@@ -716,6 +716,20 @@ struct DrainVerdict {
     truncated: bool,
 }
 
+/// WI-1044 — what [`KnowledgeBase::classify_unstamped_spec_op_call`] did, as the
+/// three things its caller must do differently. Not an `Option<Symbol>`: the target
+/// is written onto the occurrence (so `Stamped` carries nothing), and REFUSED is not
+/// the same as "no supplier" — one means fold the spec's default, the other means
+/// fold NOTHING.
+enum UnstampedDispatch {
+    /// Not this population, or nothing supplies the carrier: proceed unchanged.
+    NotApplicable,
+    /// One supplier; the occurrence now carries the typer's own `CallClass`.
+    Stamped,
+    /// Two or more suppliers (058 §4.9) — the call has no single reading.
+    Refused,
+}
+
 impl SearchStream {
     /// Yield the next solution, consuming self and returning the
     /// continuation stream. Returns `None` when exhausted.
@@ -6352,6 +6366,132 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-1044 — classify a spec-op call THE TYPER NEVER CLASSIFIED, from the values
+    /// its arguments carry, and stamp the verdict onto the occurrence.
+    ///
+    /// ## The population, and why it has no stamp
+    ///
+    /// `type_rule_bodies` runs over the rules the LOADER stored, so every rule-body
+    /// call reaches `check_apply_iter` and gets a `CallClass` (WI-1026/WI-1043). Two
+    /// populations never pass it: a TOP-LEVEL QUERY goal — converted by
+    /// `load::convert_query_term`, resolved directly, belonging to no rule — and a
+    /// rule ASSERTED at runtime. For those the WI-938 functional-relation hook
+    /// materializes a fresh occurrence out of the goal term, and a materialized
+    /// occurrence carries no classification at all.
+    ///
+    /// MEASURED on the WI-1026 one-supplier fixture before this existed:
+    /// `Desc.describe(leaf(), ?r)` answered `Int(7)` as a rule body (the supplied
+    /// impl) and `Int(1)` as a top-level query (the spec's default). One goal text,
+    /// two definite answers.
+    ///
+    /// ## Why VALUE-directed and not a second typer pass
+    ///
+    /// The typer's WI-444 block pins from the STATIC carrier it inferred; a query has
+    /// no static types to infer from, and the occurrence the hook materializes is
+    /// thrown away after the goal, so a stamp written anywhere else would not reach
+    /// this reader. What a query DOES have is bound arguments — and the tree already
+    /// owns "which implementation does this carrier supply" as a value question
+    /// ([`crate::eval::eval::spec_op_dispatch_by_value`], the owner eval's step-3
+    /// override reads). This asks that owner, so the query path cannot answer
+    /// differently from the interpreter for the same carrier.
+    ///
+    /// ## The three verdicts
+    ///
+    /// * **`NotApplicable`** — not a defaulted spec op, an argument that will not walk,
+    ///   an unclassifiable carrier, or NO supplier. The last is the case that makes a
+    ///   default a default (WI-1010: defaults fill GAPS), and it must keep folding the
+    ///   spec's own body.
+    /// * **`Stamped`** — exactly one supplier. Written through
+    ///   [`super::typing::classify_pin_or_apply_within`], the SAME writer the typer
+    ///   uses, so "may the caller enter it bare or does it need a dictionary"
+    ///   (`sort_reads_requirement_slots`) is decided in one place and WI-1037's
+    ///   `NeedsDict` route is inherited rather than re-derived.
+    /// * **`Refused`** — two or more (058 §4.9). The caller leaves the call un-reduced.
+    ///
+    /// ## THE GATE IS [`super::typing::defaulted_spec_op_parent`], asked FIRST
+    ///
+    /// WI-1042's shared gate, so the population this classifies is the population the
+    /// typer's WI-444 block pins and the dot spelling refuses — a fourth spelling here
+    /// would be the drift that ticket exists to stop. It is also the cheap early-out
+    /// this hot path needs: its first leg is a name split plus an O(1) kind probe, so
+    /// an ordinary concrete op-call (which is what `Unclassified` mostly means) leaves
+    /// before any argument is walked.
+    ///
+    /// ## THE STAMP MAY NOT OUTLIVE THE σ THAT PRODUCED IT
+    ///
+    /// `classify_pin_or_apply_within` writes into a `RefCell` on a shared
+    /// `Rc<NodeOccurrence>`, and every previous writer of that stamp was the TYPER,
+    /// whose verdict is σ-INDEPENDENT. This one is not: the carrier comes from what σ
+    /// binds the receiver to. So "one occurrence is never reduced under two different
+    /// substitutions" becomes load-bearing here for the first time — reduce one
+    /// occurrence under two σ with different carriers and the second reduction runs the
+    /// first carrier's implementation.
+    ///
+    /// It holds because every activation gets its OWN occurrence, in both shapes that
+    /// reach here: the WI-938 hook builds a fresh `rebuilt_expr` per attempt, and a
+    /// rule body is opened through `with_fresh_vars` / `body_rename`, which SUBSTITUTE
+    /// (`substitute_occurrence`) rather than share. DRIVEN in both shapes and both
+    /// clause orders on a two-carrier fixture whose suppliers answer different numbers
+    /// — `a_backtracked_receiver_reclassifies_per_carrier`. A change to either opener
+    /// that started sharing occurrences across activations would break this silently,
+    /// which is why the invariant is asserted and not merely argued.
+    ///
+    /// ## The BODY-LESS half is deliberately not here
+    ///
+    /// A body-less spec op has no default to fold, so an unstamped one already reaches
+    /// [`Self::bridge_op_to_eval`] (WI-1057) and dispatches value-directed at the eval
+    /// entry — same owner, one crossing later. Classifying it here as well would put
+    /// two redirects on one call.
+    fn classify_unstamped_spec_op_call(
+        &mut self,
+        occ: &Rc<NodeOccurrence>,
+        functor: Symbol,
+        subst: &Substitution,
+    ) -> UnstampedDispatch {
+        use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
+        use super::typing::{
+            carrier_override_suppliers, classify_pin_or_apply_within, defaulted_spec_op_parent,
+        };
+        if defaulted_spec_op_parent(self, functor).is_none() {
+            return UnstampedDispatch::NotApplicable;
+        }
+        // The spec op's arg places, in DECLARATION order — which is the order the
+        // carrier classification indexes (`self_receiver_param_index` /
+        // `carrier_param_receiver_for_values` read positionally). Positional arg
+        // first, then the named one, as the fold below does: the loader canonicalizes
+        // a plain op-call's args to named form by field name.
+        let params: Vec<Symbol> = self.symbols.arg_places(functor).to_vec();
+        let mut args: Vec<Value> = Vec::with_capacity(params.len());
+        for (i, &p) in params.iter().enumerate() {
+            let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p));
+            let Some(a) = self.walk_arg(item, subst) else {
+                return UnstampedDispatch::NotApplicable;
+            };
+            // σ-applied, so a receiver bound during the search classifies. NOT
+            // ground-gated: the carrier is read off the HEAD (`sort_of_constructor`),
+            // which a partially-instantiated entity already names, and an unbound one
+            // answers no carrier and leaves through `NoSupplier` anyway.
+            args.push(self.reify_value(&a, subst));
+        }
+        match spec_op_dispatch_by_value(self, functor, &args, carrier_override_suppliers) {
+            ValueDirectedDispatch::NoSupplier => UnstampedDispatch::NotApplicable,
+            // The spec op supplying ITSELF is not a redirect — fold as before rather
+            // than stamping a pin that points back at the spelled functor.
+            ValueDirectedDispatch::Sole(t) if t == functor => UnstampedDispatch::NotApplicable,
+            ValueDirectedDispatch::Sole(target) => {
+                // No enclosing sort and no resolved `requires` tree: a query goal has
+                // neither. A callee that needs a dictionary is therefore classified
+                // `ConcreteApplyWithin` with `dispatch_dict: None`, which is the
+                // inherit-the-caller's-frame case — and `reduce_op_value`'s WI-1037
+                // arm bridges it, where `resolve_bridge_requirements` builds the
+                // chain at the concrete argument types instead.
+                classify_pin_or_apply_within(self, occ, functor, target, None, None);
+                UnstampedDispatch::Stamped
+            }
+            ValueDirectedDispatch::Tie { .. } => UnstampedDispatch::Refused,
+        }
+    }
+
     /// WI-483: reduce a dispatched rule-body method-op call operand
     /// (`Expr::Apply{op, args}` where `op` is a CONCRETE operation) by inlining
     /// the operation body with the call args substituted into its param vars BY
@@ -6373,6 +6513,10 @@ impl KnowledgeBase {
     /// [`Self::reduce_dispatched_goal_call`], and it is the difference between
     /// reducing an operand a rule WROTE and deciding a call the WI-938 hook BUILT.
     /// See that method for why the shared operand pipeline must not ask for it.
+    ///
+    /// WI-1044 — a call the TYPER NEVER SAW is classified here, by value
+    /// ([`Self::classify_unstamped_spec_op_call`]), so an unstamped occurrence stops
+    /// meaning "the spelled functor".
     fn reduce_op_value(
         &mut self,
         v: Value,
@@ -6458,7 +6602,35 @@ impl KnowledgeBase {
         // has no frame — must not run it. Folding the spelled functor instead is not a
         // safe degradation: the spelled functor is the SPEC op, and its body is the
         // DEFAULT. That is what this site did before, and it is the defect.
-        let dispatch = occ.apply_dispatch();
+        // WI-1044 — an UNSTAMPED site gets classified HERE, by value, because the
+        // typer never saw it. A top-level query goal and a runtime-asserted rule do
+        // not pass `type_rule_bodies`, so the WI-938 hook materializes an occurrence
+        // with no `CallClass` at all — and `Unclassified` fell to the SPELLED functor
+        // one line down, which for a defaulted spec op means folding its DEFAULT.
+        // MEASURED on the WI-1026 one-supplier fixture: `Desc.describe(leaf(), ?r)`
+        // answered `7` as a rule body and `1` as a top-level query. One goal text, two
+        // definite answers, decided by whether a typer pass had happened to run over it.
+        //
+        // `Refused` returns `v` UN-REDUCED rather than folding anything: a two-supplier
+        // carrier has no single reading, and the fold's alternative here is the spec's
+        // default, i.e. a confident wrong answer. See that method for where the LOUD
+        // half of the refusal lives — this site has no diagnostic channel, and a query
+        // that reaches it has already passed its own load moment.
+        let dispatch = match occ.apply_dispatch() {
+            node_occurrence::ApplyDispatch::Unclassified => {
+                match self.classify_unstamped_spec_op_call(&occ, functor, subst) {
+                    UnstampedDispatch::Refused => return v,
+                    // `classify_pin_or_apply_within` wrote the stamp onto `occ` — read
+                    // it back through the SAME decode every other site uses, rather
+                    // than deciding Pin-vs-NeedsDict a second way here.
+                    UnstampedDispatch::Stamped => occ.apply_dispatch(),
+                    UnstampedDispatch::NotApplicable => {
+                        node_occurrence::ApplyDispatch::Unclassified
+                    }
+                }
+            }
+            d => d,
+        };
         let op = match dispatch {
             node_occurrence::ApplyDispatch::Pin(s) | node_occurrence::ApplyDispatch::NeedsDict(s) => s,
             node_occurrence::ApplyDispatch::Unclassified => functor,

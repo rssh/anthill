@@ -1119,3 +1119,6 @@ mod wi1058_rule_body_position_test;
 
 #[path = "include/wi954_published_type_param_var_test.rs"]
 mod wi954_published_type_param_var_test;
+
+#[path = "include/wi1044_query_spec_op_dispatch_test.rs"]
+mod wi1044_query_spec_op_dispatch_test;

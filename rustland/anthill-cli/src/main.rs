@@ -1458,6 +1458,25 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         }
                         print_program_clause_match_results(&kb, &results, args.max_results);
                     } else {
+                        // WI-1044: a spec-op call in the pattern whose carrier has TWO
+                        // suppliers. Ahead of the run, for the reason
+                        // `report_contested_query_names` is: such a call has no single
+                        // reading for the run to be an answer TO, and once resolution
+                        // starts the resolver has no diagnostic channel, so the tie can
+                        // only report by not answering — the silence this replaces
+                        // (MEASURED: it answered the spec's DEFAULT, definite).
+                        //
+                        // THE RESOLVE PATH ONLY, and NOT beside the contested-name
+                        // refusal above, which fires in both modes. That refusal is
+                        // about a pattern the loader could not READ, which is a defect
+                        // of the text wherever it is used; a supplier tie is a defect
+                        // of a DISPATCH, and `--match` performs none — it browses which
+                        // clause heads unify, evaluating no body. Refusing a browse
+                        // would reject a legal question about a legal program.
+                        if report_ambiguous_query_dispatch(&kb, qt) {
+                            any_unknown = true;
+                            continue;
+                        }
                         // WI-767: SLD resolution is the default — the old
                         // head-match default reported a rule-head unification
                         // (variables unbound) as an answer.
@@ -1755,6 +1774,29 @@ fn report_contested_query_names(
         report_unknown_functor_name(kb, global_scope, sym);
     }
     !contested.is_empty()
+}
+
+/// WI-1044 — report every SPEC-OP SUPPLIER TIE the query pattern names, and say
+/// whether any fired (the caller then skips the run and exits non-zero).
+///
+/// The message body is the shared one
+/// (`typing::ambiguous_spec_op_dispatch_message`, via
+/// `KnowledgeBase::ambiguous_query_dispatch`), so the query face of this refusal reads
+/// exactly like its load and eval faces — including naming each rival by its SUPPLY
+/// ROUTE, which is what tells the author which of three syntaxes to delete.
+///
+/// Unlocated, deliberately and unlike the load face: a query pattern is a whole
+/// argument, so `--pattern '<text>'` IS the location, and the multi-pattern
+/// `--query-file` path already prints a `--- query: <label> ---` header above it.
+fn report_ambiguous_query_dispatch(
+    kb: &KnowledgeBase,
+    qt: anthill_core::kb::term::TermId,
+) -> bool {
+    let ties = kb.ambiguous_query_dispatch(qt);
+    for msg in &ties {
+        eprintln!("error: {msg}");
+    }
+    !ties.is_empty()
 }
 
 /// The WI-754 unknown-functor diagnostic for one `sym`. Shared by the head-only

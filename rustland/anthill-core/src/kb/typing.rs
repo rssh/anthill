@@ -9480,7 +9480,7 @@ fn classify(_kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, class: CallClass)
 /// dict via `emit_tree_as_projection`, since eval threads `dispatch_dict`, not the
 /// diagnostic-only `resolved_tree`). The WI-415 compile-built dict is the
 /// Direct-call (non-spec-op) dual.
-fn classify_pin_or_apply_within(
+pub(crate) fn classify_pin_or_apply_within(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     fn_sym: Symbol,

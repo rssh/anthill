@@ -3193,6 +3193,148 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-1044 — every SPEC-OP CALL in query pattern `tid` whose carrier has two or
+    /// more suppliers (058 §4.9), rendered as the shared refusal sentence.
+    ///
+    /// ## Why a query needs its own face of a refusal that already exists
+    ///
+    /// A supplier tie is refused where the CALL is: at LOAD for a rule body or an
+    /// operation body (WI-1012/WI-1026/WI-1043, which hold the span), and at the CALL
+    /// for eval ([`crate::eval::EvalError::AmbiguousSpecOpDispatch`]). A top-level
+    /// query is written in NEITHER — it belongs to no rule, so no load pass ever sees
+    /// it, and it is decided by the resolver, which has no diagnostic channel at all.
+    /// MEASURED before this existed, on the WI-1026 two-supplier fixture with the
+    /// `probe` operation and the rule both removed so nothing else could catch it: the
+    /// program loaded clean and `Desc.describe(leaf(), ?r)` answered `Int(1)` — the
+    /// spec's DEFAULT, definite, with two rival implementations in the program and the
+    /// load refusal simply never reached.
+    ///
+    /// A query's load moment is the moment it is CONVERTED, which is where the caller
+    /// asks this — the same "ahead of the run" placement, and for the same reason, as
+    /// [`Self::ambiguous_query_names`]: a call with two suppliers has no single reading
+    /// for the run to be an answer TO. (An undefined functor waits for resolution
+    /// instead, per WI-754, because resolution can still succeed.)
+    ///
+    /// ## What it asks, and with what
+    ///
+    /// [`crate::eval::eval::spec_op_dispatch_by_value`] — the SAME owner eval's step-3
+    /// override and the resolver's unstamped-call classification read, over the query's
+    /// own argument terms as `Value`s. So a query cannot be refused where the
+    /// interpreter would answer, or answered where the interpreter would refuse.
+    /// Both spec-op halves are asked, each with the supplier reader its own site uses:
+    /// [`typing::carrier_override_suppliers`] for a DEFAULTED op (runnable-only) and
+    /// [`typing::spec_op_suppliers_for_carrier`] for a BODY-LESS one (unfiltered,
+    /// because its ≥2 arm is a coherence question that must not vary with the host
+    /// backend). [`typing::spec_op_call_parent`] is the union gate, so the population
+    /// admitted here is exactly the population the rule-body walk admits.
+    ///
+    /// ## Descent
+    ///
+    /// EVERY node, like [`Self::ambiguous_query_names`] and for its reason: where a
+    /// call sits decides what an ABSENT name costs and says nothing about what an
+    /// unreadable one costs. A tie in a tolerated position (a bare disjunction branch,
+    /// a quantifier body) still has no single reading.
+    ///
+    /// A carrier the arguments do not determine — an unbound receiver, a variable —
+    /// yields no verdict here and is left to the resolver, which declines to reduce
+    /// such a call once the search binds it. That is the residue: a tie first seen
+    /// mid-search is silent, because there is no moment left to be loud at. It is
+    /// narrower than what this closes (a query naming its receiver, which is what a
+    /// pattern query is), and it is the same open half WI-938's feedback records for
+    /// "make an unreduced call DELAY rather than answer nothing".
+    pub fn ambiguous_query_dispatch(&self, tid: TermId) -> Vec<String> {
+        let mut out = Vec::new();
+        self.collect_ambiguous_query_dispatch(tid, &mut out);
+        out
+    }
+
+    /// Recursive worker for [`Self::ambiguous_query_dispatch`]. Terminates because
+    /// terms are acyclic.
+    fn collect_ambiguous_query_dispatch(&self, tid: TermId, out: &mut Vec<String>) {
+        use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
+        if let Term::Fn { functor, pos_args, named_args, .. } = self.get_term(tid) {
+            let (functor, pos_args, named_args) =
+                (*functor, pos_args.clone(), named_args.clone());
+            // The union gate first — a name split plus an `OperationInfo` probe, so an
+            // ordinary predicate or constructor leaves before any argument is read.
+            if typing::spec_op_call_parent(self, functor).is_some() {
+                // The op's arg places in DECLARATION order, which is what the carrier
+                // classification INDEXES POSITIONALLY.
+                //
+                // NAMED BINDING FIRST, then the positional at that place — the reverse
+                // of `reduce_op_value`'s fold, and it is not a second rule: the two
+                // orders can disagree only on a term carrying BOTH a positional at place
+                // `i` and a named binding for place `i`, which is a duplicate binding
+                // and refused at load. The order matters here and not at the fold
+                // because this walk sees the GOAL `f(a₁…aₙ, ?r)`, one positional longer
+                // than the call the fold reduces, so a positional-first read of a
+                // partly-named goal would take the RESULT COLUMN for an argument.
+                //
+                // A STATED LIMIT, MEASURED rather than assumed: a label written in a
+                // QUERY PATTERN does not intern to the operation's arg-place symbol
+                // (driven — `Desc.describe(x: leaf(), ?r)` yields a named key that is a
+                // different `Symbol` from the `x` place), so the named leg does not fire
+                // for that spelling and the walk falls back to the positional, reads
+                // `?r`, and reports no carrier. That is a MISS and never a wrong verdict.
+                // It is left rather than closed because closing it means comparing labels
+                // by NAME, which this tree deliberately does not do (§8.6: identity is by
+                // resolved symbol) — and because the goal in question cannot answer under
+                // any verdict: WI-938's functional-relation hook requires `named_arity:
+                // 0`, so a named-arg goal never becomes a call. `TermView::named_arg`,
+                // which the fold reads through, compares by symbol identically, so this
+                // is the tree's existing rule and not a gap introduced here.
+                //
+                // ALL-OR-NOTHING, and that is not defensiveness either: skipping a place
+                // the pattern does not fill would SHIFT every later argument down one,
+                // so `self_receiver_param_index(1)` would read place 2's value. A
+                // pattern that does not fill every declared place names no carrier here
+                // and is left to resolution.
+                let places = self.symbols.arg_places(functor).to_vec();
+                let args: Option<Vec<crate::eval::value::Value>> = places
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        named_args
+                            .iter()
+                            .find(|(s, _)| s == p)
+                            .map(|(_, t)| *t)
+                            .or_else(|| pos_args.get(i).copied())
+                            .map(crate::eval::value::Value::term)
+                    })
+                    .collect();
+                // Which supplier set counts is the half the op belongs to — the same
+                // split `check_apply_iter` makes between its WI-444 block and its
+                // WI-210 block.
+                let readers: crate::eval::eval::SupplierReader =
+                    if typing::defaulted_spec_op_parent(self, functor).is_some() {
+                        typing::carrier_override_suppliers
+                    } else {
+                        typing::spec_op_suppliers_for_carrier
+                    };
+                if let Some(args) = args {
+                    if let ValueDirectedDispatch::Tie { carrier, candidates } =
+                        spec_op_dispatch_by_value(self, functor, &args, readers)
+                    {
+                        let op_qn = self.qualified_name_of(functor).to_string();
+                        out.push(typing::ambiguous_spec_op_dispatch_message(
+                            &op_qn,
+                            self.qualified_name_of(carrier),
+                            &typing::render_suppliers(
+                                self,
+                                &candidates,
+                                typing::short_name_of(&op_qn),
+                            ),
+                            typing::supplier_tie_repair(self, functor, &candidates),
+                        ));
+                    }
+                }
+            }
+        }
+        for child in self.get_term(tid).subterms() {
+            self.collect_ambiguous_query_dispatch(child, out);
+        }
+    }
+
     /// True iff `tid`'s head is a hereditary-Harrop DISCHARGE (`forall_impl`) — the one
     /// goal connective [`Self::collect_undefined_goal_functors`] never enters, because
     /// its antecedents DECLARE the predicates its consequent proves (WI-1046).

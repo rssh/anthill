@@ -1031,35 +1031,33 @@ impl Interpreter {
     /// The `repair` field is why the last of those takes an argument: the two readers
     /// here disagree about it, since only a BODY-LESS op has a dispatch slot a
     /// `[Spec = Witness]` bracket could bind.
+    /// WI-1044 — the `EvalError` FACE of [`spec_op_dispatch_by_value`], which is the
+    /// owner. Eval is one of three readers now (the resolver's unstamped-call
+    /// classification and the query-term refusal are the others), and it is the only
+    /// one with an error channel to raise the tie on.
     fn sole_supplier_by_value(
         &self,
         spec_op: Symbol,
         arg_values: &[Value],
-        suppliers: fn(
-            &KnowledgeBase,
-            Symbol,
-            Symbol,
-            Symbol,
-            Symbol,
-        ) -> SmallVec<[crate::kb::typing::SpecOpSupplier; 2]>,
+        suppliers: SupplierReader,
     ) -> Result<Option<Symbol>, EvalError> {
-        let Some((spec_sort, carrier)) = self.spec_call_runtime_carrier(spec_op, arg_values)
-        else {
-            return Ok(None);
-        };
-        let op_qn = self.kb.qualified_name_of(spec_op);
-        let op_short = crate::kb::typing::short_name_of(op_qn);
-        let Some(op_short_sym) = self.kb.lookup_symbol(op_short) else { return Ok(None) };
-        let cands = suppliers(&self.kb, spec_sort, carrier, spec_op, op_short_sym);
-        match cands.as_slice() {
-            [] => Ok(None),
-            [only] => Ok(Some(only.target)),
-            _ => Err(EvalError::AmbiguousSpecOpDispatch {
-                op: op_qn.to_string(),
-                carrier: self.kb.qualified_name_of(carrier).to_string(),
-                candidates: crate::kb::typing::render_suppliers(&self.kb, &cands, op_short),
-                repair: crate::kb::typing::supplier_tie_repair(&self.kb, spec_op, &cands),
-            }),
+        match spec_op_dispatch_by_value(&self.kb, spec_op, arg_values, suppliers) {
+            ValueDirectedDispatch::NoSupplier => Ok(None),
+            ValueDirectedDispatch::Sole(target) => Ok(Some(target)),
+            ValueDirectedDispatch::Tie { carrier, candidates } => {
+                let op_qn = self.kb.qualified_name_of(spec_op);
+                let op_short = crate::kb::typing::short_name_of(op_qn);
+                Err(EvalError::AmbiguousSpecOpDispatch {
+                    op: op_qn.to_string(),
+                    carrier: self.kb.qualified_name_of(carrier).to_string(),
+                    candidates: crate::kb::typing::render_suppliers(
+                        &self.kb, &candidates, op_short,
+                    ),
+                    repair: crate::kb::typing::supplier_tie_repair(
+                        &self.kb, spec_op, &candidates,
+                    ),
+                })
+            }
         }
     }
 
@@ -1089,58 +1087,6 @@ impl Interpreter {
             arg_values,
             crate::kb::typing::carrier_override_suppliers,
         )
-    }
-
-    /// WI-350/WI-444 — the `(spec_sort, carrier_sort)` a spec-op call names at
-    /// runtime: the spec op's parent sort (body-agnostic — WI-444 admits a
-    /// DEFAULTED op so its carrier can still override), and the receiver
-    /// argument value's own carrier sort. Mirrors the typer's `receiver_carrier`
-    /// / `carrier_param_receiver` classification so the static and dynamic paths
-    /// never disagree about which argument names the carrier.
-    fn spec_call_runtime_carrier(
-        &self,
-        spec_op: Symbol,
-        arg_values: &[Value],
-    ) -> Option<(Symbol, Symbol)> {
-        use crate::kb::typing::{
-            carrier_param_receiver_for_values, self_receiver_param_index, spec_op_parent_sort,
-        };
-        let spec_sort = spec_op_parent_sort(&self.kb, spec_op)?;
-        let rec = crate::kb::op_info::lookup_operation_info(&self.kb, spec_op)?;
-        // The carrier sort a runtime argument value names. Entity/Term values
-        // derive it from their constructor's parent sort; HANDLE / SCALAR values
-        // (a stream cursor, a `Map`, a `Cell`, a closure, a boxed scalar) carry no
-        // constructor functor, so they map to a FIXED prelude sort. Since WI-385
-        // widened consumer params from concrete handle types to the SPEC (e.g.
-        // `LogicalStream` → `Stream`), the typer no longer statically rewrites those
-        // calls, so THIS dynamic path must classify the handle's carrier or every
-        // spec op consuming one dies `UnknownOperation` — the regression that
-        // silently broke `next` on a stream, and `isEmpty`/`find` on a `Map`
-        // (WI-435 generalized the WI-009 `Value::Stream` special-case into
-        // `runtime_carrier_sort`). Classifying handle receivers also closes the
-        // WI-424 "non-receiver slot steals dispatch" gap: a receiver that returned
-        // `None` here was skipped, so a later carrier-typed arg won the first-passing
-        // `carrier_param_receiver_for_values` loop; now the receiver classifies and
-        // wins, matching the typer's `carrier_param_receiver` index.
-        let carrier_of =
-            |i: usize| -> Option<Symbol> { runtime_carrier_sort(&self.kb, arg_values.get(i)?) };
-        // Same self-receiver classification the typer's `receiver_carrier`
-        // uses, so the two never disagree about which argument names the
-        // carrier. `arg_values` is in callee-parameter order here (the typer
-        // reorders named args), so the declaration index reads the receiver.
-        // WI-424: a spec may name its carrier through its own type-param
-        // (`Iterable.iterator(c: C)`) instead of the spec sort — fall back to
-        // the carrier-param receiver, gated on the SAME provision check the
-        // typer's classification applies (the value's sort must provide the
-        // spec with that param bound to the carrier), so an element-typed
-        // param never dispatches (`iterator` on a `List` value → `List.iterator`).
-        let carrier = match self_receiver_param_index(&self.kb, &rec.params, spec_sort) {
-            Some(idx) => carrier_of(idx)?,
-            None => {
-                carrier_param_receiver_for_values(&self.kb, &rec.params, spec_sort, &carrier_of)?.1
-            }
-        };
-        Some((spec_sort, carrier))
     }
 
     // ── Binder starts: update top.awaiting, push child frame. ──────
@@ -3018,9 +2964,16 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
 /// `Expr::Spliced` and declining a value this function had just accepted: the very
 /// accept-then-decline pair the change exists to avoid.
 ///
-/// The ticket also claimed a widening here would reach dynamic dispatch: it cannot.
-/// [`runtime_carrier_sort`] gives `OpRef` AND `Node` fixed answers BEFORE it calls
-/// this, so neither arrives here from the dispatch consumer.
+/// The ticket also claimed a widening here would reach dynamic dispatch: it cannot,
+/// for `OpRef` — [`runtime_carrier_sort`] gives that a fixed answer BEFORE it calls
+/// this. **WI-1044 MADE IT FALSE FOR `Node`**: that function's `Node` arm now falls
+/// through to this one (the WI-1016 rule that both carriers must key alike — its own
+/// `Node` exclusion was an asymmetry with this reader, not a decision), so a
+/// node-carried receiver DOES arrive here from the dispatch consumer. What it can
+/// name is bounded by the consumer's next step, `sort_of_constructor`: an un-reduced
+/// `Expr::Apply` or a variable still answers nothing. See that arm for the one
+/// consequence worth knowing — a reflect-WRAPPED form heads as a real constructor of
+/// `anthill.reflect.Expr`.
 ///
 /// ADMITTING A CARRIER OBLIGES ITS PAIRED READERS (the rule WI-1016 wrote at
 /// `eval/pattern.rs`): `constructor_sub_values` must be able to destructure it, or
@@ -3071,6 +3024,132 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     }
 }
 
+/// The supplier-set reader a value-directed dispatch is asked WITH — the one thing
+/// its two spec-op populations differ in. [`crate::kb::typing::carrier_override_suppliers`]
+/// for the DEFAULTED half (runnable-only: running the spec's own default beats
+/// selecting a member the interpreter cannot call, WI-876), and
+/// [`crate::kb::typing::spec_op_suppliers_for_carrier`] for the BODY-LESS half, whose
+/// ≥2 arm is a COHERENCE refusal and so must not change answer with the host backend.
+pub(crate) type SupplierReader = fn(
+    &KnowledgeBase,
+    Symbol,
+    Symbol,
+    Symbol,
+    Symbol,
+) -> SmallVec<[crate::kb::typing::SpecOpSupplier; 2]>;
+
+/// WI-1044 — the verdict of a VALUE-DIRECTED spec-op dispatch, as data rather than
+/// as one reader's error type.
+///
+/// [`spec_op_dispatch_by_value`] used to exist only inside eval's
+/// `sole_supplier_by_value`, which folded the verdict straight into an
+/// [`EvalError`]. That was fine while eval was the only value-directed reader; it is
+/// not, since a resolver goal and a QUERY TERM ask the identical question and neither
+/// has an `EvalError` to raise. Returning the verdict lets each reader say what a tie
+/// costs THERE — eval raises, the resolver declines to reduce, the query refuses —
+/// while the walk that produces it stays one function.
+pub(crate) enum ValueDirectedDispatch {
+    /// The carrier is unclassifiable, or supplies nothing: the caller's own fallback
+    /// runs (for a DEFAULTED op that is the spec's default body — the gap a default
+    /// exists to fill).
+    NoSupplier,
+    /// Exactly one supplier — the implementation to dispatch to.
+    Sole(Symbol),
+    /// Two or more (058 §4.9): a bracket-less site has no way to name a selection, so
+    /// every reader must refuse rather than pick by route order. `carrier` and
+    /// `candidates` are what the shared wording
+    /// ([`crate::kb::typing::render_suppliers`] /
+    /// [`crate::kb::typing::supplier_tie_repair`]) needs.
+    Tie { carrier: Symbol, candidates: SmallVec<[crate::kb::typing::SpecOpSupplier; 2]> },
+}
+
+/// WI-1044 — THE value-directed dispatch walk: classify the runtime carrier of
+/// `spec_op`'s receiver among `arg_values`, ask `suppliers` who implements the op for
+/// it, and report how many answered.
+///
+/// Three readers, and the reason they must share this rather than each ask their own
+/// way is WI-1044's own defect: `reduce_op_value` folded `op_body_node(spec_op)` — the
+/// spec's DEFAULT — for a call the typer had never classified, so ONE goal text
+/// answered `7` as a rule body and `1` as a top-level query. Whatever decides a
+/// supplied implementation must decide it the same whether the question arrives as a
+/// value at eval, as a σ-walked argument at the resolver, or as a ground query term.
+///
+/// `arg_values` is in the callee's DECLARATION order (the typer reorders named args),
+/// because [`crate::kb::typing::self_receiver_param_index`] and
+/// [`crate::kb::typing::carrier_param_receiver_for_values`] index it positionally.
+pub(crate) fn spec_op_dispatch_by_value(
+    kb: &KnowledgeBase,
+    spec_op: Symbol,
+    arg_values: &[Value],
+    suppliers: SupplierReader,
+) -> ValueDirectedDispatch {
+    let Some((spec_sort, carrier)) = spec_call_runtime_carrier(kb, spec_op, arg_values) else {
+        return ValueDirectedDispatch::NoSupplier;
+    };
+    let op_short = crate::kb::typing::short_name_of(kb.qualified_name_of(spec_op));
+    let Some(op_short_sym) = kb.lookup_symbol(op_short) else {
+        return ValueDirectedDispatch::NoSupplier;
+    };
+    let cands = suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
+    match cands.as_slice() {
+        [] => ValueDirectedDispatch::NoSupplier,
+        [only] => ValueDirectedDispatch::Sole(only.target),
+        _ => ValueDirectedDispatch::Tie { carrier, candidates: cands },
+    }
+}
+
+/// WI-350/WI-444 — the `(spec_sort, carrier_sort)` a spec-op call names at
+/// runtime: the spec op's parent sort (body-agnostic — WI-444 admits a
+/// DEFAULTED op so its carrier can still override), and the receiver
+/// argument value's own carrier sort. Mirrors the typer's `receiver_carrier`
+/// / `carrier_param_receiver` classification so the static and dynamic paths
+/// never disagree about which argument names the carrier.
+///
+/// WI-1044 lifted this off `Interpreter` — it only ever read `self.kb`, and the
+/// resolver and the query-term walk need the same classification without one.
+fn spec_call_runtime_carrier(
+    kb: &KnowledgeBase,
+    spec_op: Symbol,
+    arg_values: &[Value],
+) -> Option<(Symbol, Symbol)> {
+    use crate::kb::typing::{
+        carrier_param_receiver_for_values, self_receiver_param_index, spec_op_parent_sort,
+    };
+    let spec_sort = spec_op_parent_sort(kb, spec_op)?;
+    let rec = crate::kb::op_info::lookup_operation_info(kb, spec_op)?;
+    // The carrier sort a runtime argument value names. Entity/Term values
+    // derive it from their constructor's parent sort; HANDLE / SCALAR values
+    // (a stream cursor, a `Map`, a `Cell`, a closure, a boxed scalar) carry no
+    // constructor functor, so they map to a FIXED prelude sort. Since WI-385
+    // widened consumer params from concrete handle types to the SPEC (e.g.
+    // `LogicalStream` → `Stream`), the typer no longer statically rewrites those
+    // calls, so THIS dynamic path must classify the handle's carrier or every
+    // spec op consuming one dies `UnknownOperation` — the regression that
+    // silently broke `next` on a stream, and `isEmpty`/`find` on a `Map`
+    // (WI-435 generalized the WI-009 `Value::Stream` special-case into
+    // `runtime_carrier_sort`). Classifying handle receivers also closes the
+    // WI-424 "non-receiver slot steals dispatch" gap: a receiver that returned
+    // `None` here was skipped, so a later carrier-typed arg won the first-passing
+    // `carrier_param_receiver_for_values` loop; now the receiver classifies and
+    // wins, matching the typer's `carrier_param_receiver` index.
+    let carrier_of = |i: usize| -> Option<Symbol> { runtime_carrier_sort(kb, arg_values.get(i)?) };
+    // Same self-receiver classification the typer's `receiver_carrier`
+    // uses, so the two never disagree about which argument names the
+    // carrier. `arg_values` is in callee-parameter order here (the typer
+    // reorders named args), so the declaration index reads the receiver.
+    // WI-424: a spec may name its carrier through its own type-param
+    // (`Iterable.iterator(c: C)`) instead of the spec sort — fall back to
+    // the carrier-param receiver, gated on the SAME provision check the
+    // typer's classification applies (the value's sort must provide the
+    // spec with that param bound to the carrier), so an element-typed
+    // param never dispatches (`iterator` on a `List` value → `List.iterator`).
+    let carrier = match self_receiver_param_index(kb, &rec.params, spec_sort) {
+        Some(idx) => carrier_of(idx)?,
+        None => carrier_param_receiver_for_values(kb, &rec.params, spec_sort, &carrier_of)?.1,
+    };
+    Some((spec_sort, carrier))
+}
+
 /// The prelude carrier sort a runtime VALUE names, for dynamic spec-op
 /// dispatch — the runtime twin of the typer's `carrier_sort_of_value` (which
 /// keys on a TYPE). `Entity` / `Term` values derive the carrier from their
@@ -3084,9 +3163,19 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 /// fall through to `None` and dispatch as `UnknownOperation` — the exact
 /// WI-385-widening regression class WI-435 closes (the WI-009 `Value::Stream →
 /// LogicalStream` patch generalized to every handle). A value that never names a
-/// spec receiver (unit, tuple, lazy thunk, substitution, raw node, logic var)
-/// maps to `None`.
+/// spec receiver (unit, tuple, lazy thunk, substitution, logic var) maps to `None`.
+/// An OCCURRENCE is not in that list since WI-1044 — it reads through to the
+/// constructor route below, like the `Entity` / `Term` carriers of the same datum.
 pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    // WI-1044 — CANCEL THE CARRIER ALGEBRA FIRST, exactly as [`value_functor`] does
+    // three lines into its own body, and for the same reason: an occurrence WRAPPING
+    // another carrier (`Value::Node(Expr::Spliced(…))`) must answer what the wrapped
+    // value answers. Without it the fixed-carrier rows below are simply unreachable
+    // through a splice — a spliced `Value::Map` fell to the `Node` arm, where
+    // `value_functor` cancels the splice and then answers `None` for a `Map`, so one
+    // map named `anthill.prelude.Map` raw and NO carrier wrapped. That is the WI-1016
+    // rule this function's `Node` arm was widened to obey, applied to the other half.
+    let value = value.carried();
     // Handle / scalar values: a FIXED prelude carrier sort per variant.
     let qualified: Option<&str> = match value {
         Value::Stream(_) => Some("anthill.prelude.LogicalStream"),
@@ -3104,7 +3193,36 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         // the twin of a `Value::Term{Term::Ref(c)}`, which reaches the
         // `sort_of_constructor` route below, and a bare constructor reference
         // must dispatch the same through either carrier.
-        Value::Entity { .. } | Value::Term { .. } | Value::SymbolRef(_) => None,
+        //
+        // WI-1044 — `Value::Node` RIDES WITH THEM TOO, and its absence was an
+        // asymmetry with this function's own callee, not a decision: `value_functor`
+        // (three lines of which are "an occurrence lowers too, so its head is read the
+        // same way") answers for a Node, and this listed it among the values that
+        // "never name a spec receiver". So one entity named its carrier through
+        // `Value::Entity`/`Value::Term` and named NOTHING through the occurrence
+        // carrier the resolver hands the same entity in — the WI-1016 rule that both
+        // carriers must key alike, unapplied here.
+        //
+        // A Node whose head is an OPERATION (an un-reduced `Expr::Apply`) or a bare
+        // variable still answers `None` exactly as it did — the route below is
+        // `sort_of_constructor`. What answers now is a Node whose head is a
+        // CONSTRUCTOR, which is the case where it IS the entity.
+        //
+        // "CONSTRUCTOR" IS WIDER THAN "an entity the user wrote", and the first draft
+        // of this comment said otherwise. `occ_head` routes the reflect-WRAPPED forms
+        // through `wrapped_expr_head`, so a node-carried `Expr::Lambda` / `If` / `Let` /
+        // `Match` / `DotApply` / `VarRef` heads as `anthill.reflect.Expr.lambda_expr`
+        // and friends — real constructors — and this therefore names
+        // `anthill.reflect.Expr` as their dispatch carrier, where the SAME lambda
+        // carried as a `Value::Closure` names `anthill.prelude.Function`. Harmless
+        // today because `anthill.reflect.Expr` provides no spec, so every supplier
+        // walk over that carrier is empty; it stops being harmless the day it does,
+        // and the two carriers of one lambda would then select different impls.
+        // WI-342 keeps an effectful lambda as a `Value::Node`, so the pair is real.
+        // Recorded here rather than pre-emptively excluded: excluding reflect by name
+        // would be the identity-by-name read §8.6 refuses, and the honest fix when it
+        // matters is for `Value::Closure` and its node twin to name one carrier.
+        Value::Entity { .. } | Value::Term { .. } | Value::SymbolRef(_) | Value::Node(_) => None,
         // WI-714 (proposal 052): a `Relation` value's carrier IS the `Relation`
         // sort — so `splitFirst`/`head`/`map`/… dispatch to `Relation.splitFirst`
         // (the query-running host builtin) and, via `provides LogicalStream`, the
@@ -3117,7 +3235,6 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Unit
         | Value::Tuple { .. }
         | Value::Substitution(_)
-        | Value::Node(_)
         | Value::Var(_) => return None,
     };
     if let Some(qn) = qualified {

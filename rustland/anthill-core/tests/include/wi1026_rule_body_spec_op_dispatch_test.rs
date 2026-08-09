@@ -186,10 +186,10 @@ pub(crate) const TWO_LEAF: &str = "    provides Desc[T = Leaf]\n    operation de
 pub(crate) const TWO_SUPPLY: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
                           fact Desc[T = Leaf, describe = otherDescribe]\n";
 
-fn one_supplier(ns: &str, tail: &str) -> String {
+pub(crate) fn one_supplier(ns: &str, tail: &str) -> String {
     program(ns, ONE_LEAF, ONE_SUPPLY, tail)
 }
-fn two_suppliers(ns: &str, tail: &str) -> String {
+pub(crate) fn two_suppliers(ns: &str, tail: &str) -> String {
     program(ns, TWO_LEAF, TWO_SUPPLY, tail)
 }
 

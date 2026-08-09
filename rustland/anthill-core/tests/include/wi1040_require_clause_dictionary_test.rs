@@ -36,8 +36,9 @@
 //!
 //! | test | surface+sweep | resolver `out` arm | weave |
 //! |---|---|---|---|
-//! | `a_covered_call_dispatches_through_the_clause_dictionary` | FAILS (load) | FAILS (`[]`) | **FAILS (`1`)** |
-//! | `the_same_clause_without_require_runs_the_spec_default` | ok | ok | ok — the CONTROL |
+//! | `a_covered_call_dispatches_through_the_clause_dictionary` | FAILS (load) | FAILS (`[]`) | ~~FAILS (`1`)~~ — see below |
+//! | `the_same_clause_without_require_dispatches_by_value` | ok | ok | ok |
+//! | `a_two_supplier_carrier_dispatches_silently_through_the_dictionary` | FAILS (load) | FAILS | **FAILS (`[]`)** — the CONTROL |
 //! | `every_covered_call_in_the_clause_is_woven` | FAILS (load) | FAILS | **FAILS (`[]`)** |
 //! | `the_named_spelling_binds_the_dictionary_by_hand` | FAILS (load) | **FAILS (`[]`)** | ok |
 //! | `a_require_with_no_anchor_is_refused_at_typing` | **FAILS** | ok | ok |
@@ -46,6 +47,17 @@
 //! | `the_check_only_spelling_is_unchanged` | ok | ok | ok — acceptance (f) |
 //!
 //! The last pins acceptance (f) and passes either way BY DESIGN — see its site.
+//!
+//! **WI-1044 MOVED ROWS 1–3, and the weave column is where.** The resolver now
+//! classifies an UNCLASSIFIED spec-op call from its argument values, so on THIS
+//! ticket's one-supplier fixture the plain call reaches the supplied `7` with no
+//! dictionary at all — row 1's weave column no longer discriminates, and row 2 (which
+//! existed to make it discriminate) is re-aimed at its site with the argument for why
+//! the old `1` was a defect rather than a baseline. The discrimination moves to the
+//! TWO-SUPPLIER fixture, where value-direction REFUSES (058 §4.9) and only the
+//! dictionary answers: `a_two_supplier_carrier_dispatches_silently_through_the_-
+//! dictionary` was documented "PASSES EITHER WAY by design" and is now the live
+//! control for the whole weave. Each affected test says so at its own site.
 //!
 //! ## WHICH CALLS ARE WOVEN — a narrower population than "every covered call"
 //!
@@ -202,11 +214,32 @@ fn a_covered_call_dispatches_through_the_clause_dictionary() {
     );
 }
 
-/// THE CONTROL for the test above, and the reason its `7` measures anything: the
-/// identical clause with the `require` deleted answers the spec's DEFAULT. Both
-/// numbers are reachable in this program, so neither can be produced by accident.
+/// THIS WAS THE CONTROL FOR THE TEST ABOVE, AND **WI-1044 CONSUMED IT** — re-aimed
+/// here at what it now measures, rather than deleted, because the reason it stopped
+/// discriminating is itself the thing a reader of this file needs told.
+///
+/// It asserted `1`: the identical clause with the `require` deleted folded the spec's
+/// DEFAULT, so the headline's `7` could not have been produced by accident. WI-1044
+/// made the resolver classify an UNCLASSIFIED spec-op call from the values its
+/// arguments carry, and `?x` is bound to `leaf()` by the time this call reduces — so
+/// the plain call now reaches the supplied `7` too, WITHOUT any dictionary.
+///
+/// **That is a correction, not a regression, and the argument is eval's:**
+/// `dispatch_resolved_operation`'s step-3 `resolve_carrier_override_by_value` has
+/// always dispatched this exact call by value, so `operation probe(x: T) = Desc.
+/// describe(x)` answered `7` while the identical unpinnable call in a rule body
+/// answered `1`. 058 §3.3 puts rule bodies out of scope for COMPILE-STAGE selection;
+/// it does not say the runtime must then run the default over a supplied impl, and
+/// WI-444/WI-1010's rule ("defaults fill GAPS, they do not SHADOW") says it must not.
+///
+/// **WHERE THE HEADLINE'S DISCRIMINATION WENT:**
+/// [`a_two_supplier_carrier_dispatches_silently_through_the_dictionary`], which this
+/// file documented as "PASSES EITHER WAY by design" and which is now a LIVE control —
+/// value-directed classification REFUSES a two-supplier carrier (058 §4.9), so on that
+/// fixture the weave is the only thing that answers at all. The header table's first
+/// row is updated accordingly.
 #[test]
-fn the_same_clause_without_require_runs_the_spec_default() {
+fn the_same_clause_without_require_dispatches_by_value() {
     let ns = "test.wi1040.control";
     let src = program(
         ns,
@@ -215,9 +248,11 @@ fn the_same_clause_without_require_runs_the_spec_default() {
     );
     assert_eq!(
         answer(ns, &src),
-        1,
-        "without a clause dictionary an unpinnable spec-op call folds the spec's \
-         default — this is the number the headline test must NOT produce",
+        7,
+        "WI-1044: an unpinnable spec-op call is classified from its ARGUMENT VALUES at \
+         reduction time, so it reaches what `Leaf` supplies — the same answer eval's \
+         step-3 override has always given for this call. It folded the spec's `1` \
+         before, which was the resolver and the interpreter disagreeing about one call",
     );
 }
 
@@ -464,14 +499,24 @@ fn a_nested_require_is_refused_at_parse() {
 /// is decided at typing/load. Pinned here so that a change which lets one through
 /// to run time has to come and edit this test.
 ///
-/// PASSES EITHER WAY by design — the refusal is 058's coherence machinery, which
-/// this ticket does not touch. It is here to record WHERE the tie is caught, which
-/// is what makes the resolver's `debug_assert` on the same condition honest.
+/// **WI-1044 MADE THIS THE FILE'S LIVE CONTROL FOR THE WEAVE**, and it used to pass
+/// EITHER WAY by design. Its assertion is unchanged; what changed is what happens when
+/// the weave is backed out. Value-directed classification refuses a two-supplier
+/// carrier (058 §4.9), so the un-woven call now answers NOTHING here — while the
+/// dictionary still answers `7`, because `resolve_op_target_checked` reads one
+/// sort-ops entry and never consults `spec_op_suppliers_for_carrier`. That is the same
+/// boundary the assertion below already named, seen from the other side: the two
+/// derivations of one dispatch DISAGREE about this program, and only one of them
+/// notices. It is the one fixture in this file on which the weave is the difference
+/// between an answer and none.
 #[test]
 fn a_two_supplier_carrier_dispatches_silently_through_the_dictionary() {
     let ns = "test.wi1040.tie";
-    let src = format!(
-        r#"namespace {ns}
+    // `clause` is the rule-body prefix under test — the WHOLE difference between the
+    // subject and its control, so the control cannot drift into a different program.
+    let tie_program = |ns: &str, clause: &str| {
+        format!(
+            r#"namespace {ns}
   import anthill.prelude.Int64
 
   sort Desc
@@ -490,11 +535,25 @@ fn a_two_supplier_carrier_dispatches_silently_through_the_dictionary() {
 
   fact Desc[T = Leaf, describe = otherDescribe]
 
-  rule via(?x, ?r) :- require[Desc[T]], Desc.describe(?x, ?r)
+  rule via(?x, ?r) :- {clause}Desc.describe(?x, ?r)
   rule answer(?r) :- via(leaf(), ?r)
 end
 "#
+        )
+    };
+    // THE CONTROL, MEASURED AT THE SITE rather than predicted in the header: the same
+    // program with `require[…]` deleted answers NOTHING. Value-directed classification
+    // (WI-1044) sees two suppliers for `Leaf` and declines to reduce the call, so the
+    // WI-938 hook has nothing to `unify` the result column with. That `7` below is
+    // therefore the dictionary's and no other path's.
+    let without = answers(&format!("{ns}.control"), &tie_program(&format!("{ns}.control"), ""));
+    assert!(
+        !without.iter().any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
+        "the un-woven twin must not answer: a two-supplier carrier has no single \
+         reading, and the only Int a fold could produce is the spec's DEFAULT — got \
+         {without:?}",
     );
+    let src = tie_program(ns, "require[Desc[T]], ");
     assert_eq!(
         answer(ns, &src),
         7,
@@ -509,12 +568,23 @@ end
 
 /// ACCEPTANCE (f) — the check-only spelling is unchanged. It lowers to the SAME
 /// relation with no `out`, weaves nothing, and decides exactly what WI-300's guard
-/// decided: the clause fires where the carrier provides the spec, and the call
-/// itself still folds the default (checking is not supplying).
+/// decided: the clause fires where the carrier provides the spec, and does not SUPPLY
+/// anything to the call beside it.
 ///
 /// PASSES EITHER WAY by design — that is the point. It is the sentinel for the
 /// structural claim in this file's header: were `out` positional, or were the weave
 /// keyed on anything but `out`'s presence, this test would move.
+///
+/// **WI-1044 changed the NUMBER and not the claim.** The assertion was `1`, on the
+/// reading "checking is not supplying, so the call still folds the spec's default" —
+/// but folding the default was never what "not supplying" MEANT. It is what an
+/// unclassified call happened to do, here and in
+/// [`the_same_clause_without_require_dispatches_by_value`] alike, and the resolver now
+/// classifies such a call from its argument values (see that test for why that is a
+/// correction). What acceptance (f) asserts is that this spelling weaves NOTHING, and
+/// the number that shows it is the one the plain clause gives — which is `7` for both.
+/// The sentinel is intact: a weave here would make this fixture behave like the
+/// headline's, and the two-supplier fixture above is where the two now visibly part.
 #[test]
 fn the_check_only_spelling_is_unchanged() {
     let ns = "test.wi1040.checkonly";
@@ -525,9 +595,10 @@ fn the_check_only_spelling_is_unchanged() {
     );
     assert_eq!(
         answer(ns, &src),
-        1,
-        "`requires(X)` CHECKS and does not supply — the call still folds the spec's \
-         default, exactly as before this ticket",
+        7,
+        "`requires(X)` CHECKS and does not supply — so the call beside it is decided \
+         exactly as the same call with no `requires` at all (WI-1044: by value), and \
+         NOT through a dictionary this spelling never builds",
     );
 
     // …and it still blocks a carrier that provides nothing, which is the whole of
