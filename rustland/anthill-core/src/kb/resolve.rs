@@ -6813,9 +6813,11 @@ impl KnowledgeBase {
     /// Dispatching them would reduce data, which is the same failure as the 5 wi616
     /// regressions [`Self::is_unreduced_op_call`] records, reached through the other
     /// door. It is also what keeps [`Self::body_less_dispatchable`]'s
-    /// `sort_is_parametric` leg (51 µs, O(|symbols|)) and a whole
-    /// `run_in_bridge_interp` off the per-operand path: this flag is read BEFORE
-    /// either, so an `eq` over a Set literal pays neither.
+    /// `sort_is_parametric` leg and a whole `run_in_bridge_interp` off the per-operand
+    /// path: this flag is read BEFORE either, so an `eq` over a Set literal pays
+    /// neither. (That leg was 51 µs and O(|symbols|) when this was written; WI-954 made
+    /// it an O(1) owner-scope read, so the `run_in_bridge_interp` half is now the whole
+    /// of what this saves.)
     ///
     /// The goal shape ([`Self::body_less_relation_arity`]) and this reduction are the
     /// admitting and the deciding half of one decision, and they have one reader each.
@@ -7194,14 +7196,16 @@ impl KnowledgeBase {
     /// therefore costs a reduction attempt, never a wrong answer.
     ///
     /// **THE EXPENSIVE LEG IS LAST, AND THAT ORDERING IS LOAD-BEARING.**
-    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric`, whose
-    /// own doc measures it at 51 µs/call and O(|symbols|) and instructs every caller
-    /// to place it last. This runs on the PER-GOAL hot path, and the sibling's cheap
-    /// gate does not shield it: `functional_relation_arity` bails on exactly the
-    /// body-less functors that arrive here, which is nearly every goal. So the
-    /// operation-record probe does the shielding — a fact, an entity constructor or a
-    /// plain rule predicate has no signature and leaves at the second line — and
-    /// `body_less_dispatchable` re-checks it before its own scan for the same reason.
+    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric`, which
+    /// its own doc measured at 51 µs/call and O(|symbols|) and told every caller to
+    /// place last — WI-954 made it an O(1) owner-scope read, so the ordering now shields
+    /// the REST of that lookup (the `OperationInfo` record miss and its fact scan), not
+    /// this leg. This runs on the PER-GOAL hot path, and the sibling's cheap gate does
+    /// not shield it: `functional_relation_arity` bails on exactly the body-less functors
+    /// that arrive here, which is nearly every goal. So the operation-record probe does
+    /// the shielding — a fact, an entity constructor or a plain rule predicate has no
+    /// signature and leaves at the second line — and `body_less_dispatchable` re-checks
+    /// it before its own scan for the same reason.
     fn body_less_relation_arity(&self, f: Symbol) -> Option<usize> {
         if self.builtins.get(&f).is_some() {
             return None;
@@ -7218,11 +7222,12 @@ impl KnowledgeBase {
     ///
     /// ONE OWNER for the check AND for the order it must be made in, because both
     /// readers sit on hot paths and the expensive leg is easy to reach by accident.
-    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric`,
-    /// measured at 51 µs/call and O(|symbols|), whose doc tells every caller to place
-    /// it last. The operation-record probe is what makes that safe here: an ENTITY
-    /// CONSTRUCTOR is body-less too, so without the cheap leg first a caller that
-    /// walked constructors would pay the scan for a question whose answer is always no.
+    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric` — 51 µs
+    /// and O(|symbols|) when this was written, an O(1) owner-scope read since WI-954 —
+    /// and the expensive part of that lookup is now the `OperationInfo` record miss and
+    /// its fact scan. The operation-record probe is what makes the order safe here: an
+    /// ENTITY CONSTRUCTOR is body-less too, so without the cheap leg first a caller that
+    /// walked constructors would pay that scan for a question whose answer is always no.
     ///
     /// **The rule-LESS clause lives HERE, not only at the goal shape** (design §3.3,
     /// "rules win while both exist"). A body-less spec op whose clauses are written as

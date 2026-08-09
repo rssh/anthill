@@ -6340,11 +6340,12 @@ fn op_tp_pinning_params(
         })
         .collect();
     // (code-review) Kind-gate + memoized read. A free op's parent is a NAMESPACE, and
-    // the uncached `impl_param_symbols` → `type_params_of_sort` walk scans the whole
+    // the uncached `impl_param_symbols` → `type_params_of_sort` walk scanned the whole
     // symbol table per call — paid on every call with any lambda-or-VarRef argument
-    // just to learn a namespace has no params. `sort_type_params_as_pairs` is the same
-    // filter chain (qualified param symbol → sort alias → keep `Var::Global`),
-    // memoized on `sort_param_pairs_cache`. WI-956: the gate is
+    // just to learn a namespace has no params. (WI-954 made that walk an owner-scope
+    // read, so the memo is now about not rebuilding the pairs, not about the scan.)
+    // `sort_type_params_as_pairs` is the same filter chain, memoized on
+    // `sort_param_pairs_cache`. WI-956: the gate is
     // `impl_parent_sort_of_op`'s, which asks `has_kind` — see its doc for the
     // re-declared sort whose params this dropped under `kind_of`.
     if let Some(parent) = impl_parent_sort_of_op(kb, functor) {
@@ -11160,10 +11161,12 @@ fn check_apply_iter(
         // block out of that bind and they stop coinciding.
         //
         // COST, corrected by this ticket's own review: the frame still reaches
-        // `type_params_of_sort` — 51 µs, O(|symbols|) — FOUR times per defaulted-spec-op
-        // call (`lookup_spec_op_dispatch` above, `self_receiver_spec_sort` beside it,
-        // this gate, and `lookup_spec_op_dispatch` again at the body-less block below).
-        // It was FIVE; collapsing the rest is a memo question (WI-1011), not a gate one.
+        // `type_params_of_sort` FOUR times per defaulted-spec-op call
+        // (`lookup_spec_op_dispatch` above, `self_receiver_spec_sort` beside it, this
+        // gate, and `lookup_spec_op_dispatch` again at the body-less block below). It
+        // was FIVE; collapsing the rest is a memo question (WI-1011), not a gate one.
+        // The 51 µs O(|symbols|) figure that made those four matter is WI-954's — that
+        // call is an owner-scope read now.
         if let Some(spec_sort) = defaulted_spec_op_parent(kb, fn_sym) {
             // WI-1027 moved the two-shape rule (and WI-608's abstract-spec exclusion)
             // into [`statically_pinned_carrier`], shared with the body-less guard.
@@ -12463,9 +12466,10 @@ pub(crate) fn short_name_of(qn: &str) -> &str {
 /// empty chain).
 ///
 /// NOT [`KnowledgeBase::declaring_scope_symbol`], which answers the same question
-/// from the symbol table and which [`op_declared_type_param_var`] rightly prefers.
-/// That reader's subject is a type param at depth 2 (`<ns>.<Sort>.<op>.<T>`, TWO
-/// plausible owners); this one's is always a DIRECT child of the scope it wants, so
+/// from the symbol table and which a reader whose subject is a type param at depth 2
+/// (`<ns>.<Sort>.<op>.<T>`, TWO plausible owners) rightly prefers — WI-943's
+/// `op_declared_type_param_var` did, until WI-954 removed the need to ask at all.
+/// This one's subject is always a DIRECT child of the scope it wants, so
 /// the split has nothing to decide. What separates them is the symbols that are
 /// NOT operations — this is called with any apply functor. MEASURED over
 /// stdlib + anthill-stl (2598 distinct symbols): the two agree for all 373
@@ -13327,8 +13331,10 @@ fn dot_member_dispatch_decision(
     //
     // AND IT PAYS `type_params_of_sort` A SECOND TIME, knowingly. The note that stood here
     // ("ONE `spec_op_parent_sort`, deliberately") was a micro-optimization of a path this
-    // function's own contract measures at ZERO own-member dots across the corpus; 51 µs on
-    // a branch that never runs buys nothing, and it bought a second reading of "defaulted".
+    // function's own contract measures at ZERO own-member dots across the corpus; the
+    // 51 µs it was avoiding on a branch that never runs bought nothing (and WI-954 has
+    // since made that call an owner-scope read), and it bought a second reading of
+    // "defaulted".
     // The hot reader is `call_dispatch_shape` (~745 calls/load), which pays it once; the
     // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
@@ -14692,71 +14698,47 @@ fn canonical_global_var(
 /// adds the substitution chase + rigid bridge, carrier grounding stays structural and
 /// carrier-agnostic — but the identity resolution is identical, so it lives here once.
 ///
-/// WI-943 — A TYPE PARAMETER PUBLISHES ITS CANONICAL VAR IN ONE OF TWO PLACES,
-/// ACCORDING TO HOW IT WAS WRITTEN, and this is the one function that knows which:
+/// WI-954 — ONE MAP READ. The loader decides a parameter's variable and publishes it
+/// ([`KnowledgeBase::type_param_canonical_var`]); this reads it back. There is no
+/// ladder, no channel to dispatch on, and no order to get wrong.
 ///
-///   * an `alias`-form declaration → its `SortAlias` fact, matched on EXACT symbol
-///     identity ([`resolve_sort_alias`]). `sort T = ?` and the WI-452 marked structured
-///     param are the sort-body cases — but NOT only those: WI-402's existential carrier
-///     (`-> C ensures Spec[C, …]`, `build_existential_return`) registers `C` this way in
-///     the OP's own scope. So "declared by an operation" does not imply the second
-///     bullet, and the rung ORDER below is what keeps that case right.
-///   * a BRACKET parameter (`operation cmp[T](…)`) → its op's `OperationInfo.type_params`
-///     ([`declared_type_param_var`](crate::kb::op_info::declared_type_param_var)). The loader mints it its own var and
-///     asserts NO `SortAlias` (`load_operation`: "an op type-param is its own logical
-///     variable, distinct from any same-named outer SortAlias") — which is why this
-///     channel had to be taught, not derived.
+/// WHAT IT REPLACED — two rungs, one per SPELLING of a declaration:
 ///
-/// THE TWO RUNGS ARE NOW THE WHOLE LADDER. A third ran last — the name-directed
-/// `sort_alias_by_name` — and it is exactly what WI-943 measured going wrong here: a
-/// bracket parameter fell through to it and was answered with an unrelated sort's var.
-/// WI-943 fixed that by adding the second rung above; WI-956 deleted the third, so this
-/// reader can no longer answer with a variable that belongs to some other declaration.
+///   * an `alias`-form declaration → its `SortAlias` fact ([`resolve_sort_alias`]).
+///     `sort T = ?` and the WI-452 marked structured param are the sort-body cases —
+///     but NOT only those: WI-402's existential carrier (`-> C ensures Spec[C, …]`,
+///     `build_existential_return`) registers `C` this way in the OP's own scope.
+///   * a BRACKET parameter (`operation cmp[T](…)`) → its op's
+///     `OperationInfo.type_params`. The loader mints it its own var and asserts NO
+///     `SortAlias`, which is why WI-943 had to TEACH this channel rather than derive it.
+///
+/// AND THE RUNGS DID NOT ONLY DIFFER IN COST — THE FIRST ONE ANSWERED THE WRONG
+/// QUESTION. `resolve_sort_alias` answers for any `SortAlias` whose target is a
+/// variable, and a top-level opaque `sort Term = ?` has one: it is a DECLARATION, not a
+/// parameter of its namespace (`add_type_param` is gated on the enclosing scope being a
+/// SORT, so a namespace-level abstract sort registers no parameter). MEASURED — map and
+/// ladder computed side by side over every symbol of three corpus tiers (stdlib +
+/// host bindings, + `anthill-todo`, + `examples`/`anthill-testcases`): they disagree on
+/// EXACTLY 8 symbols, identically in all three, and every one of them answers `false`
+/// to [`is_sort_param_symbol`] — `prelude.Type`, `prelude.Unit`, and `reflect`'s six
+/// opaque sorts (`Term`, `FactRef`, `Symbol`, `SourceId`, `NodeOccurrence`,
+/// `ConstraintId`). ZERO disagreement on a declared type parameter.
+///
+/// `resolve_sort_alias`' other callers gate on [`is_sort_param_symbol`] first for
+/// exactly this reason ("collapsing every `sort_ref(Term)` into Term's alias Var would
+/// lose the sort-ref form"); this reader did not, and [`declared_type_param_vid`]
+/// inherited the miss. Reading the declaration closes it — a symbol that declares no
+/// type parameter now denotes no parameter variable.
 ///
 /// `pub` so a test can drive the invariant this function owns: that its answer and the
 /// declaration's own are the SAME variable. Agreement is only assertable if both sides
-/// are reachable from outside — `wi943_type_param_identity_test`.
+/// are reachable from outside — `wi943_type_param_identity_test`,
+/// `wi954_published_type_param_var_test`.
 pub fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
-    let as_global = |tid: TermId| match kb.get_term(tid) {
-        Term::Var(Var::Global(v)) => Some(*v),
+    match kb.canonical_type_param_var(sym).map(|tid| kb.get_term(tid)) {
+        Some(Term::Var(Var::Global(v))) => Some(*v),
         _ => None,
-    };
-    resolve_sort_alias(kb, sym)
-        .and_then(as_global)
-        .or_else(|| op_declared_type_param_var(kb, sym))
-}
-
-/// WI-943 — the var an operation declares for `sym` in its BRACKET, when `sym` is the
-/// op-scoped local `scan_operation_params` defines for one (`<ns>.<op>.T`). `None` for
-/// every other symbol — a sort parameter (its scope is a sort), and equally an op-scoped
-/// parameter the bracket did not declare (WI-402's existential carrier `C`, which the op
-/// scope holds but `type_params` does not list; it is answered by the rung above).
-///
-/// The owner comes from [`KnowledgeBase::declaring_scope_symbol`] rather than a
-/// qualified-name split, which would have to decide where the owner's name ends —
-/// `<ns>.<Sort>.<op>.<T>` has TWO plausible owners and no local rule picks between them.
-/// The symbol table already knows; asking it needs no rule at all.
-///
-/// `has_kind`, not `kind_of`: a symbol's categories are a SET, and asking whether this
-/// scope PLAYS the operation role is insensitive to which keyword registered first.
-///
-/// The [`is_sort_param_symbol`] gate is LOAD-BEARING FOR COST, not for correctness: an
-/// operation scope also holds its value parameters, argument places and `result`, none of
-/// which can be in `type_params`. Without it every one of those reaches
-/// [`op_info::declared_type_param_var`], whose pre-`build_op_signatures` tier is a scan of
-/// every `OperationInfo` fact in the KB — a fallback-on-miss driven by a SPECULATIVE
-/// caller, which is exactly what [`resolve_sort_alias`] refuses for the same reason. The
-/// gate reads the very set `scan_operation_params` fills (`add_type_param` on the op
-/// scope), so it admits precisely the declared parameters.
-fn op_declared_type_param_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
-    if !is_sort_param_symbol(kb, sym) {
-        return None;
     }
-    let owner = kb.declaring_scope_symbol(sym)?;
-    if !kb.has_kind(owner, crate::intern::SymbolKind::Operation) {
-        return None;
-    }
-    super::op_info::declared_type_param_var(kb, owner, kb.local_name_of(sym))?.as_global()
 }
 
 /// WI-857 — the functor a dictionary slot carries when its goal did not resolve
@@ -15916,8 +15898,9 @@ pub struct SlotSelection {
 /// exactly the splice this function performs. Reusing it also inherits its SortAlias
 /// route (the one `sort_goal_from_subst` and `resolve_param_value_via_subst` read a
 /// sort param by, so seeding binds the very variable the callee's signature and its
-/// `requires` chain mention) and its memo — the uncached `type_params_of_sort` walk
-/// scans the whole symbol table per call.
+/// `requires` chain mention) and its memo. WI-954: that route is now the loader's
+/// published parameter→variable map, and the `type_params_of_sort` walk the memo used
+/// to shield is an owner-scope read.
 ///
 /// KIND-GATED, for the reason the same pairing at [`rigidify_op_type_params`]'s call
 /// site is: `impl_parent_of_op` strips the last segment and resolves, so a FREE
@@ -16708,15 +16691,23 @@ pub fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol>
 /// its own cheaper legs without re-spelling it. One line, and the name is the point:
 /// the two gates must not each carry their own reading of what makes a sort a spec.
 ///
-/// THE EXPENSIVE LEG, and every caller should place it last. `type_params_of_sort`
-/// `format!`s a prefix, scans ALL of `by_qualified_name` without short-circuiting, and
-/// deep-clones a `Vec<String>` — 51 µs/call, O(|symbols|); `kb/mod.rs` flags it as a
-/// hot-load-path hazard (WI-653). The obvious O(1) rewrite is NOT a drop-in: the
-/// scope-based spelling `load.rs`'s `enclosing_is_spec` uses disagrees with
-/// `type_params_of_sort` on 24 of 2755 symbols, because the latter derives the body
-/// scope through a child's `declaring_scope`. So it is SHIELDED rather than replaced.
+/// IT WAS THE EXPENSIVE LEG, AND WI-954 MADE IT O(1). `type_params_of_sort` used to
+/// `format!` a prefix, scan ALL of `by_qualified_name` without short-circuiting and
+/// deep-clone a `Vec<String>` — 51 µs/call, O(|symbols|). It now reads the owner's own
+/// scope. Callers that place this last for cost may stop bothering; nothing here needs
+/// them to move.
+///
+/// WI-1042 CALLED THAT REWRITE "NOT A DROP-IN", on the measurement that the scope-based
+/// spelling `load.rs`'s `enclosing_is_spec` uses disagreed with `type_params_of_sort` on
+/// 24 of 2755 symbols. RE-MEASURED under WI-954, the 24 are real and all of one shape:
+/// CALLBACK-PARAMETER symbols (`anthill.prelude.List.foldLeft.f`), which the child scan
+/// gave their OPERATION's parameters because `register_callback_places` defines
+/// `…foldLeft.f.a` in the op scope and the scan took an arbitrary direct child's
+/// `declaring_scope`. `["Acc", "EffP"]` for a callback parameter was the wrong answer;
+/// `[]` is the right one, and no caller passes such a symbol. Shielding it was the right
+/// call on what WI-1042 could measure, and the shield is no longer what makes it safe.
 fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
-    !kb.type_params_of_sort(sort_sym).is_empty()
+    !kb.type_param_syms_of(sort_sym).is_empty()
 }
 
 /// WI-1042 — THE defaulted-spec-op gate: `op_sym` is a member of a PARAMETRIC sort and
@@ -16794,7 +16785,9 @@ fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 /// is the cheap NON-OPERATION early-out this gate previously lacked: a relational atom
 /// head (dot-less, or parented by a NAMESPACE) leaves HERE, before
 /// [`op_has_runnable_body`] can fall through `lookup_operation_info`'s record miss into
-/// its O(N_ops) fact scan, and before [`sort_is_parametric`]'s O(|symbols|) leg.
+/// its O(N_ops) fact scan, and before [`sort_is_parametric`]'s parametric leg — which
+/// WI-954 made an O(1) owner-scope read, so that last consideration no longer applies;
+/// the early-out is still what keeps the FACT SCAN off a relational atom head.
 ///
 /// MEASURED over a stdlib + host-bindings load (counters on each leg, 2026-08-07): the
 /// gate is asked 523 times; the name split answers for 244 of them, 279 reach the body
@@ -16844,7 +16837,9 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 ///
 /// CLAUSE ORDER as [`defaulted_spec_op_parent`] measured it: the name split first (the
 /// cheap non-operation early-out — every relational atom head leaves here), then the
-/// `OperationInfo` probe, then [`sort_is_parametric`]'s O(|symbols|) leg last.
+/// `OperationInfo` probe, then [`sort_is_parametric`] last. Since WI-954 that last leg
+/// is an O(1) owner-scope read; the order is kept because the `OperationInfo` probe's
+/// fact-scan fallback is still the expensive one to shield.
 pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
     super::op_info::lookup_operation_info(kb, op_sym)?;
@@ -29360,11 +29355,10 @@ fn projected_param_of_sort(
 ) -> Option<Symbol> {
     let sort_sym = sort_sym?;
     let TypeExtractor::ExprCarried { member, .. } = extract_type(kb, ty) else { return None };
-    let short = short_name_of(kb.local_name_of(member)).to_owned();
-    if !kb.type_params_of_sort(sort_sym).iter().any(|d| *d == short) {
-        return None;
-    }
-    qualified_type_param_sym(kb, sort_sym, &short)
+    // WI-954: "is `M` a declared parameter of `sort_sym`" and "which symbol is it" were
+    // two questions asked of two different tables; the owner's own declaration list
+    // answers both at once.
+    kb.type_param_sym_of(sort_sym, short_name_of(kb.local_name_of(member)))
 }
 
 fn subject_key_of_term(kb: &KnowledgeBase, t: TermId) -> Option<SubjectKey> {
@@ -29550,59 +29544,96 @@ fn build_pattern_subst(
 
 /// WI-424 — a parametric sort's declared type parameters as `(param symbol,
 /// canonical Var term)` pairs, source order — the same shape an operation's own
-/// `type_params` take, so [`rigidify_op_type_params`] consumes either. The Var
-/// term is the loader-cached canonical param var (`resolve_sort_alias` of the
-/// qualified param name); a param whose alias is not a plain `Global` var
-/// (a constrained / structured param) is skipped. Empty for a non-sort or
-/// non-parametric `sort_sym`. Memoized on `kb.sort_param_pairs_cache` — the
-/// uncached computation walks the symbol table per call, and this is consulted
-/// per apply call site (receiver classification) and per eval dispatch.
+/// `type_params` take, so [`rigidify_op_type_params`] consumes either. Empty for a
+/// non-sort or non-parametric `sort_sym`. Memoized on `kb.sort_param_pairs_cache`
+/// because it is consulted per apply call site (receiver classification) and per eval
+/// dispatch.
+///
+/// WI-954 — TWO MAP READS, and the `filter_map` is no longer a filter on anything.
+/// This used to rebuild `<sort qn>.<param>` per parameter, re-resolve it globally, and
+/// then chase its `SortAlias`, dropping any parameter whose alias was not a plain
+/// `Var::Global` — a case that never arose (`add_type_param` is gated on
+/// `TypeExpr::Variable`, so a declared parameter's alias IS a variable) and which the
+/// loader now refuses outright. Both halves come straight from the declaration:
+/// [`KnowledgeBase::type_param_syms_of`] for the parameters in source order,
+/// [`KnowledgeBase::canonical_type_param_var`] for each one's variable.
+///
+/// ITS DOMAIN WIDENED, deliberately and without a gate. Passed an OPERATION symbol this
+/// used to answer empty — a bracket parameter has no `SortAlias` for the old route to
+/// chase — and now answers that operation's bracket parameters. That is coherent with
+/// what this function is for (the doc above: "the same shape an operation's own
+/// `type_params` take"), and adding a kind gate to preserve the old emptiness would be
+/// a new rule with nothing asking for it. Every production caller passes a SORT or a
+/// namespace; the one that could see the difference is `sort_application_parts`, whose
+/// two branches produce the same `Some((sym, vec![]))` either way.
 fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Symbol, TermId)>> {
     if let Some(cached) = kb.sort_param_pairs_cache.borrow().get(&sort_sym) {
         return cached.clone();
     }
     let pairs: Vec<(Symbol, TermId)> = kb
-        .type_params_of_sort(sort_sym)
+        .type_param_syms_of(sort_sym)
         .iter()
-        .filter_map(|name| {
-            let qualified_sym = qualified_type_param_sym(kb, sort_sym, name)?;
-            let target = resolve_sort_alias(kb, qualified_sym)?;
-            matches!(kb.get_term(target), Term::Var(Var::Global(_)))
-                .then_some((qualified_sym, target))
-        })
+        .filter_map(|&param| Some((param, published_param_var(kb, sort_sym, param)?)))
         .collect();
     let rc = Rc::new(pairs);
     kb.sort_param_pairs_cache.borrow_mut().insert(sort_sym, rc.clone());
     rc
 }
 
-/// WI-958 — the symbol a sort's declared type parameter is registered under,
-/// `<sort qualified name>.<short>`. The INVERSE of [`impl_parent_of_op`]'s question,
-/// and like it written once: its two readers ([`sort_type_params_as_pairs`] and
-/// [`type_param_vid_in_sort`]) had the same `format!` + `try_resolve_symbol` each.
+/// WI-954 — the canonical variable of a parameter its OWNER has declared, with the
+/// miss made LOUD. The two readers that enumerate `type_param_syms_of` and then look
+/// each entry up ([`sort_type_params_as_pairs`], [`reconstruct_sort_params`]) would
+/// otherwise drop a parameter silently, and dropping one is exactly what WI-384 says
+/// must never happen — the built type would carry fewer named args than the sort
+/// declares.
 ///
-/// Qualifying the short name is what ANCHORS the lookup: `sort T = ?` recurs across
-/// List, Option, Stream …, so the short name alone would be ambiguous.
+/// THE TWO GATES ARE NOT THE SAME PREDICATE, which is why this can miss at all.
+/// Publication (`load`'s `assert_sort_alias`) is gated on [`is_sort_param_symbol`] —
+/// the parameter's own DECLARING scope — while these readers enumerate the OWNER's
+/// scope. They coincide because three of the four `add_type_param` sites register into
+/// the scope the symbol was defined in; the `Item::AbstractSort` arm does not, since a
+/// DOTTED `sort a.b.T = ?` written in a sort body defines `T` into the namespace
+/// `ensure_intermediate_namespaces` made and registers it on the SORT. What that
+/// spelling should mean is a separate question; this makes sure it cannot be answered
+/// by quietly losing the parameter.
 ///
-/// Still a round-trip THROUGH STRINGS for an identity the loader already computed and
-/// dropped — WI-954's subject, which is where it goes away rather than gets shortened.
-/// Until then, one spelling.
-fn qualified_type_param_sym(kb: &KnowledgeBase, sort_sym: Symbol, short: &str) -> Option<Symbol> {
-    kb.try_resolve_symbol(&format!("{}.{}", kb.qualified_name_of(sort_sym), short))
+/// LATENT, NOT LIVE: the assertion does not fire anywhere in the workspace suite
+/// (measured — 29 binaries, 4441 tests), so no corpus program writes that shape. It is
+/// here because the divergence is reachable in principle and its symptom — a built type
+/// with fewer named args than the sort declares — is silent by nature.
+fn published_param_var(
+    kb: &KnowledgeBase,
+    owner: Symbol,
+    param: Symbol,
+) -> Option<TermId> {
+    let published = kb.canonical_type_param_var(param);
+    debug_assert!(
+        published.is_some(),
+        "WI-954: `{}` declares `{}` as a type parameter but no canonical variable was \
+         published for it — the type built for `{0}` would silently lose the parameter",
+        kb.qualified_name_of(owner),
+        kb.qualified_name_of(param),
+    );
+    published
 }
 
-/// The canonical `Var::Global` registered for `<parent_sort>.<param_sym>`. The
-/// resolution itself is [`type_param_global_var`] — the same one the σ-class side
-/// uses, so a carrier grounded here and a requirement attributed there speak of one
-/// variable.
+/// The canonical `Var::Global` `parent_sort` declares for the parameter NAMED by
+/// `param_sym` (a bare `T` off a binding key, or a qualified one). The resolution
+/// itself is [`type_param_global_var`] — the same one the σ-class side uses, so a
+/// carrier grounded here and a requirement attributed there speak of one variable.
+///
+/// Anchoring to `parent_sort` is what makes it hygienic: `sort T = ?` recurs across
+/// List, Option, Stream …, so a name alone identifies nothing. WI-954 —
+/// [`KnowledgeBase::type_param_sym_of`] anchors it by asking the OWNER for its own
+/// declared parameters, where the pre-WI-954 spelling rebuilt `<parent qn>.<name>` and
+/// re-resolved it against the whole table.
 fn type_param_vid_in_sort(
     kb: &KnowledgeBase,
     parent_sort: Symbol,
     param_sym: Symbol,
 ) -> Option<crate::kb::term::VarId> {
-    let qualified_sym =
-        qualified_type_param_sym(kb, parent_sort, kb.local_name_of(param_sym))?;
-    type_param_global_var(kb, qualified_sym)
+    let declared = kb.type_param_sym_of(parent_sort, kb.local_name_of(param_sym))?;
+    type_param_global_var(kb, declared)
 }
 
 /// Bind a pattern's variables into `env`, AND record each tuple binder's component
@@ -31248,7 +31279,7 @@ fn ground_rigid_projection_if_concrete(
     //
     // Switching does not blur the WI-383 split. The op-record lookup two lines down is
     // what decides: a name playing both roles reaches `declared_type_param_var`, which
-    // answers `None` unless the OPERATION itself declares this param — so the split
+    // answers `None` unless the OPERATION's BRACKET declares this param — so the split
     // still turns on where the param was declared, never on a registration order.
     if !kb.has_kind(sort, crate::intern::SymbolKind::Operation) {
         return None;
@@ -31258,6 +31289,15 @@ fn ground_rigid_projection_if_concrete(
     // `walk_type(subject)` lands on an unbound sibling var). Go to the op's own
     // `OperationInfo.type_params`, whose var IS the one arg-inference binds — the same
     // authority [`type_param_global_var`] consults for a written occurrence (WI-943).
+    //
+    // WI-954 PUBLISHED THAT VARIABLE AND THIS SITE STILL DOES NOT READ THE MAP, because
+    // the question here is not "what does this parameter denote" but "is it the
+    // OPERATION'S BRACKET that declared it" — the WI-383 split. The map is keyed by the
+    // parameter's symbol, and a symbol playing both the `Sort` and `Operation` roles
+    // owns one scope, so a scope-keyed read cannot separate the sort body's
+    // `sort T = ?` from the operation's `[T]`; nor would it answer `None` for WI-402's
+    // existential carrier, which is op-scoped but is not a bracket parameter. See
+    // [`op_info::declared_type_param_var`](crate::kb::op_info::declared_type_param_var).
     let Value::Term { id: subj_t, .. } = subject else { return None };
     let subj_sym = extract_sort_ref_sym(kb, &TermIdView(subj_t))?;
     let subj_name = kb.local_name_of(subj_sym).to_owned();
@@ -31475,9 +31515,7 @@ pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<Term
 /// `return`s under `&KnowledgeBase`, so it needs no snapshot — and it runs in exactly
 /// the window WI-659 measured as `type_check_sorts`' #1 hotspot, where a
 /// `Vec<RuleId>` sized to every `SortAlias` fact was being allocated per call, twice
-/// per miss. Its sibling scan [`sort_param_alias_vars`] takes the SNAPSHOT instead,
-/// and that is not an oversight: it interns a symbol per alias, so it needs `&mut kb`
-/// inside the loop.
+/// per miss.
 ///
 /// WI-956 made it `pub(crate)` for `load`'s
 /// [`super::load::Loader::find_sort_alias_var`], which carried a verbatim copy of this
@@ -31517,14 +31555,13 @@ pub(crate) struct SortAliasIndex {
     /// keying: a companion `by_name` map keyed on the source's LOCAL name was deleted
     /// with the pass that read it (see [`resolve_sort_alias`] — a local name does not
     /// identify a declaration outside its own scope).
+    ///
+    /// WI-954 removed a companion `by_parent` map (parent sort → its declared type
+    /// params and their backing vars) that existed solely so
+    /// [`reconstruct_sort_params`] could recover a sort's parameter SET from the alias
+    /// facts. A parameter's declaration is published now, so that reconstruction reads
+    /// it directly and this index is back to answering exactly one question.
     by_sym: HashMap<Symbol, TermId>,
-    /// WI-657(7) — parent-sort Symbol → its declared type params as
-    /// `(param short-name Symbol, backing `Var::Global` id)`, for
-    /// [`reconstruct_sort_params`] (which needs ALL of a sort's params, a query
-    /// `by_sym` does not answer). Every entry — key, name, and whether
-    /// the alias counts at all — is [`sort_param_alias_entry`]'s, the same call
-    /// [`sort_param_alias_vars`]' pre-index scan makes (WI-955).
-    by_parent: HashMap<Symbol, Vec<(Symbol, VarId)>>,
 }
 
 /// WI-955 — what every reader of a `SortAlias` FACT wants from it: the SOURCE's
@@ -31532,8 +31569,8 @@ pub(crate) struct SortAliasIndex {
 /// missing slot, a source with no functor head, or a target that is not term-carried.
 ///
 /// Each slot comes back in the form its consumers use, so no caller unwraps a carrier:
-/// the source is only ever keyed by identity (`by_sym`, `by_name`,
-/// [`sort_param_alias_entry`]), and the target is a `TermId` because that is the type
+/// the source is only ever keyed by identity (`by_sym`), and the target is a `TermId`
+/// because that is the type
 /// `resolve_sort_alias` answers with. Taking the `RuleId` — not a head — means a caller
 /// cannot forget the `is_fact` test and read a RULE's head as a fact.
 ///
@@ -31549,8 +31586,8 @@ pub(crate) struct SortAliasIndex {
 /// head and a non-term target are the SAME condition and both readings skip it — a
 /// stdlib + host-bindings load has 0 value-carried heads among its 107 `SortAlias`
 /// facts (measured; `lower_value_or_gate` lowers a denoted target, WI-390). It is here
-/// so that ALL THREE readers of this relation — [`build_sort_alias_index`],
-/// [`scan_sort_aliases`] and [`sort_param_alias_vars`] — decode a fact one way.
+/// so that BOTH readers of this relation — [`build_sort_alias_index`] and
+/// [`scan_sort_aliases`] — decode a fact one way.
 fn sort_alias_head_slots(kb: &KnowledgeBase, rid: RuleId) -> Option<(Symbol, TermId)> {
     if !kb.is_fact(rid) {
         return None;
@@ -31564,103 +31601,25 @@ fn sort_alias_head_slots(kb: &KnowledgeBase, rid: RuleId) -> Option<(Symbol, Ter
     Some((src_functor, target))
 }
 
-/// WI-955 — the ONE rule that turns a `SortAlias` fact into a type-param entry:
-/// `(parent sort, (param short name, backing var))`, or `None` if it is not a sort's
-/// declared type parameter at all. [`build_sort_alias_index`] files what this returns;
-/// [`sort_param_alias_vars`]' scan keeps the entries whose parent matches. Sharing the
-/// GATE as well as the keying is deliberate — the defect below was two readers drifting,
-/// and a shared key with a duplicated gate can drift the same way one step lower.
-///
-/// The parent comes from the SYMBOL TABLE (`declaring_scope_symbol`), not from slicing
-/// the alias's qualified name. The two readers used to slice it differently and
-/// disagreed: the index split off the LAST segment, the scan kept every alias whose
-/// name has the parent's as a `.`-boundary prefix and took EVERYTHING after it as the
-/// param name. Those agree only while an alias sits exactly one segment under its sort.
-/// WI-402's existential carrier sits TWO — `operation mk() -> C ensures Spec[C, …]`
-/// inside `sort Holder` defines `<ns>.Holder.mk.C` — and there the split reached the
-/// right answer (the alias belongs to `mk`, so `Holder` must not see it) while the
-/// prefix test read `mk.C` as a PARAM NAME OF `Holder` and injected a spurious
-/// `mk.C = ?_` binding into every constructor type built for it. A name cannot tell
-/// `Sort.param` from `Sort.op.param`; the scope link cannot get it wrong — `C` is
-/// declared in `mk`'s scope, `T` in the sort's.
-///
-/// [`is_sort_param_symbol`] is what makes this "a DECLARED TYPE PARAMETER of" rather
-/// than the weaker "declared in the scope of": without it a top-level `sort Term = ?`
-/// files as a param of its NAMESPACE (9 such in a stdlib load, measured — `reflect`'s
-/// opaque sorts, `prelude.Type`/`Unit`, `kernel.T`), inert only because no caller
-/// passes a namespace symbol here. With it, the entries recovered for a parent equal
-/// `type_params_of_sort` for EVERY parent (measured: 55 parents, 0 mismatches), which
-/// is the property the reconstruction is supposed to have rather than one it happens
-/// to get from its callers.
-///
-/// The `Var::Global` match is the EXTRACTION of the backing var the reconstruction
-/// reads out of the substitution — not a second membership test, and it cannot fail
-/// for a declared param. `add_type_param` is itself gated on `TypeExpr::Variable`
-/// (`load.rs`, the `Item::AbstractSort` arm of `scan_items_pass1`), so an in-body
-/// `sort T = Int64` is never a type parameter to begin with; and every form that IS
-/// one and carries a `SortAlias` gets that alias from `emit_type_param_backing_var`
-/// (WI-452's marked param, WI-402's carrier) or from the `Variable` arm of
-/// `load_abstract_sort` — a `Var::Global` in each case. An operation's BRACKET params
-/// publish through `OperationInfo.type_params` and never reach here at all. So a
-/// declared param with a non-var alias is a broken loader invariant, and the
-/// `debug_assert` says so rather than letting the sort silently lose a param
-/// (measured vacuous: 55 parents, entries == `type_params_of_sort` for every one).
-///
-/// The param name is the alias symbol's short name re-interned as a BARE symbol: the
-/// spelling a written annotation lowers to (WI-708/WI-726), and the one
-/// `make_parameterized_type` keys named args by.
-fn sort_param_alias_entry(
-    kb: &mut KnowledgeBase,
-    alias_functor: Symbol,
-    target: TermId,
-) -> Option<(Symbol, (Symbol, VarId))> {
-    if !is_sort_param_symbol(kb, alias_functor) {
-        return None;
-    }
-    let Term::Var(Var::Global(vid)) = kb.get_term(target) else {
-        debug_assert!(
-            false,
-            "WI-955: `{}` is a declared type param but its SortAlias target is {:?}, \
-             not a `Var::Global` — the reconstruction has no var to read, so the sort \
-             would silently lose the param",
-            kb.qualified_name_of(alias_functor),
-            kb.get_term(target),
-        );
-        return None;
-    };
-    let vid = *vid;
-    let parent = kb.declaring_scope_symbol(alias_functor)?;
-    let param_short = kb.local_name_of(alias_functor).to_string();
-    let param_sym = kb.intern(&param_short);
-    Some((parent, (param_sym, vid)))
-}
-
 /// WI-659 — build the SortAlias index in ONE pass. Mirrors [`resolve_sort_alias`]'s
-/// scan EXACTLY: each source is filed under BOTH its Symbol (pass 1) and its name
-/// (pass 2), insert-if-absent so the FIRST fact per key wins (matching the scan's
-/// first-match in `rules_by_functor` order). Value-fact SortAliases (no ground term
-/// head) are skipped, as the scan skips them. Run at type-check start, when every
-/// SortAlias fact is asserted; SortAlias is load-stable (the typer rewrites bodies,
-/// never aliases), so the built index never goes stale within a load.
+/// scan EXACTLY: each source is filed under its Symbol, insert-if-absent so the FIRST
+/// fact per key wins (matching the scan's first-match in `rules_by_functor` order).
+/// Value-fact SortAliases (no ground term head) are skipped, as the scan skips them.
+/// Run at type-check start, when every SortAlias fact is asserted; SortAlias is
+/// load-stable (the typer rewrites bodies, never aliases), so the built index never
+/// goes stale within a load.
 pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
     let Some(alias_sym) = kb.try_resolve_symbol("SortAlias") else {
         return;
     };
     let mut by_sym: HashMap<Symbol, TermId> = HashMap::new();
-    let mut by_parent: HashMap<Symbol, Vec<(Symbol, VarId)>> = HashMap::new();
     for rid in kb.rules_by_functor(alias_sym) {
         let Some((functor, target)) = sort_alias_head_slots(kb, rid) else {
             continue;
         };
         by_sym.entry(functor).or_insert(target);
-        // WI-657(7): file this alias under its parent sort for reconstruct_sort_params.
-        // WI-955: which sort, under what name, and whether it counts at all are all
-        // `sort_param_alias_entry`'s — the same call the scan makes.
-        if let Some((parent, entry)) = sort_param_alias_entry(kb, functor, target) {
-            by_parent.entry(parent).or_default().push(entry);
-        }
     }
-    kb.sort_alias_index = Some(SortAliasIndex { by_sym, by_parent });
+    kb.sort_alias_index = Some(SortAliasIndex { by_sym });
 }
 
 /// WI-374 (§8.1, site-scoped): expand a FOREIGN bare/partial parametric sort
@@ -37859,17 +37818,52 @@ pub fn sort_functor_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<S
 
 /// WI-578 — reconstruct a constructor's parent-sort type-param bindings from a
 /// field-unified substitution. Recovers each type-param's short name and the logic
-/// `Var` it indirects to ([`sort_param_alias_vars`]), then reads that var out of
-/// `subst`. An unbound param rides as a fresh `?_` type-var (WI-384 — keep the sort's
-/// full param arity, never drop). Extracted from [`check_constructor_iter`] so the
-/// value-level typer reuses this from ONE source; the WI-516 occurrence-lowering is
-/// load-bearing — see the inline note.
+/// `Var` it indirects to, then reads that var out of `subst`. An unbound param rides
+/// as a fresh `?_` type-var (WI-384 — keep the sort's full param arity, never drop).
+/// Extracted from [`check_constructor_iter`] so the value-level typer reuses this from
+/// ONE source; the WI-516 occurrence-lowering is load-bearing — see the inline note.
+///
+/// WI-954 — THE ALIAS WALK IS GONE, and with it a two-source (index-or-scan) shape.
+/// This used to recover the parameter set by decoding `SortAlias` FACTS: an O(1)
+/// `SortAliasIndex.by_parent` read once `build_sort_alias_index` had run, and a live
+/// scan of every `SortAlias` fact in the load-time window before it had — two data
+/// sources whose disagreement was WI-955's subject, joined by a shared decoding rule
+/// so they could not drift again. The declaration is now published directly, so there
+/// is one source, no pre-index window, and no rule to share: the parameters come from
+/// the owner and their variables from the map.
+///
+/// AND THE INDEX HALF WAS SILENTLY WRONG ACROSS LOAD PHASES. `by_parent`'s read had no
+/// fallback-on-miss — the same hazard `resolve_sort_alias` documents for `by_sym`,
+/// which `load_phase_inner` resets the index at every phase START to avoid — but a
+/// caller running AFTER a phase completes reads whatever that phase's type-check built.
+/// MEASURED on `wi946_belongs_to_readers_test`'s stdlib-then-source KB: the index held
+/// 102 entries and the source's own `Crate.T` was not among them, so
+/// `reconstruct_sort_params(Crate)` answered "no parameters" and `Boxed(5)` typed as a
+/// bare `Ref(Crate)` instead of `Crate[T = Int64]`. That test recorded the bare answer
+/// as a measurement with an instruction to revisit it if it ever changed; it changed
+/// here, and the two spellings it compares still agree.
+///
+/// NOT [`sort_type_params_as_pairs`], which answers the same set: it is MEMOIZED with
+/// no invalidator, and this runs in the load-time value-typing window where a
+/// half-loaded sort's parameter list would poison every type-check-time reader. It also
+/// keys by the QUALIFIED parameter symbol, where the type built here needs the BARE one
+/// (`make_parameterized_type`'s named-arg key convention, WI-708/WI-726).
 fn reconstruct_sort_params(
     kb: &mut KnowledgeBase,
     parent_sym: Symbol,
     subst: &Substitution,
 ) -> Vec<(Symbol, TermId)> {
-    let params = sort_param_alias_vars(kb, parent_sym);
+    // Collected under the shared borrow, then interned: `kb.intern` needs `&mut kb`.
+    let declared: Vec<(String, VarId)> = kb
+        .type_param_syms_of(parent_sym)
+        .iter()
+        .filter_map(|&p| match kb.get_term(published_param_var(kb, parent_sym, p)?) {
+            Term::Var(Var::Global(v)) => Some((kb.local_name_of(p).to_string(), *v)),
+            _ => None,
+        })
+        .collect();
+    let params: Vec<(Symbol, VarId)> =
+        declared.into_iter().map(|(short, vid)| (kb.intern(&short), vid)).collect();
     let mut param_bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(params.len());
     for (param_sym, vid) in params {
         // WI-384: an unbound param becomes a `type_var` WILDCARD (not a bare logic
@@ -37903,54 +37897,6 @@ fn reconstruct_sort_params(
         param_bindings.push((param_sym, bound_type));
     }
     param_bindings
-}
-
-/// WI-955 — a sort's type-param aliases as `(param short-name Symbol, backing
-/// `Var::Global` id)`. TWO data sources, ONE rule ([`sort_param_alias_entry`], which
-/// this ticket made shared — see it for the disagreement that motivated it): the
-/// WI-657(7) `by_parent` index once `build_sort_alias_index` has run (type-check
-/// onward, an O(1) read replacing a per-constructor-node scan of every `SortAlias`
-/// fact), and a live scan of those facts before it has (the load-time value-typing
-/// window, where the index is deliberately `None` — the reset in `load_phase_inner`).
-///
-/// Only the SET is promised, not the order: both walk `rules_by_functor` order today
-/// and nothing may rely on it, since the built type canonicalizes its named args
-/// (`make_entity_term`) regardless.
-///
-/// NOT [`sort_type_params_as_pairs`], the crate's other "this sort's params and their
-/// vars" reader, which IS driven by the declared list and IS memoized (so the hot-path
-/// objection to `type_params_of_sort` does not apply to it). Three things block it
-/// here: its `sort_param_pairs_cache` has a `get` and an `insert` and NO invalidator,
-/// so populating it from the load-time window would let a half-loaded sort's param
-/// list poison every type-check-time reader; and it keys its pairs by the QUALIFIED
-/// param symbol, not the bare one. WI-954 would remove both by publishing the loader's
-/// param→var map, and with it this two-source structure goes away entirely.
-///
-/// (WI-955 listed a THIRD: that `resolve_sort_alias`' last rung was a name-directed
-/// guess this reader had just stopped making. WI-956 deleted that rung, so the
-/// objection is gone — two blockers remain, not three.)
-fn sort_param_alias_vars(kb: &mut KnowledgeBase, parent_sym: Symbol) -> Vec<(Symbol, VarId)> {
-    if let Some(index) = &kb.sort_alias_index {
-        return index.by_parent.get(&parent_sym).cloned().unwrap_or_default();
-    }
-    let Some(alias_sym) = kb.try_resolve_symbol("SortAlias") else {
-        return Vec::new();
-    };
-    let mut params: Vec<(Symbol, VarId)> = Vec::new();
-    for rid in kb.rules_by_functor(alias_sym) {
-        // The index build's two calls, in its order: decode the fact, then decide
-        // whether it is a type-param entry and whose. Sharing both is what makes
-        // "index or scan" invisible to the caller.
-        let Some((functor, target)) = sort_alias_head_slots(kb, rid) else {
-            continue;
-        };
-        if let Some((parent, entry)) = sort_param_alias_entry(kb, functor, target) {
-            if parent == parent_sym {
-                params.push(entry);
-            }
-        }
-    }
-    params
 }
 
 /// WI-578 — the shared build-finish tail of constructor typing. Given the field-
@@ -44364,9 +44310,11 @@ fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> Option<
         // bare body probe it conjoins, deliberately: naming the half by re-asking the
         // OWNER is what makes a clause added there reach this site too — the WI-1042
         // drift. MEASURED rather than assumed to be cheap, as reaches of
-        // [`sort_is_parametric`] (51 µs, O(|symbols|)) per stdlib + host-bindings load:
-        // 1004 before this ticket, 1170 with the union admitting, **1178** with the
-        // owner re-asked. The second call costs 8, because it runs its body probe BEFORE
+        // [`sort_is_parametric`] per stdlib + host-bindings load: 1004 before this
+        // ticket, 1170 with the union admitting, **1178** with the owner re-asked. (Each
+        // reach was 51 µs, O(|symbols|), when that was measured; WI-954 made the leg an
+        // O(1) owner-scope read, so the counts stand and the price does not.) The second
+        // call costs 8, because it runs its body probe BEFORE
         // the parametric leg — so it returns early for exactly the population this arm
         // added, and pays the leg twice only for the handful of DEFAULTED spec-op call
         // sites (WI-1036 counted 4–5 of those).
@@ -45616,19 +45564,29 @@ mod p4_tests {
         let mut kb = kb_with_prelude();
 
         // Minimal owner sort `Box` with one type param `Box.T` aliased to a canonical
-        // `Var::Global` — the shape the loader emits for `sort T = ?`
-        // (`assert_sort_alias`). Built directly because `register_prelude` loads no
-        // parametric stdlib sort, so `type_param_vid_in_sort` has nothing to resolve.
+        // `Var::Global` — the shape the loader emits for `sort T = ?`. Built directly
+        // because `register_prelude` loads no parametric stdlib sort, so
+        // `type_param_vid_in_sort` has nothing to resolve.
+        //
+        // WI-954: "the shape the loader emits" is now THREE things, and this test used
+        // to build one of them — the `SortAlias` fact. `T` is declared IN `Box`'s own
+        // scope and registered as its type parameter (`add_type_param`), and its
+        // canonical variable is PUBLISHED (`record_type_param_var`); a hand-built KB
+        // that asserts only the fact describes a parameter no reader can find from its
+        // sort. `assert_sort_alias` does all three for a loaded program.
         let global_scope = kb.global_scope();
         let global_domain = global_scope.owner();
         kb.symbols.define_qualified_only("Box", "Box", SymbolKind::Sort, global_scope);
-        kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, global_scope);
         let box_sym = kb.resolve_symbol("Box");
+        let box_scope = kb.symbols.scope_id(box_sym);
+        kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, box_scope);
         let box_t = kb.resolve_symbol("Box.T");
+        kb.symbols.add_type_param(box_scope, "T", box_t);
         // SortAlias(Fn{Box.T}, Var::Global(vid)) — pos[0] is the nullary `Fn` head
         // `resolve_sort_alias` extracts the param functor from.
         let vid_seed = kb.fresh_var(box_t);
         let var_term = kb.alloc(Term::Var(Var::Global(vid_seed)));
+        kb.record_type_param_var(box_t, vid_seed);
         let alias_sym = kb.resolve_symbol("SortAlias");
         let box_t_head = kb.make_name_term_from_sym(box_t);
         let sort_sort = ClauseKind::Sort;
@@ -47034,16 +46992,23 @@ end
     }
 }
 
-/// WI-955 — [`sort_param_alias_vars`] answers the same set from its index and from its
-/// pre-index scan. See [`sort_param_alias_entry`] for the rule they now share and the
-/// WI-402 shape on which they used to disagree.
+/// WI-955/WI-954 — [`reconstruct_sort_params`] reports a sort's DECLARED parameters
+/// and nothing else, and its answer does not depend on the `SortAlias` index.
 ///
-/// LATENT, NOT LIVE when fixed: with the pre-index branch replaced by a `panic!`, the
-/// whole workspace suite passed (4069 tests, measured) — nothing tested reaches it.
-/// The window is reachable in principle (a `[simp]` requires guard, a typed pattern
-/// bound, or a dictionary guard evaluated during load, before the type-check builds
-/// the index), so these tests drive it directly rather than waiting for a program that
-/// happens to.
+/// WI-955 wrote these to pin two data sources against each other: the WI-657(7)
+/// `by_parent` index once the type-check had built it, and a live scan of the
+/// `SortAlias` facts before it had. They disagreed — the scan read `<Holder>.mk.C`, an
+/// OPERATION's WI-402 existential carrier, as a parameter named `mk.C` OF `Holder` and
+/// injected a spurious `mk.C = ?_` binding into every constructor type built for it —
+/// and WI-955 joined them onto one keying rule.
+///
+/// WI-954 REMOVED THE SECOND SOURCE. The reconstruction reads the parameters the loader
+/// published, so there is no index to be present or absent and no window before it is
+/// built. The tests keep TOGGLING `kb.sort_alias_index` because that is now the
+/// experiment: the two answers must be the same because nothing here consults it. And
+/// the property they were written for is the sharper one — `mk.C` is still not a
+/// parameter of `Holder`, reached through the scope link on the declaration rather than
+/// through a rule shared between two decoders.
 #[cfg(test)]
 mod wi955_one_alias_keying_tests {
     use crate::kb::test_support::load_stdlib;
@@ -47079,15 +47044,15 @@ end
         params.iter().map(|(s, _)| kb.local_name_of(*s).to_string()).collect()
     }
 
-    /// THE ticket's acceptance, at the reconstruction itself: both data sources report
-    /// the SAME params, and neither reports one `type_params_of_sort` does not list.
+    /// The reconstruction reports the DECLARED params, exactly, with the index present
+    /// and with it cleared.
     ///
-    /// CONTROL — back out the shared keying (restore the scan's `.`-boundary prefix
-    /// slice) and the SCANNED assertion fails: it reports `["T", "mk.C"]` against a
-    /// declared `["T"]` (measured on main before the fix). The INDEXED assertion passes
-    /// either way BY DESIGN — the last-segment split already reached the right answer
-    /// for `Holder` — and is here so that a re-keying which merely LOSES the params (an
-    /// index key no caller passes) fails loudly instead of letting the two agree at zero.
+    /// WHAT IT CAUGHT (WI-955): with the pre-WI-954 scan's `.`-boundary prefix slice,
+    /// the cleared-index answer was `["T", "mk.C"]` against a declared `["T"]`.
+    /// WHAT IT CATCHES NOW: a reconstruction that reads a sort's parameters from
+    /// anything but the declaration would go back to varying with the index — and one
+    /// that merely LOSES them fails the `== declared` assertion rather than letting two
+    /// sources agree at zero.
     #[test]
     fn both_paths_report_the_declared_params_and_nothing_else() {
         let mut kb = load_stdlib(Some(SRC));
@@ -47098,26 +47063,27 @@ end
         assert!(kb.sort_alias_index.is_some(), "the type-check built the index");
         let indexed = param_names(&mut kb, holder);
 
-        // Force the OTHER data source: the load-time window, where `load_phase_inner`
-        // has reset the index and the reconstruction scans the facts live.
+        // The load-time window, where `load_phase_inner` has reset the index. Before
+        // WI-954 this selected a different data source; now it must select nothing.
         kb.sort_alias_index = None;
         let scanned = param_names(&mut kb, holder);
 
-        assert_eq!(indexed, declared, "indexed path: the declared params, exactly");
+        assert_eq!(indexed, declared, "with the index built: the declared params, exactly");
         assert_eq!(
             scanned, declared,
-            "scanned path: the declared params, exactly — `mk.C` is the OPERATION's \
+            "with the index cleared: the same — and `mk.C` is the OPERATION's \
              existential carrier, not a param of the sort",
         );
     }
 
-    /// The same disagreement where a caller would meet it: the constructor TYPE the
-    /// value-typer builds. `holder(item: 42)` types as `Holder[T = Int64]` — the same
-    /// hash-consed term whichever data source answered.
+    /// The same property where a caller meets it: the constructor TYPE the value-typer
+    /// builds. `holder(item: 42)` types as `Holder[T = Int64]` — the same hash-consed
+    /// term with the index built and with it cleared.
     ///
-    /// CONTROL — before the fix the scanned build carried an extra `mk.C = ?_` named
-    /// arg, so the two `TermId`s differed and this failed; the `T = Int64` binding
-    /// itself passed either way (the spurious param was added, not substituted).
+    /// WHAT IT CAUGHT (WI-955): the pre-index build carried an extra `mk.C = ?_` named
+    /// arg, so the two `TermId`s differed; the `T = Int64` binding itself passed either
+    /// way (the spurious param was added, not substituted), which is why the render
+    /// assertion below spells the WHOLE type rather than checking for the binding.
     #[test]
     fn the_constructor_type_is_identical_before_and_after_the_index() {
         let mut kb = load_stdlib(Some(SRC));
@@ -47832,3 +47798,4 @@ end
         );
     }
 }
+

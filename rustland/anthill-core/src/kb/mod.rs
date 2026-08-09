@@ -881,6 +881,39 @@ pub struct KnowledgeBase {
     /// today, and this comment says so rather than implying a reader that exists.
     pub(crate) named_requirement_slots: HashMap<Symbol, Vec<NamedRequirementSlot>>,
 
+    /// WI-954 — A TYPE PARAMETER'S CANONICAL LOGICAL VARIABLE, PUBLISHED BY THE
+    /// LOADER: the parameter's own symbol → the hash-consed `Term::Var(Var::Global)`
+    /// every written occurrence of it denotes.
+    ///
+    /// The loader mints exactly one variable per declared parameter, and used to drop
+    /// the mapping on the floor: readers reconstructed it, each by its own route —
+    /// `SortAlias` for an alias-form declaration, `OperationInfo.type_params` for a
+    /// bracket parameter — behind a two-rung ladder. Two channels meant two keyings,
+    /// and getting from one to the other round-tripped through strings in both
+    /// directions.
+    ///
+    /// WI-954's OWN STATED HAZARD WAS NOT THE LIVE ONE, and the difference is worth
+    /// keeping. The ticket said the ladder's RUNG ORDER was load-bearing with nothing
+    /// enforcing it — WI-402's existential carrier being op-scoped yet publishing as an
+    /// alias, so "correct only because the alias rung ran first". The two rungs are in
+    /// fact DISJOINT on that carrier: `detect_existential_carrier` refuses the rewrite
+    /// outright when the operation's bracket already declares the return name
+    /// (`load.rs`), so `OperationInfo.type_params` can never hold the carrier's name and
+    /// the operation rung answers `None` for it in either order. What WAS live is
+    /// recorded at [`typing::type_param_global_var`](crate::kb::typing::type_param_global_var):
+    /// the alias rung is UNGATED and answered for 8 namespace-level opaque sorts that
+    /// declare no parameter at all.
+    ///
+    /// [`typing::type_param_global_var`](crate::kb::typing::type_param_global_var) is
+    /// now one read of this map — no ladder, no channel dispatch, no order to get
+    /// wrong. Written at the two points where a canonical variable is DECIDED
+    /// (`load`'s `assert_sort_alias` and `load_operation`'s bracket loop), which is
+    /// what makes the two spellings of a declaration one fact again.
+    ///
+    /// A SIDE TABLE, not a fact field, for [`Self::named_requirement_slots`]' reasons:
+    /// loader-produced, typer-consumed, no runtime or persistence surface.
+    pub(crate) type_param_canonical_var: HashMap<Symbol, TermId>,
+
     /// WI-659 — the SortAlias resolution index (source sort → alias target), built
     /// once at type-check start by `typing::build_sort_alias_index`. `None` until
     /// built; while `None`, `resolve_sort_alias` falls back to its (slower) scan.
@@ -1344,6 +1377,7 @@ impl KnowledgeBase {
             op_decl_sites: HashMap::new(),
             op_capture_params: HashMap::new(),
             named_requirement_slots: HashMap::new(),
+            type_param_canonical_var: HashMap::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             provides_index: None,
@@ -1523,6 +1557,37 @@ impl KnowledgeBase {
     /// overwhelmingly common all-anonymous owner.
     pub fn named_requirement_slots(&self, owner: Symbol) -> &[NamedRequirementSlot] {
         self.named_requirement_slots.get(&owner).map_or(&[], Vec::as_slice)
+    }
+
+    /// WI-954 — publish the canonical logical variable the loader minted for the type
+    /// parameter `param_sym`. Takes the [`VarId`], and allocates the `Term` itself, so
+    /// the stored value cannot be anything but a `Var::Global` term: the invariant
+    /// every reader depends on is enforced by the signature rather than re-tested at
+    /// each read (it used to be a `debug_assert` in the typer's alias decoding,
+    /// downstream of the loader by a whole phase).
+    ///
+    /// FIRST WRITE WINS, and that is not tidiness — it is what a RE-LOAD means. A
+    /// second load phase over the same file mints fresh variables and re-emits, and
+    /// both channels this replaces already keep the first: the alias side never
+    /// re-asserts (`load`'s `sort_alias_exists` dedup), and the operation side keeps
+    /// the FIRST `OperationInfo` fact per op (`build_op_signatures`' `seen` set —
+    /// WI-1049's subject). Overwriting here would make this map the one reader that
+    /// answers with the second load's variable while every term already in the KB
+    /// still carries the first. MEASURED: with last-wins, four `*_across_loads`
+    /// suites disagreed with the ladder on `anthill.kernel.unify.T`.
+    pub(crate) fn record_type_param_var(&mut self, param_sym: Symbol, vid: VarId) {
+        if self.type_param_canonical_var.contains_key(&param_sym) {
+            return;
+        }
+        let tid = self.alloc(Term::Var(Var::Global(vid)));
+        self.type_param_canonical_var.insert(param_sym, tid);
+    }
+
+    /// WI-954 — the canonical `Var::Global` TERM `param_sym` denotes, or `None` when
+    /// `param_sym` is not a declared type parameter. See
+    /// [`Self::type_param_canonical_var`] for why this is the only channel.
+    pub(crate) fn canonical_type_param_var(&self, param_sym: Symbol) -> Option<TermId> {
+        self.type_param_canonical_var.get(&param_sym).copied()
     }
 
     /// WI-242 — record the value-typed body node for an operation.
@@ -1782,32 +1847,57 @@ impl KnowledgeBase {
         self.symbols.scope_id(sym)
     }
 
-    /// Type-parameter names declared inside a sort's body (`sort T = ?`
-    /// inside `sort S { ... }`). Returns the names in alphabetical
-    /// order — stable across runs but not necessarily source order.
-    /// Empty when the sort has no body, no children, or no params.
+    /// The type parameters `sort_sym` DECLARES, as their own symbols, in source
+    /// order — `sort T = ?` / `sort [F] { … }` inside a sort body, and an operation's
+    /// bracket parameters when `sort_sym` is an operation. Empty for anything that
+    /// declares none.
+    ///
+    /// Source order, not alphabetical: positional bindings rely on it (`Map[String,
+    /// Int]` maps index 0 → `K`, 1 → `V` by the order they were declared).
+    ///
+    /// WI-954 — THE SCOPE IS THE OWNER'S, ASKED DIRECTLY. This used to find the body
+    /// scope by scanning every qualified name in the table for a direct child of
+    /// `sort_sym` and taking that child's declaring scope — O(|symbols|) per call, and
+    /// `typing` documented paying 51 µs of it four times per defaulted-spec-op probe.
+    /// A scope is minted from its owner (WI-984), so the child was only ever a
+    /// witness for `scope_id(sort_sym)`; the four `add_type_param` sites write to
+    /// exactly that scope. That cost is gone, and with it the reason several callers
+    /// order this leg last — see `typing::sort_is_parametric`, which also records the
+    /// 24 symbols WI-1042 measured the two spellings disagreeing on and why the
+    /// scope-based answer is the right one for each.
+    ///
+    /// CANONICALIZED FIRST, and that is not incidental tidiness — it is the half of the
+    /// old scan that was doing real work. Keying on the qualified NAME bridged a sort's
+    /// interned twins for free (WI-617: the same sort interns under several `Symbol`
+    /// copies, and `remap_name`'s miss path hands back a bare one). MEASURED: without
+    /// this, a top-level `sort List` in the testcase corpus answered `[]` for the twin
+    /// the loader reached it by, where the name-keyed scan answered `["T"]`, and its
+    /// positional bindings would have stopped mapping. `canonical_sym` is keyed on
+    /// exactly the string the old scan used, so the bridge is the same one.
+    pub fn type_param_syms_of(&self, sort_sym: Symbol) -> &[Symbol] {
+        let owner = self.canonical_sort_sym(sort_sym);
+        self.symbols.type_param_syms(self.symbols.scope_id(owner))
+    }
+
+    /// The symbol `owner` declares for its type parameter named `short`, or `None` if
+    /// it declares no such parameter. WI-954 — the replacement for rebuilding
+    /// `<owner qn>.<short>` and re-resolving it globally, which had to decide where the
+    /// owner's name ended (`<ns>.<Sort>.<op>.<T>` has two plausible owners) and could
+    /// reach a declaration in another scope entirely. Canonicalized for
+    /// [`Self::type_param_syms_of`]' reason — a twin copy of the owner names the same
+    /// declarations.
+    pub fn type_param_sym_of(&self, owner: Symbol, short: &str) -> Option<Symbol> {
+        let owner = self.canonical_sort_sym(owner);
+        self.symbols.type_param_sym(self.symbols.scope_id(owner), short)
+    }
+
+    /// [`Self::type_param_syms_of`] as short NAMES — what the many callers that only
+    /// name a parameter (arity checks, binding-label matching, diagnostics) want.
     pub fn type_params_of_sort(&self, sort_sym: Symbol) -> Vec<String> {
-        let qn = self.qualified_name_of(sort_sym);
-        let prefix = format!("{qn}.");
-        // Find the body scope by looking only at *direct* children of
-        // the sort — qualified names with no further dots after the
-        // prefix. `HashMap.iter()` order is non-deterministic, so a
-        // grandchild (e.g. an operation parameter) would otherwise
-        // sometimes win and yield the wrong scope.
-        let body_scope = self.symbols.by_qualified_name.iter()
-            .find_map(|(child_qn, child_sym)| {
-                if !child_qn.starts_with(&prefix) { return None; }
-                if child_qn[prefix.len()..].contains('.') { return None; }
-                self.symbols.declaring_scope(*child_sym)
-            });
-        let Some(body_scope) = body_scope else { return Vec::new() };
-        let Some(scope) = self.symbols.scope(body_scope) else { return Vec::new() };
-        // Source-order, not alphabetical: positional sort bindings rely
-        // on declaration order (`Map[String, Int]` mapping index 0→K,
-        // 1→V follows the order K and V were declared, not their
-        // alphabetic sort). The HashSet path is still used by
-        // `is_type_param` membership checks.
-        scope.type_params_ordered.clone()
+        self.type_param_syms_of(sort_sym)
+            .iter()
+            .map(|s| self.local_name_of(*s).to_owned())
+            .collect()
     }
 
     /// WI-709: check a sort APPLICATION's type arguments against the sort's DECLARED
@@ -1830,8 +1920,9 @@ impl KnowledgeBase {
     /// means something else.
     ///
     /// `declared` is [`Self::type_params_of_sort`] for the head — passed in, not re-read,
-    /// because that call scans the symbol table (both callers already hold the list, and
-    /// a type annotation is a hot load path — WI-653). `named` are the argument keys AS
+    /// because both callers already hold the list. (It USED to also be a scan of the
+    /// symbol table, WI-653; WI-954 made it an owner-scope read, so this is now about
+    /// not recomputing rather than about cost.) `named` are the argument keys AS
     /// WRITTEN (short names); `positional_count` the number of positional arguments, each
     /// of which binds the next declared param not already given by name (`Cell[Int64]` ≡
     /// `Cell[V = Int64]`).
@@ -4058,8 +4149,9 @@ impl KnowledgeBase {
     /// referenced sort's body (a forward reference) would see it empty and
     /// misclassify a data sort as a spec. Child symbols are all defined in
     /// `scan_definitions` (pass 1, before any loading), so this answer is
-    /// load-order-independent. Mirrors [`Self::type_params_of_sort`]'s
-    /// direct-child scan.
+    /// load-order-independent. It MIRRORED [`Self::type_params_of_sort`]'s direct-child
+    /// scan; WI-954 replaced that one with an owner-scope read, so this is now the only
+    /// direct-child scan left and the argument above stands on its own.
     ///
     /// WI-926 (§6.3): an EPONYMOUS constructor is the sort itself, so it is not a
     /// child symbol and the scan alone would answer `false` for

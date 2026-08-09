@@ -18,12 +18,22 @@
 //! asserts no `SortAlias` for an op parameter (deliberately — an op parameter is its
 //! own variable), so `resolve_sort_alias` missed on the exact symbol and fell through
 //! to its SHORT-NAME pass, which returns whichever same-named alias is first in
-//! `rules_by_functor` order. `type_param_global_var` now reads the operation's own
-//! record, so the symbol side and the declaration are the same variable by
+//! `rules_by_functor` order. WI-943 taught `type_param_global_var` the operation's own
+//! record, so the symbol side and the declaration became the same variable by
 //! construction and the WI-942 double-recording is gone.
 //!
-//! WHAT FAILS WITH THE FIX BACKED OUT — measured, by disabling
-//! `type_param_global_var`'s op-record arm and re-running:
+//! WI-954 REMOVED THE CHANNELS ENTIRELY, and this suite is the reason the removal is
+//! checkable: the loader now PUBLISHES the variable it mints for every declared
+//! parameter and `type_param_global_var` is one read of that map. The tests below are
+//! unchanged and still green, which is the property WI-954 had to preserve — the
+//! answers, not the route. `wi954_published_type_param_var_test` owns what changed.
+//!
+//! WHAT FAILED WITH WI-943'S FIX BACKED OUT — measured then, by disabling
+//! `type_param_global_var`'s op-record arm and re-running. RE-MEASURED under WI-954,
+//! with the reader forced back to the alias route alone: the same THREE fail
+//! (`op_type_param_resolves…`, `distinct_operations…`, `an_op_scoped_requires…`) and
+//! `sort_type_param_resolves_through_its_sort_alias` still passes. The operation
+//! channel is load-bearing however it is spelled, and the control is still a control.
 //!  - `op_type_param_resolves_to_the_variable_its_operation_declares` and
 //!    `distinct_operations_do_not_share_one_type_param_variable` — on `IDENT_SRC`,
 //!    which is written to LOAD either way for exactly this reason. BOTH `cmp[T]` and

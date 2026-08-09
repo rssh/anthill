@@ -1113,3 +1113,6 @@ mod include_registration_test;
 
 #[path = "include/wi1058_rule_body_position_test.rs"]
 mod wi1058_rule_body_position_test;
+
+#[path = "include/wi954_published_type_param_var_test.rs"]
+mod wi954_published_type_param_var_test;

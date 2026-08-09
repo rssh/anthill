@@ -258,16 +258,25 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
         .any(|rid| kb.is_fact(rid) && head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
 }
 
-/// WI-943 — the canonical logical variable `op_sym` DECLARES for the type parameter
-/// whose short name is `short`, or `None` when it declares no such parameter.
+/// WI-943 — the canonical logical variable `op_sym` DECLARES IN ITS BRACKET for the
+/// type parameter whose short name is `short`, or `None` when its bracket declares no
+/// such parameter.
 ///
-/// THE ONE AUTHORITY for an operation type parameter's identity. The loader mints
-/// exactly one `fresh_var` per declared parameter (`kb/load.rs` `load_operation`) and
-/// publishes it here; `rigidify_op_type_params` skolemizes THAT var, and
-/// [`crate::kb::typing`]'s `type_param_global_var` resolves a written occurrence of the
-/// parameter through this function. An operation parameter has no `SortAlias`, so this
-/// is the only place its canonical variable is recorded — one store, nothing to
-/// disagree with.
+/// NOT WHAT [`crate::kb::KnowledgeBase::canonical_type_param_var`] ANSWERS, and WI-954
+/// kept this alive after publishing that map because the two answer different
+/// questions. The map is keyed by the parameter's own SYMBOL and says what a written
+/// occurrence denotes; this is keyed by the OPERATION and says whether that operation's
+/// BRACKET is what declared it. A symbol registered as both `Sort` and `Operation`
+/// (`define` accumulates categories, WI-926) owns ONE `ScopeId`, so the sort body's
+/// `sort T = ?` and the operation's `[T]` land in the same scope and no scope read can
+/// tell them apart — `OperationInfo.type_params` can, because it is the operation's own
+/// declaration list. WI-402's existential carrier is the same distinction seen from the
+/// other side: it is `add_type_param`'d into the op scope but is NOT a bracket
+/// parameter, and this answers `None` for it.
+///
+/// Its one caller is `typing`'s `ground_rigid_projection_if_concrete`, whose WI-383
+/// split ("only an OPERATION-type-param projection grounds here") is exactly the
+/// bracket/not-bracket question.
 ///
 /// Keyed by SHORT NAME because that is how the loader interns each entry's `Symbol`
 /// (`kb.intern("T")`), not as the op-scoped `<ns>.<op>.T` local a body reference

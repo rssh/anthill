@@ -39,8 +39,9 @@ use anthill_core::eval::value::Value as EvalValue;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Literal, Term};
+use anthill_core::kb::term_view::TermIdView;
 use anthill_core::kb::typing::{
-    type_check_sorts, type_check_sorts_typed, value_type_term, TypeError,
+    extract_sort_ref_sym, type_check_sorts, type_check_sorts_typed, value_type_term, TypeError,
 };
 use anthill_core::span::{SourceId, SourceSpan};
 use std::rc::Rc;
@@ -344,13 +345,24 @@ fn an_eponymous_parametric_build_refuses_a_wrong_binding() {
 
 /// The VALUE typer (`constructor_value_type`) is `check_constructor`'s twin: WI-578
 /// routes both through `finish_constructor_type` so ONE declaration yields ONE type.
-/// It is converted with its twin and has NO independent failing case — measured, not
-/// assumed: through `value_type_term` a constructed parametric value types as the BARE
-/// sort ref under EITHER view, for either spelling, so the strict/total difference is
-/// invisible from here. What justifies the conversion is the tie itself — leaving this
-/// half on the strict view would make the two producers disagree for an eponymous
-/// parametric sort, which is the drift the shared tail exists to prevent. This test
-/// pins the parity that claim rests on.
+/// It is converted with its twin, and WI-946 measured it having no independent failing
+/// case: through `value_type_term` a constructed parametric value typed as the BARE
+/// sort ref under EITHER view, for either spelling. What justified the conversion was
+/// the tie itself — leaving this half on the strict view would make the two producers
+/// disagree for an eponymous parametric sort, which is the drift the shared tail exists
+/// to prevent. This test pins the parity that claim rests on.
+///
+/// WI-954 — THE "BARE SORT REF" HALF OF THAT MEASUREMENT WAS A DEFECT, AND IT IS GONE.
+/// `finish_constructor_type` recovered the parent's parameters by decoding `SortAlias`
+/// FACTS through the `SortAliasIndex`, whose fast path has no fallback-on-miss; a KB
+/// built as stdlib-then-source carries an index from the FIRST phase, so the source's
+/// own `Crate.T` was absent from it and the reconstruction answered "this sort has no
+/// parameters". MEASURED at this very site: `by_sym` held 102 entries and `Crate.T` was
+/// not one of them. The parameters are published by the loader now and no phase can
+/// hide them, so BOTH spellings build `Sort[T = Int64]` — which is what the occurrence
+/// typer always built, i.e. the tie this test exists for now holds at a stronger point.
+/// `a_built_parametric_value_carries_its_binding` is the subject test this site's own
+/// instruction asked for.
 fn built_value_type_is_parameterized(source: &str, ctor_qn: &str) -> bool {
     let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(source);
     let ctor = kb.try_resolve_symbol(ctor_qn).unwrap_or_else(|| panic!("no ctor {ctor_qn}"));
@@ -400,10 +412,55 @@ fn the_value_typer_answers_both_spellings_alike() {
          eponymous={eponymous})"
     );
     assert!(
-        !nested,
-        "measured: neither spelling reconstructs params through the value typer — if either \
-         gains a parameterized build, this site needs its own subject test"
+        nested,
+        "since WI-954 both spellings reconstruct the parent's params through the value \
+         typer — the pre-WI-954 `!nested` measured a stale-index miss, not a design"
     );
+}
+
+/// The subject test the parity check above could not be: the built type carries the
+/// BINDING, not merely a non-empty named-arg list. Both spellings, because that is the
+/// pair WI-946 is about — and reading the binding is what would catch a reconstruction
+/// that kept the arity (WI-384's `?_` wildcard fill) while losing the value.
+#[test]
+fn a_built_parametric_value_carries_its_binding() {
+    for (src, ctor_qn, sort_qn) in [
+        (VALUE_BUILD_NESTED, "wi946.valuebuild.nested.Crate.Boxed", "wi946.valuebuild.nested.Crate"),
+        (VALUE_BUILD_EPONYMOUS, "wi946.valuebuild.eponymous.Box", "wi946.valuebuild.eponymous.Box"),
+    ] {
+        let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(src);
+        let ctor = kb.try_resolve_symbol(ctor_qn).expect("ctor");
+        let (field, _) = kb.entity_field_types(ctor).expect("field schema")[0].clone();
+        let value = EvalValue::Entity {
+            functor: ctor,
+            pos: vec![].into(),
+            named: vec![(field, EvalValue::Int(5))].into(),
+        };
+        let ty = value_type_term(&mut kb, &Substitution::new(), &value);
+        let built = kb.get_term(ty.expect_term()).clone();
+        let int64 = kb.resolve_symbol("anthill.prelude.Int64");
+        let Term::Fn { functor, named_args, .. } = &built else {
+            panic!("{ctor_qn}: expected `Sort[T = Int64]`, got {built:?}")
+        };
+        assert_eq!(
+            kb.qualified_name_of(*functor),
+            sort_qn,
+            "{ctor_qn}: the built type is based at the parent sort",
+        );
+        assert_eq!(
+            named_args.len(),
+            1,
+            "{ctor_qn}: the sort declares ONE parameter, so the built type carries one \
+             binding — a second would be a param the sort does not have (WI-955)",
+        );
+        let (key, bound) = named_args.first().expect("one binding");
+        assert_eq!(kb.local_name_of(*key), "T", "{ctor_qn}: keyed by the param's bare name");
+        assert_eq!(
+            extract_sort_ref_sym(&kb, &TermIdView(*bound)),
+            Some(int64),
+            "{ctor_qn}: `Boxed(5)` pins `T` to the field's type, not a `?_` wildcard",
+        );
+    }
 }
 
 /// The build must not OVER-fire: the RIGHT binding still loads.

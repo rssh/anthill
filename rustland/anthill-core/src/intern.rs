@@ -434,13 +434,24 @@ pub struct Scope {
     pub parents: Vec<ScopeInclusion>,
     /// Type parameter names (excluded from parent lookups)
     pub type_params: HashSet<String>,
-    /// Type parameter names in declaration order. Parallel to
-    /// `type_params` for membership tests; this is what positional
-    /// sort bindings (e.g. `Map[String, Int]` for a `sort Map { sort
-    /// K = ?; sort V = ? }`) consult to map index 0 → "K", index 1 →
-    /// "V". Insertion-order preserves the source-text declaration
-    /// order, which is the binding contract.
-    pub type_params_ordered: Vec<String>,
+    /// The type parameters DECLARED in this scope, as their own symbols, in
+    /// declaration order. Parallel to `type_params`, which stays a `HashSet<String>`
+    /// because [`SymbolTable::is_type_param`] is an O(1) membership test on a hot
+    /// path (`typing::is_sort_param_symbol`, `load`'s type-lowering arm) and a name is
+    /// all a membership question needs.
+    ///
+    /// THIS one is the IDENTITY, and that is why it holds `Symbol`, not `String`
+    /// (WI-954). Every declarer already has the symbol in hand at the
+    /// [`SymbolTable::add_type_param`] call — it is defined on the line above at all
+    /// four sites — and readers that need to get from "this sort's parameter `T`" to
+    /// the declaration were otherwise reduced to rebuilding `<owner qn>.T` with
+    /// `format!` and re-resolving it (`typing`'s `qualified_type_param_sym`, deleted
+    /// with this).
+    ///
+    /// Order is the source-text declaration order, which is the binding contract:
+    /// positional sort bindings (`Map[String, Int]` for `sort Map { sort K = ?; sort
+    /// V = ? }`) map index 0 → `K`, index 1 → `V` off this list.
+    pub type_params_ordered: Vec<Symbol>,
 }
 
 // ── SymbolTable ─────────────────────────────────────────────────
@@ -684,12 +695,31 @@ impl SymbolTable {
             .map_or(false, |s| s.type_params.contains(name))
     }
 
-    /// Record a type parameter name for a scope (excluded from parent lookups).
-    pub fn add_type_param(&mut self, scope: ScopeId, name: &str) {
+    /// Record a type parameter for a scope (excluded from parent lookups). `sym` is
+    /// the parameter's OWN symbol — the thing `<owner qn>.<name>` resolves to — which
+    /// every caller has just defined; see [`Scope::type_params_ordered`].
+    pub fn add_type_param(&mut self, scope: ScopeId, name: &str, sym: Symbol) {
         let data = self.scopes.entry(scope).or_default();
         if data.type_params.insert(name.to_owned()) {
-            data.type_params_ordered.push(name.to_owned());
+            data.type_params_ordered.push(sym);
         }
+    }
+
+    /// The symbols of the type parameters `scope` declares, in declaration order.
+    /// Empty for a scope that declares none (and for one that was never opened).
+    pub fn type_param_syms(&self, scope: ScopeId) -> &[Symbol] {
+        self.scopes.get(&scope).map_or(&[], |s| s.type_params_ordered.as_slice())
+    }
+
+    /// The symbol `scope` declares for the type parameter named `name`, or `None`.
+    ///
+    /// The name comparison is confined to ONE owner's own declared parameters, which
+    /// is the only place a short name identifies anything (the no-short-name-comparison
+    /// direction, WI-672, is about comparing across declarations). It replaces
+    /// rebuilding `<owner qn>.<name>` and re-resolving it globally, which had to decide
+    /// where the owner's name ended and could reach a different declaration entirely.
+    pub fn type_param_sym(&self, scope: ScopeId, name: &str) -> Option<Symbol> {
+        self.type_param_syms(scope).iter().copied().find(|&s| self.local_name(s) == name)
     }
 
     /// Record an imported name alias in a scope.
@@ -1064,9 +1094,10 @@ mod tests {
         let eq = scope(&mut st, "Eq");
         let ordered = scope(&mut st, "Ord");
         // "T" is a type param of `Eq`
-        st.define("T", "Eq.T", SymbolKind::Sort, eq);
+        let t_sym = st.define("T", "Eq.T", SymbolKind::Sort, eq);
         st.add_exposed(eq, "T");
-        st.add_type_param(eq, "T");
+        st.add_type_param(eq, "T", t_sym);
+        assert_eq!(st.type_param_sym(eq, "T"), Some(t_sym));
 
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
         st.add_exposed(eq, "eq");

@@ -2735,8 +2735,8 @@ fn scan_operation_params(
     for tp in &op.type_params {
         let tp_name = parse_sym.local_name(tp.name);
         let qualified = make_qualified(prefix, tp_name);
-        kb.symbols.define(tp_name, &qualified, SymbolKind::Sort, op_scope);
-        kb.symbols.add_type_param(op_scope, tp_name);
+        let tp_sym = kb.symbols.define(tp_name, &qualified, SymbolKind::Sort, op_scope);
+        kb.symbols.add_type_param(op_scope, tp_name, tp_sym);
     }
 
     // WI-352: the op's ordered argument-place symbols, recorded on the op
@@ -3597,7 +3597,7 @@ impl ScopePass for DefinePass<'_> {
                 // SortAlias → Var backing var is emitted in `load_sort_with_body`).
                 // An UNMARKED `sort F { … }` stays a concrete nested sort.
                 if s.is_type_param && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(scope, &short);
+                    kb.symbols.add_type_param(scope, &short, sym);
                 }
                 Some(sort_scope)
             }
@@ -3637,7 +3637,7 @@ impl ScopePass for DefinePass<'_> {
                 record_internal(kb, abstract_sym, s.visibility);
                 // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
-                    kb.symbols.add_type_param(scope, &short);
+                    kb.symbols.add_type_param(scope, &short, abstract_sym);
                 }
             }
             Item::Entity(e) => {
@@ -12975,10 +12975,9 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// The `Var` target of `SortAlias(<sym>, Var)` — `sym`'s backing type-param
-    /// variable, or `None` when `sym` has no alias or its alias names a CONCRETE sort
-    /// (`sort T = Int64`, whose target is a `sort_ref`, not the type-param indirection
-    /// this wants).
+    /// The `Var` target of `SortAlias(<sym>, Var)` — or `None` when `sym` has no alias
+    /// or its alias names a CONCRETE sort (`sort T = Int64`, whose target is a
+    /// `sort_ref`, not the indirection this wants).
     ///
     /// EXACT symbol identity, one pass. It was two — exact, then by the source's LOCAL
     /// NAME — until WI-956 deleted the by-name pass everywhere (see
@@ -12991,6 +12990,14 @@ impl<'a> Loader<'a> {
     /// reader prefers the `SortAlias` INDEX, which is not built until type-check start
     /// (`build_sort_alias_index`). A stale index from an earlier type check must not
     /// answer for facts this load is still asserting, so the walk stays the scan.
+    ///
+    /// WI-954 — ONE CALLER LEFT, and its question is not "what variable does this type
+    /// parameter denote". `effects_runtime_terms` asks whether an `effects E` label is a
+    /// ROW VARIABLE, and answers it by whether a `SortAlias` backs the name. That is
+    /// deliberately narrower than the published canonical-variable map, which also
+    /// answers for an operation's BRACKET parameters — those assert no alias and are
+    /// not row variables here today. The type-parameter reader that used to share this
+    /// walk (`type_param_var`) reads the map instead.
     fn find_sort_alias_var(&self, sym: Symbol) -> Option<TermId> {
         let kb: &KnowledgeBase = self.kb;
         super::typing::scan_sort_aliases(kb, |functor| functor == sym)
@@ -13045,14 +13052,25 @@ impl<'a> Loader<'a> {
     /// scope via the `type_param_vars` cache. Used by the `Simple` arm of
     /// [`Self::type_expr_to_child`] (the sole, carrier-agnostic type lowering) to
     /// build the type-param `Var` directly.
+    ///
+    /// WI-954: the published canonical variable, not a re-derivation from the
+    /// `SortAlias` facts. `find_sort_alias_var` scanned every one of them per miss,
+    /// answered only for the ALIAS-form parameters, and left a bracket parameter to be
+    /// covered by the `(op_scope, name)` cache `load_operation` pre-seeds. One map read
+    /// answers for both, from the same declaration every later reader will see.
     fn type_param_var(&mut self, sort_sym: Symbol, short_name: &str) -> TermId {
         let key = (self.current_scope, short_name.to_owned());
         if let Some(&cached) = self.type_param_vars.get(&key) {
             return cached;
         }
-        // Try SortAlias first (if abstract sort already loaded).
-        let var_tid = if let Some(alias_var) = self.find_sort_alias_var(sort_sym) {
-            alias_var
+        // The FALLBACK mints one, for exactly the condition the pre-WI-954 miss covered:
+        // the caller's gate (`is_type_param` on the USE scope) says a parameter of this
+        // name is declared, but nothing has been published under THIS symbol — the
+        // declaration's variable is not decided yet (`preload_type_param_aliases` runs
+        // first, so this is a load order the pre-pass does not reach), or the written
+        // name resolved to a copy the declaration does not own.
+        let var_tid = if let Some(published) = self.kb.canonical_type_param_var(sort_sym) {
+            published
         } else {
             let var_sym = self.kb.intern(short_name);
             let vid = self.kb.fresh_var(var_sym);
@@ -14735,6 +14753,14 @@ impl<'a> Loader<'a> {
 
     /// Assert a positional `SortAlias(sort_ref, target)` fact. Shared emission for
     /// `load_abstract_sort` and `emit_type_param_backing_var`.
+    ///
+    /// WI-954 — AND, when the source is a DECLARED type parameter, publish the target
+    /// as that parameter's canonical variable. This is one of the two points where a
+    /// canonical variable is decided (the other is `load_operation`'s bracket loop),
+    /// which is why the publication is here rather than at the three declaration sites
+    /// that funnel into it: `sort T = ?`, WI-452's marked structured param, and
+    /// WI-402's op-scoped existential carrier all reach their variable through this
+    /// call, and each dedups against an already-asserted alias before making it.
     fn assert_sort_alias(
         &mut self,
         sort_term: TermId,
@@ -14744,6 +14770,47 @@ impl<'a> Loader<'a> {
         use crate::eval::value::Value;
         let alias_sym = self.kb.resolve_symbol("SortAlias");
         let sort_sort = ClauseKind::Sort;
+        // Only a DECLARED parameter publishes: a top-level `sort Term = ?` is an
+        // opaque abstract sort, not a parameter of its namespace, and an in-body
+        // `sort T = Int64` is not a parameter at all (`add_type_param` is gated on
+        // `TypeExpr::Variable`). Both still get a `SortAlias`; neither has a canonical
+        // parameter variable to publish.
+        let source_sym = self.kb.name_term_sym(sort_term);
+        if super::typing::is_sort_param_symbol(self.kb, source_sym) {
+            let target_var = match &target {
+                Value::Term { id, .. } => match self.kb.get_term(*id) {
+                    Term::Var(Var::Global(vid)) => Some(*vid),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match target_var {
+                Some(vid) => self.kb.record_type_param_var(source_sym, vid),
+                // LOUD, not skipped: a declared parameter whose alias is not a
+                // variable leaves every reader of its identity with nothing to read,
+                // and the sort would silently lose the parameter.
+                //
+                // UNREACHABLE THROUGH THE LOADER'S OWN EMITTERS, so it is a loader
+                // INVARIANT rather than a user diagnostic, and that is why it carries
+                // no span: the two callers are `load_abstract_sort`, gated on
+                // `TypeExpr::Variable` (the same gate `add_type_param` is under, so a
+                // declared parameter's target is a converted `?` — a var), and
+                // `emit_type_param_backing_var`, which mints one. It is reported rather
+                // than `debug_assert`ed so a release build cannot lose the parameter in
+                // silence, and rather than `panic!`ed because the trigger would still be
+                // a written declaration. The DECLARATION's qualified name is its
+                // attribution — that is what a reader has to go and look at.
+                _ => self.errors.push(LoadError::Other {
+                    message: format!(
+                        "type parameter '{}' is declared but its backing alias is not a \
+                         logical variable ({}); every occurrence of a type parameter must \
+                         denote one variable",
+                        self.kb.qualified_name_of(source_sym),
+                        target.type_name(),
+                    ),
+                }),
+            }
+        }
         self.kb.assert_metadata_fact_carrier(
             alias_sym,
             vec![Value::term(sort_term), target],
@@ -16359,7 +16426,7 @@ impl<'a> Loader<'a> {
     ) -> crate::eval::value::Value {
         let qualified = format!("{op_qualified}.{carrier}");
         let c_sym = self.kb.symbols.define(carrier, &qualified, SymbolKind::Sort, op_scope);
-        self.kb.symbols.add_type_param(op_scope, carrier);
+        self.kb.symbols.add_type_param(op_scope, carrier, c_sym);
         let c_sort_term = self.kb.alloc(Term::Fn {
             functor: c_sym,
             pos_args: SmallVec::new(),
@@ -16535,9 +16602,16 @@ impl<'a> Loader<'a> {
 
         // Pre-allocate type-param Vars and seed the per-scope cache so
         // later `type_expr_to_value` calls reuse them, and we can publish
-        // the list on OperationInfo. Skipping the `find_sort_alias_var`
-        // branch is intentional: an op type-param is its own logical
-        // variable, distinct from any same-named outer SortAlias.
+        // the list on OperationInfo. Minting unconditionally is intentional:
+        // an op type-param is its own logical variable, distinct from any
+        // same-named outer sort parameter, so this must NOT reuse one.
+        //
+        // WI-954: this is the SECOND (and last) point where a canonical parameter
+        // variable is decided — a bracket parameter asserts no `SortAlias` — so the
+        // publication happens here too, keyed by the parameter's OWN op-scoped symbol
+        // (`<ns>.<op>.T`, defined by `scan_operation_params`), not by the bare `T` the
+        // `OperationInfo` record interns. `type_param_sym` reads the very list that
+        // scan filled, so there is no name to rebuild and no scope to guess.
         let mut type_param_var_terms: Vec<TermId> = Vec::with_capacity(o.type_params.len());
         for tp in &o.type_params {
             let tp_name = self.parsed.symbols.local_name(tp.name).to_owned();
@@ -16551,6 +16625,18 @@ impl<'a> Loader<'a> {
                 self.type_param_vars.insert(cache_key, tid);
                 tid
             };
+            // A `None` here is not a skipped case: `type_param_sym` reads the set
+            // `add_type_param` filled, which is the very membership `is_sort_param_symbol`
+            // tests, so a parameter the scan did not register has no canonical variable
+            // to publish and no reader that would look for one.
+            let declared = self.kb.symbols.type_param_sym(op_scope, &tp_name);
+            let vid = match self.kb.get_term(var_tid) {
+                Term::Var(Var::Global(v)) => Some(*v),
+                _ => None,
+            };
+            if let (Some(declared), Some(vid)) = (declared, vid) {
+                self.kb.record_type_param_var(declared, vid);
+            }
             type_param_var_terms.push(var_tid);
         }
 
@@ -17332,9 +17418,11 @@ impl<'a> Loader<'a> {
             // `add_type_param` filled during the scan — including a sort-level NAMED
             // slot, which §4.7 makes a type parameter, so §4.2's "including a
             // sort-level named requirement slot" needs no separate case. Deliberately
-            // NOT `type_params_of_sort`, which re-FINDS the body scope by scanning
-            // every qualified name in the symbol table: the enclosing scope is
-            // already in hand here, so the scan would buy nothing.
+            // NOT `type_params_of_sort`: this is a MEMBERSHIP question and the enclosing
+            // scope is already in hand, so building the name list would buy nothing.
+            // (That reader also used to re-FIND the body scope by scanning every
+            // qualified name in the table; WI-954 made it an owner-scope read, so the
+            // gap between the two is now the list-build alone.)
             let enclosing_owns = self.kb.symbols.is_type_param(enclosing, name);
             let enclosing_qn = self.kb.qualified_name_of(enclosing.owner());
             let enclosing_short = last_segment(enclosing_qn);
