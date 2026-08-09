@@ -90,7 +90,10 @@
 //! `an_undefined_name_in_a_data_slot_is_not_a_goal`: the walk reaches a data slot
 //! through no switch, only by someone replacing `body_goal_children` with a
 //! whole-subtree walk — the edit it exists to fail on, and the one the ticket's own
-//! ~313-name probe took. `a_user_functor_named_tuple_is_not_a_conjunction_wrapper`
+//! ~313-name probe took. (WI-1058 closed the ARGUMENT half at the TYPER, so that row
+//! and ARM 2 of the `tuple` row now assert the message rather than a clean load: this
+//! walk's sentence must be ABSENT while the typer's is present. Two positions, two
+//! exemption sets, one shared head test.) `a_user_functor_named_tuple_is_not_a_conjunction_wrapper`
 //! FAILS when the `tuple` wrapper test is applied at every node instead of only where
 //! the loader puts one (**measured**, by reinstating that shape).
 //! `an_undefined_name_under_a_boolean_and_is_not_a_goal` passes with `and` back in the
@@ -103,8 +106,8 @@
 //! hypotheses and FALSELY REFUSE). None of the three had a test before that pass.
 //!
 //! REFERENCE: WI-1026 (which filed this); WI-895 (the same gap, filed earlier, whose
-//! ARGUMENT-position half stays open); WI-754 / WI-863 / WI-878 (the shared head
-//! test); `docs/kernel-language.md` §5.3.
+//! ARGUMENT-position half WI-1058 closed at the typer); WI-754 / WI-863 / WI-878 (the
+//! shared head test); `docs/kernel-language.md` §5.3.
 
 /// The single load-error message of `src`, which must NOT load. Panics if it loads
 /// clean — "the program loaded" must never read as a pass in a suite about refusals.
@@ -280,23 +283,34 @@ fn a_functor_this_rule_assumes_still_loads() {
     );
 }
 
-/// A DATA SLOT is not a goal, so a name inside a goal's ARGUMENT is not walked. This
-/// is the boundary between what WI-1034 closed and what WI-895 still leaves open:
-/// `holds(ite(true, 10, 20))` with `ite` un-imported interns bare and never fires as
-/// a `[simp]` redex, and that silence survives here.
+/// A DATA SLOT is not a goal, so THIS walk does not reach a name inside a goal's
+/// ARGUMENT. Asserted as an EXCLUSION rather than left implicit, because the difference
+/// is one walk step: a walk that drifted into data would refuse every constructor
+/// written in an argument.
 ///
-/// Asserted as an EXCLUSION rather than left implicit, because the difference is one
-/// walk step: the argument position is where the ticket's probe found ~313 names and
-/// the goal-position count found 20, and a walk that drifted into it would refuse
-/// every constructor written in an argument. Its own pin is
-/// `wi894_rule_functor_scope_test::a_rule_body_does_not_yet_refuse_an_unimported_functor`.
+/// WI-1058 CLOSED THE OTHER HALF, so the exclusion is now asserted on the MESSAGE rather
+/// than on a clean load: the program is refused, by the TYPER's rule-body data check
+/// (`data_functor_error`, whose sentence opens "rule-body TERM") and NOT by this walk
+/// (whose sentence opens "rule-body GOAL"). That distinction is the whole subject — two positions, two
+/// exemption sets, one shared head test (`undefined_functor`) — and asserting it this way
+/// keeps the row measuring the same thing it always did. Before WI-1058 this source
+/// loaded clean; a walk widened into data would report BOTH sentences.
 #[test]
 fn an_undefined_name_in_a_data_slot_is_not_a_goal() {
     let src = "namespace test.wi1034.dataslot\n\
                \x20 fact present(1)\n\
                \x20 rule answer(?x) :- present(absent1034data(?x))\n\
                end\n";
-    crate::common::load_kb_with(src);
+    let msg = refusal(src);
+    assert!(
+        msg.contains("names nothing") && msg.contains("absent1034data"),
+        "the TYPER's data-slot check must name it (WI-1058): {msg}",
+    );
+    assert!(
+        !msg.contains("rule-body goal"),
+        "this walk must NOT have reached a data slot — the sentence must be the TERM \
+         one, not the GOAL one: {msg}",
+    );
 }
 
 /// THE BLAST RADIUS, asserted rather than promised: the stdlib + Rust host bindings
@@ -371,14 +385,23 @@ fn a_user_functor_named_tuple_is_not_a_conjunction_wrapper() {
     let msg = refusal(undefined);
     assert!(msg.contains("names nothing") && msg.contains("tuple"), "{msg}");
 
-    // ARM 2 — its arguments are DATA. A declared `tuple` predicate whose argument
-    // names nothing must LOAD: the argument is a constructor position, not a goal.
+    // ARM 2 — its arguments are DATA, so THIS walk does not report them. Since WI-1058
+    // the typer's data check does (see `an_undefined_name_in_a_data_slot_is_not_a_goal`
+    // for why the assertion is on the message), so the arm asserts the ABSENCE of this
+    // walk's sentence: applied at every node, the wrapper test would skip this atom's own
+    // head AND walk its data as goals, and "names nothing" about `absent1034tup` is
+    // exactly what that would print.
     let declared = "namespace test.wi1034.usertuple2\n\
                     \x20 fact tuple(1)\n\
                     \x20 fact present(1)\n\
                     \x20 rule answer(?x) :- present(?x), tuple(absent1034tup(?x))\n\
                     end\n";
-    crate::common::load_kb_with(declared);
+    let msg2 = refusal(declared);
+    assert!(
+        msg2.contains("names nothing") && msg2.contains("absent1034tup"),
+        "the TYPER's data-slot check must name it (WI-1058): {msg2}",
+    );
+    assert!(!msg2.contains("rule-body goal"), "a data slot is not a goal: {msg2}");
 }
 
 /// `and` IS NOT A GOAL CONNECTIVE, and its arguments are not goals. Both walks listed

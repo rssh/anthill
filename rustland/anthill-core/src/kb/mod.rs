@@ -1263,7 +1263,8 @@ impl TypeArgProblem {
     }
 }
 
-/// WI-1046 — one positional slot that holds a GOAL, from [`KnowledgeBase::goal_arg_slots`].
+/// WI-1046 — one positional slot of a goal CONNECTIVE that does not hold plain data,
+/// from [`KnowledgeBase::goal_slot_readings`].
 ///
 /// `tuple_wrapped` says the slot holds a `tuple(g₁, …, gₙ)` CONJUNCTION WRAPPER rather
 /// than a single goal — the shape the loader gives a bounded quantifier's body and a
@@ -1274,6 +1275,35 @@ impl TypeArgProblem {
 pub(crate) struct GoalSlot {
     pub index: usize,
     pub tuple_wrapped: bool,
+    pub reading: SlotReading,
+}
+
+/// WI-1058 — WHAT the resolver does with a connective's non-data slot. The three
+/// readings are not interchangeable, and until this ticket only the first was written
+/// down: `assumed_body_functors` re-derived the second from a hand-written
+/// `local_name_of(f) == "forall_impl"` test, and the third was written down NOWHERE, so
+/// a discharge's BINDER tuple read as data and the typer walked `tuple(?f₁, …)` as a
+/// call on a functor that names nothing (measured: 21 of the 323 reports a widened
+/// rule-body walk produced).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotReading {
+    /// A goal the resolver PROVES — a `not` negand, an `or` / `push_choice` branch, a
+    /// quantifier body, a discharge's consequent. The only reading
+    /// [`KnowledgeBase::goal_arg_slots`] returns, so its three pre-existing readers
+    /// (the query walk, the rule-body walk, the loader's boolean routing) are unchanged
+    /// by the other two.
+    Proved,
+    /// A goal the resolver ASSUMES — a discharge's antecedents (`forall_impl`'s arg 1),
+    /// which it pushes as `AssumedFact`s for the consequent to discharge against.
+    /// Goal-SHAPED (so the typer reads it as a goal) but NOT proved: the predicates it
+    /// names are DECLARED by this slot and carry no clause anywhere, which is why
+    /// [`KnowledgeBase::undefined_rule_body_goals`] must collect them
+    /// ([`KnowledgeBase::assumed_body_functors`]) rather than refuse them.
+    Assumed,
+    /// The VARIABLES a quantifier / discharge scopes — `forall_impl`'s binder tuple,
+    /// `forall_in` / `some_in`'s binder. Neither a goal nor data: there is nothing to
+    /// prove and nothing to type.
+    Binders,
 }
 
 impl KnowledgeBase {
@@ -3107,11 +3137,10 @@ impl KnowledgeBase {
         out
     }
 
-    /// THE ONE TABLE of which POSITIONAL slots of `functor` the resolver evaluates as
-    /// GOALS rather than as data, and whether each slot holds a `tuple(…)` conjunction
-    /// WRAPPER rather than a single goal. Empty for a plain predicate or a data
-    /// constructor — which is what keeps `Widget(id: absent(42))` out of every goal
-    /// walk.
+    /// The POSITIONAL slots of `functor` the resolver evaluates as GOALS TO PROVE — the
+    /// [`SlotReading::Proved`] rows of [`Self::goal_slot_readings`], and nothing else.
+    /// Empty for a plain predicate or a data constructor, which is what keeps
+    /// `Widget(id: absent(42))` out of every goal walk.
     ///
     /// Three readers, deliberately: the query-pattern walk ([`Self::goal_arg_termids`],
     /// WI-863), the rule-body walk ([`Self::body_goal_children`], WI-1034), and the
@@ -3122,6 +3151,26 @@ impl KnowledgeBase {
     /// conjunction in two of them and nowhere else; the DESCENT POLICY stays with each
     /// caller (a query walk gates on negation scope, the loader does not), only the
     /// recognition is shared.
+    ///
+    /// The FILTER is the contract: all three refuse or descend on what they find here,
+    /// and a discharge's ANTECEDENTS must not be refused (a hypothesis declares its own
+    /// predicate) nor its BINDERS descended into. Those two readings joined the table
+    /// under WI-1058 and are visible only through [`Self::goal_slot_readings`].
+    pub(crate) fn goal_arg_slots(
+        &self,
+        functor: Symbol,
+        pos_arity: usize,
+    ) -> SmallVec<[GoalSlot; 2]> {
+        self.goal_slot_readings(functor, pos_arity)
+            .into_iter()
+            .filter(|s| s.reading == SlotReading::Proved)
+            .collect()
+    }
+
+    /// THE ONE TABLE of which POSITIONAL slots of `functor` the resolver reads as
+    /// something other than DATA, what it reads each as ([`SlotReading`]), and whether
+    /// the slot holds a `tuple(…)` conjunction WRAPPER rather than a single item. Empty
+    /// for a plain predicate or a data constructor.
     ///
     /// Recognised by local name where the connective is a kernel RULE (`or`, and the
     /// quantifier markers) — `builtin_of` misses those — and by builtin tag otherwise.
@@ -3141,31 +3190,61 @@ impl KnowledgeBase {
     /// their declared arities. This is the same defect the `tuple` wrapper had one layer
     /// down, fixed the same way: a node is a connective because of its SHAPE, never
     /// because of its spelling alone.
-    pub(crate) fn goal_arg_slots(
+    ///
+    /// WI-1058 added the two non-`Proved` readings, and each replaced a copy that had
+    /// already drifted or was missing outright: the discharge's ANTECEDENT slot was
+    /// hand-read in [`Self::assumed_body_functors`] off its own
+    /// `local_name_of(f) == "forall_impl"` test, and its BINDER slot was described in no
+    /// table at all — so the typer's rule-body walk read `tuple(?f₁, …, ?fₙ)` as a call
+    /// on an undefined functor. Both now come from here, so a fourth connective is added
+    /// in ONE place.
+    pub(crate) fn goal_slot_readings(
         &self,
         functor: Symbol,
         pos_arity: usize,
-    ) -> SmallVec<[GoalSlot; 2]> {
-        let slot = |index, tuple_wrapped| GoalSlot { index, tuple_wrapped };
+    ) -> SmallVec<[GoalSlot; 3]> {
+        let slot = |index, tuple_wrapped, reading| GoalSlot { index, tuple_wrapped, reading };
         match (self.local_name_of(functor), pos_arity) {
-            // A bounded quantifier's body is a `tuple(…)` of goals at arg 2 (the loader
-            // always wraps it; `resolve::unwrap_tuple_args` reads the same shape).
-            // Arity 3 is `is_scoping_marker`'s, so the two cannot disagree.
-            ("forall_in" | "some_in", 3) => return SmallVec::from_elem(slot(2, true), 1),
-            // A hereditary-Harrop discharge's CONSEQUENT, likewise wrapped. Its
-            // antecedents (arg 1) are HYPOTHESES, not goals to prove, and are read by
-            // `assumed_body_functors` alone — a different question, so not a slot here.
-            ("forall_impl", 3) => return SmallVec::from_elem(slot(2, true), 1),
+            // A bounded quantifier binds ONE variable (arg 0, unwrapped) over a
+            // COLLECTION (arg 1 — ordinary data, so no row) and evaluates a `tuple(…)`
+            // of goals at arg 2 (the loader always wraps it; `resolve::unwrap_tuple_args`
+            // reads the same shape). Arity 3 is `is_scoping_marker`'s, so the two cannot
+            // disagree.
+            ("forall_in" | "some_in", 3) => {
+                return SmallVec::from_slice(&[
+                    slot(0, false, SlotReading::Binders),
+                    slot(2, true, SlotReading::Proved),
+                ]);
+            }
+            // A hereditary-Harrop discharge: `forall_impl(tuple(binders),
+            // tuple(antecedents), tuple(consequent))` — all three wrapped, and all three
+            // read differently (`parse/convert.rs`'s lowering builds exactly this, as
+            // does the loader's synthesized `<Sort>.induction`).
+            ("forall_impl", 3) => {
+                return SmallVec::from_slice(&[
+                    slot(0, true, SlotReading::Binders),
+                    slot(1, true, SlotReading::Assumed),
+                    slot(2, true, SlotReading::Proved),
+                ]);
+            }
             // The kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
             // `kernel.anthill:48`), so `builtin_of` would miss it.
-            ("or", 2) => return SmallVec::from_slice(&[slot(0, false), slot(1, false)]),
+            ("or", 2) => {
+                return SmallVec::from_slice(&[
+                    slot(0, false, SlotReading::Proved),
+                    slot(1, false, SlotReading::Proved),
+                ]);
+            }
             _ => {}
         }
         match (self.builtin_of(functor), pos_arity) {
-            (Some(BuiltinTag::Not), 1) => SmallVec::from_elem(slot(0, false), 1),
-            (Some(BuiltinTag::PushChoice), 2) => {
-                SmallVec::from_slice(&[slot(0, false), slot(1, false)])
+            (Some(BuiltinTag::Not), 1) => {
+                SmallVec::from_elem(slot(0, false, SlotReading::Proved), 1)
             }
+            (Some(BuiltinTag::PushChoice), 2) => SmallVec::from_slice(&[
+                slot(0, false, SlotReading::Proved),
+                slot(1, false, SlotReading::Proved),
+            ]),
             _ => SmallVec::new(),
         }
     }
@@ -3310,17 +3389,17 @@ impl KnowledgeBase {
         // no operation), and a bare antecedent heads as `Ident`, which
         // `ViewHead::functor_sym` does not answer for. A shape match found NOTHING —
         // measured on `t4_assumption_does_not_leak_to_next_body_goal`.
-        if let Some((functor, 3)) = self.goal_head_sym_arity(goal) {
-            if self.local_name_of(functor) == "forall_impl" {
-                let args = self.positional_children(goal, Self::unspanned());
-                if let Some((antecedents, ante_span)) = args.get(1) {
-                    for (antecedent, _) in self.tuple_goal_children(antecedents, *ante_span) {
-                        if let Some((sym, _)) = self.goal_head_sym_arity(&antecedent) {
-                            if !out.contains(&sym) {
-                                out.push(sym);
-                            }
-                        }
-                    }
+        //
+        // WI-1058: WHICH slot holds the antecedents comes from [`Self::goal_slot_readings`],
+        // not from a `local_name_of(f) == "forall_impl"` test written here. That test was
+        // the second hand-written copy of the discharge's slot layout, and the table this
+        // now reads is the one the other copies already share.
+        for (antecedent, _) in
+            self.goal_children_with_reading(goal, Self::unspanned(), SlotReading::Assumed)
+        {
+            if let Some((sym, _)) = self.goal_head_sym_arity(&antecedent) {
+                if !out.contains(&sym) {
+                    out.push(sym);
                 }
             }
         }
@@ -3388,10 +3467,24 @@ impl KnowledgeBase {
     /// defect of the LOWERING, of exactly WI-1034's class and outside its reach —
     /// **WI-1046**.)
     fn body_goal_children(&self, goal: &crate::eval::Value, span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
+        self.goal_children_with_reading(goal, span, SlotReading::Proved)
+    }
+
+    /// WI-1058 — [`Self::body_goal_children`] generalised over WHICH
+    /// [`SlotReading`] is wanted: `Proved` for the walks that refuse or descend,
+    /// `Assumed` for [`Self::assumed_body_functors`]'s hypothesis collection. One
+    /// walk rather than two, so the `tuple(…)` unwrapping and the span fallback
+    /// cannot drift between the readings.
+    fn goal_children_with_reading(
+        &self,
+        goal: &crate::eval::Value,
+        span: SourceSpan,
+        reading: SlotReading,
+    ) -> Vec<(crate::eval::Value, SourceSpan)> {
         let Some((functor, arity)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
         let args = self.positional_children(goal, span);
         let mut out = Vec::new();
-        for slot in self.goal_arg_slots(functor, arity) {
+        for slot in self.goal_slot_readings(functor, arity).into_iter().filter(|s| s.reading == reading) {
             let Some(child) = args.get(slot.index) else { continue };
             if slot.tuple_wrapped {
                 // Unwrapped HERE, so the wrapper never reaches the head test — its own

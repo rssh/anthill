@@ -182,6 +182,40 @@ pub(super) fn equation_clause_census(kb: &KnowledgeBase, functor: Symbol) -> Cla
     census
 }
 
+/// WI-1058 — the LHS SHAPE (positional arity + named-argument labels) of every live
+/// equation defining `functor`, or `None` if any of them has a shape this cannot read.
+///
+/// The equation half of "could any clause of this name ever match this term". A `[simp]`
+/// redex fires by MATCHING the stored LHS, so a call at an arity no LHS has can never
+/// fire — the silent inertness [`ClauseCensus`] can only describe after the fact. The
+/// `None` is the same honesty [`crate::kb::typing`]'s clause-head reader keeps: the
+/// caller refuses only on a PROOF that nothing matches, and an unreadable head is not one.
+///
+/// Counts TAGGED AND UNTAGGED equations alike, for the census's own reason: an untagged
+/// clause is inert, not absent, and its shape is still a shape this call could have been
+/// written against. (`ClauseCensus` is what tells the two apart when the shape DOES
+/// match.) Labels are returned unsorted-by-nothing — the caller canonicalises.
+pub(super) fn equation_lhs_shapes(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+) -> Option<Vec<(usize, Vec<Symbol>)>> {
+    let mut out: Vec<(usize, Vec<Symbol>)> = Vec::new();
+    for rid in kb.live_rule_ids_iter() {
+        if !kb.is_equation(rid) || stored_lhs_functor(kb, rid) != Some(functor) {
+            continue;
+        }
+        let head = kb.fact_head_term(rid)?;
+        let Term::Fn { pos_args, .. } = kb.get_term(head) else { return None };
+        let lhs = *pos_args.first()?;
+        let Term::Fn { pos_args, named_args, .. } = kb.get_term(lhs) else { return None };
+        let shape = (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect());
+        if !out.contains(&shape) {
+            out.push(shape);
+        }
+    }
+    Some(out)
+}
+
 /// [`equation_clause_census`]'s answer. `pub` because `TypeError` — public API —
 /// carries one on its WI-898 variant; the *taking* of a census stays `pub(super)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

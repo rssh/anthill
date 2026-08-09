@@ -1110,3 +1110,6 @@ mod wi1049_duplicate_operation_declaration_test;
 // never and run never, silently.
 #[path = "include/include_registration_test.rs"]
 mod include_registration_test;
+
+#[path = "include/wi1058_rule_body_position_test.rs"]
+mod wi1058_rule_body_position_test;

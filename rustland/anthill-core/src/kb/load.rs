@@ -274,6 +274,18 @@ pub enum LoadError {
         /// span, and a synthesized one carries its origin's.
         span: Span,
     },
+    /// WI-1058 — the ARGUMENT-position twin of [`Self::UndefinedRuleBodyGoal`] (WI-895's
+    /// remaining half): a COMPOUND TERM in a rule body's DATA slot whose functor names
+    /// nothing. Raised by the typer's rule-body walk rather than by the loader's goal
+    /// walk, because only that walk knows the POSITION — a rule body's non-data slots (a
+    /// discharge's binder tuple, a binding pattern, the interior of a type) each hold
+    /// terms whose functors the KB deliberately declares nothing under.
+    UndefinedRuleBodyTerm {
+        /// The term's functor, qualified.
+        functor: String,
+        /// Where the term is written.
+        span: Span,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -1326,6 +1338,7 @@ impl LoadError {
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
+            | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::BooleanOperatorInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -1483,6 +1496,9 @@ impl LoadError {
                      Strengthen `provides {spec}[…] :- …` to a condition that implies \
                      `{unentailed}`, or weaken `provides {required}[…] :- …`."
                 )
+            }
+            LoadError::UndefinedRuleBodyTerm { functor, span } => {
+                format!("{}: {}", loc.format_start(*span), undefined_rule_body_term_message(functor))
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!("{}: {}", loc.format_start(*span), undefined_rule_body_goal_message(functor))
@@ -1923,6 +1939,9 @@ impl std::fmt::Display for LoadError {
                 // both faces — the located `format_with_source` above and this
                 // span-less `Display` — so the two cannot drift into two wordings.
                 write!(f, "{} at {}..{}", undefined_rule_body_goal_message(functor), span.start, span.end)
+            }
+            LoadError::UndefinedRuleBodyTerm { functor, span } => {
+                write!(f, "{} at {}..{}", undefined_rule_body_term_message(functor), span.start, span.end)
             }
             LoadError::BooleanOperatorInGoalPosition { operator, span } => {
                 write!(f, "{} at {}..{}", boolean_operator_in_goal_message(operator), span.start, span.end)
@@ -4996,6 +5015,22 @@ fn undefined_rule_body_goal_message(functor: &str) -> String {
         "rule-body goal `{functor}` names nothing: no rule, fact, operation, entity, \
          const or builtin is declared under that name, so this goal can NEVER match and \
          the rule it is written in can never fire. Fix the spelling, or import the \
+         namespace that declares `{functor}`."
+    )
+}
+
+/// WI-1058 — the ONE wording of [`LoadError::UndefinedRuleBodyTerm`], the ARGUMENT-position
+/// twin of [`undefined_rule_body_goal_message`] (WI-895's remaining half). Same head test
+/// ([`KnowledgeBase::undefined_functor`]), different CONSEQUENCE, so a different sentence:
+/// a data slot is not proved, so nothing "can never match" about it as a goal — what it
+/// can never do is unify with a declared constructor's term, or fire as a `[simp]` redex.
+/// That second clause is the measured harm: `holds894(ite(true, 10, 20))` with `ite`
+/// un-imported interns bare and is silently inert (WI-894).
+pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
+    format!(
+        "rule-body term `{functor}` names nothing: no rule, fact, operation, entity, \
+         const or builtin is declared under that name, so nothing can ever unify with it \
+         and no `[simp]` rule can ever rewrite it. Fix the spelling, or import the \
          namespace that declares `{functor}`."
     )
 }

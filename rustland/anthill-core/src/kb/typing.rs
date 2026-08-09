@@ -69,6 +69,17 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// WI-1058 — a compound term in a RULE BODY'S DATA slot whose functor names nothing.
+    /// The argument-position half of WI-895, and a DIFFERENT claim from
+    /// [`Self::UnknownApplyFunctor`]: a data slot is not a call site, so "expected a
+    /// known operation" would be advice about the wrong thing. What is wrong is that the
+    /// name resolves to no declaration at all, so the term can never match and the redex
+    /// can never fire. Its goal-position twin is `LoadError::UndefinedRuleBodyGoal`, and
+    /// the two share one head test (`KnowledgeBase::undefined_functor`).
+    UndefinedDataFunctor {
+        span: Option<Span>,
+        name: Symbol,
+    },
     /// WI-565: the refinement of [`TypeError::UnknownApplyFunctor`] for the specific case
     /// where the unresolved bare functor IS the short name of a MEMBER operation
     /// of one or more sorts (`owning_sorts`). A member's bare name is in scope
@@ -655,6 +666,9 @@ impl TypeError {
             TypeError::UnknownApplyFunctor { name, .. } => {
                 format!("unknown apply functor: {}", kb.local_name_of(*name))
             }
+            TypeError::UndefinedDataFunctor { name, .. } => {
+                crate::kb::load::undefined_rule_body_term_message(kb.qualified_name_of(*name))
+            }
             TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
                 let sort_names: Vec<String> =
                     owning_sorts.iter().map(|s| kb.local_name_of(*s).to_string()).collect();
@@ -916,6 +930,7 @@ impl TypeError {
             | TypeError::UnresolvedName { span, .. }
             | TypeError::NoConstructor { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
+            | TypeError::UndefinedDataFunctor { span, .. }
             | TypeError::BareMemberCall { span, .. }
             | TypeError::UnreducedEquationFunctor { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
@@ -1019,6 +1034,10 @@ impl TypeError {
                 expected_type: "known operation or arrow-typed variable".to_string(),
                 actual_type: "unknown functor".to_string(),
                 span: self.span(kb),
+            },
+            TypeError::UndefinedDataFunctor { name, .. } => LoadError::UndefinedRuleBodyTerm {
+                functor: kb.qualified_name_of(*name).to_string(),
+                span: self.span(kb).unwrap_or_else(|| crate::span::Span::new(0, 0)),
             },
             TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
                 LoadError::BareMemberCall {
@@ -41892,6 +41911,8 @@ fn type_rule_bodies(
             _ => continue,
         };
         let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // WI-1058 — the rule whose TEXT a checked-not-typed refusal points at.
+        let rule_sym = kb.head_functor(head);
         // The one collection per rule: head + body var types + whether they unify.
         // Shared by the contradiction report, the dot env, and the stamp.
         let (var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
@@ -41959,7 +41980,11 @@ fn type_rule_bodies(
                     // synthesized atom keeps its origin's span), and the point of
                     // the tag is that the path names where the author must look.
                     let before = errors.len();
-                    let rewritten = dispatch_calls_in_occ(kb, &env, n, errors);
+                    // WI-1058: a rule's top-level body atoms ARE its goals — the seed of
+                    // the position walk.
+                    let rewritten = dispatch_calls_in_occ(
+                        kb, &env, n, BodyPos::Goal(GoalCommit::Top), rule_sym, errors,
+                    );
                     debug_assert_eq!(
                         sources.len(),
                         before,
@@ -43699,28 +43724,33 @@ fn align_call_args_to_params(
 ///     unreported: an untyped rule-head variable as a dot receiver
 ///     ([`undecidable_by_this_typer`]).
 ///
-/// STILL NARROWED at the general `Expr::Apply`, deliberately, and this is the clause a
-/// reader is most likely to drop. A rule-body call that is neither a dot nor a spec op is
-/// still not typed at all. It is not the same size of question, and that is MEASURED, not
-/// assumed: with this walk's gate widened to every `Expr::Apply`, a stdlib + host-bindings
-/// load alone reports **468** errors (173 distinct), against **2** for the body-less shape.
-/// They are not a backlog of small mistakes — they are two whole readings the typer does
-/// not yet have. A rule NAME applied to arguments is a relational SUBGOAL, not a value
-/// (`check_apply_iter`'s WI-714 arm is gated `!in_rule_body` for exactly that reason, so
-/// every such subgoal falls through to `UnknownApplyFunctor`); and a `?P(…)` / reflect
-/// argument reaches `List[T = Term]` positions the walk types structurally. Both must be
-/// answered before the gate can widen. **OWNED BY WI-1058.**
+/// WI-1058 WIDENED IT to every `Expr::Apply`, and what made that possible is not more
+/// readings but ONE distinction: the walk now knows whether a node is a GOAL or DATA
+/// ([`BodyPos`]), so a functor can answer differently in the two positions it is written
+/// in. See [`call_dispatch_shape`] for the goal-position ladder,
+/// [`data_functor_error`] for why a data slot is NOT type-checked (three measured
+/// reasons — lost expectation, lost scope, and a rewrite that changes what the rule
+/// means), and `wi1058_rule_body_position_test` for the corrected measurement: the
+/// narrowing's own note predicted "two whole readings" split ~220/~150, and the retaken
+/// count is 28 subgoals against 295 reports from ONE producer, the loader's synthesized
+/// `<Sort>.induction`.
 fn dispatch_calls_in_occ(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
+    pos: BodyPos,
+    // WI-1058 — the ENCLOSING rule's head functor, for the two checks that report about a
+    // node rather than about a call: the message must name the rule whose TEXT the author
+    // has to edit, not the callee it names (review-found — every other rule-body site in
+    // this file passes the enclosing symbol). `None` only if the head carries no functor.
+    rule_sym: Option<Symbol>,
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
     // ONE predicate for the shapes this walk decides, shared with the pre-scan
     // ([`occ_needs_call_dispatch`]) so a shape walked but not acted on, or acted on
     // but not walked, is impossible. It answers WHICH shape, because the error tail
     // below is not the same for all three (WI-1043).
-    let shape = occ.as_expr().and_then(|e| call_dispatch_shape(kb, e));
+    let shape = occ.as_expr().and_then(|e| call_dispatch_shape(kb, e, pos));
     // WI-1043 — a BODY-LESS spec-op call is walked INTO as well as decided, so every
     // node beneath it keeps the decision and the error policy it had before this
     // ticket; the shape was admitted for a DISPATCH VERDICT, not to take the subtree
@@ -43741,20 +43771,45 @@ fn dispatch_calls_in_occ(
     // descendant of THIS node already say it", so the tail is exactly its domain.
     let mark = errors.len();
     let walked = match (shape, occ.as_expr()) {
+        // WI-1058 — an UNTYPED position is left entirely alone, subtree included: a
+        // discharge's binder tuple `tuple(?f₁, …, ?fₙ)`, and the interior of a type
+        // written in a rule body. Neither is a value, so neither is walked — the wrapper
+        // is never read as a call on a functor that names nothing, and a type's sort-name
+        // leaves are never read as unresolved values.
+        (_, _) if pos == BodyPos::Untyped => Rc::clone(occ),
         (Some(CallDispatch::Checked), _) | (_, None) => Rc::clone(occ),
         (_, Some(expr)) => {
             // Collect child clones first so the immutable borrow on `occ` ends
             // before the mutable-`kb` recursion below.
             let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
             for_each_child(expr, |c| children.push(Rc::clone(c)));
+            let child_pos = child_body_positions(kb, expr, pos, children.len());
             let new_children: Vec<Rc<NodeOccurrence>> = children
                 .iter()
-                .map(|c| dispatch_calls_in_occ(kb, env, c, errors))
+                .zip(child_pos)
+                .map(|(c, p)| dispatch_calls_in_occ(kb, env, c, p, rule_sym, errors))
                 .collect();
             super::simp_rewrite::reassemble(occ, &new_children)
         }
     };
     let Some(shape) = shape else { return walked };
+    // WI-1058 — a SUBGOAL is not a call and has no signature: it is an atom the
+    // resolver proves against the clauses its functor heads. Nothing to dispatch, so
+    // it never reaches `type_check_node`; what it gets is the check `check_apply_iter`
+    // cannot make, which is whether any of those clauses could match it at all.
+    let checked_not_typed = match shape {
+        CallDispatch::Subgoal => Some(subgoal_shape_error(kb, &walked, rule_sym)),
+        CallDispatch::DataTerm => Some(data_functor_error(kb, &walked, rule_sym)),
+        _ => None,
+    };
+    if let Some(found) = checked_not_typed {
+        if let Some(e) = found {
+            if !already_reported(kb, &errors[mark..], &e) {
+                errors.push(e);
+            }
+        }
+        return walked;
+    }
     // Everything below reads `walked`, never the parameter: for the recursing shape the
     // children may have been rewritten, and both the type-check and the node this returns
     // must see that tree. It is the same `Rc` for the two non-recursing shapes.
@@ -43762,7 +43817,15 @@ fn dispatch_calls_in_occ(
         // `result.node` is the dispatched tree (method `Apply` / reflect
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
         // the same form an op body's call rewrites to.
-        Ok(result) => result.node,
+        //
+        // WI-1058 — …for the two DISPATCH shapes only. `Call` was admitted to CHECK a
+        // fact pattern's fields, not to rewrite it, and `result.node` is redex-free: a
+        // goal `V1(v: ite(true, 10, 20))` would be stored as `V1(v: 10)` AT LOAD, which
+        // is reason 3 of the three at [`data_functor_error`] — a check that changes what
+        // a rule MEANS is not a check. It still returns `walked`, so a dot its children
+        // dispatched is kept. Review-found.
+        Ok(result) if shape != CallDispatch::Call => result.node,
+        Ok(_) => walked,
         // Every failure is a REAL error — surface it, never a silent skip
         // (project principle: loud over silent; the `Err(_) => Rc::clone(occ)`
         // catch-all this replaced masked genuine errors — a member-not-found on
@@ -43792,7 +43855,13 @@ fn dispatch_calls_in_occ(
                 // shape reports what type-checking actually found. LEAF BY LEAF rather
                 // than as one `Multiple`: this frame types a WHOLE ATOM whose parts were
                 // decided separately, so the aggregate is not one call's diagnostic.
-                CallDispatch::BodyLessSpecOp => {
+                //
+                // WI-1058 — `Call` shares this arm, and shares it because it shares the
+                // reason: it too recurses first (so a descendant may already have
+                // reported the same leaf) and it too types a whole node whose parts were
+                // decided separately. One arm rather than two identical ones, so a change
+                // to the policy cannot reach one shape and miss the other.
+                CallDispatch::BodyLessSpecOp | CallDispatch::Call => {
                     for leaf in e.flatten() {
                         if undecidable_by_this_typer(&leaf)
                             || already_reported(kb, &errors[mark..], &leaf)
@@ -43802,10 +43871,234 @@ fn dispatch_calls_in_occ(
                         errors.push(leaf);
                     }
                 }
+                // Returned early above — neither reaches `type_check_node`.
+                CallDispatch::Subgoal | CallDispatch::DataTerm => {
+                    unreachable!("a checked-not-typed shape is decided before this match")
+                }
             }
             walked
         }
     }
+}
+
+/// WI-1058 — WHERE in a rule body a node sits, which decides HOW it is read. The
+/// distinction the typer lacked until this ticket, and the whole of what made the
+/// general `Expr::Apply` unwidenable: **one name answers two questions depending on the
+/// position it is written in**, and a walk that cannot tell the positions apart must
+/// take one reading for both.
+///
+/// The live case is `anthill.reflect.Expr.ho_apply`. In a rule body it is the
+/// higher-order-application BUILTIN (`BuiltinTag::HoApply`, variadic: a predicate and
+/// the arguments to apply it to) — the form the loader's synthesized `<Sort>.induction`
+/// is written in, and the form `SearchStream::lower_ho_apply` reads. As a VALUE it is
+/// the reflect IR entity `ho_apply(predicate: Term, args: List[Term], type_args: …)`,
+/// the node an operation body's `?P(a, b)` reflects to. Typing the goal against the
+/// entity checks the applied argument against `List[T = Term]` and refuses it: 271 of
+/// the 323 reports a position-blind widening produced, all from one producer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BodyPos {
+    /// A goal the resolver proves or assumes — a rule's top-level body atom, and the
+    /// `Proved` / `Assumed` slots of a connective beneath it. The [`GoalCommit`] says
+    /// whether a DEAD goal here is a defect worth refusing.
+    Goal(GoalCommit),
+    /// A `tuple(…)` CONJUNCTION WRAPPER slot: the node here is the wrapper, and its
+    /// positional children are the goals. A node in this position that is NOT a `tuple`
+    /// is a single goal — the same defensive reading `KnowledgeBase::tuple_goal_children`
+    /// takes, since the loader wraps every such body.
+    ///
+    /// A position rather than a name test at the node, and that is WI-1046's rule: a
+    /// USER predicate locally named `tuple` is recognised as a wrapper only where the
+    /// slot table put one, never by its spelling.
+    GoalTuple(GoalCommit),
+    /// Data — a goal's argument, and everything beneath it.
+    Value,
+    /// A term this typer does not type, and does not walk into. TWO producers, listed
+    /// because the position is only as trustworthy as the list is complete:
+    ///
+    ///   * the variables a quantifier / discharge scopes ([`SlotReading::Binders`]) —
+    ///     `forall_impl`'s `tuple(?f₁, …, ?fₙ)`;
+    ///   * everything inside a TYPE written in a rule body
+    ///     ([`rule_body_type_term`]) — `PartialEq[T = ?t]`, `List[T = ?x]`, `(?a ->
+    ///     ?b)`. A type is a term (this repo's representation note), its leaves are
+    ///     type names rather than values, and it is checked where it is BUILT
+    ///     (`check_sort_type_args`, WI-710) rather than here.
+    Untyped,
+}
+
+/// WI-1058 — is a DEAD goal at this position a defect this walk refuses, or one it leaves
+/// to resolution?
+///
+/// The question is WI-863's and the answer is WI-1034's, re-asked here because the two
+/// checks must not disagree about one position. `KnowledgeBase::undefined_rule_body_goals`
+/// REFUSES a goal that names nothing at the body's top level and anywhere inside a `not`,
+/// and TOLERATES one in a bare `or` / `push_choice` branch, in a bounded-quantifier body,
+/// and anywhere inside a hereditary-Harrop discharge — each for a reason that transfers
+/// verbatim to a goal that no clause can match by SHAPE:
+///
+///   * a bare disjunction branch or a quantifier body may never need to answer, so a dead
+///     one costs nothing and refusing it rejects a valid program;
+///   * a discharge's antecedents DECLARE the predicates its consequent proves, so a
+///     hypothesis has no clause anywhere and its shape is whatever the discharge says.
+///
+/// MEASURED, both of them, in review: without this, `(forall(?p), prop(?p) -: prop(?p))`
+/// beside a `fact prop(1, 2)` was refused TWICE — a program §5.3 legislates — and
+/// `(q(?a) | q(?a, ?a))` was refused while `(q(?a) | absent(?a))` loaded, two dead
+/// branches decided oppositely by two checks.
+///
+/// The walk still DESCENDS everywhere (a dot inside a tolerated branch must still
+/// dispatch, and a data slot there must still be name-checked); what this gates is the
+/// subgoal SHAPE check alone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GoalCommit {
+    /// A rule's own top-level body atom. Checked — and its goal children are NOT, unless
+    /// it is a `not` (WI-863's descent rule exactly).
+    Top,
+    /// Reached through a `not`, or through a connective already inside one. Checked, and
+    /// so are its goal children.
+    UnderNot,
+    /// Reached through a bare `or` / `push_choice` / quantifier, or through a discharge.
+    /// Walked, never shape-checked.
+    Tolerated,
+}
+
+impl GoalCommit {
+    /// Is a goal at this position one whose deadness this walk refuses?
+    fn checked(self) -> bool {
+        matches!(self, GoalCommit::Top | GoalCommit::UnderNot)
+    }
+
+    /// The commitment a GOAL CHILD of a node at `self` inherits, given what that node is.
+    /// WI-1034's `collect_undefined_body_goals` gate, verbatim: a `not` opens the scope,
+    /// a discharge closes it, and a bare connective leaves its branches to resolution.
+    fn child(self, is_not: bool, is_discharge: bool) -> Self {
+        if is_discharge {
+            return GoalCommit::Tolerated;
+        }
+        if self == GoalCommit::UnderNot || is_not {
+            GoalCommit::UnderNot
+        } else {
+            GoalCommit::Tolerated
+        }
+    }
+}
+
+/// WI-1058 — the [`BodyPos`] of each child of `expr`, parallel to
+/// [`for_each_child`]'s order, for a node itself reached at `pos`.
+///
+/// Everything is `Value` unless the node is a GOAL-position application that the ONE
+/// slot table ([`KnowledgeBase::goal_slot_readings`]) answers for — which is what keeps
+/// a data constructor's fields, and every argument of an ordinary subgoal, out of goal
+/// position. Read from that table rather than written here, so the typer is not a fourth
+/// hand-written copy of "which arguments are goals" (WI-1034/WI-1046).
+fn child_body_positions(
+    kb: &KnowledgeBase,
+    expr: &Expr,
+    pos: BodyPos,
+    n_children: usize,
+) -> SmallVec<[BodyPos; 8]> {
+    // A TYPE's interior is a type: its "arguments" are type arguments and its leaves are
+    // sort names, neither of which has a value reading. Asked before the slot table so a
+    // sort that happens to share a connective's short name cannot open a goal position
+    // inside a type.
+    if pos == BodyPos::Untyped || rule_body_type_term(kb, expr) {
+        return smallvec::smallvec![BodyPos::Untyped; n_children];
+    }
+    let mut out: SmallVec<[BodyPos; 8]> = smallvec::smallvec![BodyPos::Value; n_children];
+    // A BINDER'S PATTERN is not data. In an operation body these arrive as Pattern-kind
+    // occurrences, which `as_expr` answers `None` for and the walk already skips; a RULE
+    // body is materialized from a term, so the same pattern arrives as a structural
+    // `Expr::Apply` on the parse-level meta-functor (`pattern_var`, `pattern_wildcard`,
+    // …) — names the KB declares nothing under, by design. MEASURED on `rule all_pos(?xs)
+    // :- all_match(?xs, lambda (x) -> is_pos(x))`, which reported `pattern_var` as an
+    // unknown functor (`wi620_paren_lambda_param_test`).
+    for i in pattern_child_indices(expr) {
+        if let Some(p) = out.get_mut(i) {
+            *p = BodyPos::Untyped;
+        }
+    }
+    let (Expr::Apply { functor, pos_args, .. }, BodyPos::Goal(commit) | BodyPos::GoalTuple(commit)) =
+        (expr, pos)
+    else {
+        return out;
+    };
+    // The wrapper: its positional children ARE the conjuncts, at the wrapper's own
+    // commitment (a `tuple` is a punctuation node, not a connective that changes what a
+    // dead goal costs). Asked only here, where the slot table said a wrapper belongs.
+    if matches!(pos, BodyPos::GoalTuple(_)) && kb.local_name_of(*functor) == "tuple" {
+        for p in out.iter_mut().take(pos_args.len()) {
+            *p = BodyPos::Goal(commit);
+        }
+        return out;
+    }
+    // WI-1034's descent gate, re-asked per child (see [`GoalCommit::child`]).
+    let child_commit = commit.child(
+        kb.builtin_of(*functor) == Some(crate::kb::resolve::BuiltinTag::Not),
+        kb.local_name_of(*functor) == "forall_impl",
+    );
+    // `for_each_child` yields `pos_args` first, so a slot index is a child index.
+    for slot in kb.goal_slot_readings(*functor, pos_args.len()) {
+        let Some(p) = out.get_mut(slot.index) else { continue };
+        *p = match (slot.reading, slot.tuple_wrapped) {
+            (crate::kb::SlotReading::Binders, _) => BodyPos::Untyped,
+            (_, true) => BodyPos::GoalTuple(child_commit),
+            (_, false) => BodyPos::Goal(child_commit),
+        };
+    }
+    out
+}
+
+/// WI-1058 — the child indices of `expr` (in [`for_each_child`] order) that hold a
+/// binding PATTERN rather than a value. Kept beside `for_each_child`'s arms in spirit:
+/// every constructor that binds is listed, so a new binder form is a visible omission
+/// here rather than a silent mis-typing of its pattern.
+fn pattern_child_indices(expr: &Expr) -> SmallVec<[usize; 4]> {
+    let mut out = SmallVec::new();
+    match expr {
+        // `f(pattern)` / `f(pattern, body)` — the pattern is child 0. `LambdaWithin` is
+        // the requirement-carrying form of the same binder (WI-222/WI-237) and binds
+        // identically; review-found, and the reason this list is written out rather than
+        // derived is that a missing row is silent.
+        Expr::Lambda { .. } | Expr::Let { .. } | Expr::LambdaWithin { .. } => out.push(0),
+        // `scrutinee`, then per branch: pattern, body, and a guard when present.
+        Expr::Match { branches, .. } => {
+            let mut i = 1;
+            for b in branches.iter() {
+                out.push(i);
+                i += 2 + usize::from(b.guard.is_some());
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// WI-1058 — is this rule-body node an ARROW TYPE, whose interior is type-land?
+///
+/// A rule body's argument slots hold TERMS, and in this language a type IS a term with
+/// logical variables in it — `?t <=> (?a -> ?b)`, `?t <=> (Int64 -> Int64 @ {})`. The
+/// arrow family ([`crate::parse::pratt::is_arrow_functor`], the ONE owner of "which
+/// spellings `->`/`@` mint") is minted by the pratt desugar and declared NOWHERE, so the
+/// data-slot name check ([`data_functor_error`]) would report every arrow type as a name
+/// that resolves to nothing. Its interior is types too — sort names, type variables,
+/// effect rows — so the whole subtree is [`BodyPos::Untyped`].
+///
+/// **NARROW ON PURPOSE, and the first cut was not.** It also answered `true` for any
+/// `has_kind(Sort)` functor, to keep a parameterized type application (`Holder[T =
+/// Int64]`) out of the walk. That was a real requirement of an earlier design — one that
+/// TYPE-CHECKED a data slot — and it survived into a design that does not, where it was
+/// no longer paying for anything and was silently WIDE: an eponymous `sort E { entity
+/// E(…) }` and a free-standing `entity E(…)` both carry `Sort` (WI-926), so every
+/// constructor written in a data slot switched the walk off for its whole subtree.
+/// MEASURED by driving the two spellings side by side: `here1(V1(v: bogusA(?x)))` was
+/// refused and `here1(K1(v: bogusB(?x)))` — differing only in that `K1` is free-standing
+/// — loaded clean, and a `?p.bogusmember()` dot inside one stopped being dispatched at
+/// all. Found in review; the sort reading it was standing in for now lives where it
+/// belongs, as a GOAL-position rung in [`call_dispatch_shape`] (an instance CLAIM is not
+/// a subgoal), and a sort-headed term in a data slot is an ordinary
+/// [`CallDispatch::DataTerm`] whose functor resolves.
+fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
+    let Expr::Apply { functor, .. } = expr else { return false };
+    crate::parse::pratt::is_arrow_functor(kb.local_name_of(*functor))
 }
 
 /// WI-282 / WI-1056 — the deliberately-tolerated failures, asked at both places
@@ -43856,12 +44149,14 @@ fn dispatch_calls_in_occ(
 /// no type.
 ///
 /// WHAT IT DOES NOT CHECK, stated rather than left to be discovered: nothing about the
-/// call itself survives, ARITY INCLUDED — `rule r(?x, ?r) :- ?r = ite(?x)` loads clean
-/// against a three-argument functor. The `[simp]` clause census is taken at the raise site
-/// and carries counts, not arities, so even that would need a new walk. Deriving a type
-/// (and an arity) from a functor's `[simp]` clauses is the reading that would retire this
-/// exemption; **WI-1058** owns it, together with the other rule-body readings the typer
-/// lacks.
+/// call's TYPE survives. WI-1058 took the ARITY half, which this paragraph used to
+/// concede as well ("`rule r(?x, ?r) :- ?r = ite(?x)` loads clean against a three-argument
+/// functor") — a `[simp]` rewrite fires by MATCHING a stored LHS, so a redex at an arity
+/// no LHS has can never fire, and [`data_functor_error`] refuses it through the same
+/// `unmatchable_shape_error` the subgoal check uses. What is still not derived is the
+/// TYPE: the enclosing `=` goal's right-hand side stays unknown, which is why this
+/// exemption stands and why the atom around it is still not decided. Deriving a type from
+/// a functor's `[simp]` clauses is what would retire it, and no ticket owns that yet.
 fn undecidable_by_this_typer(e: &TypeError) -> bool {
     matches!(
         e,
@@ -43904,9 +44199,10 @@ fn already_reported(kb: &KnowledgeBase, reported_beneath: &[TypeError], leaf: &T
 }
 
 /// WI-1043 — WHICH shape [`dispatch_calls_in_occ`] is deciding: it governs whether the
-/// walk RECURSES into the node before deciding it, and how a failure is reported. Three
-/// surface shapes reach the same `type_check_node` call; two of them have been reaching it
-/// since WI-282 / WI-1026 and the third was admitted by WI-1043.
+/// walk RECURSES into the node before deciding it, whether it is type-checked at all, and
+/// how a failure is reported. Three surface shapes reach `type_check_node`; two of them
+/// have been reaching it since WI-282 / WI-1026 and the third was admitted by WI-1043. The
+/// two WI-1058 added do NOT reach it — they are CHECKED, not typed.
 ///
 /// WI-1056 retired the third distinction this carried — `reports_every_failure`, WI-1043's
 /// narrowing to the two 058 TIES of the deciding call. That clause was what let WI-1043
@@ -43921,6 +44217,10 @@ fn already_reported(kb: &KnowledgeBase, reported_beneath: &[TypeError], leaf: &T
 /// that loaded and ran. WI-1056 decided all of them — see [`dispatch_calls_in_occ`]'s doc
 /// for the three defects that had to be FIXED and the one exemption that stands — so the
 /// narrowing has nothing left to withhold and the shape now reports what it finds.
+///
+/// WI-1058 added the last two, and with them the widening this enum's comment had been
+/// promising since WI-1043: every `Expr::Apply` a rule body carries is now decided, as
+/// a `Call` where it is DATA and as a `Subgoal` where it is a GOAL.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CallDispatch {
     /// An `Expr::DotApply` (WI-282) or a direct call on a DEFAULTED spec op (WI-1026).
@@ -43929,6 +44229,21 @@ enum CallDispatch {
     /// WI-1043 — a direct call on a BODY-LESS spec op. RECURSES first (see
     /// [`dispatch_calls_in_occ`]), then decides the whole atom.
     BodyLessSpecOp,
+    /// WI-1058 — a FACT PATTERN at goal position: an entity-headed atom, whose shape is
+    /// the entity's DECLARED field schema. Same policy as [`Self::BodyLessSpecOp`]:
+    /// recurse, then type the node, reporting leaf by leaf.
+    Call,
+    /// WI-1058 — a GOAL whose functor heads clauses: an atom the resolver PROVES, not a
+    /// call to type. Recurses into its arguments, then asks the one question a
+    /// signature-directed check cannot: could any of those clauses match this atom at
+    /// all ([`subgoal_shape_error`])? Never reaches `type_check_node` — a subgoal has no
+    /// signature, and inventing one is what made every subgoal in the corpus die as
+    /// `UnknownApplyFunctor`.
+    Subgoal,
+    /// WI-1058 — a compound term in a DATA slot. Checked for ONE thing, that its functor
+    /// NAMES something ([`data_functor_error`]); never type-checked, for three measured
+    /// reasons stated at [`call_dispatch_shape`].
+    DataTerm,
 }
 
 /// WI-282 / WI-1026 / WI-1043: is THIS node a call [`dispatch_calls_in_occ`] must decide
@@ -43993,7 +44308,56 @@ enum CallDispatch {
 /// and `builtin_cmp` fails silently on operands it cannot compare. Classifying it does
 /// not help; **WI-879 owns it**, and its acceptance is exactly that such a comparison
 /// "either answers correctly or raises, never silently fails".
-fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr) -> Option<CallDispatch> {
+///
+/// # WI-1058 — the general `Expr::Apply`, and the POSITION that decides how to read it
+///
+/// The narrowing this function carried since WI-282 is gone, and what replaces it is
+/// not "admit everything": it is that the walk now knows whether a node is a GOAL or
+/// DATA ([`BodyPos`]), so one functor can answer differently in the two places it is
+/// written. In a DATA position every application is a `Call` — that is the widening,
+/// and it is what refuses a nested `p(bogus(?x))` whose functor names nothing (the
+/// population WI-1034's goal walk does not reach, since it never descends into data).
+/// In a GOAL position the ladder is four rungs, in this order and for these reasons:
+///
+///   1. **A CONNECTIVE is not a call.** `not` / `or` / `push_choice` / the scoping
+///      markers, and the `tuple(…)` wrapper of a quantifier body — recognised by the
+///      ONE slot table ([`KnowledgeBase::goal_slot_readings`]), never by spelling.
+///      Their goal children are walked as goals; there is nothing at the node itself to
+///      type.
+///   2. **A SPEC OP keeps its two shapes**, unchanged — the `=` goal and the arithmetic
+///      that most of a rule body is made of (WI-1026 / WI-1043 / WI-1056).
+///   3. **A BUILTIN with no operation record is the BUILTIN**, whose arguments are goal
+///      terms. One symbol is in this class and it is why the widening was blocked:
+///      `anthill.reflect.Expr.ho_apply` is registered as `BuiltinTag::HoApply` *and*
+///      declared as the reflect IR entity `ho_apply(predicate: Term, args: List[Term],
+///      …)`. Read as the entity, `ho_apply(?P, Vec3(…))` checks a `Vec3` against
+///      `List[T = Term]` and is refused. MEASURED (2026-08-09, stdlib + host bindings):
+///      **271 of 323** reports a position-blind widening produced were this, every one
+///      from ONE producer — the loader's synthesized `<Sort>.induction`
+///      (`Loader::emit_induction_rule`), whose body is `ho_apply(?P, ctor(…))` by
+///      construction. This clause is the exact twin of `check_apply_iter`'s WI-1056
+///      rule-body arm, narrowed the same way and for the same reason: `SymbolKind` is a
+///      SET, so an operation reading, if the symbol has one, WINS.
+///   4. **Otherwise a `Subgoal`** — unless the functor carries a DECLARATION the typer
+///      can check it against. An ENTITY-headed goal is a fact pattern whose shape comes
+///      from the declared field schema (`check_constructor_iter`, which admits the
+///      partial named-arg form the loader fresh-fills), and an OPERATION named as a goal
+///      has a signature; both stay `Call`. Everything else is an atom the resolver
+///      proves, checked against its own clauses ([`subgoal_shape_error`]).
+///
+/// **A GOAL IS NEVER REFUSED HERE FOR NAMING NOTHING**, and that is a division of
+/// labour, not an omission. `subgoal_shape_error` says nothing when the functor heads no
+/// clause, because absence in goal position is [`KnowledgeBase::undefined_rule_body_goals`]'s
+/// (WI-1034) — and it is the only one of the two that holds the exemption a HYPOTHESIS
+/// needs. A discharge's antecedent DECLARES its predicate (`(forall(?prev),
+/// t4_property(?prev) -: t4_property(?prev))`), so `t4_property` heads no clause anywhere
+/// and must not be refused; routing goal-position absence through `Call` refused exactly
+/// that program. In DATA position there is no such tolerance and none is wanted — a
+/// nested `p(bogus(?x))` is refused, which is the population WI-1034's walk never reaches.
+fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> Option<CallDispatch> {
+    if pos == BodyPos::Untyped || rule_body_type_term(kb, expr) {
+        return None;
+    }
     match expr {
         Expr::DotApply { .. } => Some(CallDispatch::Checked),
         // TWO gate calls, and the second is [`defaulted_spec_op_parent`] rather than the
@@ -44006,15 +44370,260 @@ fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr) -> Option<CallDispatch> 
         // the parametric leg — so it returns early for exactly the population this arm
         // added, and pays the leg twice only for the handful of DEFAULTED spec-op call
         // sites (WI-1036 counted 4–5 of those).
-        Expr::Apply { functor, .. } => spec_op_call_parent(kb, *functor).map(|_| {
-            if defaulted_spec_op_parent(kb, *functor).is_some() {
-                CallDispatch::Checked
-            } else {
-                CallDispatch::BodyLessSpecOp
+        Expr::Apply { functor, pos_args, .. } => {
+            let spec_op = || {
+                spec_op_call_parent(kb, *functor).map(|_| {
+                    if defaulted_spec_op_parent(kb, *functor).is_some() {
+                        CallDispatch::Checked
+                    } else {
+                        CallDispatch::BodyLessSpecOp
+                    }
+                })
+            };
+            match pos {
+                // Returned above, with the type-term test it shares a reason with.
+                BodyPos::Untyped => None,
+                BodyPos::Value => spec_op().or(Some(CallDispatch::DataTerm)),
+                BodyPos::Goal(commit) | BodyPos::GoalTuple(commit) => {
+                    // 1 — a connective (rung 1). The `tuple` wrapper is recognised only
+                    // in the slot the table put one in, never by its name alone.
+                    let wrapper = matches!(pos, BodyPos::GoalTuple(_))
+                        && kb.local_name_of(*functor) == "tuple";
+                    if wrapper || !kb.goal_slot_readings(*functor, pos_args.len()).is_empty() {
+                        return None;
+                    }
+                    // 2 — the two spec-op shapes, unchanged.
+                    if let Some(s) = spec_op() {
+                        return Some(s);
+                    }
+                    // 3 — a resolver BUILTIN, which is read by the builtin.
+                    if kb.builtin_of(*functor).is_some() {
+                        return None;
+                    }
+                    // 4 — a FACT PATTERN, whose shape is the entity's declared field
+                    // schema. The one goal-position shape with a declaration to check
+                    // against. ASKED BEFORE the sort rung below, because an eponymous
+                    // `sort E { entity E(…) }` is ONE symbol carrying both kinds and
+                    // WI-1056 settled that a rule-body `E(a: 1)` is a CONSTRUCTION.
+                    if kb.is_entity_constructor(*functor) {
+                        return Some(CallDispatch::Call);
+                    }
+                    // 5 — a SORT-headed atom is a TYPE or an INSTANCE CLAIM (`rule r(?t)
+                    // :- Modifiable[T = ?t]`, `fact Modifiable[T = Cell]`), never a
+                    // subgoal. Its argument grammar is not a predicate's: WI-407 carrier
+                    // slots and WI-431 op-bearing bindings both live here, so measuring it
+                    // against the shapes of the facts asserted under it refuses the
+                    // stdlib's own reflect rules (`Modifiable[?t]` against `Modifiable[T =
+                    // Cell]`). Checked where it is BUILT, by `check_sort_type_args`
+                    // (WI-710/WI-927).
+                    if kb.has_kind(*functor, crate::intern::SymbolKind::Sort) {
+                        return None;
+                    }
+                    // 6 — a SUBGOAL, shape-checked only where a dead one is a defect
+                    // ([`GoalCommit`]). A tolerated position still WALKS — its dots
+                    // dispatch and its data slots are name-checked — it just does not
+                    // report the shape.
+                    commit.checked().then_some(CallDispatch::Subgoal)
+                }
             }
-        }),
+        }
         _ => None,
     }
+}
+
+/// WI-1058 — the SUBGOAL check: could ANY clause of this atom's functor match it?
+///
+/// A rule subgoal has no signature, so the question a call-site check asks ("do these
+/// arguments fit the declared parameters") has no answer here. The question that DOES
+/// have one is the resolver's own: a goal matches a clause by unifying with its head,
+/// and a head of a different SHAPE — a different positional arity, or a different set of
+/// named-argument labels — can never unify with it. A subgoal no clause can match is a
+/// dead conjunct: the rule it sits in silently answers nothing, which reads exactly like
+/// "no such fact". This is WI-1034's defect one step further in — that walk refuses a
+/// goal whose functor names NOTHING; this one refuses a goal whose functor names
+/// something that cannot be it.
+///
+/// **A PROOF OF IMPOSSIBILITY, not a shape preference**, and that is what decides the
+/// two ways it declines to fire:
+///
+///   * A clause whose head is not a hash-consed `Term::Fn` (a `Value::Node` / entity
+///     value fact — WI-348/WI-366) has no readable label set here, so no such proof
+///     exists and nothing is reported. Stated rather than left to be found: this is a
+///     limit on what can be PROVED, so widening it means reading those heads, not
+///     loosening this.
+///   * A functor with no indexed clause at all is not this check's — WI-1034's goal walk
+///     owns absence, with the hypothesis exemption and the discrimination-tree backstop
+///     an arity-0 proposition needs. Reporting it here too would say the same thing
+///     twice about one defect.
+///
+/// ENTITY-headed goals never arrive: [`call_dispatch_shape`] routes them to the
+/// constructor reading, whose shape comes from the DECLARED field schema (and admits
+/// the partial named-arg form the loader fresh-fills), not from the facts asserted under
+/// it.
+fn subgoal_shape_error(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    rule_sym: Option<Symbol>,
+) -> Option<TypeError> {
+    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return None };
+    let mut shapes: Vec<(usize, Vec<Symbol>)> = Vec::new();
+    for rid in kb.rules_by_functor_iter(*functor) {
+        // No readable shape ⇒ no proof; say nothing at all.
+        let head = kb.fact_head_term(rid)?;
+        let shape = match kb.get_term(head) {
+            Term::Fn { pos_args, named_args, .. } => {
+                (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect())
+            }
+            // `Ref(c) ≡ Fn{c}` at arity 0 (WI-436) — the canonical spelling of a
+            // 0-ary application, and how a bare proposition is stored.
+            Term::Ref(_) | Term::Ident(_) => (0, Vec::new()),
+            _ => return None,
+        };
+        shapes.push(shape);
+    }
+    unmatchable_shape_error(kb, occ, &shapes, "a clause", rule_sym)
+}
+
+/// WI-1058 — the shared half of the two "could this ever match" checks
+/// ([`subgoal_shape_error`], and the `[simp]` REDEX arm of [`data_functor_error`]):
+/// given every shape the name's clauses present, is this term's shape none of them?
+///
+/// ONE function because it is one question asked of two clause SOURCES — a predicate's
+/// heads and an equation's LHSs — and the rendering, the label canonicalisation and the
+/// "no clauses ⇒ no proof" rule must not differ between them. `subject` names the source
+/// in the message ("a clause" / "a `[simp]` equation"), which is the only difference.
+fn unmatchable_shape_error(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    shapes: &[(usize, Vec<Symbol>)],
+    subject: &str,
+    rule_sym: Option<Symbol>,
+) -> Option<TypeError> {
+    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = occ.as_expr() else {
+        return None;
+    };
+    if shapes.is_empty() {
+        return None;
+    }
+    let canon = |n: usize, labels: &[Symbol]| (n, sorted_labels(labels.iter().copied()));
+    let here = canon(pos_args.len(), &named_args.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+    let mut distinct: Vec<(usize, Vec<Symbol>)> = Vec::new();
+    for (n, labels) in shapes {
+        let s = canon(*n, labels);
+        if s == here {
+            return None;
+        }
+        if !distinct.contains(&s) {
+            distinct.push(s);
+        }
+    }
+    let render = |(n, labels): &(usize, Vec<Symbol>)| {
+        let mut s = format!("{n} positional");
+        for l in labels {
+            s.push_str(&format!(" + `{}`", kb.local_name_of(*l)));
+        }
+        s
+    };
+    let alternatives: Vec<String> = distinct.iter().map(render).collect();
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span: Some(occ.span.span),
+        // The ENCLOSING rule, not the callee: the callee is already named in the message
+        // body, and this field renders as "the rule this error is in" — which is the text
+        // the author must edit.
+        context: TypeErrorContext::Rule {
+            name: rule_sym.unwrap_or(*functor),
+            field: RuleField::Whole,
+        },
+        expected: format!(
+            "a term {subject} of `{}` can match ({})",
+            kb.qualified_name_of(*functor),
+            alternatives.join(" or "),
+        ),
+        actual: render(&here),
+    })
+}
+
+/// WI-1058 — the DATA-slot check: does this compound term's functor NAME anything?
+///
+/// The one question a rule body's data slot can be asked without an expectation and
+/// without a scope, and it is the question WI-895 filed: an un-imported functor interns
+/// bare, so `holds894(ite(true, 10, 20))` loads clean, never fires as a `[simp]` redex,
+/// and says nothing. WI-1034 closed the GOAL-position half of that; this is the other
+/// half, asked with the SAME head test ([`KnowledgeBase::undefined_functor`]) so the two
+/// positions cannot disagree about which names exist. That head test carries a
+/// scoping-marker exemption; whether a data slot ever REACHES it is not claimed here (a
+/// marker is a goal connective, so [`call_dispatch_shape`] answers for it first) — the
+/// point of sharing is that the two positions ask one authority, not that both use every
+/// clause of it.
+///
+/// **NOT a type-check, and that is measured rather than chosen for caution.** Handing a
+/// data slot to `check_apply_iter` — the obvious reading of "widen the walk to every
+/// `Expr::Apply`" — is wrong three separate ways, each found by driving the suite:
+///
+///   1. **It loses the EXPECTATION.** `check_apply_iter`'s readings are
+///      expectation-directed: a sort name denotes a `Type` VALUE only in a slot that
+///      expects one (`check_bare_ref`'s WI-206 arm). Typed standalone with `expected:
+///      None`, `takes_type(Holder[T = Int64])`'s argument reported `unresolved name:
+///      Int64` about a name that resolves — `wi927_bracket_surface_test`,
+///      `wi710_rule_body_type_arg_test`, `wi839_call_bracket_channel_test`, and 24 more.
+///   2. **It loses the SCOPE.** A node under a `lambda` / `let` is typed outside its
+///      binder, so `all_match(?xs, lambda (x) -> is_pos(x))` reported `x` unresolved
+///      twice (`wi620_paren_lambda_param_test`).
+///   3. **It REWRITES the body.** `dispatch_calls_in_occ` stores `type_check_node`'s
+///      result node, which is redex-free — so `holds(ite(true, 10, 20))` became
+///      `holds(10)` AT LOAD and the rule answered under `ResolveConfig { simplify:
+///      false }`, where its whole point is to answer nothing
+///      (`wi884_sibling_backing_test`). A check that changes what a rule MEANS is not a
+///      check.
+///
+/// Each is structural, not a missing case: a rule body's data slot holds a TERM, and the
+/// typer's call ladder is about VALUES in a typed context. That is why WI-895 said this
+/// half "needs its own predicate, not a wider walk", and this is that predicate.
+fn data_functor_error(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    rule_sym: Option<Symbol>,
+) -> Option<TypeError> {
+    // Only a COMPOUND term: a bare name in a data slot is a nullary constructor or a
+    // logic constant, and refusing those is a different, wider claim than this one
+    // (WI-1034's goal walk makes it at goal position, with the discrimination-tree
+    // backstop an arity-0 proposition needs).
+    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return None };
+    // WI-1058 — the ONE thing that IS checkable about an EQUATION-introduced functor's
+    // redex, and the hole `undecidable_by_this_typer` handed here by name: a `[simp]`
+    // rewrite fires by MATCHING a stored LHS, so a call at an arity no LHS has can never
+    // fire, whatever the tag says. That exemption's doc states the gap exactly — "nothing
+    // about the call itself survives, ARITY INCLUDED — `rule r(?x, ?r) :- ?r = ite(?x)`
+    // loads clean against a three-argument functor". It no longer does. The exemption
+    // itself STANDS: deriving a redex's TYPE from its clauses is a different and much
+    // larger reading, and this ticket did not deliver it.
+    if kb.has_kind(*functor, crate::intern::SymbolKind::EquationFunctor) {
+        if let Some(shapes) = super::simp_rewrite::equation_lhs_shapes(kb, *functor) {
+            if let Some(e) =
+                unmatchable_shape_error(kb, occ, &shapes, "a `[simp]` equation", rule_sym)
+            {
+                return Some(e);
+            }
+        }
+    }
+    let sym = kb.undefined_functor(&Value::Node(Rc::clone(occ)))?;
+    // NOT `UnknownApplyFunctor`, whose sentence is "expected a known operation or
+    // arrow-typed variable" — advice about a CALL SITE, which a data slot is not. The
+    // consequence here is that nothing can unify with the term and no `[simp]` rule can
+    // rewrite it; `UndefinedDataFunctor` says that, in the goal twin's voice.
+    Some(TypeError::UndefinedDataFunctor { span: Some(occ.span.span), name: sym })
+}
+
+/// The argument labels of a call / head, deduplicated and ordered, so two spellings of
+/// one shape compare equal. Named arguments are canonicalized at load by DECLARED field
+/// order where a schema exists and by interning order otherwise, so their stored order
+/// is not a stable comparison key.
+fn sorted_labels(labels: impl Iterator<Item = Symbol>) -> Vec<Symbol> {
+    let mut v: Vec<Symbol> = labels.collect();
+    v.sort_by_key(|s| s.index());
+    v.dedup();
+    v
 }
 
 /// WI-282 / WI-1026: does `occ` CARRY, anywhere in its subtree, a node
@@ -44027,14 +44636,23 @@ fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr) -> Option<CallDispatch> 
 /// a spec-op call still needs the var-type env installed, which is what
 /// `type_rule_bodies` builds around this gate. Still cheap after WI-1026 widened it
 /// — see [`call_dispatch_shape`] for the measurement that says so.
+///
+/// WI-1058: the stack carries each node's [`BodyPos`], derived by the SAME
+/// [`child_body_positions`] the acting walk uses. Without it the two walks would ask
+/// [`call_dispatch_shape`] different questions about the same node — the exact drift
+/// this shared predicate exists to prevent, one argument further along.
 fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
-    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
-    while let Some(o) = stack.pop() {
+    let mut stack: Vec<(Rc<NodeOccurrence>, BodyPos)> =
+        vec![(Rc::clone(occ), BodyPos::Goal(GoalCommit::Top))];
+    while let Some((o, pos)) = stack.pop() {
         if let Some(expr) = o.as_expr() {
-            if call_dispatch_shape(kb, expr).is_some() {
+            if call_dispatch_shape(kb, expr, pos).is_some() {
                 return true;
             }
-            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();
+            for_each_child(expr, |c| children.push(Rc::clone(c)));
+            let child_pos = child_body_positions(kb, expr, pos, children.len());
+            stack.extend(children.into_iter().zip(child_pos));
         }
     }
     false

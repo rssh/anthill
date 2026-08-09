@@ -233,30 +233,28 @@ end
     );
 }
 
-/// …AND THE GAP, PINNED RATHER THAN HIDDEN — now HALF closed, and this pins the half
-/// that is not. An un-imported functor interns bare, so the goal loads clean and simply
-/// never matches the scoped `[simp]` rules. That is silent inertness — the failure mode
-/// the test above rules out for operation bodies — and it is how this very change first
+/// …AND THE GAP, now CLOSED — this was a pinned assertion that the shape below still
+/// loaded clean, and WI-1058 is what made it fail. An un-imported functor interns bare,
+/// so the term never matched the scoped `[simp]` rules: silent inertness, the failure
+/// mode the test above rules out for operation bodies, and how this very change first
 /// showed up (`wi884`'s `ite_reduces` went from 1 solution to 0 with no diagnostic until
 /// its `import` was added).
 ///
-/// **WI-1034 closed the GOAL-position half**: a rule-body goal whose functor names
-/// nothing is refused at load, named and located. This fixture survives it because
-/// `ite` here is in an ARGUMENT — a DATA slot, which is not a goal and is not walked —
-/// and `holds894` is a declared fact. So the shape still loads, still never fires, and
-/// still says nothing, which is WI-895's remaining half.
+/// The two halves closed in two tickets because they are two questions with two
+/// exemption sets. **WI-1034** closed the GOAL position (`undefined_rule_body_goals`,
+/// which must exempt a `forall_impl` HYPOTHESIS — a name the discharge itself declares).
+/// **WI-1058** closed the ARGUMENT position, at the typer's rule-body walk
+/// (`data_functor_error`), which must instead exempt the positions that are not data at
+/// all: a binder tuple, a binding PATTERN, and the interior of a TYPE. Both ask
+/// `KnowledgeBase::undefined_functor`, so they cannot disagree about which names exist.
 ///
-/// The distance between the halves is a factor of fifteen and that is why they are
-/// separate: WI-1034's probe counted 20 dangling names over the corpus in goal position
-/// and ~313 with argument positions included — every constructor written in an argument
-/// is one — so the argument half needs its own predicate (a `[simp]` redex that cannot
-/// fire is not the same claim as a goal that cannot match), not a wider walk.
-///
-/// This test asserts TODAY'S behaviour deliberately, so the gap is a recorded fact with
-/// a home rather than an assumption: when WI-895's remaining half lands, this test FAILS
-/// and names what to update.
+/// The probe count that kept them apart — 20 dangling names in goal position, ~313 with
+/// arguments included — is not what the argument half costs, and that is worth recording
+/// because it is what deferred this for two tickets: measured at the typer's walk with
+/// the non-data positions excluded, stdlib + host bindings + `examples/` +
+/// `anthill-todo` + `anthill-testcases` report **zero**.
 #[test]
-fn a_rule_body_does_not_yet_refuse_an_unimported_functor() {
+fn an_unimported_functor_in_an_argument_is_refused_too() {
     const SRC: &str = r#"
 namespace wi894.rulebodygap
   import anthill.prelude.{Int64, Bool}
@@ -264,12 +262,23 @@ namespace wi894.rulebodygap
   fact holds894(10)
 end
 "#;
+    let Err(errs) = crate::common::try_load_kb_with(SRC) else {
+        panic!("an un-imported functor in a rule-body ARGUMENT must be refused (WI-1058)");
+    };
     assert!(
-        crate::common::try_load_kb_with(SRC).is_ok(),
-        "PINNED GAP (not an endorsement): a rule body's un-imported functor in an \
-         ARGUMENT position still loads clean — the GOAL position is refused as of \
-         WI-1034 (`wi1034_undefined_rule_body_goal_test`). If this now FAILS, WI-895's \
-         remaining half has landed — delete this test and fold the case into \
-         `an_unimported_functor_is_refused_in_an_operation_body`.",
+        errs.iter().any(|e| e.contains("ite")),
+        "the refusal must NAME the functor it is about, got {errs:?}",
+    );
+    // …and the IMPORTED spelling loads, which is what makes this a scoping refusal
+    // rather than a blanket one. The control the pinned version never had.
+    crate::common::load_kb_with(
+        r#"
+namespace wi894.rulebodyok
+  import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Bool.{ite}
+  rule uses894ok(?x) :- holds894ok(ite(true, 10, 20)), ?x = 1
+  fact holds894ok(10)
+end
+"#,
     );
 }
