@@ -122,17 +122,25 @@
 //!     `the_rule_body_refusal_is_located_and_shares_one_body` FAILS (the refusal
 //!     renders with no `line:col`), and nothing else moves.
 //!
-//! ## One thing the resolver deliberately does NOT honour
+//! ## The one thing the resolver deliberately did NOT honour — CLOSED by **WI-1037**
 //!
-//! `classified_apply_target` answers for `CallClass::PinNow` only. The WI-444 block
+//! `classified_apply_target` answered for `CallClass::PinNow` only. The WI-444 block
 //! writes `ConcreteApplyWithin` instead whenever the supplied impl's own sort
 //! declares `requires`, and that class means the callee needs a dictionary in its
 //! frame — which the structural fold has none of. Eval's copy of this read (the one
 //! this ticket lifted onto `NodeOccurrence`) DID name that variant, harmlessly,
 //! because eval matches it three arms earlier and routes it to the start that
 //! installs the dict; the branch was dead there, and its deadness is what hid the
-//! hazard from the lift. So a rule body reaching such an impl still runs the
-//! default — narrower than the gap this ticket closed, and filed as **WI-1037**.
+//! hazard from the lift. So a rule body reaching such an impl still ran the default.
+//!
+//! WI-1037 closed it, and NOT by widening this read — widening would have been a
+//! second wrong answer, inlining a body whose `requires` slot nothing filled. The
+//! decode is now the typed [`ApplyDispatch`], whose `NeedsDict` arm names the impl
+//! AND says the caller owes it a dictionary; the resolver declines the fold and takes
+//! the eval bridge, which resolves that `requires` at the concrete argument types.
+//! Its coverage is `wi1037_requires_impl_rule_body_test` — including the row this
+//! ticket could not have known about, since WI-1057 landed in between and had already
+//! closed the abstract half.
 //!
 //! REFERENCE: WI-1012; WI-1010; WI-444; WI-502; WI-938;
 //! `docs/design/058-implementation.md` §3.1, §3.7, §13.

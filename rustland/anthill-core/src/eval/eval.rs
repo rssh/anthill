@@ -249,13 +249,24 @@ impl Interpreter {
                         *fn_target_sym, *spec_op_sym, *enclosing_sort, *dispatch_dict,
                         pos_args, named_args, type_args,
                     ),
-                    _ => {
+                    // WI-1037 — EXHAUSTIVE, no `_` arm. The two classes above are
+                    // routed to starts that install a requirements channel; every
+                    // class named below is one this arm may honour with a plain
+                    // apply, and `classified_apply_target` answers for exactly one of
+                    // them (`PinNow`). A SIXTH `CallClass` is a compile error here
+                    // rather than a silent plain-apply of the spelled spec op with no
+                    // dictionary — the failure class WI-1037 exists to remove, which
+                    // a catch-all would have re-admitted at the next variant.
+                    None
+                    | Some(CallClass::PinNow { .. })
+                    | Some(CallClass::UnresolvedSpecOp { .. })
+                    | Some(CallClass::EtaOpRef { .. }) => {
                         // WI-218/WI-1026: only `PinNow` names a target here, and
                         // that is all this arm can honour — the two classes that
                         // need a requirements channel (`ConcreteApplyWithin`,
                         // `DeferToRequirement`) are matched ABOVE and routed to the
                         // starts that install one. See
-                        // `NodeOccurrence::classified_apply_target`.
+                        // `NodeOccurrence::apply_dispatch`.
                         let target = occ.classified_apply_target().unwrap_or(*functor);
                         self.start_apply(target, pos_args, named_args, type_args)
                     }

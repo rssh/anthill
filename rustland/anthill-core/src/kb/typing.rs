@@ -43302,6 +43302,26 @@ fn collect_covered_calls(
         if kb.functional_relation_arity(*functor).is_none() {
             continue;
         }
+        // WI-1037 — the NARROW read (`PinNow` alone), deliberately, now that
+        // `apply_dispatch` can tell the two apart. A `ConcreteApplyWithin` site is
+        // ALSO one the typer decided, so §5's sentence above ("only where the typer
+        // did not already pin") would exclude it too. It is admitted here anyway:
+        // MEASURED, 14 occurrences in the corpus reach this filter as `NeedsDict`
+        // (`test.wi1045.Desc.tag`) and they are woven, which is the behaviour
+        // `wi1045_one_dictionary_representation_test` pins.
+        //
+        // THE PRECEDENCE THAT MAKES THAT SAFE IS WRITTEN AT THE OTHER SITE, not here,
+        // and it is not the ordering of `reduce_op_value`'s arms: that function's
+        // `Expr::ApplyWithin` arm RECURSES on a rebuilt `Expr::Apply`, and
+        // `rebuilt_expr` carries the CallClass, so the woven node reaches the
+        // `Expr::Apply` decode carrying whatever the spec-op site said. The arm
+        // therefore RE-STAMPS the rebuilt node `PinNow(dictionary target)` — see the
+        // comment there. Without that, admitting a `NeedsDict` site here would let a
+        // static pin override the member the caller's dictionary selected.
+        //
+        // Narrowing this to `apply_dispatch() != Unclassified` remains a live choice
+        // about which route OWNS these calls; it belongs to whoever revisits WI-1040's
+        // weaving population, and that test is what would move.
         if cand.classified_apply_target().is_some() {
             continue;
         }
@@ -44218,9 +44238,10 @@ enum CallDispatch {
 /// (`wi1036_builtin_defaulted_dispatch_test`):
 ///
 ///   1. "`reduce_op_value` returns early on a builtin before it reads a pin, so
-///      classifying these sites changes nothing." It reads the pin FIRST — `op =
-///      classified_apply_target().unwrap_or(functor)` — and keys the builtin
-///      early-return on the PINNED symbol. (2026-08-07 /code-review.)
+///      classifying these sites changes nothing." It reads the pin FIRST — `op` comes
+///      off `occ.apply_dispatch()` (WI-1037; `classified_apply_target().unwrap_or(functor)`
+///      when this was measured) — and keys the builtin early-return on the PINNED
+///      symbol. (2026-08-07 /code-review.)
 ///   2. "`req_insertion::run` emits a dispatch rewrite per classified occurrence, so
 ///      widening emits 60 new ones." It walks `kb.op_bodies_iter()`, and a RULE body is
 ///      not an operation body: the same classified call emits ONE rewrite from an

@@ -56,6 +56,16 @@ use super::KnowledgeBase;
 /// suite is green at 16, so nothing legitimate was within reach of even the lower
 /// bound. The three numbers to re-measure if this path grows again: 32/no-escape
 /// ∈ (1.5, 2.0] MiB, 32/escape ∈ (2.0, 2.6] MiB, 16/escape ∈ (1.0, 1.5] MiB.
+///
+/// **WI-1037 grew the path and RE-MEASURED: unchanged, still (1.0, 1.5] MiB.** That
+/// ticket added a third `bridge_op_to_eval` call site — the `NeedsDict` arm of
+/// `reduce_op_value` — and it is the only one NOT gated to `depth == 0`, so it was
+/// the obvious candidate to deepen the chain. Measured the way this note asks, by
+/// running the BUILT binary under `RUST_MIN_STACK` (setting it for `cargo test`
+/// measures rustc's own stack, not the test's, and reports the same threshold
+/// whatever the code does): the fixture still overflows at 1 MiB and passes at
+/// 1.5 MiB. The new site does not nest crossings — it REPLACES a fold with one
+/// bridge, where the alternative was riding the enclosing bridge one frame deeper.
 const BRIDGE_REENTRY_CAP: usize = 16;
 
 thread_local! {
@@ -6399,6 +6409,26 @@ impl KnowledgeBase {
                 named_args: named_args.clone(),
                 type_args: type_args.clone(),
             });
+            // WI-1037 — RE-STAMP the rebuilt call, and this is load-bearing rather
+            // than tidiness. `rebuilt_expr` carries the typer stamps verbatim
+            // (`carry_typer_stamps_from`), CallClass included, so the rebuilt
+            // `Expr::Apply` still says whatever the SPEC-op site said — and the
+            // recursion below decodes it. While the decode answered `None` for
+            // `ConcreteApplyWithin` that was harmless: `op` fell to the rebuilt
+            // functor, which IS `target`, so the dictionary won by accident. Once the
+            // decode names that class (WI-1037), the carried static pin would
+            // OVERRIDE `target` and discard the member the dictionary just selected —
+            // the exact inversion of what this weave exists for, since a woven call is
+            // one whose supplier the CALLER supplies at run time.
+            //
+            // Stamped `PinNow`, not cleared, because that is what is now true of this
+            // node: the dictionary has been consumed and the callee is decided. The
+            // spec op is kept as `spec_op_sym` so the stamp still says which spec was
+            // dispatched.
+            call.set_classification(super::typing::CallClass::PinNow {
+                spec_op_sym: *functor,
+                impl_op_sym: target,
+            });
             return self.reduce_op_value(Value::Node(call), subst, depth, dispatch_body_less);
         }
         let functor = match occ.as_expr() {
@@ -6421,7 +6451,19 @@ impl KnowledgeBase {
         // own arg places, exactly as eval binds them; a named-arg call whose spec
         // and impl spell a parameter differently finds no arg and residualizes,
         // which is the WI-483 leave-uninterpreted outcome, not a wrong answer.
-        let op = occ.classified_apply_target().unwrap_or(functor);
+        // WI-1037 — the pin is read as a TYPED VERDICT, because "which operation" and
+        // "may I enter it bare" are two questions and the old `Option<Symbol>` answered
+        // only the first. `NeedsDict` names the same supplied implementation `PinNow`
+        // would, but its parent sort reads requirement slots, so the fold below — which
+        // has no frame — must not run it. Folding the spelled functor instead is not a
+        // safe degradation: the spelled functor is the SPEC op, and its body is the
+        // DEFAULT. That is what this site did before, and it is the defect.
+        let dispatch = occ.apply_dispatch();
+        let op = match dispatch {
+            node_occurrence::ApplyDispatch::Pin(s) | node_occurrence::ApplyDispatch::NeedsDict(s) => s,
+            node_occurrence::ApplyDispatch::Unclassified => functor,
+        };
+        let needs_dict = matches!(dispatch, node_occurrence::ApplyDispatch::NeedsDict(_));
         // A builtin (field_access, arith, eq, …) is reduced by its own path, not
         // folded. Only a CONCRETE operation (one with a stored body) folds; an
         // abstract / spec op has no body (its requires are abstract) — leave it.
@@ -6442,6 +6484,21 @@ impl KnowledgeBase {
         let body = match self.op_body_node(op) {
             Some(b) => Some(Rc::clone(b)),
             None if dispatch_body_less && depth == 0 && self.body_less_dispatchable(op) => None,
+            // WI-1037 — a `NeedsDict` callee is DISPATCHED, never folded, so a missing
+            // body is not a bail for it either: the bridge below is the whole
+            // reduction and it needs only the symbol and the args. Reachable for a
+            // HOST-MAPPED implementation, which is a real supplier with no body node.
+            //
+            // Gated on [`typing::op_is_interpretable`] and not admitted unconditionally:
+            // without the gate this arm deletes the O(1) `return v` for a callee the
+            // bridge could never run, and every such goal attempt — at every fold level,
+            // since this class is not depth-0 gated — would build a scratch
+            // `Interpreter` and re-register the standard builtins only to come back
+            // `None`. The gate asks the interpreter's OWN registry (WI-876/WI-886: a
+            // resolver builtin or a cpp `operation_map` entry is not something THIS
+            // runtime can call), which is exactly the question "will the bridge be able
+            // to run this".
+            None if needs_dict && super::typing::op_is_interpretable(self, op) => None,
             None => return v, // abstract op, nothing to fold and nothing to dispatch
         };
         // Recursion guard: a self-recursive op never folds to a value — treat it
@@ -6485,6 +6542,37 @@ impl KnowledgeBase {
                 Some(a) => { param_args.insert(p, a); }
                 None => return v,
             }
+        }
+        // WI-1037 — the typer says this callee reads requirement slots. DECLINE the
+        // structural fold and take the bridge, which is the one reduction path that
+        // can supply what the callee needs: `call_op_bridged` resolves the impl's OWN
+        // `requires` chain at the CONCRETE ARGUMENT TYPES (`resolve_bridge_requirements`,
+        // WI-300 Tier B) and installs real dictionaries in the frame it pushes.
+        //
+        // Both halves are load-bearing and each was a wrong answer on its own. Reaching
+        // the bridge WITHOUT the `op` redirect above runs `cached_operation_body(spec_op)`
+        // — the spec's DEFAULT — inside a frame with real dictionaries installed, i.e.
+        // today's wrong answer upgraded to a confident one (the WI-444 value-directed
+        // override lives in `dispatch_resolved_operation`, the IN-BODY path, not at the
+        // entry). Redirecting WITHOUT declining the fold inlines a body whose `requires`
+        // slot nothing filled.
+        //
+        // AT ANY DEPTH, unlike the two arms below, and the difference is the whole
+        // point rather than an oversight. Their `depth == 0` gate rests on "a depth-0
+        // bridge evaluates the WHOLE body including nested op-calls, so a nested call
+        // rides its enclosing op's single bridge" — and for THIS class that premise is
+        // false. Eval reaches a nested `ConcreteApplyWithin` through
+        // `start_apply_same_sort`, which installs the classification's `dispatch_dict`
+        // and nothing else; that dict is `None` for a cross-sort call from a caller
+        // with no enclosing sort, so the enclosing bridge runs the callee with an EMPTY
+        // requirements channel and its `requires` read fails. MEASURED on
+        // `operation probe() -> Int64 = Desc.describe(leaf())` at namespace level:
+        // riding the enclosing bridge raised `DeferToRequirement: requirement param
+        // `__req_tag` not bound in caller frame`, tripping `bridge_op_to_eval`'s own
+        // internal-error assert. Bridging the callee HERE resolves its `requires` at
+        // the concrete argument types instead, which is the one entry that can.
+        if needs_dict {
+            return self.bridge_op_to_eval(op, &params, &param_args, subst).unwrap_or(v);
         }
         // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
         // bridge below IS the whole reduction. It runs under the same gates the
@@ -6593,10 +6681,17 @@ impl KnowledgeBase {
     ///   neutrally — including nested Node children — so a genuinely ground
     ///   occurrence reads as ground and `materialize_value` lowers it, rather than
     ///   collapsing the occurrence to a `Term` before the check.)
-    /// - **no requirement dicts** — invoked via [`Interpreter::call_op_bridged`],
-    ///   NOT the placeholder-seeding entry: a body that dispatches through a
-    ///   `requires` slot errors → residualize, so only requirement-FREE ops
-    ///   decide and a placeholder can never misdispatch to a wrong value (gap 3).
+    /// - **requirement dicts are RESOLVED, not refused** — invoked via
+    ///   [`Interpreter::call_op_bridged`], NOT the placeholder-seeding entry. WI-625
+    ///   gap 3 stated this the other way ("only requirement-FREE ops decide"), and
+    ///   that has been PRE-Tier-B behaviour since WI-300: `call_op_bridged` resolves
+    ///   REAL dictionaries at the concrete argument types
+    ///   (`typing::resolve_bridge_requirements`) and installs them in the frame it
+    ///   pushes, so a body that dispatches through a `requires` slot DECIDES.
+    ///   Residualize is the fallback for `Unresolvable` / `Ambiguous` alone — a
+    ///   placeholder still never misdispatches, which is what gap 3 was protecting.
+    ///   WI-1037 depends on this being true: it is why a `NeedsDict` callee can be
+    ///   answered here rather than merely delayed.
     /// - **pure** — effects are contained by construction: the scratch
     ///   interpreter's effect registry is EMPTY (an effect → unhandled → error →
     ///   residualize) and its arenas (`Cell`/`Map`/…) are fresh and DROPPED with
@@ -7145,6 +7240,23 @@ impl KnowledgeBase {
     ///
     /// `Value::Node` only: the pin lives on the occurrence (`CallClass::PinNow`), so a
     /// `Value::Term` goal carries none and this is the sibling verbatim.
+    ///
+    /// WI-1037 — reads `classified_apply_target`, i.e. `PinNow` ALONE, so a `NeedsDict`
+    /// goal takes the `pinned == None` route and asks the whole question of the SPELLED
+    /// spec op. That is NOT merely "how many columns": `functional_relation_arity` also
+    /// applies the effect-free clause, and the paragraph above says reading the effect
+    /// off the TARGET is deliberate, because an override may declare an effect the
+    /// spec's signature did not (WI-453). So for this class the effect test lands on the
+    /// spec, and an impl that declares an effect its spec did not is admitted to the
+    /// functional-relation view where a `PinNow` supplier of the same shape would be
+    /// rejected.
+    ///
+    /// Left as it is because the reachable outcome is a DELAY, not a wrong answer: such
+    /// a call reduces through `reduce_op_value`'s `NeedsDict` bridge, whose scratch
+    /// interpreter has an EMPTY effect registry, so an effectful body errors and
+    /// residualizes. Widening the pin read here would change that delay into a refusal
+    /// at goal selection; it is a separate question from this ticket's, and this note is
+    /// here so the "arity only" reading does not license it silently.
     fn dispatched_relation_arity(&self, goal: &Value, f: Symbol) -> Option<usize> {
         let pinned = match goal {
             Value::Node(o) => o.classified_apply_target().filter(|t| *t != f),

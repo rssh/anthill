@@ -35,6 +35,35 @@ pub enum OccurrenceOrigin {
     },
 }
 
+// ── ApplyDispatch ───────────────────────────────────────────────
+
+/// WI-1037 — what an apply site's `CallClass` tells a CALLER to do, decoded by
+/// [`NodeOccurrence::apply_dispatch`].
+///
+/// The distinction that matters is not "which impl" but **whether the callee can be
+/// entered without a requirement dictionary**. `classify_pin_or_apply_within` already
+/// decides exactly that — it writes `ConcreteApplyWithin` the moment
+/// `sort_reads_requirement_slots(impl_sort)` and `PinNow` otherwise — and this type is
+/// that decision carried to the consumer instead of being flattened into an
+/// `Option<Symbol>` that both engines then had to re-derive by convention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplyDispatch {
+    /// `PinNow`: call this impl directly. Its parent sort reads no requirement
+    /// slots, so a caller with no frame at all — the resolver's structural fold —
+    /// may run it.
+    Pin(Symbol),
+    /// `ConcreteApplyWithin`: this impl is the target, but its parent sort reads
+    /// requirement slots, so running it needs a dictionary installed in its frame. A
+    /// caller that cannot install one must NOT fold it and must not fall back to the
+    /// spelled functor either — the spelled functor is the spec op, whose body is the
+    /// DEFAULT, and running that is the wrong answer rather than a missing one.
+    NeedsDict(Symbol),
+    /// No classification (a hand-built KB, a query goal the typer never saw), or a
+    /// class that names no operation a caller may enter. Callers keep the functor
+    /// the site is spelled with.
+    Unclassified,
+}
+
 // ── NodeOccurrence ──────────────────────────────────────────────
 
 /// Positional wrapper. Carries span + owner around content; the inner
@@ -590,43 +619,59 @@ impl NodeOccurrence {
         }
     }
 
-    /// WI-218/WI-1026 — the operation this apply site dispatches to when the
-    /// caller can supply **no requirement dictionary**: the `PinNow` impl, whose
-    /// parent sort by construction reads no requirement slots
-    /// (`classify_pin_or_apply_within` writes `ConcreteApplyWithin` instead the
-    /// moment it does). `None` for every other class, INCLUDING
-    /// `ConcreteApplyWithin` — see below.
+    /// WI-218/WI-1026/WI-1037 — the operation this apply site dispatches to, and
+    /// **what the caller owes it**. The READER paired with
+    /// [`set_classification`](Self::set_classification), shared by both engines.
     ///
-    /// The READER paired with [`set_classification`](Self::set_classification).
-    /// WI-1026 lifted it here from `eval.rs` because the RESOLVER needs the same
-    /// decode: `reduce_op_value` was folding `op_body_node(functor)` — a defaulted
-    /// spec op's own DEFAULT — over a call the typer had already pinned to the
-    /// carrier's supplied implementation. MEASURED: `rule answer(?r) :-
-    /// leaf().describe(?r)` answered `1` where the identical call in an operation
-    /// body answered the supplied `7`.
+    /// WI-1026 lifted the decode here from `eval.rs` because the RESOLVER needs it
+    /// too: `reduce_op_value` was folding `op_body_node(functor)` — a defaulted spec
+    /// op's own DEFAULT — over a call the typer had already pinned to the carrier's
+    /// supplied implementation. MEASURED: `rule answer(?r) :- leaf().describe(?r)`
+    /// answered `1` where the identical call in an operation body answered `7`.
     ///
-    /// **WHY `ConcreteApplyWithin` IS NOT A TARGET HERE, though eval's copy of this
-    /// read used to name it.** That variant means the callee's parent sort declares
-    /// `requires`, so running it needs a dictionary installed in its frame. Eval
-    /// never reached the old copy's arm for it — `Expr::Apply` matches
-    /// `ConcreteApplyWithin` three arms earlier and routes to
-    /// `start_apply_same_sort`, which installs the `dispatch_dict` — so that arm
-    /// was DEAD there and its deadness is what hid the hazard. It is not dead for
-    /// the resolver: `reduce_op_value` calls this unconditionally and folds
-    /// structurally, with no frame to thread a dictionary into, and the WI-444
-    /// block writes exactly this class for any supplied impl whose sort reads
-    /// requirement slots. Redirecting there would inline a body whose `requires`
-    /// slot nothing filled. So the answer is `None`, the fold keeps the spelled
-    /// functor, and the dictionary-bearing dispatch stays with the two paths that
-    /// have a frame (eval's own apply, and `bridge_op_to_eval`). A rule body
-    /// reaching a supplied impl of that shape therefore still runs the default —
-    /// a gap, narrower than the one this ticket closed, recorded as **WI-1037**.
-    pub fn classified_apply_target(&self) -> Option<Symbol> {
+    /// **WHY THE VERDICT IS A TYPE AND NOT AN `Option<Symbol>`.** It used to be one,
+    /// answering `Some` for `PinNow` alone and `None` for everything else — which
+    /// merged "no target" with "a target you must not call bare", two questions the
+    /// resolver decides differently ([`ApplyDispatch::NeedsDict`]). Under the merge
+    /// `reduce_op_value` kept the spelled functor for a `ConcreteApplyWithin` site
+    /// and folded the SPEC'S DEFAULT: WI-1037's whole defect, and one an
+    /// `Option<Symbol>` cannot even express the fix for. It is also the shape the
+    /// implementation guard on WI-1037 asked for — the decode below has no `_` arm,
+    /// so a sixth `CallClass` is a COMPILE ERROR here rather than a silent
+    /// `Unclassified`, and eval's own decode (`eval.rs`'s `Expr::Apply`) is
+    /// exhaustive for the same reason.
+    pub fn apply_dispatch(&self) -> ApplyDispatch {
         use super::typing::CallClass;
-        let NodeKind::Expr { classification, .. } = &self.kind else { return None };
+        let NodeKind::Expr { classification, .. } = &self.kind else {
+            return ApplyDispatch::Unclassified;
+        };
         match classification.borrow().as_deref() {
-            Some(CallClass::PinNow { impl_op_sym, .. }) => Some(*impl_op_sym),
-            _ => None,
+            None => ApplyDispatch::Unclassified,
+            Some(CallClass::PinNow { impl_op_sym, .. }) => ApplyDispatch::Pin(*impl_op_sym),
+            Some(CallClass::ConcreteApplyWithin { fn_target_sym, .. }) => {
+                ApplyDispatch::NeedsDict(*fn_target_sym)
+            }
+            // Named, not caught by a `_`: each of these three DOES describe the call,
+            // and none of them names an operation a caller may enter directly.
+            // `DeferToRequirement` reads the impl out of a frame slot at dispatch time
+            // (there is no target until the frame exists); `UnresolvedSpecOp` is a
+            // diagnostic tag whose call resolves to nothing; `EtaOpRef` is a function
+            // VALUE being minted, not a call being made.
+            Some(CallClass::DeferToRequirement { .. })
+            | Some(CallClass::UnresolvedSpecOp { .. })
+            | Some(CallClass::EtaOpRef { .. }) => ApplyDispatch::Unclassified,
+        }
+    }
+
+    /// The `PinNow` target alone — [`apply_dispatch`](Self::apply_dispatch) narrowed
+    /// to the one verdict a caller with NO frame may act on. Eval's plain-apply arm
+    /// reads this, and it is correct THERE only because the two classes that need a
+    /// requirements channel are matched earlier and routed to starts that install
+    /// one; see that arm.
+    pub fn classified_apply_target(&self) -> Option<Symbol> {
+        match self.apply_dispatch() {
+            ApplyDispatch::Pin(s) => Some(s),
+            ApplyDispatch::NeedsDict(_) | ApplyDispatch::Unclassified => None,
         }
     }
 
