@@ -2012,24 +2012,38 @@ Inside a body, then, an unwritten parameter is **rigid** — a skolem that unifi
 
 **How the slot is named (WI-1059).** The skolem an unwritten slot takes is the *projection off the value that carries it* — `s: Stream[T = Int64]` is checked as `s: Stream[T = Int64, E = s.E]` — and not a fresh anonymous variable. `s.E` is already rigid by §"path-dependent types" (a neutral equals only an identical neutral, never a concrete type), and it is the name a signature can already write: `operation collect(s: Stream) -> List[T = s.T]` says `s.T` in its own return, and the body must resolve the parameter to the *same* thing that return does. A *self*-sort reference is the exception, and §3 of `docs/design/type-parameter-scoping.md` is what decides it: within a sort's own definition a bare self reference participates in the parametricity tie, so `append(xs: List, ys: List)` declared inside `sort List` ties both to *this* sort's `T` rather than giving each its own projection.
 
-**Enforced in a parameter's type, at its top level (WI-1059 delivered; WI-1061 open).** The program below is refused at `feed`'s own declaration, naming the row it may not assume:
+**Enforced throughout a parameter's type (WI-1059 at its top level; WI-1061 nested inside a binding).** Each program below is refused at its own declaration, naming the row it may not assume — never at the caller that exploits it, since refusing there would make every legitimately row-polymorphic signature unusable:
 
 ```anthill
+-- top level (WI-1059): the row is missing from `s`'s own type
 operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s)
 --                                              ^ refused: expected E = {}, got E = s.E
-operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)
+operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)   -- not refused here
+
+-- nested (WI-1061): the row is missing one level down, inside a written binding
+operation feed(l: List[T = Stream[T = Int64]]) -> Int64 = takes_pure(l)
+--                                                        ^ refused: expected E = {}, got E = ?E
+operation caller(l: List[T = Stream[T = Int64, E = {Error}]]) -> Int64 = feed(l)
 ```
 
 Note that a *bare* reference says strictly less than a partial one: `Stream` leaves `T` unwritten too, so `feed(s: Stream)` may no more hand its stream to an `Int64`-element slot than it may assume a row. The four spellings are one type only in the parameters they all leave unwritten.
 
-The other two positions are **stated here but not yet enforced** — read them as the intended discipline, not as what loads. Both are measured, and **WI-1061** owns them:
+**Which skolem, by depth (WI-1061).** Only the *filler* differs. At the top level the slot takes the projection above, because the language already spells that name. A nested slot has no name at all — nothing spells the inner row of `List[T = Stream]` — so it takes a *fresh* rigid, one per slot. The *self*-sort exception overrides both depths, since the parametricity tie is the sort's: a self reference nested in a binding takes this instance's parameter exactly as a top-level one does.
+
+Depth means the parameter type's whole structure, not only its sort-application bindings: a callback's **result** (`f: (x: Int64) -> Stream[T = Int64]`) and a **tuple component** (`p: (s: Stream[T = Int64], n: Int64)`) each carry unwritten slots too, and each is rigid in the body. Two children are excluded, each for its own reason. An **effect-row** binding or an arrow's **effects** (`Stream[T = Solution, E = Error]`) is a row whose labels are compared by structural identity against the effects a body incurs, so materializing a label's own parameters would make two spellings of one effect unequal. A callback's own **parameter** is excluded because the quantification faces the other way there: an unwritten slot in `f: (a: Cell) -> Unit` says `f` accepts *every* instantiation, so the body may hand it whatever it has — rigidifying it would say `f` accepts one fixed unknown instead.
+
+The `effects` clause is likewise **not** a position for this rule. An effect atom is a row, a projection, a value-in-type denotation or a concrete label, and where a parametric sort is written there the effects check already refuses a body that incurs a *more* specific instance than the declaration names (`effects Box` against an incurred `Box[T = Int64]`) — strict in the safe direction, so the laundering this rule prevents cannot be built through it.
+
+**The RETURN position is undecided — WI-1063 owns it.** The program below still loads, and an effectful stream reaches a slot declared `E = {}`:
 
 ```anthill
-operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s   -- loads; should be refused
-operation feed(l: List[T = Stream[T = Int64]]) -> Int64 = takes_pure(l)       -- loads; should be refused
+operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s   -- loads
+operation exploit(s: Stream[T = Int64, E = {Error}]) -> Int64 = takes_pure(widen(s))
 ```
 
-The first leaves the row unwritten in the **return**, where the quantification flips (the body must *produce* a value good for every instantiation) and there is no carrier value to project off. The second leaves it unwritten **nested** inside a binding, where no path names the slot at all. Each therefore needs a filler this section's rule does not supply, which is why they are separate.
+Applying this section's rule there is implemented and measured, and it refuses `widen` at its own return. It is held back because **one reading is stated and the other is not**, and it is worth being exact about which is which. The paragraphs above state the *expansion* at every sort application — a return type included — but they state the *body obligation* it creates only for a **parameter**: every example is one, and "at a call it is flexible again, and binds from the argument" is about the argument side. Whether a return's unwritten slot binds the body the same way is simply not said here. `docs/design/type-parameter-scoping.md` §5 does say, and says the opposite: a bare return is **erased** — "the element/effect tie to `l` is GONE", a wart to be fixed by writing the type rather than a body error — and §4 records normalizing foreign bare refs in signatures as still-open WI-374 scope.
+
+So `widen` is wrong only under a reading nobody has written down; `exploit` is wrong under the one that is written, because it relies on a slot the type does not carry — the same principle that already refuses `wi374_expansion_test::bare_value_stays_unusable`. Extending the parameter rule to the return is therefore a *proposal*, and it costs 40 tests across thirteen delivered tickets, including the WI-401/402/457/480/488/491 escape gate, whose whole mechanism is a bare abstract-spec return *conforming* by provider upcast and only then being refused. Deciding this — and writing the winner into **both** documents — is WI-1063, not an implementation detail.
 
 ### 8.2 Entity Subtyping
 
