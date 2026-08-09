@@ -4695,7 +4695,19 @@ fn check_bare_ref(
         }
     }
     if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
-        return Ok(TypeResult::pure(ret_ty, env.clone(), Rc::clone(occ)));
+        // WI-1063: this IS a call — the zero-arg-call reading of a bare operation name — so
+        // its result opens the callee's existential return exactly as `mk()` does. Without it
+        // the whole rule was bypassable by deleting two characters: `takes_pure(mk())` was
+        // refused and `takes_pure(mk)` loaded clean, on the same two declarations. Not the
+        // eta reading, which returned above with an arrow type; here the return type is the
+        // result and it is genuinely checked (a wrong ELEMENT type is refused at this site
+        // today), so the row must be too.
+        let ret = Value::term(ret_ty);
+        let ret = open_existential_return(
+            kb, impl_parent_sort_of_op(kb, sym), &ret, occ.span, occ.owner,
+        )
+        .unwrap_or(ret);
+        return Ok(TypeResult::pure_value(ret, env.clone(), Rc::clone(occ)));
     }
     // A bare reference to a free-standing entity denotes the entity as a type,
     // not a construction — its type is the reflect `Type` sort, so it can be
@@ -5798,6 +5810,35 @@ fn operation_as_function_value(
         return None;
     }
     let (span, owner) = (occ.span, occ.owner);
+    // WI-1063: the eta arrow's RESULT is a use of the operation's declared return, so it
+    // OPENS like every other one. Without this the lift laundered the existential — DRIVEN,
+    // `apply_it(widen, s)` with `widen` declared exactly as the ticket's headline program put
+    // `{Error}` into a slot declaring `E = {}`, one indirection past the direct call.
+    //
+    // ONE SKOLEM PER LIFT, NOT PER APPLICATION, and that is a real limit rather than an
+    // oversight: an arrow type has nowhere to write `∃`, so whatever goes in the result
+    // position is fixed for the VALUE and every application of it reads the same ρ. It is
+    // sound for the monomorphic arrow this function builds — the gate above admits only ops
+    // with no type parameters, so the argument types are pinned and the result really is one
+    // type — and it is why that gate cannot simply be widened to admit them.
+    //
+    // REFUSING THE LIFT INSTEAD IS REFUTED, and the measurement is worth keeping because the
+    // clause above makes it look like the obvious answer (it refuses a type-parameterized op
+    // for the sibling aliasing reason). `Function` declares an effect-row parameter, so the
+    // perfectly ordinary `build(seed: Int64) -> Function[A = Int64, B = Bool]` leaves a slot
+    // unwritten and would be refused too. Control falls through to the zero-arg-call reading,
+    // whose result then conforms width-tolerantly to the annotation, and
+    // `wi420_eta_of_curried_requires_op_is_loud_type_error` goes from a loud load error to a
+    // clean load that crashes at eval — precisely the "typer's accepted set is a subset of the
+    // evaluator's" invariant this function opens by stating.
+    let return_type = open_existential_return(
+        kb,
+        impl_parent_sort_of_op(kb, sym),
+        &op.return_type,
+        span,
+        owner,
+    )
+    .unwrap_or_else(|| op.return_type.clone());
     let param = if op.params.len() == 1 {
         op.params[0].1.clone()
     } else {
@@ -5813,7 +5854,7 @@ fn operation_as_function_value(
     // arity, whatever its sole parameter's type happens to look like. `get_a(t: (a,
     // b))` mints arity 1 even though `param` is a 2-field `named_tuple`, so it no
     // longer passes for the genuinely 2-parameter `(p: A, q: B) -> R`.
-    Some(make_arrow_value(kb, &param, &op.return_type, &op.effects, op.params.len(), span, owner))
+    Some(make_arrow_value(kb, &param, &return_type, &op.effects, op.params.len(), span, owner))
 }
 
 /// WI-700: is `sym` a NULLARY (zero-parameter) operation? Only a nullary op has both
@@ -8138,13 +8179,13 @@ fn unroll_annotation_with_inferred(
             // against anything). A NAMED var (`Pair[A = ?t, B = ?t]`) is NOT
             // replaced: independently overwriting each slot would silently
             // lose the same-var tie the user wrote.
-            Some(slot)
-                if matches!(
-                    extract_type(kb, &slot.1),
-                    TypeExtractor::TypeVar(name)
-                        if matches!(kb.local_name_of(name), "?" | "?_")
-                ) =>
-            {
+            // WI-1063: via the shared [`value_is_anonymous_wildcard`], which is the one owner
+            // of "the author wrote `?` here". It reads the PARSER's carrier as well as the
+            // `type_var` one this site used to test alone — a widening, and a measured one:
+            // the full workspace suite is green either way, so no delivered program reaches
+            // this site with an anonymous `Var::Global` annotation. Shared anyway, because a
+            // second reader of the convention is how the two spellings drift apart.
+            Some(slot) if value_is_anonymous_wildcard(kb, &slot.1) => {
                 slot.1 = v.clone();
                 changed = true;
             }
@@ -9563,7 +9604,7 @@ fn concrete_override_threaded(
     fn_sym: Symbol,
     self_recv_spec: Option<Symbol>,
     pos_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Value, Vec<Value>)> {
+) -> Option<(Value, Vec<Value>, Symbol)> {
     // Self-receiver spec ops only (`splitFirst(s: Stream)`): the carrier-param
     // shape (`collect(c: C)`) does not write a receiver-projected return.
     let spec_sort = self_recv_spec?;
@@ -9593,7 +9634,13 @@ fn concrete_override_threaded(
         .iter()
         .map(|e| resolve_type_deep_value(kb, &subst, e))
         .collect();
-    Some((ret, effs))
+    // WI-1063: `impl_op`, not the spec op the CALL named. The returned type is the
+    // OVERRIDE's declaration, so every question asked about it downstream must be asked of
+    // its owner — in particular whether a sort reference in it is SELF (the §3 tie). Keying
+    // that on `fn_sym` would read `MappedStream.splitFirst`'s own `B = MappedStream[…]` as
+    // FOREIGN, since `fn_sym` is `Stream.splitFirst`, and skolemize the very carrier tie this
+    // function exists to thread.
+    Some((ret, effs, impl_op))
 }
 
 // ── Expression form checkers ───────────────────────────────────
@@ -10116,10 +10163,16 @@ fn check_apply_iter(
         // (`Function[Int64, Int64]` with open `E` vs a `String -> Bool`
         // argument must still be a loud mismatch).
         let written_params = op.params.clone();
+        // WI-1063: computed ONCE, and via [`impl_parent_sort_of_op`]. Both polarities of the
+        // §3 tie ask this one question — "is a reference to this sort the callee's OWN?" —
+        // and until this hoist they asked it in two spellings: the parameter expansion here
+        // read `kind_of`, which WI-956 exists to replace (a symbol's categories are a SET and
+        // `kind_of` reports only the first-declared one), while the return opening below read
+        // `has_kind`. On a §6.3 re-declared sort the two answered differently, and one gate
+        // being wrong is a silent expansion of the callee's own parameters.
+        let callee_parent_sort = impl_parent_sort_of_op(kb, fn_sym);
         {
-            let callee_parent_canon = impl_parent_of_op(kb, fn_sym)
-                .filter(|p| matches!(kb.kind_of(*p), Some(crate::intern::SymbolKind::Sort)))
-                .map(|p| kb.canonical_sort_sym(p));
+            let callee_parent_canon = callee_parent_sort.map(|p| kb.canonical_sort_sym(p));
             for i in 0..op.params.len() {
                 if let Some(exp) =
                     expand_foreign_sort_application(kb, &op.params[i].1, callee_parent_canon)
@@ -10559,6 +10612,11 @@ fn check_apply_iter(
         // reads the `E` member off the receiver's type, threading the observation effect
         // row. `l.E` on a sort with no effect member is the same loud missing-member
         // error — `E` is never silently defaulted to pure (design §5).
+        // WI-1063: WHOSE declaration `proj_return_type` came from. Normally the callee's, but
+        // the WI-606 fallback below threads a CONCRETE OVERRIDE's return instead, and the
+        // existential opening has to ask the §3 self question of that operation's sort, not of
+        // the spec op the call named.
+        let mut return_owner = fn_sym;
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
             let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
             // WI-459: pass the formal→argument value-reference map so a projection NEUTRAL
@@ -10594,7 +10652,10 @@ fn check_apply_iter(
                     (rt, effs)
                 }
                 Err(e) => match concrete_override_threaded(kb, &op, fn_sym, self_recv_spec, pos_results) {
-                    Some(rt_effs) => rt_effs,
+                    Some((rt, effs, impl_op)) => {
+                        return_owner = impl_op;
+                        (rt, effs)
+                    }
                     None => return Err(e),
                 },
             }
@@ -10698,6 +10759,53 @@ fn check_apply_iter(
         if let Some(exp) = expected {
             unify_types(kb, &mut subst, &proj_return_type, &exp);
         }
+
+        // WI-1063 — OPEN the callee's existential return. A RETURN's unwritten sort
+        // parameter is in POSITIVE position and is EXISTENTIALLY quantified: `operation
+        // widen(…) -> Stream[T = Int64]` declares `∃E. Stream[T = Int64, E]`. The body PACKS
+        // a witness (which is why `widen` loads, and why the mirror-image rewrite is NOT in
+        // `check_operation_bodies` — see the block comment there), and EVERY USE OPENS: this
+        // call's result is `Stream[T = Int64, E = ρ]` for a fresh rigid ρ, so a consumer that
+        // demanded `E = {}` is refused HERE rather than at `widen`'s declaration.
+        //
+        // FRESHNESS PER OPENING IS THE SOUNDNESS, not an implementation detail — two calls
+        // may genuinely return different rows, so one shared constant would relate them.
+        // `UnwrittenFill::Anonymous` mints per slot per call and nothing names a ρ, which is
+        // the correct reading of an UNNAMED existential: `docs/design/type-parameter-
+        // scoping.md` §5's "erased" ("no consumer-side mechanism can soundly recover `l`'s
+        // element or effect") is this opening said without the word.
+        //
+        // THE SAME WALK AS THE PARAMETER SIDE, under the other polarity, which is why it is
+        // that function and not a second one: a parameter's unwritten slot is negative-
+        // position and UNIVERSAL, so WI-1059/WI-1061 rigidify it in the BODY and leave it
+        // flexible at a call; a return's is existential, so it stays as written in the body
+        // and is rigidified at the CALL. One rule, two polarities — and the two sites now
+        // differ only in [`SlotPosition`] and in the filler.
+        //
+        // AFTER the `expected` seeding above, deliberately, and the reason is the SECOND half
+        // of this sentence rather than the first. For an OMITTED slot seeding cannot reach it
+        // either way — a missing binding is width-ignored by `unify_parameterized_view`, so
+        // there is nothing there to bind — but a slot written `?` is a live flexible var that
+        // seeding CAN bind, and the opening then replaces it and discards that binding, which
+        // is the intended verdict but not a no-op. What forces the order is that running the
+        // opening first would hand `unify_types` a rigid against the caller's concrete demand,
+        // and a FAILED unify may leave `subst` marked contradictory for every reader below.
+        //
+        // `return_owner`, not `fn_sym`: see its declaration above.
+        let proj_return_type = match open_existential_return(
+            kb,
+            if return_owner == fn_sym {
+                callee_parent_sort
+            } else {
+                impl_parent_sort_of_op(kb, return_owner)
+            },
+            &proj_return_type,
+            occ.span,
+            occ.owner,
+        ) {
+            Some(opened) => opened,
+            None => proj_return_type,
+        };
 
         // Apply param-name substitution to op.effects (WI-209), then
         // walk each through `walk_type_deep` so type-var bindings from
@@ -12243,8 +12351,19 @@ fn check_apply_iter(
     }
     let _ = pos_args;
     let _ = named_args;
+    // WI-1063: the declared return becomes this call's result here too, outside the Path-1
+    // block, so the opening runs here as well — a callee with a recorded return but no full
+    // `OperationInfo` is still a callee, and a rule that holds only on the path the typer
+    // usually takes is not a rule.
     lookup_operation_return_type(kb, fn_sym)
-        .map(|ty| TypeResult { ty: Value::term(ty), env: env.clone(), effects, node: Rc::clone(occ) })
+        .map(|ty| {
+            let ret = Value::term(ty);
+            let ret = open_existential_return(
+                kb, impl_parent_sort_of_op(kb, fn_sym), &ret, occ.span, occ.owner,
+            )
+            .unwrap_or(ret);
+            TypeResult { ty: ret, env: env.clone(), effects, node: Rc::clone(occ) }
+        })
         .ok_or_else(|| {
             // WI-565: refine the terse "unknown functor" when the bare name IS a
             // member operation of some sort — bare member names are in scope only
@@ -40226,8 +40345,7 @@ fn rigidify_unwritten_sort_params(
     kb: &mut KnowledgeBase,
     fill: UnwrittenFill,
     ty: &Value,
-    parent_sort: Option<Symbol>,
-    rigidify: &Substitution,
+    position: SlotPosition<'_>,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
@@ -40271,8 +40389,7 @@ fn rigidify_unwritten_sort_params(
                 kb,
                 UnwrittenFill::Anonymous,
                 &result,
-                parent_sort,
-                rigidify,
+                position,
                 span,
                 owner,
             )?;
@@ -40294,8 +40411,7 @@ fn rigidify_unwritten_sort_params(
                     kb,
                     UnwrittenFill::Anonymous,
                     v,
-                    parent_sort,
-                    rigidify,
+                    position,
                     span,
                     owner,
                 ) {
@@ -40322,8 +40438,9 @@ fn rigidify_unwritten_sort_params(
     if declared.is_empty() {
         return None;
     }
-    let is_self =
-        parent_sort.is_some_and(|p| kb.canonical_sort_sym(p) == kb.canonical_sort_sym(base));
+    let is_self = position
+        .self_sort()
+        .is_some_and(|p| kb.canonical_sort_sym(p) == kb.canonical_sort_sym(base));
     let key_match = BindingKeyMatch::for_bases(kb, base, base);
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(declared.len().max(written.len()));
     let mut consumed = vec![false; written.len()];
@@ -40338,7 +40455,11 @@ fn rigidify_unwritten_sort_params(
             // it arrives here as a still-FLEX var. Anything else the author wrote —
             // a concrete type, the op's own `[E]` (already a rigid), the enclosing sort's
             // param — is what they meant, and stands.
-            if !value_is_flex_var(kb, v) {
+            //
+            // WI-1063: WHICH written carriers count is the position's, not a constant — at a
+            // call the broad flex-var test reads the opposite fact. See
+            // [`SlotPosition::written_slot_is_unwritten`], which the corpus decided.
+            if !position.written_slot_is_unwritten(kb, v) {
                 // WI-1061 — but what the author wrote may itself leave slots unwritten one
                 // level DOWN (`l: List[T = Stream]` writes `T` and leaves `Stream`'s own
                 // `T`/`E` open), and those are unwritten in exactly the §"Expansion during
@@ -40366,8 +40487,7 @@ fn rigidify_unwritten_sort_params(
                     kb,
                     UnwrittenFill::Anonymous,
                     v,
-                    parent_sort,
-                    rigidify,
+                    position,
                     span,
                     owner,
                 );
@@ -40382,10 +40502,21 @@ fn rigidify_unwritten_sort_params(
             }
         }
         let filled = if is_self {
-            // THIS instance's parameter: the sort's canonical var run through the
-            // rigidify substitution WI-424 built, so the slot holds the same skolem every
-            // other mention of the parameter in this body already resolves to.
-            Value::term(walk_type_deep(kb, rigidify, *canonical))
+            match position.fill_self(kb, *canonical) {
+                Some(v) => v,
+                // WI-1063 — this position leaves a self slot unwritten (see [`SlotPosition`]).
+                // Put back exactly what was there: the slot is already marked `consumed`, so
+                // the carry-the-unmatched loop below will NOT restore it and skipping outright
+                // would DROP an author's `P[A = ?]` on the floor whenever a sibling binding
+                // caused a rebuild. That drop is invisible — `A = ?` and an absent `A` mean the
+                // same type — which is precisely why it must not be left to be re-derived.
+                None => {
+                    if let Some(i) = slot {
+                        bindings.push(written[i].clone());
+                    }
+                    continue;
+                }
+            }
         } else {
             fill.mint(kb, *param)
         };
@@ -40405,6 +40536,137 @@ fn rigidify_unwritten_sort_params(
     }
     let base_ref = kb.make_sort_ref(base);
     Some(parameterized_value(kb, base_ref, &bindings, span, owner))
+}
+
+/// WI-1063 — OPEN one call's existential return: mint a FRESH anonymous rigid for every
+/// unwritten sort parameter in the callee's declared return type. The caller's rationale is
+/// at the call site in [`check_apply_iter`]; what belongs here is the SCOPE.
+///
+/// FOREIGN SLOTS ONLY, via [`SlotPosition::CallResult`] — the callee's OWN sort is not
+/// existential in its return, it is the §3 parametricity tie, and this call's argument
+/// unification is what pins it through the canonical channel. Skipping it is the same
+/// decision [`expand_foreign_sort_application`] takes on the parameter side, keyed the same
+/// way, and for one reading of one rule.
+///
+/// FOUR SITES TURN A DECLARED RETURN INTO A RESULT TYPE, and all four must call this. The
+/// first cut wired only the first, and each omission was a live hole rather than a tidiness
+/// point — the ticket's own exploit ran through both of the ones review found:
+///
+/// * [`check_apply_iter`]'s Path 1, which every *applied* form reaches — a dotted call
+///   (`s.map(f)`), a qualified static (`Stream.splitFirst(s)`) and a bare application all
+///   desugar to one `Apply` (WI-752's unified ladder);
+/// * [`check_apply_iter`]'s Path 3, the fallback for a functor that has a recorded return but
+///   no full `OperationInfo`;
+/// * [`check_bare_ref`]'s ZERO-ARG-CALL reading, where a nullary operation named WITHOUT
+///   parentheses denotes its return. DRIVEN: `takes_pure(mk())` was refused while
+///   `takes_pure(mk)` loaded clean — the exploit surviving a one-character edit — and it is
+///   not the eta reading, since `mk() -> Stream[T = String]` is refused at the same site;
+/// * [`operation_as_function_value`]'s ETA lift, whose arrow RESULT is that same declared
+///   return. DRIVEN: `apply_it(widen, s)` laundered `{Error}` into a slot declaring `E = {}`.
+///   That site opens ONCE PER LIFT rather than per application, which is a real limit stated
+///   there — an arrow type has nowhere to write `∃`.
+///
+/// `callee_sort` is the sort that declares the operation whose return this IS, which is not
+/// always the one the CALL named: the WI-606 fallback threads a concrete override's
+/// declaration, and asking the §3 self question of the spec op would read the override's own
+/// carrier as foreign. Its callers pass `impl_parent_sort_of_op` of the right symbol.
+///
+/// `None` when nothing was opened, which is the overwhelmingly common case: a fully-written
+/// return, a non-parametric one, or a self-sort one. The caller keeps its original value
+/// rather than a re-minted equal-but-distinct carrier.
+fn open_existential_return(
+    kb: &mut KnowledgeBase,
+    callee_sort: Option<Symbol>,
+    ret: &Value,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Option<Value> {
+    rigidify_unwritten_sort_params(
+        kb,
+        UnwrittenFill::Anonymous,
+        ret,
+        SlotPosition::CallResult { callee_sort },
+        span,
+        owner,
+    )
+}
+
+/// WI-1063 — WHICH POSITION [`rigidify_unwritten_sort_params`] is walking. The walk itself is
+/// one rule read at two polarities (a parameter's unwritten slot is universal and rigid in the
+/// BODY; a return's is existential and rigid at the CALL), and everything the two positions
+/// disagree about is here. There are exactly two disagreements, and each has a corpus
+/// measurement behind it rather than a symmetry argument.
+#[derive(Clone, Copy)]
+enum SlotPosition<'a> {
+    /// The operation's own BODY (WI-1059/WI-1061). `sort` is the enclosing sort and
+    /// `rigidify` the WI-424 substitution that skolemized its parameters.
+    Body { sort: Option<Symbol>, rigidify: &'a Substitution },
+    /// One CALL's result (WI-1063). `callee_sort` is the CALLEE's own sort.
+    CallResult { callee_sort: Option<Symbol> },
+}
+
+impl SlotPosition<'_> {
+    /// The sort a reference must name to count as SELF here.
+    fn self_sort(self) -> Option<Symbol> {
+        match self {
+            SlotPosition::Body { sort, .. } => sort,
+            SlotPosition::CallResult { callee_sort } => callee_sort,
+        }
+    }
+
+    /// What an unwritten slot on a SELF reference takes, or `None` to leave it unwritten.
+    /// `canonical` is that sort's own canonical parameter var (the `SortAlias` target).
+    ///
+    /// THE BODY knows the instance: the canonical var run through the rigidify substitution,
+    /// so the slot holds the same skolem every other mention of that parameter in this body
+    /// already resolves to.
+    ///
+    /// A CALL MUST NOT INVENT ONE, and leaves it — the same decision
+    /// [`expand_foreign_sort_application`] takes on the parameter side and for the same
+    /// reason: the callee's own sort rides the canonical channel, where THIS call's argument
+    /// unification binds it (`type-parameter-scoping.md` §3 bullet 1). Both other answers are
+    /// wrong and both are reachable from this arm if it ever grows one — a fresh skolem would
+    /// refuse `takes_int(reverse(xs))` for every self-returning member in the stdlib, and the
+    /// canonical var itself would stamp a dangling FLEX var into `resolved_ret` for an
+    /// argument-less `List.empty()`, the hazard the WI-374 note at the parameter expansion
+    /// names.
+    fn fill_self(self, kb: &mut KnowledgeBase, canonical: TermId) -> Option<Value> {
+        match self {
+            SlotPosition::Body { rigidify, .. } => {
+                Some(Value::term(walk_type_deep(kb, rigidify, canonical)))
+            }
+            SlotPosition::CallResult { .. } => None,
+        }
+    }
+
+    /// Does a slot the author DID write nevertheless count as unwritten here? Both positions
+    /// answer yes for the same reason — kernel-language §"Expansion during unification" says
+    /// spelling a slot `?` means exactly what omitting it means — and they disagree only about
+    /// which carriers can still be an author's `?` by the time the walk sees them.
+    ///
+    /// IN THE BODY, ANY STILL-FLEXIBLE VARIABLE IS ONE. That is WI-1056's four-spellings
+    /// agreement: by then the op's own `[E]` and its enclosing sort's parameters are already
+    /// `Var::Rigid` (WI-392/WI-942), so nothing else is left flexible.
+    ///
+    /// AT A CALL, ONLY AN ANONYMOUS ONE IS, and the same broad test would read the opposite
+    /// fact. The signature a call site sees is the KB's `OperationInfo`, where NOTHING has
+    /// been rigidified: the op's `[Elem]`, the enclosing sort's parameters, and a `s.T`
+    /// projection already eliminated against the receiver are all still flexible Globals, and
+    /// they are precisely the slots this call is about to BIND. MEASURED, and it is why this
+    /// is a policy and not a shared constant: with the body's answer here the stdlib reports
+    /// `FilteredStream.splitFirst`'s `Pair[A = Elem]` re-minted as an unrelated `Pair[A = ?A]`
+    /// — the op's own type parameter skolemized out from under its own inference — and
+    /// `LogicalStream.empty() -> LogicalStream[?A]` writes a NAMED variable on purpose in a
+    /// RETURN, so a call to it would hand back a row nothing can bind. A named variable can be
+    /// TIED across slots (`Pair[A = ?t, B = ?t]` says "these two agree, whatever they are"),
+    /// which is the same reason [`merge_annotation_bindings`] replaces only the anonymous
+    /// spelling; an anonymous one appears once and pins nothing.
+    fn written_slot_is_unwritten(self, kb: &KnowledgeBase, v: &Value) -> bool {
+        match self {
+            SlotPosition::Body { .. } => value_is_flex_var(kb, v),
+            SlotPosition::CallResult { .. } => value_is_anonymous_wildcard(kb, v),
+        }
+    }
 }
 
 /// WI-1061 — WHERE in a signature an unwritten slot sits, which is the whole of what decides
@@ -40514,6 +40776,48 @@ fn value_is_flex_var(kb: &KnowledgeBase, v: &Value) -> bool {
         Value::Var(Var::Global(_)) => true,
         _ => false,
     }
+}
+
+/// WI-1063 — is `v` spelled with the ANONYMOUS variable name (`Stream[T = ?]`), the written
+/// slot that pins nothing? The narrow half of [`value_is_flex_var`]: a NAMED variable
+/// (`Pair[A = ?t, B = ?t]`, `LogicalStream[?A]`) is excluded, because a name can TIE two slots
+/// and replacing it would lose a relation the author wrote.
+///
+/// TWO CARRIERS SPELL THE SAME `?` AND BOTH ARE READ HERE, which is the whole reason this is
+/// a named predicate rather than an inline match. The PARSER mints one as a fresh
+/// `Var::Global` whose name symbol is `_` (`convert_variable_node`'s bare-`?` branch); the
+/// REFLECT/`type_var` carrier spells it as a [`TypeExtractor::TypeVar`] named `?` or `?_`. A
+/// check that read one and not the other would close a hole in one spelling of one type and
+/// leave it open in the other, silently — the failure mode WI-1016 names.
+///
+/// WHAT IT TESTS IS THE NAME, NOT PROVABLE ANONYMITY, and the difference is real enough to
+/// write down (WI-1063 owns it; there is no corpus population to measure it against — the
+/// seven tiers contain ZERO anonymous wildcard type bindings). The symbol `_` has three
+/// producers, and the parser gives two of them the SAME symbol, so no test on this value can
+/// separate them:
+///
+/// * bare `?` — fresh per occurrence, ties nothing. The case this predicate is for.
+/// * `?_` — `convert_variable_node` takes its NAMED branch (`text.len() > 1`) and interns the
+///   text after the `?`, which is `_`: a scope-SHARED var, so `Pair[A = ?_, B = ?_]` is a tie
+///   and opening it would break exactly what the paragraph above says must not break. It is
+///   indistinguishable here, and it was already read as anonymous by the annotation-merge
+///   site below before this ticket.
+/// * `fresh_anon_type_var`, which interns `_` for the DEFINITION of `sort T = ?`. That
+///   definition reaches a type slot as the sort's canonical `SortAlias` target, not as this
+///   carrier — a written sort parameter arrives resolved, and its tie survives.
+fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool {
+    let name = match extract_type(kb, v) {
+        TypeExtractor::TypeVar(n) => n,
+        _ => match v {
+            Value::Term { id, .. } => match kb.get_term(*id) {
+                Term::Var(Var::Global(vid)) => vid.name(),
+                _ => return false,
+            },
+            Value::Var(Var::Global(vid)) => vid.name(),
+            _ => return false,
+        },
+    };
+    matches!(kb.local_name_of(name), "_" | "?" | "?_")
 }
 
 fn rigidify_op_type_params(
@@ -40761,65 +41065,55 @@ fn check_operation_bodies(
                     kb,
                     UnwrittenFill::Projection(*n),
                     t,
-                    parent_of_op,
-                    &rigidify_subst,
+                    SlotPosition::Body {
+                        sort: parent_of_op,
+                        rigidify: &rigidify_subst,
+                    },
                     body_node.span,
                     body_node.owner,
                 );
                 (*n, ty.unwrap_or_else(|| t.clone()))
             })
             .collect();
-        // NOT THE RETURN TYPE — **WI-1063** owns it, and the reason is a decision the
-        // language has not taken rather than a line missing here. WI-1061 built the walk over
-        // the return and MEASURED it; the whole of it is one more call to the SAME function
-        // just made above, with `UnwrittenFill::Anonymous` and `return_type`, written back
-        // over `OpInfo.return_type` (the only two readers are the conformance check via
-        // `effective_return` and the WI-314 boundary masking, and both are body-side). It
-        // works and it refuses the hole — `widen(s: Stream[T = Int64, E = {Error}]) ->
-        // Stream[T = Int64] = s` fails at `widen.return`, `expected E = ?E` — but it costs 40
-        // tests across thirteen delivered tickets (measured on THIS tree, with the arrow and
-        // tuple arms above in place; an earlier count of 32/nine was taken before them and was
-        // also mis-tallied).
+        // NOT THE RETURN TYPE, and **WI-1063** is why — not an omission but the other half of
+        // one rule. Read the quantifier off the POLARITY of the arrow.
         //
-        // AND IT IS THE WRONG QUANTIFIER, which is the real reason it is held back — the cost
-        // is a symptom. Read the polarity off the arrow. A PARAMETER's unwritten slot is
-        // negative-position and UNIVERSAL: the caller instantiates it, which is why it is
-        // flexible at a call and rigid in the body (WI-1059, and the walk above). A RETURN's
-        // is positive-position and EXISTENTIAL: `-> Stream[T = Int64]` declares
-        // `∃E. Stream[T = Int64, E]`. The BODY PACKS a witness — so `widen` is CORRECT as
-        // written and must keep loading, and "the inferred type is more specific than the
-        // declared one" is existential introduction, not a defect. EACH CALL OPENS, minting a
-        // FRESH skolem per opening, so `widen(s) : Stream[T = Int64, E = ρ]` and the CONSUMER
-        // is what fails. Rigidifying here would demand the body be good for EVERY row —
-        // universal in a positive position — which is why its 40 failures are mostly correct
-        // programs refused for not being polymorphic where only a witness was asked.
+        // A PARAMETER's unwritten slot is negative-position and UNIVERSAL: the caller
+        // instantiates it, so it is flexible at a call and rigid HERE, in the body, which is
+        // what the walk just above enforces (WI-1059/WI-1061). A RETURN's is positive-position
+        // and EXISTENTIAL: `-> Stream[T = Int64]` declares `∃E. Stream[T = Int64, E]`. The BODY
+        // PACKS a witness — so `widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64]
+        // = s` is CORRECT as written and must keep loading, and "the inferred type is more
+        // specific than the declared one" is existential introduction, not a defect. EACH USE
+        // OPENS, minting a fresh skolem per opening, so `widen(s) : Stream[T = Int64, E = ρ]`
+        // and the CONSUMER is what fails. The opening therefore lives at the call
+        // ([`open_existential_return`], in `check_apply_iter`) and there is nothing to do here.
         //
-        // `docs/design/type-parameter-scoping.md` §5's informal "erased" ("the element/effect
-        // tie to `l` is GONE", a wart to fix by writing the type, NOT a body error) is that
-        // existential said without the word, and §4 records normalizing foreign bare refs in
-        // signatures as the still-open WI-374 scope. So the two documents were never in
-        // conflict; one names the quantifier and the other describes its effect.
+        // THE OTHER READING WAS BUILT, MEASURED AND REJECTED, and it is worth the lines
+        // because it is one call to the same function above (`UnwrittenFill::Anonymous` over
+        // `return_type`, written back onto `OpInfo.return_type`) and so looks like the obvious
+        // completion. It refuses `widen` at `widen.return`, `expected E = ?E` — that is the
+        // WRONG QUANTIFIER, a universal in a positive position, demanding the body be good for
+        // EVERY row when only a witness was asked. Its cost is the symptom: 40 tests across
+        // thirteen delivered tickets (WI-353/374/401/402/405/457/480/488/491/734/762/776/839),
+        // mostly correct programs refused for failing to be polymorphic. Against that, the
+        // existential reading shipped costing THREE — the two WI-1061 pins that flip by design
+        // and `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows`, which pinned
+        // the accepting side of this very hole (a `List` of Strings bound to an annotated
+        // `List[T = Int64]`, driven on the delivered tree). Do not revive the universal reading
+        // without defending it on its merits.
         //
-        // What the delivered tree already bets on the pack/open reading:
-        // `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows` pins `makeList() ->
-        // List = cons(1, nil)` as LOADING and says at its site that the return is deliberately
-        // not expanded — a body packing a witness; `bare_value_stays_unusable` refuses the
-        // CONSUMER of an erased value, which is the opening. And the WI-401/402/457/480/488/491
-        // escape gate is built on a bare abstract-spec return CONFORMING by provider upcast and
-        // only then being refused with its own diagnostic — materialize the return and
-        // `abstracting_return_error` is never reached, so that family silently disappears.
+        // It also silently retires the escape gate: `abstracting_return_error` sits in the
+        // `else` of `!conforms`, so materializing the return makes the WI-401/402/457/480/488/
+        // 491 family unreachable rather than merely re-fixtured. Opening at the call leaves
+        // that gate's precondition — a bare abstract-spec return CONFORMING by provider upcast
+        // — exactly as it was; driven, its diagnostic is byte-identical before and after.
         //
-        // SO WI-1063'S FIX DOES NOT BELONG HERE AT ALL. Opening happens at the USE: a fresh
-        // skolem per call, minted where a callee's declared return becomes the call's result
-        // type (`check_apply_iter`, the `proj_return_type` computation and the unify against
-        // `expected` below it). Nothing to copy from the WI-402 carrier, which needs no
-        // opening code — `strip_spec_carrier` DROPS the carrier so the declared return already
-        // IS the abstract spec, and `needs_mem(openOne(m))` then fails by ordinary subtyping.
-        // The carrier supplies the semantics, not an implementation.
-        //
-        // The PARAMETER walk above is unaffected either way: a parameter's unwritten slot is
-        // universal, and rigid in the body, under both readings (WI-1059 measured it, and the
-        // nested/arrow/tuple half here costs the corpus and the suite nothing).
+        // `docs/design/type-parameter-scoping.md` §5's informal "erased" ("no consumer-side
+        // mechanism can soundly recover `l`'s element or effect") is this existential said
+        // without the word, and `docs/kernel-language.md` §"Expansion during unification" now
+        // states both polarities. The two documents were never in conflict; one names the
+        // quantifier and the other describes its effect.
         ops_to_check.push(OpInfo {
             op_sym: rec.op_sym,
             return_type,

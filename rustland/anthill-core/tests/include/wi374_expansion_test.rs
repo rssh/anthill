@@ -408,13 +408,26 @@ end
     }
 }
 
-/// Signature expansion end-to-end sanity: a FOREIGN op with a bare `List`
-/// return loads, and its call site stays usable through an annotation. (The
-/// return itself is deliberately NOT expanded — a bare return is erased, §5;
-/// the annotation-as-bound-type is what carries the element here, the same
-/// bare-vs-parameterized width acceptance as before WI-374.)
+/// Signature expansion end-to-end: a FOREIGN op with a bare `List` return LOADS — the return
+/// is deliberately not expanded at the DECLARATION (§5, a bare return is erased) and the body
+/// packs a witness. **WI-1063 flipped the second half of this row.** An annotation may no
+/// longer narrow the result: `makeList() -> List` is `∃T. List[T]`, each call OPENS it to a
+/// fresh skolem, and `let l : List[T = Int64]` is refused at `l.annotation`.
+///
+/// THE OLD VERDICT WAS THE HOLE, NOT A FEATURE, and this row said so itself without noticing —
+/// "the annotation-as-bound-type is what carries the element here". The type carries nothing;
+/// the annotation was fabricating it. DRIVEN on the delivered tree, one word changed:
+/// `makeList() -> List = cons(head: "x", tail: nil)` — a list of STRINGS — bound to the same
+/// `let l : List[T = Int64]` loaded clean. That is `takes_pure(widen(s))` with the element
+/// type in place of the effect row, and this row was pinning its accepting side.
+///
+/// Asserted on the site AND the pair: at `l.annotation`, `expected List[T = Int64]` against a
+/// `got` that carries the opened skolem. A bare "some error" would also pass if the
+/// declaration itself had started failing, which is the verdict WI-1063 rejected.
+///
+/// CONTROL: on main both halves load, including the String-bodied variant above.
 #[test]
-fn foreign_bare_return_op_loads_and_narrows() {
+fn foreign_bare_return_op_loads_but_no_longer_narrows() {
     let src = r#"
 namespace test.wi374.foreign_ret
   import anthill.prelude.{Int64, Option, List, nil, cons}
@@ -428,7 +441,17 @@ namespace test.wi374.foreign_ret
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "foreign bare-return op must load and narrow via annotation: {errs:#?}");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("l.annotation") && joined.contains("expected List[T = Int64]"),
+        "the erased element may not be recovered by an annotation, and the refusal belongs at \
+         the annotation — NOT at `makeList`, whose body packs a witness: {errs:#?}",
+    );
+    assert!(
+        !joined.contains("makeList.return"),
+        "`makeList() -> List` is an existential the body witnesses; refusing it would be the \
+         universal reading WI-1063 rejected: {errs:#?}",
+    );
 }
 
 /// Type-not-provenance boundary (§5): expansion supplies VARIABLES, never

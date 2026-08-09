@@ -1,7 +1,7 @@
 //! WI-1061 — an UNWRITTEN sort parameter is RIGID when NESTED inside a binding, not only at a
-//! parameter's top level. And the RETURN position, which this ticket also owned, is PINNED
-//! open here rather than left unrecorded: **WI-1063** owns it, and the last two tests are its
-//! control.
+//! parameter's top level. And the RETURN position, which this ticket also owned, was PINNED
+//! open here rather than left unrecorded; **WI-1063** has since closed it, and the last two
+//! tests — this file's own control — have flipped to the verdict it decided.
 //!
 //! WI-1059 made the rule bite in one position and said so at its site: `s: Stream[T = Int64]`
 //! is checked as `s: Stream[T = Int64, E = s.E]`, so a body may not assume the row. The same
@@ -17,35 +17,36 @@
 //! nothing else names a nested slot, and the one nested thing that IS named elsewhere — a
 //! SELF-sort reference — never reaches the anonymous arm.
 //!
-//! ## Why the return position is not closed here — MEASURED, not deferred on a hunch
+//! ## Why the return position was not closed HERE — MEASURED, not deferred on a hunch
 //!
 //! The walk works in the return: pass the return type through the same function and `widen`
 //! below is refused at `widen.return`, `expected E = ?E`. It costs **40 tests across thirteen
 //! delivered tickets** (WI-353/374/401/402/405/457/480/488/491/734/762/776/839, plus this
-//! file's own two pins, which flip by design) — and it is the WRONG QUANTIFIER, which is the
-//! reason it is held back rather than the cost alone.
+//! file's own two pins) — and it is the WRONG QUANTIFIER, which is the reason it is held back
+//! rather than the cost alone.
 //!
 //! Read the polarity off the arrow. A PARAMETER's unwritten slot is negative-position and
 //! UNIVERSAL — the caller instantiates it, so it is flexible at a call and rigid in the body,
 //! which is what this file's other rows enforce. A RETURN's is positive-position and
 //! EXISTENTIAL: `-> Stream[T = Int64]` is `∃E. Stream[T = Int64, E]`. The body PACKS a
 //! witness, so `widen` below is CORRECT as written and must keep loading; each call OPENS,
-//! minting a fresh skolem, so the CONSUMER is what should fail. Rigidifying the return in the
-//! body check demands the body be good for every row — a universal in a positive position —
-//! which is why its 40 failures are mostly correct programs refused for not being polymorphic
-//! where only a witness was asked.
+//! minting a fresh skolem, so the CONSUMER is what fails. Rigidifying the return in the body
+//! check demands the body be good for every row — a universal in a positive position — which
+//! is why its 40 failures are mostly correct programs refused for not being polymorphic where
+//! only a witness was asked.
 //!
 //! `docs/design/type-parameter-scoping.md` §5's "erased" is that existential said without the
-//! word, and two delivered tests already bet on it:
-//! `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows` pins `makeList() -> List =
-//! cons(1, nil)` as LOADING (a body packing a witness), and `bare_value_stays_unusable`
-//! refuses the CONSUMER of an erased value (the opening). The WI-401/402/457/480/488/491
-//! escape gate is built on a bare abstract-spec return CONFORMING by provider upcast and only
-//! then being refused with its own diagnostic — materialize the return and that gate stops
-//! firing at all, so its fixtures cannot simply be updated.
+//! word, and a delivered test already bet on it: `wi374_expansion_test::bare_value_stays_-
+//! unusable` refuses the CONSUMER of an erased value, which is the opening. The
+//! WI-401/402/457/480/488/491 escape gate is built on a bare abstract-spec return CONFORMING
+//! by provider upcast and only then being refused with its own diagnostic — materialize the
+//! return and that gate stops firing at all, so its fixtures cannot simply be updated.
 //!
-//! WI-1063 owns the fix, and it does not live where this ticket's walk lives: opening happens
-//! at the USE (a fresh skolem per call, in `check_apply_iter`), not in the body check.
+//! **WI-1063 delivered the fix, and it does not live where this ticket's walk lives**: opening
+//! happens at the USE — a fresh skolem per call, `open_existential_return` in
+//! `check_apply_iter` — never in the body check. It cost THREE tests: the last two rows here,
+//! and `wi374_expansion_test::foreign_bare_return_op_loads_and_narrows`, which had pinned the
+//! ACCEPTING side of this same hole. `wi1063_existential_return_test` drives the new verdict.
 //!
 //! ## What fails when each piece is backed out — DRIVEN, one revert each
 //!
@@ -56,8 +57,8 @@
 //! | `an_effect_row_binding_is_not_a_nested_type` | ok | ok | **FAILS** | ok |
 //! | `a_self_reference_nested_in_a_binding_keeps_the_sort_tie` | ok | ok | ok | **FAILS** |
 //! | `a_body_that_holds_for_every_instantiation_still_loads` | ok | ok | ok | ok — by design |
-//! | `a_return_position_unwritten_row_is_not_yet_rigid` | ok | ok | ok | ok — pin |
-//! | `an_effectful_stream_still_reaches_a_pure_slot_through_a_return` | ok | ok | ok | ok — pin |
+//! | `a_return_position_unwritten_row_is_opened_at_the_call_not_the_declaration` | ok | ok | ok | ok — WI-1063 |
+//! | `an_effectful_stream_no_longer_reaches_a_pure_slot_through_a_return` | ok | ok | ok | ok — WI-1063 |
 //!
 //! The reverts are: make the recursion into a written binding return `None`; delete the
 //! `Arrow`/`NamedTuple` arms so those carriers fall to `_ => None`; drop the
@@ -66,6 +67,12 @@
 //! alone, on this file; every row above is a measurement, not a prediction. Each column fails
 //! exactly ONE row — the corpus does not reach any of these mechanisms, so this file is their
 //! only coverage and a wrong cell here would go unnoticed everywhere else.
+//!
+//! The last two rows are "ok" in every column because none of these four mechanisms is what
+//! decides them: they measure the CALL-SITE opening WI-1063 added, and their revert is that
+//! one (`open_existential_return` returning `None`), driven in
+//! `wi1063_existential_return_test`. They stay here because this is where the decision
+//! between the two readings is written down.
 //!
 //! The arrow/tuple column is the review's finding on the first cut, and is worth its own line
 //! because the shape that first shipped looked complete: the walk descended through
@@ -94,8 +101,10 @@ const NESTED: &str = "namespace test.wi1061.nested\n\
     \x20 operation caller(l: List[T = Stream[T = Int64, E = {Error}]]) -> Int64 = feed(l)\n\
     end\n";
 
-/// The RETURN-position program, PINNED as it loads today. `widen` is handed an effectful
-/// stream and declares a return whose row it does not write.
+/// The RETURN-position program. `widen` is handed an effectful stream and declares a return
+/// whose row it does not write; `exploit` feeds the result to a slot that demands the empty
+/// row. WI-1063's verdict is that `widen` LOADS and `exploit` is REFUSED — the two rows at the
+/// foot of this file read those two halves apart.
 const WIDEN: &str = "namespace test.wi1061.ret\n\
     \x20 import anthill.prelude.{Int64, Stream, Error}\n\
     \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
@@ -265,32 +274,46 @@ fn a_self_reference_nested_in_a_binding_keeps_the_sort_tie() {
     );
 }
 
-/// THE RETURN POSITION, PINNED OPEN — **WI-1063**. This is not a passing capability test; it
-/// records that the hole is still reachable, so that whoever closes it sees this row go red
-/// and finds the decision written down instead of rediscovering it.
+/// THE RETURN POSITION — this row was WI-1063's control and it has FLIPPED. It pinned the
+/// whole three-operation chain as LOADING; the refusal now lands at `exploit`'s call, and
+/// what stays green is that it does NOT land on `widen`.
 ///
-/// The program is the ticket's own: `widen` promises a stream of every row while holding one
-/// with `{Error}` in it. The header says why enforcing this is a language decision and not a
-/// line to add. `load_kb_with` panics on any load error, so this row also guards the reverse
-/// mistake — a refusal arriving here from some UNRELATED change would fail just as loudly.
+/// That is the half of the verdict this row owns and the half that separates the two readings.
+/// `widen` promises a stream of every row while holding one with `{Error}` in it, and it is
+/// CORRECT AS WRITTEN: `-> Stream[T = Int64]` is `∃E. Stream[T = Int64, E]` and the body packs
+/// a witness. Rigidifying the return in the body check — the other reading, still described in
+/// the header — refuses it right here, at `widen.return`, `expected E = ?E`. Asserting the
+/// absence of `widen.return` is therefore not belt-and-braces: it is the only thing in the
+/// suite that fails if someone revives the universal reading.
+///
+/// CONTROL: on main the whole chain loads and NOTHING is refused, so this row fails there too
+/// — for the other reason (`refusal` panics when a program loads clean).
 #[test]
-fn a_return_position_unwritten_row_is_not_yet_rigid() {
-    crate::common::load_kb_with(WIDEN);
+fn a_return_position_unwritten_row_is_opened_at_the_call_not_the_declaration() {
+    let msg = refusal(WIDEN);
+    assert!(
+        msg.contains("takes_pure.s") && !msg.contains("widen.return"),
+        "the refusal belongs at `exploit`'s call on takes_pure — `widen` PACKS a witness and \
+         must keep loading: {msg}",
+    );
 }
 
-/// The same pin read for its CONSEQUENCE rather than its shape, because "the declaration
-/// loads" is the boring half. `exploit` hands `widen`'s result — whose row the type does not
-/// carry — to a slot that declared `E = {}`, and the whole chain loads: an effectful stream
-/// reaches a pure slot. That is the soundness statement WI-1063 owns, and it is asserted here
-/// so the pin cannot be read as cosmetic.
+/// The same program read for its CONSEQUENCE rather than its shape. `exploit` hands `widen`'s
+/// result — whose row the declared type does not carry — to a slot that declared `E = {}`, and
+/// on main the whole chain loaded: an effectful stream reached a pure slot. It no longer does.
 ///
-/// Driven, not just loaded: `exploit` is resolved from the KB, so the row above cannot pass
-/// on a program whose exploiting operation silently failed to be declared at all.
+/// Asserted on the rendered pair, not on "it is refused": the `got` side must carry the
+/// SKOLEM the opening minted (`E = ?E`), because a refusal that named anything else would mean
+/// the call's result type was rebuilt by some other mechanism and this row would keep passing
+/// if the opening were removed and replaced by a blanket rejection.
+///
+/// CONTROL: on main this loads (2593 facts, no error), driven through `anthill load`.
 #[test]
-fn an_effectful_stream_still_reaches_a_pure_slot_through_a_return() {
-    let kb = crate::common::load_kb_with(WIDEN);
+fn an_effectful_stream_no_longer_reaches_a_pure_slot_through_a_return() {
+    let msg = refusal(WIDEN);
     assert!(
-        kb.try_resolve_symbol("test.wi1061.ret.exploit").is_some(),
-        "the exploiting operation must be declared — otherwise this pin measures nothing",
+        msg.contains("E = ?E") && msg.contains("E = {empty_row}"),
+        "the refusal must name the fresh skolem the call opened and the row it was handed \
+         to: {msg}",
     );
 }

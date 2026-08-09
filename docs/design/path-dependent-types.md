@@ -582,6 +582,18 @@ abstract. Two regimes fall out of the same surface:
   escape" opt-in: controlled by `ensures`, it is safe. It is the genuinely new capability
   (Rust `-> impl Trait`, ML abstract-type-with-signature).
 
+**The MEMBERS are existential too, and the caller opens them (WI-1063).** `ensures Spec[C]`
+leaves both `C` *and* every unwritten member abstract, and both are enforced at the consumer:
+`needs_mem(openOne(m))` is refused because the carrier is a `KVStore` and not the `MemStore`
+that witnessed it, and `needs_int_key(openOne(m))` is refused because `openOne`'s `K` is a
+fresh skolem — not the `String` its witness happens to carry, and certainly not the `Int64`
+the demand asked for. Until WI-1063 only the carrier half held: the loader rewrites the return
+to a bare `-> Spec` (`strip_spec_carrier`), so the members rode the ordinary width-tolerant
+expansion and a demand could name them into existence. The two halves are one rule now — a
+bare or partial return is the *implicit* spelling of this same existential, opened at the same
+place (kernel-language.md §"Expansion during unification"). `wi402_existential_return_test::-
+an_existential_results_members_are_abstract_to_the_caller` drives both halves together.
+
 #### Worked example — a factory returning an interface
 
 ```anthill

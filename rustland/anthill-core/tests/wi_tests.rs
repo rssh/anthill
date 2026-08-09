@@ -1090,6 +1090,9 @@ mod wi1056_rule_body_type_check_test;
 #[path = "include/wi1059_unwritten_param_rigid_test.rs"]
 mod wi1059_unwritten_param_rigid_test;
 
+#[path = "include/wi1063_existential_return_test.rs"]
+mod wi1063_existential_return_test;
+
 #[path = "include/wi1061_unwritten_slot_positions_test.rs"]
 mod wi1061_unwritten_slot_positions_test;
 

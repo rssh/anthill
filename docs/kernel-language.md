@@ -2034,10 +2034,10 @@ Depth means the parameter type's whole structure, not only its sort-application 
 
 The `effects` clause is likewise **not** a position for this rule. An effect atom is a row, a projection, a value-in-type denotation or a concrete label, and where a parametric sort is written there the effects check already refuses a body that incurs a *more* specific instance than the declaration names (`effects Box` against an incurred `Box[T = Int64]`) — strict in the safe direction, so the laundering this rule prevents cannot be built through it.
 
-**In a RETURN the quantifier flips to ∃ — the intended discipline, NOT yet what loads (WI-1063).** Read the quantifier off the arrow's polarity. A parameter's unwritten slot stands in *negative* position and is **universal**: the caller instantiates it, which is the same fact the paragraphs above state from the two ends — flexible at a call, rigid in the body. A return's unwritten slot stands in *positive* position and is **existential**: `-> Stream[T = Int64]` declares `∃E. Stream[T = Int64, E]`. So the two halves are
+**In a RETURN the quantifier flips to ∃ (WI-1063).** Read the quantifier off the arrow's polarity. A parameter's unwritten slot stands in *negative* position and is **universal**: the caller instantiates it, which is the same fact the paragraphs above state from the two ends — flexible at a call, rigid in the body. A return's unwritten slot stands in *positive* position and is **existential**: `-> Stream[T = Int64]` declares `∃E. Stream[T = Int64, E]`. So the two halves are
 
 - the **body packs** — it exhibits a witness, and that is all an existential asks. A body whose inferred type is *more specific* than the declared return is doing existential introduction, not making a mistake;
-- **each call opens** — it mints a **fresh** skolem per opening, so the result of `widen(s)` is `Stream[T = Int64, E = ρ]` with `ρ` rigid. Freshness per opening is load-bearing: two calls may legitimately return different rows.
+- **each use opens** — it mints a **fresh** skolem per opening, so the result of `widen(s)` is `Stream[T = Int64, E = ρ]` with `ρ` rigid. Freshness per opening is load-bearing: two calls may legitimately return different rows. *Use*, not *call*, is exact: a nullary operation named without parentheses is a use, and so is naming an operation where a function is expected — the eta arrow's result opens as well. That last one opens once per lift rather than once per application, because an arrow type has nowhere to write `∃`; it is why an operation with type parameters has no function-value form either.
 
 ```anthill
 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s
@@ -2046,9 +2046,15 @@ operation exploit(s: Stream[T = Int64, E = {Error}]) -> Int64 = takes_pure(widen
 --                                                                        ^ WRONG: ρ is not {}
 ```
 
-Today **both** lines load, and an effectful stream reaches a slot that declared `E = {}`. Where the skolem is minted is the whole design: minting it in the *body check* instead demands the body be good for every instantiation — universal quantification in a positive position, the wrong quantifier — which refuses `widen` and costs 40 tests across thirteen delivered tickets.
+Where the skolem is minted is the whole design. It is minted **at the call**, so `widen` is left alone and `exploit` is refused at `takes_pure`'s parameter. Minting it in the *body check* instead demands the body be good for every instantiation — universal quantification in a positive position, the wrong quantifier — which refuses `widen` itself and costs 40 tests across thirteen delivered tickets; that reading was built, measured and rejected.
 
-The language already implements this rule for the *carrier* of an existential return, explicitly spelled: `ensures Spec[C]` (§"path-dependent types", WI-402) has the body witness `C` while the caller sees only the spec. It is the **members** that are not opened — the same `openOne(m) -> C ensures KVStore[C]` whose witness binds `K = String` still satisfies a demand for `K = Int64`. So this is one gap in two spellings, not a bare-return quirk, and `docs/design/type-parameter-scoping.md` §5's informal "erased" is this existential said without the word.
+Three of the four spellings are existential here — a bare reference, a partial application and an explicit `?` all leave the slot for the body to witness. The fourth is not: an **operation type parameter** in a return (`mk[E]() -> Stream[T = Int64, E = E]`) is the *caller's* to instantiate, and a call that pins it from nothing is already the loud `expected a type for 'E', got unconstrained`. That is the same asymmetry the whole section rests on, read at one more position.
+
+A slot on a reference to the **callee's own sort** is not existential: it is the §3 parametricity tie of `docs/design/type-parameter-scoping.md`, naming this instance's parameter, and the call's own arguments pin it. Only a *foreign* sort's unwritten slot is opened — the same scope the parameter-side expansion uses.
+
+Opening is what erasure *is*. A consumer may rely only on what the type carries, so a value whose element type the signature never wrote cannot have it recovered downstream, not even by an annotation: `makeList() -> List` is `∃T. List[T]`, and `let l : List[T = Int64] = makeList()` is refused.
+
+The language already implements this rule for the *carrier* of an existential return, explicitly spelled: `ensures Spec[C]` (§"path-dependent types", WI-402) has the body witness `C` while the caller sees only the spec. The **members** are opened by the same rule as a bare return's, and had to be: the loader rewrites `-> C ensures Spec[C]` to a bare `-> Spec`, so before WI-1063 the same `openOne(m) -> C ensures KVStore[C]` whose witness binds `K = String` satisfied a demand for `K = Int64`. Writing `ensures` bought nothing there — it was one gap in two spellings, not a bare-return quirk. `docs/design/type-parameter-scoping.md` §5's informal "erased" is this existential said without the word.
 
 ### 8.2 Entity Subtyping
 

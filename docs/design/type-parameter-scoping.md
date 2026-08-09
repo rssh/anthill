@@ -170,8 +170,12 @@ mechanism can recover it — is exactly `∃`. `iterator(l: List) -> Stream` dec
 fault and needs no rewriting; a consumer *opens* and gets a fresh skolem, which
 is why it "cannot be reconstructed downstream" and why
 `wi374_expansion_test::bare_value_stays_unusable` is right to refuse. The advice
-above — write it in the result type — remains the fix for an author who wants
-the tie, but it is a *readability* fix, not a soundness one.
+above — write it in the result type — is still the fix for an author who wants
+the tie, and since WI-1063 it is load-bearing rather than cosmetic: a consumer
+that needs the element or the row cannot get it any other way, not even by
+annotating the result (`let l : List[T = Int64] = makeList()` is refused). What
+does NOT need fixing is the producer: an author content to erase is writing a
+correct existential, not a latent bug.
 
 Read the quantifier off the arrow's polarity, and this section and
 kernel-language.md §"Expansion during unification" stop competing: a parameter's
@@ -186,10 +190,17 @@ the body hold for every instantiation, which is a universal in a positive
 position; that was built and measured and costs 40 tests across thirteen
 delivered tickets, including the WI-401/402/457/480/488/491 escape gate.
 
-The mechanism already exists for the *carrier* of an explicit existential
+The scope is the **foreign** slots. A reference to the callee's own sort in its
+own return is §3's parametricity tie, not an existential — it names this
+instance's parameter and the call's arguments pin it — so it is left to the
+canonical channel, exactly as §4's parameter-side expansion leaves it.
+
+The mechanism already existed for the *carrier* of an explicit existential
 (`ensures Spec[C]`, WI-402 — §5 of `path-dependent-types.md`); the **members**
-are not opened, in either spelling. Until WI-1063 closes that, the hole is
-reachable and pinned by `wi1061_unwritten_slot_positions_test`.
+were not opened in either spelling, because the loader rewrites `-> C ensures
+Spec[C]` to a bare `-> Spec` and they then rode the ordinary expansion path.
+WI-1063 opens both by one rule; `wi1063_existential_return_test` drives it, and
+the corpus reaches it zero times, so that file is its only coverage.
 
 ## 6. Structured and higher-kinded parameters
 

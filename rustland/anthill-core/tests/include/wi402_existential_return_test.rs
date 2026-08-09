@@ -259,3 +259,55 @@ fn existential_dict_flows_out_at_eval() {
         other => panic!("clientMem should eval to \"mem\" via dict-out dispatch; got {other:?}"),
     }
 }
+
+/// WI-1063 — WHAT A CALLER MAY DO WITH THE RESULT, which every row above leaves unasked. They
+/// all check ADMISSION (may this operation be declared?); this one checks the other half of an
+/// existential, and it is the half that was never enforced for the MEMBERS.
+///
+/// THE FOUR CELLS, as WI-1063 found them. Carrier: declaration ENFORCED (the WI-401 gate, at
+/// `bare_return_without_ensures_still_rejected`), consumer ENFORCED (`needs_mem` here — the
+/// witness does not escape). Member: declaration NOT enforced, correctly, since the body packs
+/// a concrete witness and that is existential introduction; consumer NOT enforced — which was
+/// the hole. `openOne`'s real `K` is `String`, and it satisfied a demand for `K = Int64`
+/// because the loader rewrites `-> C ensures KVStore[C]` to a bare `-> KVStore` and the
+/// members then rode the ordinary width-tolerant path.
+///
+/// Both halves in one row so the pair cannot drift: the carrier's refusal names the SORT
+/// (`expected MemStore, got KVStore`), the member's names the SLOT (`K = ?K`) — two different
+/// mechanisms reaching the same conclusion about the same call.
+///
+/// CONTROL: on main the `needs_int_key` half LOADS CLEAN and only the `needs_mem` half is
+/// refused. Driven, both before and after.
+#[test]
+fn an_existential_results_members_are_abstract_to_the_caller() {
+    let src = r#"
+namespace test.wi402x.opened
+  import anthill.prelude.{String, Int64}
+  sort KVStore
+    sort K = ?
+    sort V = ?
+  end
+  sort MemStore
+    provides KVStore[K = String, V = String]
+    entity memStore
+  end
+  operation openOne(m: MemStore) -> C ensures KVStore[C] = m
+  operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String
+  operation needs_mem(m: MemStore) -> String
+  operation useKey(m: MemStore) -> String = needs_int_key(openOne(m))
+  operation useMem(m: MemStore) -> String = needs_mem(openOne(m))
+end
+"#;
+    let errs = load_errors(&[src]);
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("needs_int_key.s") && joined.contains("K = ?K"),
+        "the MEMBER must be abstract to the caller — `openOne`'s K is not recoverable as \
+         Int64 just because the demand said so: {errs:#?}",
+    );
+    assert!(
+        joined.contains("needs_mem.m") && joined.contains("expected MemStore"),
+        "the CARRIER must stay abstract too — this is the delivered half and it must not \
+         regress: {errs:#?}",
+    );
+}
