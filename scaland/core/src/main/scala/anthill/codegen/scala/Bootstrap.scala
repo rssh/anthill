@@ -324,7 +324,7 @@ object Bootstrap:
         r.binder.foreach(b =>
           refuseNamedRequirementSlot(
             s"sort `${sym.name(sort.name.last)}`", sym.name(b.last), b.span))
-        TypeGen.render(sym, r.typeExpr, scope.at(s"$sortName's `requires`", r.span))
+        (TypeGen.render(sym, r.typeExpr, scope.at(s"$sortName's `requires`", r.span)), r.span)
     }
     val ops = sort.items.flatMap {
       case Item.OperationItem(op) => Seq(op)
@@ -332,6 +332,7 @@ object Bootstrap:
       case _ => Seq.empty
     }
     val shape = shapeOf(sym, sort.name, sort.items.collect { case Item.EntityItem(e) => e })
+    val ext = extendsClause(sym, sym.name(sort.name.last), shape, requires, scope)
 
     // Rules + constraints are NOT emitted from bootstrap. Their bodies
     // are semantic (rule term → ScalaCheck Boolean expression); the
@@ -339,7 +340,7 @@ object Bootstrap:
     // (Prop.passed / ???) is either vacuously green or a spec violation
     // (see docs/scala-forward-mapping.md §1, §2.9). Laws emission is
     // owned by the KB-driven anthill-scala-gen.
-    val mainSrc = renderMainSort(sortName, tpStr, typeParams, requires, ops, shape,
+    val mainSrc = renderMainSort(sortName, tpStr, typeParams, ext, ops, shape,
       effectivePkg, scope, sym)
     out += GeneratedFile(
       relPath = s"src/main/scala/${pathToDir(effectivePkg)}$sortName.scala",
@@ -409,6 +410,110 @@ object Bootstrap:
         "which Scala cannot spell as both a sum and one of its cases",
         sortName.span)
 
+  /** The `extends` clause a sort's `requires` declarations become — which on a
+    * sort with CONSTRUCTORS is no clause at all (WI-1064, §2.7a).
+    *
+    * A SORT-LEVEL `requires` IS NOT AN IS-A CLAIM. Kernel spec §8.7: it "conditions
+    * every provision, and supplies every body's evidence" — it is the requirement
+    * DICTIONARY. The is-a claim is `provides`. So `requires` → `extends` is right
+    * only where the two coincide, namely where the required spec's carrier slot is
+    * bound to the declaring sort's OWN carrier (`sort Ord { sort T = ?; requires
+    * Eq[T] }` — ops take `a: T`, so `T` is Ord's carrier, and `trait Ord[T] extends
+    * Eq[T]` says what the declaration says).
+    *
+    * ON A SORT WITH CONSTRUCTORS IT NEVER COINCIDES: the sort IS the carrier, so a
+    * requirement can only be over some other parameter. `finite_combinators.anthill`
+    * writes `requires FiniteCollection[C = SrcC, …]` over its SOURCE parameter,
+    * while its claim about itself is the `provides FiniteCollection[C =
+    * FiniteMappedStream, …]` three lines below. The `extends` was built from the
+    * first, because `emitSort` reads `RequiresDeclItem` and NOTHING reads
+    * `ProvidesClauseItem` — the is-a claim falls through a `case _`. Measured
+    * symptom: `class Fmapped needs to be abstract, since it has 9 unimplemented
+    * members`, an obligation the sort never incurred and that a signature-only
+    * emission (proposal 034) could never discharge.
+    *
+    * THE ALGEBRA ARM IS UNCONDITIONAL, AND THAT IS THE HALF WI-1064 DID NOT TAKE.
+    * `SortShape` is a PROXY for the carrier question, not an answer to it: it is
+    * exact for a sort with constructors and merely usually-right without them. It
+    * is WRONG for a SELF-REPRESENTING algebra, whose carrier is the sort itself
+    * even though it declares no constructors — `set.anthill:6` ("the carrier is
+    * `Set` itself … `T` is the element type") emits `trait Set[T] extends
+    * anthill.prelude.Eq[T]` off a `requires Eq[T]` that constrains the ELEMENT,
+    * with the real claim in `provides Eq[T = Set]` eleven lines below. Same for
+    * `map.anthill:16` (`requires Eq[T = K]`, over the key) and `algebra.anthill:65`
+    * (`VectorSpace` carried by `V`, requiring `Ring[F]` over the scalar). All three
+    * COMPILE, because a trait tolerates unimplemented members, so neither
+    * `ScalaCompile` nor the refusal-set test can see them. WI-1066.
+    *
+    * NOT A SILENT DROP, and that is what [[checkDischarged]] is for.
+    */
+  private def extendsClause(
+    sym: SymbolTable, sortLeaf: String, shape: SortShape,
+    requires: IndexedSeq[(String, Span)], scope: TypeScope
+  ): String =
+    if requires.isEmpty then ""
+    else
+      shape match
+        case SortShape.Algebra =>
+          s" extends ${requires.map(_._1).mkString(", ")}"
+        case SortShape.Record(ctor) =>
+          checkDischarged(sym, sortLeaf, IndexedSeq(ctor), requires, scope)
+          ""
+        case SortShape.Sum(ctors) =>
+          checkDischarged(sym, sortLeaf, ctors, requires, scope)
+          ""
+
+  /** Refuse a data sort's `requires` that the emitted tree would not carry.
+    *
+    * The question is asked of the EMISSION and not of the source, which is what
+    * makes it the right question: the requirement survives when a constructor field
+    * is TYPED BY it, so the evidence reaches Scala as that field's type. Both
+    * corpus instances are exactly that — `requires FiniteCollection[C = SrcC,
+    * Element = Src, E = ES]` beside `entity fmapped(source: FiniteCollection[C =
+    * SrcC, Element = Src, E = ES], …)` — and there the omitted `extends` costs the
+    * emitted tree nothing. Rendering through the SAME `scope` the field list uses
+    * (`at` varies only the diagnostic label) is what makes the two comparable.
+    *
+    * PER CONSTRUCTOR, not per sort. Over the flattened field list of a sum, one
+    * constructor carrying the requirement would discharge it for its siblings, and
+    * a sibling that carries it nowhere is the silent drop this exists to prevent.
+    *
+    * CONTAINMENT, not equality, and bounded on the left so `MyWalk[T]` cannot
+    * discharge `Walk[T]`. A field is often the requirement NESTED — `sources:
+    * List[T = Walk[…]]` renders `_root_.anthill.prelude.List[Walk[SrcC, Src]]` —
+    * and whole-string equality refused those, which aborts `generate` and takes
+    * every other sort in the file with it.
+    *
+    * TWO LIMITS, both real and neither reached by the corpus. Effect arguments
+    * erase before rendering (§2.8a), so a field carrying a DIFFERENT row compares
+    * equal to the requirement — the check is blind in exactly that slot.
+    * `Names.scalaTypeName` is many-to-one, so `requires foo_bar[T]` is discharged
+    * by a field `x: fooBar[T]`. Both are the price of asking the question of the
+    * rendered output; asking it of the parse IR instead would be asking about a
+    * type the emission may not carry.
+    */
+  private def checkDischarged(
+    sym: SymbolTable, sortLeaf: String, ctors: IndexedSeq[Entity],
+    requires: IndexedSeq[(String, Span)], scope: TypeScope
+  ): Unit =
+    requires.foreach { case (rendered, span) =>
+      val occurrence = java.util.regex.Pattern.compile(
+        s"(?<![\\w.])${java.util.regex.Pattern.quote(rendered)}")
+      ctors.foreach { ctor =>
+        val carried = ctor.fields.exists(f =>
+          occurrence.matcher(TypeGen.render(sym, f.ty, scope)).find())
+        if !carried then
+          throw BootstrapError(
+            s"sort `$sortLeaf` has constructors, so its `requires $rendered` is " +
+            "evidence supplied to bodies (kernel §8.7) and not a claim about the " +
+            s"type — and constructor `${sym.name(ctor.name.last)}` has no field " +
+            "typed by it, so the emitted declaration would carry the requirement " +
+            "nowhere. §2.7's other half maps it to a `using` context parameter, " +
+            "which Bootstrap does not emit (WI-1022)",
+            span)
+      }
+    }
+
   // ── Helpers ─────────────────────────────────────────────────────
 
   /** Split a multi-segment name into (packagePath, leafTypeName). For
@@ -433,14 +538,15 @@ object Bootstrap:
 
   private def renderMainSort(
     sortName: String, tpStr: String, typeParams: IndexedSeq[TypeParamDecl],
-    requires: IndexedSeq[String], ops: IndexedSeq[Operation], shape: SortShape,
+    ext: String, ops: IndexedSeq[Operation], shape: SortShape,
     packagePath: String, scope: TypeScope, sym: SymbolTable
   ): String =
     val sb = StringBuilder()
     if packagePath.nonEmpty then sb ++= s"package $packagePath\n\n"
-    // `requires` lands on the sort's PRINCIPAL declaration — the same placement
-    // the sum branch has always used, not a new decision for the record branch.
-    val ext = if requires.isEmpty then "" else s" extends ${requires.mkString(", ")}"
+    // `ext` arrives ALREADY DECIDED (`extendsClause`), rather than being derived
+    // from `requires` here: the three branches below share one string, and while
+    // they shared one DERIVATION the algebra sort's reading was applied to the two
+    // data shapes as well (WI-1064).
     // The sort's parameters as ARGUMENTS (`[T]`), against `tpStr`'s BINDERS
     // (`[M[_]]`) — an enum case that has to name its parent needs both forms.
     val tpArgs =

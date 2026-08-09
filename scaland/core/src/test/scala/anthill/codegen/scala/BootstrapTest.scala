@@ -1203,6 +1203,248 @@ class BootstrapTest extends munit.FunSuite:
       s"refusal must state both counts: ${err.getMessage}")
   }
 
+  // ── WI-1064: `requires` → `extends` is an ALGEBRA sort's reading ───────────
+  //
+  // §2.7 offers two mappings for a `requires` and did not say when each applies,
+  // which is how one of them came to be applied unconditionally. The rule is read
+  // off the requirement's CARRIER SLOT: on an algebra sort it is over the same
+  // carrier the sort is an algebra over, and a supertrait is exactly what that
+  // says; on a sort with CONSTRUCTORS the sort IS the carrier, so a requirement
+  // over a PARAMETER constrains an INPUT and is not an is-a claim about anything.
+
+  test("WI-1064: a data sort's `requires` constrains an input, so it emits no `extends`") {
+    // A FIXTURE and not finite_combinators.anthill, for a reason worth stating: the
+    // corpus instance cannot be COMPILED in a closure of its own, because the
+    // `FiniteCollection` its field names is itself rejected by RefChecks for an
+    // unrelated defect (a refining override — WI-1065). Only a fixture lets this
+    // arm be driven by the compiler rather than by a substring. The corpus instance
+    // is asserted on its emitted text below.
+    //
+    // BOTH READINGS IN ONE FIXTURE, because they are one decision: `Counted` is an
+    // algebra whose `requires Walk[C = C, …]` is over its OWN carrier and must keep
+    // its supertrait, and `Wrapper` is a data sort whose `requires Walk[C = SrcC,
+    // …]` is over a parameter and must not become one.
+    //
+    // FAILS WHEN BACKED OUT, run: make `extendsClause` unconditional (its
+    // pre-WI-1064 form) and the emission is `enum Wrapper[SrcC, Src] extends
+    // Walk[SrcC, Src]:`, so the exact-line assertion fails — before the compile,
+    // which is therefore not what the control demonstrates. The compile symptom of
+    // that same emission is on record from the corpus instead: `class Fmapped needs
+    // to be abstract, since it has 9 unimplemented members`. The `Counted`
+    // assertion passes either way BY DESIGN; it is the control that the arm did not
+    // overreach, and the same reading is pinned on stdlib by the WI-170/WI-644 test
+    // above (`trait Eq[T] extends PartialEq[T]`), which also stays green.
+    val files = Bootstrap.generate(parseSource(
+      """namespace anthill.wi1064
+        |  sort Walk
+        |    sort C = ?
+        |    sort Element = ?
+        |    operation head(c: C) -> Element
+        |  end
+        |
+        |  sort Counted
+        |    sort C = ?
+        |    sort Element = ?
+        |    requires Walk[C = C, Element = Element]
+        |    operation count(c: C) -> Element
+        |  end
+        |
+        |  sort Wrapper
+        |    sort SrcC = ?
+        |    sort Src = ?
+        |    requires Walk[C = SrcC, Element = Src]
+        |    entity wrapped(source: Walk[C = SrcC, Element = Src])
+        |  end
+        |end
+        |""".stripMargin, "wi1064.anthill"))
+
+    val wrapper = files.find(_.relPath.endsWith("/Wrapper.scala"))
+      .getOrElse(fail(s"expected Wrapper.scala in: ${files.map(_.relPath)}")).contents
+    assert(wrapper.contains("enum Wrapper[SrcC, Src]:"),
+      s"a data sort's `requires` must leave the declaration alone:\n$wrapper")
+    // NOT DROPPED, which is the other half of the rule: the requirement still
+    // reaches Scala, as the type of the field that carries it.
+    // PASSES EITHER WAY BY DESIGN, like the `Counted` assertion below: the arm
+    // never touched field rendering. It is here because the doc's load-bearing
+    // claim — the requirement is not discarded, it reaches Scala as the field's
+    // type — would otherwise be asserted nowhere at all.
+    assert(wrapper.contains("case Wrapped(source: Walk[SrcC, Src])"),
+      s"the field must still carry the requirement:\n$wrapper")
+
+    val counted = files.find(_.relPath.endsWith("/Counted.scala"))
+      .getOrElse(fail(s"expected Counted.scala in: ${files.map(_.relPath)}")).contents
+    assert(counted.contains("trait Counted[C, Element] extends Walk[C, Element]:"),
+      s"an ALGEBRA sort's `requires` is still a supertrait:\n$counted")
+
+    ScalaCompile.assertCompiles("the WI-1064 fixture", files)
+  }
+
+  test("WI-1064: the RECORD shape takes the same arm as the sum — eponymy is not a loophole") {
+    // THE ARM NO OTHER TEST REACHES. `shapeOf` keys eponymy on the ANTHILL name, so
+    // every other fixture here (`Wrapper`/`wrapped`, `Boxed`/`boxed`) and BOTH corpus
+    // sorts (`FiniteMappedStream`/`fmapped`) classify as `Sum` — the lowercase-entity
+    // form is stdlib's convention. The `Record` branch of `extendsClause` was
+    // therefore dead to the suite, and every pre-existing Record test (Vec3,
+    // TotalFloat, Box, Acct) declares no `requires`, so it short-circuits at
+    // `if requires.isEmpty`. Only an EXACT-case eponymous constructor gets here.
+    //
+    // FAILS WHEN BACKED OUT: restore the `extends` on the Record arm alone — the
+    // one edit the whole 404-test suite used to tolerate — and `case class
+    // Holder[SrcC, Src](source: Walk[SrcC, Src])` gains ` extends Walk[SrcC, Src]`,
+    // failing this assertion and then the compile (a `case class` is instantiable,
+    // so an inherited `head` it does not define is `class Holder needs to be
+    // abstract`).
+    val files = Bootstrap.generate(parseSource(
+      """namespace anthill.wi1064
+        |  sort Walk
+        |    sort C = ?
+        |    sort Element = ?
+        |    operation head(c: C) -> Element
+        |  end
+        |
+        |  sort Holder
+        |    sort SrcC = ?
+        |    sort Src = ?
+        |    requires Walk[C = SrcC, Element = Src]
+        |    entity Holder(source: Walk[C = SrcC, Element = Src])
+        |  end
+        |end
+        |""".stripMargin, "holder.anthill"))
+    val holder = files.find(_.relPath.endsWith("/Holder.scala"))
+      .getOrElse(fail(s"expected Holder.scala in: ${files.map(_.relPath)}")).contents
+    assert(holder.contains("case class Holder[SrcC, Src](source: Walk[SrcC, Src])\n"),
+      s"the Record shape must take the same arm as the Sum shape:\n$holder")
+    ScalaCompile.assertCompiles("the WI-1064 Record fixture", files)
+  }
+
+  test("WI-1064: discharge is PER CONSTRUCTOR — a sibling that carries it nowhere is refused") {
+    // Over a sum's flattened field list, one constructor carrying the requirement
+    // would discharge it for every other case, which is precisely the silent drop
+    // `checkDischarged` exists to prevent. Both corpus instances are
+    // single-constructor, so the hole was invisible there.
+    //
+    // FAILS WHEN BACKED OUT: restore `ctors.flatMap(_.fields)` and this emits
+    // `enum Wrap[SrcC, Src]: case Carried(...); case Bare[SrcC, Src](n: Long)` with
+    // no refusal — `Bare` carries the requirement nowhere.
+    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+      """namespace anthill.wi1064
+        |  import anthill.prelude.{Int64}
+        |  sort Walk
+        |    sort C = ?
+        |    sort Element = ?
+        |    operation head(c: C) -> Element
+        |  end
+        |
+        |  sort Wrap
+        |    sort SrcC = ?
+        |    sort Src = ?
+        |    requires Walk[C = SrcC, Element = Src]
+        |    entity carried(source: Walk[C = SrcC, Element = Src])
+        |    entity bare(n: Int64)
+        |  end
+        |end
+        |""".stripMargin, "wrap.anthill")))
+    assert(err.getMessage.contains("constructor `bare`"),
+      s"refusal must name the constructor that carries it nowhere: ${err.getMessage}")
+  }
+
+  test("WI-1064 CONTROL: a requirement carried NESTED in a field type still discharges") {
+    // Containment, not equality. `sources: List[T = Walk[…]]` renders
+    // `_root_.anthill.prelude.List[Walk[SrcC, Src]]`, which is not the requirement
+    // string — and a whole-string test refused it, aborting `generate` for the whole
+    // FILE over a requirement every list element satisfies.
+    //
+    // FAILS WHEN BACKED OUT: restore `fieldTypes.contains(rendered)` (exact
+    // equality) and this throws instead of emitting.
+    val files = Bootstrap.generate(parseSource(
+      """namespace anthill.wi1064
+        |  import anthill.prelude.{List}
+        |  sort Walk
+        |    sort C = ?
+        |    sort Element = ?
+        |    operation head(c: C) -> Element
+        |  end
+        |
+        |  sort Many
+        |    sort SrcC = ?
+        |    sort Src = ?
+        |    requires Walk[C = SrcC, Element = Src]
+        |    entity many(sources: List[T = Walk[C = SrcC, Element = Src]])
+        |  end
+        |end
+        |""".stripMargin, "many.anthill"))
+    val many = files.find(_.relPath.endsWith("/Many.scala"))
+      .getOrElse(fail(s"expected Many.scala in: ${files.map(_.relPath)}")).contents
+    assert(many.contains("enum Many[SrcC, Src]:"), s"no `extends` on a data sort:\n$many")
+    assert(many.contains("List[Walk[SrcC, Src]]"),
+      s"the nested requirement must reach the emitted field:\n$many")
+  }
+
+  test("WI-1064: a data sort's `requires` that NO field carries is REFUSED, not dropped") {
+    // The omission above is admissible only because the emitted tree still carries
+    // the requirement through a field's declared type. Where it would not, omitting
+    // it is a real loss — the emitted `Boxed` says nothing of `Ordering[T]` — and
+    // that is §2.7's other half, the `using` context parameter WI-1022 owns and
+    // Bootstrap does not emit. No prelude file has this shape, which is exactly why
+    // emitting `""` for every data sort unconditionally would have looked right.
+    //
+    // FAILS WHEN BACKED OUT: delete the `checkDischarged` call and this `intercept`
+    // finds no throw — the bound is silently gone from the emitted declaration.
+    val err = intercept[BootstrapError](Bootstrap.generate(parseSource(
+      """namespace anthill.wi1064
+        |  sort Ordering
+        |    sort T = ?
+        |    operation cmp(a: T, b: T) -> T
+        |  end
+        |
+        |  sort Boxed
+        |    sort T = ?
+        |    requires Ordering[T]
+        |    entity boxed(x: T)
+        |  end
+        |end
+        |""".stripMargin, "boxed.anthill")))
+    assert(err.getMessage.contains("`Boxed`"),
+      s"refusal must name the sort: ${err.getMessage}")
+    // "evidence supplied to bodies" and not "constrains an input": the latter is
+    // false of a NULLARY marker requirement, which has no input slot at all, and
+    // `examples/classic-mini/*` write `sort Program { requires anthill.cli.Main }`
+    // — today an algebra, but one `entity` away from reaching this message.
+    assert(err.getMessage.contains("evidence supplied to bodies"),
+      s"refusal must say what a sort-level `requires` IS: ${err.getMessage}")
+    assert(err.getMessage.contains("has no field typed by it"),
+      s"refusal must say why it cannot be carried: ${err.getMessage}")
+    assert(err.getMessage.contains("boxed.anthill:"),
+      s"refusal must be located: ${err.getMessage}")
+  }
+
+  test("WI-1064 CORPUS: finite_combinators.anthill emits no `extends`, and still names it") {
+    // THE MEASURED INSTANCE, on emitted TEXT rather than compiled, for the reason
+    // the fixture test states. Both sorts, because both carried the defect.
+    //
+    // The `requires FiniteCollection[C = SrcC, …]` these two write sits two lines
+    // above a `provides FiniteCollection[C = FiniteMappedStream, …]` — the sort's
+    // actual claim about itself, which Bootstrap reads nothing of (`emitSort` has
+    // no `ProvidesClauseItem` arm). The `extends` was built from the wrong line.
+    //
+    // FAILS WHEN BACKED OUT: the pre-WI-1064 emission is `enum
+    // FiniteMappedStream[SrcC, Src, T] extends anthill.prelude.FiniteCollection[
+    // SrcC, Src]:`, whose measured consequence was `class Fmapped needs to be
+    // abstract, since it has 9 unimplemented members`.
+    val files = preludeClosure("finite_combinators")
+    Seq(
+      ("FiniteMappedStream", "enum FiniteMappedStream[SrcC, Src, T]:",
+        "case Fmapped(source: anthill.prelude.FiniteCollection[SrcC, Src],"),
+      ("FiniteFilteredStream", "enum FiniteFilteredStream[SrcC, T]:",
+        "case Ffiltered(source: anthill.prelude.FiniteCollection[SrcC, T],"),
+    ).foreach { case (sort, decl, field) =>
+      val src = files.find(_.relPath.endsWith(s"/$sort.scala"))
+        .getOrElse(fail(s"expected $sort.scala in: ${files.map(_.relPath)}")).contents
+      assert(src.contains(decl), s"$sort must carry no `extends`:\n$src")
+      assert(src.contains(field), s"$sort must still name what it requires:\n$src")
+    }
+  }
+
   test("WI-1055: the prelude refusal set is a NAMED list, and the compiling count is a floor") {
     // The ticket's two numeric guards, together because they are one trade-off:
     // every refusal added takes a file out of the tree, so the refusal list and
@@ -1249,14 +1491,28 @@ class BootstrapTest extends munit.FunSuite:
     // phase that first reported an error, so nothing a LATER phase would say is in
     // them. Peeling the failing files off and recompiling until it is clean gives
     // the real shape, measured both ways:
-    //   before  11 -> 3 (Field, the Numeric cascade) -> clean, 33 files
-    //   after    4 -> 3 (the same)                   -> 4 -> clean, 39 files
-    // Six more files compile, and the new round is the one this ticket UNCOVERED
-    // rather than caused: `requires` -> `extends` (§2.7) is unsound for a refining
-    // override and for a data sort that requires an algebra, which only became
-    // observable once FiniteCollection / FiniteMappedStream / FiniteFilteredStream
-    // were in the tree at all. Nothing about effects — WI-1064, and recorded on
-    // the WI-1062 ambient test above.
+    //   before WI-1062  11 -> 3 (Field, the Numeric cascade) -> clean
+    //   after  WI-1062   4 -> 3 (the same) -> 4 -> clean
+    //   after  WI-1064   4 -> 3 (the same) -> 2 -> 4 -> clean
+    // Six more files compile at WI-1062, and the round it added is the one it
+    // UNCOVERED rather than caused: `requires` -> `extends` (§2.7) is unsound for a
+    // refining override and for a data sort that requires an algebra, which only
+    // became observable once FiniteCollection / FiniteMappedStream /
+    // FiniteFilteredStream were in the tree at all. Nothing about effects.
+    //
+    // WI-1064 TOOK THE DATA-SORT HALF: that round of 4 is now 2, and the two that
+    // went are `class Fmapped needs to be abstract` / the `Ffiltered` twin. The two
+    // left are the refining override (`error overriding method map in trait
+    // Iterable`), which is WI-1065's and is why a round still fails.
+    //
+    // THE FINAL ROUND OF 4 IS PEELING, NOT A DEFECT, and reading it as one would be
+    // easy: once finite_collection.anthill is peeled off for the override above,
+    // `FiniteCollection` is no longer in the compilation set, so the two combinator
+    // files that name it as a FIELD TYPE report `type FiniteCollection is not a
+    // member of anthill.prelude`. It is WI-1065's error seen one round later.
+    // WHAT THIS MEANS FOR THE FILE COUNT: unchanged, and that is expected — WI-1064
+    // alone cannot grow the closure, because the files it fixed depend on the file
+    // WI-1065 has yet to.
     //
     // (DECLARATION, construct) and not the construct alone: WI-1021's measured
     // finding was precisely that iterable.anthill's refusal MOVED within its file,

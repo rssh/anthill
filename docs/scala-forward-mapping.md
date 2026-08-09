@@ -366,6 +366,68 @@ sort PolynomOps {                           trait PolynomOps {
 }
 ```
 
+#### 2.7a A sort-level `requires` is evidence, not an is-a claim
+
+The choice above is not free, and the reason it is not is stated in the kernel spec rather
+than here. Kernel §8.7: a sort-level `requires` "conditions **every** provision, and supplies
+every body's evidence" — it is the requirement **dictionary**. The is-a claim is `provides`.
+So `requires` → `extends` is right only where the two *coincide*: where the required spec's
+carrier slot is bound to the declaring sort's own **carrier**.
+
+The carrier is not identified by position or by naming — it is what the sort's operations
+take as their receiver, and everything else in the bracket is a parameter of that algebra.
+Three shapes occur in the prelude:
+
+| shape | example | carrier |
+|---|---|---|
+| carrier is an explicit parameter | `FiniteCollection { sort C = ?; sort Element = ?; effects E = ? }`, ops take `c: C` | `C` |
+| carrier is the sole parameter | `PartialEq { sort T = ? }`, ops take `a: T, b: T` | `T` |
+| self-representing — carrier is the sort | `Set { sort T = ? }`, ops take `s: Set` | `Set`; `T` is the element |
+
+**What the bootstrap mapper decides today, and on what.** It reads the sort's *shape*, which
+is a proxy for the carrier question and is exact only in one direction:
+
+- **A sort with constructors** *is* the carrier, so a requirement on it can only be over some
+  other parameter and can never be an is-a claim. It produces **no `extends`**.
+  `finite_combinators.anthill` writes
+
+  ```
+  requires FiniteCollection[C = SrcC, Element = Src, E = ES]
+  entity fmapped(source: FiniteCollection[C = SrcC, Element = Src, E = ES], fn: …)
+  provides FiniteCollection[C = FiniteMappedStream, Element = T, E = {ES, EF}]
+  ```
+
+  where the `requires` constrains the *source* carrier `SrcC` and the sort's claim about
+  itself is the `provides`, three lines below. An `extends` built from the first is an is-a
+  claim about the wrong carrier — and, inheriting members no signature-only emission can
+  define, produces `class Fmapped needs to be abstract, since it has 9 unimplemented
+  members`.
+
+- **A sort without constructors** gets the supertrait, **unconditionally**. That is correct
+  wherever the carrier is a type parameter the requirement is over (`trait Ord[T] extends
+  Eq[T]`), and **wrong for a self-representing algebra**, whose carrier is the sort itself:
+  `set.anthill` emits `trait Set[T] extends anthill.prelude.Eq[T]` off a `requires Eq[T]`
+  that constrains the *element*, with the real claim in its `provides Eq[T = Set]`. Same for
+  `map.anthill` (`requires Eq[T = K]`, over the key) and `algebra.anthill`'s `VectorSpace`
+  (carried by `V`, requiring `Ring[F]` over the scalar). These compile — a trait tolerates
+  unimplemented members — so nothing in the emitted tree reports them. **WI-1066** owns
+  reading the carrier properly; until it lands, this half of the rule is a known
+  over-approximation and is written down here rather than left to be discovered.
+
+A data sort's `requires` is **not discarded** by the omission: the required spec reaches
+Scala as the declared type of the constructor field typed by it (`source:
+FiniteCollection[SrcC, Src]` above), which is the whole of what a signature-only emission can
+say about it. The check is per constructor and matches the requirement nested inside a field
+type (`sources: List[T = Walk[…]]` carries `Walk[…]`). A constructor that carries it **nowhere**
+is **refused** rather than emitted short — that case is §2.7's other half, the `using` context
+parameter, which the bootstrap mapper does not emit (WI-1022).
+
+*(WI-1064. The `provides` clause has no bootstrap emission of its own — a `given` instance
+would need the bodies proposal 034 assigns to the KB-driven gen — so today it is read for
+nothing; what this rule fixes is that the `requires` was being read in its place. A sort whose
+operation **refines** one inherited from a required sort is a separate defect with a separate
+cause: see WI-1065.)*
+
 ### 2.8 Effects → Method Shape
 
 The default `scala_std` profile (per `stdlib/anthill/realization/scala_std.anthill`) maps:
