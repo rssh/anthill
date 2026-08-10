@@ -46,7 +46,18 @@ object ScalaCompile:
     */
   def errors(files: Seq[GeneratedFile]): Seq[Diag] =
     val root = Files.createTempDirectory("anthill-scala-gen")
-    val sources = files.filter(_.relPath.endsWith(".scala")).map { f =>
+    val scala = files.filter(_.relPath.endsWith(".scala"))
+    // TWO FILES AT ONE PATH WOULD COMPILE GREEN, and the harness would be the thing
+    // hiding it (WI-1054 review): `writeString` overwrites, so the second declaration
+    // simply vanishes and the compiler is asked about a tree that could never be
+    // written to disk intact. Loud here as well as in `Bootstrap.generate`, because
+    // this function is also handed HAND-BUILT sets (a fixture plus a stub sibling) that
+    // never passed through `generate`'s check.
+    val duplicated = scala.groupBy(_.relPath).filter(_._2.length > 1).keys.toVector.sorted
+    require(duplicated.isEmpty,
+      s"the same path is emitted twice and one copy would be lost: " +
+      duplicated.mkString(", "))
+    val sources = scala.map { f =>
       val target = root.resolve(f.relPath)
       Files.createDirectories(target.getParent)
       Files.writeString(target, f.contents)

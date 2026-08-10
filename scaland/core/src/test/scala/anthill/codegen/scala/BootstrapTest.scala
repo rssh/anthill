@@ -1830,6 +1830,197 @@ class BootstrapTest extends munit.FunSuite:
     }
   }
 
+  // ── WI-1054: the hyphen is the one character anthill admits and Scala does not ──
+  //
+  // Not a style question. An anthill identifier is `[a-zA-Z_][a-zA-Z0-9_-]*`
+  // (`Tokens.identToken`), and `def zero-val(): T` is a PARSE error — dotc reads
+  // `zero` applied to an operator — so the emitter produced text that is not the
+  // language. `docs/scala-forward-mapping.md` §5 states the rule: `-` normalises to
+  // `_` FIRST, then the per-kind convention runs, so `zero-val` and `zero_val` reach
+  // Scala as one name.
+
+  test("WI-1054 CORPUS: numeric.anthill's `zero-val` emits `zeroVal`, and the file compiles") {
+    // The corpus instance the ticket was measured on (WI-1020's harness, commit
+    // 0ebec357): `Numeric.scala:8: '=' expected, but identifier found`.
+    //
+    // FAILS WHEN BACKED OUT: drop `normalize` from `Names.scalaMethodName` and the
+    // `def zeroVal` assertion fails; `assertCompiles` then fails too, with that same
+    // parse error. The siblings are in the set because Numeric `requires
+    // PartialOrd[T]`, which `requires PartialEq[T]` — neither carries a hyphen, so
+    // both pass either way and are here only to close the compile.
+    val files = preludeClosure("numeric", "ordered", "eq")
+    val src = files.find(_.relPath == "src/main/scala/anthill/prelude/Numeric.scala")
+      .getOrElse(fail(s"expected Numeric.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("def zeroVal(): T"),
+      s"a hyphenated operation must emit as camelCase:\n$src")
+    assert(!src.contains("zero-val"),
+      s"no hyphen may survive into the emitted source:\n$src")
+    ScalaCompile.assertCompiles("numeric.anthill's emission", files)
+  }
+
+  test("WI-1054: a hyphen in EVERY identifier position emits a legal Scala name") {
+    // Five positions over THREE normalisation sites — `scalaFieldName` delegates to
+    // `scalaMethodName`, so a field and a method are one site, not two — and each
+    // converts by its own §5 rule after the shared normalisation. A test asserting
+    // only "no hyphen" would pass on `zero_val`, `my_sort` and `myLib` alike, so
+    // every assertion names the CHOSEN spelling.
+    //
+    // FAILS WHEN BACKED OUT, measured one site at a time:
+    //   - `Names.scalaMethodName`     → `def zeroVal(myArg: T)` and `myField`
+    //   - `Names.scalaTypeName`       → `trait MyAlgebra` / `enum MyData` / `case MyEntity`
+    //   - `Names.scalaPackageSegment` → `package my_lib` and the `my_lib/` relPath
+    // Each back-out leaves the other two assertions green, which is why they are
+    // separate assertions and not one compile. `Bootstrap.splitPath`'s multi-segment
+    // prefix is the FOURTH site and no fixture here reaches it — the dotted-declaration
+    // test below owns it.
+    val files = gen(parseSource(
+      """namespace my-lib
+        |  sort my-algebra
+        |    sort T = ?
+        |    operation zero-val(my-arg: T) -> T
+        |  end
+        |
+        |  sort my-data
+        |    entity my-entity(my-field: Int64)
+        |    entity plain-one
+        |  end
+        |end
+        |""".stripMargin, "my-lib.anthill"))
+
+    // The NAMESPACE segment: package clause and the directory derived from it. §5
+    // leaves a segment otherwise as-written — `my_lib`, not `myLib` — because a
+    // lowercase segment is already idiomatic for a Scala package.
+    assertEquals(files.map(_.relPath).sorted, IndexedSeq(
+      "src/main/scala/my_lib/MyAlgebra.scala", "src/main/scala/my_lib/MyData.scala"))
+    files.foreach(f => assert(f.contents.startsWith("package my_lib\n"),
+      s"a hyphenated namespace segment must emit as `package my_lib`:\n${f.contents}"))
+
+    val algebra = files.find(_.relPath.endsWith("/MyAlgebra.scala")).get.contents
+    assert(algebra.contains("trait MyAlgebra[T]:"),
+      s"a hyphenated sort must PascalCase:\n$algebra")
+    assert(algebra.contains("def zeroVal(myArg: T): T"),
+      s"a hyphenated operation and parameter must camelCase:\n$algebra")
+
+    val data = files.find(_.relPath.endsWith("/MyData.scala")).get.contents
+    assert(data.contains("enum MyData:"), s"a hyphenated sort must PascalCase:\n$data")
+    assert(data.contains("case MyEntity(myField: _root_.scala.Long)"),
+      s"a hyphenated entity and field must convert by their own rule:\n$data")
+    assert(data.contains("case PlainOne"), s"a nullary hyphenated entity too:\n$data")
+
+    // CODE LINES ONLY, and the exclusion is not a convenience: `Bootstrap.evidenceNote`
+    // legitimately writes anthill names into `//` comments (`This sort's carrier is its
+    // parameter \`my-carrier\``), so a whole-file scan would assert an invariant the
+    // emitter does not hold and fail on correct output. What IS an invariant is that
+    // every identifier the emitter puts in code position went through `Names`.
+    files.foreach { f =>
+      val code = f.contents.linesIterator.filterNot(_.trim.startsWith("//"))
+      code.foreach(line => assert(!line.contains("-"),
+        s"no hyphen may survive into code in ${f.relPath}:\n${f.contents}"))
+    }
+    ScalaCompile.assertCompiles("a hyphen in every identifier position", files)
+  }
+
+  test("WI-1054: a DOTTED declaration's package prefix is converted too") {
+    // The fourth conversion site, and the one the three tests above all miss:
+    // `Bootstrap.splitPath`'s multi-segment branch. A top-level `sort my-co.Thing`
+    // takes its package from the declaration's own prefix rather than from an
+    // enclosing `namespace`, so it reaches neither `namespacePath` nor the
+    // single-segment `else` branch the other fixtures use.
+    //
+    // FAILS WHEN BACKED OUT: revert the `prefix` line in `splitPath` to
+    // `.map(sym.name).mkString(".")` and this emits `package my-co` at
+    // `src/main/scala/my-co/Thing.scala` — both assertions below, and the compile.
+    // Measured: with that one line reverted the other three WI-1054 tests stay green.
+    val files = gen(parseSource(
+      """sort my-co.deep-ns.Thing
+        |  entity Thing(v: Int64)
+        |end
+        |""".stripMargin, "thing.anthill"))
+    assertEquals(files.map(_.relPath),
+      IndexedSeq("src/main/scala/my_co/deep_ns/Thing.scala"))
+    assert(files.head.contents.startsWith("package my_co.deep_ns\n"),
+      s"every prefix segment is converted, not only the first:\n${files.head.contents}")
+    ScalaCompile.assertCompiles("a dotted declaration with a hyphenated prefix", files)
+  }
+
+  test("WI-1054: two anthill names converging on one Scala name is REFUSED, not last-wins") {
+    // What normalising `-` to `_` costs, and the reason it is paid at the emitter and
+    // not left to whoever writes the tree to disk. `Names.scalaTypeName` was already
+    // many-to-one (`foo_bar` and `fooBar` share an image); §5 adds `foo-bar` to that
+    // class. Two sorts in it emit two `FooBar.scala`, and NOTHING downstream could see
+    // it — `emittedTypes`' duplicate check is keyed on the ANTHILL leaf, so two
+    // different leaves never meet there, and a last-writer-wins tree compiles green
+    // with one declaration silently absent.
+    //
+    // FAILS WHEN BACKED OUT: drop the `refuseColliding(files)` call in
+    // `Bootstrap.generate` and this returns two `GeneratedFile`s at one relPath with
+    // no error at all.
+    val err = intercept[BootstrapError](gen(parseSource(
+      """namespace my-lib
+        |  sort foo-bar
+        |    entity foo-bar(v: Int64)
+        |  end
+        |
+        |  sort foo_bar
+        |    entity foo_bar(v: Int64)
+        |  end
+        |end
+        |""".stripMargin, "collide.anthill")))
+    assert(err.getMessage.contains("src/main/scala/my_lib/FooBar.scala"),
+      s"the refusal must name the path that collides: ${err.getMessage}")
+
+    // THE CONTROL, and it is the point of the whole ticket: the SAME two spellings in
+    // ONE declaration are one name, not a collision. Passes with and without
+    // `refuseColliding` BY DESIGN — its job is to say the refusal did not widen into
+    // "a hyphen anywhere is suspicious".
+    val ok = gen(parseSource(
+      """namespace my-lib
+        |  sort foo-bar
+        |    entity foo-bar(v: Int64)
+        |  end
+        |end
+        |""".stripMargin, "single.anthill"))
+    assertEquals(ok.map(_.relPath), IndexedSeq("src/main/scala/my_lib/FooBar.scala"))
+  }
+
+  test("WI-1054: `-` and `_` are ONE name, so a hyphenated import is not a foreign package") {
+    // The consequence of normalising rather than giving `-` its own spelling, and the
+    // one place it is observable beyond the emitted text: `TypeScope` compares an
+    // import's package against the package the declaration is EMITTED into
+    // (`shadowsThePrelude`), and an import of one's own namespace must not read as an
+    // import from elsewhere. Convert the emitted side alone and every name this file
+    // imports becomes `Unplaceable` — "imported from `my-lib`, but this declaration is
+    // emitted into package `my_lib`".
+    //
+    // FAILS WHEN BACKED OUT: drop the conversion in `Bootstrap.importedNames` and this
+    // is a BootstrapError, not a wrong string.
+    //
+    // TWO FILES, and that is what makes it drive the comparison at all: `place`
+    // consults the file's OWN types before `shadowsThePrelude`, so an import of a
+    // sibling declared in the same file never reaches the package check. (Measured —
+    // written as one file, this test passed with the conversion backed out.)
+    val payload = gen(parseSource(
+      """namespace my-lib
+        |  sort Payload
+        |    entity Payload(v: Int64)
+        |  end
+        |end
+        |""".stripMargin, "payload.anthill"))
+    val holder = gen(parseSource(
+      """namespace my-lib
+        |  sort Holder
+        |    import my-lib.{Payload}
+        |    operation held() -> Payload
+        |  end
+        |end
+        |""".stripMargin, "holder.anthill"))
+    val src = holder.find(_.relPath == "src/main/scala/my_lib/Holder.scala")
+      .getOrElse(fail(s"expected Holder.scala in: ${holder.map(_.relPath)}")).contents
+    assert(src.contains("def held(): my_lib.Payload"),
+      s"a self-import through a hyphenated package must still place the name:\n$src")
+    ScalaCompile.assertCompiles("a hyphenated namespace importing itself", payload ++ holder)
+  }
+
   test("WI-1055: the prelude refusal set is a NAMED list, and the compiling count is a floor") {
     // The ticket's two numeric guards, together because they are one trade-off:
     // every refusal added takes a file out of the tree, so the refusal list and
@@ -1873,12 +2064,18 @@ class BootstrapTest extends munit.FunSuite:
     // `VectorSpace` changed the same way and still name siblings.
     //
     // Compiling the whole closure is WI-1020's. What is left of it, MEASURED at
-    // WI-1062: FOUR errors, down from eleven. One is WI-1054 (`zero-val` is not a
+    // WI-1062: FOUR errors, down from eleven. One was WI-1054 (`zero-val` is not a
     // Scala identifier, `Numeric.scala`); the other three are `Modifiable`, which
     // effects.anthill declares and is refused for an unrelated `anthill.reflect`
     // import, cascading into `MutableCollection.scala`. The eight that went were
     // all `Iterable is not a member of anthill.prelude` — the cascade WI-1062 was
     // filed to remove — and `PersistentCollection.scala` is now clean.
+    //
+    // RE-MEASURED AT WI-1054: THREE, and they are the `Modifiable` three. The parse
+    // error is gone — that ticket normalizes `-` to `_` before the §5 conversion, so
+    // `Numeric.scala` emits `def zeroVal(): T`. Nothing else in the closure carried a
+    // hyphen (measured across the prelude: `zero-val` was the only one), which is why
+    // this is a one-error move and not a cascade.
     //
     // BOTH COUNTS UNDER-REPORT, and by construction: `dotc` ends the run at the
     // phase that first reported an error, so nothing a LATER phase would say is in
@@ -1888,6 +2085,11 @@ class BootstrapTest extends munit.FunSuite:
     //   after  WI-1062   4 -> 3 (the same) -> 4 -> clean
     //   after  WI-1064   4 -> 3 (the same) -> 2 -> 4 -> clean
     //   after  WI-1066   4 -> 3 (the same) -> 2 -> 4 -> clean   (unchanged)
+    //   after  WI-1054        3 (Modifiable) -> 2 -> 4 -> clean
+    // WI-1054 removed the FIRST rung outright rather than shortening one: the round
+    // of 4 was 3 Modifiable errors plus the `zero-val` parse error, and with the
+    // parse error gone that round IS the old second rung. The remaining ladder is
+    // unchanged, which is the check that it fixed one thing.
     // Six more files compile at WI-1062, and the round it added is the one it
     // UNCOVERED rather than caused: `requires` -> `extends` (§2.7) is unsound for a
     // refining override and for a data sort that requires an algebra, which only

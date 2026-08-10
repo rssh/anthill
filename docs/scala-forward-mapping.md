@@ -58,7 +58,7 @@ manifest declares `language_version: none`, which is deliberately distinct from
 omitting the field.
 
 Anthill `namespace` segments map directly to the package path;
-hyphens in identifiers become underscores.
+hyphens in identifiers become underscores (§5).
 
 ## 2. Mapping Rules
 
@@ -100,7 +100,7 @@ hyphens in identifiers become underscores.
 
 ### 2.1 Namespace → Package or Object
 
-A top-level `namespace` becomes a Scala `package`; nested namespaces become nested `object`s (Scala packages can't be nested inline). Names are kept as-written; hyphens become underscores.
+A top-level `namespace` becomes a Scala `package`; nested namespaces become nested `object`s (Scala packages can't be nested inline). Segment names are kept as-written except for the hyphen rule (§5): `namespace my-lib` → `package my_lib`, and the source directory follows (`src/main/scala/my_lib/`). A namespace segment is *not* camelCased — it is already idiomatic for a Scala package.
 
 ```
 namespace banking                →  package banking { ... }
@@ -737,6 +737,16 @@ Anthill stdlib is mixed: most operations use snake_case (`to_bigint`, `read_line
 | Namespace segment (lowercase: `prelude`, `realization`) | matches Scala package | unchanged → `package prelude` |
 | Variable (snake_case: `?work_item`) | scope-local; doesn't surface in generated code |  — |
 
+**Hyphen rule.** An anthill identifier is `[a-zA-Z_][a-zA-Z0-9_-]*`, so `-` is the one character it admits that Scala does not — and `def zero-val(): T` is not merely unidiomatic Scala, it is a *parse error* (the compiler reads `zero` applied to an operator). Every hyphen is therefore normalised to `_` **before** the per-kind conversion above runs, so `zero-val` and `zero_val` reach Scala as the same name:
+
+| Anthill | Kind | Scala output |
+|---|---|---|
+| `zero-val` | operation / field | `zeroVal` |
+| `my-sort` | sort / entity | `MySort` |
+| `my-lib` | namespace segment | `my_lib` (and the directory `my_lib/`) |
+
+The underscore §1.1 promises is thus what survives in exactly the position §1.1 is written about — the package path — while an identifier whose kind *is* camelCased takes the camelCase. Enforced in `Names.normalize` (scaland), applied at every entry point of `Names`.
+
 **Conversion rule.** snake_case → camelCase: split on `_`, lowercase the first segment, PascalCase each subsequent segment, join. Identifiers without `_` are unchanged (already camelCase or single-word).
 
 **Round-tripping.** `scala-anthill-gen` (proposal 034) emits `@anthillName("original_snake_case")` on every generated `def` whose Scala name differs from its source — preserves the lossless round trip and lets `Implementation`-fact validation match by source-side name. This mirrors `rust-anthill-gen`'s `#[anthill(name = "...")]`.
@@ -744,6 +754,8 @@ Anthill stdlib is mixed: most operations use snake_case (`to_bigint`, `read_line
 **Operator-named operations** (e.g. `add` lifted to `+` via the Pratt operator table): the *method* keeps the spelled-out name (`def add`); whether the consumer also defines a symbolic alias (`def +(other: T): T = add(this, other)`) is a project-level decision, not baseline codegen output. Symbolic methods exist in Scala 3 but they're harder to grep and risk operator-precedence surprise.
 
 **Reserved-word collisions.** When an anthill identifier collides with a Scala keyword (e.g. `match`, `type`, `class`), the generated name is backticked (``def `match`(…)``) — same approach Scala uses for Java interop.
+
+*Except in a namespace segment*, which is also a **directory** name: backticking `namespace type` would put backticks in `src/main/scala/`type`/`. So a reserved namespace segment is currently emitted verbatim and the output does not compile — a known gap, not a rule. Refusing it is the right answer and needs a diagnostic located at the namespace header; `Names.scalaPackageSegment` records this at the site. A backend whose namespaces do not map to paths (an object-nesting one) is not bound by the exception.
 
 ## 6. Cross-references
 

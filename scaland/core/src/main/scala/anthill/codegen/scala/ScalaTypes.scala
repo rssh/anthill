@@ -55,7 +55,12 @@ case class ScalaTypes(
     * [[autoImportedTypes]] ([[Bootstrap.emittedTypes]] filters on it), and whether an
     * explicit `import` in a consumer file NAMES this same package or another one
     * ([[TypeScope.place]]). Split, a caller could resolve a table for one package and
-    * have imports judged against another. */
+    * have imports judged against another.
+    *
+    * HELD IN CONVERTED (SCALA) FORM, normalized by [[resolve]] (WI-1054): both readers
+    * compare it against a package string the emitter produced, and those are converted.
+    * A raw `my-lib` here matches neither, so a hyphenated auto-import package would
+    * empty the table AND turn every self-import into a false `Unplaceable`. */
   autoImportPackage: String,
   /** Anthill leaf name → the type the auto-imported files EMIT for it, with the
     * parameters that declaration writes. `_root_`-anchored, for the same reason the
@@ -166,6 +171,7 @@ object ScalaTypes:
       case other => throw IllegalStateException(
         s"no usable type_map for language `$language`, profile `$profile`: $other")
     val reachable = Bootstrap.emittedTypes(autoImported, autoImportPackage)
-    ScalaTypes(scalars, autoImportPackage, reachable.types, reachable.declaredNotEmitted)
+    ScalaTypes(scalars, Names.scalaPackagePathOf(autoImportPackage),
+      reachable.types, reachable.declaredNotEmitted)
 
 end ScalaTypes

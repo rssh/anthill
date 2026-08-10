@@ -9,8 +9,15 @@ scaland/target/
 scaland/project/target/
 scaland/.bsp/
 scaland/.metals/
-# sbt invoked from the repo root (rather than scaland/) drops its target/ here
+# sbt invoked from the repo root (rather than scaland/) drops these here, mirroring
+# the scaland/ entries above
 /target/
+/project/target/
+/.bsp/
+
+# R
+.RData
+.Rhistory
 
 # IDE
 .idea/

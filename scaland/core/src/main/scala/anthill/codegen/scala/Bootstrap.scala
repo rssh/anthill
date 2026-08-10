@@ -74,7 +74,38 @@ object Bootstrap:
         emitStandaloneEntity(pf.symbols, e, "", env, Map.empty, files)
       case _ =>
     }
+    refuseColliding(files)
     files.toIndexedSeq
+
+  /** Two emissions at ONE path is a refusal, not a last-writer-wins (WI-1054 review).
+    *
+    * `Names.scalaTypeName` is MANY-TO-ONE — `foo_bar` and `fooBar` already shared an
+    * image, and normalizing `-` to `_` (§5) adds `foo-bar` to that class — so two
+    * distinct anthill sorts can now want one `FooBar.scala`. Nothing downstream can see
+    * it: `emittedTypes`' duplicate check is keyed on the ANTHILL leaf, so two different
+    * leaves never collide there, and whatever writes the tree to disk keeps whichever
+    * file it wrote last. The result is a silently missing declaration in a tree that
+    * compiled green.
+    *
+    * ON THE OUTPUT and not on the name table, because the path is what actually
+    * collides and every emission route reaches it — a sort, a standalone entity, and a
+    * namespace's `<Ns>Ops` trait each build their own `relPath`, and a check on any one
+    * of them would miss the other two.
+    *
+    * `Span.empty` AND NOT A BORROWED ONE, which is what that value is for ("a
+    * diagnostic that genuinely has nowhere to point"): the fault is a RELATION between
+    * two declarations, so neither of them is where a reader should be sent, and
+    * pointing at one would say the wrong thing more confidently than saying nothing.
+    * The path it names is what identifies both.
+    */
+  private def refuseColliding(files: ArrayBuffer[GeneratedFile]): Unit =
+    val collisions = files.groupBy(_.relPath).filter(_._2.length > 1).keys.toVector.sorted
+    if collisions.nonEmpty then
+      throw BootstrapError(
+        s"two declarations emit to one path (${collisions.mkString(", ")}). Scala " +
+        "names are converted many-to-one (§5: `-` normalizes to `_`, then snake_case " +
+        "camelCases), so distinct anthill names can converge — rename one of them",
+        Span.empty)
 
   /** What a set of files makes reachable by a BARE name: the types they emit into the
     * auto-import package, and the names they declare there with no emission at all
@@ -122,10 +153,18 @@ object Bootstrap:
   def emittedTypes(
     files: Iterable[ParsedFile], autoImportPackage: String = "anthill.prelude"
   ): AutoImported =
+    // CONVERTED BEFORE IT IS COMPARED (WI-1054 review), because `t.pkg` now is: a
+    // caller naming a hyphenated auto-import package would match NOTHING against the
+    // raw string and get an empty table back with no diagnostic — every prelude name
+    // silently degrading from an arity-checked `Placement.Known` to an unchecked
+    // `Ambient`. That is the same one-side-converted defect `importedNames` documents,
+    // one hop out, and the reason both are stated: a package string is only ever
+    // compared against another package string, so every producer of one converts.
+    val autoImportPkg = Names.scalaPackagePathOf(autoImportPackage)
     files.foldLeft(AutoImported(Map.empty, Set.empty)) { (acc, pf) =>
       val here = fileTypes(pf.symbols, pf.items, "")
       val types = here.types.foldLeft(acc.types) { case (m, (leaf, t)) =>
-        if t.pkg != autoImportPackage then m
+        if t.pkg != autoImportPkg then m
         else
           // Annotated: a Scala 3 enum-case constructor widens to the enum type without
           // an expected type, and the map's value type is the CASE.
@@ -144,7 +183,7 @@ object Bootstrap:
           m + (leaf -> known)
       }
       AutoImported(types, acc.declaredNotEmitted ++ here.declaredNotEmitted.collect {
-        case (leaf, pkg) if pkg == autoImportPackage => leaf
+        case (leaf, pkg) if pkg == autoImportPkg => leaf
       })
     }
 
@@ -288,7 +327,16 @@ object Bootstrap:
       span)
 
   /** Anthill leaf name → the package an `import` brings it from, accumulated
-    * down the nesting: a sort's imports add to its namespace's. */
+    * down the nesting: a sort's imports add to its namespace's.
+    *
+    * THE KEY STAYS AS ANTHILL WROTE IT and only the VALUE is converted (WI-1054): the
+    * key is looked up by [[TypeScope.place]] against a written occurrence, which is the
+    * anthill name, while the value is compared against the emitted `pkg` — a
+    * package-converted string. Converting one and not the other is what makes the
+    * comparison meaningful: leave the value raw and a hyphenated namespace importing
+    * from itself reads as an import from ELSEWHERE, and every name it brings in is
+    * refused as unreachable.
+    */
   private def importedNames(
     sym: SymbolTable, imports: IndexedSeq[Import], outer: Map[String, String]
   ): Map[String, String] =
@@ -296,9 +344,10 @@ object Bootstrap:
       val path = imp.path.segments.map(sym.name)
       imp.kind match
         case ImportKind.Selective(names) =>
-          acc ++ names.map(n => sym.name(n.last) -> path.mkString("."))
+          val from = Names.scalaPackagePath(path)
+          acc ++ names.map(n => sym.name(n.last) -> from)
         case ImportKind.Plain if path.length > 1 =>
-          acc + (path.last -> path.dropRight(1).mkString("."))
+          acc + (path.last -> Names.scalaPackagePath(path.dropRight(1)))
         // A wildcard names nothing in particular, and a single-segment plain
         // import names a package rather than a member; neither places a name.
         case _ => acc
@@ -390,18 +439,31 @@ object Bootstrap:
     * each emitted type lands, and a second copy of this arithmetic is how a derived
     * table comes to name a package the emitter never writes to.
     */
-  private case class NamespacePath(parentPkg: String, leaf: String):
+  private case class NamespacePath(parentPkg: String, leaf: String, anthillLeaf: String):
     def childPath: String = if parentPkg.isEmpty then leaf else s"$parentPkg.$leaf"
 
   private def namespacePath(
     sym: SymbolTable, ns: Namespace, packagePath: String
   ): NamespacePath =
-    val segs = ns.name.segments.map(sym.name)
-    if segs.length == 1 then NamespacePath(packagePath, segs.head)
+    val written = ns.name.segments.map(sym.name)
+    // WI-1054: every segment is a PACKAGE segment, so `my-ns` reaches the `package`
+    // clause — and the directory `pathToDir` derives from it — as `my_ns`.
+    //
+    // [[NamespacePath.anthillLeaf]] is for the DIAGNOSTIC LABEL ALONE, and that is the
+    // whole of it: a located refusal must quote the namespace as the source spells it.
+    // It is NOT what the `<Ns>Ops` trait name is read from — `Names.scalaTypeName`
+    // normalizes for itself and normalization is idempotent, so both leaves give the
+    // same identifier. (An earlier comment here claimed otherwise; a third field with a
+    // false rationale is what a later call site would pick the wrong leaf from.)
+    val segs = written.map(Names.scalaPackageSegment)
+    if segs.length == 1 then NamespacePath(packagePath, segs.head, written.head)
     else
-      val parent = segs.dropRight(1).mkString(".")
+      // `packagePath` is an ENCLOSING path, already converted by whichever call
+      // produced it; only the segments this header writes are converted here.
+      val parent = Names.scalaPackagePath(written.dropRight(1))
       NamespacePath(
-        if packagePath.isEmpty then parent else s"$packagePath.$parent", segs.last)
+        if packagePath.isEmpty then parent else s"$packagePath.$parent",
+        segs.last, written.last)
 
   private def emitNamespace(
     sym: SymbolTable, ns: Namespace, packagePath: String, env: FileEnv,
@@ -428,7 +490,7 @@ object Bootstrap:
     if nsOps.nonEmpty then
       val typeName = Names.scalaTypeName(nsLeaf) + "Ops"
       val scope = env.scopeAt(
-        s"namespace `$nsLeaf`", ns.name.span, nsParentPkg, imports)
+        s"namespace `${here.anthillLeaf}`", ns.name.span, nsParentPkg, imports)
       val sb = StringBuilder()
       if nsParentPkg.nonEmpty then sb ++= s"package $nsParentPkg\n\n"
       sb ++= s"trait $typeName:\n"
@@ -877,12 +939,17 @@ object Bootstrap:
   /** Split a multi-segment name into (packagePath, leafTypeName). For
     * `anthill.prelude.Option` returns ("anthill.prelude", "Option"); for
     * a single-segment name the enclosing `packagePath` is used instead.
+    *
+    * BOTH HALVES ARE CONVERTED, by their own rule (WI-1054): the prefix segments name
+    * a PACKAGE and take [[Names.scalaPackageSegment]], the leaf names a TYPE and takes
+    * `scalaTypeName`. A raw prefix would put a hyphen in a `package` clause and in the
+    * `src/main/scala/…` path derived from it.
     */
   private def splitPath(
     sym: SymbolTable, name: anthill.parse.Name, packagePath: String
   ): (String, String) =
     if name.segments.length > 1 then
-      val prefix = name.segments.dropRight(1).map(sym.name).mkString(".")
+      val prefix = Names.scalaPackagePath(name.segments.dropRight(1).map(sym.name))
       val leaf = Names.scalaTypeName(sym.name(name.last))
       val pkg = if packagePath.isEmpty then prefix else s"$packagePath.$prefix"
       (pkg, leaf)
