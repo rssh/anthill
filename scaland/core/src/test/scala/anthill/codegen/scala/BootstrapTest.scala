@@ -2487,11 +2487,11 @@ class BootstrapTest extends munit.FunSuite:
       s"without the declaration nothing checks the arity:\n$ambient")
   }
 
-  test("WI-1060: two files emitting the same leaf differently is refused, not last-wins") {
-    // The derived table is keyed on the LEAF, because that is what a bare mention
-    // writes. Two files answering it differently means the caller's claim — "these
-    // are reachable by bare name" — is false for that name, and a fold that just
-    // overwrote would pick by file ORDER and emit the loser's arity everywhere.
+  test("WI-1060/WI-1067: two declarations in one package are refused, not last-wins") {
+    // The derived table is keyed on PACKAGE + LEAF, because that pair is one Scala
+    // declaration address. Two files answering the same address means the caller's
+    // closure has two declarations for one name, and a fold that just overwrote would
+    // pick by file ORDER and emit the loser's arity everywhere.
     //
     // No corpus set has the shape (the 45 prelude files do not), so this arm is
     // driven by a fixture or not at all.
@@ -2505,18 +2505,20 @@ class BootstrapTest extends munit.FunSuite:
     val err = intercept[BootstrapError](Bootstrap.emittedTypes(IndexedSeq(
       dup("one.anthill", "    sort A = ?"),
       dup("two.anthill", "    sort A = ?\n    sort B = ?"))))
-    assert(err.getMessage.contains("`Twin` is emitted twice"),
+    assert(err.getMessage.contains("`Twin` is declared twice in Scala package `anthill.prelude`"),
       s"the refusal must name the leaf: ${err.getMessage}")
     // LOCATED, and that is not decoration: the real call passes 45 files, so a message
     // naming the leaf alone leaves a reader grepping for it. The span is the SECOND
     // declaration — the one that could not be added.
     assert(err.getMessage.contains("two.anthill:"),
       s"the refusal must name the file it could not add: ${err.getMessage}")
-    // CONTROL: the same declaration twice is not a conflict — a file set that lists a
-    // file twice, or two identical declarations, has one answer and it is that one.
+    assert(err.getMessage.contains("first declaration is at one.anthill:"),
+      s"the refusal must name the first declaration too: ${err.getMessage}")
+    // CONTROL: the SAME PARSED FILE twice is not a conflict — a repeated input has the
+    // same source span and is one declaration listed twice, not two declarations.
+    val once = dup("one.anthill", "    sort A = ?")
     assertEquals(
-      Bootstrap.emittedTypes(IndexedSeq(dup("one.anthill", "    sort A = ?"),
-                                        dup("two.anthill", "    sort A = ?"))).types.keySet,
+      Bootstrap.emittedTypes(IndexedSeq(once, once)).in("anthill.prelude").types.keySet,
       Set("Twin"))
   }
 
@@ -2725,16 +2727,14 @@ class BootstrapTest extends munit.FunSuite:
     // `Placement.Ambient` and emitted `my.app.Type`, a bare identifier naming nothing
     // in the tree. That is the defect B1 was filed for, surviving one file over.
     //
-    // WHAT IT COSTS, stated because it is a trade and not a free win: a project that
-    // declares its OWN `Type` in a sibling file is now refused, where before it
-    // emitted `my.app.Type` and compiled. Bootstrap sees the prelude and this file and
-    // nothing else, so it cannot tell that project apart from one that meant the
-    // prelude's. The same blindness in the other direction is silent — a project's own
-    // `Option` is emitted `_root_.anthill.prelude.Option` with no diagnostic — and a
-    // loud wrong answer is the one worth having.
+    // WI-1067 CLOSES THE OLD TRADE: a caller that supplies a sibling project `Type`
+    // gets that exact-package declaration before this prelude negative. This fixture
+    // deliberately supplies no such project declaration, so the prelude refusal is the
+    // only honest answer; omitting a real sibling from `projectFiles` violates the
+    // caller's complete-closure promise.
     //
-    // FAILS WHEN BACKED OUT: drop `AutoImported.declaredNotEmitted` (return only the
-    // types) and this emits `def label(t: my.app.Type): X` with no refusal.
+    // FAILS WHEN BACKED OUT: drop `PackageTypes.declaredNotEmitted` (retain only the
+    // positive types) and this emits `def label(t: my.app.Type): X` with no refusal.
     val consumer = parseSource(
       """namespace my.app
         |  sort Labeller
@@ -2770,7 +2770,7 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-1060: a type_map entry for a PARAMETERIZED sort is refused") {
     // The check that replaced `TypeGen.preludeSorts`' deleted `require`, and it guards
     // the mistake WI-1021 measured and reverted: `List -> scala.List`. `preludeSorts`
-    // is `autoImportedTypes -- hostScalars.keySet`, so such an entry DELETES list
+    // is `autoImportPackage.types -- hostScalars.keySet`, so such an entry DELETES list
     // .anthill's declared arity and re-adds `List` as a 0-parameter host type — and
     // every `List[T = X]` in the corpus is then refused with "`List` maps to Scala
     // `_root_.scala.List` and declares 0 type parameter(s), but 1 were written", a
@@ -2857,4 +2857,223 @@ class BootstrapTest extends munit.FunSuite:
       s"the refusal must name the missing entry: ${err.getMessage}")
     assert(err.getMessage.contains("drop") && err.getMessage.contains("sink.anthill:"),
       s"the refusal must name the declaration and be located: ${err.getMessage}")
+  }
+
+  // ── WI-1067: package-keyed local/project type lookup ─────────────────────
+
+  test("WI-1067: one file resolves exact packages and qualifies cross-package uses") {
+    // A generated top-level `package a.b` does NOT make `a.Foo` bare-visible in Scala
+    // 3. The package chain still selects a.Foo for Anthill's nested namespace, but both
+    // that reference and the sibling-package reference must be qualified. The old flat
+    // table emitted bare `Foo` in both places; only a real compile exposed the defect.
+    //
+    // FAILS WHEN BACKED OUT: flatten `FileTypes` by leaf and `Sibling.use` emits bare
+    // `Foo`; the real compiler rejects it. CONTROL: `Same.use` is in Foo's exact package,
+    // stays bare, and compiles, proving the fix does not qualify everything.
+    val fixture = parseSource(
+      """namespace a
+        |  sort Foo
+        |    operation id(x: Int64) -> Int64
+        |  end
+        |  sort Same
+        |    operation use(x: Foo) -> Foo
+        |  end
+        |  namespace b
+        |    sort Nested
+        |      operation use(x: Foo) -> Foo
+        |    end
+        |  end
+        |end
+        |namespace c
+        |  sort Sibling
+        |    operation use(x: Foo) -> Foo
+        |  end
+        |end
+        |""".stripMargin, "two_packages.anthill")
+    val files = gen(fixture)
+    val same = files.find(_.relPath.endsWith("/a/Same.scala")).get.contents
+    val nested = files.find(_.relPath.endsWith("/a/b/Nested.scala")).get.contents
+    val sibling = files.find(_.relPath.endsWith("/c/Sibling.scala")).get.contents
+    assert(same.contains("def use(x: Foo): Foo"),
+      s"a type in the exact package must remain bare:\n$same")
+    assert(nested.contains("def use(x: _root_.a.Foo): _root_.a.Foo"),
+      s"an ancestor-package type must be selected but qualified:\n$nested")
+    assert(sibling.contains("def use(x: _root_.a.Foo): _root_.a.Foo"),
+      s"a unique sibling-package type must be qualified:\n$sibling")
+    ScalaCompile.assertCompiles("one file spanning exact, nested, and sibling packages", files)
+  }
+
+  test("WI-1067: the empty package is not an ancestor candidate of a named package") {
+    // Scala 3 does not make a default-package member reachable from a named package;
+    // even `_root_.RootType` cannot name it there. The correct outcome is therefore a
+    // located refusal rather than generated source that fails later.
+    val fixture = parseSource(
+      """sort RootType
+        |  operation id(x: Int64) -> Int64
+        |end
+        |namespace named
+        |  sort User
+        |    operation use(x: RootType) -> RootType
+        |  end
+        |end
+        |""".stripMargin, "default_package.anthill")
+    val err = intercept[BootstrapError](gen(fixture))
+    assert(err.getMessage.contains("default-package members") &&
+           err.getMessage.contains("named package `named`"), err.getMessage)
+    assert(err.getMessage.contains("default_package.anthill:"),
+      s"the refusal must point at the use: ${err.getMessage}")
+  }
+
+  test("WI-1067: a nearer negative declaration shadows an emitted ancestor") {
+    // Positive and negative tables must be searched in ONE nearest-package walk. Two
+    // separate walks let `a.Shadow` jump over the abstract `a.b.Shadow`, turning an
+    // unrepresentable source declaration into a different, compilable Scala type.
+    val ancestor = parseSource(
+      """namespace a
+        |  sort Shadow
+        |    operation id(x: Int64) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "ancestor_shadow.anthill")
+    val nearer = parseSource(
+      """namespace a.b
+        |  sort Shadow = ?
+        |end
+        |""".stripMargin, "nearer_shadow.anthill")
+    val consumer = parseSource(
+      """namespace a.b.c
+        |  sort User
+        |    operation use(x: Shadow) -> Shadow
+        |  end
+        |end
+        |""".stripMargin, "shadow_user.anthill")
+
+    val shadowed = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
+      projectFiles = IndexedSeq(ancestor, nearer, consumer))
+    val err = intercept[BootstrapError](Bootstrap.generate(consumer, shadowed))
+    assert(err.getMessage.contains("`Shadow` is declared in package `a.b`") &&
+           err.getMessage.contains("emits no Scala type"), err.getMessage)
+    assert(err.getMessage.contains("shadow_user.anthill:"),
+      s"the refusal must locate the use: ${err.getMessage}")
+
+    // CONTROL: remove only the nearer negative declaration. The ancestor becomes the
+    // selected type, stays qualified in package a.b.c, and the real closure compiles.
+    val reachable = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
+      projectFiles = IndexedSeq(ancestor, consumer))
+    val files = Bootstrap.generate(ancestor, reachable) ++
+      Bootstrap.generate(consumer, reachable)
+    val user = files.find(_.relPath.endsWith("/a/b/c/User.scala")).get.contents
+    assert(user.contains("def use(x: _root_.a.Shadow): _root_.a.Shadow"), user)
+    ScalaCompile.assertCompiles("ancestor package after removing a nearer negative", files)
+  }
+
+  test("WI-1067: duplicate leaves conflict within one package and coexist across packages") {
+    // The within-file namespace merge used `++`, so the second declaration silently
+    // replaced the first before either placement or the project-wide duplicate guard
+    // could see it. The message must identify BOTH declarations; pointing only at the
+    // second leaves a reader searching a multi-namespace file for the first.
+    val samePackage = parseSource(
+      """namespace dup
+        |  sort Twin
+        |    operation one(x: Int64) -> Int64
+        |  end
+        |  sort Twin
+        |    operation two(x: Int64) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "same_package.anthill")
+    val err = intercept[BootstrapError](gen(samePackage))
+    assert(err.getMessage.contains("`Twin` is declared twice in Scala package `dup`"),
+      err.getMessage)
+    assert(err.getMessage.contains("first declaration is at same_package.anthill:"),
+      s"the first declaration must be named: ${err.getMessage}")
+    assert(err.getMessage.startsWith("same_package.anthill:"),
+      s"the second declaration must locate the refusal: ${err.getMessage}")
+
+    // CONTROL: package is part of identity. These two declarations are legal, both
+    // survive the table, and the resulting source set compiles together.
+    val differentPackages = parseSource(
+      """namespace left
+        |  sort Twin
+        |    operation one(x: Int64) -> Int64
+        |  end
+        |end
+        |namespace right
+        |  sort Twin
+        |    operation two(x: Int64) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "different_packages.anthill")
+    val files = gen(differentPackages)
+    assertEquals(files.map(_.relPath).sorted, IndexedSeq(
+      "src/main/scala/left/Twin.scala", "src/main/scala/right/Twin.scala"))
+    ScalaCompile.assertCompiles("same leaf in two packages", files)
+  }
+
+  test("WI-1067: a project sibling type beats the prelude and absence falls back") {
+    def ownPair = parseSource(
+      """namespace my.app
+        |  sort Pair
+        |    sort A = ?
+        |    sort B = ?
+        |    operation fst(p: Pair) -> A
+        |  end
+        |end
+        |""".stripMargin, "project_pair.anthill")
+    def consumer = parseSource(
+      """namespace my.app
+        |  sort User
+        |    sort X = ?
+        |    sort Y = ?
+        |    operation use(p: Pair[A = X, B = Y]) -> X
+        |  end
+        |end
+        |""".stripMargin, "project_user.anthill")
+
+    // The caller supplies its COMPLETE project parse set once when resolving the
+    // tables; every per-file generation reads the same answer. With the sibling
+    // present, `_root_.my.app.Pair` must win over the auto-imported prelude Pair, and
+    // compiling both files proves the selected name exists.
+    val project = IndexedSeq(ownPair, consumer)
+    val projectTypes = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles, projectFiles = project)
+    val projectOut = project.flatMap(Bootstrap.generate(_, projectTypes))
+    val user = projectOut.find(_.relPath.endsWith("/User.scala")).get.contents
+    assert(user.contains("def use(p: _root_.my.app.Pair[X, Y]): X"),
+      s"the same-package sibling must beat the prelude:\n$user")
+    ScalaCompile.assertCompiles("project Pair plus its consumer", projectOut)
+
+    // CONTROL: remove only the sibling declaration. The same consumer still reaches
+    // `_root_.anthill.prelude.Pair`; compiling it with pair.anthill proves the fallback
+    // names a real declaration rather than merely producing the expected substring.
+    val fallbackTypes = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles, projectFiles = IndexedSeq(consumer))
+    val fallback = Bootstrap.generate(consumer, fallbackTypes)
+    val fallbackUser = fallback.head.contents
+    assert(fallbackUser.contains("def use(p: _root_.anthill.prelude.Pair[X, Y]): X"),
+      s"without the sibling the prelude must remain the fallback:\n$fallbackUser")
+    val preludePair = Bootstrap.generate(
+      parseStdlib("anthill/prelude/pair.anthill"), fallbackTypes)
+    ScalaCompile.assertCompiles("prelude Pair fallback plus its consumer",
+      preludePair ++ fallback)
+  }
+
+  test("WI-1067: a repeated fully-qualified dotted declaration does not double its package") {
+    // `splitPath` used to append the dotted prefix to the enclosing package even when
+    // the prefix already WAS that package, producing
+    // `anthill.prelude.anthill.prelude.Concat`. Both the relPath and a real compile
+    // drive the fix; a source-only assertion would not catch a mismatched path/table.
+    val fixture = parseSource(
+      """namespace anthill.prelude
+        |  sort anthill.prelude.Concat
+        |    operation apply(x: Int64) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "qualified_concat.anthill")
+    val files = gen(fixture)
+    assertEquals(files.map(_.relPath),
+      IndexedSeq("src/main/scala/anthill/prelude/Concat.scala"))
+    assert(files.head.contents.startsWith("package anthill.prelude\n"),
+      files.head.contents)
+    ScalaCompile.assertCompiles("a repeated fully-qualified declaration prefix", files)
   }

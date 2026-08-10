@@ -172,7 +172,7 @@ emitter:
 | | source | resolved by |
 |---|---|---|
 | the scalars (`Int64 → _root_.scala.Long`, …) | the profile's `type_map` in `scala_std.anthill` | `ScalaProfile.typeMap(kb)` |
-| every other prelude sort (its Scala name *and* its parameters) | the prelude's own `.anthill` files | `Bootstrap.emittedTypes(files, autoImportPackage)` |
+| every other prelude/project sort (its Scala name *and* its parameters) | the complete parsed prelude + project file closure | `Bootstrap.emittedTypes(files)`, package-keyed and installed by `ScalaTypes.resolve` |
 
 The split is the claim each half can honestly make. `Int64 → Long` is a **profile
 decision** — `rust_std` says `i64`, `cpp_std` says `int64_t`, and a Scala.js profile
@@ -185,17 +185,30 @@ no host name to put in the one it has, so the second half could not have lived i
 the fact without growing the schema — and a schema that could say it would only be
 restating the declaration, with nothing keeping the two in step.
 
-Deriving also settles **membership**: every sort the emitted prelude contains is in
-the table, not a hand-picked subset, so `Eq`, `Iterable`, `FiniteCollection` and the
-rest are placed by their own declarations instead of falling through to the
-guess an unplaced name gets (qualified with the *declaring file's* package: right
-for a prelude file, wrong for a project consumer). The caller decides *which* files
-are reachable by bare name, and only declarations emitted into `anthill.prelude`
-**itself** enter the table: a nested `namespace anthill.prelude.algebra` is a package
-a bare mention does not reach, so its `Ring` is skipped rather than published. The
-same walk also records the names the prelude *declares* and emits nothing for — a
-namespace-level `sort Type = ?` — so those are refused from every file rather than
-only from the one that declares them.
+Deriving also settles **membership**: every sort the supplied closure promises to
+emit is indexed under its Scala package, not a hand-picked subset. Lookup first
+consults the mentioning declaration's package and its nearest dotted Anthill ancestors, then
+the designated `anthill.prelude` auto-import package. Thus a same-package project
+`Pair` in a sibling file beats the prelude's, while a nested
+`anthill.prelude.algebra.Ring` does not leak into `my.app`. The empty package is not an
+ancestor candidate of a named package. The same walk records names declared with no Scala
+emission — a namespace-level `sort Type = ?` — under their package, so they refuse a
+use only where that declaration is actually in Anthill's dotted-package lookup chain.
+
+That lookup chain is not a claim about bare Scala visibility. Each generated file has
+one top-level package clause, and Scala 3 does **not** make `a.Foo` bare-visible from
+`package a.b`. Therefore only an exact-package declaration is emitted bare; a selected
+ancestor or sibling declaration is emitted as `_root_.a.Foo`. A real compiler fixture
+owns this distinction, including an exact-package bare-name control.
+
+The table is deliberately an **emission promise**, not proof that emission already
+succeeded. Calling `Bootstrap.generate` to construct it would be circular because
+generation needs the table. The caller must therefore pass and generate the same
+complete parsed closure; compiling the generated Scala closure is the enforcement
+point. If one of today's seven refused prelude files promises `SortedSet`, `Delay`,
+`Relation`, `EffectExpression`, or `Meta` but emits no file, compilation fails on that
+missing `_root_` declaration. The named refusal-set test pins those seven promises so
+the boundary cannot change silently.
 
 Three consequences worth stating. A profile that **drops** a scalar entry does not
 get a fallback: the name falls to the sort the prelude declares (`trait Int64`, which
@@ -203,12 +216,11 @@ no value inhabits), because nothing in the emitter special-cases it. A profile e
 naming a **parameterized** sort (`List → scala.List`, which `rust_std` still carries)
 is refused when the table is resolved, because such an entry would replace the
 declared arity with zero and refuse every written occurrence — blaming the use site
-for a bad fact. And a project declaring its **own** `Pair` in a sibling file still
-reaches the prelude table: an explicit `import` of another package shadows it (and is
-then refused, since the emitter writes no Scala `import`), but a sibling declaration
-with no import is invisible from one file's parse IR. Closing that needs a resolved
-project closure, not a lookup-order change — WI-1067, which also owns the same defect
-one scope down, where a file's *own* table is flat while the file may span packages.
+for a bad fact. And a project declaring its **own** `Pair` in a sibling file wins when
+the caller includes that file in `ScalaTypes.resolve(projectFiles = ...)`; omitting
+the sibling deliberately restores the prelude fallback. An explicit `import` of
+another package still shadows the auto-import and is refused, since Bootstrap emits
+no Scala `import`.
 
 `rust_std`'s hardcoded `map_primitive_type` (`rustland/anthill-core/src/codegen/rust.rs`)
 is **explicitly out of scope here**: it is a different backend in a different
@@ -580,17 +592,18 @@ its row variables among its type variables — so a parameter the signature only
 uses in an effect position (inside a `{…}` row, an arrow's `@` annotation, or the
 `effects` clause) is a row variable and is erased from the emitted `def`.
 
-**Which end decides.** Codegen is per-file (proposal 034), so the parameter kinds of
-a *foreign* sort are not always in reach. Two rules, and they agree wherever both
-could run:
+**Which end decides.** Emission is per-file (proposal 034), but the caller supplies a
+package-keyed declaration inventory for the complete project/prelude closure. Parameter
+kinds are therefore known for that closure, but not necessarily for an external sort the
+caller omitted. Two rules, and they agree wherever both could run:
 
 - Where the **declaration** is visible — the enclosing sort, a type the file emits, a
-  prelude table entry, a higher-kinded parameter's members — the declaration says
+  project/prelude package-table entry, a higher-kinded parameter's members — the declaration says
   which slots are `effects`, and the argument in one is dropped *whatever was
   written there*. A plain `E` in `Stream[Element, E]` is an identifier like any
   other; nothing but `Stream`'s own declaration can say it goes.
-- Where it is **not** — an unqualified name resolved in an enclosing namespace or
-  through the auto-imported prelude — the **argument** decides: a written row is a
+- Where it is **not** — an unqualified name absent from the supplied emission closure —
+  the **argument** decides: a written row is a
   row, and a name the declaration binds as an effect parameter denotes one. Both are
   locally provable facts about the argument, not guesses about the callee.
 

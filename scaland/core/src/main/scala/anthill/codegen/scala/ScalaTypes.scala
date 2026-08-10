@@ -27,9 +27,9 @@ import anthill.parse.ParsedFile
   *  - `hostScalars` is a PROFILE decision and comes from the KB
   *    ([[ScalaProfile.typeMap]]). `Int64 -> Long` is scala_std's choice — rust_std says
   *    `i64`, cpp_std `int64_t` — and a profile is entitled to another one.
-  *  - `autoImportedTypes` is a FACT ABOUT THE PRELUDE'S OWN FILES and is derived by
-  *    parsing them ([[Bootstrap.emittedTypes]]). That `List` takes one type parameter is
-  *    not something a profile could disagree with; it is what `list.anthill` declares. The
+  *  - `packageTypes` is a FACT ABOUT THE PROJECT/PRELUDE FILES and is derived by parsing
+  *    them ([[Bootstrap.emittedTypes]]). That `List` takes one type parameter is not
+  *    something a profile could disagree with; it is what `list.anthill` declares. The
   *    hand-written table this replaced was a copy of `Bootstrap.sortTypeParams`' own
   *    answer with nothing cross-checking it — give a sort a new parameter and every
   *    consumer was refused with a message reading as if the DECLARATION were wrong.
@@ -51,10 +51,9 @@ case class ScalaTypes(
   /** The anthill package a bare name reaches WITHOUT an import — `anthill.prelude`.
     *
     * A FIELD and not a constant, because two different questions read it and both must
-    * get the same answer: which of the passed files' declarations enter
-    * [[autoImportedTypes]] ([[Bootstrap.emittedTypes]] filters on it), and whether an
-    * explicit `import` in a consumer file NAMES this same package or another one
-    * ([[TypeScope.place]]). Split, a caller could resolve a table for one package and
+    * get the same answer: which package table supplies the fallback bare-name scope,
+    * and whether an explicit `import` in a consumer file NAMES this same package or
+    * another one ([[TypeScope.place]]). Split, a caller could resolve one fallback and
     * have imports judged against another.
     *
     * HELD IN CONVERTED (SCALA) FORM, normalized by [[resolve]] (WI-1054): both readers
@@ -62,26 +61,21 @@ case class ScalaTypes(
     * A raw `my-lib` here matches neither, so a hyphenated auto-import package would
     * empty the table AND turn every self-import into a false `Unplaceable`. */
   autoImportPackage: String,
-  /** Anthill leaf name → the type the auto-imported files EMIT for it, with the
-    * parameters that declaration writes. `_root_`-anchored, for the same reason the
-    * scalars are: a relative `anthill.prelude.Option` is capturable by a project that
-    * emits into a package with an `anthill` member of its own.
+  /** Scala package → the types the supplied files PROMISE to emit there, plus names
+    * declared there for which Bootstrap emits no type. Every spelling is `_root_`
+    * anchored. The map includes both the auto-imported files and the caller's complete
+    * project file set, so a declaration's own/dotted-ancestor package can answer
+    * before the auto-import package (WI-1067).
     *
-    * EVERY emitted type, scalars included — this is what the files say, before any
-    * question of what a written name should denote. [[preludeSorts]] is the answer to
-    * the second question. */
-  autoImportedTypes: Map[String, Placement.Known],
-  /** Names the auto-imported files DECLARE and Bootstrap emits no Scala type for — a
-    * namespace-level `sort Type = ?`, whose Scala spelling would be an `opaque type`
-    * needing an enclosing object rather than a package.
-    *
-    * The cross-file half of WI-1055 B1, which had no carrier before this table existed:
-    * inside sort.anthill a bare `Type` was already refused (the file's own
-    * `FileTypes.declaredNotEmitted`), while the same name from ANY other file fell to
-    * [[Placement.Ambient]] and emitted `<consumer pkg>.Type` — a bare identifier naming
-    * nothing in the tree, which is the defect B1 was filed for. */
-  autoImportedNotEmitted: Set[String]
+    * PROMISE is precise: deriving this table cannot call `Bootstrap.generate`, because
+    * generation itself needs the table. The caller must generate the same closure it
+    * supplied to [[resolve]]; the mandatory Scala compilation of that closure catches a
+    * refused declaring file as a missing `_root_` type. */
+  packageTypes: Map[String, Bootstrap.PackageTypes]
 ):
+
+  private val autoImported: Bootstrap.PackageTypes =
+    packageTypes.getOrElse(autoImportPackage, Bootstrap.PackageTypes(Map.empty, Set.empty))
 
   // A `type_map` entry may only name a sort with NO parameters, and this is the check
   // that says so rather than a comment hoping for it. `preludeSorts` subtracts the
@@ -93,7 +87,7 @@ case class ScalaTypes(
   // not a hypothetical: rust_std.anthill carries it today and scala_std did until WI-1021.
   private val parameterizedScalars: Vector[String] =
     hostScalars.keys.toVector.sorted.flatMap(leaf =>
-      autoImportedTypes.get(leaf).filter(_.kinds.written > 0)
+      autoImported.types.get(leaf).filter(_.kinds.written > 0)
         .map(k => s"`$leaf` -> `${hostScalars(leaf)}`, but the auto-imported files " +
                   s"declare it with ${k.kinds.written} type parameter(s)"))
   if parameterizedScalars.nonEmpty then
@@ -104,7 +98,7 @@ case class ScalaTypes(
       "carry; an entry for a parameterized sort would replace the declared arity with " +
       "zero and refuse every written occurrence of it (WI-1021)")
 
-  /** What a written name is actually placed by: [[autoImportedTypes]] MINUS the
+  /** What an auto-imported written name is actually placed by: its package table MINUS the
     * scalars.
     *
     * The subtraction is the whole of WI-1021's inversion, stated once and structurally
@@ -119,7 +113,7 @@ case class ScalaTypes(
     * has to beat the ENCLOSING sort and the file's own types too, which are the same
     * declaration reached by two other routes. */
   private val preludeSorts: Map[String, Placement.Known] =
-    autoImportedTypes -- hostScalars.keySet
+    autoImported.types -- hostScalars.keySet
 
   /** The scalar half. Consulted ABOVE the enclosing sort: read the other way round,
     * `int64.anthill` emitted `def compare(a: Int64, b: Int64): Int64` against a trait no
@@ -134,10 +128,36 @@ case class ScalaTypes(
   def preludeSort(anthillLeaf: String): Option[Placement.Known] =
     preludeSorts.get(anthillLeaf)
 
+  /** The nearest declaration in the mentioning Anthill package or a dotted ancestor.
+    *
+    * The empty package is deliberately absent from a named package's parent chain:
+    * Scala 3 does not make default-package members visible from named packages. The
+    * spelling of an emitted type remains fully qualified because a generated top-level
+    * `package a.b` clause does NOT make `a.Foo` bare-visible. Qualification makes the
+    * selected declaration explicit and capture-free across both files and packages.
+    *
+    * POSITIVE AND NEGATIVE ENTRIES SHARE THIS WALK. Looking for an emitted type first
+    * and a not-emitted declaration second would let an ancestor's concrete `Foo` jump
+    * over a nearer abstract `Foo`, silently defeating normal shadowing.
+    */
+  def packagePlacement(pkg: String, anthillLeaf: String): Option[Placement] =
+    PackageNesting.from(pkg).iterator.flatMap { owner =>
+      packageTypes.get(owner).flatMap { table =>
+        table.types.get(anthillLeaf).map(k => k: Placement).orElse {
+          Option.when(table.declaredNotEmitted.contains(anthillLeaf)) {
+            Placement.Unplaceable(
+              s"`$anthillLeaf` is declared in package `$owner` by the supplied project " +
+              "files in a position Bootstrap emits no Scala type for (an abstract sort " +
+              "has no declaration in the output), so the name is not in the emitted tree")
+          }
+        }
+      }
+    }.nextOption()
+
   /** The refusal half of the same table: an auto-imported file declares the name and
     * emits nothing for it, so no spelling reaches it from anywhere. */
   def preludeNotEmitted(anthillLeaf: String): Option[Placement] =
-    if autoImportedNotEmitted.contains(anthillLeaf) then
+    if autoImported.declaredNotEmitted.contains(anthillLeaf) then
       Some(Placement.Unplaceable(
         s"`$anthillLeaf` is declared by the auto-imported `$autoImportPackage` in a " +
         "position Bootstrap emits no Scala type for (an abstract sort has no " +
@@ -163,6 +183,7 @@ object ScalaTypes:
     */
   def resolve(
     kb: KnowledgeBase, autoImported: Iterable[ParsedFile],
+    projectFiles: Iterable[ParsedFile] = Iterable.empty,
     autoImportPackage: String = "anthill.prelude",
     language: String = "scala", profile: String = "std"
   ): ScalaTypes =
@@ -170,8 +191,25 @@ object ScalaTypes:
       case HostTypeMap.Declared(entries) => entries
       case other => throw IllegalStateException(
         s"no usable type_map for language `$language`, profile `$profile`: $other")
-    val reachable = Bootstrap.emittedTypes(autoImported, autoImportPackage)
+    // Both sets enter ONE package-keyed inventory. If a caller includes the prelude in
+    // `projectFiles` too, identical spans make that repetition idempotent; two distinct
+    // declarations at one (package, leaf) remain a located refusal.
+    val reachable = Bootstrap.emittedTypes(autoImported ++ projectFiles)
     ScalaTypes(scalars, Names.scalaPackagePathOf(autoImportPackage),
-      reachable.types, reachable.declaredNotEmitted)
+      reachable.packages)
 
 end ScalaTypes
+
+/** Anthill's dotted package lookup chain, nearest first (WI-1067).
+  *
+  * Named packages never include the empty package in the chain. For example `a.b.c`
+  * selects among `a.b.c`, `a.b`, and `a`; the empty package sees only itself. This is
+  * NOT a claim that a top-level Scala `package a.b.c` clause imports ancestor members:
+  * cross-package selections are emitted fully qualified.
+  */
+private[codegen] object PackageNesting:
+  def from(pkg: String): IndexedSeq[String] =
+    if pkg.isEmpty then IndexedSeq("")
+    else
+      val segments = pkg.split('.').toIndexedSeq
+      (segments.length to 1 by -1).map(n => segments.take(n).mkString("."))

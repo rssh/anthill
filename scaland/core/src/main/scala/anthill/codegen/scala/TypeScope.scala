@@ -119,19 +119,18 @@ enum Placement:
     * `operation get(c: Cell) -> V` inside `sort Cell[V]` means `Cell[V]`, and
     * Scala has no bare spelling for that. */
   case Enclosing(sort: EnclosingSort)
-  /** A type whose PARAMETERS are known — one this file emits, or a `scala_std`
-    * type-map entry. Knowing them is what makes an arity MISMATCH detectable
-    * (Group B3) and, since WI-1062, what says which argument slots erase. */
+  /** A type whose PARAMETERS are known — one this file emits, one in the supplied
+    * project/prelude closure, or a `scala_std` type-map entry. Knowing them is what
+    * makes an arity MISMATCH detectable (Group B3) and, since WI-1062, what says which
+    * argument slots erase. */
   case Known(scalaName: String, kinds: ParamKinds)
   /** Not placed by anything Bootstrap can see, and nothing Bootstrap CAN see says
-    * it is wrong: the name is unqualified, unimported, and undeclared here, so
-    * anthill resolved it in an enclosing namespace or through the auto-imported
-    * prelude.
+    * it is wrong: the name is unqualified, unimported, and absent from the file plus
+    * supplied project/prelude tables. Anthill resolved it in source context the caller
+    * did not include in the emission closure.
     *
     * QUALIFIED WITH THE DECLARATION'S OWN PACKAGE, which is right whenever that
-    * package is where the name lives — the common case by far, since a file's
-    * sibling declarations and (for the prelude itself) the auto-import target are
-    * the same package. It is a GUESS when they differ: a file emitting into
+    * package is where the name lives. It is a GUESS when they differ: a file emitting into
     * `anthill.reflect` that reaches a prelude name through the auto-import gets
     * `anthill.reflect.Foo`. No file does that today (the reflect namespace imports
     * explicitly, and an explicit import is [[Unplaceable]] rather than this), and
@@ -187,13 +186,13 @@ case class TypeScope(
   /** Anthill leaf name → how this declaration binds it: a Scala type parameter,
     * or an erased effect row (WI-1062). */
   params: Map[String, ParamBinding],
-  /** Anthill leaf name → its declared parameters, for every type THIS FILE
-    * emits. */
-  fileTypes: Map[String, ParamKinds],
+  /** (Scala package, Anthill leaf) → the type THIS FILE promises to emit. Package is
+    * load-bearing: one file may contain several namespaces (WI-1067). */
+  fileTypes: Map[(String, String), Placement.Known],
   /** Anthill leaf name → the anthill package an `import` in scope brings it from. */
   importedFrom: Map[String, String],
-  /** Names this file DECLARES and Bootstrap emits no Scala type for. */
-  declaredNotEmitted: Set[String],
+  /** Package-qualified names this file DECLARES and Bootstrap emits no Scala type for. */
+  declaredNotEmitted: Set[(String, String)],
   /** The project-wide prelude tables: the profile's scalars and the types the
     * auto-imported files emit (WI-1060). Resolved by the caller and passed into
     * `Bootstrap.generate` — the emitter reads no KB (proposal 034). */
@@ -255,12 +254,12 @@ case class TypeScope(
     * declaration is an opaque `sort Unit = ?`, which [[Placement.Unplaceable]] would
     * otherwise refuse.
     *
-    * THE PRELUDE TABLE SITS BELOW WHAT THIS FILE SAYS, including what it says
-    * NEGATIVELY: [[shadowsThePrelude]] runs first and its every answer is a refusal.
-    * That ordering is anthill's own — a local declaration and an explicit `import`
-    * both shadow the auto-import — and it stopped being a formality when WI-1060
-    * derived the table: six hand-picked names could rarely collide with an import,
-    * every prelude sort collides often. */
+    * THE AUTO-IMPORT TABLE SITS BELOW what this file and the mentioning declaration's
+    * project package say, including their negative answers. [[shadowsThePrelude]] then
+    * handles explicit imports, and its every answer is a refusal. That ordering is
+    * anthill's own — a local/project declaration and an explicit `import` both shadow
+    * the auto-import — and it stopped being a formality when WI-1060 derived the table:
+    * six hand-picked names could rarely collide, every prelude sort collides often. */
   def place(anthillLeaf: String): Placement =
     // WI-1062 adds no link: an erased effect parameter is a PARAMETER, so it
     // answers from the same first link every other one does. That it cannot be
@@ -273,12 +272,59 @@ case class TypeScope(
       }
       .orElse(types.hostScalar(anthillLeaf))
       .orElse(enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_)))
-      .orElse(fileTypes.get(anthillLeaf)
-        .map(ks => Placement.Known(Names.scalaTypeName(anthillLeaf), ks)))
+      .orElse(filePlacement(anthillLeaf))
+      .orElse(types.packagePlacement(pkg, anthillLeaf))
       .orElse(shadowsThePrelude(anthillLeaf))
       .orElse(types.preludeSort(anthillLeaf))
       .orElse(types.preludeNotEmitted(anthillLeaf))
       .getOrElse(ambient(anthillLeaf))
+
+  /** Place a type declared in THIS file (WI-1067).
+    *
+    * Only a declaration in the EXACT mentioning package is visible by a bare Scala
+    * name. The generated source uses one top-level `package a.b` clause; Scala 3 does
+    * not thereby bring `a.Foo` into bare scope. An Anthill ancestor-package declaration
+    * is still the selected declaration, but keeps its `_root_`-qualified spelling. A
+    * unique declaration elsewhere in the same file is treated the same way. Multiple
+    * unreachable declarations with one leaf are ambiguous and refused. A
+    * default-package declaration cannot be named from a named package even with
+    * qualification in Scala 3, so that case is refused too.
+    */
+  private def filePlacement(anthillLeaf: String): Option[Placement] =
+    PackageNesting.from(pkg).zipWithIndex.iterator.flatMap { case (owner, distance) =>
+      fileTypes.get(owner -> anthillLeaf).map { known =>
+        // Only the exact package is bare. An ancestor selected by Anthill's package
+        // chain deliberately retains its fully-qualified Scala spelling: top-level
+        // Scala package clauses do not create a lexical enclosing scope.
+        if distance == 0 then
+          Placement.Known(Names.scalaTypeName(anthillLeaf), known.kinds): Placement
+        else known: Placement
+      }.orElse {
+        Option.when(declaredNotEmitted.contains(owner -> anthillLeaf)) {
+          Placement.Unplaceable(
+            s"this file declares `$anthillLeaf` in package `$owner` in a position " +
+            "Bootstrap emits no Scala type for (an abstract sort has no declaration " +
+            "in the output), so the name is not in the emitted tree")
+        }
+      }
+    }.nextOption().orElse {
+      val elsewhere = fileTypes.iterator.collect {
+        case ((owner, leaf), known) if leaf == anthillLeaf => owner -> known
+      }.toVector.sortBy(_._1)
+      elsewhere match
+        case Vector() => None
+        case Vector((owner, _)) if owner.isEmpty && pkg.nonEmpty =>
+          Some(Placement.Unplaceable(
+            s"this file declares `$anthillLeaf` in the empty package, but this " +
+            s"declaration is emitted into named package `$pkg`; Scala 3 does not make " +
+            "default-package members reachable from a named package"))
+        case Vector((_, known)) => Some(known)
+        case many =>
+          Some(Placement.Unplaceable(
+            s"this file declares `$anthillLeaf` in several packages " +
+            s"(${many.map(_._1).map(p => if p.isEmpty then "<empty>" else p).mkString(", ")}), " +
+            s"none visible from `$pkg`; a bare mention cannot choose one"))
+    }
 
   /** What THIS FILE says about the name, where that displaces the auto-imported
     * prelude — and every such answer is a refusal.
@@ -292,32 +338,22 @@ case class TypeScope(
     * sort the prelude emits and the collision surface is ten times wider.
     */
   private def shadowsThePrelude(anthillLeaf: String): Option[Placement] =
-    if declaredNotEmitted.contains(anthillLeaf) then
-      // The file DECLARES it and the emitted tree has no such type: a
-      // namespace-level `sort Type = ?` is an opaque handle with no Scala
-      // declaration here (`Type` in sort.anthill is exactly this), and a bare
-      // `Type` in a member signature therefore names nothing at all.
-      Some(Placement.Unplaceable(
-        s"this file declares `$anthillLeaf` in a position Bootstrap emits no Scala " +
-        "type for (an abstract sort has no declaration in the output), so the name " +
-        "is not in the emitted tree"))
-    else
-      importedFrom.get(anthillLeaf) match
-        // AN IMPORT OF THE PRELUDE ITSELF IS NOT A SHADOW — it names the same
-        // declaration the auto-import would have found, and half the prelude writes
-        // one (`cell.anthill`'s `import anthill.prelude.{Unit, Modifiable, …}`). Only
-        // an import from ELSEWHERE displaces the table, and then it is unreachable.
-        case Some(from) if from != pkg && from != types.autoImportPackage =>
-          // Provably wrong: the import says the name lives in ANOTHER package, and
-          // Bootstrap emits no Scala `import`, so the bare mention cannot reach it.
-          // `Term` / `NodeOccurrence` from `anthill.reflect` are this case, and
-          // emitting the Scala import would only move the failure — the reflect
-          // namespace is outside the generated closure.
-          Some(Placement.Unplaceable(
-            s"`$anthillLeaf` is imported from `$from`, but this declaration is emitted " +
-            s"into package `$pkg` and Bootstrap emits no Scala `import`, so a bare " +
-            "mention cannot reach it"))
-        case _ => None
+    importedFrom.get(anthillLeaf) match
+      // AN IMPORT OF THE PRELUDE ITSELF IS NOT A SHADOW — it names the same
+      // declaration the auto-import would have found, and half the prelude writes
+      // one (`cell.anthill`'s `import anthill.prelude.{Unit, Modifiable, …}`). Only
+      // an import from ELSEWHERE displaces the table, and then it is unreachable.
+      case Some(from) if from != pkg && from != types.autoImportPackage =>
+        // Provably wrong: the import says the name lives in ANOTHER package, and
+        // Bootstrap emits no Scala `import`, so the bare mention cannot reach it.
+        // `Term` / `NodeOccurrence` from `anthill.reflect` are this case, and
+        // emitting the Scala import would only move the failure — the reflect
+        // namespace is outside the generated closure.
+        Some(Placement.Unplaceable(
+          s"`$anthillLeaf` is imported from `$from`, but this declaration is emitted " +
+          s"into package `$pkg` and Bootstrap emits no Scala `import`, so a bare " +
+          "mention cannot reach it"))
+      case _ => None
 
   /** Nothing Bootstrap can see places the name, and nothing it can see says the name
     * is wrong: it rides out qualified with this declaration's own package. */

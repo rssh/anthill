@@ -220,15 +220,12 @@ object TypeGen:
   // WI-1021 DECIDED WHICH NAME GOES IN WHICH TABLE and that decision is unchanged;
   // its reasoning, and the defects it measured, are on [[ScalaTypes]].
   //
-  // AN IMPORTED NAME SHADOWS THE TABLE and a SIBLING-FILE one does not, which is the
-  // line the derived table forced. `TypeScope.shadowsThePrelude` runs before the
-  // prelude lookup, so a project writing `import my.lib.{Numeric}` is refused rather
-  // than emitted as `_root_.anthill.prelude.Numeric` — a different library's type,
-  // which is what it did while the lookup came first. What is still NOT checked is a
-  // name a project declares in a sibling FILE with no import: `fileTypes` is per-file
-  // and the caller's auto-import set is the prelude, so a project's own `Pair`
-  // reaches the prelude's. Closing that means resolving a project's whole file set
-  // the way `ScalaTypes.resolve` resolves the prelude's — the same package-keyed
-  // table `FileTypes` needs one scope down, which is why WI-1067 owns both.
+  // IMPORTS AND SIBLING FILES (WI-1060/WI-1067). `TypeScope.shadowsThePrelude`
+  // refuses a project writing `import my.lib.{Numeric}` rather than emitting
+  // `_root_.anthill.prelude.Numeric` — a different library's type. A declaration in a
+  // sibling project file is not an import: the caller supplies its complete parsed
+  // project to `ScalaTypes.resolve`, whose package-keyed table is consulted before the
+  // auto-import table. Thus `my.app.Pair` wins from another file in `my.app`, while a
+  // `Pair` in a sibling package does not leak across package scope.
 
 end TypeGen
