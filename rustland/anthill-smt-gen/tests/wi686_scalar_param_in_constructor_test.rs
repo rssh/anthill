@@ -89,7 +89,10 @@ fn emit(rule: &str) -> String {
     // emitter inlines it at the `Ops.clamp(?x, ?r)` call.
     kb.synthesize_op_defining_rule(clamp_sym(&kb))
         .expect("clamp synthesizes a defining rule");
-    let cfg = ProofConfig { logic: Some("QF_LRA".to_string()), ..Default::default() };
+    let cfg = ProofConfig {
+        logic: Some("QF_LRA".to_string()),
+        ..Default::default()
+    };
     emit_satisfiability_check_with(&kb, rule, &cfg)
         .unwrap_or_else(|e| panic!("emit {rule}: {}", e.message))
 }
@@ -114,7 +117,10 @@ fn true_property_is_unsat() {
     }
     let smt = emit("test.smt_gen.wi686.clamp_negative");
     let v = run_z3("wi686_clamp_nonneg", &smt);
-    assert_eq!(v, "unsat", "clamp(x).v >= 0 holds ⇒ its violation is unsat — got {v:?}\n{smt}");
+    assert_eq!(
+        v, "unsat",
+        "clamp(x).v >= 0 holds ⇒ its violation is unsat — got {v:?}\n{smt}"
+    );
 }
 
 #[test]
@@ -125,7 +131,10 @@ fn false_property_is_sat() {
     }
     let smt = emit("test.smt_gen.wi686.clamp_nonpos");
     let v = run_z3("wi686_clamp_nonpos", &smt);
-    assert_eq!(v, "sat", "clamp(x).v > 0 is FALSE (x<0 ⇒ clamp=0) ⇒ its violation is sat — got {v:?}\n{smt}");
+    assert_eq!(
+        v, "sat",
+        "clamp(x).v > 0 is FALSE (x<0 ⇒ clamp=0) ⇒ its violation is sat — got {v:?}\n{smt}"
+    );
 }
 
 #[test]
@@ -144,5 +153,8 @@ fn concrete_literal_input_flows_through_frozen_fragment() {
     // clamp(-2).v = 0, so the violation `clamp(-2).v < 0` is unsat. Were the
     // scalar param NOT closed (left free), it would be sat.
     let v = run_z3("wi686_clamp_neg_literal", &smt);
-    assert_eq!(v, "unsat", "clamp(-2).v = 0 ⇒ `< 0` violation is unsat — got {v:?}\n{smt}");
+    assert_eq!(
+        v, "unsat",
+        "clamp(-2).v = 0 ⇒ `< 0` violation is unsat — got {v:?}\n{smt}"
+    );
 }

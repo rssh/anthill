@@ -7,17 +7,12 @@
 //! existing proposal-030 / WI-119 specialization-witness machinery
 //! (and WI-210's upcoming dispatch query) can find the impl.
 
-
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadResult};
-use anthill_core::kb::typing::{
-    lookup_spec_op_dispatch,
-    find_unique_impl_op,
-    DispatchOutcome,
-    type_check_expr,
-    TypingEnv,
-};
+use anthill_core::kb::load::{self, LoadResult, NullResolver};
 use anthill_core::kb::subst::Substitution;
+use anthill_core::kb::typing::{
+    find_unique_impl_op, lookup_spec_op_dispatch, type_check_expr, DispatchOutcome, TypingEnv,
+};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -31,15 +26,16 @@ fn load_with(extra: &str) -> KnowledgeBase {
 /// Phase 3 helper: returns errors so dispatch-failure diagnostics
 /// can be asserted directly. The WI-210 dispatch-failure marker
 /// surfaces as a LoadError via load_phase_inner's all_errors.
-fn load_capturing_errors(
-    extra: &str,
-) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
+fn load_capturing_errors(extra: &str) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -52,14 +48,13 @@ fn load_capturing_errors(
 
 /// Render every `SortProvidesInfo` head the KB knows about, sorted.
 fn provides_info_heads(kb: &mut KnowledgeBase) -> Vec<String> {
-    let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+    let sym = kb
+        .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
         .expect("SortProvidesInfo registered");
     let rids: Vec<_> = kb.rules_by_functor(sym).into_iter().collect();
     let heads: Vec<_> = rids.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = TermPrinter::new(kb);
-    let mut out: Vec<String> = heads.into_iter()
-        .map(|h| printer.print_term(h))
-        .collect();
+    let mut out: Vec<String> = heads.into_iter().map(|h| printer.print_term(h)).collect();
     out.sort();
     out
 }
@@ -84,11 +79,13 @@ fn fact_clause_inside_sort_body_emits_provides_info() {
     "#;
     let mut kb = load_with(src);
     let heads = provides_info_heads(&mut kb);
-    let found = heads.iter().any(|h|
-        h.contains("Wi210ImplB") && h.contains("Wi210SpecA")
+    let found = heads
+        .iter()
+        .any(|h| h.contains("Wi210ImplB") && h.contains("Wi210SpecA"));
+    assert!(
+        found,
+        "expected SortProvidesInfo for Wi210ImplB/Wi210SpecA; saw:\n{heads:#?}"
     );
-    assert!(found,
-        "expected SortProvidesInfo for Wi210ImplB/Wi210SpecA; saw:\n{heads:#?}");
 }
 
 #[test]
@@ -113,12 +110,14 @@ fn fact_clause_at_namespace_emits_with_carrier_as_sort_ref() {
     "#;
     let mut kb = load_with(src);
     let heads = provides_info_heads(&mut kb);
-    let found = heads.iter().any(|h|
-        h.contains("Wi210NsCarrier") && h.contains("Wi210NsSpec")
-    );
-    assert!(found,
+    let found = heads
+        .iter()
+        .any(|h| h.contains("Wi210NsCarrier") && h.contains("Wi210NsSpec"));
+    assert!(
+        found,
         "namespace-level fact must emit SortProvidesInfo with the \
-         carrier as sort_ref; saw:\n{heads:#?}");
+         carrier as sort_ref; saw:\n{heads:#?}"
+    );
 }
 
 #[test]
@@ -146,11 +145,13 @@ fn fact_for_non_spec_sort_does_not_emit_provides_info() {
     // notation this should not be treated as spec satisfaction.
     let mut kb = load_with(src);
     let heads = provides_info_heads(&mut kb);
-    let found = heads.iter().any(|h|
-        h.contains("Wi210Holder") && h.contains("Wi210Color")
+    let found = heads
+        .iter()
+        .any(|h| h.contains("Wi210Holder") && h.contains("Wi210Color"));
+    assert!(
+        !found,
+        "fact for non-parametric sort must not emit SortProvidesInfo; saw:\n{heads:#?}"
     );
-    assert!(!found,
-        "fact for non-parametric sort must not emit SortProvidesInfo; saw:\n{heads:#?}");
 }
 
 // ─── Phase 2: spec-op detection helper ──────────────────────────
@@ -168,13 +169,16 @@ fn lookup_spec_op_dispatch_recognizes_body_less_op_on_parametric_sort() {
         end
     "#;
     let kb = load_with(src);
-    let op_sym = kb.try_resolve_symbol("wi210p2.spec.Wi210Spec.wi210_op")
+    let op_sym = kb
+        .try_resolve_symbol("wi210p2.spec.Wi210Spec.wi210_op")
         .expect("op symbol registered");
     let parent = lookup_spec_op_dispatch(&kb, op_sym)
         .expect("body-less op on parametric sort should be a spec op");
     let parent_qn = kb.qualified_name_of(parent);
-    assert_eq!(parent_qn, "wi210p2.spec.Wi210Spec",
-        "spec-op's parent sort should be Wi210Spec; got {parent_qn}");
+    assert_eq!(
+        parent_qn, "wi210p2.spec.Wi210Spec",
+        "spec-op's parent sort should be Wi210Spec; got {parent_qn}"
+    );
 }
 
 #[test]
@@ -190,10 +194,13 @@ fn lookup_spec_op_dispatch_rejects_op_with_body() {
         end
     "#;
     let kb = load_with(src);
-    let op_sym = kb.try_resolve_symbol("wi210p2.with_body.Wi210Impl.wi210_op")
+    let op_sym = kb
+        .try_resolve_symbol("wi210p2.with_body.Wi210Impl.wi210_op")
         .expect("op symbol registered");
-    assert!(lookup_spec_op_dispatch(&kb, op_sym).is_none(),
-        "op with body must not be a spec op (would dispatch to itself)");
+    assert!(
+        lookup_spec_op_dispatch(&kb, op_sym).is_none(),
+        "op with body must not be a spec op (would dispatch to itself)"
+    );
 }
 
 #[test]
@@ -209,10 +216,13 @@ fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
         end
     "#;
     let kb = load_with(src);
-    let op_sym = kb.try_resolve_symbol("wi210p2.no_params.Wi210Plain.wi210_op")
+    let op_sym = kb
+        .try_resolve_symbol("wi210p2.no_params.Wi210Plain.wi210_op")
         .expect("op symbol registered");
-    assert!(lookup_spec_op_dispatch(&kb, op_sym).is_none(),
-        "op on non-parametric sort must not be a spec op");
+    assert!(
+        lookup_spec_op_dispatch(&kb, op_sym).is_none(),
+        "op on non-parametric sort must not be a spec op"
+    );
 }
 
 // ─── Phase 3 dispatch tests (proposal 038) ───────────────────────
@@ -234,15 +244,15 @@ fn stdlib_namespace_facts_emit_provides_info_for_numeric() {
     // semantics are equivalent: Int64 satisfies Numeric.
     let mut kb = load_with("");
     let heads = provides_info_heads(&mut kb);
-    let dump: Vec<&String> = heads.iter()
-        .filter(|h| h.contains("Numeric"))
-        .collect();
+    let dump: Vec<&String> = heads.iter().filter(|h| h.contains("Numeric")).collect();
     eprintln!("WI210-DBG Numeric SortProvidesInfo heads: {dump:#?}");
-    let int_numeric = heads.iter().any(|h|
-        h.contains("Numeric") && h.contains("Int64")
+    let int_numeric = heads
+        .iter()
+        .any(|h| h.contains("Numeric") && h.contains("Int64"));
+    assert!(
+        int_numeric,
+        "expected Int64 to be recorded as a Numeric impl; saw heads with Numeric:\n{dump:#?}"
     );
-    assert!(int_numeric,
-        "expected Int64 to be recorded as a Numeric impl; saw heads with Numeric:\n{dump:#?}");
 }
 
 #[test]
@@ -253,12 +263,14 @@ fn store_anthill_emits_provides_info_for_workitemstore() {
     // produce a SortProvidesInfo record.
     let mut kb = load_with_store();
     let heads = provides_info_heads(&mut kb);
-    let found = heads.iter().any(|h|
-        h.contains("FileBasedWorkitemStore") && h.contains("WorkItemStore")
-    );
-    assert!(found,
+    let found = heads
+        .iter()
+        .any(|h| h.contains("FileBasedWorkitemStore") && h.contains("WorkItemStore"));
+    assert!(
+        found,
         "expected SortProvidesInfo recording FileBasedWorkitemStore as \
-         WorkItemStore impl; saw:\n{heads:#?}");
+         WorkItemStore impl; saw:\n{heads:#?}"
+    );
 }
 
 // ─── Phase 3 dispatch outcome tests (proposal 038) ────────────────
@@ -274,12 +286,14 @@ fn subst_with_param(
     carrier_qn: &str,
 ) -> Substitution {
     let param_qn = format!("{spec_qn}.{param_short}");
-    let param_sym = kb.try_resolve_symbol(&param_qn)
+    let param_sym = kb
+        .try_resolve_symbol(&param_qn)
         .unwrap_or_else(|| panic!("{} not registered", param_qn));
-    let param_var = crate::common::sort_alias_backing_var(kb, param_sym).unwrap_or_else(||
-        panic!("{}'s SortAlias not found for {spec_qn}", param_short));
+    let param_var = crate::common::sort_alias_backing_var(kb, param_sym)
+        .unwrap_or_else(|| panic!("{}'s SortAlias not found for {spec_qn}", param_short));
 
-    let carrier_sym = kb.try_resolve_symbol(carrier_qn)
+    let carrier_sym = kb
+        .try_resolve_symbol(carrier_qn)
         .unwrap_or_else(|| panic!("{} not registered", carrier_qn));
     let carrier_term = kb.make_sort_ref(carrier_sym);
 
@@ -296,8 +310,8 @@ fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Subs
 /// bindings. Used by the WorkItemStore dispatch tests below.
 fn load_with_store() -> KnowledgeBase {
     let path = crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     load_with(&src)
 }
 
@@ -307,10 +321,11 @@ fn load_with_store() -> KnowledgeBase {
 fn dispatch_workitemstore_op(op_short: &str) -> (KnowledgeBase, anthill_core::intern::Symbol) {
     let mut kb = load_with_store();
     let op_qn = format!("anthill.todo.store.WorkItemStore.{op_short}");
-    let op_sym = kb.try_resolve_symbol(&op_qn)
+    let op_sym = kb
+        .try_resolve_symbol(&op_qn)
         .unwrap_or_else(|| panic!("{op_qn} not registered"));
-    let spec_sort = lookup_spec_op_dispatch(&kb, op_sym)
-        .unwrap_or_else(|| panic!("{op_qn} is not a spec op"));
+    let spec_sort =
+        lookup_spec_op_dispatch(&kb, op_sym).unwrap_or_else(|| panic!("{op_qn} is not a spec op"));
     let subst = subst_with_param(
         &mut kb,
         "anthill.todo.store.WorkItemStore",
@@ -330,15 +345,17 @@ fn dispatch_unique_finds_int_impl_for_numeric_add() {
     // emitting `fact Numeric[T = Int64]`, find_unique_impl_op should
     // resolve a Unique outcome whose impl sort is Int64.
     let mut kb = load_with("");
-    let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
+    let add_sym = kb
+        .try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym)
-        .expect("Numeric.add is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym).expect("Numeric.add is a spec op");
     let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Int64");
     let op_short = kb.intern("add");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert!(matches!(outcome, DispatchOutcome::Unique(_)),
-        "expected Unique impl for Numeric add at T=Int64; got {outcome:?}");
+    assert!(
+        matches!(outcome, DispatchOutcome::Unique(_)),
+        "expected Unique impl for Numeric add at T=Int64; got {outcome:?}"
+    );
 }
 
 #[test]
@@ -349,10 +366,10 @@ fn dispatch_no_candidates_when_carrier_lacks_impl() {
     // about different sorts and must not gate Bool dispatch (same
     // rationale as `Eq[T=Type]` not gating `Eq[T=Int64]`).
     let mut kb = load_with("");
-    let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
+    let add_sym = kb
+        .try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym)
-        .expect("Numeric.add is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym).expect("Numeric.add is a spec op");
     let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Bool");
     let op_short = kb.intern("add");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
@@ -366,7 +383,8 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
     // binding for the same spec — find_unique_impl_op must reject as
     // Ambiguous (coherence rule (C)). We construct two independent
     // impl sorts that each provide AmbSpec at T=AmbCarrier.
-    let mut kb = load_with(r#"
+    let mut kb = load_with(
+        r#"
         namespace wi210p3.amb
           sort AmbSpec
             sort T = ?
@@ -384,11 +402,12 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
             operation amb_op(x: AmbCarrier) -> AmbCarrier = x
           end
         end
-    "#);
-    let amb_op_sym = kb.try_resolve_symbol("wi210p3.amb.AmbSpec.amb_op")
+    "#,
+    );
+    let amb_op_sym = kb
+        .try_resolve_symbol("wi210p3.amb.AmbSpec.amb_op")
         .expect("AmbSpec.amb_op registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, amb_op_sym)
-        .expect("AmbSpec.amb_op is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, amb_op_sym).expect("AmbSpec.amb_op is a spec op");
     let subst = subst_with_t(&mut kb, "wi210p3.amb.AmbSpec", "wi210p3.amb.AmbCarrier");
     let op_short = kb.intern("amb_op");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
@@ -397,16 +416,23 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
     // the payload is asserted, not just the variant.
     match &outcome {
         DispatchOutcome::Ambiguous(tie) => {
-            let names: Vec<&str> = tie.candidates.iter().map(|s| kb.qualified_name_of(*s)).collect();
+            let names: Vec<&str> = tie
+                .candidates
+                .iter()
+                .map(|s| kb.qualified_name_of(*s))
+                .collect();
             assert!(
-                names.iter().any(|c| c.ends_with("AmbA")) && names.iter().any(|c| c.ends_with("AmbB")),
+                names.iter().any(|c| c.ends_with("AmbA"))
+                    && names.iter().any(|c| c.ends_with("AmbB")),
                 "Ambiguous must name BOTH tied impls; got {names:?}"
             );
             // WI-843: the tie is at the CALL's own goal here (no conditional
             // instance), which is what entitles the diagnostic to offer a bracket.
             assert!(tie.at_call_goal, "a top-level tie must be marked as such");
         }
-        other => panic!("expected Ambiguous when two impls provide the same binding; got {other:?}"),
+        other => {
+            panic!("expected Ambiguous when two impls provide the same binding; got {other:?}")
+        }
     }
 }
 
@@ -416,7 +442,8 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
 /// *element*, so the carrier is not a binding: every impl's universally-
 /// quantified `fact Box[T]` matches a per-call `Box[T = Int64]` goal.
 fn load_box_two_carriers() -> KnowledgeBase {
-    load_with(r#"
+    load_with(
+        r#"
         namespace wi350.box
           sort Box
             sort T = ?
@@ -435,7 +462,8 @@ fn load_box_two_carriers() -> KnowledgeBase {
             operation peek(b: StreamBox) -> T = match b case sbox(x) -> x
           end
         end
-    "#)
+    "#,
+    )
 }
 
 #[test]
@@ -445,15 +473,17 @@ fn wi350_self_receiver_spec_is_ambiguous_without_carrier() {
     // describes ("EVERY Stream-op call is DispatchAmbiguous"). This is the
     // `dispatch_spec_op_cached(.., carrier = None)` path.
     let mut kb = load_box_two_carriers();
-    let peek_sym = kb.try_resolve_symbol("wi350.box.Box.peek")
+    let peek_sym = kb
+        .try_resolve_symbol("wi350.box.Box.peek")
         .expect("Box.peek registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym)
-        .expect("Box.peek is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym).expect("Box.peek is a spec op");
     let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int64");
     let op_short = kb.intern("peek");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert!(matches!(outcome, DispatchOutcome::Ambiguous { .. }),
-        "two carrier impls + no carrier discriminator must be Ambiguous; got {outcome:?}");
+    assert!(
+        matches!(outcome, DispatchOutcome::Ambiguous { .. }),
+        "two carrier impls + no carrier discriminator must be Ambiguous; got {outcome:?}"
+    );
 }
 
 #[test]
@@ -462,22 +492,34 @@ fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
     // The fix: threading the receiver's concrete carrier (`ListBox`) keeps
     // only that carrier's impl, so the same goal resolves Unique.
     let mut kb = load_box_two_carriers();
-    let peek_sym = kb.try_resolve_symbol("wi350.box.Box.peek")
+    let peek_sym = kb
+        .try_resolve_symbol("wi350.box.Box.peek")
         .expect("Box.peek registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym)
-        .expect("Box.peek is a spec op");
-    let listbox_sym = kb.try_resolve_symbol("wi350.box.ListBox")
+    let spec_sort = lookup_spec_op_dispatch(&kb, peek_sym).expect("Box.peek is a spec op");
+    let listbox_sym = kb
+        .try_resolve_symbol("wi350.box.ListBox")
         .expect("ListBox registered");
-    let listbox_peek = kb.try_resolve_symbol("wi350.box.ListBox.peek")
+    let listbox_peek = kb
+        .try_resolve_symbol("wi350.box.ListBox.peek")
         .expect("ListBox.peek registered");
     let subst = subst_with_t(&mut kb, "wi350.box.Box", "anthill.prelude.Int64");
     let op_short = kb.intern("peek");
 
     let (outcome, _tree) = dispatch_spec_op_cached(
-        &mut kb, &subst, spec_sort, op_short, &[], Some(listbox_sym), None, &[],
+        &mut kb,
+        &subst,
+        spec_sort,
+        op_short,
+        &[],
+        Some(listbox_sym),
+        None,
+        &[],
     );
-    assert_eq!(outcome, DispatchOutcome::Unique(listbox_peek),
-        "carrier = ListBox must resolve uniquely to ListBox.peek; got {outcome:?}");
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Unique(listbox_peek),
+        "carrier = ListBox must resolve uniquely to ListBox.peek; got {outcome:?}"
+    );
 }
 
 #[test]
@@ -493,7 +535,8 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     // concrete impl is the runtime value's own concern (WI-350 case b).
     // Pre-WI-350 this raised `DispatchAmbiguous`. (WI-567: the Option-returning
     // op is now `headOption`; bare-`T` `head` carries a guarded `Error`.)
-    let mut kb = load_with(r#"
+    let mut kb = load_with(
+        r#"
         namespace wi350.stream2
           import anthill.prelude.{Stream, Option, Pair}
           sort MyStream2
@@ -503,35 +546,45 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
               -> Option[Pair[?A, MyStream2[?A]]]
           end
         end
-    "#);
+    "#,
+    );
 
-    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.headOption")
+    let head_sym = kb
+        .try_resolve_symbol("anthill.prelude.Stream.headOption")
         .expect("Stream.headOption registered");
-    let stream_sym = kb.try_resolve_symbol("anthill.prelude.Stream")
+    let stream_sym = kb
+        .try_resolve_symbol("anthill.prelude.Stream")
         .expect("Stream registered");
-    let term_sym = kb.try_resolve_symbol("anthill.reflect.Term")
+    let term_sym = kb
+        .try_resolve_symbol("anthill.reflect.Term")
         .expect("Term registered");
-    let error_sym = kb.try_resolve_symbol("anthill.prelude.Error")
+    let error_sym = kb
+        .try_resolve_symbol("anthill.prelude.Error")
         .expect("Error registered");
 
     // Sanity: there really are ≥2 Stream providers now.
     let providers: Vec<String> = provides_info_heads(&mut kb)
-        .into_iter().filter(|h| h.contains("Stream")).collect();
-    assert!(providers.len() >= 2,
-        "expected ≥2 Stream impls (LogicalStream + MyStream2); saw:\n{providers:#?}");
+        .into_iter()
+        .filter(|h| h.contains("Stream"))
+        .collect();
+    assert!(
+        providers.len() >= 2,
+        "expected ≥2 Stream impls (LogicalStream + MyStream2); saw:\n{providers:#?}"
+    );
 
     let t_field = kb.intern("T");
     let e_field = kb.intern("E");
     let term_ty = kb.make_sort_ref(term_sym);
     let error_ty = kb.make_sort_ref(error_sym);
     let stream_base = kb.make_sort_ref(stream_sym);
-    let stream_concrete = kb.make_parameterized_type(
-        stream_base, &[(t_field, term_ty), (e_field, error_ty)],
-    );
+    let stream_concrete =
+        kb.make_parameterized_type(stream_base, &[(t_field, term_ty), (e_field, error_ty)]);
 
-    let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")
+    let apply_arg_sym = kb
+        .try_resolve_symbol("anthill.reflect.ApplyArg")
         .expect("ApplyArg registered");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
     let name_arg = kb.intern("name");
     let value_arg = kb.intern("value");
@@ -562,8 +615,9 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     let mut env = TypingEnv::empty();
     env.bind_var(s_sym, anthill_core::eval::Value::term(stream_concrete));
 
-    let result = type_check_expr(&mut kb, &env, apply_term)
-        .expect("headOption(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls");
+    let result = type_check_expr(&mut kb, &env, apply_term).expect(
+        "headOption(s) on abstract Stream[T] must type-check (not Ambiguous) with ≥2 impls",
+    );
     let ty = result.ty.expect_term();
     let ty_str = TermPrinter::new(&kb).print_term(ty);
     // WI-361: term-backed `Option[T = …]` = `Fn{Option, named}` — the base sort
@@ -572,8 +626,11 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
         Term::Fn { functor, .. } => *functor,
         _ => panic!("expected parameterized Option return; got {ty_str}"),
     };
-    assert_eq!(kb.qualified_name_of(base), "anthill.prelude.Option",
-        "abstract-receiver headOption must type via interface to Option; got {ty_str}");
+    assert_eq!(
+        kb.qualified_name_of(base),
+        "anthill.prelude.Option",
+        "abstract-receiver headOption must type via interface to Option; got {ty_str}"
+    );
 }
 
 #[test]
@@ -592,11 +649,13 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // spec op is directly runnable rather than a dispatch placeholder, so
     // `lookup_spec_op_dispatch` correctly declines it (WI-444).
     let mut kb = load_with("");
-    let split_sym = kb.try_resolve_symbol("anthill.prelude.Stream.splitFirst")
+    let split_sym = kb
+        .try_resolve_symbol("anthill.prelude.Stream.splitFirst")
         .expect("Stream.splitFirst registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, split_sym)
-        .expect("Stream.splitFirst is a body-less spec op");
-    let logical_stream = kb.try_resolve_symbol("anthill.prelude.LogicalStream")
+    let spec_sort =
+        lookup_spec_op_dispatch(&kb, split_sym).expect("Stream.splitFirst is a body-less spec op");
+    let logical_stream = kb
+        .try_resolve_symbol("anthill.prelude.LogicalStream")
         .expect("LogicalStream registered");
     let subst = subst_with_param(
         &mut kb,
@@ -609,17 +668,28 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
     // Carrier = LogicalStream: the universal `fact Stream[T]` candidate
     // matches the per-call T = Int64 and the carrier filter keeps only it.
     let (with_carrier, _) = dispatch_spec_op_cached(
-        &mut kb, &subst, spec_sort, op_short, &[], Some(logical_stream), None, &[],
+        &mut kb,
+        &subst,
+        spec_sort,
+        op_short,
+        &[],
+        Some(logical_stream),
+        None,
+        &[],
     );
-    assert!(matches!(with_carrier, DispatchOutcome::Unique(_)),
+    assert!(
+        matches!(with_carrier, DispatchOutcome::Unique(_)),
         "expected Unique dispatch for Stream.splitFirst at carrier=LogicalStream, T=Int64; \
-         got {with_carrier:?}");
+         got {with_carrier:?}"
+    );
 
     // Carrier-less compat path: ≥2 Stream impls both match the universal
     // binding, so dispatch is Ambiguous without a carrier to discriminate.
     let no_carrier = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert!(matches!(no_carrier, DispatchOutcome::Ambiguous { .. }),
-        "expected Ambiguous for carrier-less Stream.splitFirst with ≥2 impls; got {no_carrier:?}");
+    assert!(
+        matches!(no_carrier, DispatchOutcome::Ambiguous { .. }),
+        "expected Ambiguous for carrier-less Stream.splitFirst with ≥2 impls; got {no_carrier:?}"
+    );
 }
 
 #[test]
@@ -649,21 +719,27 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     // Exercises the typer's check_apply path end-to-end (parse → unify →
     // dispatch), not just the manual-subst entry point above.
     let domain_src = std::fs::read_to_string(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill")
-    ).expect("read domain.anthill");
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"),
+    )
+    .expect("read domain.anthill");
     let store_src = std::fs::read_to_string(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill")
-    ).expect("read store.anthill");
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"),
+    )
+    .expect("read store.anthill");
     let combined = format!("{domain_src}\n{store_src}");
 
     let mut kb = load_with(&combined);
-    let commit_sym = kb.try_resolve_symbol("anthill.todo.store.WorkItemStore.commit")
+    let commit_sym = kb
+        .try_resolve_symbol("anthill.todo.store.WorkItemStore.commit")
         .expect("WorkItemStore.commit registered");
-    let cell_sym = kb.try_resolve_symbol("anthill.prelude.Cell")
+    let cell_sym = kb
+        .try_resolve_symbol("anthill.prelude.Cell")
         .expect("Cell registered");
-    let wis_sym = kb.try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore.WIS")
+    let wis_sym = kb
+        .try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore.WIS")
         .expect("FileBasedWorkitemStore.WIS registered");
-    let workitem_sym = kb.try_resolve_symbol("anthill.stage0.WorkItem")
+    let workitem_sym = kb
+        .try_resolve_symbol("anthill.stage0.WorkItem")
         .expect("anthill.stage0.WorkItem registered");
 
     // Cell[V = WIS] must use the canonical `parameterized(...)` form —
@@ -675,9 +751,11 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     let cell_wis = kb.make_parameterized_type(cell_base, &[(v_field, wis_ty)]);
     let workitem_ty = kb.make_sort_ref(workitem_sym);
 
-    let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")
+    let apply_arg_sym = kb
+        .try_resolve_symbol("anthill.reflect.ApplyArg")
         .expect("ApplyArg registered");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
     let name_arg = kb.intern("name");
     let value_arg = kb.intern("value");
@@ -726,10 +804,12 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     env.bind_var(w_sym, anthill_core::eval::Value::term(workitem_ty));
 
     let result = type_check_expr(&mut kb, &env, apply_term);
-    assert!(result.is_ok(),
+    assert!(
+        result.is_ok(),
         "expected commit(s, w) for s:Cell[V=WIS] / w:WorkItem to type-check \
          (dispatch should resolve to FileBasedWorkitemStore.commit); got {:?}",
-         result.as_ref().err());
+        result.as_ref().err()
+    );
 }
 
 #[test]
@@ -740,15 +820,19 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     // type-checks via Int64's spec satisfaction — i.e. the dispatch hook
     // resolves to Unique without bailing the typer.
     let mut kb = load_with("");
-    let add_sym = kb.try_resolve_symbol("anthill.prelude.Numeric.add")
+    let add_sym = kb
+        .try_resolve_symbol("anthill.prelude.Numeric.add")
         .expect("Numeric.add registered");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64")
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
         .expect("Int64 registered");
     let int_type = kb.make_sort_ref(int_sym);
 
-    let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")
+    let apply_arg_sym = kb
+        .try_resolve_symbol("anthill.reflect.ApplyArg")
         .expect("ApplyArg registered");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
     let name_arg = kb.intern("name");
     let value_arg = kb.intern("value");
@@ -793,9 +877,11 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     env.bind_var(x_sym, anthill_core::eval::Value::term(int_type));
 
     let result = type_check_expr(&mut kb, &env, apply_term);
-    assert!(result.is_ok(),
+    assert!(
+        result.is_ok(),
         "expected add(x, x) for x:Int to type-check; got {:?} (dispatch likely failed)",
-        result.as_ref().err());
+        result.as_ref().err()
+    );
 }
 
 // ─── Override is a `provides` concept, not a `requires` one ───────
@@ -809,7 +895,8 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
 
 #[test]
 fn requires_user_with_same_named_op_does_not_provide_or_override() {
-    let (mut kb, load_result, _errs) = load_capturing_errors(r#"
+    let (mut kb, load_result, _errs) = load_capturing_errors(
+        r#"
         namespace ovr.req_vs_prov
           sort OvrSpec
             sort T = ?
@@ -827,40 +914,59 @@ fn requires_user_with_same_named_op_does_not_provide_or_override() {
             operation ovr_op(x: OvrCarrier) -> OvrCarrier = x
           end
         end
-    "#);
+    "#,
+    );
 
     // 1. The provider emits SortProvidesInfo; the requires-user does NOT.
     let heads = provides_info_heads(&mut kb);
-    assert!(heads.iter().any(|h| h.contains("OvrProv") && h.contains("OvrSpec")),
-        "OvrProv (fact OvrSpec) must emit SortProvidesInfo; saw:\n{heads:#?}");
-    assert!(!heads.iter().any(|h| h.contains("OvrReq") && h.contains("OvrSpec")),
+    assert!(
+        heads
+            .iter()
+            .any(|h| h.contains("OvrProv") && h.contains("OvrSpec")),
+        "OvrProv (fact OvrSpec) must emit SortProvidesInfo; saw:\n{heads:#?}"
+    );
+    assert!(
+        !heads
+            .iter()
+            .any(|h| h.contains("OvrReq") && h.contains("OvrSpec")),
         "OvrReq (requires OvrSpec) must NOT emit SortProvidesInfo — \
-         requires is not provides; saw:\n{heads:#?}");
+         requires is not provides; saw:\n{heads:#?}"
+    );
 
     // 2. The requires-user's op is a distinct symbol from the spec op
     //    (it shadows the inherited name; it is not the spec op itself).
-    let spec_op = kb.try_resolve_symbol("ovr.req_vs_prov.OvrSpec.ovr_op")
+    let spec_op = kb
+        .try_resolve_symbol("ovr.req_vs_prov.OvrSpec.ovr_op")
         .expect("OvrSpec.ovr_op registered");
-    let req_op = kb.try_resolve_symbol("ovr.req_vs_prov.OvrReq.ovr_op")
+    let req_op = kb
+        .try_resolve_symbol("ovr.req_vs_prov.OvrReq.ovr_op")
         .expect("OvrReq.ovr_op registered");
-    assert_ne!(spec_op, req_op,
-        "the requires-user's same-named op must be a distinct symbol, not the spec op");
+    assert_ne!(
+        spec_op, req_op,
+        "the requires-user's same-named op must be a distinct symbol, not the spec op"
+    );
 
     // 3. Dispatch for OvrSpec at T=OvrCarrier resolves uniquely to the
     //    provider — the requires-user is not in the candidate set.
-    let spec_sort = lookup_spec_op_dispatch(&kb, spec_op)
-        .expect("OvrSpec.ovr_op is a spec op");
-    let subst = subst_with_t(&mut kb, "ovr.req_vs_prov.OvrSpec", "ovr.req_vs_prov.OvrCarrier");
+    let spec_sort = lookup_spec_op_dispatch(&kb, spec_op).expect("OvrSpec.ovr_op is a spec op");
+    let subst = subst_with_t(
+        &mut kb,
+        "ovr.req_vs_prov.OvrSpec",
+        "ovr.req_vs_prov.OvrCarrier",
+    );
     let op_short = kb.intern("ovr_op");
     match find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]) {
         DispatchOutcome::Unique(s) => {
             let qn = kb.qualified_name_of(s).to_string();
-            assert!(qn.contains("OvrProv"),
-                "dispatch must resolve to the provider OvrProv.ovr_op; got {qn}");
+            assert!(
+                qn.contains("OvrProv"),
+                "dispatch must resolve to the provider OvrProv.ovr_op; got {qn}"
+            );
         }
         other => panic!(
             "expected Unique dispatch to the provider (requires-user must not \
-             contribute a candidate); got {other:?}"),
+             contribute a candidate); got {other:?}"
+        ),
     }
 
     // 4. WI-346: the same-named op on the requires-user is now flagged as an
@@ -873,5 +979,10 @@ fn requires_user_with_same_named_op_does_not_provide_or_override() {
         }),
         "expected a RequiresShadow warning for OvrReq.ovr_op shadowing OvrSpec.ovr_op; \
          got: {:?}",
-        load_result.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>());
+        load_result
+            .warnings
+            .iter()
+            .map(|w| w.to_string())
+            .collect::<Vec<_>>()
+    );
 }

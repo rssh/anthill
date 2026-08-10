@@ -29,7 +29,8 @@ use super::key::CACHE_FORMAT_VERSION;
 /// strategy — each anthill project has its own blob namespace, so
 /// cleanup or GC of one project doesn't disturb another.
 pub fn blob_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {
-    let repo_canon = repo_root.canonicalize()
+    let repo_canon = repo_root
+        .canonicalize()
         .unwrap_or_else(|_| repo_root.to_path_buf());
     let mut h = Sha256::new();
     h.update(repo_canon.to_string_lossy().as_bytes());

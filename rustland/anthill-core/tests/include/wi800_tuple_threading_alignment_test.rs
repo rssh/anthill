@@ -91,7 +91,11 @@ fn permuted_literal_is_threaded_at_its_own_slot() {
 #[test]
 fn in_order_literal_still_threads() {
     let src = split_case("test.wi800.inorder", DECLARED, "(head: h, rest: t)");
-    assert!(load_errs(&src).is_empty(), "the in-order literal must load: {:?}", load_errs(&src));
+    assert!(
+        load_errs(&src).is_empty(),
+        "the in-order literal must load: {:?}",
+        load_errs(&src)
+    );
 }
 
 // ── the hint agrees with the relation about WHICH component ─────
@@ -104,7 +108,11 @@ fn in_order_literal_still_threads() {
 /// `head`, gives up, and this program stops loading.
 #[test]
 fn width_threads_past_a_dropped_component() {
-    let src = split_case("test.wi800.widthdrop", DECLARED, "(mid: 1, head: h, rest: t)");
+    let src = split_case(
+        "test.wi800.widthdrop",
+        DECLARED,
+        "(mid: 1, head: h, rest: t)",
+    );
     assert!(
         load_errs(&src).is_empty(),
         "a component after a width-dropped one must still be threaded: {:?}",
@@ -115,7 +123,11 @@ fn width_threads_past_a_dropped_component() {
 /// The same, with the drop BETWEEN the two threaded components.
 #[test]
 fn width_threads_around_a_dropped_component() {
-    let src = split_case("test.wi800.widthmid", DECLARED, "(head: h, mid: 1, rest: t)");
+    let src = split_case(
+        "test.wi800.widthmid",
+        DECLARED,
+        "(head: h, mid: 1, rest: t)",
+    );
     assert!(
         load_errs(&src).is_empty(),
         "a middle drop must not stop the threading: {:?}",

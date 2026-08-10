@@ -36,8 +36,14 @@ fn unrealizable_effect_rejected() {
         .expect_err("an effect the cpp profile cannot realize must fail codegen");
 
     let msg = err.to_string();
-    assert!(msg.contains("ConsoleOutput"), "must name the offending effect: {msg}");
-    assert!(msg.contains("shout"), "must name the offending operation: {msg}");
+    assert!(
+        msg.contains("ConsoleOutput"),
+        "must name the offending effect: {msg}"
+    );
+    assert!(
+        msg.contains("shout"),
+        "must name the offending operation: {msg}"
+    );
     assert!(msg.contains("cpp"), "must name the target profile: {msg}");
     // The supported set comes from the KB, not a hardcoded list.
     assert!(
@@ -70,8 +76,14 @@ fn unrealizable_effect_names_the_active_profile() {
     .expect_err("an effect no profile realizes must fail codegen");
 
     let msg = err.to_string();
-    assert!(msg.contains("ConsoleOutput"), "must name the offending effect: {msg}");
-    assert!(msg.contains("cpp20-stl"), "must name the ACTIVE profile: {msg}");
+    assert!(
+        msg.contains("ConsoleOutput"),
+        "must name the offending effect: {msg}"
+    );
+    assert!(
+        msg.contains("cpp20-stl"),
+        "must name the ACTIVE profile: {msg}"
+    );
 }
 
 /// The positive half of the acceptance: both effects cpp DOES realize —
@@ -109,7 +121,10 @@ fn realized_effects_lower_fine() {
     let cpp = emit_traits_struct(&mut kb, "test.wi576.ok.Robot")
         .expect("effects the profile realizes must lower");
 
-    assert!(cpp.contains("bump"), "Modify-effect op should be emitted:\n{cpp}");
+    assert!(
+        cpp.contains("bump"),
+        "Modify-effect op should be emitted:\n{cpp}"
+    );
     assert!(
         cpp.contains("tl::expected<int64_t, std::string> risky"),
         "Error effect should still drive the ResultWrap return:\n{cpp}"
@@ -138,7 +153,10 @@ fn effect_row_parameter_is_not_gated() {
     let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.wi576.poly.Runner")
         .expect("an effect-polymorphic op must not trip the capability gate");
-    assert!(cpp.contains("run"), "the op should still be emitted:\n{cpp}");
+    assert!(
+        cpp.contains("run"),
+        "the op should still be emitted:\n{cpp}"
+    );
 }
 
 /// The stdlib instance of the same shape — `Monad.flatMap[A, B, EffP](…)
@@ -156,8 +174,14 @@ fn stdlib_monad_effect_row_parameter_is_not_gated() {
 fn realizes_effect_reads_flat_keyed_facts() {
     let mut kb = load_kb_with("namespace test.wi576.flat\nend\n");
 
-    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Error").as_deref(), Some("ResultWrap"));
-    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(
+        realizes_effect(&mut kb, "cpp", None, "Error").as_deref(),
+        Some("ResultWrap")
+    );
+    assert_eq!(
+        realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(),
+        Some("MutRef")
+    );
     // Outside the supported set — the answer the gate turns into an error.
     assert_eq!(realizes_effect(&mut kb, "cpp", None, "ConsoleOutput"), None);
     // An unknown profile still sees the language base (`key: none`).
@@ -177,20 +201,32 @@ fn realizes_effect_reads_nested_language_mapping() {
     let mut kb = load_kb_with("namespace test.wi576.nested\nend\n");
 
     // scala_std: Modify is by-value (immutable update), Error is Either.
-    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Modify").as_deref(), Some("ByValue"));
+    assert_eq!(
+        realizes_effect(&mut kb, "scala", Some("std"), "Modify").as_deref(),
+        Some("ByValue")
+    );
     assert_eq!(
         realizes_effect(&mut kb, "scala", Some("std"), "Error").as_deref(),
         Some("ResultWrap")
     );
     // rust_std: Modify is `&mut self` — same effect, different host realization,
     // read through one accessor.
-    assert_eq!(realizes_effect(&mut kb, "rust", Some("std"), "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(
+        realizes_effect(&mut kb, "rust", Some("std"), "Modify").as_deref(),
+        Some("MutRef")
+    );
 
     // scala_caps declares Console; scala_std does not. The profile selects.
-    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Console"), None);
+    assert_eq!(
+        realizes_effect(&mut kb, "scala", Some("std"), "Console"),
+        None
+    );
 
     // The gap WI-576's description names: no scala profile realizes `Async`.
-    assert_eq!(realizes_effect(&mut kb, "scala", Some("std"), "Async"), None);
+    assert_eq!(
+        realizes_effect(&mut kb, "scala", Some("std"), "Async"),
+        None
+    );
 }
 
 /// Pins the accessor's CONTRACT for the nested representation: the profile is
@@ -213,7 +249,10 @@ fn realizes_effect_without_a_profile_resolves_no_nested_entry() {
     );
     assert_eq!(realizes_effect(&mut kb, "scala", None, "Modify"), None);
     // Contrast: cpp's flat facts carry `key: none`, so the base resolves.
-    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(
+        realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(),
+        Some("MutRef")
+    );
 }
 
 /// A cpp `EffectMapping` must not be answered from another language's entries,
@@ -224,7 +263,10 @@ fn realizes_effect_does_not_leak_across_languages() {
     let mut kb = load_kb_with("namespace test.wi576.iso\nend\n");
 
     // scala_std maps Modify to ByValue; cpp must still answer MutRef.
-    assert_eq!(realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(), Some("MutRef"));
+    assert_eq!(
+        realizes_effect(&mut kb, "cpp", None, "Modify").as_deref(),
+        Some("MutRef")
+    );
     // No `LanguageMapping(language: "cpp")` and no flat rust facts exist, so a
     // language with neither representation present resolves nothing.
     assert_eq!(realizes_effect(&mut kb, "python", None, "Modify"), None);

@@ -13,7 +13,6 @@
 //! --anthill flag, so the earlier Flat convention only ever wrote to
 //! throwaway test dirs.)
 
-
 use std::fs;
 use std::process::Command;
 
@@ -38,19 +37,27 @@ fn feedback_persists_fact_to_project_dir() {
     let out = Command::new(ANTHILL_TODO_BIN)
         .args([
             "--anthill",
-            "-d", proj.to_str().unwrap(),
-            "--agent", "claude",
-            "feedback", "WI-001", "ported from anthill bundle",
+            "-d",
+            proj.to_str().unwrap(),
+            "--agent",
+            "claude",
+            "feedback",
+            "WI-001",
+            "ported from anthill bundle",
         ])
         .output()
         .expect("run anthill-todo");
 
-    assert!(out.status.success(),
+    assert!(
+        out.status.success(),
         "feedback failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("feedback on WI-001: ported from anthill bundle"),
-        "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("feedback on WI-001: ported from anthill bundle"),
+        "unexpected stdout: {stdout}"
+    );
 
     // The fact lands in some `.anthill` file under anthill-todo/ (the
     // SingleFile convention targets workitems.anthill); the test is
@@ -72,9 +79,11 @@ fn feedback_persists_fact_to_project_dir() {
             }
         }
     }
-    assert!(found,
+    assert!(
+        found,
         "Feedback fact not found in any .anthill file under {}",
-        inner.display());
+        inner.display()
+    );
 }
 
 #[test]
@@ -88,21 +97,29 @@ fn feedback_on_missing_item_errors_and_writes_nothing() {
 
     let out = Command::new(ANTHILL_TODO_BIN)
         .args([
-            "-d", proj.to_str().unwrap(),
-            "--agent", "claude",
-            "feedback", "WI-999", "feedback for a ghost",
+            "-d",
+            proj.to_str().unwrap(),
+            "--agent",
+            "claude",
+            "feedback",
+            "WI-999",
+            "feedback for a ghost",
         ])
         .output()
         .expect("run anthill-todo");
 
-    assert!(!out.status.success(),
+    assert!(
+        !out.status.success(),
         "feedback on a missing item must exit nonzero; stderr={}",
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     // Pin the exact diagnostic (not two independent substrings) so a nonzero
     // exit for an *unrelated* reason can't masquerade as the not-found path.
-    assert!(stderr.contains("work item 'WI-999' not found"),
-        "expected the not-found diagnostic, got stderr: {stderr}");
+    assert!(
+        stderr.contains("work item 'WI-999' not found"),
+        "expected the not-found diagnostic, got stderr: {stderr}"
+    );
 
     // Prove the store was left untouched — not merely that the literal
     // "WI-999" is absent (a truncating rewrite would pass that). The pre-
@@ -110,12 +127,18 @@ fn feedback_on_missing_item_errors_and_writes_nothing() {
     // Neither domain.anthill nor rules.anthill mentions "WI-001" or
     // "fact Feedback", so both checks are attributable to the store write.
     let combined = crate::common::read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("WI-999"),
-        "no orphan fact for a nonexistent item should be persisted; store:\n{combined}");
-    assert!(!combined.contains("fact Feedback"),
-        "no Feedback fact should have been written at all; store:\n{combined}");
-    assert!(combined.contains("WI-001"),
-        "the existing work item must remain intact; store:\n{combined}");
+    assert!(
+        !combined.contains("WI-999"),
+        "no orphan fact for a nonexistent item should be persisted; store:\n{combined}"
+    );
+    assert!(
+        !combined.contains("fact Feedback"),
+        "no Feedback fact should have been written at all; store:\n{combined}"
+    );
+    assert!(
+        combined.contains("WI-001"),
+        "the existing work item must remain intact; store:\n{combined}"
+    );
 }
 
 #[test]
@@ -126,8 +149,10 @@ fn feedback_missing_text_errors_cleanly() {
     let out = Command::new(ANTHILL_TODO_BIN)
         .args([
             "--anthill",
-            "-d", proj.to_str().unwrap(),
-            "feedback", "WI-001",  // text positional missing
+            "-d",
+            proj.to_str().unwrap(),
+            "feedback",
+            "WI-001", // text positional missing
         ])
         .output()
         .expect("run anthill-todo");

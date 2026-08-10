@@ -67,27 +67,40 @@ pub(crate) struct ClosureArena {
 
 impl ClosureArena {
     fn new() -> Self {
-        Self { slots: Vec::new(), free_list: Vec::new() }
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     fn alloc_raw(&mut self, c: Closure) -> u32 {
         if let Some(reused) = self.free_list.pop() {
-            self.slots[reused as usize] = Slot { value: Some(c), refcount: 1 };
+            self.slots[reused as usize] = Slot {
+                value: Some(c),
+                refcount: 1,
+            };
             reused
         } else {
             let raw = self.slots.len() as u32;
-            self.slots.push(Slot { value: Some(c), refcount: 1 });
+            self.slots.push(Slot {
+                value: Some(c),
+                refcount: 1,
+            });
             raw
         }
     }
 
     fn get_raw(&self, raw: u32) -> &Closure {
-        self.slots[raw as usize].value.as_ref()
+        self.slots[raw as usize]
+            .value
+            .as_ref()
             .expect("closure arena slot already released")
     }
 
     fn get_raw_mut(&mut self, raw: u32) -> &mut Closure {
-        self.slots[raw as usize].value.as_mut()
+        self.slots[raw as usize]
+            .value
+            .as_mut()
             .expect("closure arena slot already released")
     }
 
@@ -131,7 +144,10 @@ impl ClosureArenaRef {
     /// Store a closure, returning an owning handle (initial refcount = 1).
     pub fn alloc(&self, c: Closure) -> ClosureHandle {
         let raw = self.0.borrow_mut().alloc_raw(c);
-        ClosureHandle { raw, arena: self.clone() }
+        ClosureHandle {
+            raw,
+            arena: self.clone(),
+        }
     }
 
     /// Read a closure via a scoped borrow; the closure `f` runs while the
@@ -154,10 +170,7 @@ impl ClosureArenaRef {
     /// Safe because the interpreter is single-threaded and synchronous:
     /// nothing else runs during the swap-out-swap-in window, so observers
     /// never see an empty env.
-    pub fn clone_env(
-        &self,
-        h: &ClosureHandle,
-    ) -> SmallVec<[(Symbol, Value); 4]> {
+    pub fn clone_env(&self, h: &ClosureHandle) -> SmallVec<[(Symbol, Value); 4]> {
         let mut stolen = {
             let mut arena = self.0.borrow_mut();
             let c = arena.get_raw_mut(h.raw);
@@ -172,11 +185,15 @@ impl ClosureArenaRef {
     }
 
     /// Live-slot count — for reclamation observability.
-    pub fn live(&self) -> usize { self.0.borrow().live() }
+    pub fn live(&self) -> usize {
+        self.0.borrow().live()
+    }
 }
 
 impl Default for ClosureArenaRef {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Refcounted handle. Clone increments the slot refcount, Drop decrements.
@@ -188,13 +205,18 @@ pub struct ClosureHandle {
 }
 
 impl ClosureHandle {
-    pub fn raw(&self) -> u32 { self.raw }
+    pub fn raw(&self) -> u32 {
+        self.raw
+    }
 }
 
 impl Clone for ClosureHandle {
     fn clone(&self) -> Self {
         self.arena.0.borrow_mut().retain_raw(self.raw);
-        Self { raw: self.raw, arena: self.arena.clone() }
+        Self {
+            raw: self.raw,
+            arena: self.arena.clone(),
+        }
     }
 }
 

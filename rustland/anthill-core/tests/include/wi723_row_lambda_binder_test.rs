@@ -54,10 +54,8 @@ end
 /// column) is a valid field access compared against a String literal.
 #[test]
 fn wi723_named_tuple_schema_types_row_lambda_binder() {
-    let source = src(
-        r#"let r = person_row.where(lambda c -> eq(c.name, "alice"))
-    r.isEmpty"#,
-    );
+    let source = src(r#"let r = person_row.where(lambda c -> eq(c.name, "alice"))
+    r.isEmpty"#);
     if let Err(errs) = try_load_kb_with(&source) {
         panic!(
             "person_row.where(λ) over a named-tuple relation should type-check \
@@ -73,10 +71,8 @@ fn wi723_named_tuple_schema_types_row_lambda_binder() {
 /// unresolved-var binder would instead unify `c.name` to `Int64` and pass).
 #[test]
 fn wi723_row_lambda_column_type_is_concrete_string() {
-    let source = src(
-        r#"let r = person_row.where(lambda c -> eq(c.name, 42))
-    r.isEmpty"#,
-    );
+    let source = src(r#"let r = person_row.where(lambda c -> eq(c.name, 42))
+    r.isEmpty"#);
     match try_load_kb_with(&source) {
         Ok(_) => panic!(
             "eq(c.name, 42) must be rejected — c.name is String, not an unresolved var \
@@ -97,10 +93,8 @@ fn wi723_row_lambda_column_type_is_concrete_string() {
 /// first field.
 #[test]
 fn wi723_row_lambda_second_column_type_is_concrete_int() {
-    let source = src(
-        r#"let r = person_row.where(lambda c -> eq(c.age, "thirty"))
-    r.isEmpty"#,
-    );
+    let source = src(r#"let r = person_row.where(lambda c -> eq(c.age, "thirty"))
+    r.isEmpty"#);
     match try_load_kb_with(&source) {
         Ok(_) => panic!("eq(c.age, \"thirty\") must be rejected — c.age is Int64, not String"),
         Err(errs) => {
@@ -117,11 +111,9 @@ fn wi723_row_lambda_second_column_type_is_concrete_int() {
 /// resolves the schema through the SAME dot-call path — the two receiver forms agree.
 #[test]
 fn wi723_local_receiver_resolves_schema_identically() {
-    let source = src(
-        r#"let pr = person_row
+    let source = src(r#"let pr = person_row
     let r = pr.where(lambda c -> eq(c.name, "alice"))
-    r.isEmpty"#,
-    );
+    r.isEmpty"#);
     if let Err(errs) = try_load_kb_with(&source) {
         panic!(
             "a let-local receiver bound to the rule ref should type-check identically; \

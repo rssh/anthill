@@ -20,9 +20,9 @@
 //! `UnresolvedName` for the bare imported sort used in the field-type position —
 //! failing this test.
 
+use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::resolve::ResolveConfig;
 use smallvec::SmallVec;
 
 /// File A — the `Tree` namespace. References `Leaf` (file B) in `Node.leaf` and
@@ -58,7 +58,10 @@ end
 "#;
 
 fn config() -> ResolveConfig {
-    ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
+    ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    }
 }
 
 fn var(kb: &mut KnowledgeBase, name: &str) -> TermId {

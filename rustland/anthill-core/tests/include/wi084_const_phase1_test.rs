@@ -46,12 +46,18 @@ fn kb() -> anthill_core::kb::KnowledgeBase {
         for e in &errs {
             eprintln!("{e}");
         }
-        panic!("WI-084 Phase 1 source should load cleanly; {} errors", errs.len());
+        panic!(
+            "WI-084 Phase 1 source should load cleanly; {} errors",
+            errs.len()
+        );
     })
 }
 
 /// Resolve a qualified name and assert it is a `Const` symbol.
-fn assert_const_kind(kb: &anthill_core::kb::KnowledgeBase, qname: &str) -> anthill_core::intern::Symbol {
+fn assert_const_kind(
+    kb: &anthill_core::kb::KnowledgeBase,
+    qname: &str,
+) -> anthill_core::intern::Symbol {
     let sym = kb
         .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("const `{qname}` should resolve to a symbol"));

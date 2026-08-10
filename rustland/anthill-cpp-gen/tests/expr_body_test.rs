@@ -23,8 +23,7 @@ fn literal_int_body() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Calc")
-        .expect("emit Calc traits");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Calc").expect("emit Calc traits");
 
     assert!(
         cpp.contains("static int64_t forty_two() {\n        return 42;\n    }"),
@@ -44,8 +43,7 @@ fn literal_float_and_string_bodies() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Constants")
-        .expect("emit Constants");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Constants").expect("emit Constants");
 
     assert!(
         cpp.contains("static double pi() {\n        return 3.14;\n    }"),
@@ -70,8 +68,7 @@ fn parameter_reference_body() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Identity")
-        .expect("emit Identity");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Identity").expect("emit Identity");
 
     assert!(
         cpp.contains("static int64_t id(int64_t x) {\n        return x;\n    }"),
@@ -94,8 +91,7 @@ fn simple_function_call_body() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Counter")
-        .expect("emit Counter");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Counter").expect("emit Counter");
 
     assert!(
         cpp.contains("static int64_t use(int64_t x) {\n        return step(x);\n    }"),
@@ -117,11 +113,12 @@ fn nested_call_body() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_a.NestedCalls")
-        .expect("emit NestedCalls");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.NestedCalls").expect("emit NestedCalls");
 
     assert!(
-        cpp.contains("static int64_t triple_inc(int64_t x) {\n        return inc(inc(inc(x)));\n    }"),
+        cpp.contains(
+            "static int64_t triple_inc(int64_t x) {\n        return inc(inc(inc(x)));\n    }"
+        ),
         "nested-call body missing or wrong:\n{cpp}"
     );
 }
@@ -152,8 +149,7 @@ fn expression_body_takes_precedence_over_carrier_dispatch() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Calc").expect("emit Calc");
 
     // Body is the literal 99 (expression body wins) — not self->get().
     assert!(
@@ -178,8 +174,7 @@ fn literal_int_body_compiles() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.expr_a_compile.Calc")
-        .expect("emit Calc");
+    let traits = emit_traits_struct(&mut kb, "test.expr_a_compile.Calc").expect("emit Calc");
 
     let cxx = match find_cxx() {
         Some(c) => c,

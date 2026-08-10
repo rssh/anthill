@@ -6,10 +6,10 @@
 //! so the description emission was re-added to that walk's `Var` arm. This test
 //! locks that in.
 
-use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, Literal};
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::term::{Literal, Term};
+use anthill_core::kb::KnowledgeBase;
+use anthill_core::parse;
 
 /// True iff the KB holds a `DescriptionInfo(content: text, …)` fact.
 fn has_description_fact(kb: &KnowledgeBase, text: &str) -> bool {

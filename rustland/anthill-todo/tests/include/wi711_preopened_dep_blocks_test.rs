@@ -7,7 +7,6 @@
 //! (the control), and the blocked/ready split is status-agnostic, so a
 //! PreOpened item with an unmet dep shows blocked under its OWN group.
 
-
 use std::process::Command;
 
 use crate::common::setup_project;
@@ -59,9 +58,15 @@ fact WorkItem(
 fn run(proj: &std::path::Path, args: &[&str]) -> String {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    let out = Command::new(BIN).args(&full).output().expect("run anthill-todo");
-    assert!(out.status.success(),
-        "command failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo");
+    assert!(
+        out.status.success(),
+        "command failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -77,18 +82,25 @@ fn preopened_dep_blocks_dependent_in_list() {
 
     let open_hdr = stdout.find("Open:").expect("Open group header");
     // The blocked marker inside the Open group (the first one after "Open:").
-    let blocked_idx = stdout[open_hdr..].find("-- blocked --")
+    let blocked_idx = stdout[open_hdr..]
+        .find("-- blocked --")
         .map(|i| open_hdr + i)
         .expect("Open group has a blocked section");
     let wi002 = stdout.find("WI-002").expect("WI-002 shown");
     let wi003 = stdout.find("WI-003").expect("WI-003 shown");
 
-    assert!(wi003 < blocked_idx,
-        "WI-003 (dep Delivered) must be ready, above the blocked marker: {stdout}");
-    assert!(wi002 > blocked_idx,
-        "WI-002 (dep PreOpened) must be in the blocked section: {stdout}");
-    assert!(stdout.contains("WI-001 [PreOpened]"),
-        "the PreOpened premise still lists: {stdout}");
+    assert!(
+        wi003 < blocked_idx,
+        "WI-003 (dep Delivered) must be ready, above the blocked marker: {stdout}"
+    );
+    assert!(
+        wi002 > blocked_idx,
+        "WI-002 (dep PreOpened) must be in the blocked section: {stdout}"
+    );
+    assert!(
+        stdout.contains("WI-001 [PreOpened]"),
+        "the PreOpened premise still lists: {stdout}"
+    );
 }
 
 /// `next` offers the ready item and never the one blocked by a PreOpened dep.
@@ -98,12 +110,18 @@ fn preopened_dep_excludes_dependent_from_next() {
     let proj = setup_project(&tmp, FIXTURE);
 
     let stdout = run(&proj, &["next", "--all"]);
-    assert!(stdout.contains("WI-003"),
-        "the ready item (dep Delivered) is claimable: {stdout}");
-    assert!(!stdout.contains("WI-002"),
-        "the PreOpened-blocked item must not be offered: {stdout}");
-    assert!(!stdout.contains("WI-001"),
-        "a PreOpened item is not itself claimable: {stdout}");
+    assert!(
+        stdout.contains("WI-003"),
+        "the ready item (dep Delivered) is claimable: {stdout}"
+    );
+    assert!(
+        !stdout.contains("WI-002"),
+        "the PreOpened-blocked item must not be offered: {stdout}"
+    );
+    assert!(
+        !stdout.contains("WI-001"),
+        "a PreOpened item is not itself claimable: {stdout}"
+    );
 }
 
 /// `list --unblocked` drops the PreOpened-blocked item, keeps the ready one.
@@ -113,10 +131,14 @@ fn preopened_dep_hidden_under_unblocked() {
     let proj = setup_project(&tmp, FIXTURE);
 
     let stdout = run(&proj, &["list", "--unblocked"]);
-    assert!(!stdout.contains("WI-002"),
-        "blocked-by-PreOpened item is dropped: {stdout}");
-    assert!(stdout.contains("WI-003 [Open]"),
-        "the ready item (dep Delivered) is kept: {stdout}");
+    assert!(
+        !stdout.contains("WI-002"),
+        "blocked-by-PreOpened item is dropped: {stdout}"
+    );
+    assert!(
+        stdout.contains("WI-003 [Open]"),
+        "the ready item (dep Delivered) is kept: {stdout}"
+    );
 }
 
 /// The blocked/ready split is status-agnostic: a PreOpened item with an
@@ -129,15 +151,24 @@ fn blocked_split_is_status_agnostic_across_groups() {
     let proj = setup_project(&tmp, FIXTURE);
 
     let stdout = run(&proj, &["list"]);
-    assert_eq!(stdout.matches("-- blocked --").count(), 2,
-        "one blocked section in the Open group and one in the PreOpened group: {stdout}");
+    assert_eq!(
+        stdout.matches("-- blocked --").count(),
+        2,
+        "one blocked section in the Open group and one in the PreOpened group: {stdout}"
+    );
     let preopen_hdr = stdout.find("PreOpened:").expect("PreOpened group header");
     let tail = &stdout[preopen_hdr..];
-    let blocked_idx = tail.find("-- blocked --").expect("PreOpened group blocked section");
+    let blocked_idx = tail
+        .find("-- blocked --")
+        .expect("PreOpened group blocked section");
     let wi001 = tail.find("WI-001").expect("WI-001 in PreOpened group");
     let wi005 = tail.find("WI-005").expect("WI-005 in PreOpened group");
-    assert!(wi001 < blocked_idx,
-        "the depless PreOpened premise WI-001 is ready: {stdout}");
-    assert!(wi005 > blocked_idx,
-        "WI-005 (unmet dep) is blocked within the PreOpened group: {stdout}");
+    assert!(
+        wi001 < blocked_idx,
+        "the depless PreOpened premise WI-001 is ready: {stdout}"
+    );
+    assert!(
+        wi005 > blocked_idx,
+        "WI-005 (unmet dep) is blocked within the PreOpened group: {stdout}"
+    );
 }

@@ -55,7 +55,9 @@ fn typed_errors(source: &str) -> Vec<TypeError> {
 /// Load-time errors (the channel that carries op-return conformance and
 /// `EqOverrideUnbacked`).
 fn load_errors(source: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(source).err().unwrap_or_default()
+    crate::common::try_load_kb_with(source)
+        .err()
+        .unwrap_or_default()
 }
 
 // ── The §6.3 shapes, as the KB records them ─────────────────────────────────
@@ -74,13 +76,24 @@ sort Shape
 end
 "#;
     let (kb, _r) = crate::common::load_stdlib_kb_with_source(source);
-    let sym = |n: &str| kb.try_resolve_symbol(n).unwrap_or_else(|| panic!("no symbol {n}"));
+    let sym = |n: &str| {
+        kb.try_resolve_symbol(n)
+            .unwrap_or_else(|| panic!("no symbol {n}"))
+    };
 
     // EPONYMOUS and FREE-STANDING: the edge is reflexive, so only the total view sees it.
     for name in ["Vec3", "Loose"] {
         let s = sym(name);
-        assert_eq!(kb.sort_of_constructor(s), Some(s), "{name}: belongs-to is reflexive");
-        assert_eq!(kb.strict_parent_sort(s), None, "{name}: the strict view cuts it");
+        assert_eq!(
+            kb.sort_of_constructor(s),
+            Some(s),
+            "{name}: belongs-to is reflexive"
+        );
+        assert_eq!(
+            kb.strict_parent_sort(s),
+            None,
+            "{name}: the strict view cuts it"
+        );
     }
     // SORT-NESTED: the two agree, which is why the defect was invisible in the suite.
     let circle = sym("Shape.Circle");
@@ -152,7 +165,10 @@ fn an_eponymous_carrier_in_a_foreign_field_is_refused() {
 #[test]
 fn a_free_standing_carrier_in_a_foreign_field_is_refused() {
     let errors = typed_errors(FIELD_MISMATCH_FREE_STANDING);
-    assert!(!errors.is_empty(), "the free-standing spelling must be refused too");
+    assert!(
+        !errors.is_empty(),
+        "the free-standing spelling must be refused too"
+    );
 }
 
 /// The check must not OVER-fire: an eponymous carrier in its own field is fine.
@@ -169,7 +185,10 @@ end
 fact Holder(v: Vec3(x: 1.0))
 "#,
     );
-    assert!(errors.is_empty(), "an eponymous carrier in its OWN field must load, got {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "an eponymous carrier in its OWN field must load, got {errors:?}"
+    );
 }
 
 /// A field declared `anthill.reflect.Term` holds a QUOTED term, so ANY carrier
@@ -208,7 +227,10 @@ end
         ),
     ] {
         let errs = load_errors(src);
-        assert!(errs.is_empty(), "{label} carrier must quote into a Term field: {errs:?}");
+        assert!(
+            errs.is_empty(),
+            "{label} carrier must quote into a Term field: {errs:?}"
+        );
     }
 }
 
@@ -285,7 +307,10 @@ end
 #[test]
 fn control_a_nested_parametric_destructure_resolves_its_type_param() {
     let errors = typed_errors(DESTRUCTURE_NESTED);
-    assert!(errors.is_empty(), "`Boxed(v)` over `Crate[T = Int64]` binds v: Int64, got {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "`Boxed(v)` over `Crate[T = Int64]` binds v: Int64, got {errors:?}"
+    );
 }
 
 #[test]
@@ -365,7 +390,9 @@ fn an_eponymous_parametric_build_refuses_a_wrong_binding() {
 /// instruction asked for.
 fn built_value_type_is_parameterized(source: &str, ctor_qn: &str) -> bool {
     let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(source);
-    let ctor = kb.try_resolve_symbol(ctor_qn).unwrap_or_else(|| panic!("no ctor {ctor_qn}"));
+    let ctor = kb
+        .try_resolve_symbol(ctor_qn)
+        .unwrap_or_else(|| panic!("no ctor {ctor_qn}"));
     // Key the field by the DECLARED symbol — `constructor_value_type` matches named
     // children against `entity_field_types` by symbol identity.
     let (field, _) = kb.entity_field_types(ctor).expect("field schema")[0].clone();
@@ -402,8 +429,10 @@ end
 
 #[test]
 fn the_value_typer_answers_both_spellings_alike() {
-    let nested =
-        built_value_type_is_parameterized(VALUE_BUILD_NESTED, "wi946.valuebuild.nested.Crate.Boxed");
+    let nested = built_value_type_is_parameterized(
+        VALUE_BUILD_NESTED,
+        "wi946.valuebuild.nested.Crate.Boxed",
+    );
     let eponymous =
         built_value_type_is_parameterized(VALUE_BUILD_EPONYMOUS, "wi946.valuebuild.eponymous.Box");
     assert_eq!(
@@ -425,8 +454,16 @@ fn the_value_typer_answers_both_spellings_alike() {
 #[test]
 fn a_built_parametric_value_carries_its_binding() {
     for (src, ctor_qn, sort_qn) in [
-        (VALUE_BUILD_NESTED, "wi946.valuebuild.nested.Crate.Boxed", "wi946.valuebuild.nested.Crate"),
-        (VALUE_BUILD_EPONYMOUS, "wi946.valuebuild.eponymous.Box", "wi946.valuebuild.eponymous.Box"),
+        (
+            VALUE_BUILD_NESTED,
+            "wi946.valuebuild.nested.Crate.Boxed",
+            "wi946.valuebuild.nested.Crate",
+        ),
+        (
+            VALUE_BUILD_EPONYMOUS,
+            "wi946.valuebuild.eponymous.Box",
+            "wi946.valuebuild.eponymous.Box",
+        ),
     ] {
         let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(src);
         let ctor = kb.try_resolve_symbol(ctor_qn).expect("ctor");
@@ -439,7 +476,12 @@ fn a_built_parametric_value_carries_its_binding() {
         let ty = value_type_term(&mut kb, &Substitution::new(), &value);
         let built = kb.get_term(ty.expect_term()).clone();
         let int64 = kb.resolve_symbol("anthill.prelude.Int64");
-        let Term::Fn { functor, named_args, .. } = &built else {
+        let Term::Fn {
+            functor,
+            named_args,
+            ..
+        } = &built
+        else {
             panic!("{ctor_qn}: expected `Sort[T = Int64]`, got {built:?}")
         };
         assert_eq!(
@@ -454,7 +496,11 @@ fn a_built_parametric_value_carries_its_binding() {
              binding — a second would be a param the sort does not have (WI-955)",
         );
         let (key, bound) = named_args.first().expect("one binding");
-        assert_eq!(kb.local_name_of(*key), "T", "{ctor_qn}: keyed by the param's bare name");
+        assert_eq!(
+            kb.local_name_of(*key),
+            "T",
+            "{ctor_qn}: keyed by the param's bare name"
+        );
         assert_eq!(
             extract_sort_ref_sym(&kb, &TermIdView(*bound)),
             Some(int64),
@@ -478,7 +524,10 @@ namespace wi946.build.eponymous.ok
 end
 "#,
     );
-    assert!(errs.is_empty(), "the matching binding must still load, got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "the matching binding must still load, got {errs:?}"
+    );
 }
 
 // ── 5. head_result_carrier — the WI-652 eq-override-backing probe ───────────
@@ -518,7 +567,8 @@ end
 "#;
 
 fn flags_unbacked_eq(errs: &[String], carrier: &str) -> bool {
-    errs.iter().any(|e| e.contains("override declared but unimplemented") && e.contains(carrier))
+    errs.iter()
+        .any(|e| e.contains("override declared but unimplemented") && e.contains(carrier))
 }
 
 #[test]
@@ -584,8 +634,12 @@ end
 fn synthesizes_at(source: &str, op_qn: &str, ctor_qn: &str, field: &str) -> bool {
     let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(source);
     let sp = SourceSpan::new(SourceId::from_raw(0), 0, 0);
-    let op = kb.try_resolve_symbol(op_qn).unwrap_or_else(|| panic!("no op {op_qn}"));
-    let ctor = kb.try_resolve_symbol(ctor_qn).unwrap_or_else(|| panic!("no ctor {ctor_qn}"));
+    let op = kb
+        .try_resolve_symbol(op_qn)
+        .unwrap_or_else(|| panic!("no op {op_qn}"));
+    let ctor = kb
+        .try_resolve_symbol(ctor_qn)
+        .unwrap_or_else(|| panic!("no ctor {ctor_qn}"));
     let fsym = kb.intern(field);
     let five = NodeOccurrence::new_expr(Expr::Const(Literal::Int(5)), sp, None);
     let arg: Rc<NodeOccurrence> = NodeOccurrence::new_expr(
@@ -666,7 +720,11 @@ end
 "#,
         ),
     ] {
-        assert!(load_errors(src).is_empty(), "{label} tuple field must load: {:?}", load_errors(src));
+        assert!(
+            load_errors(src).is_empty(),
+            "{label} tuple field must load: {:?}",
+            load_errors(src)
+        );
     }
 }
 
@@ -707,7 +765,11 @@ end
     );
 
     for (label, extra_decl, arm) in [
-        ("nested nullary ctor", "enum Other\n  entity Blue\nend", "Blue"),
+        (
+            "nested nullary ctor",
+            "enum Other\n  entity Blue\nend",
+            "Blue",
+        ),
         ("free-standing entity", "entity Bare", "Bare"),
         ("eponymous sort", "sort Solo\n  entity Solo\nend", "Solo"),
     ] {

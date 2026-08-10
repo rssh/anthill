@@ -5,10 +5,9 @@
 //! Not a real test — `#[ignore]` by default; run with
 //!   cargo test -p anthill-core --test wi237_diag_test -- --ignored --nocapture
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -16,21 +15,25 @@ use anthill_core::persistence::print::TermPrinter;
 #[ignore]
 fn dump_eq_lt_rewrites() {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files
+        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/rules.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // and main.anthill now import (WI-434) — load it before them.
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
-    files.push(crate::common::workspace_root()
-        .join("rustland/anthill-todo/anthill/main.anthill"));
+    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/main.anthill"));
 
-    let parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src)
-            .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
@@ -39,7 +42,9 @@ fn dump_eq_lt_rewrites() {
         Ok(_) => println!("[wi237] load OK"),
         Err(errs) => {
             println!("[wi237] load errors ({}):", errs.len());
-            for e in errs { println!("  {e}"); }
+            for e in errs {
+                println!("  {e}");
+            }
         }
     }
 
@@ -50,20 +55,22 @@ fn dump_eq_lt_rewrites() {
         let spec_qn = kb.qualified_name_of(spec_sym).to_string();
         // Render the rewritten term's `fn` symbol.
         let fn_desc = match kb.get_term(rewritten_tid) {
-            Term::Fn { named_args, .. } => {
-                named_args.iter()
-                    .find(|(s, _)| kb.local_name_of(*s) == "fn")
-                    .map(|(_, v)| match kb.get_term(*v) {
-                        Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
-                        other => format!("{other:?}"),
-                    })
-                    .unwrap_or_else(|| "<no fn>".to_string())
-            }
+            Term::Fn { named_args, .. } => named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "fn")
+                .map(|(_, v)| match kb.get_term(*v) {
+                    Term::Ref(s) | Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
+                    other => format!("{other:?}"),
+                })
+                .unwrap_or_else(|| "<no fn>".to_string()),
             other => format!("{other:?}"),
         };
         println!("  origin spec={spec_qn}  ->  rewritten fn={fn_desc}");
         count += 1;
-        if count > 60 { println!("  ... (truncated)"); break; }
+        if count > 60 {
+            println!("  ... (truncated)");
+            break;
+        }
     }
     println!("[wi237] total dispatch_origin: {count}");
 
@@ -87,7 +94,10 @@ fn dump_eq_lt_rewrites() {
         match resolved {
             Some(sym) => {
                 let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym);
-                let has_body = info.as_ref().map(|i| i.body_node.is_some()).unwrap_or(false);
+                let has_body = info
+                    .as_ref()
+                    .map(|i| i.body_node.is_some())
+                    .unwrap_or(false);
                 let has_info = info.is_some();
                 println!("[wi237] resolve {name} -> Some  has_info={has_info} has_body={has_body}");
             }

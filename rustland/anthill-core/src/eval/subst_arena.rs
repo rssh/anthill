@@ -24,16 +24,25 @@ pub(crate) struct SubstArena {
 
 impl SubstArena {
     fn new() -> Self {
-        Self { slots: Vec::new(), free_list: Vec::new() }
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     fn alloc_raw(&mut self, subst: Substitution) -> u32 {
         if let Some(reused) = self.free_list.pop() {
-            self.slots[reused as usize] = Slot { subst: Some(subst), refcount: 1 };
+            self.slots[reused as usize] = Slot {
+                subst: Some(subst),
+                refcount: 1,
+            };
             reused
         } else {
             let raw = self.slots.len() as u32;
-            self.slots.push(Slot { subst: Some(subst), refcount: 1 });
+            self.slots.push(Slot {
+                subst: Some(subst),
+                refcount: 1,
+            });
             raw
         }
     }
@@ -69,7 +78,10 @@ impl SubstArenaRef {
 
     pub fn alloc(&self, subst: Substitution) -> SubstHandle {
         let raw = self.0.borrow_mut().alloc_raw(subst);
-        SubstHandle { raw, arena: self.clone() }
+        SubstHandle {
+            raw,
+            arena: self.clone(),
+        }
     }
 
     /// Borrow the underlying `Substitution` for a read-only callback.
@@ -81,11 +93,15 @@ impl SubstArenaRef {
     }
 
     /// Number of live substitution slots (diagnostic for refcount tests).
-    pub fn live(&self) -> usize { self.0.borrow().live() }
+    pub fn live(&self) -> usize {
+        self.0.borrow().live()
+    }
 }
 
 impl Default for SubstArenaRef {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Refcounted substitution handle. Clone bumps the slot's refcount; Drop
@@ -96,15 +112,22 @@ pub struct SubstHandle {
 }
 
 impl SubstHandle {
-    pub fn raw(&self) -> u32 { self.raw }
-    #[allow(dead_code)]  // arena handle accessor; kept for future subst ops
-    pub(crate) fn arena(&self) -> &SubstArenaRef { &self.arena }
+    pub fn raw(&self) -> u32 {
+        self.raw
+    }
+    #[allow(dead_code)] // arena handle accessor; kept for future subst ops
+    pub(crate) fn arena(&self) -> &SubstArenaRef {
+        &self.arena
+    }
 }
 
 impl Clone for SubstHandle {
     fn clone(&self) -> Self {
         self.arena.0.borrow_mut().retain_raw(self.raw);
-        Self { raw: self.raw, arena: self.arena.clone() }
+        Self {
+            raw: self.raw,
+            arena: self.arena.clone(),
+        }
     }
 }
 

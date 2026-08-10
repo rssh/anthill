@@ -22,9 +22,9 @@
 use anthill_core::kb::load::{is_equational_head, meta_has_flag};
 use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::term::Term;
+use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
-use anthill_core::kb::ClauseKind;
 
 /// A self-representing container spec `Bag` (carrier = `Bag`, element `T`,
 /// `requires Eq[T]`), a concrete carrier `IntBag` that `provides Bag[T = Int64]`,
@@ -75,13 +75,18 @@ end
 "#;
 
 fn sym(kb: &KnowledgeBase, qn: &str) -> anthill_core::intern::Symbol {
-    kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    kb.try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("resolve {qn}"))
 }
 
 /// A nullary constructor term `f()` (`Fn { f, [], [] }`).
 fn nullary(kb: &mut KnowledgeBase, qn: &str) -> anthill_core::kb::term::TermId {
     let f = sym(kb, qn);
-    kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::new(), named_args: SmallVec::new() })
+    kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    })
 }
 
 // ── resolver side: carrier-keyed firing over a real provider ──────────

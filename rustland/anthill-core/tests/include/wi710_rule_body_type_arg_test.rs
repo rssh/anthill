@@ -36,7 +36,8 @@ end
         ),
     };
     assert!(
-        errs.iter().any(|e| e.contains("no type parameter named 'W'")),
+        errs.iter()
+            .any(|e| e.contains("no type parameter named 'W'")),
         "expected the shared undeclared-type-argument diagnostic, got {errs:?}"
     );
 }
@@ -54,10 +55,13 @@ end
 "#;
     let errs = match try_load_kb_with(src) {
         Err(errs) => errs,
-        Ok(_) => panic!("the nested `Cell[W = Int64]` is a TYPE with a stray param — must not load"),
+        Ok(_) => {
+            panic!("the nested `Cell[W = Int64]` is a TYPE with a stray param — must not load")
+        }
     };
     assert!(
-        errs.iter().any(|e| e.contains("no type parameter named 'W'")),
+        errs.iter()
+            .any(|e| e.contains("no type parameter named 'W'")),
         "expected the shared diagnostic, got {errs:?}"
     );
 }
@@ -110,7 +114,8 @@ end
         Ok(_) => panic!("a rule-body call-site type-argument list is dropped — it must not load"),
     };
     assert!(
-        errs.iter().any(|e| e.contains("call-site type arguments `pick[…](…)` are not supported here")),
+        errs.iter()
+            .any(|e| e.contains("call-site type arguments `pick[…](…)` are not supported here")),
         "expected the WI-839 not-supported-here diagnostic, got {errs:?}",
     );
     assert!(

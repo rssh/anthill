@@ -921,8 +921,6 @@ mod wi896_labeled_predicate_head_test;
 #[path = "include/wi898_equation_functor_kind_test.rs"]
 mod wi898_equation_functor_kind_test;
 
-
-
 #[path = "include/wi900_implicit_tier_agreement_test.rs"]
 mod wi900_implicit_tier_agreement_test;
 
@@ -1076,17 +1074,16 @@ mod wi997_declaration_ledger_test;
 #[path = "include/wi1000_secondary_entry_content_test.rs"]
 mod wi1000_secondary_entry_content_test;
 
-
-#[path = "include/wi1040_require_clause_dictionary_test.rs"]
-mod wi1040_require_clause_dictionary_test;
 #[path = "include/wi1036_builtin_defaulted_dispatch_test.rs"]
 mod wi1036_builtin_defaulted_dispatch_test;
+#[path = "include/wi1040_require_clause_dictionary_test.rs"]
+mod wi1040_require_clause_dictionary_test;
 #[path = "include/wi1042_defaulted_gate_test.rs"]
 mod wi1042_defaulted_gate_test;
-#[path = "include/wi1045_one_dictionary_representation_test.rs"]
-mod wi1045_one_dictionary_representation_test;
 #[path = "include/wi1043_bodyless_rule_body_test.rs"]
 mod wi1043_bodyless_rule_body_test;
+#[path = "include/wi1045_one_dictionary_representation_test.rs"]
+mod wi1045_one_dictionary_representation_test;
 
 #[path = "include/wi1037_requires_impl_rule_body_test.rs"]
 mod wi1037_requires_impl_rule_body_test;

@@ -5,11 +5,10 @@
 /// implementations separately.
 ///
 /// See `docs/rust-forward-mapping.md` for the full mapping specification.
-
 use std::collections::{HashMap, HashSet};
 
-use crate::intern::{SymbolTable, Symbol};
-use crate::kb::term::{Term, Literal, TermId};
+use crate::intern::{Symbol, SymbolTable};
+use crate::kb::term::{Literal, Term, TermId};
 use crate::parse::ir::*;
 
 // ── Codegen error ───────────────────────────────────────────────
@@ -130,7 +129,8 @@ pub fn generate_rust_with_config(
     global_trait_sorts: &HashSet<String>,
     config: &CodegenConfig,
 ) -> Result<String, Vec<CodegenError>> {
-    let mut cg = RustCodegen::with_context(&parsed.symbols, &parsed.terms, global_trait_sorts, config);
+    let mut cg =
+        RustCodegen::with_context(&parsed.symbols, &parsed.terms, global_trait_sorts, config);
     // WI-853: a file's TOP-LEVEL imports emit their `use` lines here, where a
     // namespace body's are emitted by `emit_namespace`. Both spell one anthill
     // `import` as one Rust `use`; dropping the top-level ones would generate a
@@ -170,8 +170,10 @@ fn collect_trait_sorts_from_items(
     for item in items {
         match item {
             Item::SortWithBody(s) => {
-                let has_ops = s.items.iter().any(|i| matches!(i,
-                    Item::Operation(_) | Item::OperationBlock(_)));
+                let has_ops = s
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, Item::Operation(_) | Item::OperationBlock(_)));
                 let has_entities = s.items.iter().any(|i| matches!(i, Item::Entity(_)));
                 if !has_entities && has_ops {
                     traits.insert(symbols.local_name(s.name.last()).to_owned());
@@ -216,7 +218,8 @@ impl<'a> SortInfo<'a> {
         for item in items {
             match item {
                 Item::AbstractSort(s) => {
-                    info.type_params.push(symbols.local_name(s.name.last()).to_owned());
+                    info.type_params
+                        .push(symbols.local_name(s.name.last()).to_owned());
                 }
                 Item::RequiresDecl(r) => {
                     // `effects E = ?` desugars to `requires
@@ -335,10 +338,26 @@ impl<'a> RustCodegen<'a> {
     }
 
     /// Find a binding by named param, falling back to positional index.
-    fn find_binding<'b>(&self, bindings: &'b [SortBinding], param_name: &str, positional_index: usize) -> Option<&'b SortBinding> {
-        bindings.iter()
-            .find(|b| b.param.as_ref().map(|p| self.symbols.local_name(p.last()) == param_name).unwrap_or(false))
-            .or_else(|| bindings.iter().filter(|b| b.param.is_none()).nth(positional_index))
+    fn find_binding<'b>(
+        &self,
+        bindings: &'b [SortBinding],
+        param_name: &str,
+        positional_index: usize,
+    ) -> Option<&'b SortBinding> {
+        bindings
+            .iter()
+            .find(|b| {
+                b.param
+                    .as_ref()
+                    .map(|p| self.symbols.local_name(p.last()) == param_name)
+                    .unwrap_or(false)
+            })
+            .or_else(|| {
+                bindings
+                    .iter()
+                    .filter(|b| b.param.is_none())
+                    .nth(positional_index)
+            })
     }
 
     fn local_name_of(&self, sym: Symbol) -> String {
@@ -349,7 +368,11 @@ impl<'a> RustCodegen<'a> {
         match vis {
             Some(Visibility::Public) => "pub ",
             _ => {
-                if self.config.default_pub { "pub " } else { "" }
+                if self.config.default_pub {
+                    "pub "
+                } else {
+                    ""
+                }
             }
         }
     }
@@ -385,7 +408,12 @@ impl<'a> RustCodegen<'a> {
     /// `boxed_trait_objects` it becomes `Box<dyn <SortName>>`. A non-trait
     /// enclosing sort (enum impl method) keeps `Self` (delegates to
     /// [`Self::wrap_trait_return`], which leaves non-trait names untouched).
-    fn wrap_trait_return_in_sort(&self, ret: &str, sort_name: &str, type_params: &[String]) -> String {
+    fn wrap_trait_return_in_sort(
+        &self,
+        ret: &str,
+        sort_name: &str,
+        type_params: &[String],
+    ) -> String {
         if self.config.boxed_trait_objects && self.trait_sorts.contains(sort_name) {
             // The enclosing trait sort renders as `Self` (see `type_to_rust_in_sort`).
             // A `Self` return — bare OR nested (e.g. `Option<Pair<T, Self>>` from
@@ -460,7 +488,12 @@ impl<'a> RustCodegen<'a> {
     /// (WI-532) map to their `f64` expressions (keeping `float.anthill` Rust
     /// codegen working and matching cpp-gen). Anything else is a loud codegen
     /// error — dropped and diagnosed, never a silent skip, per the repo rule.
-    fn lower_const_value(&mut self, name: &str, rust_ty: &str, value: Option<TermId>) -> Option<String> {
+    fn lower_const_value(
+        &mut self,
+        name: &str,
+        rust_ty: &str,
+        value: Option<TermId>,
+    ) -> Option<String> {
         let Some(tid) = value else {
             if rust_ty == "f64" {
                 if let Some(expr) = host_float_const_rust(name) {
@@ -495,7 +528,11 @@ impl<'a> RustCodegen<'a> {
     /// constructible from a string literal), whereas `&'static str` is.
     fn const_rust_type(&self, ty: &TypeExpr) -> String {
         let t = self.type_to_rust(ty);
-        if t == "String" { "&str".to_string() } else { t }
+        if t == "String" {
+            "&str".to_string()
+        } else {
+            t
+        }
     }
 
     /// Emit a term-level const as `[pub] const NAME: T = value;`. A trait
@@ -505,7 +542,11 @@ impl<'a> RustCodegen<'a> {
         let name = self.resolve(&c.name);
         let ty = self.const_rust_type(&c.ty);
         if let Some(val) = self.lower_const_value(&name, &ty, c.value) {
-            let vis = if in_trait { "" } else { self.visibility_prefix(c.visibility) };
+            let vis = if in_trait {
+                ""
+            } else {
+                self.visibility_prefix(c.visibility)
+            };
             self.line(&format!("{vis}const {name}: {ty} = {val};"));
         }
     }
@@ -519,7 +560,9 @@ impl<'a> RustCodegen<'a> {
     /// flagged; the reflect subset has none.)
     fn has_trait_object_field<'b>(&self, tys: impl Iterator<Item = &'b TypeExpr>) -> bool {
         self.config.boxed_trait_objects
-            && tys.into_iter().any(|ty| self.is_trait_type(&self.type_expr_short_name(ty)))
+            && tys
+                .into_iter()
+                .any(|ty| self.is_trait_type(&self.type_expr_short_name(ty)))
     }
 
     // ── Type expression mapping ──────────────────────────────────
@@ -532,9 +575,8 @@ impl<'a> RustCodegen<'a> {
             }
             TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Tuple(fields) => {
-                let parts: Vec<String> = fields.iter()
-                    .map(|(_, ty)| self.type_to_rust(ty))
-                    .collect();
+                let parts: Vec<String> =
+                    fields.iter().map(|(_, ty)| self.type_to_rust(ty)).collect();
                 // A 1-tuple needs the trailing comma: Rust reads `(T)` as plain `T`,
                 // which silently DROPS the tuple. Reachable since WI-766 made a
                 // one-component named tuple type writable (`-> (a: Int64)`).
@@ -548,19 +590,22 @@ impl<'a> RustCodegen<'a> {
                 let n = self.resolve(name);
                 match n.as_str() {
                     "List" => {
-                        let inner = self.find_binding(bindings, "T", 0)
+                        let inner = self
+                            .find_binding(bindings, "T", 0)
                             .map(|b| self.type_to_rust(&b.bound))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Vec<{inner}>")
                     }
                     "Option" => {
-                        let inner = self.find_binding(bindings, "T", 0)
+                        let inner = self
+                            .find_binding(bindings, "T", 0)
                             .map(|b| self.type_to_rust(&b.bound))
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
                     }
                     _ => {
-                        let args: Vec<String> = bindings.iter()
+                        let args: Vec<String> = bindings
+                            .iter()
                             .map(|b| self.type_to_rust(&b.bound))
                             .collect();
                         let mapped = map_primitive_type(&n);
@@ -568,10 +613,13 @@ impl<'a> RustCodegen<'a> {
                     }
                 }
             }
-            TypeExpr::Arrow { params, return_type, .. } => {
-                let param_types: Vec<String> = params.iter()
-                    .map(|(_, p)| self.type_to_rust(p))
-                    .collect();
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                ..
+            } => {
+                let param_types: Vec<String> =
+                    params.iter().map(|(_, p)| self.type_to_rust(p)).collect();
                 let ret = self.type_to_rust(return_type);
                 format!("fn({}) -> {ret}", param_types.join(", "))
             }
@@ -594,7 +642,13 @@ impl<'a> RustCodegen<'a> {
 
     /// Map a type, but if the type name matches the enclosing sort name,
     /// replace with `Self`.
-    fn type_to_rust_in_sort(&self, ty: &TypeExpr, sort_name: &str, type_params: &[String], collapse_type_params: bool) -> String {
+    fn type_to_rust_in_sort(
+        &self,
+        ty: &TypeExpr,
+        sort_name: &str,
+        type_params: &[String],
+        collapse_type_params: bool,
+    ) -> String {
         match ty {
             TypeExpr::Simple(name) => {
                 let n = self.resolve(name);
@@ -608,8 +662,11 @@ impl<'a> RustCodegen<'a> {
             }
             TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Tuple(fields) => {
-                let parts: Vec<String> = fields.iter()
-                    .map(|(_, ty)| self.type_to_rust_in_sort(ty, sort_name, type_params, collapse_type_params))
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(_, ty)| {
+                        self.type_to_rust_in_sort(ty, sort_name, type_params, collapse_type_params)
+                    })
                     .collect();
                 // A 1-tuple needs the trailing comma: Rust reads `(T)` as plain `T`,
                 // which silently DROPS the tuple. Reachable since WI-766 made a
@@ -627,31 +684,67 @@ impl<'a> RustCodegen<'a> {
                 }
                 match n.as_str() {
                     "List" => {
-                        let inner = self.find_binding(bindings, "T", 0)
-                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
+                        let inner = self
+                            .find_binding(bindings, "T", 0)
+                            .map(|b| {
+                                self.type_to_rust_in_sort(
+                                    &b.bound,
+                                    sort_name,
+                                    type_params,
+                                    collapse_type_params,
+                                )
+                            })
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Vec<{inner}>")
                     }
                     "Option" => {
-                        let inner = self.find_binding(bindings, "T", 0)
-                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
+                        let inner = self
+                            .find_binding(bindings, "T", 0)
+                            .map(|b| {
+                                self.type_to_rust_in_sort(
+                                    &b.bound,
+                                    sort_name,
+                                    type_params,
+                                    collapse_type_params,
+                                )
+                            })
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
                     }
                     _ => {
-                        let args: Vec<String> = bindings.iter()
-                            .map(|b| self.type_to_rust_in_sort(&b.bound, sort_name, type_params, collapse_type_params))
+                        let args: Vec<String> = bindings
+                            .iter()
+                            .map(|b| {
+                                self.type_to_rust_in_sort(
+                                    &b.bound,
+                                    sort_name,
+                                    type_params,
+                                    collapse_type_params,
+                                )
+                            })
                             .collect();
                         let mapped = map_primitive_type(&n);
                         format!("{mapped}<{}>", args.join(", "))
                     }
                 }
             }
-            TypeExpr::Arrow { params, return_type, .. } => {
-                let param_types: Vec<String> = params.iter()
-                    .map(|(_, p)| self.type_to_rust_in_sort(p, sort_name, type_params, collapse_type_params))
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                ..
+            } => {
+                let param_types: Vec<String> = params
+                    .iter()
+                    .map(|(_, p)| {
+                        self.type_to_rust_in_sort(p, sort_name, type_params, collapse_type_params)
+                    })
                     .collect();
-                let ret = self.type_to_rust_in_sort(return_type, sort_name, type_params, collapse_type_params);
+                let ret = self.type_to_rust_in_sort(
+                    return_type,
+                    sort_name,
+                    type_params,
+                    collapse_type_params,
+                );
                 format!("fn({}) -> {ret}", param_types.join(", "))
             }
             TypeExpr::Denoted(_) => "()".to_owned(),
@@ -677,7 +770,11 @@ impl<'a> RustCodegen<'a> {
                 self.resolve(n) == name
                     || bindings.iter().any(|b| self.type_mentions(&b.bound, name))
             }
-            TypeExpr::Arrow { params, return_type, .. } => {
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                ..
+            } => {
                 params.iter().any(|(_, p)| self.type_mentions(p, name))
                     || self.type_mentions(return_type, name)
             }
@@ -696,24 +793,32 @@ impl<'a> RustCodegen<'a> {
         for item in items {
             match item {
                 Item::Namespace(n) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_namespace(n);
                     last_entity = None;
                 }
                 Item::SortWithBody(s) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_sort(s);
                     last_entity = None;
                 }
                 Item::Entity(e) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_standalone_entity(e, _enclosing_ns);
                     last_entity = Some(self.resolve(&e.name));
                 }
                 Item::Operation(o) => {
                     let op_name = self.resolve(&o.name);
                     self.errors.push(CodegenError {
-                        message: format!("operation `{op_name}` has no enclosing namespace for module trait"),
+                        message: format!(
+                            "operation `{op_name}` has no enclosing namespace for module trait"
+                        ),
                     });
                 }
                 Item::Fact(f) => {
@@ -726,7 +831,9 @@ impl<'a> RustCodegen<'a> {
                     // Collected later for test module
                 }
                 Item::Constraint(c) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_constraint(c);
                 }
                 Item::AbstractSort(_) => {
@@ -734,13 +841,18 @@ impl<'a> RustCodegen<'a> {
                 }
                 // WI-533: a free-standing const → `pub const NAME: T = value;`.
                 Item::Const(c) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_const(c, false);
                     last_entity = None;
                 }
-                Item::OperationBlock(_) | Item::RequiresDecl(_)
+                Item::OperationBlock(_)
+                | Item::RequiresDecl(_)
                 | Item::Describe(_)
-                | Item::Proof(_) | Item::ProvidesClause(_) | Item::ProvidesBlock(_) => {}
+                | Item::Proof(_)
+                | Item::ProvidesClause(_)
+                | Item::ProvidesBlock(_) => {}
             }
             first = false;
         }
@@ -781,15 +893,13 @@ impl<'a> RustCodegen<'a> {
         // Map: sort_name → Vec<&Operation> for namespace-level ops
         let mut sort_ops: std::collections::HashMap<String, Vec<&Operation>> =
             std::collections::HashMap::new();
-        let mut consumed_ops: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
+        let mut consumed_ops: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         // Map: sort_name → Vec<String> for namespace-level facts as supertraits
         // Associate each fact with the most recent preceding sort
         let mut sort_supertraits: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        let mut consumed_facts: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
+        let mut consumed_facts: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         // Track the most recently seen sort name for fact association
         let mut current_sort: Option<String> = None;
@@ -818,9 +928,9 @@ impl<'a> RustCodegen<'a> {
                 Item::Fact(f) => {
                     // If preceded by a sort, associate as supertrait
                     if let Some(ref sname) = current_sort {
-                        if let Some(trait_name) = extract_fact_sort_name(
-                            self.symbols, self.terms, f
-                        ) {
+                        if let Some(trait_name) =
+                            extract_fact_sort_name(self.symbols, self.terms, f)
+                        {
                             // Only associate if the fact name is a known sort
                             // (not an entity-level fact like `fact BulkStore`)
                             if sort_names.contains(&trait_name) {
@@ -862,7 +972,9 @@ impl<'a> RustCodegen<'a> {
             }
             match item {
                 Item::SortWithBody(s) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     let sname = self.resolve(&s.name);
                     let extra_ops = sort_ops.remove(&sname).unwrap_or_default();
                     let extra_supers = sort_supertraits.remove(&sname).unwrap_or_default();
@@ -875,18 +987,24 @@ impl<'a> RustCodegen<'a> {
                     let extra_supers = sort_supertraits.remove(&sname).unwrap_or_default();
                     if let Some(host_type) = self.config.carrier_bindings.get(&sname) {
                         // Carrier binding: emit type alias instead of struct/trait
-                        if !first { self.blank(); }
+                        if !first {
+                            self.blank();
+                        }
                         let vis = self.visibility_prefix(s.visibility);
                         self.line(&format!("{vis}type {sname} = {host_type};"));
                     } else if let Some(ops) = extra_ops {
-                        if !first { self.blank(); }
+                        if !first {
+                            self.blank();
+                        }
                         self.emit_abstract_sort_as_trait(s, &ops, &extra_supers);
                     } else {
                         // No operations → emit as unit struct. Derive like other
                         // generated types (WI-540) so an opaque sort (e.g.
                         // `NodeOccurrence`) can sit in a `derive(Clone, Debug)`
                         // struct field. (No-op when `derives` is empty.)
-                        if !first { self.blank(); }
+                        if !first {
+                            self.blank();
+                        }
                         self.emit_derive_attr();
                         let vis = self.visibility_prefix(s.visibility);
                         self.line(&format!("{vis}struct {sname};"));
@@ -894,12 +1012,16 @@ impl<'a> RustCodegen<'a> {
                     last_entity = None;
                 }
                 Item::Namespace(n) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_namespace(n);
                     last_entity = None;
                 }
                 Item::Entity(e) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_standalone_entity(e, Some(ns));
                     last_entity = Some(self.resolve(&e.name));
                 }
@@ -914,11 +1036,15 @@ impl<'a> RustCodegen<'a> {
                     // Collected later for test module
                 }
                 Item::Constraint(c) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_constraint(c);
                 }
                 Item::Const(c) => {
-                    if !first { self.blank(); }
+                    if !first {
+                        self.blank();
+                    }
                     self.emit_const(c, false);
                 }
                 _ => {}
@@ -948,25 +1074,40 @@ impl<'a> RustCodegen<'a> {
     }
 
     fn collect_sort_names(&self, items: &[Item]) -> Vec<String> {
-        items.iter().filter_map(|item| {
-            match item {
+        items
+            .iter()
+            .filter_map(|item| match item {
                 Item::SortWithBody(s) => Some(self.resolve(&s.name)),
                 Item::AbstractSort(s) => Some(self.resolve(&s.name)),
                 _ => None,
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     fn collect_body_sort_names(&self, items: &[Item]) -> Vec<String> {
-        items.iter().filter_map(|item| {
-            if let Item::SortWithBody(s) = item { Some(self.resolve(&s.name)) } else { None }
-        }).collect()
+        items
+            .iter()
+            .filter_map(|item| {
+                if let Item::SortWithBody(s) = item {
+                    Some(self.resolve(&s.name))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn collect_entity_names(&self, items: &[Item]) -> Vec<String> {
-        items.iter().filter_map(|item| {
-            if let Item::Entity(e) = item { Some(self.resolve(&e.name)) } else { None }
-        }).collect()
+        items
+            .iter()
+            .filter_map(|item| {
+                if let Item::Entity(e) = item {
+                    Some(self.resolve(&e.name))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Emit an abstract sort (no body) as a trait with aggregated namespace-level operations.
@@ -991,7 +1132,9 @@ impl<'a> RustCodegen<'a> {
 
         let mut first_op = true;
         for op in ops {
-            if !first_op { self.blank(); }
+            if !first_op {
+                self.blank();
+            }
             self.emit_trait_method(op, &sort_name, &[], false);
             first_op = false;
         }
@@ -1045,7 +1188,10 @@ impl<'a> RustCodegen<'a> {
         if self.config.suppress_imports {
             return;
         }
-        let mut segments: Vec<String> = imp.path.segments.iter()
+        let mut segments: Vec<String> = imp
+            .path
+            .segments
+            .iter()
             .map(|s| to_snake_case(&self.local_name_of(*s)))
             .collect();
 
@@ -1067,9 +1213,7 @@ impl<'a> RustCodegen<'a> {
             }
             ImportKind::Selective(names) => {
                 let path = segments.join("::");
-                let selected: Vec<String> = names.iter()
-                    .map(|n| self.resolve(n))
-                    .collect();
+                let selected: Vec<String> = names.iter().map(|n| self.resolve(n)).collect();
                 self.line(&format!("use {}::{{{}}};", path, selected.join(", ")));
             }
             ImportKind::Wildcard => {
@@ -1163,7 +1307,11 @@ impl<'a> RustCodegen<'a> {
             format!("<{}>", info.type_params.join(", "))
         };
 
-        if !self.has_trait_object_field(info.entities.iter().flat_map(|e| e.fields.iter().map(|f| &f.ty))) {
+        if !self.has_trait_object_field(
+            info.entities
+                .iter()
+                .flat_map(|e| e.fields.iter().map(|f| &f.ty)),
+        ) {
             self.emit_derive_attr();
         }
         self.line(&format!("{vis}enum {sort_name}{generics} {{"));
@@ -1178,9 +1326,8 @@ impl<'a> RustCodegen<'a> {
                 self.indent();
                 for field in &entity.fields {
                     let fname = to_snake_case(&self.local_name_of(field.name));
-                    let ftype = self.type_to_rust_for_enum_field(
-                        &field.ty, sort_name, &info.type_params,
-                    );
+                    let ftype =
+                        self.type_to_rust_for_enum_field(&field.ty, sort_name, &info.type_params);
                     self.line(&format!("{fname}: {ftype},"));
                 }
                 self.dedent();
@@ -1212,7 +1359,9 @@ impl<'a> RustCodegen<'a> {
             self.indent();
             let mut first_op = true;
             for op in &info.operations {
-                if !first_op { self.blank(); }
+                if !first_op {
+                    self.blank();
+                }
                 self.emit_method_signature(op, sort_name, &info.type_params, true);
                 first_op = false;
             }
@@ -1257,7 +1406,9 @@ impl<'a> RustCodegen<'a> {
             format!(": {}", info.supertraits.join(" + "))
         };
 
-        self.line(&format!("{vis}trait {sort_name}{trait_generics}{supertrait_clause} {{"));
+        self.line(&format!(
+            "{vis}trait {sort_name}{trait_generics}{supertrait_clause} {{"
+        ));
         self.indent();
 
         // WI-533: sort-body consts become trait associated consts, emitted
@@ -1272,7 +1423,9 @@ impl<'a> RustCodegen<'a> {
 
         let mut first_op = true;
         for op in &info.operations {
-            if !first_op { self.blank(); }
+            if !first_op {
+                self.blank();
+            }
             self.emit_trait_method(op, sort_name, &info.type_params, collapse_self);
             first_op = false;
         }
@@ -1338,7 +1491,9 @@ impl<'a> RustCodegen<'a> {
         // type). An effect-only param (`EffP`, used solely in `@ {EffP}` / `effects`)
         // has no Rust witness — emitting it as an unconstrained generic would break
         // call-site inference — so it is erased.
-        let method_type_params: Vec<String> = op.type_params.iter()
+        let method_type_params: Vec<String> = op
+            .type_params
+            .iter()
             .map(|tp| self.local_name_of(tp.name))
             .filter(|name| {
                 op.params.iter().any(|p| self.type_mentions(&p.ty, name))
@@ -1352,7 +1507,8 @@ impl<'a> RustCodegen<'a> {
         };
 
         // Determine self-arg
-        let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, collapse_self);
+        let (has_self, is_mut) =
+            self.check_self_arg(op, sort_name, type_params, &effects, collapse_self);
 
         let mut params_str = String::new();
 
@@ -1377,7 +1533,8 @@ impl<'a> RustCodegen<'a> {
         }
 
         // Return type
-        let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
+        let raw_ret =
+            self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
         let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name, type_params);
         let ret = wrap_return_type(&raw_ret, &effects);
 
@@ -1387,14 +1544,15 @@ impl<'a> RustCodegen<'a> {
         // bound such methods on `Self: Sized` so they are excluded from the vtable
         // and the trait stays object-safe. Gated by the flag to keep default output
         // unchanged.
-        let where_clause = if self.config.boxed_trait_objects
-            && (!has_self || !method_type_params.is_empty())
-        {
-            " where Self: Sized"
-        } else {
-            ""
-        };
-        self.line(&format!("fn {op_name}{method_generics}({params_str}) -> {ret}{where_clause};"));
+        let where_clause =
+            if self.config.boxed_trait_objects && (!has_self || !method_type_params.is_empty()) {
+                " where Self: Sized"
+            } else {
+                ""
+            };
+        self.line(&format!(
+            "fn {op_name}{method_generics}({params_str}) -> {ret}{where_clause};"
+        ));
     }
 
     fn emit_method_signature(
@@ -1404,7 +1562,11 @@ impl<'a> RustCodegen<'a> {
         type_params: &[String],
         in_impl: bool,
     ) {
-        let vis = if in_impl { self.visibility_prefix(op.visibility) } else { "" };
+        let vis = if in_impl {
+            self.visibility_prefix(op.visibility)
+        } else {
+            ""
+        };
         let op_name = to_snake_case(&self.resolve(&op.name));
         let effects = analyze_effects(&op.effects, self.symbols, type_params);
 
@@ -1458,7 +1620,9 @@ impl<'a> RustCodegen<'a> {
 
         let mut first = true;
         for op in ops {
-            if !first { self.blank(); }
+            if !first {
+                self.blank();
+            }
             self.emit_module_trait_method(op);
             first = false;
         }
@@ -1516,7 +1680,10 @@ impl<'a> RustCodegen<'a> {
 
         // Check if the first param is the target of a Modifies effect
         let first_param_name = self.local_name_of(op.params[0].name);
-        let is_mut = effects.modifies_targets.iter().any(|t| t == &first_param_name);
+        let is_mut = effects
+            .modifies_targets
+            .iter()
+            .any(|t| t == &first_param_name);
 
         (true, is_mut)
     }
@@ -1557,9 +1724,7 @@ impl<'a> RustCodegen<'a> {
     // ── Rules → test module ──────────────────────────────────────
 
     fn emit_test_module(&mut self, rules: &[&Rule]) {
-        let labeled: Vec<_> = rules.iter()
-            .filter(|r| r.label.is_some())
-            .collect();
+        let labeled: Vec<_> = rules.iter().filter(|r| r.label.is_some()).collect();
 
         if labeled.is_empty() {
             return;
@@ -1594,7 +1759,11 @@ struct EffectInfo {
     errors_type: Option<String>,
 }
 
-fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[String]) -> EffectInfo {
+fn analyze_effects(
+    effects: &[Effect],
+    symbols: &SymbolTable,
+    type_params: &[String],
+) -> EffectInfo {
     let mut info = EffectInfo {
         modifies_targets: Vec::new(),
         errors_type: None,
@@ -1655,7 +1824,9 @@ fn analyze_effects(effects: &[Effect], symbols: &SymbolTable, type_params: &[Str
             // label would (a `Error[X] :- g` still yields the `Error[X]` Result, not a
             // silent drop). Recurse on the label and merge.
             TypeExpr::EffectGuarded { label, .. } => {
-                let inner = Effect { type_expr: (**label).clone() };
+                let inner = Effect {
+                    type_expr: (**label).clone(),
+                };
                 let sub = analyze_effects(std::slice::from_ref(&inner), symbols, type_params);
                 info.modifies_targets.extend(sub.modifies_targets);
                 if info.errors_type.is_none() {
@@ -1854,11 +2025,11 @@ fn to_snake_case(s: &str) -> String {
 /// `super` / `Self`) get a trailing underscore instead.
 fn escape_rust_keyword(name: String) -> String {
     const RESERVED: &[&str] = &[
-        "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
-        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
-        "use", "where", "while", "async", "await", "abstract", "become", "box", "do", "final",
-        "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+        "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false",
+        "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+        "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+        "unsafe", "use", "where", "while", "async", "await", "abstract", "become", "box", "do",
+        "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
     ];
     match name.as_str() {
         "crate" | "self" | "super" | "Self" => format!("{name}_"),
@@ -1868,12 +2039,14 @@ fn escape_rust_keyword(name: String) -> String {
 }
 
 /// Extract a sort name from a fact term (for fact-as-supertrait pattern).
-fn extract_fact_sort_name(symbols: &SymbolTable, terms: &SimpleTermStore, fact: &Fact) -> Option<String> {
+fn extract_fact_sort_name(
+    symbols: &SymbolTable,
+    terms: &SimpleTermStore,
+    fact: &Fact,
+) -> Option<String> {
     match terms.get(fact.term) {
         Term::Ident(sym) => Some(symbols.local_name(*sym).to_owned()),
-        Term::Fn { functor, .. } => {
-            Some(symbols.local_name(*functor).to_owned())
-        }
+        Term::Fn { functor, .. } => Some(symbols.local_name(*functor).to_owned()),
         _ => None,
     }
 }
@@ -1948,7 +2121,11 @@ fn replace_word(s: &str, word: &str, replacement: &str) -> String {
         let prev_ok = before.chars().last().map_or(true, |c| !is_ident(c));
         let next_ok = after_word.chars().next().map_or(true, |c| !is_ident(c));
         out.push_str(before);
-        out.push_str(if prev_ok && next_ok { replacement } else { word });
+        out.push_str(if prev_ok && next_ok {
+            replacement
+        } else {
+            word
+        });
         rest = after_word;
     }
     out.push_str(rest);

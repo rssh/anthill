@@ -18,8 +18,8 @@
 //!   - the spec sort itself as subject (`Storage.Key`) is the `T#K`
 //!     carrier-conflation and is LOUDLY rejected.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -28,8 +28,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -176,7 +176,8 @@ fn delta_through_the_bound_wrong_return_rejected() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("String")),
         "grounded P.Key is String, rejected against -> Int64 with concrete types; got: {errs:?}",
     );
 }
@@ -247,7 +248,8 @@ fn concrete_sort_subject_wrong_return_rejected() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("String")),
         "MemStore.Key is String; got: {errs:?}",
     );
 }
@@ -269,7 +271,8 @@ fn bare_spec_subject_rejected() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("conflate distinct carriers")),
+        errs.iter()
+            .any(|e| e.contains("conflate distinct carriers")),
         "Storage.Key off the bare spec in a field is the T#K conflation — loud; got: {errs:?}",
     );
 }

@@ -63,7 +63,10 @@ fn run_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per call — reusing one after a trapped call returns a
     // bogus Internal on every later call.
     let mut interp = interp_for(src);
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -131,7 +134,10 @@ fn permuted_literal_with_uniform_types_now_conforms() {
         "(b: 10, a: 3)",
         "lambda (p, q) -> p - q",
     ));
-    assert!(errs.is_empty(), "a permuted all-Int64 literal conforms; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a permuted all-Int64 literal conforms; got: {errs:?}"
+    );
 }
 
 // ── `<:` is name-keyed at every tuple position ─────────────────
@@ -152,7 +158,10 @@ namespace test.wi788.oparg
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "a permuted argument conforms; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a permuted argument conforms; got: {errs:?}"
+    );
     assert_eq!(run_int(src, "test.wi788.oparg.drive"), 3);
 }
 
@@ -291,7 +300,13 @@ fn function_slot_checks_a_non_tuple_argument() {
 fn function_slot_admits_both_application_forms() {
     let ty = "(a: Int64, b: Int64)";
     let lam = "lambda (p, q) -> p - q";
-    let whole = fn_slot_case("test.wi788.formwhole", "Int64, Function", ty, "(a: 3, b: 10)", lam);
+    let whole = fn_slot_case(
+        "test.wi788.formwhole",
+        "Int64, Function",
+        ty,
+        "(a: 3, b: 10)",
+        lam,
+    );
     let spread = fn_slot_case("test.wi788.formspread", "Int64, Function", ty, "3, 10", lam);
     assert_eq!(run_int(&whole, "test.wi788.formwhole.drive"), -7);
     assert_eq!(run_int(&spread, "test.wi788.formspread.drive"), -7);

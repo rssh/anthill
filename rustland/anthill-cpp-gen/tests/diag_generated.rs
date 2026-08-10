@@ -21,13 +21,17 @@ fn dump_generated_profile_shape() {
         end
     "#;
     let kb = load_kb_with(source);
-    let sym = kb.try_resolve_symbol("anthill.realization.Generated").unwrap();
+    let sym = kb
+        .try_resolve_symbol("anthill.realization.Generated")
+        .unwrap();
     for rid in kb.rules_by_functor(sym) {
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             for (name, val) in named_args {
                 let n = kb.local_name_of(*name);
-                if n != "profile" && n != "description" { continue; }
+                if n != "profile" && n != "description" {
+                    continue;
+                }
                 println!("\n== {n} ==");
                 dump(&kb, *val, 2);
             }
@@ -38,10 +42,20 @@ fn dump_generated_profile_shape() {
 fn dump(kb: &anthill_core::kb::KnowledgeBase, term: anthill_core::kb::term::TermId, indent: usize) {
     let pad = " ".repeat(indent);
     match kb.get_term(term) {
-        Term::Fn { functor, named_args, pos_args } => {
+        Term::Fn {
+            functor,
+            named_args,
+            pos_args,
+        } => {
             let qn = kb.qualified_name_of(*functor);
-            println!("{pad}Fn {qn:?} pos={} named={}", pos_args.len(), named_args.len());
-            for p in pos_args { dump(kb, *p, indent + 4); }
+            println!(
+                "{pad}Fn {qn:?} pos={} named={}",
+                pos_args.len(),
+                named_args.len()
+            );
+            for p in pos_args {
+                dump(kb, *p, indent + 4);
+            }
             for (n, v) in named_args {
                 println!("{pad}  {} =", kb.local_name_of(*n));
                 dump(kb, *v, indent + 4);

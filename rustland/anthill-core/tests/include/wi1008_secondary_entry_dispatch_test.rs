@@ -76,8 +76,8 @@
 //!     four fixtures.
 
 use anthill_core::eval::{self, Interpreter, Value};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::Term;
+use anthill_core::kb::KnowledgeBase;
 
 /// One spec with one operation, shared by every fixture.
 const SPEC: &str = r#"
@@ -213,13 +213,19 @@ fn free_standing_entity_fixture() -> String {
 /// THE CONTROL, and fixture (1) unchanged. Passes with the fix backed out.
 #[test]
 fn op_in_sort_body_dispatches() {
-    assert_eq!(eval_int(&sort_body_fixture(), "test.wi1008.driveGeneric"), Ok(ANSWER));
+    assert_eq!(
+        eval_int(&sort_body_fixture(), "test.wi1008.driveGeneric"),
+        Ok(ANSWER)
+    );
 }
 
 /// THE CAPABILITY. Fails `OperationBodyMissing { name: "…Show.show" }` without the fix.
 #[test]
 fn op_in_secondary_entry_dispatches() {
-    assert_eq!(eval_int(&secondary_entry_fixture(), "test.wi1008.driveGeneric"), Ok(ANSWER));
+    assert_eq!(
+        eval_int(&secondary_entry_fixture(), "test.wi1008.driveGeneric"),
+        Ok(ANSWER)
+    );
 }
 
 /// The CLAIM moved inside the entry as well — the ticket's fixture (3). It fails and
@@ -227,13 +233,19 @@ fn op_in_secondary_entry_dispatches() {
 /// not the discriminator.
 #[test]
 fn claim_in_secondary_entry_dispatches() {
-    assert_eq!(eval_int(&claim_in_entry_fixture(), "test.wi1008.driveGeneric"), Ok(ANSWER));
+    assert_eq!(
+        eval_int(&claim_in_entry_fixture(), "test.wi1008.driveGeneric"),
+        Ok(ANSWER)
+    );
 }
 
 /// The §6.3 carrier — WI-978's shape, whose `SortInfo` comes from the other emitter.
 #[test]
 fn free_standing_entity_carrier_dispatches() {
-    assert_eq!(eval_int(&free_standing_entity_fixture(), "test.wi1008.driveGeneric"), Ok(ANSWER));
+    assert_eq!(
+        eval_int(&free_standing_entity_fixture(), "test.wi1008.driveGeneric"),
+        Ok(ANSWER)
+    );
 }
 
 /// 059: "'Main' and 'secondary' name roles, not order" — a secondary entry may be
@@ -270,17 +282,23 @@ end
     // cannot say whether the rest agree, which is exactly what this test is for.
     let rows: Vec<(&str, Vec<&str>)> = vec![
         ("entry before main, same file", vec![entry_first.as_str()]),
-        ("two files, main listed first", vec![main_file.as_str(), entry_file.as_str()]),
-        ("two files, entry listed first", vec![entry_file.as_str(), main_file.as_str()]),
+        (
+            "two files, main listed first",
+            vec![main_file.as_str(), entry_file.as_str()],
+        ),
+        (
+            "two files, entry listed first",
+            vec![entry_file.as_str(), main_file.as_str()],
+        ),
     ];
     let bad: Vec<String> = rows
         .into_iter()
-        .filter_map(|(order, files)| {
-            match eval_int_files(&files, "test.wi1008.driveGeneric") {
+        .filter_map(
+            |(order, files)| match eval_int_files(&files, "test.wi1008.driveGeneric") {
                 Ok(ANSWER) => None,
                 other => Some(format!("{order}: {other:?}")),
-            }
-        })
+            },
+        )
         .collect();
     assert!(
         bad.is_empty(),
@@ -292,13 +310,19 @@ end
 
 /// The op symbols `SortInfo(name: sort).operations` lists, by qualified name.
 fn sort_info_operations(kb: &KnowledgeBase, sort_qn: &str) -> Vec<String> {
-    let sort_sym = kb.try_resolve_symbol(sort_qn).unwrap_or_else(|| panic!("no sort {sort_qn}"));
-    let si = kb.try_resolve_symbol("anthill.reflect.SortInfo").expect("SortInfo");
+    let sort_sym = kb
+        .try_resolve_symbol(sort_qn)
+        .unwrap_or_else(|| panic!("no sort {sort_qn}"));
+    let si = kb
+        .try_resolve_symbol("anthill.reflect.SortInfo")
+        .expect("SortInfo");
     for rid in kb.rules_by_functor(si) {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
         // `get_named_arg` is the crate's own field reader (`kb::typing`); `head_sym` has
         // no public equivalent — `KnowledgeBase::head_functor` is `pub(crate)`.
         let field = |n| anthill_core::kb::typing::get_named_arg(kb, &named, n);
@@ -310,7 +334,9 @@ fn sort_info_operations(kb: &KnowledgeBase, sort_qn: &str) -> Vec<String> {
         if field("name").and_then(head_sym) != Some(sort_sym) {
             continue;
         }
-        let Some(ops) = field("operations") else { continue };
+        let Some(ops) = field("operations") else {
+            continue;
+        };
         return anthill_core::kb::typing::list_to_vec(kb, ops)
             .into_iter()
             .filter_map(head_sym)
@@ -340,7 +366,9 @@ fn sort_info_lists_the_secondary_entrys_operation() {
 
     let rec = kb.try_resolve_symbol("test.wi1008.Rec").expect("Rec");
     let show = kb.intern("show");
-    let target = kb.sort_ops_lookup(rec, show).map(|s| kb.qualified_name_of(s).to_string());
+    let target = kb
+        .sort_ops_lookup(rec, show)
+        .map(|s| kb.qualified_name_of(s).to_string());
     assert_eq!(
         target.as_deref(),
         Some("test.wi1008.Rec.show"),
@@ -390,9 +418,14 @@ end
 #[test]
 fn rerunning_the_pass_rewrites_nothing() {
     let mut kb = crate::common::load_kb_with(&secondary_entry_fixture());
-    let si = kb.try_resolve_symbol("anthill.reflect.SortInfo").expect("SortInfo");
+    let si = kb
+        .try_resolve_symbol("anthill.reflect.SortInfo")
+        .expect("SortInfo");
     let snapshot = |kb: &KnowledgeBase| -> Vec<(anthill_core::kb::RuleId, _)> {
-        kb.rules_by_functor(si).iter().map(|rid| (*rid, kb.rule_head(*rid))).collect()
+        kb.rules_by_functor(si)
+            .iter()
+            .map(|rid| (*rid, kb.rule_head(*rid)))
+            .collect()
     };
 
     let before = snapshot(&kb);

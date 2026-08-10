@@ -38,8 +38,8 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::op_info;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
 use anthill_core::kb::term_view::{TermView, ViewHead};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::ClauseKind;
+use anthill_core::kb::KnowledgeBase;
 
 // ── Leaf helpers ────────────────────────────────────────────────
 
@@ -90,14 +90,22 @@ pub(crate) fn collect_list_terms(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Te
     let mut current = list_tid;
     loop {
         match kb.get_term(current) {
-            CoreTerm::Fn { functor, named_args, .. } => {
+            CoreTerm::Fn {
+                functor,
+                named_args,
+                ..
+            } => {
                 let name = kb.local_name_of(*functor);
                 if name == "nil" {
                     break;
                 }
                 if name == "cons" {
-                    let head = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "head");
-                    let tail = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "tail");
+                    let head = named_args
+                        .iter()
+                        .find(|(s, _)| kb.local_name_of(*s) == "head");
+                    let tail = named_args
+                        .iter()
+                        .find(|(s, _)| kb.local_name_of(*s) == "tail");
                     if let Some(&(_, h)) = head {
                         results.push(h);
                     }
@@ -121,7 +129,11 @@ pub(crate) fn collect_list_terms(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Te
 pub(crate) fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, TermId)> {
     head.named_keys(kb)
         .into_iter()
-        .filter_map(|k| head.named_arg(kb, k).and_then(|i| i.as_term_id()).map(|t| (k, t)))
+        .filter_map(|k| {
+            head.named_arg(kb, k)
+                .and_then(|i| i.as_term_id())
+                .map(|t| (k, t))
+        })
         .collect()
 }
 
@@ -144,14 +156,23 @@ fn facts_by_functor(kb: &KnowledgeBase, qualified_functor: &str, reader: &str) -
 /// Collect the names of every `MemberInfo` of a given `kind` (`Constructor`,
 /// `Operation`, …) whose parent is the resolved sort `parent_sym` (WI-632:
 /// matched by functor symbol, not by display-name string).
-pub(crate) fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -> Vec<String> {
+pub(crate) fn members_of_kind(
+    kb: &mut KnowledgeBase,
+    parent_sym: Symbol,
+    kind: &str,
+) -> Vec<String> {
     let name_field = kb.intern("name");
     let kind_field = kb.intern("kind");
     let parent_field = kb.intern("parent");
     let mut results = vec![];
     for head in facts_by_functor(kb, "anthill.reflect.MemberInfo", "MemberInfo") {
         let named = term_named_args(kb, &head);
-        let field = |key| named.iter().find(|(name, _)| *name == key).map(|(_, value)| *value);
+        let field = |key| {
+            named
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| *value)
+        };
         let (Some(name), Some(member_kind), Some(parent)) =
             (field(name_field), field(kind_field), field(parent_field))
         else {
@@ -220,7 +241,11 @@ pub(crate) fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -
                 continue;
             }
         }
-        let list = |key: Symbol| field(key).map(|t| collect_list_terms(kb, t)).unwrap_or_default();
+        let list = |key: Symbol| {
+            field(key)
+                .map(|t| collect_list_terms(kb, t))
+                .unwrap_or_default()
+        };
         out.push(SortRecord {
             name,
             definition,
@@ -316,10 +341,17 @@ pub(crate) fn read_descriptions(
     let mut out = Vec::new();
     for head in facts_by_functor(kb, "anthill.reflect.DescriptionInfo", "DescriptionInfo") {
         let named = term_named_args(kb, &head);
-        let field = |key| named.iter().find(|(name, _)| *name == key).map(|(_, value)| *value);
-        let (Some(record_target), Some(content), Some(index_term)) =
-            (field(target_field), field(content_field), field(index_field))
-        else {
+        let field = |key| {
+            named
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| *value)
+        };
+        let (Some(record_target), Some(content), Some(index_term)) = (
+            field(target_field),
+            field(content_field),
+            field(index_field),
+        ) else {
             continue;
         };
         let index = match kb.get_term(index_term) {
@@ -391,8 +423,12 @@ pub(crate) trait ReifyBuilder {
     fn on_literal(&mut self, kb: &mut KnowledgeBase, lit: Literal) -> Self::Repr;
     fn on_var(&mut self, kb: &mut KnowledgeBase, name: String) -> Self::Repr;
     fn on_ref(&mut self, kb: &mut KnowledgeBase, name: Symbol) -> Self::Repr;
-    fn on_fn(&mut self, kb: &mut KnowledgeBase, functor: Symbol, args: Vec<Self::Repr>)
-        -> Self::Repr;
+    fn on_fn(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        functor: Symbol,
+        args: Vec<Self::Repr>,
+    ) -> Self::Repr;
 }
 
 /// Walk any [`TermView`] carrier and reify it via `builder`. The single reifier
@@ -426,7 +462,11 @@ pub(crate) fn reify_walk<V: TermView, B: ReifyBuilder>(
             let bottom = kb.intern("⊥");
             builder.on_ref(kb, bottom)
         }
-        ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            named_arity,
+        } => {
             let named_keys = view.named_keys(kb);
             let mut children = Vec::with_capacity(pos_arity + named_arity);
             for i in 0..pos_arity {

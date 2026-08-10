@@ -8,7 +8,10 @@ use std::process::Command;
 const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 
 fn run(args: &[&str]) -> (String, bool) {
-    let out = Command::new(BIN).args(args).output().expect("run anthill-todo");
+    let out = Command::new(BIN)
+        .args(args)
+        .output()
+        .expect("run anthill-todo");
     (
         String::from_utf8_lossy(&out.stdout).trim().to_string(),
         out.status.success(),
@@ -19,7 +22,10 @@ fn run(args: &[&str]) -> (String, bool) {
 fn version_flag_prints_nonempty_stamp() {
     let (stdout, ok) = run(&["--version"]);
     assert!(ok, "--version must exit 0");
-    assert!(!stdout.is_empty(), "--version must print a non-empty string");
+    assert!(
+        !stdout.is_empty(),
+        "--version must print a non-empty string"
+    );
     assert!(
         stdout.starts_with("anthill-todo "),
         "version line must name the binary: {stdout}"

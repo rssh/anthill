@@ -1,3 +1,5 @@
+use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 /// Integration tests for Ring/Polynom testcase.
 ///
 /// Verifies:
@@ -5,11 +7,7 @@
 /// - Polynom sort with `requires Ring[R]` (positional binding)
 /// - Arrow types `(R) -> R` and `(R, R) -> R` in operation params
 /// - All files parse and load into KB without errors
-
-
 use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
 
 /// Load stdlib + ring-polynom testcase into a fresh KB.
 fn load_ring_polynom_kb() -> KnowledgeBase {
@@ -22,12 +20,12 @@ fn load_ring_polynom_kb() -> KnowledgeBase {
     files.push(ring_path);
     files.push(polynom_path);
 
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
 
@@ -49,7 +47,10 @@ fn ring_polynom_loads_without_errors() {
     // Both Ring and Polynom should be resolvable
     let ring_term = kb.resolve_qualified_name_term("Ring");
     let polynom_term = kb.resolve_qualified_name_term("Polynom");
-    assert_ne!(ring_term, polynom_term, "Ring and Polynom should be distinct sorts");
+    assert_ne!(
+        ring_term, polynom_term,
+        "Ring and Polynom should be distinct sorts"
+    );
 }
 
 #[test]
@@ -69,8 +70,13 @@ fn polynom_has_arrow_type_operations() {
     let mut kb = load_ring_polynom_kb();
 
     // Polynom operations should be resolvable, including those with arrow type params
-    let ops = ["Polynom.eval", "Polynom.map_coeffs", "Polynom.zip_with",
-               "Polynom.add", "Polynom.scale"];
+    let ops = [
+        "Polynom.eval",
+        "Polynom.map_coeffs",
+        "Polynom.zip_with",
+        "Polynom.add",
+        "Polynom.scale",
+    ];
     for op_name in &ops {
         let op_term = kb.resolve_qualified_name_term(op_name);
         let _ = op_term; // verify it doesn't panic
@@ -93,11 +99,12 @@ fn polynom_has_requires_ring() {
     let has_polynom_req = results.iter().any(|&fid| {
         let tid = kb.fact_term(fid);
         match kb.get_term(tid) {
-            Term::Fn { named_args, .. } => {
-                named_args.iter().any(|(_, val)| *val == polynom_term)
-            }
+            Term::Fn { named_args, .. } => named_args.iter().any(|(_, val)| *val == polynom_term),
             _ => false,
         }
     });
-    assert!(has_polynom_req, "Polynom should have a SortRequiresInfo fact");
+    assert!(
+        has_polynom_req,
+        "Polynom should have a SortRequiresInfo fact"
+    );
 }

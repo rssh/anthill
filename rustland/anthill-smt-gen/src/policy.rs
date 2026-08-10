@@ -170,8 +170,7 @@ pub fn render_cited_lemma_under_policy(
 ) -> Result<Vec<String>, SmtGenError> {
     // A cite is cited — that IS the default, stated rather than
     // rediscovered from a set membership that could only be true.
-    let policy =
-        policy_for_with_default(kb, cited, backend, PredicatePolicy::LiftedAxiom)?;
+    let policy = policy_for_with_default(kb, cited, backend, PredicatePolicy::LiftedAxiom)?;
     match policy {
         PredicatePolicy::LiftedAxiom => lift_rule_to_implication_clause(kb, cited),
         PredicatePolicy::Inline if consumer_is_abstract => Err(SmtGenError::new(format!(
@@ -212,9 +211,8 @@ fn lookup_explicit_policy(
     predicate: &str,
     backend: &str,
 ) -> Result<Option<PredicatePolicy>, SmtGenError> {
-    let Some(policy_sym) = kb.try_resolve_symbol(
-        "anthill.realization.policy.TranslationPolicy"
-    ) else {
+    let Some(policy_sym) = kb.try_resolve_symbol("anthill.realization.policy.TranslationPolicy")
+    else {
         return Ok(None);
     };
     let candidates = kb
@@ -242,14 +240,19 @@ fn lookup_explicit_policy(
         // (WI-515: the synthetic schema-declaration fact this filter
         // also used to exclude is no longer asserted.)
         let pred = match read_string_field(kb, named, "predicate") {
-            Some(s) => s, None => continue,
+            Some(s) => s,
+            None => continue,
         };
         let bk = match read_string_field(kb, named, "backend") {
-            Some(s) => s, None => continue,
+            Some(s) => s,
+            None => continue,
         };
-        if pred != predicate || bk != backend { continue; }
+        if pred != predicate || bk != backend {
+            continue;
+        }
         let policy_tid = match get_named_arg(kb, named, "policy") {
-            Some(t) => t, None => continue,
+            Some(t) => t,
+            None => continue,
         };
         if let Some(p) = decode_policy_term(kb, policy_tid) {
             return Ok(Some(p));

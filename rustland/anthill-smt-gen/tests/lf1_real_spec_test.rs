@@ -23,8 +23,8 @@
 
 use std::path::PathBuf;
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
@@ -33,20 +33,19 @@ use anthill_smt_gen::emit_satisfiability_check;
 
 /// Build a KB with stdlib + the actual lf1 spec directory on disk.
 fn lf1_kb() -> KnowledgeBase {
-    let lf1_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/webots-modelling/lf1");
-    let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../stdlib/anthill");
+    let lf1_root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/webots-modelling/lf1");
+    let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
 
     let mut all_files = collect_anthill_files(&stdlib_root);
     all_files.extend(collect_anthill_files(&lf1_root));
 
-    let parsed: Vec<ParsedFile> = all_files.iter()
+    let parsed: Vec<ParsedFile> = all_files
+        .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
     let refs: Vec<&ParsedFile> = parsed.iter().collect();
@@ -56,19 +55,23 @@ fn lf1_kb() -> KnowledgeBase {
     // example, so a discarded `Err` here would let every proof below be emitted
     // from a half-loaded spec.
     if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
-        panic!("stdlib + lf1 must load clean; got: {:?}",
-               errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+        panic!(
+            "stdlib + lf1 must load clean; got: {:?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+        );
     }
     kb
 }
 
 #[test]
 fn lf1_lower_violation_is_unsat() {
-    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !common::z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let kb = lf1_kb();
-    let smt = emit_satisfiability_check(
-        &kb, "anthill.examples.lf1.safety.gps.lower_violation"
-    ).expect("emit lower_violation");
+    let smt = emit_satisfiability_check(&kb, "anthill.examples.lf1.safety.gps.lower_violation")
+        .expect("emit lower_violation");
     let verdict = common::run_z3("lf1_lower_violation", &smt);
     assert_eq!(
         verdict, "unsat",
@@ -79,11 +82,13 @@ fn lf1_lower_violation_is_unsat() {
 
 #[test]
 fn lf1_upper_violation_is_unsat() {
-    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !common::z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let kb = lf1_kb();
-    let smt = emit_satisfiability_check(
-        &kb, "anthill.examples.lf1.safety.gps.upper_violation"
-    ).expect("emit upper_violation");
+    let smt = emit_satisfiability_check(&kb, "anthill.examples.lf1.safety.gps.upper_violation")
+        .expect("emit upper_violation");
     let verdict = common::run_z3("lf1_upper_violation", &smt);
     assert_eq!(
         verdict, "unsat",
@@ -94,7 +99,10 @@ fn lf1_upper_violation_is_unsat() {
 
 #[test]
 fn lf1_step_distance_bound_is_within_two_meters() {
-    if !common::z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !common::z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     // With the lf1 facts (RTK-quality eps=0.1, v_max=8, T_c=0.032)
     // the step bound should compute to:
     //   delta = (8+8)*0.032 + 4*0.1 + tau*8 ≈ 0.512 + 0.4 + 0.256
@@ -104,10 +112,14 @@ fn lf1_step_distance_bound_is_within_two_meters() {
     // the safety claim.)
     use anthill_smt_gen::{emit_obligation, Obligation};
     let kb = lf1_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "anthill.examples.lf1.safety.gps.step_distance_bound".to_string(),
-        upper_bound: 2.0,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "anthill.examples.lf1.safety.gps.step_distance_bound".to_string(),
+            upper_bound: 2.0,
+        },
+    )
+    .expect("emit");
     let verdict = common::run_z3("lf1_step_bound", &smt);
     assert_eq!(
         verdict, "unsat",

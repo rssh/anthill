@@ -41,13 +41,20 @@ fn discards_a_loader_verdict(line: &str) -> bool {
     if !t.contains("let _ =") {
         return false;
     }
-    ["load_all(", "load_incremental(", "load::load(", "scan_definitions("]
-        .iter()
-        .any(|entry| t.contains(entry))
+    [
+        "load_all(",
+        "load_incremental(",
+        "load::load(",
+        "scan_definitions(",
+    ]
+    .iter()
+    .any(|entry| t.contains(entry))
 }
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -75,11 +82,17 @@ fn no_source_discards_the_loaders_error() {
 
     let mut offenders = Vec::new();
     for path in &files {
-        let rel = path.strip_prefix(&rustland).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = path
+            .strip_prefix(&rustland)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         if ALLOWED.contains(&rel.as_str()) || rel == SELF {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
         for (i, line) in text.lines().enumerate() {
             if discards_a_loader_verdict(line) {
                 offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));

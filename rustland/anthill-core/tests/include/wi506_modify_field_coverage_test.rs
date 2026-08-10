@@ -9,8 +9,8 @@
 //! parameter for coverage: a declared `Modify[c]` (path `[c]`) covers an incurred
 //! `Modify[c.rep]` (path `[c, rep]`) because `[c]` is a prefix.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_result(source: &str) -> Result<(), Vec<String>> {
@@ -93,10 +93,10 @@ namespace test.wi506.wrong
   end
 end
 "#;
-    let errs = load_result(src)
-        .expect_err("Modify[a] must NOT cover a mutation of b.rep (b != a)");
+    let errs = load_result(src).expect_err("Modify[a] must NOT cover a mutation of b.rep (b != a)");
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") || e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") || e.contains("Modify")),
         "expected an undeclared-effect error for b.rep under Modify[a]; got: {errs:?}",
     );
 }

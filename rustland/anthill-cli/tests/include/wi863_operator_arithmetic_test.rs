@@ -12,7 +12,6 @@
 //! STILL not computing in a query, each pending its own resolver builtin:
 //! `^`→`pow` (no Int `pow` op exists at all), prefix `-`→`neg`, `and`→`Bool.and`.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 /// props has no bearing on the arithmetic — div/mod are builtins registered by
@@ -28,11 +27,24 @@ fn query(pattern: &str) -> crate::common::Output {
 #[test]
 fn slash_divides_in_a_query() {
     let bare = query("6 / 2");
-    assert_eq!(bare.code, 0, "`6 / 2` must resolve, not refuse; stderr:\n{}", bare.stderr);
-    assert_eq!(bare.diagnostics("error:").count(), 0, "no refusal; stderr:\n{}", bare.stderr);
+    assert_eq!(
+        bare.code, 0,
+        "`6 / 2` must resolve, not refuse; stderr:\n{}",
+        bare.stderr
+    );
+    assert_eq!(
+        bare.diagnostics("error:").count(),
+        0,
+        "no refusal; stderr:\n{}",
+        bare.stderr
+    );
 
     let bound = query("div(6, 2, ?r)");
-    assert!(bound.stdout.contains("?r = 3"), "6/2 = 3; stdout:\n{}", bound.stdout);
+    assert!(
+        bound.stdout.contains("?r = 3"),
+        "6/2 = 3; stdout:\n{}",
+        bound.stdout
+    );
 }
 
 /// `mod` and its `%` spelling both compute, Euclidean (always non-negative).
@@ -41,19 +53,32 @@ fn mod_computes_euclidean() {
     for p in ["7 mod 3", "7 % 3"] {
         let out = query(p);
         assert_eq!(out.code, 0, "`{p}` must resolve; stderr:\n{}", out.stderr);
-        assert_eq!(out.diagnostics("error:").count(), 0, "`{p}` no refusal; stderr:\n{}", out.stderr);
+        assert_eq!(
+            out.diagnostics("error:").count(),
+            0,
+            "`{p}` no refusal; stderr:\n{}",
+            out.stderr
+        );
     }
     // -7 mod 3 = 2 (non-negative), NOT -1 (that would be `rem`) — matches the eval
     // `Int64.mod` (rem_euclid).
     let neg = query("mod(-7, 3, ?r)");
-    assert!(neg.stdout.contains("?r = 2"), "-7 mod 3 = 2 (euclidean); stdout:\n{}", neg.stdout);
+    assert!(
+        neg.stdout.contains("?r = 2"),
+        "-7 mod 3 = 2 (euclidean); stdout:\n{}",
+        neg.stdout
+    );
 }
 
 /// `div` truncates toward zero, like the eval `Int64.div`.
 #[test]
 fn div_truncates_toward_zero() {
     let out = query("div(-7, 2, ?r)");
-    assert!(out.stdout.contains("?r = -3"), "-7 / 2 truncates to -3; stdout:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("?r = -3"),
+        "-7 / 2 truncates to -3; stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// THE partiality pin: a zero divisor is NOT a value, so the goal has no result —
@@ -64,9 +89,22 @@ fn div_truncates_toward_zero() {
 fn division_by_zero_is_no_solution_not_a_refusal() {
     for p in ["6 / 0", "div(6, 0, ?r)", "7 mod 0", "mod(7, 0, ?r)"] {
         let out = query(p);
-        assert_eq!(out.code, 0, "`{p}` must run, not crash/refuse; stderr:\n{}", out.stderr);
-        assert!(out.has_stdout_line("no solutions"), "`{p}` -> no solutions; stdout:\n{}", out.stdout);
-        assert_eq!(out.diagnostics("error:").count(), 0, "`{p}` is not a refusal; stderr:\n{}", out.stderr);
+        assert_eq!(
+            out.code, 0,
+            "`{p}` must run, not crash/refuse; stderr:\n{}",
+            out.stderr
+        );
+        assert!(
+            out.has_stdout_line("no solutions"),
+            "`{p}` -> no solutions; stdout:\n{}",
+            out.stdout
+        );
+        assert_eq!(
+            out.diagnostics("error:").count(),
+            0,
+            "`{p}` is not a refusal; stderr:\n{}",
+            out.stderr
+        );
     }
 }
 
@@ -76,8 +114,17 @@ fn division_by_zero_is_no_solution_not_a_refusal() {
 #[test]
 fn an_unbound_divisor_delays() {
     let out = query("div(6, ?b, ?r)");
-    assert_eq!(out.code, 0, "an unbound divisor must not refuse; stderr:\n{}", out.stderr);
-    assert_eq!(out.diagnostics("error:").count(), 0, "not a refusal; stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "an unbound divisor must not refuse; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.diagnostics("error:").count(),
+        0,
+        "not a refusal; stderr:\n{}",
+        out.stderr
+    );
     assert!(
         out.stdout.contains("conditional") || out.stdout.contains("residual"),
         "an unbound divisor is undecided (conditional/residual); stdout:\n{}",
@@ -91,7 +138,11 @@ fn an_unbound_divisor_delays() {
 #[test]
 fn bigint_div_and_mod_compute() {
     let d = query("div(60000000000000000000, 20000000000000000000, ?r)");
-    assert!(d.stdout.contains("?r = 3"), "6e19 / 2e19 = 3; stdout:\n{}", d.stdout);
+    assert!(
+        d.stdout.contains("?r = 3"),
+        "6e19 / 2e19 = 3; stdout:\n{}",
+        d.stdout
+    );
     // 7e19 mod 2e19 = 1e19 (positive, euclidean).
     let m = query("mod(70000000000000000000, 20000000000000000000, ?r)");
     assert!(
@@ -106,7 +157,11 @@ fn bigint_div_and_mod_compute() {
 #[test]
 fn div_exact_alias_computes() {
     let out = query("anthill.prelude.Int64.divExact(6, 2, ?r)");
-    assert!(out.stdout.contains("?r = 3"), "divExact(6,2) = 3; stdout:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("?r = 3"),
+        "divExact(6,2) = 3; stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// Float division rides the float slot (IEEE) — `div(6.0, 2.0)` = 3.0. This is the
@@ -114,7 +169,11 @@ fn div_exact_alias_computes() {
 #[test]
 fn float_division_computes() {
     let out = query("div(6.0, 2.0, ?r)");
-    assert!(out.stdout.contains("?r = 3.0"), "6.0 / 2.0 = 3.0; stdout:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("?r = 3.0"),
+        "6.0 / 2.0 = 3.0; stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// The one overflow corner: `i64::MIN` over `-1`. `div` genuinely overflows (the
@@ -124,11 +183,27 @@ fn float_division_computes() {
 /// path crashes nor is mistaken for a refusal.
 #[test]
 fn min_over_negative_one_yields_no_solution_not_a_crash() {
-    for p in ["div(-9223372036854775808, -1, ?r)", "mod(-9223372036854775808, -1, ?r)"] {
+    for p in [
+        "div(-9223372036854775808, -1, ?r)",
+        "mod(-9223372036854775808, -1, ?r)",
+    ] {
         let out = query(p);
-        assert_eq!(out.code, 0, "`{p}` must run (no panic/refusal); stderr:\n{}", out.stderr);
-        assert!(out.has_stdout_line("no solutions"), "`{p}` -> no solutions; stdout:\n{}", out.stdout);
-        assert_eq!(out.diagnostics("error:").count(), 0, "`{p}` not a refusal; stderr:\n{}", out.stderr);
+        assert_eq!(
+            out.code, 0,
+            "`{p}` must run (no panic/refusal); stderr:\n{}",
+            out.stderr
+        );
+        assert!(
+            out.has_stdout_line("no solutions"),
+            "`{p}` -> no solutions; stdout:\n{}",
+            out.stdout
+        );
+        assert_eq!(
+            out.diagnostics("error:").count(),
+            0,
+            "`{p}` not a refusal; stderr:\n{}",
+            out.stderr
+        );
     }
 }
 
@@ -142,6 +217,10 @@ fn add_sub_mul_still_compute() {
         ("mul(6, 2, ?r)", "?r = 12"),
     ] {
         let out = query(p);
-        assert!(out.stdout.contains(want), "`{p}` -> `{want}`; stdout:\n{}", out.stdout);
+        assert!(
+            out.stdout.contains(want),
+            "`{p}` -> `{want}`; stdout:\n{}",
+            out.stdout
+        );
     }
 }

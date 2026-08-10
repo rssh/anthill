@@ -34,11 +34,11 @@ use smallvec::SmallVec;
 
 use super::resolve::ResolveConfig;
 use super::term::{Term, TermId};
-use super::KnowledgeBase;
 use super::typing::{
     external_effects, extract_effect_resource_sym, extract_sort_ref_sym, extract_type,
     extract_type_param, substitute_ref_syms, TypeExtractor, TypingEnv,
 };
+use super::KnowledgeBase;
 use crate::eval::value::Value;
 use crate::intern::{Symbol, SymbolKind};
 
@@ -56,7 +56,9 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
         None => return out, // no Modifiable facts loaded — nothing admits a region
     };
     for rid in kb.rules_by_functor(modifiable) {
-        let Some(head) = kb.fact_head_term(rid) else { continue };
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
         collect_sort_refs(kb, head, modifiable, &mut out);
     }
     out
@@ -280,8 +282,8 @@ pub(crate) fn op_boundary_effects(
                 if admits {
                     // Escapes via the result — re-key to the op's own
                     // `result` and keep (the op honestly allocates).
-                    let result_place =
-                        *op_result_sym_memo.get_or_insert_with(|| resolve_op_result_sym(kb, op_sym));
+                    let result_place = *op_result_sym_memo
+                        .get_or_insert_with(|| resolve_op_result_sym(kb, op_sym));
                     let kept = match result_place {
                         Some(target) => rekey_resource_value(kb, &effect, sym, target),
                         None => effect,
@@ -476,7 +478,8 @@ end
     }
 
     fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
     }
 
     /// A synthetic ground `Modify[T = <resource>]` label, the shape the loader's
@@ -502,13 +505,20 @@ end
     }
 
     fn resources(kb: &KnowledgeBase, row: &[Value]) -> HashSet<Symbol> {
-        row.iter().filter_map(|e| extract_effect_resource_sym(kb, e)).collect()
+        row.iter()
+            .filter_map(|e| extract_effect_resource_sym(kb, e))
+            .collect()
     }
 
     /// Run `op_boundary_effects` for `<op_qn>` with a return type of sort `ret`
     /// and a single synthetic `Modify[<op_qn>.<modify_on>]` input label; return
     /// the resource-symbol set of the masked row.
-    fn boundary(kb: &mut KnowledgeBase, op_qn: &str, ret_qn: &str, modify_on: &str) -> HashSet<Symbol> {
+    fn boundary(
+        kb: &mut KnowledgeBase,
+        op_qn: &str,
+        ret_qn: &str,
+        modify_on: &str,
+    ) -> HashSet<Symbol> {
         let op_sym = sym(kb, op_qn);
         let regions = region_sorts(kb);
         let ret = sym(kb, ret_qn);
@@ -525,7 +535,12 @@ end
     fn foreach_callback_modify_surfaces_on_list() {
         let mut kb = load_ops();
         let l = sym(&kb, "anthill.test.wi353.each.l");
-        let got = boundary(&mut kb, "anthill.test.wi353.each", "anthill.prelude.Unit", "f.a");
+        let got = boundary(
+            &mut kb,
+            "anthill.test.wi353.each",
+            "anthill.prelude.Unit",
+            "f.a",
+        );
         assert_eq!(
             got,
             [l].into_iter().collect(),
@@ -538,7 +553,12 @@ end
         let mut kb = load_ops();
         let z = sym(&kb, "anthill.test.wi353.foldCell.z");
         let result = sym(&kb, "anthill.test.wi353.foldCell.result");
-        let got = boundary(&mut kb, "anthill.test.wi353.foldCell", "anthill.prelude.Cell", "f.a");
+        let got = boundary(
+            &mut kb,
+            "anthill.test.wi353.foldCell",
+            "anthill.prelude.Cell",
+            "f.a",
+        );
         assert_eq!(
             got,
             [z, result].into_iter().collect(),
@@ -551,7 +571,12 @@ end
     fn fold_result_type_cannot_carry_region_masks_it() {
         let mut kb = load_ops();
         let z = sym(&kb, "anthill.test.wi353.foldInt.z");
-        let got = boundary(&mut kb, "anthill.test.wi353.foldInt", "anthill.prelude.Int64", "f.a");
+        let got = boundary(
+            &mut kb,
+            "anthill.test.wi353.foldInt",
+            "anthill.prelude.Int64",
+            "f.a",
+        );
         assert_eq!(
             got,
             [z].into_iter().collect(),
@@ -566,7 +591,12 @@ end
         // surfaces on `xs`, not on the seed `z` or the `result`.
         let mut kb = load_ops();
         let xs = sym(&kb, "anthill.test.wi353.foldCell.xs");
-        let got = boundary(&mut kb, "anthill.test.wi353.foldCell", "anthill.prelude.Cell", "f.t");
+        let got = boundary(
+            &mut kb,
+            "anthill.test.wi353.foldCell",
+            "anthill.prelude.Cell",
+            "f.t",
+        );
         assert_eq!(
             got,
             [xs].into_iter().collect(),

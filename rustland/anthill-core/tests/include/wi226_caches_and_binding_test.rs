@@ -10,13 +10,12 @@
 //!    predicate rejects, the search falls through to the next
 //!    strategy.
 
-
+use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     build_dep_projection, requires_chain, ProjectionSyms, RequiresEntry,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -94,11 +93,13 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
     // re-walking SortProvidesInfo. We verify by reading the cache map
     // directly: it grows by exactly one entry after the first
     // dispatch, and a second call doesn't add a new entry.
-    use anthill_core::kb::typing::dispatch_spec_op_cached;
     use anthill_core::kb::subst::Substitution;
+    use anthill_core::kb::typing::dispatch_spec_op_cached;
 
     let mut kb = load_stdlib_only();
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .expect("Eq sort");
     let eq_op_short = kb.intern("eq");
     let subst = Substitution::new();
     let enclosing_requires: Vec<RequiresEntry> = Vec::new();
@@ -111,7 +112,14 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
     let before = kb.resolve_cache_len();
     let _ = dispatch_spec_op_cached(
-        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None, None, &[],
+        &mut kb,
+        &subst,
+        eq_sym,
+        eq_op_short,
+        &enclosing_requires,
+        None,
+        None,
+        &[],
     );
     let after_first = kb.resolve_cache_len();
     assert_eq!(
@@ -122,7 +130,14 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
 
     // Second call at the same (goal, scope) — no new entry, served from cache.
     let _ = dispatch_spec_op_cached(
-        &mut kb, &subst, eq_sym, eq_op_short, &enclosing_requires, None, None, &[],
+        &mut kb,
+        &subst,
+        eq_sym,
+        eq_op_short,
+        &enclosing_requires,
+        None,
+        None,
+        &[],
     );
     let after_second = kb.resolve_cache_len();
     assert_eq!(
@@ -143,8 +158,12 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     let mut kb = load_stdlib_only();
     let syms = ProjectionSyms::resolve(&mut kb).expect("stdlib symbols");
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .expect("Eq sort");
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 sort");
     let string_sym = kb
         .try_resolve_symbol("anthill.prelude.String")
         .expect("String sort");
@@ -153,7 +172,8 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
         .expect("SortView sort");
     let t_field = kb.intern("T");
 
-    let make_sort_view = |kb: &mut KnowledgeBase, base: anthill_core::intern::Symbol,
+    let make_sort_view = |kb: &mut KnowledgeBase,
+                          base: anthill_core::intern::Symbol,
                           binding: anthill_core::intern::Symbol|
      -> anthill_core::kb::term::TermId {
         let base_ref = kb.alloc(Term::Ref(base));
@@ -189,9 +209,14 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     // enclosing sort; Strategy 1/2 won't fire anyway (binding mismatch),
     // so the name lookup is never reached.
     let projection = build_dep_projection(
-        &mut kb, &dep,
+        &mut kb,
+        &dep,
         &anthill_core::kb::typing::DictChain::unnamed(caller_requires.clone()),
-        &caller_sub_chains, &syms, None, None, &[],
+        &caller_sub_chains,
+        &syms,
+        None,
+        None,
+        &[],
     )
     .expect("Strategy 3 must resolve Eq[T=String] via the String carrier");
 
@@ -201,11 +226,16 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     // String). Instead it must be the dictionary construction node with
     // impl = Ref(String).
     let (functor, named_args) = match kb.get_term(projection) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("projection must be Fn; got {other:?}"),
     };
     assert_eq!(
-        functor, syms.dict_ctor,
+        functor,
+        syms.dict_ctor,
         "binding-aware match must reject slot 0 (Eq[T=Int64] != Eq[T=String]) \
          and fall through to Strategy 3's `Dictionary` node; got {}",
         kb.qualified_name_of(functor)
@@ -218,11 +248,11 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
         .expect("impl arg");
     let impl_sym = match kb.get_term(impl_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            *functor
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
         other => panic!("impl must be a sort reference; got {other:?}"),
     };
     assert_eq!(

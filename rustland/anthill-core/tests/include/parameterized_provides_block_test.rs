@@ -107,7 +107,8 @@ fn both_spec_shapes_file_the_implementation_fact_under_the_base_sort() {
         // `Fact` kind like every other metadata fact, and the functor index is
         // what selects them. Note `try_resolve_symbol`, not `intern` — the head
         // functor is the RESOLVED symbol, a different one.
-        let impl_sym = kb.try_resolve_symbol("anthill.realization.Implementation")
+        let impl_sym = kb
+            .try_resolve_symbol("anthill.realization.Implementation")
             .expect("resolve anthill.realization.Implementation");
         // Filtered to this file's namespace: the Rust host bindings loaded
         // alongside emit their own `Implementation` facts (Int64, String, …).
@@ -118,9 +119,20 @@ fn both_spec_shapes_file_the_implementation_fact_under_the_base_sort() {
             .collect()
     };
     let param = domain_of(PARAMETERIZED);
-    assert_eq!(param.len(), 1, "expected one Implementation fact, got {param:?}");
-    assert_eq!(param, domain_of(UNPARAMETERIZED), "domain must not depend on the spec shape");
-    assert!(param[0].ends_with("Stack"), "domain should be the base sort, got {param:?}");
+    assert_eq!(
+        param.len(),
+        1,
+        "expected one Implementation fact, got {param:?}"
+    );
+    assert_eq!(
+        param,
+        domain_of(UNPARAMETERIZED),
+        "domain must not depend on the spec shape"
+    );
+    assert!(
+        param[0].ends_with("Stack"),
+        "domain should be the base sort, got {param:?}"
+    );
 }
 
 // ── WI-984: the block's BODY resolves in the spec's scope ────────────────────

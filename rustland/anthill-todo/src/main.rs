@@ -73,7 +73,6 @@ creates a new item, tags it, and makes WI-CUR depend on it — the "insert a blo
 prerequisite" step, in one command.
 "#;
 
-
 // ── File collection ─────────────────────────────────────────────
 //
 // WI-747: the recursive walk is `anthill_core::fs_util`; the POLICY below —
@@ -147,11 +146,14 @@ fn find_project_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
         if dir.is_dir() {
             return Ok(dir.to_path_buf());
         }
-        return Err(format!("project directory does not exist: {}", dir.display()));
+        return Err(format!(
+            "project directory does not exist: {}",
+            dir.display()
+        ));
     }
 
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("cannot determine current directory: {e}"))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("cannot determine current directory: {e}"))?;
 
     // Discovery is by MARKER, not by name or by "holds some .anthill file", so a
     // successful match needs no warning to caveat it (WI-744).
@@ -206,7 +208,10 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
     let mut segments: SmallVec<[anthill_core::intern::Symbol; 2]> = SmallVec::new();
     segments.push(pf.symbols.intern("anthill"));
     segments.push(pf.symbols.intern("stage0"));
-    let name = Name { segments, span: Span::default() };
+    let name = Name {
+        segments,
+        span: Span::default(),
+    };
     let items = std::mem::take(&mut pf.items);
     pf.items.push(Item::Namespace(Namespace {
         name,
@@ -264,7 +269,10 @@ fn is_bundled_domain_or_rules(pf: &ParsedFile) -> bool {
     // an abstract `sort` (no body) → `Item::AbstractSort`, and the `entity`
     // sugar → `Item::Entity`. `rule` → `Item::Rule`.
     let defines_domain = |i: &Item| {
-        matches!(i, Item::Entity(_) | Item::SortWithBody(_) | Item::AbstractSort(_))
+        matches!(
+            i,
+            Item::Entity(_) | Item::SortWithBody(_) | Item::AbstractSort(_)
+        )
     };
     let defines_rule = |i: &Item| matches!(i, Item::Rule(_));
     pf.items.iter().any(|item| match item {
@@ -301,11 +309,10 @@ const CURRENT_STORE_FORMAT_VERSION: u32 = 1;
 
 fn extract_named_arg(kb: &KnowledgeBase, term: TermId, field: &str) -> Option<TermId> {
     match kb.get_term(term) {
-        Term::Fn { named_args, .. } => {
-            named_args.iter()
-                .find(|(s, _)| kb.local_name_of(*s) == field)
-                .map(|(_, id)| *id)
-        }
+        Term::Fn { named_args, .. } => named_args
+            .iter()
+            .find(|(s, _)| kb.local_name_of(*s) == field)
+            .map(|(_, id)| *id),
         _ => None,
     }
 }
@@ -400,7 +407,10 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     // `find_project_dir`'s explicit-dir arm, so a typo'd `-d` errors rather than
     // conjuring a phantom tree (the write-side twin of the WI-744 discovery bug).
     if base_dir.is_some() && !base.is_dir() {
-        eprintln!("error: project directory does not exist: {}", base.display());
+        eprintln!(
+            "error: project directory does not exist: {}",
+            base.display()
+        );
         return runner::EXIT_RUNTIME;
     }
 
@@ -416,7 +426,10 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     let abs_base = match fs::canonicalize(base) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("error: cannot resolve project directory {}: {e}", base.display());
+            eprintln!(
+                "error: cannot resolve project directory {}: {e}",
+                base.display()
+            );
             return runner::EXIT_RUNTIME;
         }
     };
@@ -431,12 +444,19 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
         return runner::EXIT_RUNTIME;
     }
     if is_project_dir(&abs_base) {
-        eprintln!("error: {} is already an anthill-todo project", abs_base.display());
+        eprintln!(
+            "error: {} is already an anthill-todo project",
+            abs_base.display()
+        );
         return runner::EXIT_RUNTIME;
     }
 
     let name = project_name.map(str::to_string).unwrap_or_else(|| {
-        abs_base.file_name().and_then(|n| n.to_str()).unwrap_or("my-project").to_string()
+        abs_base
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("my-project")
+            .to_string()
     });
 
     fs::create_dir_all(&dir).expect("cannot create anthill-todo/");
@@ -450,7 +470,8 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     );
     fs::write(dir.join("project.anthill"), project).expect("write project.anthill");
 
-    let workitems = format!("-- Work items\n\nfact StoreFormat(version: {CURRENT_STORE_FORMAT_VERSION})\n\n");
+    let workitems =
+        format!("-- Work items\n\nfact StoreFormat(version: {CURRENT_STORE_FORMAT_VERSION})\n\n");
     fs::write(dir.join("workitems.anthill"), workitems).expect("write workitems.anthill");
 
     // The absolute path, not a bare `anthill-todo/`: a wrong-place write must be
@@ -522,7 +543,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                     return runner::EXIT_COMPILE;
                 }
             }
-        } else if let Some(dir) = arg.strip_prefix("-d=").or_else(|| arg.strip_prefix("--dir=")) {
+        } else if let Some(dir) = arg
+            .strip_prefix("-d=")
+            .or_else(|| arg.strip_prefix("--dir="))
+        {
             explicit_dir = Some(PathBuf::from(dir));
         } else if arg == "--agent" {
             match iter.next() {
@@ -619,7 +643,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // Each project file pairs its on-disk path with the parsed IR so
     // the IndexedFileStore can later associate fact RuleIds with their
     // byte-range spans on disk.
-    struct ProjectFile { path: PathBuf, parsed: ParsedFile }
+    struct ProjectFile {
+        path: PathBuf,
+        parsed: ParsedFile,
+    }
     let mut project_items: Vec<ProjectFile> = Vec::new();
     for file in &project_files {
         // WI-744: a project file we can SEE but cannot READ is an error. Skipping
@@ -634,18 +661,25 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         };
         match parse::parse(&source) {
             Ok(mut parsed) => {
-                if is_bundle_logic_file(&parsed) { continue; }
+                if is_bundle_logic_file(&parsed) {
+                    continue;
+                }
                 // The standard domain/rules ship bundled (WI-505); a project's
                 // own copy would double-define them, so skip it. Its presence
                 // is a legacy scaffold, not an error — succeed against the
                 // bundled definitions.
-                if is_bundled_domain_or_rules(&parsed) { continue; }
+                if is_bundled_domain_or_rules(&parsed) {
+                    continue;
+                }
                 assign_default_namespace(&mut parsed);
                 // WI-745: stamp the path so a load error names the FILE
                 // (`path:line:col`) — the todo CLI merges embedded stdlib +
                 // bundle + N project files, so a bare byte offset identified none.
                 let parsed = parsed.with_path(file.clone());
-                project_items.push(ProjectFile { path: file.clone(), parsed });
+                project_items.push(ProjectFile {
+                    path: file.clone(),
+                    parsed,
+                });
             }
             Err(errs) => {
                 // A parse failure is always surfaced — a stale domain.anthill
@@ -665,7 +699,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     }
 
     let mut kb = KnowledgeBase::new();
-    let all_refs: Vec<&ParsedFile> = stdlib_parsed.iter()
+    let all_refs: Vec<&ParsedFile> = stdlib_parsed
+        .iter()
         .chain(bundle_parsed.iter())
         .chain(project_items.iter().map(|pf| &pf.parsed))
         .collect();
@@ -735,12 +770,17 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             pos: vec![].into(),
             named: vec![
                 (root_field, Value::Str(store_root_str.clone())),
-                (conv_field, Value::Entity {
-                    functor: single_file_sym,
-                    pos: vec![].into(),
-                    named: vec![(file_field, Value::Str("workitems.anthill".to_string()))].into(),
-                }),
-            ].into(),
+                (
+                    conv_field,
+                    Value::Entity {
+                        functor: single_file_sym,
+                        pos: vec![].into(),
+                        named: vec![(file_field, Value::Str("workitems.anthill".to_string()))]
+                            .into(),
+                    },
+                ),
+            ]
+            .into(),
         };
         let key = match interp.store_canonical_key(&v) {
             Ok(k) => k,
@@ -759,7 +799,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             store_root,
             FileConvention::SingleFile("workitems.anthill".to_string()),
         );
-        for (file, result) in project_items.iter()
+        for (file, result) in project_items
+            .iter()
             .zip(per_file_results.iter().skip(project_offset))
         {
             let spans = file.parsed.fact_spans();
@@ -813,7 +854,9 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // is the same store_value used by the FileStore registry, so
         // anthill-side `persist`/`flush` calls through the cell route to
         // the same underlying IndexedFileStore.
-        let wis_sym = interp.kb_mut().intern("anthill.todo.store.FileBasedWorkitemStore.wis");
+        let wis_sym = interp
+            .kb_mut()
+            .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
         let backend_field = interp.kb_mut().intern("backend");
         let counter_field = interp.kb_mut().intern("id_counter");
         let wis_value = Value::Entity {
@@ -822,7 +865,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             named: vec![
                 (backend_field, store_value.clone()),
                 (counter_field, Value::Int(id_counter)),
-            ].into(),
+            ]
+            .into(),
         };
         let handle = interp.alloc_cell(wis_value);
         Value::Cell(handle)
@@ -842,15 +886,17 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // now the direct-require count. A transitive require is bundled
     // inside its direct parent's dict, not a top-level slot.
     let chain_dicts: smallvec::SmallVec<[_; 2]> = {
-        let main_sym = interp.kb().try_resolve_symbol("anthill.todo.Main")
+        let main_sym = interp
+            .kb()
+            .try_resolve_symbol("anthill.todo.Main")
             .expect("anthill.todo.Main must be loaded");
-        let workitemstore_sym = interp.kb()
+        let workitemstore_sym = interp
+            .kb()
             .try_resolve_symbol("anthill.todo.store.WorkItemStore");
-        let filebased_sym = interp.kb_mut()
+        let filebased_sym = interp
+            .kb_mut()
             .intern("anthill.todo.store.FileBasedWorkitemStore");
-        let entries = anthill_core::kb::typing::direct_requires_chain(
-            interp.kb_mut(), main_sym,
-        );
+        let entries = anthill_core::kb::typing::direct_requires_chain(interp.kb_mut(), main_sym);
         let mut out: smallvec::SmallVec<[_; 2]> = smallvec::SmallVec::new();
         for entry in &entries {
             let impl_sym = if Some(entry.required_sort) == workitemstore_sym {
@@ -859,7 +905,8 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 entry.required_sort
             };
             out.push(
-                interp.alloc_requirement(impl_sym, [])
+                interp
+                    .alloc_requirement(impl_sym, [])
                     .expect("the stdlib defines anthill.realization.runtime.Dictionary"),
             );
         }

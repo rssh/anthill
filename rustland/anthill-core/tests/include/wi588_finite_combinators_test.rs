@@ -12,7 +12,10 @@
 use anthill_core::eval::{Interpreter, Value};
 
 fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -99,11 +102,16 @@ namespace test.wi588.mapdot
   operation dot_map(m: Map[K = Int64, V = Int64]) -> Int64 = m.map(to_zero).size()
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
-    assert!(errs.is_empty(),
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
+    assert!(
+        errs.is_empty(),
         "Map.map/.filter via dot-dispatch must resolve to the finite FiniteCollection \
          ops (consumable by .size()) via the requires-refinement tie-break, not the \
-         lazy Iterable ops (-> Stream):\n{}", errs.join("\n"));
+         lazy Iterable ops (-> Stream):\n{}",
+        errs.join("\n")
+    );
 }
 
 /// `Map.filter`/`.map` via dot-dispatch EVALUATE finitely and the result is itself

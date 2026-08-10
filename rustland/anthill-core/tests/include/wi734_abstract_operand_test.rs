@@ -127,7 +127,8 @@ end
     );
     match try_load_kb_with(&src) {
         Err(errs) => assert!(
-            errs.iter().any(|e| e.contains("disjoint") || e.contains("share the field name")),
+            errs.iter()
+                .any(|e| e.contains("disjoint") || e.contains("share the field name")),
             "expected the disjoint-field-name Concat error, got: {errs:?}"
         ),
         Ok(_) => panic!("a concrete colliding merge must stay a loud error"),

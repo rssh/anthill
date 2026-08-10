@@ -10,7 +10,6 @@
 //! resolve by accidental scope walk or not at all: the user gets a confident
 //! wrong answer, or a silent `no solutions`, in place of a diagnostic.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 fn q(args: &[&str]) -> crate::common::Output {
@@ -31,8 +30,11 @@ fn a_well_formed_query_file_answers() {
     let path = dir.join("good-query.anthill");
     let out = q(&["--query-file", path.to_str().unwrap()]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("2 solution(s)"),
-            "expected both facts; got stdout:\n{}", out.stdout);
+    assert!(
+        out.has_stdout_line("2 solution(s)"),
+        "expected both facts; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// A bare `--pattern` has no imports at all: it must scan clean and answer. The
@@ -42,9 +44,16 @@ fn a_well_formed_query_file_answers() {
 #[test]
 fn a_bare_pattern_answers() {
     let out = q(&["probe.db.Person.mk(name: ?n, age: ?a)"]);
-    assert_eq!(out.code, 0, "a plain pattern must not trip the scan; stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("2 solution(s)"),
-            "expected both facts; got stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "a plain pattern must not trip the scan; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.has_stdout_line("2 solution(s)"),
+        "expected both facts; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// An unresolved import in the query source must BLOCK. Before WI-744 this
@@ -55,14 +64,28 @@ fn unresolved_import_in_a_query_blocks() {
     let dir = fixtures_dir("query");
     let path = dir.join("bad-import-query.anthill");
     let out = q(&["--query-file", path.to_str().unwrap()]);
-    assert_eq!(out.code, 1, "a load error in the query must block; stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 1,
+        "a load error in the query must block; stderr:\n{}",
+        out.stderr
+    );
     // "no solutions" included: the resolve path's EMPTY answer has no count
     // line, so a blocked-but-ran query would slip past the count checks alone.
-    assert!(!out.stdout.contains("solution(s)") && !out.stdout.contains("result(s)")
-                && !out.stdout.contains("no solutions"),
-            "the query must not answer; got stdout:\n{}", out.stdout);
-    assert!(out.has_diagnostic("error:", "no.such.module.Nope"),
-            "expected a loud `error:` naming the import; got stderr:\n{}", out.stderr);
-    assert!(!out.has_diagnostic("warning:", "no.such.module.Nope"),
-            "the import must not be demoted to a warning:\n{}", out.stderr);
+    assert!(
+        !out.stdout.contains("solution(s)")
+            && !out.stdout.contains("result(s)")
+            && !out.stdout.contains("no solutions"),
+        "the query must not answer; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.has_diagnostic("error:", "no.such.module.Nope"),
+        "expected a loud `error:` naming the import; got stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.has_diagnostic("warning:", "no.such.module.Nope"),
+        "the import must not be demoted to a warning:\n{}",
+        out.stderr
+    );
 }

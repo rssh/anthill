@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anthill_core::codegen::{CodegenConfig, generate_rust_with_config, collect_trait_sorts};
+use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_config, CodegenConfig};
 use anthill_core::parse;
 
 fn main() {
@@ -16,12 +16,8 @@ fn main() {
         // `Value` (not a bare `TermId`). A generated host op over a `Term`
         // (e.g. `Store.persist(fact: Term)`) thus carries an occurrence/entity
         // without lowering it to a hash-consed id.
-        carrier_bindings: HashMap::from([
-            ("Term".into(), "anthill_core::eval::Value".into()),
-        ]),
-        namespace_map: HashMap::from([
-            ("anthill".into(), "crate".into()),
-        ]),
+        carrier_bindings: HashMap::from([("Term".into(), "anthill_core::eval::Value".into())]),
+        namespace_map: HashMap::from([("anthill".into(), "crate".into())]),
         derives: vec!["Clone".into(), "Debug".into()],
         default_pub: true,
         boxed_trait_objects: false,
@@ -57,13 +53,22 @@ fn main() {
         // data types + the opaque carriers they reference. The occurrence IR
         // (`Expr` / `Pattern` / …) and the free reflect ops stay interpreter-only.
         emit_only: Some(vec![
-            "Term".into(), "Symbol".into(), "FactRef".into(), "StoredRef".into(),
-            "ConstraintId".into(), "NodeOccurrence".into(),
-            "KB".into(), "Substitution".into(),
-            "Solution".into(), "LogicalQuery".into(),
-            "TermRepr".into(), "LiteralRepr".into(),
-            "SortInfo".into(), "OperationInfo".into(),
-            "FieldInfo".into(), "DescriptionInfo".into(),
+            "Term".into(),
+            "Symbol".into(),
+            "FactRef".into(),
+            "StoredRef".into(),
+            "ConstraintId".into(),
+            "NodeOccurrence".into(),
+            "KB".into(),
+            "Substitution".into(),
+            "Solution".into(),
+            "LogicalQuery".into(),
+            "TermRepr".into(),
+            "LiteralRepr".into(),
+            "SortInfo".into(),
+            "OperationInfo".into(),
+            "FieldInfo".into(),
+            "DescriptionInfo".into(),
             // proposal 053: the write-policy enum the persistence `Store`
             // algebra's `monotonicity` op returns (store.anthill imports it).
             "Monotonicity".into(),

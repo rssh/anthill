@@ -71,12 +71,16 @@ end
 "#;
 
 fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-    kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol `{qn}` not found"))
+    kb.try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("symbol `{qn}` not found"))
 }
 
 fn eval_int(consumer: &str) -> i64 {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call(consumer, &[]).unwrap_or_else(|e| panic!("{consumer} evaluates: {e:?}")) {
+    match interp
+        .call(consumer, &[])
+        .unwrap_or_else(|e| panic!("{consumer} evaluates: {e:?}"))
+    {
         Value::Int(n) => n,
         other => panic!("{consumer}: expected Int, got {other:?}"),
     }
@@ -88,9 +92,19 @@ fn eval_int(consumer: &str) -> i64 {
 #[test]
 fn sub_occurrences_children_rebuild() {
     let kb = crate::common::load_kb_with(SRC);
-    let body = kb.op_body_node(sym(&kb, "test.wi722read.consumer_a")).expect("consumer_a body");
-    assert_eq!(crate::common::head_short(&kb, &body), "wrapped", "sub_occurrences should have rebuilt wrapped(...)");
-    assert_eq!(eval_int("test.wi722read.consumer_a"), 105, "wrapped(5) = 105");
+    let body = kb
+        .op_body_node(sym(&kb, "test.wi722read.consumer_a"))
+        .expect("consumer_a body");
+    assert_eq!(
+        crate::common::head_short(&kb, &body),
+        "wrapped",
+        "sub_occurrences should have rebuilt wrapped(...)"
+    );
+    assert_eq!(
+        eval_int("test.wi722read.consumer_a"),
+        105,
+        "wrapped(5) = 105"
+    );
 }
 
 /// `occurrence_type` reads the typer-stamped type of the reused (typed) argument

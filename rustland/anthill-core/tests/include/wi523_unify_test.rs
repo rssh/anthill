@@ -9,15 +9,15 @@
 //! core. Also covers `<=>`-headed empty-body rules being recognized as
 //! equations (`is_equation`) and fired by the resolver's `apply_eq_rules`.
 
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
-use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId, Literal, Var};
-use anthill_core::kb::term_view::views_structurally_equal;
 use anthill_core::eval::value::Value;
+use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::term_view::views_structurally_equal;
+use anthill_core::kb::ClauseKind;
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
-use anthill_core::kb::ClauseKind;
 
 /// Mint a fresh global logic variable and return its `Term::Var` carrier — the
 /// query-side var whose binding the assertions inspect via `kb.reify`.
@@ -30,11 +30,14 @@ fn fresh_var_term(kb: &mut KnowledgeBase, name: &str) -> TermId {
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -50,20 +53,30 @@ fn load_ok(extra: &str) -> KnowledgeBase {
     assert!(
         errs.is_empty(),
         "clean load expected; got:\n{}",
-        errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+        errs.iter()
+            .map(|e| format!("{e}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     kb
 }
 
 /// Resolve `functor_qn(args...)` and return the solutions.
-fn resolve(kb: &mut KnowledgeBase, functor_qn: &str, args: &[TermId]) -> Vec<anthill_core::kb::resolve::Solution> {
+fn resolve(
+    kb: &mut KnowledgeBase,
+    functor_qn: &str,
+    args: &[TermId],
+) -> Vec<anthill_core::kb::resolve::Solution> {
     let functor = kb.resolve_symbol(functor_qn);
     let goal = kb.alloc(Term::Fn {
         functor,
         pos_args: SmallVec::from_slice(args),
         named_args: SmallVec::new(),
     });
-    let cfg = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
     kb.resolve(&[goal], &cfg)
 }
 
@@ -209,7 +222,10 @@ fn unify_headed_fact_is_recognized_as_equation() {
         named_args: SmallVec::new(),
     });
     let rid = kb.assert_fact(head, sort, domain, None);
-    assert!(kb.is_equation(rid), "a `unify`-headed empty-body 2-arg rule is an equation");
+    assert!(
+        kb.is_equation(rid),
+        "a `unify`-headed empty-body 2-arg rule is an equation"
+    );
     assert!(
         kb.rules_by_functor(unify_sym).contains(&rid),
         "the equation must be indexed under `unify_functor()` for discrim selection"
@@ -272,8 +288,16 @@ fn unify_terms_data_face() {
     let y_term = fresh_var_term(&mut kb, "_y");
     let one = int_term(&mut kb, 1);
     let two = int_term(&mut kb, 2);
-    let a = kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[x_term, two]), named_args: SmallVec::new() });
-    let b = kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[one, y_term]), named_args: SmallVec::new() });
+    let a = kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::from_slice(&[x_term, two]),
+        named_args: SmallVec::new(),
+    });
+    let b = kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::from_slice(&[one, y_term]),
+        named_args: SmallVec::new(),
+    });
 
     let sigma = kb.unify_terms(a, b).expect("f(?x,2) unifies with f(1,?y)");
     let xb = kb.reify(x_term, &sigma).expect_term();
@@ -290,9 +314,20 @@ fn unify_terms_mismatch_is_none() {
     let g = kb.intern("g");
     let one = int_term(&mut kb, 1);
     let one2 = int_term(&mut kb, 1);
-    let fa = kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[one]), named_args: SmallVec::new() });
-    let gb = kb.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_slice(&[one2]), named_args: SmallVec::new() });
-    assert!(kb.unify_terms(fa, gb).is_none(), "f(1) and g(1) do not unify");
+    let fa = kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::from_slice(&[one]),
+        named_args: SmallVec::new(),
+    });
+    let gb = kb.alloc(Term::Fn {
+        functor: g,
+        pos_args: SmallVec::from_slice(&[one2]),
+        named_args: SmallVec::new(),
+    });
+    assert!(
+        kb.unify_terms(fa, gb).is_none(),
+        "f(1) and g(1) do not unify"
+    );
 }
 
 #[test]
@@ -301,8 +336,15 @@ fn unify_terms_occurs_check_is_none() {
     let mut kb = fresh_kb();
     let f = kb.intern("f");
     let x_term = fresh_var_term(&mut kb, "_x");
-    let fx = kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[x_term]), named_args: SmallVec::new() });
-    assert!(kb.unify_terms(x_term, fx).is_none(), "?x and f(?x) fail occurs-check");
+    let fx = kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::from_slice(&[x_term]),
+        named_args: SmallVec::new(),
+    });
+    assert!(
+        kb.unify_terms(x_term, fx).is_none(),
+        "?x and f(?x) fail occurs-check"
+    );
 }
 
 #[test]
@@ -316,11 +358,24 @@ fn unify_rigid_var_is_reflexive() {
     let s = kb.intern("_k");
     let r = kb.fresh_var(s);
     let rigid = kb.alloc(Term::Var(Var::Rigid(r)));
-    assert!(kb.unify_terms(rigid, rigid).is_some(), "!k <=> !k must unify (reflexivity)");
-    let fr = kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[rigid]), named_args: SmallVec::new() });
-    assert!(kb.unify_terms(fr, fr).is_some(), "f(!k) <=> f(!k) must unify");
+    assert!(
+        kb.unify_terms(rigid, rigid).is_some(),
+        "!k <=> !k must unify (reflexivity)"
+    );
+    let fr = kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::from_slice(&[rigid]),
+        named_args: SmallVec::new(),
+    });
+    assert!(
+        kb.unify_terms(fr, fr).is_some(),
+        "f(!k) <=> f(!k) must unify"
+    );
 
     let r2 = kb.fresh_var(s);
     let other = kb.alloc(Term::Var(Var::Rigid(r2)));
-    assert!(kb.unify_terms(rigid, other).is_none(), "distinct skolems !k <=> !j must NOT unify");
+    assert!(
+        kb.unify_terms(rigid, other).is_none(),
+        "distinct skolems !k <=> !j must NOT unify"
+    );
 }

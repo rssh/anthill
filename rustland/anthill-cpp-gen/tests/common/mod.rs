@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
@@ -40,12 +40,12 @@ pub fn rustland_root() -> PathBuf {
 }
 
 fn parse_files(files: &[PathBuf]) -> Vec<ParsedFile> {
-    files.iter()
+    files
+        .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect()
 }
@@ -53,7 +53,11 @@ fn parse_files(files: &[PathBuf]) -> Vec<ParsedFile> {
 /// Parsed stdlib, computed once per test binary.
 static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     let files = collect_anthill_files(&stdlib_dir());
-    assert!(!files.is_empty(), "stdlib must be loadable from {}", stdlib_dir().display());
+    assert!(
+        !files.is_empty(),
+        "stdlib must be loadable from {}",
+        stdlib_dir().display()
+    );
     parse_files(&files)
 });
 
@@ -75,14 +79,22 @@ static STDLIB_MINUS_CPP_PROFILE_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::ne
         .into_iter()
         .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("cpp_std.anthill"))
         .collect();
-    assert!(!files.is_empty(), "stdlib must be loadable from {}", stdlib_dir().display());
+    assert!(
+        !files.is_empty(),
+        "stdlib must be loadable from {}",
+        stdlib_dir().display()
+    );
     parse_files(&files)
 });
 
 /// Parsed cpp host bindings, computed once per test binary.
 static CPP_BINDINGS_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     let files = collect_anthill_files(&cpp_bindings_dir());
-    assert!(!files.is_empty(), "cpp bindings must be loadable from {}", cpp_bindings_dir().display());
+    assert!(
+        !files.is_empty(),
+        "cpp bindings must be loadable from {}",
+        cpp_bindings_dir().display()
+    );
     parse_files(&files)
 });
 
@@ -152,11 +164,12 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     // workspace ever set, and one that silently downgraded EVERY test in this
     // crate to asserting over a half-loaded KB. A fixture that must load dirty
     // opts in by NAME, through `load_kb_with_lenient`.
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
     kb
 }
 
@@ -175,11 +188,12 @@ pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
     refs.push(&user);
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
     kb
 }
 

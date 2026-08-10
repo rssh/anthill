@@ -13,7 +13,10 @@
 use anthill_core::eval::{Interpreter, Value};
 
 fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -40,7 +43,10 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "test.wi598.list.map_collect_len"), 4);
-    assert_eq!(run_int(&mut interp, "test.wi598.list.filter_collect_len"), 2);
+    assert_eq!(
+        run_int(&mut interp, "test.wi598.list.filter_collect_len"),
+        2
+    );
     assert_eq!(run_int(&mut interp, "test.wi598.list.chain_collect_len"), 2);
 }
 

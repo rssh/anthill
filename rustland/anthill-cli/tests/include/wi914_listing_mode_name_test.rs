@@ -17,7 +17,6 @@
 //! is unambiguous under one `-i` and contested under two — the only shape that can tell
 //! "resolved at `_global`" apart from "looked up absolutely".
 
-
 use crate::common::{anthill, fixtures_dir};
 
 fn query(args: &[&str]) -> crate::common::Output {
@@ -42,7 +41,11 @@ fn query_both(args: &[&str]) -> crate::common::Output {
 }
 
 fn assert_lists(out: &crate::common::Output, line: &str) {
-    assert_eq!(out.code, 0, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.stdout.lines().any(|l| l.trim() == line),
         "expected the listing to contain `{line}`; stdout:\n{}",
@@ -100,7 +103,11 @@ fn a_short_domain_name_resolves_at_global_too() {
 #[test]
 fn an_absent_functor_name_is_refused_not_reported_as_an_empty_listing() {
     let out = query(&["--mode", "functor", "NoSuch907"]);
-    assert_eq!(out.code, 1, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 1,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.has_diagnostic("error:", "'NoSuch907' in --mode functor does not resolve"),
         "stderr:\n{}",
@@ -118,9 +125,16 @@ fn an_absent_functor_name_is_refused_not_reported_as_an_empty_listing() {
 #[test]
 fn an_absent_domain_name_is_refused_as_a_domain() {
     let out = query(&["--mode", "domain", "nosuch.ns907"]);
-    assert_eq!(out.code, 1, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 1,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     assert!(
-        out.has_diagnostic("error:", "'nosuch.ns907' in --mode domain does not resolve to a known domain"),
+        out.has_diagnostic(
+            "error:",
+            "'nosuch.ns907' in --mode domain does not resolve to a known domain"
+        ),
         "stderr:\n{}",
         out.stderr
     );
@@ -134,9 +148,16 @@ fn an_absent_domain_name_is_refused_as_a_domain() {
 fn a_contested_listing_name_is_refused_with_its_candidates() {
     for mode in ["functor", "domain"] {
         let out = query_both(&["--mode", mode, "Widget907"]);
-        assert_eq!(out.code, 1, "mode {mode}; stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+        assert_eq!(
+            out.code, 1,
+            "mode {mode}; stdout:\n{}\nstderr:\n{}",
+            out.stdout, out.stderr
+        );
         assert!(
-            out.has_diagnostic("error:", &format!("'Widget907' in --mode {mode} is ambiguous")),
+            out.has_diagnostic(
+                "error:",
+                &format!("'Widget907' in --mode {mode} is ambiguous")
+            ),
             "mode {mode}; stderr:\n{}",
             out.stderr
         );
@@ -161,7 +182,11 @@ fn a_contested_listing_name_is_refused_with_its_candidates() {
 #[test]
 fn the_sort_mode_no_longer_exists() {
     let out = query(&["--mode", "sort", "Fact"]);
-    assert_eq!(out.code, 2, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 2,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.has_diagnostic("error:", "invalid value 'sort'"),
         "the refusal must name the rejected value; stderr:\n{}",
@@ -170,7 +195,8 @@ fn the_sort_mode_no_longer_exists() {
     // Not `has_diagnostic`: clap prints `[possible values: …]` on its own
     // continuation line, which carries no `error:` prefix to key on.
     assert!(
-        out.stderr.contains("pattern") && out.stderr.contains("functor")
+        out.stderr.contains("pattern")
+            && out.stderr.contains("functor")
             && out.stderr.contains("domain"),
         "and enumerate the modes that survive; stderr:\n{}",
         out.stderr
@@ -200,7 +226,12 @@ fn the_sort_mode_no_longer_exists() {
 /// admit.
 #[test]
 fn a_declared_sorts_clauses_are_reachable_without_the_mode() {
-    let sorts = query(&["--max-results", "0", "--match", "SortInfo(name: ?s, constructors: ?c)"]);
+    let sorts = query(&[
+        "--max-results",
+        "0",
+        "--match",
+        "SortInfo(name: ?s, constructors: ?c)",
+    ]);
     assert_eq!(sorts.code, 0, "stderr:\n{}", sorts.stderr);
     assert!(
         sorts.stdout.contains("[w907a]"),

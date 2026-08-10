@@ -57,7 +57,12 @@ fn workspace_root() -> PathBuf {
 fn rs_file_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .map(|e| e.expect("dir entry").file_name().to_string_lossy().into_owned())
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|n| n.ends_with(".rs"))
         .collect();
     names.sort();
@@ -69,15 +74,19 @@ fn registrations(tests_dir: &Path) -> BTreeMap<String, Vec<String>> {
     let mut regs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for aggregator in rs_file_names(tests_dir) {
         let path = tests_dir.join(&aggregator);
-        let src = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let src =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         for line in src.lines() {
             // `#[path = "include/foo_test.rs"]`
             let Some(rest) = line.trim().strip_prefix("#[path = \"include/") else {
                 continue;
             };
-            let Some(name) = rest.split('"').next() else { continue };
-            regs.entry(name.to_string()).or_default().push(aggregator.clone());
+            let Some(name) = rest.split('"').next() else {
+                continue;
+            };
+            regs.entry(name.to_string())
+                .or_default()
+                .push(aggregator.clone());
         }
     }
     regs
@@ -131,8 +140,16 @@ fn every_include_file_is_registered_in_exactly_one_aggregator() {
                         "{krate}/tests/include/{name} is registered {} times, in {} ({}), so it \
                          compiles and runs once per registration. Keep exactly one.",
                         aggs.len(),
-                        if distinct.len() == 1 { "one aggregator" } else { "several aggregators" },
-                        distinct.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                        if distinct.len() == 1 {
+                            "one aggregator"
+                        } else {
+                            "several aggregators"
+                        },
+                        distinct
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ))
                 }
                 Some(_) => {}

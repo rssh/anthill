@@ -11,8 +11,8 @@
 //! AND yields the bound impl (`unit ↦ optionUnit`). A carrier with no instance is a
 //! LOUD error (the undischarged obligation), never a silent accept.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// The §5.4 `CpsMonad` spec in the marked enclosing-list form + the `Option`
@@ -47,7 +47,8 @@ fn load_errors(src: &str) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let s = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let s =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&s).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -66,7 +67,10 @@ fn load_errors(src: &str) -> Vec<String> {
 fn result_carrier_fill_typechecks() {
     let src = cps_src("  operation useResult() -> Option[T = Int64] = unit(42)");
     let errs = load_errors(&src);
-    assert!(errs.is_empty(), "unit(42) : Option should fill F := Option and typecheck: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "unit(42) : Option should fill F := Option and typecheck: {errs:?}"
+    );
 }
 
 /// ARG-carrier (`F` in the argument) typechecks: `flatMap(o : Option, …)` fills
@@ -78,7 +82,10 @@ fn arg_carrier_fill_typechecks() {
          operation useArg(o: Option[T = Int64]) -> Option[T = Int64] = flatMap(o, mkSome)",
     );
     let errs = load_errors(&src);
-    assert!(errs.is_empty(), "flatMap(o:Option, mkSome) should fill F := Option and typecheck: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "flatMap(o:Option, mkSome) should fill F := Option and typecheck: {errs:?}"
+    );
 }
 
 /// The fill is TYPE-CHECKED: `unit(42)` grounds to `Option[T = Int64]`, so a wrong
@@ -91,7 +98,8 @@ fn fill_is_type_checked_wrong_type_rejected() {
     );
     let errs = load_errors(&src);
     assert!(
-        errs.iter().any(|e| e.contains("wrong") && e.contains("Option")),
+        errs.iter()
+            .any(|e| e.contains("wrong") && e.contains("Option")),
         "unit(42):Option[Int64] must be rejected against declared Option[String]: {errs:?}"
     );
 }
@@ -132,7 +140,8 @@ end
 "#;
     let errs = load_errors(src);
     assert!(
-        errs.iter().any(|e| e.contains("pureConsumer") && e.contains("Error")),
+        errs.iter()
+            .any(|e| e.contains("pureConsumer") && e.contains("Error")),
         "a pure consumer of an effectful instance impl (optionUnit effects Error) must be \
          rejected — the impl's effect surfaces through the HK dispatch: {errs:?}"
     );

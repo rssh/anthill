@@ -46,7 +46,9 @@ pub fn bin() -> PathBuf {
 
 /// `tests/fixtures/<group>` — e.g. `fixtures_dir("run")`.
 pub fn fixtures_dir(group: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(group)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(group)
 }
 
 /// Write `contents` to a uniquely-named temp dir and return the path.
@@ -56,8 +58,7 @@ pub fn fixtures_dir(group: &str) -> PathBuf {
 /// directory is deliberately left behind for failure-mode debugging, matching
 /// the convention in `anthill-smt-gen/tests/common`.
 pub fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("anthill-test-{}-{}", std::process::id(), name));
+    let dir = std::env::temp_dir().join(format!("anthill-test-{}-{}", std::process::id(), name));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
@@ -66,7 +67,10 @@ pub fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 /// Run the built binary with `args`.
 pub fn anthill(args: &[&str]) -> Output {
-    let out = Command::new(bin()).args(args).output().expect("run anthill binary");
+    let out = Command::new(bin())
+        .args(args)
+        .output()
+        .expect("run anthill binary");
     Output {
         code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

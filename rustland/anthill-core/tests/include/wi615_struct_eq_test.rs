@@ -7,18 +7,17 @@
 //! leaves `===` structural. Phase-1 behaviour verified here: `===` is a total,
 //! dispatch-free structural equality test that needs no `Eq` instance.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let parsed_extra =
-        parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
+    let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
@@ -114,11 +113,19 @@ fn struct_eq_on_structurally_equal_compounds_succeeds() {
     };
     let p1 = mk_pair(&mut kb, 1, 2);
     let p2 = mk_pair(&mut kb, 1, 2);
-    assert_eq!(same_solutions(&mut kb, p1, p2), 1, "pair(1,2) === pair(1,2) must hold");
+    assert_eq!(
+        same_solutions(&mut kb, p1, p2),
+        1,
+        "pair(1,2) === pair(1,2) must hold"
+    );
 
     let q1 = mk_pair(&mut kb, 1, 2);
     let q2 = mk_pair(&mut kb, 1, 3);
-    assert_eq!(same_solutions(&mut kb, q1, q2), 0, "pair(1,2) === pair(1,3) must not hold");
+    assert_eq!(
+        same_solutions(&mut kb, q1, q2),
+        0,
+        "pair(1,2) === pair(1,3) must not hold"
+    );
 }
 
 #[test]
@@ -136,11 +143,19 @@ fn struct_eq_evaluates_in_an_operation_body() {
     let t = interp
         .call("test.wi615.eval.same", &[Value::Int(4), Value::Int(4)])
         .expect("same(4,4) must evaluate");
-    assert_eq!(t.as_bool(), Some(true), "4 === 4 in an op body must be true");
+    assert_eq!(
+        t.as_bool(),
+        Some(true),
+        "4 === 4 in an op body must be true"
+    );
     let f = interp
         .call("test.wi615.eval.same", &[Value::Int(4), Value::Int(5)])
         .expect("same(4,5) must evaluate");
-    assert_eq!(f.as_bool(), Some(false), "4 === 5 in an op body must be false");
+    assert_eq!(
+        f.as_bool(),
+        Some(false),
+        "4 === 5 in an op body must be false"
+    );
 }
 
 #[test]
@@ -151,9 +166,17 @@ fn struct_eq_needs_no_eq_instance() {
     let mut kb = load_with(SRC);
     let red = ref_term(&mut kb, "test.wi615.Tag.red");
     let red2 = ref_term(&mut kb, "test.wi615.Tag.red");
-    assert_eq!(same_solutions(&mut kb, red, red2), 1, "red === red must hold with no Eq instance");
+    assert_eq!(
+        same_solutions(&mut kb, red, red2),
+        1,
+        "red === red must hold with no Eq instance"
+    );
 
     let red3 = ref_term(&mut kb, "test.wi615.Tag.red");
     let blue = ref_term(&mut kb, "test.wi615.Tag.blue");
-    assert_eq!(same_solutions(&mut kb, red3, blue), 0, "red === blue must not hold");
+    assert_eq!(
+        same_solutions(&mut kb, red3, blue),
+        0,
+        "red === blue must not hold"
+    );
 }

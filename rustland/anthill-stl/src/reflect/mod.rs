@@ -119,9 +119,9 @@ include!(concat!(env!("OUT_DIR"), "/reflect.rs"));
 
 // ── SubstBridge (Rust-only infra) ───────────────────────────────
 
+use anthill_core::kb::KnowledgeBase;
 use std::cell::RefCell;
 use std::rc::Rc;
-use anthill_core::kb::KnowledgeBase;
 
 /// Host realization of the reflect `Substitution` (implements the generated
 /// trait in `bridge.rs`). Wraps a core substitution and carries its own
@@ -133,7 +133,10 @@ pub struct SubstBridge {
 }
 
 impl SubstBridge {
-    pub fn from_core(s: anthill_core::kb::subst::Substitution, kb: Rc<RefCell<KnowledgeBase>>) -> Self {
+    pub fn from_core(
+        s: anthill_core::kb::subst::Substitution,
+        kb: Rc<RefCell<KnowledgeBase>>,
+    ) -> Self {
         Self { inner: s, kb }
     }
 }

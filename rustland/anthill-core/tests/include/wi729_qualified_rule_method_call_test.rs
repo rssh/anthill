@@ -158,9 +158,9 @@ namespace test.wi729schema
 end
 "#;
     match try_load_kb_with(SRC) {
-        Ok(_) => panic!(
-            "eq(c.name, 42) must be rejected — `Person.rows`' schema types c.name as String"
-        ),
+        Ok(_) => {
+            panic!("eq(c.name, 42) must be rejected — `Person.rows`' schema types c.name as String")
+        }
         Err(errs) => {
             let joined = errs.join("\n");
             assert!(
@@ -248,7 +248,8 @@ end
     ] {
         let errs = try_load_kb_with(src).err().unwrap_or_default();
         assert!(
-            errs.iter().any(|e| e.contains(flattened) && e.contains("unknown functor")),
+            errs.iter()
+                .any(|e| e.contains(flattened) && e.contains("unknown functor")),
             "`{flattened}` must stay the loud unknown-functor error, got: {errs:?}"
         );
     }

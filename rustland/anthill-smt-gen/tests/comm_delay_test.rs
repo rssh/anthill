@@ -69,32 +69,47 @@ fn lf1_safety_kb() -> anthill_core::kb::KnowledgeBase {
 #[test]
 fn comm_delay_max_emits_a_well_formed_smtlib_doc() {
     let kb = lf1_safety_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
-        upper_bound: 0.1,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
+            upper_bound: 0.1,
+        },
+    )
+    .expect("emit");
 
     // Header
-    assert!(smt.contains("(set-logic QF_LRA)"),
-            "missing logic declaration:\n{smt}");
+    assert!(
+        smt.contains("(set-logic QF_LRA)"),
+        "missing logic declaration:\n{smt}"
+    );
     // User-asserted constants resolved from the matching fact
-    assert!(smt.contains("(define-fun range_max () Real 100.0)"),
-            "range_max const missing:\n{smt}");
-    assert!(smt.contains("(define-fun control_period () Real 0.032)"),
-            "control_period const missing:\n{smt}");
+    assert!(
+        smt.contains("(define-fun range_max () Real 100.0)"),
+        "range_max const missing:\n{smt}"
+    );
+    assert!(
+        smt.contains("(define-fun control_period () Real 0.032)"),
+        "control_period const missing:\n{smt}"
+    );
     // Result variable bound to the rule body's RHS expression.
     // Loaded rules use de Bruijn indices, so the head's result is a
     // synthetic `var_<i>` rather than `tau` — Z3 doesn't care.
-    assert!(smt.contains("(define-fun var_"),
-            "result var define-fun missing:\n{smt}");
+    assert!(
+        smt.contains("(define-fun var_"),
+        "result var define-fun missing:\n{smt}"
+    );
     // Obligation: assert NEGATION of the bound — Z3 should reply unsat.
-    assert!(smt.contains("(assert (not (<= var_"),
-            "obligation assertion missing:\n{smt}");
-    assert!(smt.contains(" 0.1)))"),
-            "upper bound 0.1 missing in obligation:\n{smt}");
+    assert!(
+        smt.contains("(assert (not (<= var_"),
+        "obligation assertion missing:\n{smt}"
+    );
+    assert!(
+        smt.contains(" 0.1)))"),
+        "upper bound 0.1 missing in obligation:\n{smt}"
+    );
     // Driver
-    assert!(smt.contains("(check-sat)"),
-            "missing (check-sat):\n{smt}");
+    assert!(smt.contains("(check-sat)"), "missing (check-sat):\n{smt}");
 }
 
 /// First non-trivial check that we can actually verify and not just
@@ -103,12 +118,19 @@ fn comm_delay_max_emits_a_well_formed_smtlib_doc() {
 /// computed tau is much smaller). Skipped when `z3` isn't on $PATH.
 #[test]
 fn comm_delay_max_z3_round_trip_unsat() {
-    if !z3_available() { eprintln!("z3 not available — skipping discharge round-trip"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping discharge round-trip");
+        return;
+    }
     let kb = lf1_safety_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
-        upper_bound: 0.1,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
+            upper_bound: 0.1,
+        },
+    )
+    .expect("emit");
     let verdict = run_z3("smt_gen_comm_delay", &smt);
     assert!(
         verdict == "unsat",
@@ -123,27 +145,42 @@ fn config_overrides_logic_and_emits_timeout() {
     let mut config = ProofConfig::default();
     config.logic = Some("AUFLIRA".to_string());
     config.timeout_ms = Some(2500);
-    let smt = emit_obligation_with(&kb, &Obligation {
-        rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
-        upper_bound: 0.1,
-    }, &config).expect("emit");
-    assert!(smt.contains("(set-logic AUFLIRA)"),
-            "logic override not honoured:\n{smt}");
-    assert!(smt.contains("(set-option :timeout 2500)"),
-            "timeout option not emitted:\n{smt}");
+    let smt = emit_obligation_with(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
+            upper_bound: 0.1,
+        },
+        &config,
+    )
+    .expect("emit");
+    assert!(
+        smt.contains("(set-logic AUFLIRA)"),
+        "logic override not honoured:\n{smt}"
+    );
+    assert!(
+        smt.contains("(set-option :timeout 2500)"),
+        "timeout option not emitted:\n{smt}"
+    );
     // Default logic must NOT appear.
-    assert!(!smt.contains("(set-logic QF_LRA)"),
-            "default logic leaked through override:\n{smt}");
+    assert!(
+        !smt.contains("(set-logic QF_LRA)"),
+        "default logic leaked through override:\n{smt}"
+    );
 }
 
 #[test]
 fn comm_delay_max_emits_arith_in_correct_smt_lib_order() {
     // Z3 wants prefix notation `(+ a b)`, not infix `(a + b)`.
     let kb = lf1_safety_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
-        upper_bound: 0.1,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.lf1.comm_delay_max".to_string(),
+            upper_bound: 0.1,
+        },
+    )
+    .expect("emit");
 
     // The body should contain `(/ range_max signal_speed)` as the
     // propagation-delay sub-expression, NOT `(range_max / ...)`.

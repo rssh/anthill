@@ -111,7 +111,11 @@
 /// The five-row fixture, parameterized on whether `anthill.prelude.Bool` is imported.
 /// One builder so the two arms cannot drift into two programs.
 fn program(ns: &str, import_bool: bool) -> String {
-    let imp = if import_bool { "  import anthill.prelude.Bool\n" } else { "" };
+    let imp = if import_bool {
+        "  import anthill.prelude.Bool\n"
+    } else {
+        ""
+    };
     format!(
         "namespace {ns}\n{imp}\
          \x20 fact left1046(1)\n\
@@ -144,8 +148,14 @@ fn counts(ns: &str, import_bool: bool) -> Vec<usize> {
 #[test]
 fn an_imported_bool_no_longer_captures_negation() {
     let with_import = counts("test.wi1046.naf.imported", true);
-    assert_eq!(with_import[2], 1, "NAF over a failing goal must SUCCEED: {with_import:?}");
-    assert_eq!(with_import[3], 0, "NAF over a holding goal must FAIL: {with_import:?}");
+    assert_eq!(
+        with_import[2], 1,
+        "NAF over a failing goal must SUCCEED: {with_import:?}"
+    );
+    assert_eq!(
+        with_import[3], 0,
+        "NAF over a holding goal must FAIL: {with_import:?}"
+    );
 }
 
 /// THE HEADLINE, disjunction half — and the strongest form of the claim: the two arms
@@ -160,7 +170,11 @@ fn an_imported_bool_no_longer_captures_negation() {
 fn an_imported_bool_no_longer_captures_disjunction() {
     let without = counts("test.wi1046.disj.plain", false);
     let with = counts("test.wi1046.disj.imported", true);
-    assert_eq!(without, vec![2, 1, 1, 0], "the un-imported baseline: {without:?}");
+    assert_eq!(
+        without,
+        vec![2, 1, 1, 0],
+        "the un-imported baseline: {without:?}"
+    );
     assert_eq!(
         without, with,
         "an import must not change what a rule body MEANS — that is what \
@@ -211,13 +225,22 @@ fn a_goal_position_and_is_refused() {
         .err()
         .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
         .join("\n");
-    assert!(msg.contains("Goal conjunction is the COMMA"), "the repair must be named: {msg}");
-    assert!(msg.contains("anthill.prelude.Bool.and"), "the referent must be named: {msg}");
+    assert!(
+        msg.contains("Goal conjunction is the COMMA"),
+        "the repair must be named: {msg}"
+    );
+    assert!(
+        msg.contains("anthill.prelude.Bool.and"),
+        "the referent must be named: {msg}"
+    );
     // Located, like every other rule-body refusal (WI-745): the operator's own line.
     let (loc, _) = msg
         .split_once(": ")
         .unwrap_or_else(|| panic!("expected a `line:col: message` rendering, got: {msg}"));
-    assert!(loc.starts_with("4:"), "the refusal must point at the rule, got `{loc}`: {msg}");
+    assert!(
+        loc.starts_with("4:"),
+        "the refusal must point at the rule, got `{loc}`: {msg}"
+    );
 }
 
 /// THE CONTROL THE REFUSAL MUST NOT CONSUME: an OPERATION body still evaluates `&` /
@@ -349,10 +372,8 @@ fn a_query_pattern_discharge_does_not_refuse_its_own_hypothesis() {
     let mut kb = crate::common::load_kb_with(
         "namespace test.wi1046.q\n  fact seed1046(1)\n  rule ok1046(?x) :- seed1046(?x)\nend\n",
     );
-    let qt = crate::common::query_pattern_term(
-        &mut kb,
-        "not((forall(?h), hyp1046(?h) -: hyp1046(?h)))",
-    );
+    let qt =
+        crate::common::query_pattern_term(&mut kb, "not((forall(?h), hyp1046(?h) -: hyp1046(?h)))");
     let undefined: Vec<String> = kb
         .undefined_query_goal_functors(qt)
         .iter()

@@ -22,8 +22,8 @@
 //! `eq` is still licensed in its body and resolves by the element's own sort at
 //! eval.
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 /// Load the stdlib plus `extra` in one batch and return any load-time errors.
@@ -32,10 +32,11 @@ use anthill_core::parse;
 fn type_check_user(extra: &str) -> Vec<LoadError> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter()
+    let mut parsed: Vec<_> = files
+        .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -49,7 +50,10 @@ fn type_check_user(extra: &str) -> Vec<LoadError> {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `nth` (an `IndexedSeq` op) on a `List` whose element type does NOT provide

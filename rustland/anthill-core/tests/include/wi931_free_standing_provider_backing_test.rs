@@ -145,7 +145,9 @@ fn the_six_storage_operations_are_declared_host_mapped() {
         "anthill.persistence.NonMonotonicStore.update",
         "anthill.persistence.QueryableStore.retrieve",
     ] {
-        let sym = kb.try_resolve_symbol(op).unwrap_or_else(|| panic!("{op} must resolve"));
+        let sym = kb
+            .try_resolve_symbol(op)
+            .unwrap_or_else(|| panic!("{op} must resolve"));
         assert!(
             kb.is_host_mapped_op(sym),
             "{op} must carry an `operation_map` host implementation",
@@ -209,7 +211,8 @@ fn no_backend_provides_bulk_store() {
     // The spec itself is untouched — this is a missing IMPLEMENTATION, not a
     // deleted capability, so `pull` must still be declared for WI-932 to fill in.
     assert!(
-        kb.try_resolve_symbol("anthill.persistence.BulkStore.pull").is_some(),
+        kb.try_resolve_symbol("anthill.persistence.BulkStore.pull")
+            .is_some(),
         "`BulkStore.pull` must still be DECLARED — only its provision was withdrawn",
     );
 }
@@ -234,7 +237,8 @@ fn sql_store_provides_nothing() {
         "SqlStore has no realization, so it may provide nothing; provisions were {provs:?}",
     );
     assert!(
-        kb.try_resolve_symbol("anthill.examples.persistence.sql.SqlStore").is_some(),
+        kb.try_resolve_symbol("anthill.examples.persistence.sql.SqlStore")
+            .is_some(),
         "the SqlStore SHAPE stays — a backend would be written against it",
     );
 }
@@ -264,7 +268,8 @@ end
         Err(e) => e,
     };
     assert!(
-        errs.iter().any(|e| e.contains("ZzNotAStore") && e.contains("retract")),
+        errs.iter()
+            .any(|e| e.contains("ZzNotAStore") && e.contains("retract")),
         "an arbitrary carrier must NOT inherit the spec-level host mapping: {errs:?}",
     );
 }
@@ -292,7 +297,8 @@ end
         Err(e) => e,
     };
     assert!(
-        errs.iter().any(|e| e.contains("SqlStore") && e.contains("retract")),
+        errs.iter()
+            .any(|e| e.contains("SqlStore") && e.contains("retract")),
         "no host implements a SQL backend, so the provision must be refused: {errs:?}",
     );
 }
@@ -321,7 +327,8 @@ end
         Err(e) => e,
     };
     assert!(
-        errs.iter().any(|e| e.contains("W931Carrier") && e.contains("w931op")),
+        errs.iter()
+            .any(|e| e.contains("W931Carrier") && e.contains("w931op")),
         "a free-standing entity providing a spec whose op nothing backs must be \
          refused: {errs:?}",
     );
@@ -350,5 +357,8 @@ end
         Ok(_) => Vec::new(),
         Err(e) => e,
     };
-    assert!(errs.is_empty(), "a backed carrier must load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a backed carrier must load clean: {errs:?}"
+    );
 }

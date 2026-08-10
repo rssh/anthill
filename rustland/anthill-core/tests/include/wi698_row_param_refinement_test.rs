@@ -473,7 +473,10 @@ fn effects_row_param_anchor_is_not_wired_as_scope_parent() {
 
 #[test]
 fn row_param_threads_param_to_param() {
-    expect_load(&[MECH_SRC, WRAP_SRC], "Wrap2[EW = {}] threading (CoordState shape)");
+    expect_load(
+        &[MECH_SRC, WRAP_SRC],
+        "Wrap2[EW = {}] threading (CoordState shape)",
+    );
 }
 
 #[test]
@@ -496,7 +499,10 @@ fn abstract_carrier_leaks_no_refined_row() {
 
 #[test]
 fn stdlib_iterable_list_instantiation_precedent() {
-    expect_load(&[STDLIB_PRECEDENT_SRC], "Iterable.isEmpty over List (E = {})");
+    expect_load(
+        &[STDLIB_PRECEDENT_SRC],
+        "Iterable.isEmpty over List (E = {})",
+    );
 }
 
 /// 054 §Mechanism read/write split: TWO decoupled row params (ER/EW) thread and
@@ -1304,7 +1310,10 @@ fn simp_rule_over_pure_ops_still_loads() {
 /// FIRING rewrites (`[simp]`/`[unfold]`) are the hazard, not every equational law.
 #[test]
 fn untagged_equation_mentioning_external_op_still_loads() {
-    expect_load(&[UNTAGGED_EXTERNAL_SRC], "an untagged equation over an External-rowed op");
+    expect_load(
+        &[UNTAGGED_EXTERNAL_SRC],
+        "an untagged equation over an External-rowed op",
+    );
 }
 
 /// A `[simp]` rule whose GUARD calls an `External`-rowed op in METHOD syntax

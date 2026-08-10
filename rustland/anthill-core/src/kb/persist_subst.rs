@@ -7,15 +7,14 @@
 /// Two implementations:
 /// - `SmallSubst` — SmallVec-based, clone = memcpy (~128 bytes for ≤ 8 bindings)
 /// - `SharedSubst` — Arc cons-list, clone = O(1) refcount bump
-
 use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use crate::eval::value::Value;
-use crate::intern::Symbol;
 use super::subst::Substitution;
 use super::term::{Term, TermId, TermStore, VarId};
+use crate::eval::value::Value;
+use crate::intern::Symbol;
 use crate::kb::term_view::{TermView, ViewItem};
 use crate::kb::KnowledgeBase;
 
@@ -86,11 +85,19 @@ pub enum BindValue {
 pub(crate) fn extract_at_path(terms: &TermStore, fact_term: TermId, path: &VarPath) -> TermId {
     let mut cur = fact_term;
     for step in path.steps() {
-        let Term::Fn { pos_args, named_args, .. } = terms.get(cur) else {
+        let Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } = terms.get(cur)
+        else {
             // A recorded path must descend a term that matched the query
             // structure; a non-Fn here is a discrim/path desync — surface it
             // loudly in debug, fall back to the whole term in release.
-            debug_assert!(false, "extract_at_path: path step {step:?} into a non-Fn term");
+            debug_assert!(
+                false,
+                "extract_at_path: path step {step:?} into a non-Fn term"
+            );
             return fact_term;
         };
         let next = match step {
@@ -100,7 +107,10 @@ pub(crate) fn extract_at_path(terms: &TermStore, fact_term: TermId, path: &VarPa
         match next {
             Some(id) => cur = id,
             None => {
-                debug_assert!(false, "extract_at_path: no arg at {step:?} (path/fact desync)");
+                debug_assert!(
+                    false,
+                    "extract_at_path: no arg at {step:?} (path/fact desync)"
+                );
                 return fact_term;
             }
         }
@@ -134,7 +144,10 @@ pub(crate) fn extract_value_at_path(kb: &KnowledgeBase, head: &Value, path: &Var
             // head; a missing child is a path/head desync — loud in debug,
             // whole-head fallback in release.
             None => {
-                debug_assert!(false, "extract_value_at_path: no child at {step:?} (path/head desync)");
+                debug_assert!(
+                    false,
+                    "extract_value_at_path: no child at {step:?} (path/head desync)"
+                );
                 return head.clone();
             }
         };
@@ -160,14 +173,24 @@ pub(crate) trait PersistSubst: Clone {
     /// path — demands structural identity (a nonlinear pattern var matches only
     /// identical target subterms; unifying would force the target's vars equal
     /// and silently drop the constraint). See [`Substitution::bind_leaf`].
-    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId, unify_rebind: bool) -> Substitution;
+    fn resolve_leaf(
+        self,
+        kb: &KnowledgeBase,
+        fact_term: TermId,
+        unify_rebind: bool,
+    ) -> Substitution;
 
     /// Carrier-faithful peer of [`resolve_leaf`] (WI-348 Phase B): resolve
     /// deferred paths against a `Value` fact head instead of a hash-consed
     /// `TermId`, so a value fact's bindings keep `Value::Node` identity and read
     /// the carrier the discrimination tree actually indexed. `unify_rebind` as
     /// in [`resolve_leaf`].
-    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value, unify_rebind: bool) -> Substitution;
+    fn resolve_leaf_view(
+        self,
+        kb: &KnowledgeBase,
+        fact_head: &Value,
+        unify_rebind: bool,
+    ) -> Substitution;
 }
 
 // ── SmallSubst — SmallVec-based (clone = memcpy) ────────────────
@@ -179,7 +202,9 @@ pub(crate) struct SmallSubst {
 
 impl PersistSubst for SmallSubst {
     fn new() -> Self {
-        SmallSubst { bindings: SmallVec::new() }
+        SmallSubst {
+            bindings: SmallVec::new(),
+        }
     }
 
     fn with_binding(mut self, var: VarId, value: BindValue) -> Self {
@@ -192,7 +217,12 @@ impl PersistSubst for SmallSubst {
     // repeated query var (WI-512) — UNIFIES its two values; on the MATCHING
     // path it demands structural identity. Either way a genuine mismatch lands
     // as `is_contradiction()`.
-    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId, unify_rebind: bool) -> Substitution {
+    fn resolve_leaf(
+        self,
+        kb: &KnowledgeBase,
+        fact_term: TermId,
+        unify_rebind: bool,
+    ) -> Substitution {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
             match val {
@@ -207,14 +237,22 @@ impl PersistSubst for SmallSubst {
         s
     }
 
-    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value, unify_rebind: bool) -> Substitution {
+    fn resolve_leaf_view(
+        self,
+        kb: &KnowledgeBase,
+        fact_head: &Value,
+        unify_rebind: bool,
+    ) -> Substitution {
         let mut s = Substitution::new();
         for (vid, val) in self.bindings {
             match val {
                 BindValue::Term(tid) => s.bind_leaf(kb, vid, Value::term(tid), unify_rebind),
-                BindValue::Path(path) => {
-                    s.bind_leaf(kb, vid, extract_value_at_path(kb, fact_head, &path), unify_rebind)
-                }
+                BindValue::Path(path) => s.bind_leaf(
+                    kb,
+                    vid,
+                    extract_value_at_path(kb, fact_head, &path),
+                    unify_rebind,
+                ),
                 BindValue::Value(v) => s.bind_leaf(kb, vid, v, unify_rebind),
             }
         }
@@ -245,14 +283,21 @@ impl PersistSubst for SharedSubst {
     fn with_binding(self, var: VarId, value: BindValue) -> Self {
         SharedSubst {
             head: Some(Arc::new(SubstCell {
-                var, value, tail: self.head,
+                var,
+                value,
+                tail: self.head,
             })),
         }
     }
 
     // Re-binds dispatch through `bind_leaf`, mirroring `SmallSubst` (WI-633) —
     // keep the two leaf materializations in lockstep.
-    fn resolve_leaf(self, kb: &KnowledgeBase, fact_term: TermId, unify_rebind: bool) -> Substitution {
+    fn resolve_leaf(
+        self,
+        kb: &KnowledgeBase,
+        fact_term: TermId,
+        unify_rebind: bool,
+    ) -> Substitution {
         let mut s = Substitution::new();
         let mut cur = &self.head;
         while let Some(cell) = cur {
@@ -269,15 +314,23 @@ impl PersistSubst for SharedSubst {
         s
     }
 
-    fn resolve_leaf_view(self, kb: &KnowledgeBase, fact_head: &Value, unify_rebind: bool) -> Substitution {
+    fn resolve_leaf_view(
+        self,
+        kb: &KnowledgeBase,
+        fact_head: &Value,
+        unify_rebind: bool,
+    ) -> Substitution {
         let mut s = Substitution::new();
         let mut cur = &self.head;
         while let Some(cell) = cur {
             match &cell.value {
                 BindValue::Term(tid) => s.bind_leaf(kb, cell.var, Value::term(*tid), unify_rebind),
-                BindValue::Path(path) => {
-                    s.bind_leaf(kb, cell.var, extract_value_at_path(kb, fact_head, path), unify_rebind)
-                }
+                BindValue::Path(path) => s.bind_leaf(
+                    kb,
+                    cell.var,
+                    extract_value_at_path(kb, fact_head, path),
+                    unify_rebind,
+                ),
                 BindValue::Value(v) => s.bind_leaf(kb, cell.var, v.clone(), unify_rebind),
             }
             cur = &cell.tail;
@@ -290,8 +343,8 @@ impl PersistSubst for SharedSubst {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::term::{Literal, Term, TermId};
+    use super::*;
 
     // WI-486: `resolve_leaf` now takes `&KnowledgeBase` (its bind/path-extract
     // need the carrier-aware comparator + the kb's term store), so the fixture
@@ -303,10 +356,17 @@ mod tests {
 
     impl TestEnv {
         fn new() -> Self {
-            TestEnv { kb: KnowledgeBase::new(), next_var: 0 }
+            TestEnv {
+                kb: KnowledgeBase::new(),
+                next_var: 0,
+            }
         }
-        fn intern(&mut self, s: &str) -> Symbol { self.kb.intern(s) }
-        fn alloc(&mut self, term: Term) -> TermId { self.kb.alloc(term) }
+        fn intern(&mut self, s: &str) -> Symbol {
+            self.kb.intern(s)
+        }
+        fn alloc(&mut self, term: Term) -> TermId {
+            self.kb.alloc(term)
+        }
         fn fresh_var(&mut self, name: &str) -> VarId {
             let sym = self.kb.intern(name);
             let id = self.next_var;
@@ -323,10 +383,12 @@ mod tests {
         let vid = env.fresh_var("x");
         let tid = env.alloc(Term::Const(Literal::Int(42)));
 
-        let s = SmallSubst::new()
-            .with_binding(vid, BindValue::Term(tid));
+        let s = SmallSubst::new().with_binding(vid, BindValue::Term(tid));
         let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0), true);
-        assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(
+            sub.resolve_as_value(vid).map(|v| v.expect_term()),
+            Some(tid)
+        );
     }
 
     #[test]
@@ -341,10 +403,15 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let s = SmallSubst::new()
-            .with_binding(vid, BindValue::Path(VarPath::root().appended(ArgPos::Positional(0))));
+        let s = SmallSubst::new().with_binding(
+            vid,
+            BindValue::Path(VarPath::root().appended(ArgPos::Positional(0))),
+        );
         let sub = s.resolve_leaf(&env.kb, fact_term, true);
-        assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(val));
+        assert_eq!(
+            sub.resolve_as_value(vid).map(|v| v.expect_term()),
+            Some(val)
+        );
     }
 
     #[test]
@@ -354,18 +421,25 @@ mod tests {
         let vid2 = env.fresh_var("y");
         let tid = env.alloc(Term::Const(Literal::Int(1)));
 
-        let s1 = SmallSubst::new()
-            .with_binding(vid1, BindValue::Term(tid));
-        let s2 = s1.clone()
-            .with_binding(vid2, BindValue::Term(tid));
+        let s1 = SmallSubst::new().with_binding(vid1, BindValue::Term(tid));
+        let s2 = s1.clone().with_binding(vid2, BindValue::Term(tid));
 
         let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0), true);
-        assert_eq!(sub1.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(
+            sub1.resolve_as_value(vid1).map(|v| v.expect_term()),
+            Some(tid)
+        );
         assert!(sub1.resolve_as_value(vid2).is_none());
 
         let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0), true);
-        assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
-        assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(
+            sub2.resolve_as_value(vid1).map(|v| v.expect_term()),
+            Some(tid)
+        );
+        assert_eq!(
+            sub2.resolve_as_value(vid2).map(|v| v.expect_term()),
+            Some(tid)
+        );
     }
 
     #[test]
@@ -374,10 +448,12 @@ mod tests {
         let vid = env.fresh_var("x");
         let tid = env.alloc(Term::Const(Literal::Int(42)));
 
-        let s = SharedSubst::new()
-            .with_binding(vid, BindValue::Term(tid));
+        let s = SharedSubst::new().with_binding(vid, BindValue::Term(tid));
         let sub = s.resolve_leaf(&env.kb, TermId::from_raw(0), true);
-        assert_eq!(sub.resolve_as_value(vid).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(
+            sub.resolve_as_value(vid).map(|v| v.expect_term()),
+            Some(tid)
+        );
     }
 
     #[test]
@@ -387,17 +463,21 @@ mod tests {
         let vid2 = env.fresh_var("y");
         let tid = env.alloc(Term::Const(Literal::Int(1)));
 
-        let s1 = SharedSubst::new()
-            .with_binding(vid1, BindValue::Term(tid));
-        let s2 = s1.clone()
-            .with_binding(vid2, BindValue::Term(tid));
+        let s1 = SharedSubst::new().with_binding(vid1, BindValue::Term(tid));
+        let s2 = s1.clone().with_binding(vid2, BindValue::Term(tid));
 
         let sub1 = s1.resolve_leaf(&env.kb, TermId::from_raw(0), true);
         assert!(sub1.resolve_as_value(vid2).is_none());
 
         let sub2 = s2.resolve_leaf(&env.kb, TermId::from_raw(0), true);
-        assert_eq!(sub2.resolve_as_value(vid1).map(|v| v.expect_term()), Some(tid));
-        assert_eq!(sub2.resolve_as_value(vid2).map(|v| v.expect_term()), Some(tid));
+        assert_eq!(
+            sub2.resolve_as_value(vid1).map(|v| v.expect_term()),
+            Some(tid)
+        );
+        assert_eq!(
+            sub2.resolve_as_value(vid2).map(|v| v.expect_term()),
+            Some(tid)
+        );
     }
 
     // ── Path extraction tests ───────────────────────────────────
@@ -420,8 +500,22 @@ mod tests {
             pos_args: SmallVec::from_slice(&[val0, val1]),
             named_args: SmallVec::new(),
         });
-        assert_eq!(extract_at_path(&env.kb.terms, term, &VarPath::root().appended(ArgPos::Positional(0))), val0);
-        assert_eq!(extract_at_path(&env.kb.terms, term, &VarPath::root().appended(ArgPos::Positional(1))), val1);
+        assert_eq!(
+            extract_at_path(
+                &env.kb.terms,
+                term,
+                &VarPath::root().appended(ArgPos::Positional(0))
+            ),
+            val0
+        );
+        assert_eq!(
+            extract_at_path(
+                &env.kb.terms,
+                term,
+                &VarPath::root().appended(ArgPos::Positional(1))
+            ),
+            val1
+        );
     }
 
     #[test]
@@ -435,7 +529,14 @@ mod tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(k_sym, val)]),
         });
-        assert_eq!(extract_at_path(&env.kb.terms, term, &VarPath::root().appended(ArgPos::Named(k_sym))), val);
+        assert_eq!(
+            extract_at_path(
+                &env.kb.terms,
+                term,
+                &VarPath::root().appended(ArgPos::Named(k_sym))
+            ),
+            val
+        );
     }
 
     #[test]
@@ -447,16 +548,27 @@ mod tests {
         let g_sym = env.intern("g");
         let inner = env.alloc(Term::Const(Literal::Int(7)));
         let g = env.alloc(Term::Fn {
-            functor: g_sym, pos_args: SmallVec::from_elem(inner, 1), named_args: SmallVec::new(),
+            functor: g_sym,
+            pos_args: SmallVec::from_elem(inner, 1),
+            named_args: SmallVec::new(),
         });
         let f = env.alloc(Term::Fn {
-            functor: f_sym, pos_args: SmallVec::from_elem(g, 1), named_args: SmallVec::new(),
+            functor: f_sym,
+            pos_args: SmallVec::from_elem(g, 1),
+            named_args: SmallVec::new(),
         });
         let path = VarPath::root()
             .appended(ArgPos::Positional(0))
             .appended(ArgPos::Positional(0));
         assert_eq!(extract_at_path(&env.kb.terms, f, &path), inner);
         // One step short reaches the intermediate g(inner).
-        assert_eq!(extract_at_path(&env.kb.terms, f, &VarPath::root().appended(ArgPos::Positional(0))), g);
+        assert_eq!(
+            extract_at_path(
+                &env.kb.terms,
+                f,
+                &VarPath::root().appended(ArgPos::Positional(0))
+            ),
+            g
+        );
     }
 }

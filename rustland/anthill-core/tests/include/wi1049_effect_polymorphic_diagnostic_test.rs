@@ -56,7 +56,9 @@ const PURE_SRC: &str = r#"
 
 fn block_for(src: &str, qn: &str) -> Option<EquationBlock> {
     let kb = crate::common::load_kb_with(src);
-    let op = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol {qn}"));
+    let op = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("no symbol {qn}"));
     kb.effect_row_blocking_equations(op)
 }
 
@@ -66,14 +68,20 @@ fn polymorphic_row_is_not_reported_as_effectful() {
     // rendered sentence must not call the operation effectful.
     let block = block_for(POLYMORPHIC_SRC, "wi1049.poly.Coll.put")
         .expect("an effect-polymorphic op still blocks equational treatment");
-    assert!(matches!(block, EquationBlock::Polymorphic(_)),
-        "`effects E` over a row variable is POLYMORPHIC, not effectful; got {block:?}");
+    assert!(
+        matches!(block, EquationBlock::Polymorphic(_)),
+        "`effects E` over a row variable is POLYMORPHIC, not effectful; got {block:?}"
+    );
     let sentence = block.to_string();
-    assert!(sentence.contains("effect-POLYMORPHIC") && sentence.contains("row VARIABLE"),
-        "the sentence must name the row as a variable; got: {sentence}");
-    assert!(!sentence.contains("is not a function"),
+    assert!(
+        sentence.contains("effect-POLYMORPHIC") && sentence.contains("row VARIABLE"),
+        "the sentence must name the row as a variable; got: {sentence}"
+    );
+    assert!(
+        !sentence.contains("is not a function"),
         "an effect-polymorphic op is not disqualified from function-hood — that \
-         claim belongs to the Effectful arm only; got: {sentence}");
+         claim belongs to the Effectful arm only; got: {sentence}"
+    );
 }
 
 #[test]
@@ -104,10 +112,16 @@ fn path_dependent_row_projection_is_polymorphic_too() {
     "#;
     let block = block_for(src, "wi1049.proj.Feed.peek")
         .expect("a projected row still blocks equational treatment");
-    assert!(matches!(block, EquationBlock::Polymorphic(_)),
+    assert!(
+        matches!(block, EquationBlock::Polymorphic(_)),
         "`effects f.E` projects the receiver's row PARAMETER — polymorphic, not \
-         effectful; got {block:?}");
-    assert!(block.row().contains("E"), "the row must still be named: {}", block.row());
+         effectful; got {block:?}"
+    );
+    assert!(
+        block.row().contains("E"),
+        "the row must still be named: {}",
+        block.row()
+    );
 }
 
 #[test]
@@ -126,11 +140,19 @@ fn concrete_effect_still_reads_as_effectful() {
     "#;
     let block = block_for(src, "wi1049.eff.Sink.emit")
         .expect("an External-rowed op blocks equational treatment");
-    assert!(matches!(block, EquationBlock::Effectful(_)),
-        "a concrete `External` row is Effectful; got {block:?}");
-    assert!(block.row().contains("External"), "the row must name External: {}", block.row());
-    assert!(block.to_string().contains("is not a function"),
-        "the Effectful arm keeps its claim; got: {block}");
+    assert!(
+        matches!(block, EquationBlock::Effectful(_)),
+        "a concrete `External` row is Effectful; got {block:?}"
+    );
+    assert!(
+        block.row().contains("External"),
+        "the row must name External: {}",
+        block.row()
+    );
+    assert!(
+        block.to_string().contains("is not a function"),
+        "the Effectful arm keeps its claim; got: {block}"
+    );
 }
 
 #[test]
@@ -138,8 +160,10 @@ fn the_two_arms_read_differently() {
     // The point of the change: a reader can tell the cases apart. If both arms
     // rendered alike, the classification would be decoration.
     let poly = block_for(POLYMORPHIC_SRC, "wi1049.poly.Coll.isNone")
-        .expect("polymorphic op blocks").to_string();
-    let eff = block_for(r#"
+        .expect("polymorphic op blocks")
+        .to_string();
+    let eff = block_for(
+        r#"
         namespace wi1049.eff2
           import anthill.prelude.{Int64, External}
           sort Sink2
@@ -147,10 +171,16 @@ fn the_two_arms_read_differently() {
             operation emit2(s: Sink2, x: Int64) -> Int64 effects External
           end
         end
-    "#, "wi1049.eff2.Sink2.emit2").expect("effectful op blocks").to_string();
+    "#,
+        "wi1049.eff2.Sink2.emit2",
+    )
+    .expect("effectful op blocks")
+    .to_string();
     assert_ne!(poly, eff, "the two arms must not render identically");
-    assert!(poly.contains("pure at a pure carrier"),
-        "the polymorphic arm must explain that the row depends on the carrier; got: {poly}");
+    assert!(
+        poly.contains("pure at a pure carrier"),
+        "the polymorphic arm must explain that the row depends on the carrier; got: {poly}"
+    );
 }
 
 #[test]
@@ -160,8 +190,12 @@ fn pure_carrier_ops_still_admit_the_law() {
     // also the REPAIR the polymorphic message now points at, so it must work.
     let kb = crate::common::load_kb_with(PURE_SRC);
     for qn in ["wi1049.pure.Box.put", "wi1049.pure.Box.isNone"] {
-        let op = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol {qn}"));
-        assert!(kb.effect_row_blocking_equations(op).is_none(),
-            "{qn} is pure — it must not block equational treatment");
+        let op = kb
+            .try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("no symbol {qn}"));
+        assert!(
+            kb.effect_row_blocking_equations(op).is_none(),
+            "{qn} is pure — it must not block equational treatment"
+        );
     }
 }

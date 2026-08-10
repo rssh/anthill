@@ -4,7 +4,6 @@
 //! the --before target depend on it; a --depends that is (or reaches)
 //! the target is a cycle and rejected loudly, BEFORE anything persists.
 
-
 use std::process::Command;
 
 use crate::common::{read_combined, setup_project};
@@ -37,7 +36,10 @@ fact WorkItem(
 fn run_bundle(proj: &std::path::Path, args: &[&str]) -> std::process::Output {
     let mut full = vec!["-d", proj.to_str().unwrap(), "--anthill"];
     full.extend_from_slice(args);
-    Command::new(BIN).args(&full).output().expect("run anthill-todo")
+    Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo")
 }
 
 fn ok(out: &std::process::Output) -> String {
@@ -81,7 +83,14 @@ fn insert_creates_tags_and_rewires_the_before_target() {
 
     let stdout = ok(&run_bundle(
         &proj,
-        &["insert", "prereq work", "--before", "WI-002", "--tag", "typing"],
+        &[
+            "insert",
+            "prereq work",
+            "--before",
+            "WI-002",
+            "--tag",
+            "typing",
+        ],
     ));
     assert!(
         stdout.contains(
@@ -99,8 +108,10 @@ fn insert_creates_tags_and_rewires_the_before_target() {
         .split("fact WorkItem(")
         .find(|b| b.contains("\"WI-002\""))
         .expect("WI-002 block");
-    assert!(wi002.contains("WI-001") && wi002.contains("WI-004"),
-        "WI-002 deps should hold both: {wi002}");
+    assert!(
+        wi002.contains("WI-001") && wi002.contains("WI-004"),
+        "WI-002 deps should hold both: {wi002}"
+    );
 }
 
 #[test]
@@ -113,13 +124,15 @@ fn insert_with_before_equal_dep_rejects_cycle() {
         &["insert", "bad", "--before", "WI-001", "--depends", "WI-001"],
     ));
     assert!(
-        stderr.contains(
-            "error: inserting before WI-001 with dependency WI-001 would create a cycle"
-        ),
+        stderr
+            .contains("error: inserting before WI-001 with dependency WI-001 would create a cycle"),
         "stderr: {stderr}"
     );
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("\"bad\""), "nothing should persist: {combined}");
+    assert!(
+        !combined.contains("\"bad\""),
+        "nothing should persist: {combined}"
+    );
 }
 
 /// WI-002 depends on WI-001, so inserting before WI-001 with a dependency
@@ -134,9 +147,8 @@ fn insert_with_transitive_cycle_rejects() {
         &["insert", "bad", "--before", "WI-001", "--depends", "WI-002"],
     ));
     assert!(
-        stderr.contains(
-            "error: inserting before WI-001 with dependency WI-002 would create a cycle"
-        ),
+        stderr
+            .contains("error: inserting before WI-001 with dependency WI-002 would create a cycle"),
         "stderr: {stderr}"
     );
 }

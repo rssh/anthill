@@ -11,12 +11,15 @@
 //! fallback on the receiver's sort. A head naming a sort/namespace keeps the
 //! `field_access` path.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -28,8 +31,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -152,7 +155,10 @@ namespace wi280.genfield
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "bare generic field access must load; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "bare generic field access must load; got: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi280.genfield.t"), 42);
 }
@@ -175,7 +181,10 @@ namespace wi280.shadow
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "param-named-like-sort field access must load; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "param-named-like-sort field access must load; got: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi280.shadow.t"), 9);
 }
@@ -204,7 +213,10 @@ namespace wi280.mixed
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "mixed-arg-order field access must load; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "mixed-arg-order field access must load; got: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi280.mixed.t_a"), 10);
     assert_eq!(run_int(&mut interp, "wi280.mixed.t_b"), 20);

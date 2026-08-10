@@ -127,7 +127,9 @@ end
 "#
     );
     let mut interp = interp_for(&src);
-    let r = interp.call("test.wi762desugared.cols", &[]).expect("cols runs");
+    let r = interp
+        .call("test.wi762desugared.cols", &[])
+        .expect("cols runs");
     let rows = list_heads(&r);
     assert_eq!(rows.len(), 2, "both rows project to the (name, age) schema");
     assert!(
@@ -156,9 +158,15 @@ end
 "#
     );
     let mut interp = interp_for(&src);
-    let r = interp.call("test.wi762computed.youngCols", &[]).expect("youngCols runs");
+    let r = interp
+        .call("test.wi762computed.youngCols", &[])
+        .expect("youngCols runs");
     let rows = list_heads(&r);
-    assert_eq!(rows.len(), 1, "only bob (age 25) survives the filter, then projects");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only bob (age 25) survives the filter, then projects"
+    );
     assert!(
         matches!(rows[0], Value::Tuple { .. }),
         "the surviving row is a projected named tuple: {:?}",

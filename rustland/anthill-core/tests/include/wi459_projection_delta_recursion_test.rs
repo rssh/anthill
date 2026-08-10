@@ -20,8 +20,8 @@
 //! non-decomposing; the δ-reduction lives at the ELIMINATION site, which has the receiver's
 //! type in hand).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -30,8 +30,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -132,7 +132,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("xs.T") && e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("xs.T") && e.contains("Int64")),
         "h : xs.T (neutral) cannot satisfy a concrete `-> Int64` — a neutral never absorbs a \
          concrete demand; expected a mismatch naming xs.T vs Int64, got: {errs:?}",
     );

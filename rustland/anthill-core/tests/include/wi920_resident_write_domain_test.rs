@@ -67,29 +67,49 @@ fn by_domain_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         pos: vec![].into(),
         named: vec![
             (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (convention_sym, Value::Entity {
-                functor: by_domain, pos: vec![].into(), named: vec![].into(),
-            }),
-        ].into(),
+            (
+                convention_sym,
+                Value::Entity {
+                    functor: by_domain,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
+        ]
+        .into(),
     };
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
     interp
-        .register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::ByDomain)))
+        .register_mirror(
+            key,
+            Box::new(FileStore::new(root.to_path_buf(), FileConvention::ByDomain)),
+        )
         .expect("a file store declares no intrinsic policy (WI-919)");
     store_val
 }
 
 /// A nullary `qname()` carrier — the fact to persist.
 fn nullary(interp: &mut Interpreter, qname: &str) -> Value {
-    let sym = interp.kb_mut().try_resolve_symbol(qname)
+    let sym = interp
+        .kb_mut()
+        .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}`"));
-    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into() }
+    Value::Entity {
+        functor: sym,
+        pos: vec![].into(),
+        named: vec![].into(),
+    }
 }
 
 fn persist(interp: &mut Interpreter, store: &Value, qname: &str) {
     let fact = nullary(interp, qname);
     interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store.clone(), fact, Value::Unit],
+        )
         .expect("persist ok");
 }
 
@@ -98,13 +118,20 @@ fn persist(interp: &mut Interpreter, store: &Value, qname: &str) {
 /// from the raw string, and a probe that mixes the two reads a namespace's domain as
 /// absent — measured, on this fixture.
 fn keys_of(interp: &mut Interpreter, qname: &str) -> Vec<(String, String)> {
-    let sym = interp.kb_mut().try_resolve_symbol(qname)
+    let sym = interp
+        .kb_mut()
+        .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}`"));
     let kb = interp.kb();
-    kb.rules_by_functor(sym).iter().map(|&rid| (
-        kb.rule_clause_kind(rid).to_string(),
-        kb.qualified_name_of(kb.rule_domain(rid)).to_string(),
-    )).collect()
+    kb.rules_by_functor(sym)
+        .iter()
+        .map(|&rid| {
+            (
+                kb.rule_clause_kind(rid).to_string(),
+                kb.qualified_name_of(kb.rule_domain(rid)).to_string(),
+            )
+        })
+        .collect()
 }
 
 /// The `.anthill` files under `root`, relative and sorted.
@@ -156,7 +183,10 @@ fn facts_from_two_namespaces_are_filed_under_their_own_domains() {
     persist(&mut interp, &store, "test.alpha.Widget920");
     persist(&mut interp, &store, "test.beta.Gadget920");
     interp
-        .call("anthill.persistence.Store.flush", &[store.clone(), Value::Unit])
+        .call(
+            "anthill.persistence.Store.flush",
+            &[store.clone(), Value::Unit],
+        )
         .expect("flush ok");
 
     assert_eq!(
@@ -178,7 +208,10 @@ fn the_persisted_content_is_unchanged() {
 
     persist(&mut interp, &store, "test.beta.Gadget920");
     interp
-        .call("anthill.persistence.Store.flush", &[store.clone(), Value::Unit])
+        .call(
+            "anthill.persistence.Store.flush",
+            &[store.clone(), Value::Unit],
+        )
         .expect("flush ok");
 
     let written = files_written(dir.path());
@@ -201,14 +234,23 @@ fn a_head_that_declares_no_scope_is_filed_under_global() {
     let mut interp = interp_for(SRC);
     let store = by_domain_store(&mut interp, dir.path());
     let undeclared = interp.kb_mut().intern("Undeclared920");
-    let fact = Value::Entity { functor: undeclared, pos: vec![].into(), named: vec![].into() };
+    let fact = Value::Entity {
+        functor: undeclared,
+        pos: vec![].into(),
+        named: vec![].into(),
+    };
 
     interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store.clone(), fact, Value::Unit],
+        )
         .expect("an undeclared head still persists");
 
     let kb = interp.kb();
-    let domains: Vec<String> = kb.rules_by_functor(undeclared).iter()
+    let domains: Vec<String> = kb
+        .rules_by_functor(undeclared)
+        .iter()
         .map(|&rid| kb.qualified_name_of(kb.rule_domain(rid)).to_string())
         .collect();
     assert_eq!(

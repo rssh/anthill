@@ -16,8 +16,8 @@
 //! bodies call `splitFirst` and recurse on themselves at the enclosing element
 //! and effect parameters — exactly this pattern.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(src: &str) -> Vec<String> {
@@ -26,8 +26,8 @@ fn load_errors(src: &str) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let s = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let s =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&s).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();

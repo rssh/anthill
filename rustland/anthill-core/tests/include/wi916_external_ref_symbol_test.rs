@@ -91,7 +91,11 @@ fn mounted_with_one_row() -> (KnowledgeBase, Symbol, Symbol, StoredRow) {
 
 /// `w916a(id: <n>)` as a raw `Value::Entity` — the shape the source stores.
 fn row(functor: Symbol, id_field: Symbol, id: i64) -> Value {
-    Value::Entity { functor, pos: [].into(), named: [(id_field, Value::Int(id))].into() }
+    Value::Entity {
+        functor,
+        pos: [].into(),
+        named: [(id_field, Value::Int(id))].into(),
+    }
 }
 
 /// Load a SECOND top-level wildcard import into the live KB, contesting `Widget916` at
@@ -119,11 +123,14 @@ fn a_load_that_contests_the_mount_name_still_retracts_its_rows() {
 
     contest_the_mount_name(&mut kb);
 
-    let retracted = kb
-        .retract_persistent(&stored.reference)
-        .expect("the owner is the symbol the mount resolved, so it is found without a \
-                 second reading of the name — pre-fix: Err(Backend(\"ambiguous owner\"))");
-    assert!(retracted, "the row was live, so the source reports it removed");
+    let retracted = kb.retract_persistent(&stored.reference).expect(
+        "the owner is the symbol the mount resolved, so it is found without a \
+                 second reading of the name — pre-fix: Err(Backend(\"ambiguous owner\"))",
+    );
+    assert!(
+        retracted,
+        "the row was live, so the source reports it removed"
+    );
     assert_eq!(row_count(&kb, functor), 0, "and it is gone from the extent");
 }
 
@@ -140,7 +147,11 @@ fn a_load_that_contests_the_mount_name_still_updates_its_rows() {
         .update_persistent(&stored.reference, row(functor, id_field, 2), None)
         .expect("no name is re-read — pre-fix: Err(Backend(\"ambiguous owner\"))")
         .expect("the row is live");
-    assert_eq!(row_count(&kb, functor), 1, "updated in place, not duplicated");
+    assert_eq!(
+        row_count(&kb, functor),
+        1,
+        "updated in place, not duplicated"
+    );
     assert!(
         kb.retract_persistent(&replacement.reference)
             .expect("the replacement rides the same owner"),

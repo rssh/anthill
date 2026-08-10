@@ -22,7 +22,6 @@
 //! those two measurements possible — WI-907's fixture cannot show it, since its contested
 //! `SortInfo` is a sort with no clauses.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 fn query(args: &[&str]) -> crate::common::Output {
@@ -79,8 +78,17 @@ fn assert_refused_as_ambiguous(out: &crate::common::Output, name: &str, candidat
 }
 
 fn assert_answered(out: &crate::common::Output, line: &str) {
-    assert_eq!(out.code, 0, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
-    assert_eq!(out.diagnostics("error:").count(), 0, "stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    assert_eq!(
+        out.diagnostics("error:").count(),
+        0,
+        "stderr:\n{}",
+        out.stderr
+    );
     assert!(out.has_stdout_line(line), "stdout:\n{}", out.stdout);
 }
 
@@ -111,7 +119,10 @@ fn a_single_import_still_answers_the_identical_dotted_path() {
 /// "qualify the name" has somewhere to go.
 #[test]
 fn qualifying_the_contested_head_resolves_the_same_path() {
-    assert_answered(&query_both(&["wi917.alpha.Widget917.w917a(v: ?x)"]), "?x = 1");
+    assert_answered(
+        &query_both(&["wi917.alpha.Widget917.w917a(v: ?x)"]),
+        "?x = 1",
+    );
 }
 
 // ── The positions WI-863 tolerates ──────────────────────────────────
@@ -133,7 +144,10 @@ fn a_contested_name_in_a_bare_disjunction_branch_is_refused() {
 /// tolerating that silently DROPPED the row.
 #[test]
 fn a_single_import_still_answers_the_same_disjunction() {
-    assert_answered(&query_alpha(&["push_choice(never917(), contested917(?v))"]), "?v = 1");
+    assert_answered(
+        &query_alpha(&["push_choice(never917(), contested917(?v))"]),
+        "?v = 1",
+    );
 }
 
 /// A DATA SLOT — never a goal, and never walked by the undefined-functor pass at all.
@@ -146,7 +160,10 @@ fn a_contested_name_in_a_data_slot_is_refused() {
     assert_refused_as_ambiguous(
         &out,
         "load917",
-        &["wi917.alpha.Payload917.load917", "wi917.beta.Payload917.load917"],
+        &[
+            "wi917.alpha.Payload917.load917",
+            "wi917.beta.Payload917.load917",
+        ],
     );
 }
 

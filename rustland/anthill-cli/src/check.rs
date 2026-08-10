@@ -17,13 +17,13 @@ use std::process::Command;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::extent::BodiedRulePolicy;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
+use anthill_core::kb::KnowledgeBase;
 use anthill_smt_gen::cache::{
-    blob_subdir, hash_content, load_blob, load_witness, resolve_cache_root,
-    witness_subdir, SmtVerdictDto, WitnessShape, WitnessSidecar,
+    blob_subdir, hash_content, load_blob, load_witness, resolve_cache_root, witness_subdir,
+    SmtVerdictDto, WitnessShape, WitnessSidecar,
 };
 use anthill_smt_gen::outcome::parse_z3_output;
 
@@ -67,7 +67,6 @@ pub struct CheckOpts {
     pub filters: Vec<String>,
 }
 
-
 /// Like `run_check` but with explicit options for the ε CLI flags.
 pub fn run_check_with(
     paths: &[PathBuf],
@@ -110,13 +109,13 @@ pub fn run_check_with(
             eprintln!("error: cannot verify a ProofRecord with a non-term head");
             return Err(1);
         };
-        let outcome = match check_one_record_with(
-            kb, head, &blob_dir, &witness_dir, solver, opts
-        ) {
+        let outcome = match check_one_record_with(kb, head, &blob_dir, &witness_dir, solver, opts) {
             Some(o) => o,
             None => continue,
         };
-        if !filter_keeps(&outcome, opts) { continue; }
+        if !filter_keeps(&outcome, opts) {
+            continue;
+        }
         out.push(outcome);
     }
     Ok(out)
@@ -127,7 +126,9 @@ pub fn run_check_with(
 fn filter_keeps(o: &CheckOutcome, opts: &CheckOpts) -> bool {
     if !opts.filters.is_empty() {
         let any_match = opts.filters.iter().any(|pat| glob_match(pat, &o.rule_qn));
-        if !any_match { return false; }
+        if !any_match {
+            return false;
+        }
     }
     if opts.report_trust_only {
         return matches!(o.status, CheckStatus::Trusted(_));
@@ -150,11 +151,15 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     }
     let mut cursor = 0usize;
     let first = parts[0];
-    if !text[cursor..].starts_with(first) { return false; }
+    if !text[cursor..].starts_with(first) {
+        return false;
+    }
     cursor += first.len();
     for (i, part) in parts[1..].iter().enumerate() {
         if part.is_empty() {
-            if i + 2 == parts.len() { return true; }
+            if i + 2 == parts.len() {
+                return true;
+            }
             continue;
         }
         match text[cursor..].find(part) {
@@ -182,11 +187,10 @@ fn check_one_record_with(
         Term::Fn { named_args, .. } => named_args,
         _ => return None,
     };
-    let rule_qn = match get_named_arg(kb, named, "rule")
-        .and_then(|tid| match kb.get_term(tid) {
-            Term::Const(Literal::String(s)) => Some(s.clone()),
-            _ => None,
-        }) {
+    let rule_qn = match get_named_arg(kb, named, "rule").and_then(|tid| match kb.get_term(tid) {
+        Term::Const(Literal::String(s)) => Some(s.clone()),
+        _ => None,
+    }) {
         Some(s) => s,
         None => return None,
     };
@@ -219,21 +223,28 @@ fn check_one_record_with(
 /// empty — no replay. TrustedAxiom records surface their reason.
 fn check_witness_term_shallow(kb: &KnowledgeBase, witness: TermId) -> CheckStatus {
     let (functor, named) = match kb.get_term(witness) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         _ => return CheckStatus::Skipped("witness not a structured term".into()),
     };
-    let f_short = kb.qualified_name_of(functor)
-        .rsplit('.').next().unwrap_or("").to_string();
+    let f_short = kb
+        .qualified_name_of(functor)
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_string();
     match f_short.as_str() {
         "ScopeAxiom" => check_scope_axiom_witness(kb, &named),
         "TrustedAxiom" => {
-            let reason = read_string_field(kb, &named, "reason")
-                .unwrap_or_else(|| "(no reason)".into());
+            let reason =
+                read_string_field(kb, &named, "reason").unwrap_or_else(|| "(no reason)".into());
             CheckStatus::Trusted(reason)
         }
         "SmtDischarge" => {
-            let dh = read_string_field(kb, &named, "document_hash")
-                .unwrap_or_default();
+            let dh = read_string_field(kb, &named, "document_hash").unwrap_or_default();
             if dh.is_empty() {
                 CheckStatus::Failed("SmtDischarge: document_hash empty (shallow)".into())
             } else {
@@ -250,9 +261,7 @@ fn check_witness_sidecar_shallow(sidecar: &WitnessSidecar) -> CheckStatus {
     match &sidecar.witness {
         WitnessShape::SmtDischarge { document_hash, .. } => {
             if document_hash.is_empty() {
-                CheckStatus::Failed(
-                    "sidecar SmtDischarge: document_hash empty (shallow)".into()
-                )
+                CheckStatus::Failed("sidecar SmtDischarge: document_hash empty (shallow)".into())
             } else {
                 CheckStatus::Pass
             }
@@ -266,30 +275,28 @@ fn check_witness_sidecar_shallow(sidecar: &WitnessSidecar) -> CheckStatus {
 /// Verify a witness loaded from a sidecar — same dispatch as
 /// `check_witness_term` but operates on the serialized DTO so we
 /// don't need to round-trip through KB term construction.
-fn check_witness_sidecar(
-    sidecar: &WitnessSidecar,
-    blob_dir: &Path,
-    solver: &str,
-) -> CheckStatus {
+fn check_witness_sidecar(sidecar: &WitnessSidecar, blob_dir: &Path, solver: &str) -> CheckStatus {
     check_witness_shape(&sidecar.witness, blob_dir, solver)
 }
 
-fn check_witness_shape(
-    shape: &WitnessShape,
-    blob_dir: &Path,
-    solver: &str,
-) -> CheckStatus {
+fn check_witness_shape(shape: &WitnessShape, blob_dir: &Path, solver: &str) -> CheckStatus {
     match shape {
-        WitnessShape::SmtDischarge { document_hash, verdict, .. } => {
+        WitnessShape::SmtDischarge {
+            document_hash,
+            verdict,
+            ..
+        } => {
             if document_hash.is_empty() {
                 return CheckStatus::Skipped("sidecar has empty document_hash".into());
             }
             let recorded_verdict = match verdict {
                 SmtVerdictDto::Unsat => "Unsat",
                 SmtVerdictDto::Sat { .. } => "Sat",
-                SmtVerdictDto::Unknown { .. } => return CheckStatus::Skipped(
-                    "sidecar verdict is Unknown — nothing to replay".into()
-                ),
+                SmtVerdictDto::Unknown { .. } => {
+                    return CheckStatus::Skipped(
+                        "sidecar verdict is Unknown — nothing to replay".into(),
+                    )
+                }
             };
             check_smt_discharge_payload(blob_dir, document_hash, recorded_verdict, solver)
         }
@@ -298,7 +305,8 @@ fn check_witness_shape(
             // witness, aggregate via aggregate_meta_outcomes so trust
             // surfaces alongside other-pass outcomes (rather than
             // short-circuiting and masking later failures).
-            let outcomes: Vec<CheckStatus> = sub.iter()
+            let outcomes: Vec<CheckStatus> = sub
+                .iter()
                 .map(|s| check_witness_shape(s, blob_dir, solver))
                 .collect();
             aggregate_meta_outcomes(tactic_name, &outcomes)
@@ -333,7 +341,11 @@ fn check_witness_term(
     solver: &str,
 ) -> CheckStatus {
     let (functor, named) = match kb.get_term(witness) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         _ => return CheckStatus::Skipped("witness is not a structured term".into()),
     };
     let f_qn = kb.qualified_name_of(functor);
@@ -344,8 +356,8 @@ fn check_witness_term(
         "Specialization" => check_specialization_witness(kb, &named),
         "MetaCompose" => check_meta_compose_witness(kb, &named, blob_dir, solver),
         "TrustedAxiom" => {
-            let reason = read_string_field(kb, &named, "reason")
-                .unwrap_or_else(|| "(no reason)".into());
+            let reason =
+                read_string_field(kb, &named, "reason").unwrap_or_else(|| "(no reason)".into());
             CheckStatus::Trusted(reason)
         }
         // Other constructors land in later β sub-phases.
@@ -367,16 +379,15 @@ fn check_meta_compose_witness(
     blob_dir: &Path,
     solver: &str,
 ) -> CheckStatus {
-    let tactic_name = read_string_field(kb, named, "tactic_name")
-        .unwrap_or_else(|| "compose".into());
+    let tactic_name =
+        read_string_field(kb, named, "tactic_name").unwrap_or_else(|| "compose".into());
     let sub_tid = match get_named_arg(kb, named, "sub") {
         Some(t) => t,
-        None => return CheckStatus::Failed(
-            "MetaCompose: missing `sub` field".into()
-        ),
+        None => return CheckStatus::Failed("MetaCompose: missing `sub` field".into()),
     };
     let sub_witnesses = read_witness_list(kb, sub_tid);
-    let outcomes: Vec<CheckStatus> = sub_witnesses.iter()
+    let outcomes: Vec<CheckStatus> = sub_witnesses
+        .iter()
         .map(|t| check_witness_term(kb, *t, blob_dir, solver))
         .collect();
     aggregate_meta_outcomes(&tactic_name, &outcomes)
@@ -401,22 +412,16 @@ fn aggregate_meta_outcomes(tactic_name: &str, outcomes: &[CheckStatus]) -> Check
             CheckStatus::Pass => {}
             CheckStatus::Trusted(r) => trust_reasons.push(format!("[{i}] {r}")),
             CheckStatus::Skipped(r) => skipped_reasons.push(format!("[{i}] {r}")),
-            CheckStatus::Failed(r) => return CheckStatus::Failed(format!(
-                "{tactic_name}[{i}]: {r}"
-            )),
+            CheckStatus::Failed(r) => {
+                return CheckStatus::Failed(format!("{tactic_name}[{i}]: {r}"))
+            }
         }
     }
     if !skipped_reasons.is_empty() {
-        return CheckStatus::Skipped(format!(
-            "{tactic_name}: {}",
-            skipped_reasons.join("; ")
-        ));
+        return CheckStatus::Skipped(format!("{tactic_name}: {}", skipped_reasons.join("; ")));
     }
     if !trust_reasons.is_empty() {
-        return CheckStatus::Trusted(format!(
-            "{tactic_name}: {}",
-            trust_reasons.join("; ")
-        ));
+        return CheckStatus::Trusted(format!("{tactic_name}: {}", trust_reasons.join("; ")));
     }
     CheckStatus::Pass
 }
@@ -427,12 +432,22 @@ fn read_witness_list(kb: &KnowledgeBase, mut tid: TermId) -> Vec<TermId> {
     let mut out = Vec::new();
     for _ in 0..1024 {
         let (functor, named) = match kb.get_term(tid) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (*functor, named_args.clone()),
             _ => break,
         };
-        let f_short = kb.qualified_name_of(functor)
-            .rsplit('.').next().unwrap_or("").to_owned();
-        if f_short != "cons" { break; }
+        let f_short = kb
+            .qualified_name_of(functor)
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        if f_short != "cons" {
+            break;
+        }
         if let Some(h) = get_named_arg(kb, &named, "head") {
             out.push(h);
         }
@@ -514,7 +529,9 @@ fn proof_record_exists(kb: &KnowledgeBase, qn: &str) -> bool {
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             if let Some(tid) = get_named_arg(kb, named_args, "rule") {
                 if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
-                    if s == qn { return true; }
+                    if s == qn {
+                        return true;
+                    }
                 }
             }
         }
@@ -538,14 +555,28 @@ fn read_substitution(
     };
     for _ in 0..1024 {
         let (functor, named_inner) = match kb.get_term(tid) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (*functor, named_args.clone()),
             _ => break,
         };
-        let f_short = kb.qualified_name_of(functor)
-            .rsplit('.').next().unwrap_or("").to_owned();
-        if f_short != "cons" { break; }
+        let f_short = kb
+            .qualified_name_of(functor)
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        if f_short != "cons" {
+            break;
+        }
         if let Some(h) = get_named_arg(kb, &named_inner, "head") {
-            if let Term::Fn { named_args: bind_args, .. } = kb.get_term(h) {
+            if let Term::Fn {
+                named_args: bind_args,
+                ..
+            } = kb.get_term(h)
+            {
                 let k = read_string_field(kb, bind_args, "abstract_param");
                 let v = read_string_field(kb, bind_args, "concrete_sort");
                 if let (Some(k), Some(v)) = (k, v) {
@@ -579,7 +610,9 @@ fn check_scope_axiom_witness(
     kb: &KnowledgeBase,
     named: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
 ) -> CheckStatus {
-    use anthill_core::kb::load::{flatten_spec, qn_of_sort_ref, sort_info_is_inductive, sort_info_qn};
+    use anthill_core::kb::load::{
+        flatten_spec, qn_of_sort_ref, sort_info_is_inductive, sort_info_qn,
+    };
 
     let scope_qn = match read_string_field(kb, named, "scope_qn") {
         Some(s) => s,
@@ -593,9 +626,11 @@ fn check_scope_axiom_witness(
     if aspect == "induction" {
         let sort_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortInfo") {
             Some(s) => s,
-            None => return CheckStatus::Failed(
-                "ScopeAxiom(induction): SortInfo schema not loaded".into()
-            ),
+            None => {
+                return CheckStatus::Failed(
+                    "ScopeAxiom(induction): SortInfo schema not loaded".into(),
+                )
+            }
         };
         // WI-806: read SortInfo FACTS through the accessor — a bodied SortInfo
         // rule fails the check loudly (not silently skipped), and a value-fact
@@ -614,7 +649,9 @@ fn check_scope_axiom_witness(
                 _ => continue,
             };
             let actual_qn = sort_info_qn(kb, &head_named);
-            if actual_qn.as_deref() != Some(&scope_qn) { continue; }
+            if actual_qn.as_deref() != Some(&scope_qn) {
+                continue;
+            }
             if sort_info_is_inductive(kb, &head_named) {
                 return CheckStatus::Pass;
             } else {
@@ -630,13 +667,13 @@ fn check_scope_axiom_witness(
     }
 
     if let Some(expected_se_flat) = aspect.strip_prefix("requires.") {
-        let requires_sym = match kb.try_resolve_symbol(
-            "anthill.reflect.SortRequiresInfo"
-        ) {
+        let requires_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
             Some(s) => s,
-            None => return CheckStatus::Failed(
-                "ScopeAxiom(requires): SortRequiresInfo schema not loaded".into()
-            ),
+            None => {
+                return CheckStatus::Failed(
+                    "ScopeAxiom(requires): SortRequiresInfo schema not loaded".into(),
+                )
+            }
         };
         let requires = match kb.read_facts(requires_sym, &[], BodiedRulePolicy::Refuse) {
             Ok(rows) => rows,
@@ -650,10 +687,15 @@ fn check_scope_axiom_witness(
             let Value::Term { id: head, .. } = row else {
                 return CheckStatus::Failed(
                     "ScopeAxiom(requires): non-term SortRequiresInfo row is unsupported; \
-                     decode it through TermView".into(),
+                     decode it through TermView"
+                        .into(),
                 );
             };
-            let Term::Fn { named_args: head_named, .. } = kb.get_term(head) else {
+            let Term::Fn {
+                named_args: head_named,
+                ..
+            } = kb.get_term(head)
+            else {
                 return CheckStatus::Failed(
                     "ScopeAxiom(requires): SortRequiresInfo row is not function-shaped".into(),
                 );
@@ -666,7 +708,9 @@ fn check_scope_axiom_witness(
                 Some(q) => q,
                 None => continue,
             };
-            if actual_qn != scope_qn { continue; }
+            if actual_qn != scope_qn {
+                continue;
+            }
             scope_seen = true;
             let spec_tid = match get_named_arg(kb, &head_named, "spec") {
                 Some(t) => t,
@@ -710,13 +754,15 @@ fn check_smt_discharge_witness(
     };
     let document = match load_blob(blob_dir, &document_hash) {
         Some(s) => s,
-        None => return CheckStatus::Failed(format!(
-            "blob {document_hash} missing — re-run prove to repopulate"
-        )),
+        None => {
+            return CheckStatus::Failed(format!(
+                "blob {document_hash} missing — re-run prove to repopulate"
+            ))
+        }
     };
     if hash_content(&document) != document_hash {
         return CheckStatus::Failed(
-            "blob content hash mismatch — store has been tampered with".into()
+            "blob content hash mismatch — store has been tampered with".into(),
         );
     }
     let observed_verdict = match run_solver(solver_path, &document) {
@@ -732,14 +778,13 @@ fn check_smt_discharge_witness(
 }
 
 fn run_solver(solver_path: &str, document: &str) -> Result<String, String> {
-    let path = std::env::temp_dir().join(format!(
-        "anthill_check_{}.smt2",
-        rand_suffix()
-    ));
+    let path = std::env::temp_dir().join(format!("anthill_check_{}.smt2", rand_suffix()));
     if let Err(e) = std::fs::write(&path, document) {
         return Err(format!("write smt2: {e}"));
     }
-    let out = Command::new(solver_path).arg(&path).output()
+    let out = Command::new(solver_path)
+        .arg(&path)
+        .output()
         .map_err(|e| format!("invoke {solver_path}: {e}"))?;
     let _ = std::fs::remove_file(&path);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -779,8 +824,10 @@ fn read_string_field(
 
 pub(crate) fn rand_suffix() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     let pid = std::process::id();
     format!("{pid}_{nanos}")
 }
@@ -798,13 +845,15 @@ fn check_smt_discharge_payload(
 ) -> CheckStatus {
     let document = match load_blob(blob_dir, document_hash) {
         Some(s) => s,
-        None => return CheckStatus::Failed(format!(
-            "blob {document_hash} missing — re-run prove to repopulate"
-        )),
+        None => {
+            return CheckStatus::Failed(format!(
+                "blob {document_hash} missing — re-run prove to repopulate"
+            ))
+        }
     };
     if hash_content(&document) != document_hash {
         return CheckStatus::Failed(
-            "blob content hash mismatch — store has been tampered with".into()
+            "blob content hash mismatch — store has been tampered with".into(),
         );
     }
     let observed = match run_solver(solver_path, &document) {
@@ -826,33 +875,46 @@ mod tests {
     use tempfile::TempDir;
 
     fn z3_available() -> bool {
-        Command::new("z3").arg("--version").output()
-            .map(|o| o.status.success()).unwrap_or(false)
+        Command::new("z3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     #[test]
     fn replay_unsat_passes() {
-        if !z3_available() { eprintln!("skip: z3 not on PATH"); return; }
+        if !z3_available() {
+            eprintln!("skip: z3 not on PATH");
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let smt = "(set-logic LRA)\n(declare-const x Real)\n\
                    (assert (and (> x 0) (< x 0)))\n(check-sat)\n";
         let hash = store_blob(tmp.path(), smt).unwrap();
         let result = check_smt_discharge_payload(tmp.path(), &hash, "Unsat", "z3");
-        assert!(matches!(result, CheckStatus::Pass),
-            "expected Pass for genuinely unsat document");
+        assert!(
+            matches!(result, CheckStatus::Pass),
+            "expected Pass for genuinely unsat document"
+        );
     }
 
     #[test]
     fn replay_verdict_mismatch_fails() {
-        if !z3_available() { eprintln!("skip: z3 not on PATH"); return; }
+        if !z3_available() {
+            eprintln!("skip: z3 not on PATH");
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         // SAT document but witness claims Unsat — replay must reject.
         let smt = "(set-logic LRA)\n(declare-const x Real)\n\
                    (assert (> x 0))\n(check-sat)\n";
         let hash = store_blob(tmp.path(), smt).unwrap();
         let result = check_smt_discharge_payload(tmp.path(), &hash, "Unsat", "z3");
-        assert!(matches!(result, CheckStatus::Failed(_)),
-            "expected Failed when recorded verdict disagrees with replay");
+        assert!(
+            matches!(result, CheckStatus::Failed(_)),
+            "expected Failed when recorded verdict disagrees with replay"
+        );
     }
 
     #[test]
@@ -861,8 +923,10 @@ mod tests {
         // No blob stored at this hash.
         let bogus_hash = "ab".repeat(32);
         let result = check_smt_discharge_payload(tmp.path(), &bogus_hash, "Unsat", "z3");
-        assert!(matches!(result, CheckStatus::Failed(msg) if msg.contains("missing")),
-            "expected Failed with 'missing' message when blob is absent");
+        assert!(
+            matches!(result, CheckStatus::Failed(msg) if msg.contains("missing")),
+            "expected Failed with 'missing' message when blob is absent"
+        );
     }
 
     /// Phase β.7 tampering: a sidecar that claims Unsat but points
@@ -873,7 +937,10 @@ mod tests {
     /// boundary in §β.1.
     #[test]
     fn lying_sidecar_verdict_fails() {
-        if !z3_available() { eprintln!("skip: z3 not on PATH"); return; }
+        if !z3_available() {
+            eprintln!("skip: z3 not on PATH");
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         // SAT-shaped document — Z3 will return sat.
         let sat_doc = "(set-logic LRA)\n(declare-const x Real)\n\
@@ -881,8 +948,10 @@ mod tests {
         let hash = store_blob(tmp.path(), sat_doc).unwrap();
         // Sidecar lies and claims this discharge was Unsat.
         let result = check_smt_discharge_payload(tmp.path(), &hash, "Unsat", "z3");
-        assert!(matches!(result, CheckStatus::Failed(_)),
-            "lying sidecar must fail verification");
+        assert!(
+            matches!(result, CheckStatus::Failed(_)),
+            "lying sidecar must fail verification"
+        );
     }
 
     /// Phase β.7 tampering: a blob whose on-disk content has been
@@ -899,8 +968,10 @@ mod tests {
         std::fs::create_dir_all(tampered_path.parent().unwrap()).unwrap();
         std::fs::write(&tampered_path, "(check-sat) ; tampered\n").unwrap();
         let result = check_smt_discharge_payload(tmp.path(), &hash, "Unsat", "z3");
-        assert!(matches!(result, CheckStatus::Failed(msg) if msg.contains("hash mismatch")),
-            "tampered blob must fail content-hash re-check");
+        assert!(
+            matches!(result, CheckStatus::Failed(msg) if msg.contains("hash mismatch")),
+            "tampered blob must fail content-hash re-check"
+        );
     }
 
     #[test]
@@ -913,8 +984,10 @@ mod tests {
             CheckStatus::Failed("smt mismatch".into()),
         ];
         let r = aggregate_meta_outcomes("induction", &outcomes);
-        assert!(matches!(r, CheckStatus::Failed(msg) if msg.contains("smt mismatch")),
-            "Failed must take precedence over Trusted in aggregation");
+        assert!(
+            matches!(r, CheckStatus::Failed(msg) if msg.contains("smt mismatch")),
+            "Failed must take precedence over Trusted in aggregation"
+        );
     }
 
     #[test]
@@ -927,8 +1000,10 @@ mod tests {
             CheckStatus::Pass,
         ];
         let r = aggregate_meta_outcomes("ranking", &outcomes);
-        assert!(matches!(r, CheckStatus::Trusted(msg) if msg.contains("axiom_a")),
-            "Trusted must surface when no Failed/Skipped outcomes exist");
+        assert!(
+            matches!(r, CheckStatus::Trusted(msg) if msg.contains("axiom_a")),
+            "Trusted must surface when no Failed/Skipped outcomes exist"
+        );
     }
 
     #[test]
@@ -941,8 +1016,10 @@ mod tests {
             CheckStatus::Skipped("not yet impl".into()),
         ];
         let r = aggregate_meta_outcomes("induction", &outcomes);
-        assert!(matches!(r, CheckStatus::Skipped(_)),
-            "Skipped must take precedence over Trusted in aggregation");
+        assert!(
+            matches!(r, CheckStatus::Skipped(_)),
+            "Skipped must take precedence over Trusted in aggregation"
+        );
     }
 
     #[test]
@@ -980,11 +1057,19 @@ mod tests {
         ];
         match aggregate_meta_outcomes("induction", &outcomes) {
             CheckStatus::Trusted(msg) => {
-                assert!(msg.contains("axiom_a"), "trust reasons missing axiom_a: {msg}");
-                assert!(msg.contains("axiom_b"), "trust reasons missing axiom_b: {msg}");
+                assert!(
+                    msg.contains("axiom_a"),
+                    "trust reasons missing axiom_a: {msg}"
+                );
+                assert!(
+                    msg.contains("axiom_b"),
+                    "trust reasons missing axiom_b: {msg}"
+                );
             }
-            other => panic!("expected Trusted with both reasons, got {:?}",
-                std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Trusted with both reasons, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 }
@@ -1016,7 +1101,9 @@ pub fn print_summary(outcomes: &[CheckOutcome]) -> usize {
             }
         }
     }
-    println!("\nsummary: {pass} pass, {failed} failed, {skipped} skipped, {trusted} trusted, {} total",
-        outcomes.len());
+    println!(
+        "\nsummary: {pass} pass, {failed} failed, {skipped} skipped, {trusted} trusted, {} total",
+        outcomes.len()
+    );
     failed
 }

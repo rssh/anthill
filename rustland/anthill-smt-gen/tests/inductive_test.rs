@@ -98,34 +98,44 @@ fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
 #[test]
 fn lower_violation_emits_assertions_and_free_vars() {
     let kb = inductive_kb();
-    let smt = emit_satisfiability_check(
-        &kb, "test.smt_gen.invariant.lower_violation").expect("emit");
+    let smt =
+        emit_satisfiability_check(&kb, "test.smt_gen.invariant.lower_violation").expect("emit");
 
     // Logic shifts to LRA (abs is non-trivial in QF_LRA).
     assert!(smt.contains("(set-logic LRA)"), "wrong logic:\n{smt}");
     // Free vars d_prev, step appear as declare-const, not define-fun
     // (no equation binds them).
-    assert!(smt.contains("(declare-const var_"),
-            "missing free-var decl:\n{smt}");
+    assert!(
+        smt.contains("(declare-const var_"),
+        "missing free-var decl:\n{smt}"
+    );
     // The bound check `(<= (anthill_abs ...) ...)` lands in the
     // assertions, with the synthesized abs prelude (WI-147).
-    assert!(smt.contains("(<= (anthill_abs"),
-            "missing abs-bound assertion:\n{smt}");
-    assert!(smt.contains("(define-fun anthill_abs"),
-            "missing anthill_abs prelude:\n{smt}");
+    assert!(
+        smt.contains("(<= (anthill_abs"),
+        "missing abs-bound assertion:\n{smt}"
+    );
+    assert!(
+        smt.contains("(define-fun anthill_abs"),
+        "missing anthill_abs prelude:\n{smt}"
+    );
     // The lower-bound violation `(< d_next d_min)` lands too.
-    assert!(smt.contains("(< "),
-            "missing strict-lt violation assertion:\n{smt}");
-    assert!(smt.contains("(check-sat)"),
-            "missing check-sat:\n{smt}");
+    assert!(
+        smt.contains("(< "),
+        "missing strict-lt violation assertion:\n{smt}"
+    );
+    assert!(smt.contains("(check-sat)"), "missing check-sat:\n{smt}");
 }
 
 #[test]
 fn lower_violation_z3_says_unsat() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let kb = inductive_kb();
-    let smt = emit_satisfiability_check(
-        &kb, "test.smt_gen.invariant.lower_violation").expect("emit");
+    let smt =
+        emit_satisfiability_check(&kb, "test.smt_gen.invariant.lower_violation").expect("emit");
     let verdict = run_z3("smt_gen_lower_unsat", &smt);
     assert_eq!(
         verdict, "unsat",
@@ -143,23 +153,30 @@ fn lower_violation_z3_says_unsat() {
 #[test]
 fn lower_violation_envelope_is_non_empty() {
     let kb = inductive_kb();
-    let smt = emit_satisfiability_check(
-        &kb, "test.smt_gen.invariant.lower_violation").expect("emit");
+    let smt =
+        emit_satisfiability_check(&kb, "test.smt_gen.invariant.lower_violation").expect("emit");
     // Both d_low and d_high bounds get computed inline; check we
     // aren't vacuous by confirming d_min and d_max are far enough
     // apart that the inner interval exists.
-    assert!(smt.contains("(define-fun d_min () Real 1.0)"),
-            "d_min const missing:\n{smt}");
-    assert!(smt.contains("(define-fun d_max () Real 100.0)"),
-            "d_max const missing:\n{smt}");
+    assert!(
+        smt.contains("(define-fun d_min () Real 1.0)"),
+        "d_min const missing:\n{smt}"
+    );
+    assert!(
+        smt.contains("(define-fun d_max () Real 100.0)"),
+        "d_max const missing:\n{smt}"
+    );
 }
 
 #[test]
 fn upper_violation_z3_says_unsat() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let kb = inductive_kb();
-    let smt = emit_satisfiability_check(
-        &kb, "test.smt_gen.invariant.upper_violation").expect("emit");
+    let smt =
+        emit_satisfiability_check(&kb, "test.smt_gen.invariant.upper_violation").expect("emit");
     let verdict = run_z3("smt_gen_upper_unsat", &smt);
     assert_eq!(
         verdict, "unsat",

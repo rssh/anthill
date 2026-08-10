@@ -14,7 +14,6 @@
 //! falsifies its negand. Each nested case is pinned alongside the legitimate NAF
 //! it must be told apart from.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 /// Queried against `props.anthill` — top-level `base(1)`/`base(2)` facts, the
@@ -48,7 +47,12 @@ fn answered(out: &crate::common::Output) -> bool {
 #[test]
 fn not_over_an_unknown_functor_is_refused_not_confident_true() {
     let out = query_props(&["not(nonesuch(42))"]);
-    assert!(is_refused(&out, "nonesuch"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "nonesuch"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
     // THE pin: the old bug printed a positive answer. A refusal must not.
     assert!(
         !out.stdout.contains("true") && !out.stdout.contains("solution(s)"),
@@ -62,7 +66,12 @@ fn not_over_an_unknown_functor_is_refused_not_confident_true() {
 #[test]
 fn a_doubly_nested_unknown_under_not_is_refused() {
     let out = query_props(&["not(not(nonesuch(1)))"]);
-    assert!(is_refused(&out, "nonesuch"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "nonesuch"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 /// A connective deep: `not(nonesuch(1) | base(999))`. The surface `|` lowers to
@@ -72,7 +81,12 @@ fn a_doubly_nested_unknown_under_not_is_refused() {
 #[test]
 fn an_unknown_disjunct_under_not_is_refused() {
     let out = query_props(&["not(nonesuch(1) | base(999))"]);
-    assert!(is_refused(&out, "nonesuch"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "nonesuch"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 /// A bounded-quantifier body is a goal too, and under a `not` it is followed:
@@ -80,7 +94,12 @@ fn an_unknown_disjunct_under_not_is_refused() {
 #[test]
 fn an_unknown_in_a_quantifier_body_under_not_is_refused() {
     let out = query_props(&["not((forall ?x in [1, 2]: nonesuch(?x)))"]);
-    assert!(is_refused(&out, "nonesuch"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "nonesuch"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 // ── What legitimate NAF must NOT be refused ─────────────────────────
@@ -91,7 +110,11 @@ fn an_unknown_in_a_quantifier_body_under_not_is_refused() {
 #[test]
 fn not_over_a_known_empty_predicate_still_succeeds() {
     let out = query_props(&["not(base(999))"]);
-    assert!(answered(&out), "genuine NAF over a known-empty predicate must run; stderr:\n{}", out.stderr);
+    assert!(
+        answered(&out),
+        "genuine NAF over a known-empty predicate must run; stderr:\n{}",
+        out.stderr
+    );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
 }
 
@@ -101,8 +124,16 @@ fn not_over_a_known_empty_predicate_still_succeeds() {
 #[test]
 fn not_over_a_true_fact_answers_empty() {
     let out = query_props(&["not(base(1))"]);
-    assert!(answered(&out), "genuine negation must run; stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("no solutions"), "stdout:\n{}", out.stdout);
+    assert!(
+        answered(&out),
+        "genuine negation must run; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.has_stdout_line("no solutions"),
+        "stdout:\n{}",
+        out.stdout
+    );
 }
 
 // ── Bare (un-negated) disjunction / quantifier are NOT refused ──────
@@ -114,7 +145,11 @@ fn not_over_a_true_fact_answers_empty() {
 #[test]
 fn a_bare_disjunction_with_an_unknown_branch_is_not_refused() {
     let out = query_props(&["push_choice(base(1), nonesuch(5))"]);
-    assert!(answered(&out), "a live disjunction must answer, not be refused; stderr:\n{}", out.stderr);
+    assert!(
+        answered(&out),
+        "a live disjunction must answer, not be refused; stderr:\n{}",
+        out.stderr
+    );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
 }
 
@@ -124,7 +159,11 @@ fn a_bare_disjunction_with_an_unknown_branch_is_not_refused() {
 #[test]
 fn a_vacuous_bare_quantifier_over_an_unknown_body_is_not_refused() {
     let out = query_props(&["(forall ?x in []: nonesuch(?x))"]);
-    assert!(answered(&out), "a vacuous quantifier must answer, not be refused; stderr:\n{}", out.stderr);
+    assert!(
+        answered(&out),
+        "a vacuous quantifier must answer, not be refused; stderr:\n{}",
+        out.stderr
+    );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
 }
 
@@ -134,7 +173,11 @@ fn a_vacuous_bare_quantifier_over_an_unknown_body_is_not_refused() {
 #[test]
 fn a_defined_quantifier_body_is_not_refused() {
     let out = query_props(&["(forall ?x in [1, 2]: base(?x))"]);
-    assert!(answered(&out), "a defined body predicate must resolve; stderr:\n{}", out.stderr);
+    assert!(
+        answered(&out),
+        "a defined body predicate must resolve; stderr:\n{}",
+        out.stderr
+    );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
 }
 
@@ -148,6 +191,14 @@ fn a_defined_quantifier_body_is_not_refused() {
 #[test]
 fn an_unknown_functor_in_a_data_position_is_not_refused() {
     let out = query_props(&["base(nonesuch(1))"]);
-    assert!(answered(&out), "a data-position functor must not be refused; stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("no solutions"), "stdout:\n{}", out.stdout);
+    assert!(
+        answered(&out),
+        "a data-position functor must not be refused; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.has_stdout_line("no solutions"),
+        "stdout:\n{}",
+        out.stdout
+    );
 }

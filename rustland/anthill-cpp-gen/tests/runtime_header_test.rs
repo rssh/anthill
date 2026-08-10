@@ -13,13 +13,20 @@ use common::{find_cxx, scratch_dir};
 #[test]
 fn runtime_header_is_non_empty_and_namespaced() {
     let header = emit_runtime_header();
-    assert!(header.contains("namespace anthill::runtime {"),
-            "header should declare the runtime namespace");
-    assert!(header.contains("satisfies_indexed_seq_v"),
-            "IndexedSeq trait missing");
+    assert!(
+        header.contains("namespace anthill::runtime {"),
+        "header should declare the runtime namespace"
+    );
+    assert!(
+        header.contains("satisfies_indexed_seq_v"),
+        "IndexedSeq trait missing"
+    );
     assert!(header.contains("satisfies_eq_v"), "Eq trait missing");
     assert!(header.contains("satisfies_ordered_v"), "Ord trait missing");
-    assert!(header.contains("satisfies_numeric_v"), "Numeric trait missing");
+    assert!(
+        header.contains("satisfies_numeric_v"),
+        "Numeric trait missing"
+    );
 }
 
 #[test]

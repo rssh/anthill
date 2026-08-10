@@ -6,18 +6,37 @@ use super::Value;
 
 #[derive(Debug)]
 pub enum EvalError {
-    UnboundVar { name: String, span: Option<SourceSpan> },
-    UnknownOperation { name: String },
+    UnboundVar {
+        name: String,
+        span: Option<SourceSpan>,
+    },
+    UnknownOperation {
+        name: String,
+    },
     /// An operation was invoked that has neither a body nor a registered
     /// builtin. The typer is supposed to guarantee this never happens, so
     /// hitting it is an invariant violation (a typer/loader bug) — NOT a
     /// recoverable domain error, and it does not ride the `Error` effect
     /// channel. Carries a captured backtrace to locate the bad dispatch.
-    OperationBodyMissing { name: String, backtrace: std::backtrace::Backtrace },
-    TypeMismatch { expected: &'static str, got: String },
-    ArityMismatch { op: &'static str, expected: usize, got: usize },
-    Overflow { op: &'static str },
-    DepthExceeded { cap: usize },
+    OperationBodyMissing {
+        name: String,
+        backtrace: std::backtrace::Backtrace,
+    },
+    TypeMismatch {
+        expected: &'static str,
+        got: String,
+    },
+    ArityMismatch {
+        op: &'static str,
+        expected: usize,
+        got: usize,
+    },
+    Overflow {
+        op: &'static str,
+    },
+    DepthExceeded {
+        cap: usize,
+    },
     /// The `step_cap` work budget was exhausted: a non-terminating computation
     /// (a tail loop, OR a dispatch/deliver value-cascade — both now iterate on
     /// the heap trampoline and tick one step per iteration), or a real
@@ -26,15 +45,23 @@ pub enum EvalError {
     /// operations, it names the offending sources so they can be located
     /// quickly. Empty when no `step_cap` was set (the ring is only maintained
     /// when a cap could fire).
-    StepsExhausted { cap: u64, chain: Vec<String> },
-    UnhandledEffect { effect: Symbol, payload: Option<TermId> },
+    StepsExhausted {
+        cap: u64,
+        chain: Vec<String>,
+    },
+    UnhandledEffect {
+        effect: Symbol,
+        payload: Option<TermId>,
+    },
     /// An anthill-level `Error` effect was raised (proposal 027 §Error).
     /// Produced at the effect-dispatch site from a handler's
     /// `HandlerAction::Throw(payload)`. The payload is an ordinary opaque
     /// `Value` — error-ness lives in *this variant* (the channel), not in
     /// the value itself. Until catch/recover constructs land (WI-195+), a
     /// raised Error aborts evaluation carrying its payload here.
-    Raised { payload: Value },
+    Raised {
+        payload: Value,
+    },
     /// A handler returned a continuation-manipulating action (`Fail`,
     /// `Choice`, or `Suspend`) that the runtime cannot yet honor — those
     /// need the Branch / suspend-resume substrate (WI-075). Hitting one is
@@ -56,12 +83,16 @@ pub enum EvalError {
     /// being forced — a dependency cycle (`const A = B + 1; const B = A + 1`).
     /// The value cache's forcing sentinel detects this dynamically; `name` is the
     /// const whose forcing re-entered.
-    ConstCycle { name: String },
+    ConstCycle {
+        name: String,
+    },
     /// Proposal 039 / WI-084: a host-supplied (bodyless) `const`'s value was
     /// demanded but no reflect builtin is registered to produce it. The const
     /// type-checks (its declared type is known) — only the runtime VALUE is
     /// unavailable in this build (the spec-only-vs-codegen axis).
-    ConstValueUnavailable { name: String },
+    ConstValueUnavailable {
+        name: String,
+    },
     /// WI-625 gap 1 (SLD→eval bridge): a semantic comparison inside a bridged
     /// op-body evaluation reached a genuinely UNDECIDED point — a truncated
     /// sub-proof, or an eq-overriding carrier buried under non-overriding
@@ -84,7 +115,10 @@ pub enum EvalError {
     /// this bit a nested truncation would reach `bridge_eq_op_to_eval` as an
     /// indistinguishable flounder and the outer stream's `truncated` flag would
     /// stay clear — the exact WI-628 hole, one bridge level up.
-    Suspended { detail: String, truncated: bool },
+    Suspended {
+        detail: String,
+        truncated: bool,
+    },
     /// WI-855: value-directed dispatch reached an impl whose own `requires` slot is
     /// covered by TWO OR MORE providers at these argument types, with no rule to
     /// pick between them ([`crate::kb::typing::BridgeRequirements::Ambiguous`]).
@@ -95,7 +129,11 @@ pub enum EvalError {
     /// user instances. Why a tie raises here while every other unresolvable cause
     /// enters the frame unsupplied is argued once, where the choice is made:
     /// `Interpreter::requirements_for_value_directed_impl`.
-    AmbiguousRequirement { op: String, requirement: String, candidates: Vec<String> },
+    AmbiguousRequirement {
+        op: String,
+        requirement: String,
+        candidates: Vec<String>,
+    },
     /// WI-857: a dictionary slot that pins NO provider was used — dispatched
     /// through, projected into, or enumerated. The slot carries an empty bundle over
     /// the `NoProvider` marker because its goal did not resolve when the dictionary
@@ -112,7 +150,9 @@ pub enum EvalError {
     /// `detail` is pre-rendered by `kb::typing::marker_refusal`, the one owner of the
     /// sentence (the marker carries no payload, so the wording must hedge over the
     /// three causes — narrowing it is what carrying the reason to runtime would buy).
-    UnpinnedRequirement { detail: String },
+    UnpinnedRequirement {
+        detail: String,
+    },
     /// WI-842 (proposal 058 §4.9): value-directed dispatch found TWO OR MORE
     /// suppliers of one spec op for the runtime receiver's carrier — the carrier's
     /// own member, an instance fact's binding, a witness sort's member — and this
@@ -165,7 +205,10 @@ pub enum EvalError {
     /// [`crate::kb::simp_rewrite::MacroRejection`] and the typer reports it as a
     /// load error; at a RUNTIME call of the same op it renders like any other
     /// eval error.
-    MacroRejected { detail: String, span: Option<SourceSpan> },
+    MacroRejected {
+        detail: String,
+        span: Option<SourceSpan>,
+    },
     Internal(String),
 }
 
@@ -179,10 +222,16 @@ impl std::fmt::Display for EvalError {
                 "operation has no body: {name} — this is a typer-guaranteed invariant \
                  violation (should be unreachable).\nbacktrace:\n{backtrace}"
             ),
-            EvalError::TypeMismatch { expected, got } => write!(f, "type mismatch: expected {expected}, got {got}"),
-            EvalError::ArityMismatch { op, expected, got } => write!(f, "{op}: expected {expected} args, got {got}"),
+            EvalError::TypeMismatch { expected, got } => {
+                write!(f, "type mismatch: expected {expected}, got {got}")
+            }
+            EvalError::ArityMismatch { op, expected, got } => {
+                write!(f, "{op}: expected {expected} args, got {got}")
+            }
             EvalError::Overflow { op } => write!(f, "{op}: integer overflow"),
-            EvalError::DepthExceeded { cap } => write!(f, "activation stack depth exceeded cap of {cap}"),
+            EvalError::DepthExceeded { cap } => {
+                write!(f, "activation stack depth exceeded cap of {cap}")
+            }
             EvalError::StepsExhausted { cap, chain } => {
                 write!(
                     f,
@@ -201,15 +250,29 @@ impl std::fmt::Display for EvalError {
                     write!(
                         f,
                         ".\n  operations involved: {}\n  recent dispatches (most recent last): {}",
-                        distinct.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
-                        chain.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" -> "),
+                        distinct
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        chain
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" -> "),
                     )?;
                 }
                 Ok(())
             }
             EvalError::UnhandledEffect { .. } => write!(f, "unhandled effect"),
             EvalError::Raised { .. } => write!(f, "raised error"),
-            EvalError::UnsupportedHandlerAction { action, effect, op, detail, backtrace } => {
+            EvalError::UnsupportedHandlerAction {
+                action,
+                effect,
+                op,
+                detail,
+                backtrace,
+            } => {
                 write!(
                     f,
                     "handler for effect `{effect}` returned the `{action}` action while \
@@ -242,7 +305,11 @@ impl std::fmt::Display for EvalError {
             // of selection), so the repair is to give the call a selecting site or
             // to keep one provision.
             EvalError::UnpinnedRequirement { detail } => write!(f, "{detail}"),
-            EvalError::AmbiguousRequirement { op, requirement, candidates } => write!(
+            EvalError::AmbiguousRequirement {
+                op,
+                requirement,
+                candidates,
+            } => write!(
                 f,
                 "dispatch to `{op}`: its requirement `{requirement}` is provided by \
                  tied providers ({}) and this route selects none — value-directed \
@@ -255,7 +322,12 @@ impl std::fmt::Display for EvalError {
             // `TypeError::AmbiguousSpecOpDispatch` and both `LoadError` renderings —
             // the same tie is refused at LOAD when the carrier is statically concrete
             // and here when it is not, so the two faces must quote one sentence.
-            EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair } => write!(
+            EvalError::AmbiguousSpecOpDispatch {
+                op,
+                carrier,
+                candidates,
+                repair,
+            } => write!(
                 f,
                 "{}",
                 crate::kb::typing::ambiguous_spec_op_dispatch_message(
@@ -335,13 +407,20 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
         Value::Float(x) => x.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Unit => "()".to_string(),
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             let name = kb.local_name_of(*functor);
             if (pos.is_empty() && named.is_empty()) || depth >= MAX_DEPTH {
                 return name.to_string();
             }
-            let mut parts: Vec<String> =
-                pos.iter().map(|p| render_payload_at(kb, p, depth + 1)).collect();
+            let mut parts: Vec<String> = pos
+                .iter()
+                .map(|p| render_payload_at(kb, p, depth + 1))
+                .collect();
             for (fname, fv) in named.iter() {
                 parts.push(format!(
                     "{}: {}",

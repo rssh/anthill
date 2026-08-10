@@ -148,11 +148,13 @@ fn by_snd(name: &str, bracket: &str) -> String {
 fn a_bare_pin_leaves_the_witnesss_own_sub_goal_ambiguous() {
     let errs = load_errs(&program("wi870.tie", &by_fst("go", "")));
     assert!(
-        errs.iter().any(|e| e.contains("Ascending") && e.contains("Descending")),
+        errs.iter()
+            .any(|e| e.contains("Ascending") && e.contains("Descending")),
         "the tie is the witness's element ordering, naming both program rivals: {errs:?}"
     );
     assert!(
-        errs.iter().any(|e| e.contains("[Slot = Chosen]") || e.contains("named requirement slot")),
+        errs.iter()
+            .any(|e| e.contains("[Slot = Chosen]") || e.contains("named requirement slot")),
         "and the repair it prints is the value-position binding this ticket wires: {errs:?}"
     );
 }
@@ -200,13 +202,21 @@ fn each_named_slot_is_pinned_independently() {
         ),
     );
     assert_eq!(
-        eval_int(&src, "wi870.perslot.Driver.fstDesc", "OA descending decides"),
+        eval_int(
+            &src,
+            "wi870.perslot.Driver.fstDesc",
+            "OA descending decides"
+        ),
         1,
         "the first components decide — `sub(2, 1)` under the reversed ordering. Had \
          the two pins landed on each other's slots this would be `sub(1, 2)` = -1",
     );
     assert_eq!(
-        eval_int(&src, "wi870.perslot.Driver.sndDesc", "OB descending decides"),
+        eval_int(
+            &src,
+            "wi870.perslot.Driver.sndDesc",
+            "OB descending decides"
+        ),
         -8,
         "the first components tie at 5, so OB decides — `sub(1, 9)` under the reversed \
          ordering. Had the two pins landed on each other's slots this would be `sub(9, \
@@ -241,7 +251,11 @@ fn the_nested_pin_survives_into_a_bracket_less_later_call() {
         &format!("{}{}", set("asc", "Ascending"), set("desc", "Descending")),
     );
     assert_eq!(
-        eval_int(&src, "wi870.sigma.Driver.asc", "the set's least element, ascending"),
+        eval_int(
+            &src,
+            "wi870.sigma.Driver.asc",
+            "the set's least element, ascending"
+        ),
         1,
         "`insert` and `toList` carry the ordering in the ARGUMENT's type",
     );
@@ -269,7 +283,9 @@ fn the_nested_pin_survives_into_a_bracket_less_later_call() {
 fn a_binding_that_provides_nothing_at_the_sub_goal_is_refused() {
     let at_site = load_errs(&program("wi870.nosuch", &by_fst("go", "[OA = Duo]")));
     assert!(
-        at_site.iter().any(|e| e.contains("Duo") && e.contains("Ord")),
+        at_site
+            .iter()
+            .any(|e| e.contains("Duo") && e.contains("Ord")),
         "a value that provides the slot's spec NOWHERE is refused at the site, naming \
          both halves: {at_site:?}"
     );
@@ -312,7 +328,8 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
          pair(fst: \"b\", snd: \"a\"))\n",
     ));
     assert!(
-        key.iter().any(|e| e.contains("Pair") && e.contains("CONCRETE")),
+        key.iter()
+            .any(|e| e.contains("Pair") && e.contains("CONCRETE")),
         "in the KEY's value position a concrete provider is refused — §3.5 check 3, \
          unchanged: {key:?}"
     );
@@ -324,7 +341,11 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
          duo(l: pair(fst: \"a\", snd: \"z\"), r: 3), duo(l: pair(fst: \"b\", snd: \"a\"), r: 3))\n",
     );
     assert_eq!(
-        eval_int(&src, "wi870.check3slot.Driver.go", "a concrete provider in a slot"),
+        eval_int(
+            &src,
+            "wi870.check3slot.Driver.go",
+            "a concrete provider in a slot"
+        ),
         -1,
         "one level in, the identical name is ACCEPTED and answers: `Pair`'s own \
          lexicographic order puts (\"a\", \"z\") before (\"b\", \"a\"). Refusing here \
@@ -348,7 +369,11 @@ fn a_slot_binding_composes_to_any_depth() {
     };
     let src = program(
         "wi870.nested",
-        &format!("{}{}", nested("asc", "Ascending"), nested("desc", "Descending")),
+        &format!(
+            "{}{}",
+            nested("asc", "Ascending"),
+            nested("desc", "Descending")
+        ),
     );
     // The outer duo's first components are the INNER duos, which tie on THEIR first
     // component (5) — so the answer is decided by the inner witness's SECOND slot, two
@@ -360,7 +385,11 @@ fn a_slot_binding_composes_to_any_depth() {
         "the inner second components decide: `sub(9, 1)` ascending",
     );
     assert_eq!(
-        eval_int(&src, "wi870.nested.Driver.desc", "…flipped by the innermost pin"),
+        eval_int(
+            &src,
+            "wi870.nested.Driver.desc",
+            "…flipped by the innermost pin"
+        ),
         -8,
         "and only the INNERMOST binding differs between these two calls. That the \
          program loads at all is half the assertion: unpinned, that sub-goal ties \
@@ -390,7 +419,8 @@ fn an_unknown_key_in_the_value_is_still_refused_by_name() {
 fn a_plain_type_parameter_in_the_value_selects_nothing() {
     let errs = load_errs(&program("wi870.plain", &by_fst("go", "[A = Int64]")));
     assert!(
-        errs.iter().any(|e| e.contains("Ascending") && e.contains("Descending")),
+        errs.iter()
+            .any(|e| e.contains("Ascending") && e.contains("Descending")),
         "binding `A` says nothing about which `Ord[Int64]` answers, so the \
          element tie stands exactly as in the control: {errs:?}"
     );

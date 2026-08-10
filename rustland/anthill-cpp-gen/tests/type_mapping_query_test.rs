@@ -41,7 +41,11 @@ fn base_renames_resolve_via_query() {
 #[test]
 fn guarded_type_mapping_is_evaluated_not_refused() {
     let base = |fast_math: bool| {
-        let toggle = if fast_math { "fact FastMath(on: true)" } else { "fact FastMath(on: false)" };
+        let toggle = if fast_math {
+            "fact FastMath(on: true)"
+        } else {
+            "fact FastMath(on: false)"
+        };
         let source = format!(
             r#"
             namespace test.bodiedguard
@@ -64,7 +68,11 @@ fn guarded_type_mapping_is_evaluated_not_refused() {
     };
 
     // Guard holds → the overlay's host type is emitted.
-    assert_eq!(base(true).as_deref(), Some("float"), "passing guard → mapping applies");
+    assert_eq!(
+        base(true).as_deref(),
+        Some("float"),
+        "passing guard → mapping applies"
+    );
     // Guard fails → no mapping (the rule contributed no row).
     assert_eq!(base(false), None, "failing guard → no mapping resolves");
 }

@@ -8,7 +8,10 @@
 
 /// Call a nullary op and expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }

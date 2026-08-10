@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 /// Symbol table — maps strings to compact `Symbol(u32)` handles,
 /// with optional resolution metadata (kind, scope, qualified name).
 ///
@@ -5,9 +6,7 @@
 /// **Resolved** (local name + qualified name + kinds + parent scope).
 /// The scan-then-load pipeline defines symbols during scanning, then
 /// resolves references during loading.
-
 use std::collections::{HashMap, HashSet};
-use smallvec::SmallVec;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Symbol(u32);
@@ -410,7 +409,11 @@ impl ResolveResult {
     /// re-derived per site, and the site that re-derived it WRONG (silently standing an
     /// ambiguity down as if it were a miss) is what that ticket was.
     pub fn or_else(self, next: impl FnOnce() -> ResolveResult) -> ResolveResult {
-        if self.denotes() { self } else { next() }
+        if self.denotes() {
+            self
+        } else {
+            next()
+        }
     }
 }
 
@@ -505,9 +508,7 @@ impl SymbolTable {
             return sym;
         }
         let sym = Symbol(self.defs.len() as u32);
-        self.defs.push(SymbolDef::Unresolved {
-            name: s.to_owned(),
-        });
+        self.defs.push(SymbolDef::Unresolved { name: s.to_owned() });
         self.intern_map.insert(s.to_owned(), sym);
         sym
     }
@@ -657,7 +658,9 @@ impl SymbolTable {
             return true;
         }
         // Unresolved/unknown — nothing to hide.
-        let Some(decl_scope) = self.declaring_scope(sym) else { return true };
+        let Some(decl_scope) = self.declaring_scope(sym) else {
+            return true;
+        };
         // Walk the enclosing-parent chain up from `from_scope`.
         let mut stack = vec![from_scope];
         let mut visited = HashSet::new();
@@ -691,7 +694,8 @@ impl SymbolTable {
 
     /// Check if a name is a type parameter of the given scope.
     pub fn is_type_param(&self, scope: ScopeId, name: &str) -> bool {
-        self.scopes.get(&scope)
+        self.scopes
+            .get(&scope)
             .map_or(false, |s| s.type_params.contains(name))
     }
 
@@ -708,7 +712,9 @@ impl SymbolTable {
     /// The symbols of the type parameters `scope` declares, in declaration order.
     /// Empty for a scope that declares none (and for one that was never opened).
     pub fn type_param_syms(&self, scope: ScopeId) -> &[Symbol] {
-        self.scopes.get(&scope).map_or(&[], |s| s.type_params_ordered.as_slice())
+        self.scopes
+            .get(&scope)
+            .map_or(&[], |s| s.type_params_ordered.as_slice())
     }
 
     /// The symbol `scope` declares for the type parameter named `name`, or `None`.
@@ -719,7 +725,10 @@ impl SymbolTable {
     /// rebuilding `<owner qn>.<name>` and re-resolving it globally, which had to decide
     /// where the owner's name ended and could reach a different declaration entirely.
     pub fn type_param_sym(&self, scope: ScopeId, name: &str) -> Option<Symbol> {
-        self.type_param_syms(scope).iter().copied().find(|&s| self.local_name(s) == name)
+        self.type_param_syms(scope)
+            .iter()
+            .copied()
+            .find(|&s| self.local_name(s) == name)
     }
 
     /// Record an imported name alias in a scope.
@@ -858,19 +867,22 @@ impl SymbolTable {
             // `exposed` holds a sort's entity variants (proposal 044 job 2): a
             // non-empty set leaks only those variants to the enclosing scope; an
             // empty set (specs, namespaces) is fully visible via requires/wildcard.
-            data.parents.iter().filter_map(|p| {
-                if !p.is_enclosing {
-                    if let Some(parent) = self.scopes.get(&p.parent_scope) {
-                        if parent.type_params.contains(name) {
-                            return None;
-                        }
-                        if !parent.exposed.is_empty() && !parent.exposed.contains(name) {
-                            return None;
+            data.parents
+                .iter()
+                .filter_map(|p| {
+                    if !p.is_enclosing {
+                        if let Some(parent) = self.scopes.get(&p.parent_scope) {
+                            if parent.type_params.contains(name) {
+                                return None;
+                            }
+                            if !parent.exposed.is_empty() && !parent.exposed.contains(name) {
+                                return None;
+                            }
                         }
                     }
-                }
-                Some(p.parent_scope)
-            }).collect()
+                    Some(p.parent_scope)
+                })
+                .collect()
         } else {
             return ResolveResult::NotFound;
         };
@@ -937,8 +949,6 @@ impl SymbolTable {
             _ => None,
         }
     }
-
-
 }
 
 // ── Backward-compatible type alias ──────────────────────────────
@@ -1080,7 +1090,13 @@ mod tests {
         st.add_exposed(eq, "eq");
 
         // `Ord` includes `Eq`
-        st.add_parent(ordered, ScopeInclusion { parent_scope: eq, is_enclosing: false });
+        st.add_parent(
+            ordered,
+            ScopeInclusion {
+                parent_scope: eq,
+                is_enclosing: false,
+            },
+        );
 
         match st.resolve_in_scope("eq", ordered) {
             ResolveResult::Found(found) => assert_eq!(found, eq_sym),
@@ -1102,7 +1118,13 @@ mod tests {
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
         st.add_exposed(eq, "eq");
 
-        st.add_parent(ordered, ScopeInclusion { parent_scope: eq, is_enclosing: false });
+        st.add_parent(
+            ordered,
+            ScopeInclusion {
+                parent_scope: eq,
+                is_enclosing: false,
+            },
+        );
 
         // "T" should NOT resolve from parent (it's a type param)
         match st.resolve_in_scope("T", ordered) {
@@ -1128,8 +1150,20 @@ mod tests {
         st.define("foo", "B.foo", SymbolKind::Operation, b);
         st.add_exposed(b, "foo");
 
-        st.add_parent(c, ScopeInclusion { parent_scope: a, is_enclosing: false });
-        st.add_parent(c, ScopeInclusion { parent_scope: b, is_enclosing: false });
+        st.add_parent(
+            c,
+            ScopeInclusion {
+                parent_scope: a,
+                is_enclosing: false,
+            },
+        );
+        st.add_parent(
+            c,
+            ScopeInclusion {
+                parent_scope: b,
+                is_enclosing: false,
+            },
+        );
 
         match st.resolve_in_scope("foo", c) {
             ResolveResult::Ambiguous(candidates) => assert_eq!(candidates.len(), 2),
@@ -1146,7 +1180,13 @@ mod tests {
         st.add_exposed(a, "foo");
 
         let local_foo = st.define("foo", "B.foo", SymbolKind::Operation, b);
-        st.add_parent(b, ScopeInclusion { parent_scope: a, is_enclosing: false });
+        st.add_parent(
+            b,
+            ScopeInclusion {
+                parent_scope: a,
+                is_enclosing: false,
+            },
+        );
 
         // Local should win
         match st.resolve_in_scope("foo", b) {
@@ -1172,7 +1212,11 @@ mod tests {
     #[test]
     fn positional_label_index_inverts_positional_label() {
         for i in 0..64 {
-            assert_eq!(positional_label_index(&positional_label(i)), Some(i), "index {i}");
+            assert_eq!(
+                positional_label_index(&positional_label(i)),
+                Some(i),
+                "index {i}"
+            );
         }
     }
 
@@ -1180,8 +1224,14 @@ mod tests {
     /// bare `parse::<usize>()` used to admit — the drift WI-790 closes.
     #[test]
     fn non_synthetic_labels_have_no_index() {
-        for label in ["_0", "_01", "_00", "_007", "_", "_b", "_id", "_1a", "_+1", "x", "1", ""] {
-            assert_eq!(positional_label_index(label), None, "{label:?} is not synthetic");
+        for label in [
+            "_0", "_01", "_00", "_007", "_", "_b", "_id", "_1a", "_+1", "x", "1", "",
+        ] {
+            assert_eq!(
+                positional_label_index(label),
+                None,
+                "{label:?} is not synthetic"
+            );
         }
     }
 
@@ -1194,9 +1244,18 @@ mod tests {
     fn is_positional_label_at_is_index_sensitive() {
         assert!(is_positional_label_at("_1", 0));
         assert!(is_positional_label_at("_2", 1));
-        assert!(!is_positional_label_at("_2", 0), "`_2` in slot 0 is a user label");
-        assert!(!is_positional_label_at("_1", 1), "`_1` in slot 1 is a user label");
-        assert!(!is_positional_label_at("_01", 0), "leading zero is a user label");
+        assert!(
+            !is_positional_label_at("_2", 0),
+            "`_2` in slot 0 is a user label"
+        );
+        assert!(
+            !is_positional_label_at("_1", 1),
+            "`_1` in slot 1 is a user label"
+        );
+        assert!(
+            !is_positional_label_at("_01", 0),
+            "leading zero is a user label"
+        );
         assert!(!is_positional_label_at("_b", 0));
     }
 
@@ -1210,18 +1269,35 @@ mod tests {
         let mut syms = SymbolTable::new();
         let child = scope(&mut syms, "Child");
         let parent = scope(&mut syms, "Parent");
-        let link = ScopeInclusion { parent_scope: parent, is_enclosing: false };
+        let link = ScopeInclusion {
+            parent_scope: parent,
+            is_enclosing: false,
+        };
         syms.add_parent(child, link.clone());
         syms.add_parent(child, link.clone());
         syms.add_parent(child, link.clone());
-        assert_eq!(syms.scope(child).unwrap().parents.len(), 1, "one link, offered thrice");
+        assert_eq!(
+            syms.scope(child).unwrap().parents.len(),
+            1,
+            "one link, offered thrice"
+        );
 
         // …and the dedup is on the WHOLE inclusion, so the same parent scope reached
         // by an ENCLOSING edge is a SECOND link, not a repeat of the first. Without
         // this row the guard could be narrowed to `parent_scope` and nothing here
         // would notice.
-        syms.add_parent(child, ScopeInclusion { is_enclosing: true, ..link });
-        assert_eq!(syms.scope(child).unwrap().parents.len(), 2, "two DISTINCT links");
+        syms.add_parent(
+            child,
+            ScopeInclusion {
+                is_enclosing: true,
+                ..link
+            },
+        );
+        assert_eq!(
+            syms.scope(child).unwrap().parents.len(),
+            2,
+            "two DISTINCT links"
+        );
     }
 
     /// WI-984's rider, said as an assertion rather than left silent: dropping
@@ -1236,8 +1312,20 @@ mod tests {
         let mut syms = SymbolTable::new();
         let child = scope(&mut syms, "Stack");
         let eq = scope(&mut syms, "Eq");
-        syms.add_parent(child, ScopeInclusion { parent_scope: eq, is_enclosing: false });
-        syms.add_parent(child, ScopeInclusion { parent_scope: eq, is_enclosing: false });
+        syms.add_parent(
+            child,
+            ScopeInclusion {
+                parent_scope: eq,
+                is_enclosing: false,
+            },
+        );
+        syms.add_parent(
+            child,
+            ScopeInclusion {
+                parent_scope: eq,
+                is_enclosing: false,
+            },
+        );
         assert_eq!(syms.scope(child).unwrap().parents.len(), 1);
     }
 

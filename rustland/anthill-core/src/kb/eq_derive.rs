@@ -51,9 +51,9 @@ use smallvec::SmallVec;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
-use crate::kb::ClauseKind;
 use crate::kb::term::Term;
 use crate::kb::term_view::{TermView, ViewHead};
+use crate::kb::ClauseKind;
 use crate::kb::KnowledgeBase;
 
 /// WI-664 entry point (a post-load pass). See the module header for placement.
@@ -211,11 +211,21 @@ fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Sy
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = super::typing::get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_view) = super::typing::get_named_arg(kb, &named, "spec") else { continue };
-        let Some(spec_base) = super::load::provides_spec_base_sym(kb, spec_view) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = super::typing::get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_view) = super::typing::get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some(spec_base) = super::load::provides_spec_base_sym(kb, spec_view) else {
+            continue;
+        };
         if kb.canonical_sort_sym(spec_base) == noneq_canon {
             out.push(carrier);
         }
@@ -233,7 +243,9 @@ fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Sy
 fn composite_field_sorts(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     for ctor in kb.field_constructors_of_sort(sort) {
-        let Some(fields) = kb.entity_field_types(ctor) else { continue };
+        let Some(fields) = kb.entity_field_types(ctor) else {
+            continue;
+        };
         let fields: Vec<(Symbol, Value)> = fields.to_vec();
         for (_name, ftype) in &fields {
             if let Some(fsort) = super::typing::sort_functor_of_view(kb, ftype) {
@@ -316,8 +328,16 @@ impl KnowledgeBase {
     pub(crate) fn same_shape_child_pairs(&self, a: &Value, b: &Value) -> FieldPairs {
         let (pa, na) = match (a.head(self), b.head(self)) {
             (
-                ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
-                ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+                ViewHead::Functor {
+                    functor: fa,
+                    pos_arity: pa,
+                    named_arity: na,
+                },
+                ViewHead::Functor {
+                    functor: fb,
+                    pos_arity: pb,
+                    named_arity: nb,
+                },
             ) => {
                 if fa != fb || pa != pb || na != nb {
                     return FieldPairs::Mismatch;

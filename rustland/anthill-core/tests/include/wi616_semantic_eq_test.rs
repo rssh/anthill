@@ -116,7 +116,11 @@ fn eq_on_entities_without_instance_stays_structural() {
     let (r1, r2) = (kb.alloc(Term::Ref(red)), kb.alloc(Term::Ref(red)));
     assert_eq!(solutions(&mut kb, "se", r1, r2), 1, "eq(red,red) must hold");
     let (r, b) = (kb.alloc(Term::Ref(red)), kb.alloc(Term::Ref(blue)));
-    assert_eq!(solutions(&mut kb, "se", r, b), 0, "eq(red,blue) must not hold");
+    assert_eq!(
+        solutions(&mut kb, "se", r, b),
+        0,
+        "eq(red,blue) must not hold"
+    );
 }
 
 // ── Set: membership equality via the dispatched carrier eq ────────────────
@@ -152,10 +156,18 @@ fn set_eq_distinguishes_different_members() {
     let mut kb = load_kb();
     let a = int_set(&mut kb, &[1, 2]);
     let b = int_set(&mut kb, &[1, 3]);
-    assert_eq!(solutions(&mut kb, "se", a, b), 0, "eq({{1,2}}, {{1,3}}) must not hold");
+    assert_eq!(
+        solutions(&mut kb, "se", a, b),
+        0,
+        "eq({{1,2}}, {{1,3}}) must not hold"
+    );
     let a = int_set(&mut kb, &[1]);
     let b = int_set(&mut kb, &[1, 2]);
-    assert_eq!(solutions(&mut kb, "se", a, b), 0, "eq({{1}}, {{1,2}}) must not hold");
+    assert_eq!(
+        solutions(&mut kb, "se", a, b),
+        0,
+        "eq({{1}}, {{1,2}}) must not hold"
+    );
 }
 
 #[test]
@@ -163,7 +175,11 @@ fn set_eq_structurally_identical_sets_hold_by_reflexivity() {
     let mut kb = load_kb();
     let a = int_set(&mut kb, &[1, 2]);
     let b = int_set(&mut kb, &[1, 2]);
-    assert_eq!(solutions(&mut kb, "se", a, b), 1, "eq({{1,2}}, {{1,2}}) must hold");
+    assert_eq!(
+        solutions(&mut kb, "se", a, b),
+        1,
+        "eq({{1,2}}, {{1,2}}) must hold"
+    );
 }
 
 #[test]
@@ -171,7 +187,11 @@ fn set_neq_negates_membership_equality() {
     let mut kb = load_kb();
     let a = int_set(&mut kb, &[1, 2]);
     let b = int_set(&mut kb, &[1, 3]);
-    assert_eq!(solutions(&mut kb, "sne", a, b), 1, "neq({{1,2}}, {{1,3}}) must hold");
+    assert_eq!(
+        solutions(&mut kb, "sne", a, b),
+        1,
+        "neq({{1,2}}, {{1,3}}) must hold"
+    );
     let a = int_set(&mut kb, &[1, 2]);
     let b = int_set(&mut kb, &[2, 1]);
     assert_eq!(
@@ -221,7 +241,11 @@ fn struct_eq_on_sets_stays_structural() {
     );
     let c = int_set(&mut kb, &[1, 2]);
     let d = int_set(&mut kb, &[1, 2]);
-    assert_eq!(solutions(&mut kb, "sid", c, d), 1, "identical spellings are `===`");
+    assert_eq!(
+        solutions(&mut kb, "sid", c, d),
+        1,
+        "identical spellings are `===`"
+    );
 }
 
 // ── Map: `Eq[Map]` declared-but-unimplemented is a LOUD type error (WI-650) ──
@@ -286,7 +310,11 @@ fn nonlinear_head_output_var_repro() {
         let out = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(out_vid)));
         let goal = fn_term(&mut kb, &format!("test.wi616.{pred}"), &[boxed, out]);
         let sols = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(sols.len(), 1, "{pred}(box(42), ?out) must have one solution");
+        assert_eq!(
+            sols.len(),
+            1,
+            "{pred}(box(42), ?out) must have one solution"
+        );
         let bound = kb.reify(out, &sols[0].subst);
         assert!(
             reifies_to_int(&kb, &bound, 42),
@@ -344,7 +372,9 @@ fn nonlinear_head_doubly_concrete_unifies() {
     // rule var structurally (some(?x) vs some(42) differ) and dropped the
     // candidate: silent 0 solutions.
     let mut kb = load_kb();
-    let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").unwrap();
+    let some_sym = kb
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .unwrap();
     let x_name = kb.intern("x");
     let x_vid = kb.fresh_var(x_name);
     let x = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(x_vid)));
@@ -396,7 +426,11 @@ fn nonlinear_head_inverse_orientation_binds() {
     let v42 = int_term(&mut kb, 42);
     let goal = fn_term(&mut kb, "test.wi616.unbox0", &[boxed, v42]);
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
-    assert_eq!(sols.len(), 1, "unbox0(box(?out), 42) must have one solution");
+    assert_eq!(
+        sols.len(),
+        1,
+        "unbox0(box(?out), 42) must have one solution"
+    );
     let bound = kb.reify(out, &sols[0].subst);
     assert!(
         reifies_to_int(&kb, &bound, 42),
@@ -432,11 +466,23 @@ fn dispatch_on_non_ground_operand_suspends_and_never_binds() {
     let s1 = set_of(&mut kb, &[x]);
     let s2 = set_of(&mut kb, &[v2]);
     let (def_eq, susp_eq) = solution_split(&mut kb, "se", s1, s2);
-    assert_eq!(def_eq, 0, "eq over a non-ground overriding carrier must not decide");
-    assert!(susp_eq > 0, "eq over a non-ground overriding carrier must SUSPEND, not fail");
+    assert_eq!(
+        def_eq, 0,
+        "eq over a non-ground overriding carrier must not decide"
+    );
+    assert!(
+        susp_eq > 0,
+        "eq over a non-ground overriding carrier must SUSPEND, not fail"
+    );
     let (def_ne, susp_ne) = solution_split(&mut kb, "sne", s1, s2);
-    assert_eq!(def_ne, 0, "neq over a non-ground overriding carrier must not decide");
-    assert!(susp_ne > 0, "neq over a non-ground overriding carrier must SUSPEND, not fail");
+    assert_eq!(
+        def_ne, 0,
+        "neq over a non-ground overriding carrier must not decide"
+    );
+    assert!(
+        susp_ne > 0,
+        "neq over a non-ground overriding carrier must SUSPEND, not fail"
+    );
     // `=` never binds: the suspended solutions must leave ?x unbound.
     let goal = fn_term(&mut kb, "test.wi616.se", &[s1, s2]);
     for sol in kb.resolve(&[goal], &ResolveConfig::default()) {
@@ -464,20 +510,40 @@ fn buried_override_suspends_instead_of_structural_verdict() {
     let some1 = fn_term(&mut kb, "anthill.prelude.Option.some", &[s12]);
     let some2 = fn_term(&mut kb, "anthill.prelude.Option.some", &[s21]);
     let (def_eq, susp_eq) = solution_split(&mut kb, "se", some1, some2);
-    assert_eq!(def_eq, 0, "eq(some({{1,2}}), some({{2,1}})) must not decide structurally");
-    assert!(susp_eq > 0, "eq over a buried override must SUSPEND, not fail");
+    assert_eq!(
+        def_eq, 0,
+        "eq(some({{1,2}}), some({{2,1}})) must not decide structurally"
+    );
+    assert!(
+        susp_eq > 0,
+        "eq over a buried override must SUSPEND, not fail"
+    );
     let (def_ne, susp_ne) = solution_split(&mut kb, "sne", some1, some2);
-    assert_eq!(def_ne, 0, "neq(some({{1,2}}), some({{2,1}})) must not decide structurally");
-    assert!(susp_ne > 0, "neq over a buried override must SUSPEND, not fail");
+    assert_eq!(
+        def_ne, 0,
+        "neq(some({{1,2}}), some({{2,1}})) must not decide structurally"
+    );
+    assert!(
+        susp_ne > 0,
+        "neq over a buried override must SUSPEND, not fail"
+    );
     // Purely structural nesting still decides: some(1) vs some(2) has no
     // reachable override.
     let (one, two) = (int_term(&mut kb, 1), int_term(&mut kb, 2));
     let sa = fn_term(&mut kb, "anthill.prelude.Option.some", &[one]);
     let sb = fn_term(&mut kb, "anthill.prelude.Option.some", &[two]);
-    assert_eq!(solutions(&mut kb, "sne", sa, sb), 1, "neq(some(1), some(2)) must hold");
+    assert_eq!(
+        solutions(&mut kb, "sne", sa, sb),
+        1,
+        "neq(some(1), some(2)) must hold"
+    );
     let sc = fn_term(&mut kb, "anthill.prelude.Option.some", &[one]);
     let sd = fn_term(&mut kb, "anthill.prelude.Option.some", &[two]);
-    assert_eq!(solutions(&mut kb, "se", sc, sd), 0, "eq(some(1), some(2)) must not hold");
+    assert_eq!(
+        solutions(&mut kb, "se", sc, sd),
+        0,
+        "eq(some(1), some(2)) must not hold"
+    );
 }
 
 #[test]
@@ -491,16 +557,32 @@ fn larger_set_eq_uses_fresh_sub_budget() {
     let rev: Vec<i64> = (1..=12).rev().collect();
     let a = int_set(&mut kb, &fwd);
     let b = int_set(&mut kb, &rev);
-    assert_eq!(solutions(&mut kb, "se", a, b), 1, "12-element permuted sets are equal");
+    assert_eq!(
+        solutions(&mut kb, "se", a, b),
+        1,
+        "12-element permuted sets are equal"
+    );
     let a2 = int_set(&mut kb, &fwd);
     let b2 = int_set(&mut kb, &rev);
-    assert_eq!(solutions(&mut kb, "sne", a2, b2), 0, "equal 12-element sets are not neq");
+    assert_eq!(
+        solutions(&mut kb, "sne", a2, b2),
+        0,
+        "equal 12-element sets are not neq"
+    );
     let mut fwd13 = fwd.clone();
     fwd13.push(13);
     let c = int_set(&mut kb, &fwd13);
     let d = int_set(&mut kb, &rev);
-    assert_eq!(solutions(&mut kb, "se", c, d), 0, "13-vs-12-element sets differ");
+    assert_eq!(
+        solutions(&mut kb, "se", c, d),
+        0,
+        "13-vs-12-element sets differ"
+    );
     let c2 = int_set(&mut kb, &fwd13);
     let d2 = int_set(&mut kb, &rev);
-    assert_eq!(solutions(&mut kb, "sne", c2, d2), 1, "13-vs-12-element sets are neq");
+    assert_eq!(
+        solutions(&mut kb, "sne", c2, d2),
+        1,
+        "13-vs-12-element sets are neq"
+    );
 }

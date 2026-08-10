@@ -13,8 +13,8 @@
 //!      forms LOAD clean — the runtime some-shape is pinned in
 //!      `wi408_some_coercion_test.rs`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn try_load(extra: &str) -> Vec<load::LoadError> {
@@ -35,7 +35,10 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
 }
 
 fn errors_text(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── The two proven holes are now diagnosed ──────────────────────────────────
@@ -103,7 +106,10 @@ namespace test.wi385.ok
 end
 "#;
     let errs = try_load(src);
-    eprintln!("=== correct_arg_and_field_load_clean ===\n{}", errors_text(&errs));
+    eprintln!(
+        "=== correct_arg_and_field_load_clean ===\n{}",
+        errors_text(&errs)
+    );
     assert!(
         errs.is_empty(),
         "correct Int64 arg/field must load clean: {}",
@@ -219,7 +225,10 @@ namespace test.wi385.bareopt
 end
 "#;
     let errs = try_load(src);
-    eprintln!("=== bare_option_field_accepts_value ===\n{}", errors_text(&errs));
+    eprintln!(
+        "=== bare_option_field_accepts_value ===\n{}",
+        errors_text(&errs)
+    );
     assert!(
         errs.is_empty(),
         "bare Option field accepts any value (some-coercion): {}",

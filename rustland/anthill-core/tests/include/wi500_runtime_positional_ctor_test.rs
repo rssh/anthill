@@ -17,15 +17,18 @@
 
 use anthill_core::eval::value::Value;
 use anthill_core::eval::Interpreter;
-use anthill_core::kb::term::{Literal, Term};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Literal, Term};
+use anthill_core::kb::ClauseKind;
+use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
 use std::rc::Rc;
-use anthill_core::kb::ClauseKind;
 
 fn config() -> ResolveConfig {
-    ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
+    ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    }
 }
 
 /// Resolve the CANONICAL named query `Verified(at: <at>)` and count solutions.
@@ -75,11 +78,22 @@ fn alloc_from_value_desugars_positional_to_named() {
     let v = positional_verified(&kb, "now");
     let t = kb.alloc_from_value(&v).expect("lower positional entity");
     match kb.get_term(t) {
-        Term::Fn { pos_args, named_args, .. } => {
-            assert!(pos_args.is_empty(), "positional args must be desugared away, got {pos_args:?}");
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            assert!(
+                pos_args.is_empty(),
+                "positional args must be desugared away, got {pos_args:?}"
+            );
             assert_eq!(named_args.len(), 1, "exactly the one declared field");
             let (field, _) = named_args[0];
-            assert_eq!(kb.local_name_of(field), "at", "positional arg fills the declared `at` field");
+            assert_eq!(
+                kb.local_name_of(field),
+                "at",
+                "positional arg fills the declared `at` field"
+            );
         }
         other => panic!("expected Term::Fn, got {other:?}"),
     }
@@ -111,10 +125,15 @@ fn op_body_positional_ctor_persisted_matches() {
     let kb = crate::common::load_kb_with(SRC);
     let mut interp = Interpreter::new(kb);
     let v = interp.call("test.wi500.mk", &[]).expect("call mk");
-    let t = interp.kb_mut().alloc_from_value(&v).expect("lower op result");
+    let t = interp
+        .kb_mut()
+        .alloc_from_value(&v)
+        .expect("lower op result");
     let sort = interp.kb_mut().intern("Fact");
     let domain = interp.kb_mut().intern("test.wi500");
-    interp.kb_mut().assert_fact(t, ClauseKind::Fact, domain, None);
+    interp
+        .kb_mut()
+        .assert_fact(t, ClauseKind::Fact, domain, None);
     assert_eq!(
         resolve_verified_at(interp.kb_mut(), "now"),
         1,

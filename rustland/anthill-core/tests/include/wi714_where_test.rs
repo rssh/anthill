@@ -150,6 +150,8 @@ end
             got.contains("2-column"),
             "expected a multi-column whole-row diagnostic, got: {got}",
         ),
-        other => panic!("expected a clean TypeMismatch for a multi-column whole-row where, got {other:?}"),
+        other => panic!(
+            "expected a clean TypeMismatch for a multi-column whole-row where, got {other:?}"
+        ),
     }
 }

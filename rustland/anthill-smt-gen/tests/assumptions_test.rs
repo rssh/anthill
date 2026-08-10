@@ -43,22 +43,29 @@ fn assumptions_appear_as_assert_in_preamble() {
         ],
         ..Default::default()
     };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.assumptions.violation", &cfg)
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.assumptions.violation", &cfg)
         .expect("emit");
-    assert!(smt.contains("(assert (>= var_d 5.0))"),
-        "first assumption missing:\n{smt}");
-    assert!(smt.contains("(assert (<= var_d 7.0))"),
-        "second assumption missing:\n{smt}");
+    assert!(
+        smt.contains("(assert (>= var_d 5.0))"),
+        "first assumption missing:\n{smt}"
+    );
+    assert!(
+        smt.contains("(assert (<= var_d 7.0))"),
+        "second assumption missing:\n{smt}"
+    );
     // The marker comment helps debug-readability of generated SMT.
-    assert!(smt.contains("Cited-lemma assumptions"),
-        "expected the assumptions block comment:\n{smt}");
+    assert!(
+        smt.contains("Cited-lemma assumptions"),
+        "expected the assumptions block comment:\n{smt}"
+    );
     // Must precede the violation goal so Z3 has the hypothesis when
     // deciding `lt(?d, d_min)`.
     let assume_idx = smt.find("(>= var_d 5.0)").unwrap();
     let goal_idx = smt.find("(< ").unwrap_or(usize::MAX);
-    assert!(assume_idx < goal_idx,
-        "assumption must come before goal:\n{smt}");
+    assert!(
+        assume_idx < goal_idx,
+        "assumption must come before goal:\n{smt}"
+    );
 }
 
 #[test]
@@ -69,9 +76,10 @@ fn empty_assumptions_emit_no_block() {
         assumptions: vec![],
         ..Default::default()
     };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.assumptions.violation", &cfg)
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.assumptions.violation", &cfg)
         .expect("emit");
-    assert!(!smt.contains("Cited-lemma assumptions"),
-        "no assumptions ⇒ no block comment:\n{smt}");
+    assert!(
+        !smt.contains("Cited-lemma assumptions"),
+        "no assumptions ⇒ no block comment:\n{smt}"
+    );
 }

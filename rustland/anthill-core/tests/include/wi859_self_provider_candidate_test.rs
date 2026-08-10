@@ -54,7 +54,9 @@ use anthill_core::kb::typing::provider_coherence_candidates;
 
 /// The load diagnostics of `src`, empty when it loads clean.
 fn load_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// `Desc` plus a self-providing `Leaf`, with `rival` interpolated after them — so the
@@ -189,12 +191,18 @@ end
     // The group IS the cell claimed above — asserted rather than assumed, since a
     // program that loads for some unrelated reason would satisfy everything else.
     let mut kb = crate::common::load_kb_with(src);
-    let mut cands =
-        provider_coherence_candidates(&kb, "anthill.prelude.PartialEq", "test.wi859.completion.Pebble");
+    let mut cands = provider_coherence_candidates(
+        &kb,
+        "anthill.prelude.PartialEq",
+        "test.wi859.completion.Pebble",
+    );
     cands.sort();
     assert_eq!(
         cands,
-        vec!["fact".to_string(), "self:test.wi859.completion.Pebble".to_string()],
+        vec![
+            "fact".to_string(),
+            "self:test.wi859.completion.Pebble".to_string()
+        ],
         "expected the (1 fact, 0 witnesses, 1 self) cell — the composition whose \
          admission this ticket had to decide"
     );
@@ -204,7 +212,12 @@ end
         crate::wi837_witness_eq_dispatch_test::entity_term(&mut kb, ctor, &[("n", 2)]),
     );
     assert_eq!(
-        crate::wi837_witness_eq_dispatch_test::solutions(&mut kb, "test.wi859.completion.peq", x, y),
+        crate::wi837_witness_eq_dispatch_test::solutions(
+            &mut kb,
+            "test.wi859.completion.peq",
+            x,
+            y
+        ),
         1,
         "the retroactive fact's `eq` must still ANSWER — 0 solutions is the structural \
          fallback, i.e. the completing fact was dropped"
@@ -368,7 +381,9 @@ fn the_mixed_fact_and_witness_pair_is_still_refused() {
 end
 "#;
     assert!(
-        load_errors(src).iter().any(|e| e.contains("ambiguous provider kinds")),
+        load_errors(src)
+            .iter()
+            .any(|e| e.contains("ambiguous provider kinds")),
         "WI-838's verdict is unchanged by the third kind: {:?}",
         load_errors(src)
     );

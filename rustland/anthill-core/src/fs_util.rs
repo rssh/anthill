@@ -49,8 +49,8 @@ pub fn collect_files_recursive(
     extensions: &[&str],
     out: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
-    let entries = fs::read_dir(dir)
-        .map_err(|e| format!("cannot read directory {}: {e}", dir.display()))?;
+    let entries =
+        fs::read_dir(dir).map_err(|e| format!("cannot read directory {}: {e}", dir.display()))?;
     for entry in entries {
         let entry = entry
             .map_err(|e| format!("cannot read an entry of directory {}: {e}", dir.display()))?;

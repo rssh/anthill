@@ -6,7 +6,6 @@
 //! both read every project .anthill file, so each must see and remove
 //! the other's Tag facts.
 
-
 use std::process::Command;
 
 use crate::common::{read_combined, setup_project};
@@ -32,13 +31,19 @@ fact WorkItem(
 fn run_bundle(proj: &std::path::Path, args: &[&str]) -> std::process::Output {
     let mut full = vec!["-d", proj.to_str().unwrap(), "--anthill"];
     full.extend_from_slice(args);
-    Command::new(BIN).args(&full).output().expect("run anthill-todo")
+    Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo")
 }
 
 fn run_native(proj: &std::path::Path, args: &[&str]) -> std::process::Output {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    Command::new(BIN).args(&full).output().expect("run anthill-todo")
+    Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo")
 }
 
 fn ok(out: &std::process::Output) -> String {
@@ -61,10 +66,16 @@ fn bundle_tag_persists_and_reports() {
     let proj = setup_project(&tmp, TWO_ITEMS);
 
     let stdout = ok(&run_bundle(&proj, &["tag", "WI-001", "typing"]));
-    assert!(stdout.contains("tagged: WI-001 +typing"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("tagged: WI-001 +typing"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("fact Tag("), "no Tag fact written: {combined}");
+    assert!(
+        combined.contains("fact Tag("),
+        "no Tag fact written: {combined}"
+    );
     assert!(combined.contains("workitem: \"WI-001\""));
     assert!(combined.contains("name: \"typing\""));
 
@@ -114,10 +125,16 @@ fn bundle_untag_removes_the_fact() {
 
     ok(&run_bundle(&proj, &["tag", "WI-001", "typing"]));
     let stdout = ok(&run_bundle(&proj, &["untag", "WI-001", "typing"]));
-    assert!(stdout.contains("untagged: WI-001 -typing"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("untagged: WI-001 -typing"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("fact Tag("), "Tag fact survived: {combined}");
+    assert!(
+        !combined.contains("fact Tag("),
+        "Tag fact survived: {combined}"
+    );
 }
 
 #[test]
@@ -141,10 +158,16 @@ fn native_tag_bundle_untag_interop() {
 
     ok(&run_native(&proj, &["tag", "WI-001", "typing"]));
     let stdout = ok(&run_bundle(&proj, &["untag", "WI-001", "typing"]));
-    assert!(stdout.contains("untagged: WI-001 -typing"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("untagged: WI-001 -typing"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("fact Tag("), "Tag fact survived: {combined}");
+    assert!(
+        !combined.contains("fact Tag("),
+        "Tag fact survived: {combined}"
+    );
 }
 
 /// Bundle-written tag must be visible to and removable by the native path.
@@ -155,8 +178,14 @@ fn bundle_tag_native_untag_interop() {
 
     ok(&run_bundle(&proj, &["tag", "WI-001", "typing"]));
     let stdout = ok(&run_native(&proj, &["untag", "WI-001", "typing"]));
-    assert!(stdout.contains("untagged: WI-001 -typing"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("untagged: WI-001 -typing"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("fact Tag("), "Tag fact survived: {combined}");
+    assert!(
+        !combined.contains("fact Tag("),
+        "Tag fact survived: {combined}"
+    );
 }

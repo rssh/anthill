@@ -14,7 +14,6 @@
 //! refutation, a capped answer set must not read as a complete enumeration,
 //! and a strategy flag must not be silently dropped under a listing mode.
 
-
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
@@ -42,7 +41,9 @@ fn api_definite_bindings() -> Vec<String> {
     load::load_all(&mut kb, &[&parsed], &FileSourceResolver::new(Vec::new()))
         .expect("fixture loads");
 
-    let functor = kb.try_resolve_symbol("probe.wi767.loc").expect("rule loaded");
+    let functor = kb
+        .try_resolve_symbol("probe.wi767.loc")
+        .expect("rule loaded");
     let n_sym = kb.intern("n");
     let vid = kb.fresh_var(n_sym);
     let goal = Value::Entity {
@@ -69,20 +70,32 @@ fn api_definite_bindings() -> Vec<String> {
 #[test]
 fn default_query_agrees_with_kb_resolve_on_an_enumerating_rule() {
     let api = api_definite_bindings();
-    assert_eq!(api, vec!["a".to_string()],
-               "API baseline moved — fixture or resolver changed");
+    assert_eq!(
+        api,
+        vec!["a".to_string()],
+        "API baseline moved — fixture or resolver changed"
+    );
 
     let fx = fixture();
     let out = anthill(&["query", "-p", fx.to_str().unwrap(), "probe.wi767.loc(?n)"]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
     for value in &api {
-        assert!(out.stdout.contains(&format!("?n = {value:?}")),
-                "CLI must bind ?n = {value:?} like kb.resolve; got stdout:\n{}", out.stdout);
+        assert!(
+            out.stdout.contains(&format!("?n = {value:?}")),
+            "CLI must bind ?n = {value:?} like kb.resolve; got stdout:\n{}",
+            out.stdout
+        );
     }
-    assert!(out.has_stdout_line(&format!("{} solution(s)", api.len())),
-            "CLI must report exactly the definite solutions; got stdout:\n{}", out.stdout);
-    assert!(!out.stdout.contains("residual"),
-            "no goal flounders here; got stdout:\n{}", out.stdout);
+    assert!(
+        out.has_stdout_line(&format!("{} solution(s)", api.len())),
+        "CLI must report exactly the definite solutions; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("residual"),
+        "no goal flounders here; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// `--match` keeps the old structural browse, made honest: a bodied rule's
@@ -91,14 +104,29 @@ fn default_query_agrees_with_kb_resolve_on_an_enumerating_rule() {
 #[test]
 fn match_mode_lists_the_rule_head_without_evaluating() {
     let fx = fixture();
-    let out = anthill(&["query", "--match", "-p", fx.to_str().unwrap(), "probe.wi767.loc(?n)"]);
+    let out = anthill(&[
+        "query",
+        "--match",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.loc(?n)",
+    ]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("1 result(s)"),
-            "one head match expected; got stdout:\n{}", out.stdout);
-    assert!(out.stdout.contains(" :- "),
-            "a bodied rule must show its body; got stdout:\n{}", out.stdout);
-    assert!(!out.stdout.contains("?n = \"a\""),
-            "--match must not evaluate the rule body; got stdout:\n{}", out.stdout);
+    assert!(
+        out.has_stdout_line("1 result(s)"),
+        "one head match expected; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(" :- "),
+        "a bodied rule must show its body; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("?n = \"a\""),
+        "--match must not evaluate the rule body; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// `--match` on a fact pattern echoes the stored fact itself — the browse view
@@ -106,35 +134,67 @@ fn match_mode_lists_the_rule_head_without_evaluating() {
 #[test]
 fn match_mode_echoes_fact_heads() {
     let fx = fixture();
-    let out = anthill(&["query", "--match", "-p", fx.to_str().unwrap(),
-                        "probe.wi767.LocalSort.Local(name: ?n, val: ?v)"]);
+    let out = anthill(&[
+        "query",
+        "--match",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.LocalSort.Local(name: ?n, val: ?v)",
+    ]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("name: \"a\"") && out.stdout.contains("val: \"one\""),
-            "the stored fact must be echoed with its fields; got stdout:\n{}", out.stdout);
-    assert!(out.has_stdout_line("2 result(s)"),
-            "both Local facts match; got stdout:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("name: \"a\"") && out.stdout.contains("val: \"one\""),
+        "the stored fact must be echoed with its fields; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.has_stdout_line("2 result(s)"),
+        "both Local facts match; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// `--resolve` predates the default flip; it stays accepted and identical.
 #[test]
 fn resolve_flag_is_still_accepted() {
     let fx = fixture();
-    let out = anthill(&["query", "--resolve", "-p", fx.to_str().unwrap(), "probe.wi767.loc(?n)"]);
+    let out = anthill(&[
+        "query",
+        "--resolve",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.loc(?n)",
+    ]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("?n = \"a\"") && out.has_stdout_line("1 solution(s)"),
-            "--resolve must answer like the default; got stdout:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("?n = \"a\"") && out.has_stdout_line("1 solution(s)"),
+        "--resolve must answer like the default; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// `--match` and `--resolve` contradict each other; clap refuses the combo.
 #[test]
 fn match_conflicts_with_resolve() {
     let fx = fixture();
-    let out = anthill(&["query", "--match", "--resolve", "-p", fx.to_str().unwrap(),
-                        "probe.wi767.loc(?n)"]);
-    assert_ne!(out.code, 0, "conflicting flags must be refused; stdout:\n{}", out.stdout);
-    assert!(out.stderr.contains("cannot be used with"),
-            "the refusal must come from the declared conflict, not an unrelated failure; stderr:\n{}",
-            out.stderr);
+    let out = anthill(&[
+        "query",
+        "--match",
+        "--resolve",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.loc(?n)",
+    ]);
+    assert_ne!(
+        out.code, 0,
+        "conflicting flags must be refused; stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("cannot be used with"),
+        "the refusal must come from the declared conflict, not an unrelated failure; stderr:\n{}",
+        out.stderr
+    );
 }
 
 /// A depth-truncated search abandoned branches, so its "no solutions" is
@@ -143,13 +203,25 @@ fn match_conflicts_with_resolve() {
 #[test]
 fn depth_truncated_search_is_flagged_undecided() {
     let fx = fixture();
-    let out = anthill(&["query", "--max-depth", "1", "-p", fx.to_str().unwrap(),
-                        "probe.wi767.loc(?n)"]);
+    let out = anthill(&[
+        "query",
+        "--max-depth",
+        "1",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.loc(?n)",
+    ]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("no solutions"),
-            "depth 1 cannot reach the rule body; got stdout:\n{}", out.stdout);
-    assert!(out.stdout.contains("truncated at --max-depth"),
-            "a truncated search must carry the UNDECIDED caveat; got stdout:\n{}", out.stdout);
+    assert!(
+        out.stdout.contains("no solutions"),
+        "depth 1 cannot reach the rule body; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("truncated at --max-depth"),
+        "a truncated search must carry the UNDECIDED caveat; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// Hitting --max-results must say so: the resolver is asked for one solution
@@ -158,11 +230,20 @@ fn depth_truncated_search_is_flagged_undecided() {
 #[test]
 fn hitting_the_result_cap_is_flagged() {
     let fx = fixture();
-    let out = anthill(&["query", "--max-results", "1", "-p", fx.to_str().unwrap(),
-                        "probe.wi767.LocalSort.Local(name: ?n, val: ?v)"]);
+    let out = anthill(&[
+        "query",
+        "--max-results",
+        "1",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.LocalSort.Local(name: ?n, val: ?v)",
+    ]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("1 solution(s) shown — more exist, raise --max-results"),
-            "two Local facts behind a cap of 1 must flag the cut; got stdout:\n{}", out.stdout);
+    assert!(
+        out.has_stdout_line("1 solution(s) shown — more exist, raise --max-results"),
+        "two Local facts behind a cap of 1 must flag the cut; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// `--max-depth` budgets RESOLUTION; under `--match` (or a listing mode) it
@@ -170,12 +251,26 @@ fn hitting_the_result_cap_is_flagged() {
 #[test]
 fn max_depth_under_match_is_refused() {
     let fx = fixture();
-    let out = anthill(&["query", "--match", "--max-depth", "3", "-p", fx.to_str().unwrap(),
-                        "probe.wi767.loc(?n)"]);
-    assert_eq!(out.code, 1,
-               "--max-depth under --match must be refused, not ignored; stdout:\n{}", out.stdout);
-    assert!(out.stderr.contains("--max-depth applies only to resolution"),
-            "the refusal must name the flag; got stderr:\n{}", out.stderr);
+    let out = anthill(&[
+        "query",
+        "--match",
+        "--max-depth",
+        "3",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.loc(?n)",
+    ]);
+    assert_eq!(
+        out.code, 1,
+        "--max-depth under --match must be refused, not ignored; stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stderr
+            .contains("--max-depth applies only to resolution"),
+        "the refusal must name the flag; got stderr:\n{}",
+        out.stderr
+    );
 }
 
 /// `--match` (and `--resolve`) select the PATTERN answering strategy; under a
@@ -186,10 +281,23 @@ fn match_under_a_listing_mode_is_refused() {
     // WI-921 deleted `--mode sort`, which this drove; `--mode functor` carries the
     // claim unchanged — the refusal is about the FLAG's position, not about which
     // listing mode is under it, and it lands before the KB is even loaded.
-    let out = anthill(&["query", "--match", "--mode", "functor", "-p", fx.to_str().unwrap(),
-                        "probe.wi767.LocalSort"]);
-    assert_eq!(out.code, 1,
-               "--match under a listing mode must be refused, not ignored; stdout:\n{}", out.stdout);
-    assert!(out.stderr.contains("--mode pattern"),
-            "the refusal must say which mode accepts the flag; got stderr:\n{}", out.stderr);
+    let out = anthill(&[
+        "query",
+        "--match",
+        "--mode",
+        "functor",
+        "-p",
+        fx.to_str().unwrap(),
+        "probe.wi767.LocalSort",
+    ]);
+    assert_eq!(
+        out.code, 1,
+        "--match under a listing mode must be refused, not ignored; stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("--mode pattern"),
+        "the refusal must say which mode accepts the flag; got stderr:\n{}",
+        out.stderr
+    );
 }

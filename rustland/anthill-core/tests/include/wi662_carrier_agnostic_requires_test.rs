@@ -20,10 +20,10 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::typing::{requires_chain_flat, requires_tree};
+use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
-use anthill_core::kb::ClauseKind;
 
 /// Stdlib + a two-sort source (`Foo` the required spec, `Carrier` the requiring
 /// sort) → the loaded KB.
@@ -61,7 +61,9 @@ end
 /// `SortView(Foo, k = <Value::Node>)` value; otherwise a bare ground `Foo` term.
 /// Returns the `(Carrier, Foo)` symbols.
 fn assert_requires_fact(kb: &mut KnowledgeBase, denoted: bool) -> (Symbol, Symbol) {
-    let carrier = kb.try_resolve_symbol("test.wi662.Carrier").expect("Carrier");
+    let carrier = kb
+        .try_resolve_symbol("test.wi662.Carrier")
+        .expect("Carrier");
     let foo = kb.try_resolve_symbol("test.wi662.Foo").expect("Foo");
     let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
     let sort_ref_field = kb.intern("sort_ref");
@@ -106,7 +108,9 @@ fn assert_requires_fact(kb: &mut KnowledgeBase, denoted: bool) -> (Symbol, Symbo
 /// The chain entry for `Carrier`'s requirement on `Foo`, rebuilt fresh (the load
 /// pass may have memoized an empty chain for the bare `Carrier`).
 fn carrier_requires_foo_spec(kb: &mut KnowledgeBase) -> Option<Value> {
-    let carrier = kb.try_resolve_symbol("test.wi662.Carrier").expect("Carrier");
+    let carrier = kb
+        .try_resolve_symbol("test.wi662.Carrier")
+        .expect("Carrier");
     let foo = kb.try_resolve_symbol("test.wi662.Foo").expect("Foo");
     kb.invalidate_requires_chain_cache();
     requires_chain_flat(kb, carrier)
@@ -138,8 +142,8 @@ fn ground_sort_requires_still_rides_as_term() {
     let mut kb = load_kb();
     assert_requires_fact(&mut kb, /* denoted */ false);
 
-    let spec = carrier_requires_foo_spec(&mut kb)
-        .expect("the ground requires must appear in the chain");
+    let spec =
+        carrier_requires_foo_spec(&mut kb).expect("the ground requires must appear in the chain");
     assert!(
         matches!(spec, Value::Term { .. }),
         "a fully-ground requires spec must ride as a hash-consed Value::Term \
@@ -190,7 +194,9 @@ end
     let middle = kb.try_resolve_symbol("test.wi662b.Middle").expect("Middle");
     let foo = kb.try_resolve_symbol("test.wi662b.Foo").expect("Foo");
     let parent = kb.try_resolve_symbol("test.wi662b.Parent").expect("Parent");
-    let middle_t = kb.try_resolve_symbol("test.wi662b.Middle.T").expect("Middle.T");
+    let middle_t = kb
+        .try_resolve_symbol("test.wi662b.Middle.T")
+        .expect("Middle.T");
     let int64 = kb.resolve_symbol("anthill.prelude.Int64");
 
     // Assert the denoted `Middle requires Foo[X = Middle.T, E = <Node>]`.

@@ -23,11 +23,11 @@
 //! the number of facts in that group. (WI-515: the synthetic per-entity
 //! declaration fact this pin also used to exclude is no longer asserted.)
 
+use crate::common::interp_for;
 use anthill_core::eval::stream::StreamSource;
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::resolve::SearchStream;
 use anthill_core::kb::term::{Term, Var};
-use crate::common::interp_for;
 
 /// Number of facts per group. The ticket requires N >= 1000.
 const N: i64 = 1000;
@@ -91,7 +91,8 @@ fn group_query(interp: &mut Interpreter, group: i64) -> SearchStream {
         named: vec![(term_field, pattern)].into(),
     };
 
-    kb.execute_logical_query(&query).expect("execute lowered query")
+    kb.execute_logical_query(&query)
+        .expect("execute lowered query")
 }
 
 #[test]
@@ -114,7 +115,10 @@ fn wi077_resolver_long_stream_surfaces_all_n_solutions() {
         // slot, which is what keeps memory flat across N.
         let carries_subst = matches!(&v, Value::Entity { named, .. }
             if named.iter().any(|(_, fv)| matches!(fv, Value::Substitution(_))));
-        assert!(carries_subst, "resolver yields a Solution carrying a Substitution, got {v:?}");
+        assert!(
+            carries_subst,
+            "resolver yields a Solution carrying a Substitution, got {v:?}"
+        );
         count += 1;
     }
 
@@ -130,9 +134,17 @@ fn wi077_resolver_long_stream_surfaces_all_n_solutions() {
     );
 
     // (b) the resolver slot is reclaimed once its only handle drops.
-    assert_eq!(interp.stream_arena_live_count(), 1, "slot live until handle drops");
+    assert_eq!(
+        interp.stream_arena_live_count(),
+        1,
+        "slot live until handle drops"
+    );
     drop(handle);
-    assert_eq!(interp.stream_arena_live_count(), 0, "resolver slot reclaimed");
+    assert_eq!(
+        interp.stream_arena_live_count(),
+        0,
+        "resolver slot reclaimed"
+    );
 }
 
 #[test]
@@ -173,5 +185,9 @@ fn wi077_mplus_over_long_branches_surfaces_all_solutions() {
     // Dropping the final continuation cascades through the MPlus tree and
     // reclaims every slot (mplus + both branches).
     drop(stream);
-    assert_eq!(interp.stream_arena_live_count(), 0, "all MPlus arena slots reclaimed");
+    assert_eq!(
+        interp.stream_arena_live_count(),
+        0,
+        "all MPlus arena slots reclaimed"
+    );
 }

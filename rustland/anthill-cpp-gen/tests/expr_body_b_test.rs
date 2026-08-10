@@ -28,8 +28,7 @@ fn if_then_else_literal_branches() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc")
-        .expect("emit Calc traits");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc").expect("emit Calc traits");
 
     assert!(
         cpp.contains("static int64_t pick(bool b) {\n        return (b ? 1 : 0);\n    }"),
@@ -51,8 +50,7 @@ fn if_then_else_with_call_in_condition() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc").expect("emit Calc");
 
     // Phase E rewrites `gt(n, 0)` to `(n > 0)` because gt is the
     // anthill.prelude.Ord.gt typeclass operation.
@@ -76,8 +74,7 @@ fn nested_if_then_else() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("(b1 ? 1 : (b2 ? 0 : -1))"),
@@ -105,8 +102,7 @@ fn field_access_emits_dot_syntax() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_b_field.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b_field.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("return p.x;"),
@@ -129,8 +125,7 @@ fn field_access_in_expression_position() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_b_field2.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_b_field2.Calc").expect("emit Calc");
 
     // Phase E rewrites `add(p.x, p.y)` to `(p.x + p.y)` since add is
     // the anthill.prelude.Numeric.add typeclass method.

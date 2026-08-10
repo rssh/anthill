@@ -10,7 +10,10 @@
 use anthill_core::eval::{Interpreter, Value};
 
 fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -111,7 +114,9 @@ namespace test.wi585.map_unsound
   operation oops() -> Int64 = foldLeft(m1(), 0, bad_cb)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         !errs.is_empty(),
         "a foldLeft callback with element Pair[String, Bool] (≠ the Map's \

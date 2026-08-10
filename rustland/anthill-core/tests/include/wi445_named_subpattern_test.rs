@@ -12,8 +12,8 @@
 //! (`extend_env_from_pattern`) and eval (`match_constructor_pattern`), where
 //! the entity's fields are always registered. Order-independent throughout.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load stdlib + `src`, returning any load/type errors as strings.
@@ -23,7 +23,8 @@ fn load_errors(src: &str) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let s = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let s =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&s).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -38,7 +39,10 @@ fn load_errors(src: &str) -> Vec<String> {
 
 /// Call a nullary op, expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -67,10 +71,21 @@ namespace wi445.single
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "named sub-pattern must load and type-check: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "named sub-pattern must load and type-check: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi445.single.t_some"), 9, "named some(x) binds x=9");
-    assert_eq!(run_int(&mut interp, "wi445.single.t_none"), -1, "named none() arm fires");
+    assert_eq!(
+        run_int(&mut interp, "wi445.single.t_some"),
+        9,
+        "named some(x) binds x=9"
+    );
+    assert_eq!(
+        run_int(&mut interp, "wi445.single.t_none"),
+        -1,
+        "named none() arm fires"
+    );
 }
 
 /// Named sub-patterns bind BY FIELD NAME — robust to order: a pattern listing
@@ -92,9 +107,16 @@ namespace wi445.reorder
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "reordered named pattern must load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "reordered named pattern must load: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi445.reorder.t"), 7, "a - b = 10 - 3 = 7 (bound by name, not order)");
+    assert_eq!(
+        run_int(&mut interp, "wi445.reorder.t"),
+        7,
+        "a - b = 10 - 3 = 7 (bound by name, not order)"
+    );
 }
 
 /// A MIXED pattern: a leading positional sub-pattern (fills field `a`) plus a
@@ -116,10 +138,21 @@ namespace wi445.mixed
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "mixed positional+named pattern must load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "mixed positional+named pattern must load: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi445.mixed.t_named_ctor"), 7, "x=a=10, y=b=3");
-    assert_eq!(run_int(&mut interp, "wi445.mixed.t_pos_ctor"), 7, "named pattern matches positionally-built value");
+    assert_eq!(
+        run_int(&mut interp, "wi445.mixed.t_named_ctor"),
+        7,
+        "x=a=10, y=b=3"
+    );
+    assert_eq!(
+        run_int(&mut interp, "wi445.mixed.t_pos_ctor"),
+        7,
+        "named pattern matches positionally-built value"
+    );
 }
 
 /// Order independence at LOAD: the entity is declared AFTER the operation that
@@ -145,9 +178,16 @@ namespace wi445.order
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "named sub-pattern over a later-declared entity must load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "named sub-pattern over a later-declared entity must load: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi445.order.t"), 4, "binds despite entity declared after op");
+    assert_eq!(
+        run_int(&mut interp, "wi445.order.t"),
+        4,
+        "binds despite entity declared after op"
+    );
 }
 
 /// The positional form is unchanged (no regression) and interoperates with the
@@ -171,8 +211,19 @@ namespace wi445.coexist
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "mixed positional/named arms must load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "mixed positional/named arms must load: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi445.coexist.t_pos"), 8, "positional arm still binds");
-    assert_eq!(run_int(&mut interp, "wi445.coexist.t_named"), -1, "named none arm fires");
+    assert_eq!(
+        run_int(&mut interp, "wi445.coexist.t_pos"),
+        8,
+        "positional arm still binds"
+    );
+    assert_eq!(
+        run_int(&mut interp, "wi445.coexist.t_named"),
+        -1,
+        "named none arm fires"
+    );
 }

@@ -168,7 +168,12 @@ fn the_rule_body_and_the_operation_body_report_the_same_error() {
     let from_op = refusal(&carrier(&format!(
         "  operation probe() -> Int64 = {bad_arg}\n"
     )));
-    let body = |m: &str| m.split_once(": ").expect("a `line:col: message` rendering").1.to_string();
+    let body = |m: &str| {
+        m.split_once(": ")
+            .expect("a `line:col: message` rendering")
+            .1
+            .to_string()
+    };
     assert_eq!(
         body(&from_rule),
         body(&from_op),
@@ -189,7 +194,11 @@ fn the_rule_body_and_the_operation_body_report_the_same_error() {
 /// constructor OF anything.
 #[test]
 fn an_eponymous_constructor_constructs_in_a_rule_body() {
-    constructor_is_checked("test.wi1056.epo", "sort P\n    entity P(a: Int64)\n  end", "P");
+    constructor_is_checked(
+        "test.wi1056.epo",
+        "sort P\n    entity P(a: Int64)\n  end",
+        "P",
+    );
 }
 
 /// A FREE-STANDING `entity E(…)` — the `Pose` shape from
@@ -208,7 +217,11 @@ fn a_free_standing_entity_constructs_in_a_rule_body() {
 /// than a rewrite.
 #[test]
 fn a_sort_nested_constructor_still_constructs() {
-    constructor_is_checked("test.wi1056.nested", "sort S\n    entity Q(a: Int64)\n  end", "Q");
+    constructor_is_checked(
+        "test.wi1056.nested",
+        "sort S\n    entity Q(a: Int64)\n  end",
+        "Q",
+    );
 }
 
 /// Build `<decl>` and drive its constructor from a rule body, both ways: `?r = <ctor>(a:
@@ -310,10 +323,10 @@ fn all_four_spellings_of_one_type_conform_alike() {
     };
     // (spelling, operation header) — the op-type-param row needs its own `[U]` / `[E]`.
     let box_spellings = [
-        ("Box[T = Int64, U = U]", "feed[U]"),   // explicit operation type parameter
-        ("Box", "feed"),                         // bare: all parameters unwritten
-        ("Box[T = Int64, U = ?]", "feed"),      // wildcard written out
-        ("Box[T = Int64]", "feed"),             // PARTIAL — the spelling WI-1056 fixed
+        ("Box[T = Int64, U = U]", "feed[U]"), // explicit operation type parameter
+        ("Box", "feed"),                      // bare: all parameters unwritten
+        ("Box[T = Int64, U = ?]", "feed"),    // wildcard written out
+        ("Box[T = Int64]", "feed"),           // PARTIAL — the spelling WI-1056 fixed
     ];
     let stream_spellings = [
         ("Stream[T = Int64, E = E]", "feed[E]"),
@@ -324,10 +337,15 @@ fn all_four_spellings_of_one_type_conform_alike() {
     let accepts = |src: &str| crate::common::try_load_kb_with(src).is_ok();
     for (spellings, build) in [
         (&box_spellings[..], &boxed as &dyn Fn(&str, &str) -> String),
-        (&stream_spellings[..], &streamed as &dyn Fn(&str, &str) -> String),
+        (
+            &stream_spellings[..],
+            &streamed as &dyn Fn(&str, &str) -> String,
+        ),
     ] {
-        let verdicts: Vec<(&str, bool)> =
-            spellings.iter().map(|(p, o)| (*p, accepts(&build(p, o)))).collect();
+        let verdicts: Vec<(&str, bool)> = spellings
+            .iter()
+            .map(|(p, o)| (*p, accepts(&build(p, o))))
+            .collect();
         assert!(
             verdicts.iter().all(|(_, v)| *v == verdicts[0].1),
             "the four spellings of one type must reach ONE verdict, got {verdicts:?}",
@@ -360,7 +378,10 @@ fn one_leaf_inside_nested_body_less_atoms_is_reported_once() {
     let msg = refusal(&carrier(
         "  rule bad(?r) :- ?r = W.bump(Wv(n: 1), \"not an int\") - 1\n",
     ));
-    assert!(msg.contains("bump.by"), "the nested failure must still be reported: {msg}");
+    assert!(
+        msg.contains("bump.by"),
+        "the nested failure must still be reported: {msg}"
+    );
     assert_eq!(
         msg.lines().count(),
         1,
@@ -463,7 +484,8 @@ fn an_imported_equation_functor_is_exempt_and_an_unresolved_one_is_not() {
 /// schema is coherent, that one says nothing in the corpus is refused.
 #[test]
 fn the_bigint_induction_schema_is_typed_at_bigint() {
-    let kb = crate::common::load_kb_with("namespace test.wi1056.bigint\n  fact present1056(1)\nend\n");
+    let kb =
+        crate::common::load_kb_with("namespace test.wi1056.bigint\n  fact present1056(1)\nend\n");
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
     let sym = kb
         .try_resolve_symbol("anthill.prelude.BigInt.induction")
@@ -483,7 +505,10 @@ fn the_bigint_induction_schema_is_typed_at_bigint() {
         printed.contains("to_bigint"),
         "the induction bounds must be BigInts, not Int64 literals: {printed}",
     );
-    assert!(printed.contains("sub"), "the strong-induction step still uses sub: {printed}");
+    assert!(
+        printed.contains("sub"),
+        "the strong-induction step still uses sub: {printed}"
+    );
 }
 
 /// THE BLAST RADIUS, asserted rather than promised: the stdlib + Rust host bindings load

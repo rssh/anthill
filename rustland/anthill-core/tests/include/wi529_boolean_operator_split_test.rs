@@ -23,11 +23,11 @@
 //! covered by `push_choice_test` and the typing tests; one NAF test is repeated
 //! here to nail the position-direction contrast.
 
+use crate::common::{self, interp_for};
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, Var};
 use smallvec::SmallVec;
-use crate::common::{self, interp_for};
 
 fn expect_bool(v: Value) -> bool {
     match v {
@@ -37,7 +37,8 @@ fn expect_bool(v: Value) -> bool {
 }
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const EVAL_SRC: &str = r#"
@@ -69,12 +70,30 @@ fn op_body_boolean_ops_eval_as_bool_values() {
             .unwrap_or_else(|e| panic!("call {name}: {e:?}"))
     };
 
-    assert!(!expect_bool(call(&mut interp, "test.wi529.eval.t_not")), "not(true) = false");
-    assert!(expect_bool(call(&mut interp, "test.wi529.eval.t_bang")), "!false = true");
-    assert!(expect_bool(call(&mut interp, "test.wi529.eval.t_and_tt")), "and(true, true) = true");
-    assert!(!expect_bool(call(&mut interp, "test.wi529.eval.t_and_tf")), "and(true, false) = false");
-    assert!(!expect_bool(call(&mut interp, "test.wi529.eval.t_or_ff")), "or(false, false) = false");
-    assert!(expect_bool(call(&mut interp, "test.wi529.eval.t_or_tf")), "or(true, false) = true");
+    assert!(
+        !expect_bool(call(&mut interp, "test.wi529.eval.t_not")),
+        "not(true) = false"
+    );
+    assert!(
+        expect_bool(call(&mut interp, "test.wi529.eval.t_bang")),
+        "!false = true"
+    );
+    assert!(
+        expect_bool(call(&mut interp, "test.wi529.eval.t_and_tt")),
+        "and(true, true) = true"
+    );
+    assert!(
+        !expect_bool(call(&mut interp, "test.wi529.eval.t_and_tf")),
+        "and(true, false) = false"
+    );
+    assert!(
+        !expect_bool(call(&mut interp, "test.wi529.eval.t_or_ff")),
+        "or(false, false) = false"
+    );
+    assert!(
+        expect_bool(call(&mut interp, "test.wi529.eval.t_or_tf")),
+        "or(true, false) = true"
+    );
 }
 
 /// `neg(...)` routes to `Numeric.neg` and evaluates (the new `numeric_neg` builtin
@@ -112,7 +131,9 @@ namespace test.wi529.shadow
 end
 "#;
     let mut interp = interp_for(src);
-    let r = interp.call("test.wi529.shadow.flip", &[]).expect("call flip");
+    let r = interp
+        .call("test.wi529.shadow.flip", &[])
+        .expect("call flip");
     assert!(
         !expect_bool(r),
         "op-body not(true) = false (Bool.not) even though reflect.not is imported"
@@ -165,7 +186,11 @@ end
 
     let cfg = ResolveConfig::default();
     let solutions = kb.resolve(&[goal], &cfg);
-    assert_eq!(solutions.len(), 1, "exactly n2 is allowed (n1 is blocked → NAF fails)");
+    assert_eq!(
+        solutions.len(),
+        1,
+        "exactly n2 is allowed (n1 is blocked → NAF fails)"
+    );
     let bound = kb.reify(x_term, &solutions[0].subst).expect_term();
     assert_eq!(bound, kb.alloc(Term::Ref(n2_sym)), "allowed binds ?x = n2");
 }

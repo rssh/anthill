@@ -11,10 +11,10 @@
 //! Body `eq` is `BuiltinTag::Eq` (structural), so the fire/don't-fire/suspend outcome
 //! is governed ENTIRELY by the `requires` guard.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -106,7 +106,11 @@ fn fresh(kb: &mut KnowledgeBase, name: &str) -> TermId {
     kb.alloc(Term::Var(Var::Global(vid)))
 }
 
-fn related_solutions(kb: &mut KnowledgeBase, a: TermId, b: TermId) -> Vec<anthill_core::kb::resolve::Solution> {
+fn related_solutions(
+    kb: &mut KnowledgeBase,
+    a: TermId,
+    b: TermId,
+) -> Vec<anthill_core::kb::resolve::Solution> {
     let related = kb
         .try_resolve_symbol("test.wi300.related")
         .expect("test.wi300.related not in KB");
@@ -222,7 +226,8 @@ fn two_requires_on_same_spec_is_a_loud_error() {
         .err()
         .expect("two requires on the same spec must fail to load");
     assert!(
-        errs.iter().any(|e| e.contains("at most one `requires` on spec")),
+        errs.iter()
+            .any(|e| e.contains("at most one `requires` on spec")),
         "expected a same-spec duplication error, got: {errs:?}"
     );
 }

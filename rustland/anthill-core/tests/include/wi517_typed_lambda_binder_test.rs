@@ -16,26 +16,34 @@
 //! The grammar/parse side is exercised in
 //! `tree-sitter-anthill/test/corpus/expressions.txt`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra source → load errors (typer diagnostics among them).
 fn load_errs(extra: &str) -> Vec<load::LoadError> {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).err().unwrap_or_default()
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .err()
+        .unwrap_or_default()
 }
 
 fn fmt(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -54,7 +62,11 @@ namespace test.wi517.single
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "annotated single binder should type-check:\n{}", fmt(&errs));
+    assert!(
+        errs.is_empty(),
+        "annotated single binder should type-check:\n{}",
+        fmt(&errs)
+    );
 }
 
 #[test]
@@ -73,7 +85,10 @@ namespace test.wi517.mismatch
 end
 "#;
     let errs = load_errs(src);
-    assert!(!errs.is_empty(), "body contradicting the binder annotation must be rejected");
+    assert!(
+        !errs.is_empty(),
+        "body contradicting the binder annotation must be rejected"
+    );
 }
 
 #[test]
@@ -114,5 +129,9 @@ namespace test.wi517.tuple
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "annotated tuple binders should type-check:\n{}", fmt(&errs));
+    assert!(
+        errs.is_empty(),
+        "annotated tuple binders should type-check:\n{}",
+        fmt(&errs)
+    );
 }

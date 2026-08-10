@@ -32,11 +32,11 @@ use crate::eval::pattern::functor_matches;
 use crate::intern::{Symbol, SymbolKind};
 use crate::span::SourceSpan;
 
-use super::ClauseKind;
 use super::node_occurrence::{Expr, MatchBranch, NodeOccurrence, Pattern};
 use super::occurrence::PassId;
 use super::op_info::lookup_operation_info;
 use super::term::{Literal, Term, TermId, Var, VarId};
+use super::ClauseKind;
 use super::{KnowledgeBase, RuleId};
 
 /// Local interpretation environment: a binder `Symbol` → the occurrence bound
@@ -105,7 +105,11 @@ pub(crate) fn folded_call_match(
     // suspend shape. A `Var(Global)` here is an unbound resolver goal var (the
     // call arg the body branches on); any other scrutinee shape either reduced
     // already or isn't narrowable by unifying with a constructor pattern.
-    let Some(Expr::Match { scrutinee, branches }) = residual.as_expr() else {
+    let Some(Expr::Match {
+        scrutinee,
+        branches,
+    }) = residual.as_expr()
+    else {
         return None;
     };
     if !matches!(scrutinee.as_expr(), Some(Expr::Var(Var::Global(_)))) {
@@ -128,7 +132,10 @@ pub(crate) fn folded_call_match(
     }
     let arms = branches
         .iter()
-        .map(|b| UnfoldArm { pattern: Rc::clone(&b.pattern), body: Rc::clone(&b.body) })
+        .map(|b| UnfoldArm {
+            pattern: Rc::clone(&b.pattern),
+            body: Rc::clone(&b.body),
+        })
         .collect();
     Some((Rc::clone(scrutinee), arms))
 }
@@ -223,12 +230,22 @@ fn flatten_arms(
     out: &mut Vec<DefiningEquation>,
 ) -> Option<()> {
     match occ.as_expr() {
-        Some(Expr::If { condition, then_branch, else_branch }) => {
+        Some(Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        }) => {
             let mut then_guards = guards.clone();
-            then_guards.push(DefiningGuard { cond: Rc::clone(condition), negated: false });
+            then_guards.push(DefiningGuard {
+                cond: Rc::clone(condition),
+                negated: false,
+            });
             flatten_arms(then_branch, then_guards, out)?;
             let mut else_guards = guards;
-            else_guards.push(DefiningGuard { cond: Rc::clone(condition), negated: true });
+            else_guards.push(DefiningGuard {
+                cond: Rc::clone(condition),
+                negated: true,
+            });
             flatten_arms(else_branch, else_guards, out)?;
             Some(())
         }
@@ -238,7 +255,10 @@ fn flatten_arms(
         // Any other residual (constructor, arithmetic apply, field access, var,
         // const) is a single arm under the accumulated guards.
         _ => {
-            out.push(DefiningEquation { guards, result: Rc::clone(occ) });
+            out.push(DefiningEquation {
+                guards,
+                result: Rc::clone(occ),
+            });
             Some(())
         }
     }
@@ -301,7 +321,10 @@ fn reduce(
         Expr::Var(_) | Expr::Const(_) | Expr::Spliced(_) | Expr::Bottom => Some(Rc::clone(occ)),
 
         // ── match: reduce when the scrutinee's shape is statically known ──
-        Expr::Match { scrutinee, branches } => reduce_match(kb, occ, scrutinee, branches, env, pass),
+        Expr::Match {
+            scrutinee,
+            branches,
+        } => reduce_match(kb, occ, scrutinee, branches, env, pass),
 
         // ── let: inline a simple `let name = value in body` binding ──
         // Reduce the value, bind the pattern var to it, and reduce the
@@ -317,7 +340,12 @@ fn reduce(
         // *loud* decline (the whole inline bails) rather than silently binding a
         // projection variable to the un-projected value — escalate destructuring
         // lets to their own ticket if a body needs them (WI-679 scope note).
-        Expr::Let { pattern, value, body, .. } => {
+        Expr::Let {
+            pattern,
+            value,
+            body,
+            ..
+        } => {
             let Some(Pattern::Var { name, .. }) = pattern.as_pattern() else {
                 return None;
             };
@@ -328,7 +356,11 @@ fn reduce(
         }
 
         // ── if: reduce when the condition folds to a boolean literal ──
-        Expr::If { condition, then_branch, else_branch } => {
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             let cond = reduce(kb, condition, env, pass)?;
             if let Some(b) = static_bool(&cond) {
                 let chosen = if b { then_branch } else { else_branch };
@@ -338,7 +370,11 @@ fn reduce(
             let else_r = reduce(kb, else_branch, env, pass)?;
             Some(rebuild(
                 occ,
-                Expr::If { condition: cond, then_branch: then_r, else_branch: else_r },
+                Expr::If {
+                    condition: cond,
+                    then_branch: then_r,
+                    else_branch: else_r,
+                },
                 pass,
             ))
         }
@@ -346,7 +382,12 @@ fn reduce(
         // ── residual-call boundary: substitute into args, do NOT unfold ──
         // The recursive/nested call stays a call; the WI-283 re-`Visit` loop
         // re-specializes it when it is reassembled at this same hook.
-        Expr::Apply { functor, pos_args, named_args, type_args } => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
             // ── field projection (WI-687): a `field_access(recv, f)` whose
             // receiver reduces to a statically-known constructor projects to the
             // named field, so a body that `match`es (or otherwise reads) a field
@@ -399,7 +440,12 @@ fn reduce(
                 pass,
             ))
         }
-        Expr::Constructor { name, pos_args, named_args, from_projection } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            from_projection,
+        } => {
             let pos = reduce_vec(kb, pos_args, env, pass)?;
             let named = reduce_named(kb, named_args, env, pass)?;
             Some(rebuild(
@@ -467,13 +513,23 @@ fn reduce_match(
                     span: b.span,
                 });
             }
-            Some(rebuild(occ, Expr::Match { scrutinee: scr, branches: new_branches }, pass))
+            Some(rebuild(
+                occ,
+                Expr::Match {
+                    scrutinee: scr,
+                    branches: new_branches,
+                },
+                pass,
+            ))
         }
     }
 }
 
 enum ArmSel {
-    Matched { body: Rc<NodeOccurrence>, bindings: Vec<(Symbol, Rc<NodeOccurrence>)> },
+    Matched {
+        body: Rc<NodeOccurrence>,
+        bindings: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    },
     Undecidable,
 }
 
@@ -491,7 +547,10 @@ fn select_arm(kb: &KnowledgeBase, scr: &Rc<NodeOccurrence>, branches: &[MatchBra
         }
         match match_pattern_occ(kb, &b.pattern, scr) {
             PatOutcome::Yes(bindings) => {
-                return ArmSel::Matched { body: Rc::clone(&b.body), bindings };
+                return ArmSel::Matched {
+                    body: Rc::clone(&b.body),
+                    bindings,
+                };
             }
             PatOutcome::No => continue,
             PatOutcome::Undecidable => return ArmSel::Undecidable,
@@ -527,7 +586,11 @@ fn match_pattern_occ(
             Some(_) => PatOutcome::No,
             None => PatOutcome::Undecidable,
         },
-        Pattern::Constructor { name, pos_args, named_args } => {
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let Some(head) = occ_head_ctor(kb, scr) else {
                 return PatOutcome::Undecidable;
             };
@@ -554,9 +617,10 @@ fn match_pattern_occ(
         // on why a name-keyed scrutinee (the only shape the runtime reads by label)
         // is already undecidable there.
         Pattern::Tuple { positional, .. } => match scr.as_expr() {
-            Some(Expr::TupleLit { positional: sp, named: sn }) => {
-                match_tuple_fields(kb, positional, sp, sn)
-            }
+            Some(Expr::TupleLit {
+                positional: sp,
+                named: sn,
+            }) => match_tuple_fields(kb, positional, sp, sn),
             // A known non-tuple scrutinee can't match a tuple pattern.
             _ if occ_head_ctor(kb, scr).is_some() || scr_literal(scr).is_some() => PatOutcome::No,
             _ => PatOutcome::Undecidable,
@@ -656,7 +720,12 @@ fn ctor_field_occs(
     scr: &Rc<NodeOccurrence>,
 ) -> Option<Vec<(Symbol, Rc<NodeOccurrence>)>> {
     match scr.as_expr()? {
-        Expr::Constructor { name, pos_args, named_args, .. } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        } => {
             let fields = kb.entity_field_names(*name)?;
             let mut slots: Vec<Option<Rc<NodeOccurrence>>> = vec![None; fields.len()];
             for (i, a) in pos_args.iter().enumerate() {
@@ -726,18 +795,30 @@ pub(crate) fn field_access_parts(
 fn occ_as_ctor(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
-) -> Option<(Symbol, Vec<Rc<NodeOccurrence>>, Vec<(Symbol, Rc<NodeOccurrence>)>)> {
+) -> Option<(
+    Symbol,
+    Vec<Rc<NodeOccurrence>>,
+    Vec<(Symbol, Rc<NodeOccurrence>)>,
+)> {
     let is_data = |f: Symbol| kb.entity_field_types(f).is_some() || kb.is_constructor_symbol(f);
     match occ.as_expr()? {
-        Expr::Constructor { name, pos_args, named_args, .. }
-        | Expr::Instantiation { name, pos_args, named_args }
-            if is_data(*name) =>
-        {
-            Some((*name, pos_args.clone(), named_args.clone()))
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
         }
-        Expr::Apply { functor, pos_args, named_args, .. } if is_data(*functor) => {
-            Some((*functor, pos_args.clone(), named_args.clone()))
-        }
+        | Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } if is_data(*name) => Some((*name, pos_args.clone(), named_args.clone())),
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } if is_data(*functor) => Some((*functor, pos_args.clone(), named_args.clone())),
         Expr::Ref(s) | Expr::Ident(s) if kb.kind_of(*s) == Some(SymbolKind::Entity) => {
             Some((*s, Vec::new(), Vec::new()))
         }
@@ -756,7 +837,10 @@ fn occ_as_ctor(
 fn skeletonize(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
     if let Some((name, pos, named)) = occ_as_ctor(kb, arg) {
         let pos2: Vec<_> = pos.iter().map(|p| skeletonize(kb, p)).collect();
-        let named2: Vec<_> = named.iter().map(|(s, v)| (*s, skeletonize(kb, v))).collect();
+        let named2: Vec<_> = named
+            .iter()
+            .map(|(s, v)| (*s, skeletonize(kb, v)))
+            .collect();
         return NodeOccurrence::new_expr(
             Expr::Constructor {
                 name,
@@ -832,15 +916,24 @@ fn shadow(env: &Env, pattern: &Rc<NodeOccurrence>) -> Env {
     if bound.is_empty() {
         return env.clone();
     }
-    env.iter().filter(|(s, _)| !bound.contains(s)).cloned().collect()
+    env.iter()
+        .filter(|(s, _)| !bound.contains(s))
+        .cloned()
+        .collect()
 }
 
 fn collect_bound_names(pattern: &Rc<NodeOccurrence>, out: &mut Vec<Symbol>) {
-    let Some(pat) = pattern.as_pattern() else { return };
+    let Some(pat) = pattern.as_pattern() else {
+        return;
+    };
     match pat {
         Pattern::Var { name, .. } => out.push(*name),
         Pattern::Wildcard | Pattern::Literal { .. } => {}
-        Pattern::Constructor { pos_args, named_args, .. } => {
+        Pattern::Constructor {
+            pos_args,
+            named_args,
+            ..
+        } => {
             for p in pos_args {
                 collect_bound_names(p, out);
             }
@@ -914,7 +1007,11 @@ fn refold_defining_equations(
     for eq in rest.iter().rev() {
         let condition = conj_of_guards(kb, &eq.guards, span)?;
         acc = NodeOccurrence::new_expr(
-            Expr::If { condition, then_branch: Rc::clone(&eq.result), else_branch: acc },
+            Expr::If {
+                condition,
+                then_branch: Rc::clone(&eq.result),
+                else_branch: acc,
+            },
             span,
             None,
         );
@@ -991,7 +1088,12 @@ fn goal_value_args(
     goal: &Rc<NodeOccurrence>,
     op: Symbol,
 ) -> Option<Vec<Rc<NodeOccurrence>>> {
-    let Some(Expr::Apply { pos_args, named_args, .. }) = goal.as_expr() else {
+    let Some(Expr::Apply {
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
         return None;
     };
     if !named_args.is_empty() {
@@ -1051,13 +1153,17 @@ impl std::fmt::Display for EquationBlock {
     /// two consumers share; each adds its own "so this construct is declined".
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EquationBlock::Effectful(row) => write!(f,
-                "carries effect row {row}, and an effectful operation is not a function"),
-            EquationBlock::Polymorphic(row) => write!(f,
+            EquationBlock::Effectful(row) => write!(
+                f,
+                "carries effect row {row}, and an effectful operation is not a function"
+            ),
+            EquationBlock::Polymorphic(row) => write!(
+                f,
                 "is effect-POLYMORPHIC — its row {row} is a row VARIABLE, not an effect, so \
                  the operation is pure at a pure carrier and effectful at an effectful one. \
                  The row is not known until a carrier binds it, and a declaration here binds \
-                 EVERY carrier, so it is declined for the instantiations that are effectful"),
+                 EVERY carrier, so it is declined for the instantiations that are effectful"
+            ),
         }
     }
 }
@@ -1114,7 +1220,10 @@ impl KnowledgeBase {
         // A member this cannot read (a `denoted` `Value::Node` row element) counts
         // as concrete: that keeps an unclassifiable row on the pre-WI-1049 wording
         // rather than promising a purity the reader cannot check.
-        let polymorphic = info.effects.iter().all(|e| self.effect_member_is_parametric(e));
+        let polymorphic = info
+            .effects
+            .iter()
+            .all(|e| self.effect_member_is_parametric(e));
         Some(if polymorphic {
             EquationBlock::Polymorphic(row)
         } else {
@@ -1207,7 +1316,11 @@ impl KnowledgeBase {
     /// collector with zero head vars and mint a malformed arity-0 rule.
     pub fn synthesize_op_defining_rule(&mut self, op: Symbol) -> Option<RuleId> {
         // Idempotent — reuse any existing (synth or hand-written) defining rule.
-        if let Some(rid) = self.rules_by_functor(op).into_iter().find(|r| !self.is_fact(*r)) {
+        if let Some(rid) = self
+            .rules_by_functor(op)
+            .into_iter()
+            .find(|r| !self.is_fact(*r))
+        {
             return Some(rid);
         }
         // Probe admissibility over the DeBruijn frame FIRST (no fresh vars): a
@@ -1222,8 +1335,7 @@ impl KnowledgeBase {
 
         // Fresh Globals: one per parameter (named for readability). The result
         // Global is allocated by `assert_defining_rule`.
-        let param_vars: Vec<VarId> =
-            (0..n).map(|i| self.fresh_var(info.params[i].0)).collect();
+        let param_vars: Vec<VarId> = (0..n).map(|i| self.fresh_var(info.params[i].0)).collect();
 
         // Occurrence params → the arms carry these Globals; the head args are the
         // SAME Globals as `Term::Var`, so head/body share one De Bruijn frame.
@@ -1232,8 +1344,10 @@ impl KnowledgeBase {
             .map(|g| NodeOccurrence::new_expr(Expr::Var(Var::Global(*g)), span, None))
             .collect();
         let eqs = defining_equations(self, op, &pos_args, &[])?;
-        let head_args: SmallVec<[TermId; 4]> =
-            param_vars.iter().map(|g| self.alloc(Term::Var(Var::Global(*g)))).collect();
+        let head_args: SmallVec<[TermId; 4]> = param_vars
+            .iter()
+            .map(|g| self.alloc(Term::Var(Var::Global(*g))))
+            .collect();
         self.assert_defining_rule(op, &eqs, head_args, span)
     }
 
@@ -1260,8 +1374,7 @@ impl KnowledgeBase {
         let result_name = self.intern("defeq_result");
         let result_var = self.fresh_var(result_name);
         let eq_sym = self.eq_functor();
-        let result_occ =
-            NodeOccurrence::new_expr(Expr::Var(Var::Global(result_var)), span, None);
+        let result_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(result_var)), span, None);
         let body_node = NodeOccurrence::new_expr(
             Expr::Apply {
                 functor: eq_sym,
@@ -1298,8 +1411,7 @@ impl KnowledgeBase {
         let defeq_qn = format!("{op_qn}__defeq");
         let short = defeq_qn.rsplit('.').next().unwrap_or(&defeq_qn).to_string();
         let global_scope = self.global_scope();
-        let label_sym =
-            self.define_symbol(&short, &defeq_qn, SymbolKind::Rule, global_scope);
+        let label_sym = self.define_symbol(&short, &defeq_qn, SymbolKind::Rule, global_scope);
         self.set_rule_label(rid, label_sym);
         Some(rid)
     }
@@ -1340,7 +1452,11 @@ impl KnowledgeBase {
         value_args: &[Rc<NodeOccurrence>],
     ) -> Option<RuleId> {
         // Idempotent — reuse any existing (per-call-site or generic) defining rule.
-        if let Some(rid) = self.rules_by_functor(op).into_iter().find(|r| !self.is_fact(*r)) {
+        if let Some(rid) = self
+            .rules_by_functor(op)
+            .into_iter()
+            .find(|r| !self.is_fact(*r))
+        {
             return Some(rid);
         }
         if !super::typing::op_has_runnable_body(self, op) {
@@ -1429,7 +1545,9 @@ impl KnowledgeBase {
             // needs each goal's actual argument occurrences.
             let goals: Vec<Rc<NodeOccurrence>> = self.rule_body_nodes(rid).to_vec();
             for goal in &goals {
-                let Some(f) = goal_functor(goal) else { continue };
+                let Some(f) = goal_functor(goal) else {
+                    continue;
+                };
                 // `f` must resolve to the operation itself — call the op qualified
                 // enough to bind (a bare relation name that doesn't resolve to the
                 // op is left to the emitter's loud "unhandled body goal functor").

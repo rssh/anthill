@@ -139,8 +139,14 @@ fn a_goal_naming_nothing_is_refused_and_located() {
     let (line, col) = loc
         .split_once(':')
         .unwrap_or_else(|| panic!("expected `line:col`, got `{loc}` in: {msg}"));
-    assert_eq!(line, "3", "the refusal must point at the line the goal is written on: {msg}");
-    assert!(col.parse::<u32>().is_ok(), "expected a numeric column, got `{col}` in: {msg}");
+    assert_eq!(
+        line, "3",
+        "the refusal must point at the line the goal is written on: {msg}"
+    );
+    assert!(
+        col.parse::<u32>().is_ok(),
+        "expected a numeric column, got `{col}` in: {msg}"
+    );
 }
 
 /// THE CONTROL THIS REFUSAL MUST NOT CONSUME, and the reason a "no clauses => refuse"
@@ -178,7 +184,10 @@ fn a_goal_inside_a_negation_is_refused_too() {
                \x20 rule answer(?x) :- present(?x), not(not(absent1034naf(?x)))\n\
                end\n";
     let msg = refusal(src);
-    assert!(msg.contains("absent1034naf"), "WI-863's descent must reach it: {msg}");
+    assert!(
+        msg.contains("absent1034naf"),
+        "WI-863's descent must reach it: {msg}"
+    );
 }
 
 /// …AND THE POSITIONS IT DELIBERATELY DOES NOT ENTER, driven as a matched pair with
@@ -205,7 +214,11 @@ fn a_bare_or_branch_and_a_quantifier_body_are_left_to_resolution() {
     );
     let mut kb = crate::common::load_kb_with(&src);
     let raw = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
-    assert_eq!(raw.len(), 1, "exactly the surviving branch answers: {raw:?}");
+    assert_eq!(
+        raw.len(),
+        1,
+        "exactly the surviving branch answers: {raw:?}"
+    );
     assert!(raw[0].1, "and definitely, not as a residual: {raw:?}");
     // Rendered, not matched on `Value::Int`: an `or` answer comes back through the
     // resolver as a `Value::Term` carrier, and a carrier test here would be asserting
@@ -216,9 +229,16 @@ fn a_bare_or_branch_and_a_quantifier_body_are_left_to_resolution() {
         }
         other => format!("{other:?}"),
     };
-    assert_eq!(rendered, "7", "the surviving branch must answer its own row: {raw:?}");
+    assert_eq!(
+        rendered, "7",
+        "the surviving branch must answer its own row: {raw:?}"
+    );
     let vacuous = crate::common::query_unary(&mut kb, &format!("{ns}.quantified"));
-    assert_eq!(vacuous.len(), 1, "a quantifier over [] is vacuously true: {vacuous:?}");
+    assert_eq!(
+        vacuous.len(),
+        1,
+        "a quantifier over [] is vacuously true: {vacuous:?}"
+    );
 }
 
 /// A RESOLVER SCOPING MARKER carries no clause BY DESIGN, and the loader synthesizes
@@ -244,7 +264,8 @@ fn a_synthesized_induction_marker_still_loads() {
     );
     let kb = crate::common::load_kb_with(&src);
     assert!(
-        kb.try_resolve_symbol(&format!("{ns}.Nat1034.induction")).is_some(),
+        kb.try_resolve_symbol(&format!("{ns}.Nat1034.induction"))
+            .is_some(),
         "the fixture must actually emit an induction rule, else it exempts nothing",
     );
 }
@@ -383,7 +404,10 @@ fn a_user_functor_named_tuple_is_not_a_conjunction_wrapper() {
                      \x20 rule answer(?x) :- present(?x), tuple(?x)\n\
                      end\n";
     let msg = refusal(undefined);
-    assert!(msg.contains("names nothing") && msg.contains("tuple"), "{msg}");
+    assert!(
+        msg.contains("names nothing") && msg.contains("tuple"),
+        "{msg}"
+    );
 
     // ARM 2 — its arguments are DATA, so THIS walk does not report them. Since WI-1058
     // the typer's data check does (see `an_undefined_name_in_a_data_slot_is_not_a_goal`
@@ -401,7 +425,10 @@ fn a_user_functor_named_tuple_is_not_a_conjunction_wrapper() {
         msg2.contains("names nothing") && msg2.contains("absent1034tup"),
         "the TYPER's data-slot check must name it (WI-1058): {msg2}",
     );
-    assert!(!msg2.contains("rule-body goal"), "a data slot is not a goal: {msg2}");
+    assert!(
+        !msg2.contains("rule-body goal"),
+        "a data slot is not a goal: {msg2}"
+    );
 }
 
 /// `and` IS NOT A GOAL CONNECTIVE, and its arguments are not goals. Both walks listed

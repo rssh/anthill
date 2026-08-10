@@ -94,7 +94,9 @@ end
          the un-re-keyed `Modify[T = a]`/`Modify[f.a]`; got: {errs:#?}"
     );
     assert!(
-        !errs.iter().any(|e| e.contains("absent") || e.contains("Branch")),
+        !errs
+            .iter()
+            .any(|e| e.contains("absent") || e.contains("Branch")),
         "the `-Branch` lacks-atom must NOT surface a spurious effect \
          (the pre-WI-377 `present(absent(Branch))` double-wrap would); got: {errs:#?}"
     );

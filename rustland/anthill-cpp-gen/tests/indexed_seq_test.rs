@@ -22,8 +22,7 @@ fn length_lowers_to_size_cast() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.is_len.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.is_len.Calc").expect("emit Calc");
     assert!(
         cpp.contains("return static_cast<int64_t>(xs.size());"),
         "length should lower to xs.size():\n{cpp}"
@@ -42,8 +41,7 @@ fn nth_lowers_to_bounds_checked_optional() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.is_nth.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.is_nth.Calc").expect("emit Calc");
     // The bounds check covers both lower and upper bounds in one
     // expression so the result type stays `std::optional<T>`.
     assert!(

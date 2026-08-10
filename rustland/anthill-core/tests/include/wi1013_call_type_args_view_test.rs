@@ -57,8 +57,8 @@ fn stdlib_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -80,7 +80,12 @@ fn call(
     type_args: Vec<(Option<Symbol>, Value)>,
 ) -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(
-        Expr::Apply { functor, pos_args: vec![arg], named_args: Vec::new(), type_args },
+        Expr::Apply {
+            functor,
+            pos_args: vec![arg],
+            named_args: Vec::new(),
+            type_args,
+        },
         span(),
         None,
     )
@@ -92,13 +97,25 @@ fn ref_occ(s: Symbol) -> Rc<NodeOccurrence> {
 
 /// `(f, x, [T = Int64], [T = String])` on a stdlib KB — one call functor, one
 /// argument, and two type-argument lists differing ONLY in the bound type.
-fn fixture(kb: &mut KnowledgeBase) -> (Symbol, Rc<NodeOccurrence>, Vec<(Option<Symbol>, Value)>, Vec<(Option<Symbol>, Value)>) {
+fn fixture(
+    kb: &mut KnowledgeBase,
+) -> (
+    Symbol,
+    Rc<NodeOccurrence>,
+    Vec<(Option<Symbol>, Value)>,
+    Vec<(Option<Symbol>, Value)>,
+) {
     let f = kb.intern("wi1013_f");
     let t = kb.intern("T");
     let x = kb.intern("wi1013_x");
     let int64 = Value::term(kb.alloc(Term::Ref(kb.resolve_symbol("anthill.prelude.Int64"))));
     let string = Value::term(kb.alloc(Term::Ref(kb.resolve_symbol("anthill.prelude.String"))));
-    (f, ref_occ(x), vec![(Some(t), int64)], vec![(Some(t), string)])
+    (
+        f,
+        ref_occ(x),
+        vec![(Some(t), int64)],
+        vec![(Some(t), string)],
+    )
 }
 
 /// FAILS when WI-1013 is backed out: with `type_args` dropped from the view, the two
@@ -119,8 +136,14 @@ fn bracket_distinct_calls_key_apart() {
         goal_fingerprint(&kb, &b, &sigma),
         goal_fingerprint(&kb, &bare, &sigma),
     );
-    assert_ne!(ka, kb_, "two calls differing only in `[T = …]` must key apart");
-    assert_ne!(ka, kbare, "a bracketed call must not key as its bracket-less twin");
+    assert_ne!(
+        ka, kb_,
+        "two calls differing only in `[T = …]` must key apart"
+    );
+    assert_ne!(
+        ka, kbare,
+        "a bracketed call must not key as its bracket-less twin"
+    );
 
     // The keys are USABLE as dedup keys — `is_opaque_free` is what fact dedup asks,
     // and a bracket must not degrade a call to an unkeyable head.
@@ -131,12 +154,24 @@ fn bracket_distinct_calls_key_apart() {
     // The head PROMISES the extra child, and `named_keys` supplies it — a head that
     // announced N+1 and listed N is the WI-815 shape defect `fingerprint_into` guards.
     match a.head(&kb) {
-        ViewHead::Functor { pos_arity, named_arity, .. } => {
-            assert_eq!((pos_arity, named_arity), (1, 1), "one arg + the type_args child");
+        ViewHead::Functor {
+            pos_arity,
+            named_arity,
+            ..
+        } => {
+            assert_eq!(
+                (pos_arity, named_arity),
+                (1, 1),
+                "one arg + the type_args child"
+            );
         }
         other => panic!("expected a Functor head, got {other:?}"),
     }
-    assert_eq!(a.named_keys(&kb).len(), 1, "`named_keys` supplies what the head promised");
+    assert_eq!(
+        a.named_keys(&kb).len(),
+        1,
+        "`named_keys` supplies what the head promised"
+    );
 }
 
 /// FAILS when WI-1013 is backed out: `views_structurally_equal` answers `true`, which
@@ -150,7 +185,10 @@ fn bracket_distinct_calls_are_unequal() {
     let b = Value::Node(call(f, Rc::clone(&x), ta_str));
     let a2 = Value::Node(call(f, Rc::clone(&x), ta_int));
 
-    assert!(!views_structurally_equal(&kb, &a, &b), "`[T = Int64]` ≠ `[T = String]`");
+    assert!(
+        !views_structurally_equal(&kb, &a, &b),
+        "`[T = Int64]` ≠ `[T = String]`"
+    );
     assert!(
         views_structurally_equal(&kb, &a, &a2),
         "and the distinction is not a blanket refusal — two calls with the SAME bracket \
@@ -173,7 +211,10 @@ fn bracket_distinct_fact_heads_do_not_over_dedup() {
 
     let ra = kb.assert_fact_value(a, ClauseKind::Fact, domain, None);
     let rb = kb.assert_fact_value(b, ClauseKind::Fact, domain, None);
-    assert_ne!(ra, rb, "two bracket-distinct fact heads are two facts, not one");
+    assert_ne!(
+        ra, rb,
+        "two bracket-distinct fact heads are two facts, not one"
+    );
 
     // The CONTROL for the same mechanism: dedup still works. Re-asserting a
     // structurally identical head collapses, so the assertion above measures
@@ -203,13 +244,17 @@ fn a_bracket_survives_the_term_round_trip() {
     let term_bare = node_occurrence::try_occurrence_to_term(&mut kb, &occ_bare)
         .expect("a bracket-less call has a term twin");
 
-    assert_ne!(term_a, term_b, "the twins of two bracket-distinct calls are distinct terms");
+    assert_ne!(
+        term_a, term_b,
+        "the twins of two bracket-distinct calls are distinct terms"
+    );
     assert_ne!(term_a, term_bare, "and neither is the bracket-less twin");
 
     // THE ISOMORPHISM: one call, read through either carrier, keys identically.
-    for (occ, term, what) in
-        [(&occ_a, term_a, "[T = Int64]"), (&occ_b, term_b, "[T = String]")]
-    {
+    for (occ, term, what) in [
+        (&occ_a, term_a, "[T = Int64]"),
+        (&occ_b, term_b, "[T = String]"),
+    ] {
         assert_eq!(
             goal_fingerprint(&kb, &Value::Node(Rc::clone(occ)), &sigma),
             goal_fingerprint(&kb, &term, &sigma),
@@ -226,12 +271,14 @@ fn a_bracket_survives_the_term_round_trip() {
     let domain = kb.intern("wi1013_iso");
     kb.assert_fact(term_a, ClauseKind::Fact, domain, None);
     assert_eq!(
-        kb.browse_program_clauses_matching(&Value::Node(Rc::clone(&occ_a))).len(),
+        kb.browse_program_clauses_matching(&Value::Node(Rc::clone(&occ_a)))
+            .len(),
         1,
         "the occurrence query finds the term-indexed fact",
     );
     assert_eq!(
-        kb.browse_program_clauses_matching(&Value::Node(Rc::clone(&occ_b))).len(),
+        kb.browse_program_clauses_matching(&Value::Node(Rc::clone(&occ_b)))
+            .len(),
         0,
         "and a different bracket does not — the candidate set narrowed, not widened",
     );
@@ -248,9 +295,17 @@ fn a_bracket_free_call_keys_and_matches_as_before() {
     let occ = call(f, Rc::clone(&x), Vec::new());
 
     match Value::Node(Rc::clone(&occ)).head(&kb) {
-        ViewHead::Functor { functor, pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
             assert_eq!(functor, Some(f));
-            assert_eq!((pos_arity, named_arity), (1, 0), "no synthesized child appears");
+            assert_eq!(
+                (pos_arity, named_arity),
+                (1, 0),
+                "no synthesized child appears"
+            );
         }
         other => panic!("expected a Functor head, got {other:?}"),
     }
@@ -266,7 +321,10 @@ fn a_bracket_free_call_keys_and_matches_as_before() {
         pos_args: smallvec::SmallVec::from_slice(&[arg]),
         named_args: smallvec::SmallVec::new(),
     });
-    assert_eq!(twin, expected, "a bracket-less call lowers to the unchanged term");
+    assert_eq!(
+        twin, expected,
+        "a bracket-less call lowers to the unchanged term"
+    );
 }
 
 /// CONTROL — GREEN BEFORE AND AFTER. The two carriers already agreed for a bracket-less
@@ -310,10 +368,17 @@ end
         Some(Expr::Apply { type_args, .. }) => type_args.len(),
         other => panic!("expected the body to be an Apply, got {other:?}"),
     };
-    assert_eq!(brackets, 1, "the written `[A = Int64]` reached the occurrence");
+    assert_eq!(
+        brackets, 1,
+        "the written `[A = Int64]` reached the occurrence"
+    );
 
     match Value::Node(Rc::clone(&body)).head(&kb) {
-        ViewHead::Functor { pos_arity, named_arity, .. } => {
+        ViewHead::Functor {
+            pos_arity,
+            named_arity,
+            ..
+        } => {
             assert_eq!(
                 (pos_arity, named_arity),
                 (1, 1),
@@ -376,7 +441,11 @@ end
     let view = Value::Node(Rc::clone(&body));
 
     let keys = view.named_keys(&kb);
-    assert_eq!(keys.len(), 2, "the user argument AND the bracket slot: {keys:?}");
+    assert_eq!(
+        keys.len(),
+        2,
+        "the user argument AND the bracket slot: {keys:?}"
+    );
     assert_eq!(
         keys.iter().collect::<std::collections::HashSet<_>>().len(),
         2,
@@ -385,8 +454,14 @@ end
 
     let arg_key = kb.intern("type_args");
     let slot_key = kb.resolve_symbol("anthill.reflect.type_arg");
-    assert!(view.named_arg(&kb, arg_key).is_some(), "the user argument is addressable");
-    assert!(view.named_arg(&kb, slot_key).is_some(), "and so is the bracket, separately");
+    assert!(
+        view.named_arg(&kb, arg_key).is_some(),
+        "the user argument is addressable"
+    );
+    assert!(
+        view.named_arg(&kb, slot_key).is_some(),
+        "and so is the bracket, separately"
+    );
 }
 
 /// CONTROL — GREEN BEFORE AND AFTER. The same argument name on a call with NO bracket:
@@ -410,5 +485,9 @@ end
     let caller = kb.resolve_symbol("wi1013.nocollide.caller");
     let body = Rc::clone(kb.op_body_node(caller).expect("caller has a body"));
     let keys = Value::Node(body).named_keys(&kb);
-    assert_eq!(keys, vec![kb.intern("type_args")], "just the user's argument");
+    assert_eq!(
+        keys,
+        vec![kb.intern("type_args")],
+        "just the user's argument"
+    );
 }

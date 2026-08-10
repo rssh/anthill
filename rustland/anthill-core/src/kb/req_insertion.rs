@@ -25,11 +25,11 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::Symbol;
-use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child};
+use crate::kb::node_occurrence::{for_each_child, Expr, NodeKind, NodeOccurrence};
 use crate::kb::term::{Term, TermId};
 use crate::kb::typing::{
-    record_apply_rewrite, record_apply_within_concrete,
-    record_apply_within_rewrite, CallClass, TypeError,
+    record_apply_rewrite, record_apply_within_concrete, record_apply_within_rewrite, CallClass,
+    TypeError,
 };
 use crate::kb::KnowledgeBase;
 
@@ -46,8 +46,7 @@ use crate::kb::KnowledgeBase;
 pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // Collect into Vecs so we don't hold a borrow on `kb.op_bodies`
     // while emitting (each `record_*` mutates `kb.dispatch_rewrites`).
-    let body_roots: Vec<Rc<NodeOccurrence>> =
-        kb.op_bodies_iter().map(|(_, b)| b.clone()).collect();
+    let body_roots: Vec<Rc<NodeOccurrence>> = kb.op_bodies_iter().map(|(_, b)| b.clone()).collect();
     let mut raw_entries: Vec<RawClassified> = Vec::new();
     for root in &body_roots {
         collect_classified(root, &mut raw_entries);
@@ -101,12 +100,24 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut chain_cache: HashMap<Symbol, crate::kb::typing::DictChain> = HashMap::new();
 
     for entry in entries {
-        let ClassifiedApply { apply_term, named_args, pos_args, class } = entry;
+        let ClassifiedApply {
+            apply_term,
+            named_args,
+            pos_args,
+            class,
+        } = entry;
         match class {
-            CallClass::PinNow { spec_op_sym, impl_op_sym } => {
+            CallClass::PinNow {
+                spec_op_sym,
+                impl_op_sym,
+            } => {
                 record_apply_rewrite(
-                    kb, apply_term, &named_args, &pos_args,
-                    spec_op_sym, impl_op_sym,
+                    kb,
+                    apply_term,
+                    &named_args,
+                    &pos_args,
+                    spec_op_sym,
+                    impl_op_sym,
                 );
             }
             CallClass::ConcreteApplyWithin {
@@ -119,17 +130,33 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             } => {
                 let caller_requires = chain_for(kb, &mut chain_cache, enclosing_sort);
                 record_apply_within_concrete(
-                    kb, apply_term, &named_args, &pos_args,
-                    fn_target_sym, callee_spec_sort, spec_op_sym,
-                    &caller_requires, resolved_tree.as_ref(),
+                    kb,
+                    apply_term,
+                    &named_args,
+                    &pos_args,
+                    fn_target_sym,
+                    callee_spec_sort,
+                    spec_op_sym,
+                    &caller_requires,
+                    resolved_tree.as_ref(),
                 );
             }
             CallClass::DeferToRequirement {
-                spec_op_sym, slot, proj_path, enclosing_sort, ..
+                spec_op_sym,
+                slot,
+                proj_path,
+                enclosing_sort,
+                ..
             } => {
                 record_apply_within_rewrite(
-                    kb, apply_term, &named_args, &pos_args,
-                    spec_op_sym, enclosing_sort, slot, &proj_path,
+                    kb,
+                    apply_term,
+                    &named_args,
+                    &pos_args,
+                    spec_op_sym,
+                    enclosing_sort,
+                    slot,
+                    &proj_path,
                 );
             }
             CallClass::UnresolvedSpecOp { .. } => {
@@ -170,14 +197,16 @@ struct ClassifiedApply {
 /// explicit work-stack so deeply-nested let / match / lambda chains
 /// (e.g. the 624-line typing_pass_spec.anthill) don't blow the host
 /// stack regardless of source nesting depth.
-fn collect_classified(
-    root: &Rc<NodeOccurrence>,
-    out: &mut Vec<RawClassified>,
-) {
+fn collect_classified(root: &Rc<NodeOccurrence>, out: &mut Vec<RawClassified>) {
     let mut stack: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(32);
     stack.push(Rc::clone(root));
     while let Some(occ) = stack.pop() {
-        let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
+        let NodeKind::Expr {
+            expr,
+            classification,
+            ..
+        } = &occ.kind
+        else {
             continue;
         };
         if let Expr::Apply { functor, .. } = expr {

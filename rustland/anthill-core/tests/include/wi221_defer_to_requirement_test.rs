@@ -10,25 +10,24 @@
 //! Reference: docs/design/operation-call-model.md
 //! §"Defer-to-requirement detection".
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::typing::{
-    lookup_spec_op_dispatch,
-    find_unique_impl_op,
-    requires_chain_flat,
-    DispatchOutcome,
-};
 use anthill_core::kb::subst::Substitution;
+use anthill_core::kb::typing::{
+    find_unique_impl_op, lookup_spec_op_dispatch, requires_chain_flat, DispatchOutcome,
+};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -36,7 +35,9 @@ fn load_with(extra: &str) -> KnowledgeBase {
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => kb,
         Err(errs) => {
-            for e in &errs { eprintln!("{e}"); }
+            for e in &errs {
+                eprintln!("{e}");
+            }
             // Tests below tolerate non-fatal load issues — the post-load
             // KB still carries the requires/SortProvidesInfo records the
             // dispatch outcome depends on. Mirrors the load_with helper
@@ -56,12 +57,14 @@ fn subst_with_param(
     carrier_qn: &str,
 ) -> Substitution {
     let param_qn = format!("{spec_qn}.{param_short}");
-    let param_sym = kb.try_resolve_symbol(&param_qn)
+    let param_sym = kb
+        .try_resolve_symbol(&param_qn)
         .unwrap_or_else(|| panic!("{param_qn} not registered"));
-    let param_var = crate::common::sort_alias_backing_var(kb, param_sym).unwrap_or_else(||
-        panic!("{param_short}'s SortAlias not found for {spec_qn}"));
+    let param_var = crate::common::sort_alias_backing_var(kb, param_sym)
+        .unwrap_or_else(|| panic!("{param_short}'s SortAlias not found for {spec_qn}"));
 
-    let carrier_sym = kb.try_resolve_symbol(carrier_qn)
+    let carrier_sym = kb
+        .try_resolve_symbol(carrier_qn)
         .unwrap_or_else(|| panic!("{carrier_qn} not registered"));
     let carrier_term = kb.make_sort_ref(carrier_sym);
 
@@ -81,19 +84,21 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
     // Without the WI-221 patch, find_unique_impl_op would return
     // Unique(Int64.eq) and Pin-now-rewrite the call, even though the
     // dispatch should go through frame.requirements at runtime.
-    let mut kb = load_with(r#"
+    let mut kb = load_with(
+        r#"
         namespace test.wi221.open_bound
           import anthill.prelude.{PartialEq, Int64}
           sort Wi221Box
             requires PartialEq[T = Int64]
           end
         end
-    "#);
+    "#,
+    );
 
-    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+    let eq_op = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered by stdlib");
-    let spec_sort = lookup_spec_op_dispatch(&kb, eq_op)
-        .expect("Eq.eq is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, eq_op).expect("Eq.eq is a spec op");
     let subst = subst_with_param(
         &mut kb,
         "anthill.prelude.PartialEq",
@@ -102,22 +107,28 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
     );
     let op_short = kb.intern("eq");
 
-    let enclosing = kb.try_resolve_symbol("test.wi221.open_bound.Wi221Box")
+    let enclosing = kb
+        .try_resolve_symbol("test.wi221.open_bound.Wi221Box")
         .expect("Wi221Box registered");
 
     // Sanity check: with no enclosing sort, the existing Pin-now path
     // resolves Eq[T=Int64] to a Unique impl (Int64's `fact Eq[T = Int64]`).
     let pin_now = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
-    assert!(matches!(pin_now, DispatchOutcome::Unique(_)),
-        "without enclosing sort, expected Unique (Pin-now); got {pin_now:?}");
+    assert!(
+        matches!(pin_now, DispatchOutcome::Unique(_)),
+        "without enclosing sort, expected Unique (Pin-now); got {pin_now:?}"
+    );
 
     // WI-221 patch: with Wi221Box as enclosing sort (whose `requires`
     // chain covers Eq[T=Int64]), dispatch must defer.
     let chain = requires_chain_flat(&kb, enclosing);
     let deferred = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
-    assert_eq!(deferred, DispatchOutcome::Deferred,
+    assert_eq!(
+        deferred,
+        DispatchOutcome::Deferred,
         "WI-221: expected Deferred when call reaches Eq.eq via Wi221Box's \
-         `requires PartialEq[T = Int64]` clause; got {deferred:?}");
+         `requires PartialEq[T = Int64]` clause; got {deferred:?}"
+    );
 }
 
 #[test]
@@ -126,18 +137,20 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
     // mention the spec must still produce the Pin-now rewrite. WI-221's
     // open-bound check is narrow — it triggers only when the spec is
     // genuinely reached via `requires`.
-    let mut kb = load_with(r#"
+    let mut kb = load_with(
+        r#"
         namespace test.wi221.no_require
           sort Wi221Plain
             entity wi221_plain
           end
         end
-    "#);
+    "#,
+    );
 
-    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+    let eq_op = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered by stdlib");
-    let spec_sort = lookup_spec_op_dispatch(&kb, eq_op)
-        .expect("Eq.eq is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, eq_op).expect("Eq.eq is a spec op");
     let subst = subst_with_param(
         &mut kb,
         "anthill.prelude.PartialEq",
@@ -146,14 +159,17 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
     );
     let op_short = kb.intern("eq");
 
-    let enclosing = kb.try_resolve_symbol("test.wi221.no_require.Wi221Plain")
+    let enclosing = kb
+        .try_resolve_symbol("test.wi221.no_require.Wi221Plain")
         .expect("Wi221Plain registered");
     let chain = requires_chain_flat(&kb, enclosing);
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
-    assert!(matches!(outcome, DispatchOutcome::Unique(_)),
+    assert!(
+        matches!(outcome, DispatchOutcome::Unique(_)),
         "WI-221: enclosing sort without `requires PartialEq[T=Int64]` must not \
-         defer — Pin-now still applies. Got {outcome:?}");
+         defer — Pin-now still applies. Got {outcome:?}"
+    );
 }
 
 #[test]
@@ -163,7 +179,8 @@ fn dispatch_defers_when_requires_uses_open_param() {
     // A per-call subst that ground-binds that param to Int64 should still
     // be deferred — the impl chosen at runtime depends on whichever
     // Eq requirement the caller passes for the chosen T.
-    let mut kb = load_with(r#"
+    let mut kb = load_with(
+        r#"
         namespace test.wi221.open_t
           import anthill.prelude.PartialEq
           sort Wi221Generic
@@ -171,12 +188,13 @@ fn dispatch_defers_when_requires_uses_open_param() {
             requires PartialEq[T]
           end
         end
-    "#);
+    "#,
+    );
 
-    let eq_op = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+    let eq_op = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered by stdlib");
-    let spec_sort = lookup_spec_op_dispatch(&kb, eq_op)
-        .expect("Eq.eq is a spec op");
+    let spec_sort = lookup_spec_op_dispatch(&kb, eq_op).expect("Eq.eq is a spec op");
     let subst = subst_with_param(
         &mut kb,
         "anthill.prelude.PartialEq",
@@ -185,13 +203,17 @@ fn dispatch_defers_when_requires_uses_open_param() {
     );
     let op_short = kb.intern("eq");
 
-    let enclosing = kb.try_resolve_symbol("test.wi221.open_t.Wi221Generic")
+    let enclosing = kb
+        .try_resolve_symbol("test.wi221.open_t.Wi221Generic")
         .expect("Wi221Generic registered");
     let chain = requires_chain_flat(&kb, enclosing);
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
-    assert_eq!(outcome, DispatchOutcome::Deferred,
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Deferred,
         "WI-221: `requires PartialEq[T]` (with T as the sort's open param) must \
          defer for any per-call ground binding — the impl varies per \
-         requirement. Got {outcome:?}");
+         requirement. Got {outcome:?}"
+    );
 }

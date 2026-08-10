@@ -122,7 +122,11 @@ fn fixture(ns: &str, main_entry: &str, claim_in_entry: bool, backed: bool) -> St
     };
     // The backing member stays in the secondary entry in every row, so the only
     // thing that varies across a row PAIR is where the CLAIM sits.
-    let member = if backed { "operation show(x: Rec) -> Int64 = 111" } else { "" };
+    let member = if backed {
+        "operation show(x: Rec) -> Int64 = 111"
+    } else {
+        ""
+    };
     format!(
         r#"
 namespace {ns}
@@ -154,10 +158,15 @@ fn backing_absent_is_refused() {
     let mut bad = Vec::new();
     for (spelling, main_entry) in [("entity", ENTITY), ("sort", SORT)] {
         for (i, claim_in_entry) in [true, false].into_iter().enumerate() {
-            let placement = if claim_in_entry { "in the secondary entry" } else { "one level out" };
+            let placement = if claim_in_entry {
+                "in the secondary entry"
+            } else {
+                "one level out"
+            };
             let ns = format!("wi978.u{spelling}{i}");
             let src = fixture(&ns, main_entry, claim_in_entry, false);
-            let want = format!("'{ns}.Rec' provides '{ns}.Show' but backs no operation '{ns}.Show.show'");
+            let want =
+                format!("'{ns}.Rec' provides '{ns}.Show' but backs no operation '{ns}.Show.show'");
             match crate::common::try_load_kb_with(&src) {
                 Err(errs) if errs.join("\n").contains(&want) => {}
                 Err(errs) => bad.push(format!(
@@ -174,7 +183,11 @@ fn backing_absent_is_refused() {
     }
     // Every row reported, so backing the fix out names the discriminating rows
     // rather than only the first one reached.
-    assert!(bad.is_empty(), "unbacked rows that were not refused:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "unbacked rows that were not refused:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// THE ACCEPTANCE MATRIX, HALF TWO — backing PRESENT: every row accepted, AND
@@ -189,7 +202,11 @@ fn backing_present_is_accepted_and_recorded() {
     let mut bad = Vec::new();
     for (spelling, main_entry) in [("entity", ENTITY), ("sort", SORT)] {
         for (i, claim_in_entry) in [true, false].into_iter().enumerate() {
-            let placement = if claim_in_entry { "in the secondary entry" } else { "one level out" };
+            let placement = if claim_in_entry {
+                "in the secondary entry"
+            } else {
+                "one level out"
+            };
             let ns = format!("wi978.b{spelling}{i}");
             let src = fixture(&ns, main_entry, claim_in_entry, true);
             // `load_kb_with` panics on a load error, so "accepted" is asserted by
@@ -204,7 +221,11 @@ fn backing_present_is_accepted_and_recorded() {
             }
         }
     }
-    assert!(bad.is_empty(), "backed rows recording the wrong provisions:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "backed rows recording the wrong provisions:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// The two placements must give the SAME message, not merely both refuse — the
@@ -275,7 +296,8 @@ end
             .err()
             .unwrap_or_else(|| panic!("{label}: an unbacked claim must be refused whichever declaration is written first"));
         assert!(
-            errs.join("\n").contains(&format!("'{ns}.Rec' provides '{ns}.Show'")),
+            errs.join("\n")
+                .contains(&format!("'{ns}.Rec' provides '{ns}.Show'")),
             "{label}: expected the unbacked-provider diagnostic; got:\n{}",
             errs.join("\n")
         );

@@ -122,7 +122,9 @@ end
 
 /// The load errors of `src`, or an empty vec when it loads clean.
 fn errors_of(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// The R3 refusals only — so a row can say "R3 was silent here" without asserting
@@ -157,9 +159,7 @@ fn eval_int(src: &str, op: &str) -> Result<i64, String> {
 fn a_fresh_body_having_operation_dispatches() {
     let src = fixture(
         "test.wi1000.ok",
-        &format!(
-            "    operation show(x: Rec) -> Int64 = {ANSWER}\n    provides Show[T = Rec]"
-        ),
+        &format!("    operation show(x: Rec) -> Int64 = {ANSWER}\n    provides Show[T = Rec]"),
     );
     assert_eq!(eval_int(&src, "test.wi1000.ok.driveGeneric"), Ok(ANSWER));
 }
@@ -172,7 +172,11 @@ fn a_fresh_body_having_operation_dispatches() {
 fn a_fresh_bodyless_operation_is_refused() {
     let src = fixture("test.wi1000.nobody", "    operation show(x: Rec) -> Int64");
     let errs = r3_errors(&src);
-    assert_eq!(errs.len(), 1, "expected exactly one R3 refusal, got {errs:#?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly one R3 refusal, got {errs:#?}"
+    );
     assert!(
         errs[0].contains("`operation` 'show'") && errs[0].contains("'test.wi1000.nobody.Rec'"),
         "the diagnostic must name the declaration AND the sort whose entry this is; got {:?}",
@@ -208,7 +212,11 @@ fn the_operation_rule_reaches_operation_block_sugar() {
         "    operation {\n      show(x: Rec) -> Int64\n    }",
     );
     let errs = r3_errors(&bare);
-    assert_eq!(errs.len(), 1, "expected exactly one R3 refusal, got {errs:#?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly one R3 refusal, got {errs:#?}"
+    );
     assert!(
         errs[0].contains("`operation` 'show'") && errs[0].contains("runnable Anthill body"),
         "the sugar must reach the SAME rule with the same words; got {:?}",
@@ -274,7 +282,8 @@ end
 "#;
     let errs = errors_of(src);
     assert!(
-        errs.iter().any(|e| e.contains("is declared more than once in its scope")),
+        errs.iter()
+            .any(|e| e.contains("is declared more than once in its scope")),
         "WI-1049's rule must be the one that fires; got {errs:#?}"
     );
     assert!(
@@ -359,11 +368,19 @@ fn every_refused_production_is_refused() {
         ("type param `?T`", "    sort ?P", "`sort` 'P'"),
         ("type param `[T]`", "    sort [P]", "`sort` 'P'"),
         ("braced binder", "    sort [F] { sort [T] }", "`sort` 'F'"),
-        ("sort-level requires", "    requires Show[T = Rec]", "`requires`"),
+        (
+            "sort-level requires",
+            "    requires Show[T = Rec]",
+            "`requires`",
+        ),
         ("rule", "    rule freshp(1)", "`rule`"),
         ("rule block", "    rule {\n      freshp(1)\n    }", "`rule`"),
         ("fact", "    fact freshq(2)", "`fact`"),
-        ("constraint", "    constraint no_three :- Rec.show(rec(n: 3))", "`constraint`"),
+        (
+            "constraint",
+            "    constraint no_three :- Rec.show(rec(n: 3))",
+            "`constraint`",
+        ),
     ];
     let mut bad = Vec::new();
     for (i, (label, body, want)) in rows.iter().enumerate() {
@@ -374,13 +391,19 @@ fn every_refused_production_is_refused() {
         let errs = r3_errors(&src);
         match errs.iter().find(|e| e.contains(want)) {
             Some(e) if e.contains(&format!("test.wi1000.r{i}.Rec")) => {}
-            Some(e) => bad.push(format!("{label}: refused, but the message names no sort: {e}")),
+            Some(e) => bad.push(format!(
+                "{label}: refused, but the message names no sort: {e}"
+            )),
             None => bad.push(format!(
                 "{label}: expected an R3 refusal carrying {want:?}, got {errs:#?}"
             )),
         }
     }
-    assert!(bad.is_empty(), "rows not refused as R3 requires:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "rows not refused as R3 requires:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// THE OTHER SIDE OF DEFAULT-DENY. A classifier that refused everything would pass
@@ -397,20 +420,29 @@ fn every_refused_production_is_refused() {
 fn every_allowed_production_loads() {
     let rows: &[(&str, &str)] = &[
         ("const", "    const LIMIT: Int64 = 5"),
-        ("nested sort with a body", "    sort Code\n      entity code(v: Int64)\n    end"),
+        (
+            "nested sort with a body",
+            "    sort Code\n      entity code(v: Int64)\n    end",
+        ),
         ("bodyless type alias", "    sort Code = Int64"),
         (
             "the alias USED by a sibling member",
             "    sort Code = Int64\n    operation widen(x: Rec) -> Code = 5",
         ),
-        ("nested namespace", "    namespace Inner\n      rule inner_p(1)\n    end"),
+        (
+            "nested namespace",
+            "    namespace Inner\n      rule inner_p(1)\n    end",
+        ),
         ("provides clause", "    provides Show[T = Rec]"),
         (
             "host provides block",
             "    provides Rec language rust\n      artifact \"nowhere.rs\"\n      \
              carrier { Rec: \"Rec\" }\n    end",
         ),
-        ("inline description block", "    {< a description block is inert >}\n    const C: Int64 = 1"),
+        (
+            "inline description block",
+            "    {< a description block is inert >}\n    const C: Int64 = 1",
+        ),
     ];
     let mut bad = Vec::new();
     for (i, (label, body)) in rows.iter().enumerate() {
@@ -423,7 +455,11 @@ fn every_allowed_production_loads() {
             bad.push(format!("{label}: must load clean, got {errs:#?}"));
         }
     }
-    assert!(bad.is_empty(), "allowed rows that did not load:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "allowed rows that did not load:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// 059's RECURSION RULE. A `provides … language L … end` block is a REALIZATION, not
@@ -459,7 +495,8 @@ fn the_provides_block_interior_is_classified() {
     ] {
         let errs = r3_errors(&block(inner));
         assert!(
-            errs.iter().any(|e| e.contains(want) && e.contains("test.wi1000.pb.Rec")),
+            errs.iter()
+                .any(|e| e.contains(want) && e.contains("test.wi1000.pb.Rec")),
             "{label} inside the block must be refused as it would be one level out; got {errs:#?}"
         );
     }
@@ -473,7 +510,10 @@ fn the_provides_block_interior_is_classified() {
              carrier {{ Rec: \"Rec\" }}\n    end"
         ),
     );
-    assert_eq!(eval_int(&migrated, "test.wi1000.pbok.driveGeneric"), Ok(ANSWER));
+    assert_eq!(
+        eval_int(&migrated, "test.wi1000.pbok.driveGeneric"),
+        Ok(ANSWER)
+    );
 }
 
 /// THE ORPHAN CLAIM — the capability the fact ban must NOT have taken, and the reason
@@ -598,7 +638,8 @@ end
     );
     let errs = r3_errors(&foreign);
     assert!(
-        errs.iter().any(|e| e.contains("`proof` 'other'") && e.contains("set_proof_result")),
+        errs.iter()
+            .any(|e| e.contains("`proof` 'other'") && e.contains("set_proof_result")),
         "a proof whose target the MAIN entry declares is refused, naming the target and \
          saying what a proof writes; got {errs:#?}"
     );
@@ -711,7 +752,11 @@ end
         1,
         "exactly the entity's own refusal, and nothing about the `describe`; got {errs:#?}"
     );
-    assert!(errs[0].contains("`entity` 'Extra'"), "and it is the entity's; got {:?}", errs[0]);
+    assert!(
+        errs[0].contains("`entity` 'Extra'"),
+        "and it is the entity's; got {:?}",
+        errs[0]
+    );
 }
 
 // ── The address a declaration's NAME lands at ───────────────────────────────
@@ -735,7 +780,10 @@ end
 /// goes, so the last row pins that it stays refused.
 #[test]
 fn a_dotted_declaration_name_is_not_the_entrys_content() {
-    let dotted = fixture("test.wi1000.dot", "    operation Inner.helper(x: Rec) -> Int64");
+    let dotted = fixture(
+        "test.wi1000.dot",
+        "    operation Inner.helper(x: Rec) -> Int64",
+    );
     assert!(
         r3_errors(&dotted).is_empty(),
         "a dotted name declares into `Rec.Inner`, an ordinary namespace R3 does not \
@@ -757,7 +805,9 @@ fn a_dotted_declaration_name_is_not_the_entrys_content() {
     // And the shape that shows the rule is not "skip anything dotted".
     let dotted_param = fixture("test.wi1000.dotp", "    sort Inner.T = ?");
     assert!(
-        r3_errors(&dotted_param).iter().any(|e| e.contains("`sort` 'Inner.T'")),
+        r3_errors(&dotted_param)
+            .iter()
+            .any(|e| e.contains("`sort` 'Inner.T'")),
         "a dotted type-parameter binder still binds THIS sort, so it stays refused; \
          got {:?}",
         r3_errors(&dotted_param)
@@ -798,7 +848,9 @@ fn a_qualified_target_naming_this_entry_is_admitted() {
         ),
     );
     assert!(
-        r3_errors(&nested_member).iter().any(|e| e.contains("`describe` 'Code.widen'")),
+        r3_errors(&nested_member)
+            .iter()
+            .any(|e| e.contains("`describe` 'Code.widen'")),
         "a nested sort is its own type's MAIN entry, so its member is another entry's; \
          got {:?}",
         r3_errors(&nested_member)
@@ -818,7 +870,8 @@ fn a_valueless_const_in_an_entry_is_refused() {
     let bare = fixture("test.wi1000.cbare", "    const LIMIT: Int64");
     let errs = r3_errors(&bare);
     assert!(
-        errs.iter().any(|e| e.contains("`const` 'LIMIT'") && e.contains("const_map")),
+        errs.iter()
+            .any(|e| e.contains("`const` 'LIMIT'") && e.contains("const_map")),
         "a value-less const is refused, naming the declaration and the host channel it \
          would be reserving; got {errs:#?}"
     );
@@ -867,7 +920,8 @@ fn a_type_parameter_is_refused_and_the_control_says_why() {
     let entry = fixture("test.wi1000.tp", "    sort T = ?");
     let errs = r3_errors(&entry);
     assert!(
-        errs.iter().any(|e| e.contains("`sort` 'T'") && e.contains("identity")),
+        errs.iter()
+            .any(|e| e.contains("`sort` 'T'") && e.contains("identity")),
         "a type parameter in a secondary entry is refused; got {errs:#?}"
     );
 
@@ -881,7 +935,9 @@ namespace test.wi1000.tpmain
 end
 "#;
     let kb = crate::common::load_kb_with(main_entry);
-    let rec = kb.try_resolve_symbol("test.wi1000.tpmain.Rec").expect("Rec");
+    let rec = kb
+        .try_resolve_symbol("test.wi1000.tpmain.Rec")
+        .expect("Rec");
     assert_eq!(
         kb.type_params_of_sort(rec),
         vec!["T".to_string()],

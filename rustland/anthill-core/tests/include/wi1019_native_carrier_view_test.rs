@@ -80,7 +80,11 @@ fn an_opref_is_equal_to_itself_and_keys_by_its_op() {
     let kb = interp.kb();
     let a = resolve(&interp, "anthill.prelude.Int64");
     let b = resolve(&interp, "anthill.prelude.Bool");
-    let mk = |op| Value::OpRef { op, dict: None, named: None };
+    let mk = |op| Value::OpRef {
+        op,
+        dict: None,
+        named: None,
+    };
 
     let (eq, same_key) = eq_and_key(kb, &mk(a), &mk(a));
     assert!(eq, "an op-as-value is equal to itself");
@@ -104,8 +108,16 @@ fn the_named_spec_op_half_is_part_of_the_identity() {
 
     let (eq, same_key) = eq_and_key(
         kb,
-        &Value::OpRef { op: a, dict: None, named: None },
-        &Value::OpRef { op: a, dict: None, named: Some(b) },
+        &Value::OpRef {
+            op: a,
+            dict: None,
+            named: None,
+        },
+        &Value::OpRef {
+            op: a,
+            dict: None,
+            named: Some(b),
+        },
     );
     assert!(!eq, "the NAMED spec-op half is part of the identity");
     assert!(!same_key, "and it reaches the key too");
@@ -127,7 +139,11 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
 
     let d_int = crate::common::dict(&interp, int64, []);
     let d_bool = crate::common::dict(&interp, bool_sym, []);
-    let with = |d| Value::OpRef { op, dict: Some(std::rc::Rc::new(d)), named: None };
+    let with = |d| Value::OpRef {
+        op,
+        dict: Some(std::rc::Rc::new(d)),
+        named: None,
+    };
 
     let kb = interp.kb();
     let (eq, same_key) = eq_and_key(kb, &with(d_int.clone()), &with(d_bool));
@@ -137,12 +153,22 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
     // And an OpRef WITH a dict is still equal to itself — the arity-3 shape is
     // not merely "distinct from everything", which `assert!(!…)` alone allows.
     let (eq, same_key) = eq_and_key(kb, &with(d_int.clone()), &with(d_int.clone()));
-    assert!(eq && same_key, "an OpRef carrying a dict is equal to itself");
+    assert!(
+        eq && same_key,
+        "an OpRef carrying a dict is equal to itself"
+    );
 
     // A present `dict` and an absent one differ by ARITY, the conditional-key
     // shape (`Expr::Proof` precedent) — no `Option` wrapper is synthesized.
-    let (eq, same_key) =
-        eq_and_key(kb, &with(d_int), &Value::OpRef { op, dict: None, named: None });
+    let (eq, same_key) = eq_and_key(
+        kb,
+        &with(d_int),
+        &Value::OpRef {
+            op,
+            dict: None,
+            named: None,
+        },
+    );
     assert!(!eq && !same_key, "a captured dict is not the same as none");
 }
 
@@ -179,7 +205,11 @@ fn a_dictionary_views_as_its_impl_and_sub_dictionaries() {
     let dict_sym = resolve(&interp, "anthill.realization.runtime.Dictionary");
     let kb = interp.kb();
     match parent.head(kb) {
-        ViewHead::Functor { functor, pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
             assert_eq!(functor, Some(dict_sym), "views under its own declared sort");
             assert_eq!(pos_arity, 1, "one sub-dictionary, positionally");
             assert_eq!(named_arity, 1, "and `impl`");
@@ -233,9 +263,11 @@ fn two_dictionaries_over_different_impls_are_not_equal() {
     // With one representation there is no identity left for them to differ in.
     let db_int = crate::common::dict(&b, int64, []).into_value();
     let (eq, same_key) = eq_and_key(a.kb(), &da, &db_int);
-    assert!(eq && same_key,
+    assert!(
+        eq && same_key,
         "one dictionary built on two sides is one value — the whole point of \
-         retiring the arena (requirement-channel.md §9)");
+         retiring the arena (requirement-channel.md §9)"
+    );
 }
 
 // ── The blast radius, asserted ───────────────────────────────────────────────
@@ -258,8 +290,15 @@ fn an_opref_key_is_payload_bearing() {
     let op = resolve(&interp, "anthill.prelude.Int64");
     let key = goal_fingerprint(
         interp.kb(),
-        &Value::OpRef { op, dict: None, named: None },
+        &Value::OpRef {
+            op,
+            dict: None,
+            named: None,
+        },
         &Substitution::new(),
     );
-    assert!(key.is_opaque_free(), "an OpRef head now carries its own payload");
+    assert!(
+        key.is_opaque_free(),
+        "an OpRef head now carries its own payload"
+    );
 }

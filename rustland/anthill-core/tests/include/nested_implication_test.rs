@@ -4,22 +4,24 @@
 //! parses, loads, and round-trips. Used by auto-generated induction
 //! principles for the inductive-step case (WI-106 follow-up).
 
-
 use std::rc::Rc;
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap();
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p).unwrap();
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
@@ -28,8 +30,13 @@ fn load_with(extra: &str) -> KnowledgeBase {
 }
 
 fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<Rc<NodeOccurrence>> {
-    let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol {qn} not found"));
-    let rid = kb.rules_by_functor(sym).first().copied()
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("symbol {qn} not found"));
+    let rid = kb
+        .rules_by_functor(sym)
+        .first()
+        .copied()
         .unwrap_or_else(|| panic!("no rule for {qn}"));
     kb.rule_body_nodes(rid).to_vec()
 }
@@ -54,9 +61,17 @@ fn nested_impl_in_rule_body_parses_and_loads() {
     // Second goal should be a forall_impl occurrence
     let goal = &body[1];
     match goal.as_expr() {
-        Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-            assert_eq!(kb.local_name_of(*functor), "forall_impl",
-                "second goal should be forall_impl");
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) => {
+            assert_eq!(
+                kb.local_name_of(*functor),
+                "forall_impl",
+                "second goal should be forall_impl"
+            );
             assert_eq!(pos_args.len(), 3, "forall_impl takes (binders, ants, cons)");
             assert!(named_args.is_empty());
         }
@@ -80,7 +95,10 @@ fn nested_impl_round_trips_through_printer() {
     let body = rule_body_for(&kb, "test.nested.print.s_r");
     let printer = TermPrinter::new(&kb);
     let printed = printer.print_occurrence(&body[0]);
-    assert!(printed.contains("(forall("), "missing forall opener: {printed}");
+    assert!(
+        printed.contains("(forall("),
+        "missing forall opener: {printed}"
+    );
     assert!(printed.contains(" -: "), "missing -: separator: {printed}");
     assert!(printed.contains("ho_apply"), "missing ho_apply: {printed}");
 }

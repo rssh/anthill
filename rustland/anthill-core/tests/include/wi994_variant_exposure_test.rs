@@ -54,7 +54,9 @@ end
     );
     // Back the un-gate out and this fails at LOAD — `type mismatch in merge.apply:
     // … got unknown functor`.
-    let got = interp.call("wi994.boot.row", &[]).expect("row() must evaluate");
+    let got = interp
+        .call("wi994.boot.row", &[])
+        .expect("row() must evaluate");
     assert_built(
         &interp,
         &got,
@@ -152,7 +154,9 @@ end
 "#,
     );
     let cond = Value::term(interp.kb_mut().make_name_term("wi994_condition"));
-    let got = interp.call("wi994.uniq.p", &[cond]).expect("p() must evaluate");
+    let got = interp
+        .call("wi994.uniq.p", &[cond])
+        .expect("p() must evaluate");
     assert_built(
         &interp,
         &got,

@@ -23,18 +23,25 @@ fn dump_phase_c_shapes() {
     "#;
     let kb = load_kb_with(source);
 
-    let op_impl_sym = kb.try_resolve_symbol("anthill.realization.OperationImpl").unwrap();
+    let op_impl_sym = kb
+        .try_resolve_symbol("anthill.realization.OperationImpl")
+        .unwrap();
     for rid in kb.rules_by_functor(op_impl_sym) {
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
-            let op = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "operation")
-                .map(|(_, v)| *v).unwrap();
+            let op = named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "operation")
+                .map(|(_, v)| *v)
+                .unwrap();
             let op_sym = match kb.get_term(op) {
                 Term::Ref(s) => *s,
                 _ => continue,
             };
             let op_name = kb.qualified_name_of(op_sym).to_string();
-            if !op_name.contains("test.dumpc") { continue; }
+            if !op_name.contains("test.dumpc") {
+                continue;
+            }
             println!("\n== {op_name} ==");
             // WI-305: the body occurrence lives in the op_body_node side-table.
             match kb.op_body_node(op_sym) {

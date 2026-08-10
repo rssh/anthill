@@ -4,21 +4,23 @@
 //! its SMT-side semantics — auto-include in proof preamble — are
 //! deferred for v0; the attribute itself parses and stores cleanly.)
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, is_equational_head, NullResolver};
-use anthill_core::parse;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::ClauseKind;
+use anthill_core::kb::KnowledgeBase;
+use anthill_core::parse;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -38,7 +40,9 @@ fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
     let all_rules = kb.clauses_of_kind(rule_sort_term);
     for &rid in &all_rules {
         let head = kb.rule_head(rid);
-        if !is_equational_head(&kb, head) { continue; }
+        if !is_equational_head(&kb, head) {
+            continue;
+        }
         // Is this rule still in rules_by_functor under its head's
         // functor? Probe directly.
         if let Term::Fn { functor, .. } = kb.get_term(head) {
@@ -53,19 +57,23 @@ fn equational_indexed_count(mut kb: KnowledgeBase) -> usize {
 
 #[test]
 fn bare_equational_rule_is_excluded_from_rules_by_functor() {
-    let baseline = equational_indexed_count(load_with(r#"
+    let baseline = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.bare
           rule Marker(?x) :- ?x = 1
         end
-    "#));
-    let with_law = equational_indexed_count(load_with(r#"
+    "#,
+    ));
+    let with_law = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.bare
           rule Marker(?x) :- ?x = 1
           rule {
             my_law: foo(?a, ?b) = foo(?b, ?a)
           }
         end
-    "#));
+    "#,
+    ));
     assert_eq!(
         baseline, with_law,
         "bare equational rule must NOT add to the rules_by_functor index — \
@@ -76,17 +84,21 @@ fn bare_equational_rule_is_excluded_from_rules_by_functor() {
 #[test]
 fn simp_attributed_equational_rule_is_indexed() {
     // Top-level rule_declaration with attached meta_block.
-    let baseline = equational_indexed_count(load_with(r#"
+    let baseline = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.simp_baseline
           rule Marker(?x) :- ?x = 1
         end
-    "#));
-    let with_simp = equational_indexed_count(load_with(r#"
+    "#,
+    ));
+    let with_simp = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.simp_with
           rule Marker(?x) :- ?x = 1
           rule my_def: foo(?a) = bar(?a) [simp]
         end
-    "#));
+    "#,
+    ));
     assert!(
         with_simp > baseline,
         "[simp]-tagged equational rule must be in rules_by_functor — \
@@ -96,17 +108,21 @@ fn simp_attributed_equational_rule_is_indexed() {
 
 #[test]
 fn unfold_attributed_equational_rule_is_indexed() {
-    let baseline = equational_indexed_count(load_with(r#"
+    let baseline = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.unfold_baseline
           rule Marker(?x) :- ?x = 1
         end
-    "#));
-    let with_unfold = equational_indexed_count(load_with(r#"
+    "#,
+    ));
+    let with_unfold = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.unfold_with
           rule Marker(?x) :- ?x = 1
           rule my_def: g(?a) = h(?a) [unfold]
         end
-    "#));
+    "#,
+    ));
     assert!(
         with_unfold > baseline,
         "[unfold]-tagged equational rule must be in rules_by_functor — \
@@ -122,12 +138,15 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
     // cite-required for SLD-side resolution. Once SMT-emission
     // integration lands the rule will additionally appear in the
     // discharge's preamble within scope.
-    let baseline = equational_indexed_count(load_with(r#"
+    let baseline = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.hint
           rule Marker(?x) :- ?x = 1
         end
-    "#));
-    let with_hint = equational_indexed_count(load_with(r#"
+    "#,
+    ));
+    let with_hint = equational_indexed_count(load_with(
+        r#"
         namespace test.eqattr.hint
           rule Marker(?x) :- ?x = 1
           rule {
@@ -135,7 +154,8 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
             [hint]
           }
         end
-    "#));
+    "#,
+    ));
     assert_eq!(
         baseline, with_hint,
         "[hint] alone must NOT add to the rules_by_functor index in v0 \
@@ -148,14 +168,17 @@ fn horn_rule_is_indexed_regardless_of_attributes() {
     // Horn rules (head is a non-`=` term, body via `:-`) are
     // unaffected by the equational gate. Always indexed in
     // rules_by_functor for SLD goal resolution.
-    let kb = load_with(r#"
+    let kb = load_with(
+        r#"
         namespace test.eqattr.horn
           rule horny(?x, ?y)
             :- ?x = 1,
                ?y = 2
         end
-    "#);
-    let sym = kb.try_resolve_symbol("test.eqattr.horn.horny")
+    "#,
+    );
+    let sym = kb
+        .try_resolve_symbol("test.eqattr.horn.horny")
         .expect("horny rule must resolve");
     assert!(
         !kb.rules_by_functor(sym).is_empty(),

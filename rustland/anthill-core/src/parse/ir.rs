@@ -6,16 +6,15 @@
 /// Terms at parse time use `TermId` into `SimpleTermStore` (a plain Vec,
 /// no hash-consing). During loading into the KB, terms are re-allocated
 /// into the hash-consed store.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{SymbolTable, Symbol};
-use crate::span::Span;
+use crate::intern::{Symbol, SymbolTable};
 use crate::kb::term::{Term, TermId, TermSource};
+use crate::span::Span;
 
 // ── Simple term store (parse-time only) ─────────────────────────
 
@@ -152,9 +151,10 @@ impl SimpleTermStore {
     /// Used by tests that need to find specific Term shapes (e.g.
     /// `Term::ParseAux`) without navigating from an Item field.
     pub fn iter(&self) -> impl Iterator<Item = (TermId, &Term)> + '_ {
-        self.entries.iter().enumerate().map(|(i, entry)| {
-            (TermId::from_raw(i as u32), &entry.term)
-        })
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| (TermId::from_raw(i as u32), &entry.term))
     }
 }
 
@@ -247,7 +247,10 @@ impl Name {
     }
 
     pub fn last(&self) -> Symbol {
-        *self.segments.last().expect("Name must have at least one segment")
+        *self
+            .segments
+            .last()
+            .expect("Name must have at least one segment")
     }
 
     pub fn is_simple(&self) -> bool {
@@ -727,7 +730,13 @@ pub enum ConstraintBody {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Quantifier { Forall, Some, One, Lone, No }
+pub enum Quantifier {
+    Forall,
+    Some,
+    One,
+    Lone,
+    No,
+}
 
 impl Quantifier {
     /// The `LogicalQuery` constructor name this quantifier lowers to.
@@ -743,10 +752,22 @@ impl Quantifier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Aggregate { Count, Sum, Min, Max }
+pub enum Aggregate {
+    Count,
+    Sum,
+    Min,
+    Max,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompareOp { Le, Ge, Lt, Gt, Eq, Ne }
+pub enum CompareOp {
+    Le,
+    Ge,
+    Lt,
+    Gt,
+    Eq,
+    Ne,
+}
 
 // ── Sugar: blocks ───────────────────────────────────────────────
 

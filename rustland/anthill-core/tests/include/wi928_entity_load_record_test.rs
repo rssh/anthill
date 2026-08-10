@@ -108,7 +108,10 @@ fn a_later_field_is_checked_under_both_spellings() {
     let s = own_errors(try_load_kb_with(&sugar));
     assert_eq!(s.len(), 1, "the second field is checked: {s:?}");
     assert!(s[0].contains("Thing.label"), "and named: {s:?}");
-    assert_eq!(without_position(&s), without_position(&own_errors(try_load_kb_with(&long))));
+    assert_eq!(
+        without_position(&s),
+        without_position(&own_errors(try_load_kb_with(&long)))
+    );
 }
 
 // ── The record itself ───────────────────────────────────────────
@@ -123,14 +126,25 @@ fn both_spellings_emit_one_sort_info_whose_constructor_is_itself() {
         let mut kb = try_load_kb_with(&src).expect("declaration alone loads");
         let thing = subject(&kb);
         let records = records_naming(&kb, "anthill.reflect.SortInfo", thing);
-        assert_eq!(records.len(), 1, "[{label}] exactly one SortInfo names Thing");
+        assert_eq!(
+            records.len(),
+            1,
+            "[{label}] exactly one SortInfo names Thing"
+        );
 
         let ctors: Vec<String> =
             anthill_core::kb::typing::list_to_vec(&kb, field(&kb, &records[0], "constructors"))
                 .into_iter()
-                .map(|t| kb.local_name_of(head_sym(&kb, t).expect("a constructor ref")).to_string())
+                .map(|t| {
+                    kb.local_name_of(head_sym(&kb, t).expect("a constructor ref"))
+                        .to_string()
+                })
                 .collect();
-        assert_eq!(ctors, vec!["Thing".to_string()], "[{label}] its sole constructor is itself");
+        assert_eq!(
+            ctors,
+            vec!["Thing".to_string()],
+            "[{label}] its sole constructor is itself"
+        );
     }
 }
 
@@ -146,7 +160,8 @@ fn the_records_differ_only_in_the_written_keyword() {
             let thing = subject(&kb);
             let records = records_naming(&kb, "anthill.reflect.SortInfo", thing);
             let kind = field(&kb, &records[0], "kind");
-            kb.local_name_of(head_sym(&kb, kind).expect("kind is a name")).to_string()
+            kb.local_name_of(head_sym(&kb, kind).expect("kind is a name"))
+                .to_string()
         })
         .collect();
     assert_eq!(kinds, vec!["entity".to_string(), "sort".to_string()]);
@@ -159,7 +174,8 @@ fn both_spellings_emit_the_induction_principle() {
     for (label, src) in spellings() {
         let kb = try_load_kb_with(&src).expect("declaration alone loads");
         assert!(
-            kb.try_resolve_symbol("test.wi928.Thing.induction").is_some(),
+            kb.try_resolve_symbol("test.wi928.Thing.induction")
+                .is_some(),
             "[{label}] a one-constructor sort has an induction principle",
         );
     }
@@ -200,7 +216,10 @@ fn control_the_stdlib_loads_clean() {
         Ok(_) => Vec::new(),
         Err(e) => e,
     };
-    assert!(errs.is_empty(), "the stdlib + host bindings must load clean: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "the stdlib + host bindings must load clean: {errs:#?}"
+    );
 }
 
 /// NEGATIVE CONTROL — a sort-body variant named DIFFERENTLY from its sort is
@@ -218,21 +237,28 @@ end
 ";
     let mut kb = try_load_kb_with(src).expect("loads");
     let status = kb.try_resolve_symbol("test.wi928v.Status").expect("Status");
-    let open = kb.try_resolve_symbol("test.wi928v.Status.Open").expect("Open");
+    let open = kb
+        .try_resolve_symbol("test.wi928v.Status.Open")
+        .expect("Open");
     assert_eq!(kb.strict_parent_sort(open), Some(status));
 
-    let si = kb.try_resolve_symbol("anthill.reflect.SortInfo").expect("reflect");
+    let si = kb
+        .try_resolve_symbol("anthill.reflect.SortInfo")
+        .expect("reflect");
     let own_record = kb
         .rules_by_functor(si)
         .into_iter()
         .filter(|rid| kb.is_fact(*rid))
         .filter_map(|rid| kb.fact_head_named_args(rid))
         .any(|named| {
-            named.iter().any(|(f, v)| {
-                kb.local_name_of(*f) == "name" && head_sym(&kb, *v) == Some(open)
-            })
+            named
+                .iter()
+                .any(|(f, v)| kb.local_name_of(*f) == "name" && head_sym(&kb, *v) == Some(open))
         });
-    assert!(!own_record, "a variant is not a sort; it has no SortInfo of its own");
+    assert!(
+        !own_record,
+        "a variant is not a sort; it has no SortInfo of its own"
+    );
 }
 
 // ── Reading the declaration record ──────────────────────────────
@@ -245,7 +271,8 @@ fn spellings() -> Vec<(&'static str, String)> {
 }
 
 fn subject(kb: &KnowledgeBase) -> Symbol {
-    kb.try_resolve_symbol("test.wi928.Thing").expect("Thing resolves")
+    kb.try_resolve_symbol("test.wi928.Thing")
+        .expect("Thing resolves")
 }
 
 /// Every fact of `functor` (a reflect record) whose `name:` field denotes
@@ -257,14 +284,22 @@ fn records_naming(kb: &KnowledgeBase, functor: &str, subject: Symbol) -> Vec<Rec
         .into_iter()
         .filter(|rid| kb.is_fact(*rid))
         .filter_map(|rid| kb.fact_head_named_args(rid))
-        .filter(|named| head_sym(kb, field_of(kb, named, "name").expect("a record names something")) == Some(subject))
+        .filter(|named| {
+            head_sym(
+                kb,
+                field_of(kb, named, "name").expect("a record names something"),
+            ) == Some(subject)
+        })
         .collect()
 }
 
 type Record = smallvec::SmallVec<[(Symbol, TermId); 2]>;
 
 fn field_of(kb: &KnowledgeBase, record: &Record, name: &str) -> Option<TermId> {
-    record.iter().find(|(f, _)| kb.local_name_of(*f) == name).map(|(_, v)| *v)
+    record
+        .iter()
+        .find(|(f, _)| kb.local_name_of(*f) == name)
+        .map(|(_, v)| *v)
 }
 
 fn field(kb: &KnowledgeBase, record: &Record, name: &str) -> TermId {

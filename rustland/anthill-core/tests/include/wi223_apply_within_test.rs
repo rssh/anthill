@@ -15,7 +15,6 @@
 //! Reference: docs/design/operation-call-model.md §"Names model",
 //! §"Eval mechanics: AwaitState with requirements".
 
-
 use smallvec::SmallVec;
 
 use anthill_core::eval::value::Dictionary;
@@ -26,7 +25,8 @@ use anthill_core::kb::KnowledgeBase;
 use crate::common::load_kb_with;
 
 fn make_nil(kb: &mut KnowledgeBase) -> TermId {
-    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")
+    let nil_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil registered");
     kb.alloc(Term::Fn {
         functor: nil_sym,
@@ -36,17 +36,15 @@ fn make_nil(kb: &mut KnowledgeBase) -> TermId {
 }
 
 fn make_cons(kb: &mut KnowledgeBase, head: TermId, tail: TermId) -> TermId {
-    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")
+    let cons_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
         .expect("List.cons registered");
     let head_field = kb.intern("head");
     let tail_field = kb.intern("tail");
     kb.alloc(Term::Fn {
         functor: cons_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (head_field, head),
-            (tail_field, tail),
-        ]),
+        named_args: SmallVec::from_slice(&[(head_field, head), (tail_field, tail)]),
     })
 }
 
@@ -72,10 +70,12 @@ namespace test.wi223.apply_within
 end
 "#;
     let mut kb = load_kb_with(src);
-    let target_sym = kb.try_resolve_symbol("test.wi223.apply_within.produce")
+    let target_sym = kb
+        .try_resolve_symbol("test.wi223.apply_within.produce")
         .expect("produce registered");
     let impl_sym = kb.intern("test.wi223.apply_within.SomeImpl");
-    let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
+    let aw_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .unwrap();
 
     // requirements = [Dictionary(impl: SomeImpl)]
@@ -99,10 +99,14 @@ end
     });
 
     let mut interp = Interpreter::new(kb);
-    let value = interp.run_with_requirements(aw_term, SmallVec::new())
+    let value = interp
+        .run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within should reduce");
-    assert_eq!(value.as_int(), Some(42),
-        "produce body should run and return 42");
+    assert_eq!(
+        value.as_int(),
+        Some(42),
+        "produce body should run and return 42"
+    );
 }
 
 #[test]
@@ -126,10 +130,12 @@ namespace test.wi223.dispatch_form
 end
 "#;
     let mut kb = load_kb_with(src);
-    let int_impl = kb.try_resolve_symbol("test.wi223.dispatch_form.IntFooImpl")
+    let int_impl = kb
+        .try_resolve_symbol("test.wi223.dispatch_form.IntFooImpl")
         .expect("IntFooImpl registered");
 
-    let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
+    let aw_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .unwrap();
 
     // A synthetic spec-op-like symbol (the short name "foo"). The
@@ -159,10 +165,14 @@ end
     });
 
     let mut interp = Interpreter::new(kb);
-    let value = interp.run_with_requirements(aw_term, SmallVec::new())
+    let value = interp
+        .run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within with dispatching dict should reduce");
-    assert_eq!(value.as_int(), Some(100),
-        "IntFooImpl.foo should run when the dispatching dict's functor is IntFooImpl");
+    assert_eq!(
+        value.as_int(),
+        Some(100),
+        "IntFooImpl.foo should run when the dispatching dict's functor is IntFooImpl"
+    );
 }
 
 #[test]
@@ -184,12 +194,15 @@ namespace test.wi223.thread_through
 end
 "#;
     let mut kb = load_kb_with(src);
-    let target_sym = kb.try_resolve_symbol("test.wi223.thread_through.read_my_req")
+    let target_sym = kb
+        .try_resolve_symbol("test.wi223.thread_through.read_my_req")
         .unwrap();
     let impl_sym = kb.intern("test.wi223.thread_through.MyImpl");
-    let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
+    let aw_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .unwrap();
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
 
     // Override the read_my_req body with a fresh NodeOccurrence reading
@@ -201,7 +214,8 @@ end
     // produced it via `OccurrenceOrigin::Synthesized`.
     let _ = var_ref_sym;
     let req_self_sym = kb.intern("__req_self");
-    let original_body = kb.op_body_node(target_sym)
+    let original_body = kb
+        .op_body_node(target_sym)
         .expect("read_my_req body materialized in kb.op_bodies")
         .clone();
     let pass = kb.register_pass("test.wi223.body_override");
@@ -234,14 +248,18 @@ end
     });
 
     let mut interp = Interpreter::new(kb);
-    let value = interp.run_with_requirements(aw_term, SmallVec::new())
+    let value = interp
+        .run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within with introspecting body should reduce");
     // WI-1045: the body's `var_ref(__req_self)` delivers the dictionary AS a
     // value — no unwrapping carrier — so this reads it back through the same
     // boundary an anthill caller would.
     let observed = Dictionary::from_value(interp.kb(), &value)
         .unwrap_or_else(|| panic!("expected a Dictionary value, got {value:?}"));
-    assert_eq!(observed.impl_sort(), impl_sym,
+    assert_eq!(
+        observed.impl_sort(),
+        impl_sym,
         "callee's frame.requirements[__req_self] should be the \
-         dictionary we constructed at the apply_within site");
+         dictionary we constructed at the apply_within site"
+    );
 }

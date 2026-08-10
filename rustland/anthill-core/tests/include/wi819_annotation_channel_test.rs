@@ -28,12 +28,12 @@
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
+use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{self, Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal};
-use anthill_core::intern::Symbol;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
@@ -47,8 +47,8 @@ fn load_with(extras: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -77,8 +77,12 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 
 /// The `Expr::Let` occurrence at the root of operation `qn`'s body.
 fn let_body(kb: &KnowledgeBase, qn: &str) -> Rc<NodeOccurrence> {
-    let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("op {qn} not resolved"));
-    let node = kb.op_body_node(sym).unwrap_or_else(|| panic!("op {qn} has no body node"));
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("op {qn} not resolved"));
+    let node = kb
+        .op_body_node(sym)
+        .unwrap_or_else(|| panic!("op {qn} has no body node"));
     assert!(
         matches!(node.as_expr(), Some(Expr::Let { .. })),
         "{qn}'s body root must be a `let`, got {:?}",
@@ -197,7 +201,10 @@ fn let_annotation_separates_structural_equality_and_goal_keys() {
         "the annotation must reach `goal_fingerprint`; equal keys let the query cache \
          and `seen_goals` treat two different programs as one",
     );
-    assert_ne!(k_int, k_bare, "an absent annotation is not the same goal as a present one");
+    assert_ne!(
+        k_int, k_bare,
+        "an absent annotation is not the same goal as a present one"
+    );
 
     // CROSS-CARRIER, checked at the PATTERN — which is where the annotation
     // lives, and the only level at which both carriers can be compared here
@@ -215,7 +222,10 @@ fn let_annotation_separates_structural_equality_and_goal_keys() {
         node_occurrence::pattern_to_term(&mut kb, &p_int),
         node_occurrence::pattern_to_term(&mut kb, &p_str),
     );
-    assert_ne!(t_int, t_str, "the pattern TERMS must differ — the annotation reaches that carrier");
+    assert_ne!(
+        t_int, t_str,
+        "the pattern TERMS must differ — the annotation reaches that carrier"
+    );
     assert_eq!(
         goal_fingerprint(&kb, &anthill_core::kb::term_view::TermIdView(t_int), &subst),
         goal_fingerprint(&kb, &Value::Node(p_int), &subst),
@@ -268,9 +278,17 @@ fn the_annotation_rides_the_pattern_term_not_the_let_term() {
     let let_occ = let_body(&kb, "wi819.keys.as_int");
     let keys: Vec<String> = {
         use anthill_core::kb::term_view::TermView;
-        Value::Node(let_occ).named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect()
+        Value::Node(let_occ)
+            .named_keys(&kb)
+            .iter()
+            .map(|s| kb.local_name_of(*s).to_string())
+            .collect()
     };
-    assert_eq!(keys, ["pattern", "value", "body"], "`let_expr` gains no annotation slot");
+    assert_eq!(
+        keys,
+        ["pattern", "value", "body"],
+        "`let_expr` gains no annotation slot"
+    );
 
     // The pattern's term twin carries `type_ann`.
     let twin = node_occurrence::pattern_to_term(&mut kb, &pattern);
@@ -278,9 +296,14 @@ fn the_annotation_rides_the_pattern_term_not_the_let_term() {
         panic!("pattern twin should be a Fn, got {:?}", kb.get_term(twin));
     };
     assert!(
-        named_args.iter().any(|(k, _)| kb.local_name_of(*k) == "type_ann"),
+        named_args
+            .iter()
+            .any(|(k, _)| kb.local_name_of(*k) == "type_ann"),
         "the pattern TERM must carry `type_ann`; keys were {:?}",
-        named_args.iter().map(|(k, _)| kb.local_name_of(*k).to_string()).collect::<Vec<_>>(),
+        named_args
+            .iter()
+            .map(|(k, _)| kb.local_name_of(*k).to_string())
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -338,7 +361,8 @@ namespace wi819.tuple_enforced
 end
 "#]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("String")),
         "a tuple-pattern annotation contradicting the value must be rejected; got: {errs:?}",
     );
 }
@@ -377,7 +401,8 @@ namespace wi819.wildcard_bad
 end
 "#]);
     assert!(
-        errs.iter().any(|e| e.contains("String") && e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("String") && e.contains("Int64")),
         "`let _: String = 1` asserts a false type and must be rejected FOR THAT REASON, \
          not merely stored; got: {errs:?}",
     );
@@ -447,8 +472,11 @@ end
     // with no `line:col` at all; WI-745 made file identity part of every load
     // error's contract, and this one is user-reachable.
     assert!(
-        errs.iter().any(|e| e.contains("annotated twice") && e.contains(':')
-            && e.split(':').next().is_some_and(|h| h.chars().all(|c| c.is_ascii_digit()))),
+        errs.iter().any(|e| e.contains("annotated twice")
+            && e.contains(':')
+            && e.split(':')
+                .next()
+                .is_some_and(|h| h.chars().all(|c| c.is_ascii_digit()))),
         "the diagnostic must carry a line:col location; got: {errs:?}",
     );
 }
@@ -469,7 +497,10 @@ fn tuple_pattern_labels_survive_the_term_round_trip() {
     let sub = |n| NodeOccurrence::new_pattern(Pattern::Var { name: n }, span, None);
 
     let labelled = NodeOccurrence::new_pattern(
-        Pattern::Tuple { positional: vec![sub(a), sub(b)], labels: vec![b, a] },
+        Pattern::Tuple {
+            positional: vec![sub(a), sub(b)],
+            labels: vec![b, a],
+        },
         span,
         None,
     );
@@ -488,7 +519,10 @@ fn tuple_pattern_labels_survive_the_term_round_trip() {
     // empty, exactly as `constructor_pattern.named` is, so nothing that used to
     // key one way starts keying another.
     let bare = NodeOccurrence::new_pattern(
-        Pattern::Tuple { positional: vec![sub(a), sub(b)], labels: Vec::new() },
+        Pattern::Tuple {
+            positional: vec![sub(a), sub(b)],
+            labels: Vec::new(),
+        },
         span,
         None,
     );
@@ -497,7 +531,10 @@ fn tuple_pattern_labels_survive_the_term_round_trip() {
         panic!("tuple twin should be a Fn");
     };
     assert_eq!(
-        named_args.iter().map(|(k, _)| kb.local_name_of(*k).to_string()).collect::<Vec<_>>(),
+        named_args
+            .iter()
+            .map(|(k, _)| kb.local_name_of(*k).to_string())
+            .collect::<Vec<_>>(),
         ["elements"],
         "an unlabelled, unannotated tuple pattern keeps its one-key term shape",
     );
@@ -516,5 +553,8 @@ namespace wi819.spec_subbinder
       a
 end
 "#]);
-    assert!(errs.is_empty(), "sub-binder + whole-pattern annotation must coexist; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "sub-binder + whole-pattern annotation must coexist; got: {errs:?}"
+    );
 }

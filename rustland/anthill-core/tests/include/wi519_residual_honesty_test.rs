@@ -11,26 +11,28 @@
 //! three-way honest: `not(P)` over a floundered `P` is itself undecided
 //! (residualizes), not a silent success/failure.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}")));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|e| panic!("load: {e:?}"));
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|e| panic!("load: {e:?}"));
     kb
 }
 
@@ -50,7 +52,11 @@ fn goal(kb: &mut KnowledgeBase, qn: &str, args: &[TermId]) -> TermId {
 }
 
 fn resolve(kb: &mut KnowledgeBase, g: TermId, definite_only: bool) -> Vec<Solution> {
-    let cfg = ResolveConfig { max_solutions: 10, definite_only, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        definite_only,
+        ..Default::default()
+    };
     kb.resolve(&[g], &cfg)
 }
 
@@ -73,7 +79,11 @@ fn floundered_goal_is_residual_not_definite() {
     // Default mode still returns the branch, but it is NOT definite.
     let g = goal(&mut kb, "wi519.flounder.maybe", &[x, y]);
     let sols = resolve(&mut kb, g, false);
-    assert_eq!(sols.len(), 1, "the floundered branch yields one (residual) solution by default");
+    assert_eq!(
+        sols.len(),
+        1,
+        "the floundered branch yields one (residual) solution by default"
+    );
     assert!(
         !sols[0].is_definite(),
         "eq(?a,?b) floundered → residual non-empty → not a definite solution; got residual {:?}",
@@ -108,7 +118,10 @@ fn definite_solution_survives_definite_only() {
     let i = fresh_var(&mut kb, "_i");
     let g = goal(&mut kb, "wi519.def.has", &[i]);
     let sols = resolve(&mut kb, g, false);
-    assert!(!sols.is_empty(), "the fact-backed query has at least one solution");
+    assert!(
+        !sols.is_empty(),
+        "the fact-backed query has at least one solution"
+    );
     assert!(
         sols.iter().all(|s| s.is_definite()),
         "every fact-backed solution is definite (empty residual)",
@@ -119,7 +132,8 @@ fn definite_solution_survives_definite_only() {
     let g2 = goal(&mut kb, "wi519.def.has", &[i]);
     let defs = resolve(&mut kb, g2, true);
     assert_eq!(
-        defs.len(), sols.len(),
+        defs.len(),
+        sols.len(),
         "definite-only returns the same definite solutions, dropping none",
     );
     assert!(defs.iter().all(|s| s.is_definite()));
@@ -151,7 +165,10 @@ fn naf_three_way_over_ground_inner() {
     // not(P) where P holds → not FAILS → no solution.
     let w = fresh_var(&mut kb, "_w");
     let g = goal(&mut kb, "wi519.naf.nf_holds", &[w]);
-    assert!(resolve(&mut kb, g, false).is_empty(), "not(definite P) fails");
+    assert!(
+        resolve(&mut kb, g, false).is_empty(),
+        "not(definite P) fails"
+    );
 
     // not(P) where P has no solution → not SUCCEEDS definitely.
     let g = goal(&mut kb, "wi519.naf.nf_fails", &[w]);
@@ -162,7 +179,11 @@ fn naf_three_way_over_ground_inner() {
     // not(P) where P FLOUNDERS → undecided → residualizes (NOT a silent success).
     let g = goal(&mut kb, "wi519.naf.nf_flounder", &[w]);
     let s = resolve(&mut kb, g, false);
-    assert_eq!(s.len(), 1, "not(floundered P) yields a residual solution by default");
+    assert_eq!(
+        s.len(),
+        1,
+        "not(floundered P) yields a residual solution by default"
+    );
     assert!(
         !s[0].is_definite(),
         "not(floundered P) is undecided → residual, not a definite success",

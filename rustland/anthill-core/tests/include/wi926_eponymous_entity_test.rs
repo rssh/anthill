@@ -73,7 +73,8 @@ fn an_eponymous_constructor_is_the_sort_itself() {
     assert_eq!(names, vec!["name", "language"], "declared field order");
 
     assert!(
-        kb.try_resolve_symbol("test.wi926.Project.Project").is_none(),
+        kb.try_resolve_symbol("test.wi926.Project.Project")
+            .is_none(),
         "the nested constructor name must not exist — one written name, one symbol",
     );
 }
@@ -85,7 +86,9 @@ fn a_differently_named_variant_keeps_its_nested_symbol() {
     // and it stays a child symbol with the schema on it.
     let kb = load_src(SRC);
 
-    let person = kb.try_resolve_symbol("test.wi926.Person").expect("Person resolves");
+    let person = kb
+        .try_resolve_symbol("test.wi926.Person")
+        .expect("Person resolves");
     assert!(
         kb.entity_field_names(person).is_none(),
         "a sort whose constructor is named differently carries no schema itself",
@@ -97,7 +100,9 @@ fn a_differently_named_variant_keeps_its_nested_symbol() {
     assert_eq!(kb.strict_parent_sort(mk), Some(person));
 
     // Same for a multi-variant sort.
-    let status = kb.try_resolve_symbol("test.wi926.Status").expect("Status resolves");
+    let status = kb
+        .try_resolve_symbol("test.wi926.Status")
+        .expect("Status resolves");
     assert!(kb.try_resolve_symbol("test.wi926.Status.Open").is_some());
     assert!(kb.entity_field_names(status).is_none());
 }
@@ -110,7 +115,9 @@ fn the_sugar_and_the_desugaring_agree() {
     let kb = load_src(SRC);
 
     for name in ["test.wi926.Standalone", "test.wi926.Project"] {
-        let sym = kb.try_resolve_symbol(name).unwrap_or_else(|| panic!("{name} resolves"));
+        let sym = kb
+            .try_resolve_symbol(name)
+            .unwrap_or_else(|| panic!("{name} resolves"));
         assert!(
             kb.entity_field_names(sym).is_some(),
             "{name}: the declaration's schema is on the name that was written",
@@ -121,7 +128,8 @@ fn the_sugar_and_the_desugaring_agree() {
             "{name}: an entity that is its own type has no parent sort",
         );
         assert!(
-            kb.try_resolve_symbol(&format!("{name}.{}", kb.local_name_of(sym))).is_none(),
+            kb.try_resolve_symbol(&format!("{name}.{}", kb.local_name_of(sym)))
+                .is_none(),
             "{name}: no nested twin",
         );
         assert!(
@@ -137,7 +145,9 @@ fn an_eponymous_data_sort_is_not_an_abstract_spec() {
     // an eponymous constructor is not a child. Left alone it would answer `false`
     // and the provider-info loader (WI-407) would read a data sort as a spec.
     let kb = load_src(SRC);
-    let project = kb.try_resolve_symbol("test.wi926.Project").expect("Project resolves");
+    let project = kb
+        .try_resolve_symbol("test.wi926.Project")
+        .expect("Project resolves");
     assert!(
         kb.sort_has_constructors(project),
         "an eponymous sort is constructor-shaped DATA, not an abstract spec",
@@ -167,10 +177,16 @@ fn an_eponymous_data_sort_is_not_an_abstract_spec() {
 #[test]
 fn a_persisted_row_is_the_same_term_as_its_source_twin() {
     let mut kb = load_src(SRC);
-    let task = kb.try_resolve_symbol("test.wi926.Task").expect("Task resolves");
+    let task = kb
+        .try_resolve_symbol("test.wi926.Task")
+        .expect("Task resolves");
 
     let before = kb.rules_by_functor(task);
-    assert_eq!(before.len(), 1, "the source `fact Task(…)` is the only row so far");
+    assert_eq!(
+        before.len(),
+        1,
+        "the source `fact Task(…)` is the only row so far"
+    );
     let source_head = kb.rule_head(before[0]);
 
     // The SAME datum, through the persistence loader.
@@ -223,19 +239,29 @@ whatever = "x"
     let errs = term_ser::load_toml(&mut kb, toml_src, domain)
         .expect_err("a schema-less section must be refused, not loaded against an empty schema");
     assert!(
-        errs.iter().any(|e| matches!(e, term_ser::SerError::NoFieldSchema { .. })),
+        errs.iter()
+            .any(|e| matches!(e, term_ser::SerError::NoFieldSchema { .. })),
         "expected NoFieldSchema, got: {errs:?}",
     );
     // The diagnostic names the constructors, so the remedy is readable off it.
-    let text = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+    let text = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         text.contains("test.wi926.Status.Open") && text.contains("test.wi926.Status.Closed"),
         "the error must name the constructors to pick from; got:\n{text}",
     );
 
     // Nothing was asserted.
-    let status = kb.try_resolve_symbol("test.wi926.Status").expect("Status resolves");
-    assert!(kb.rules_by_functor(status).is_empty(), "a refused section asserts nothing");
+    let status = kb
+        .try_resolve_symbol("test.wi926.Status")
+        .expect("Status resolves");
+    assert!(
+        kb.rules_by_functor(status).is_empty(),
+        "a refused section asserts nothing"
+    );
 }
 
 /// With a real schema in hand, an unknown key in a row is reported. It could not

@@ -14,15 +14,14 @@
 //! call (so consumers can rely on it), and it is NOT duplicated after N
 //! calls (so a re-entry doesn't inflate the discrim tree).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load;
-use anthill_core::kb::term::{Term, TermId};
-use anthill_core::kb::typing::{
-    sort_functor_of, type_display_name,
-    types_compatible as raw_types_compatible,
-};
 use anthill_core::kb::subst::Substitution;
+use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::term_view::TermIdView;
+use anthill_core::kb::typing::{
+    sort_functor_of, type_display_name, types_compatible as raw_types_compatible,
+};
+use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
 
 /// Test-private wrapper: see typing_test.rs::types_compatible for the
@@ -87,7 +86,12 @@ fn bridge_fact_not_duplicated_on_many_register_prelude_calls() {
 
     let er_sym = effects_runtime_sym(&kb);
     let rules = kb.rules_by_functor(er_sym);
-    assert_eq!(rules.len(), 1, "expected 1 rule after 5 register_prelude calls, got {}", rules.len());
+    assert_eq!(
+        rules.len(),
+        1,
+        "expected 1 rule after 5 register_prelude calls, got {}",
+        rules.len()
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -104,10 +108,12 @@ fn bridge_fact_not_duplicated_on_many_register_prelude_calls() {
 /// test only inspect the wrapper's functor + the inner's TermId, so the
 /// inner can be any well-formed term — `Type::nothing` keeps the test
 /// self-contained (no stdlib load required, just `register_prelude`).
-fn build_effects_rows_wrapping(kb: &mut KnowledgeBase, inner: anthill_core::kb::term::TermId)
-    -> anthill_core::kb::term::TermId
-{
-    let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")
+fn build_effects_rows_wrapping(
+    kb: &mut KnowledgeBase,
+    inner: anthill_core::kb::term::TermId,
+) -> anthill_core::kb::term::TermId {
+    let effects_rows_sym = kb
+        .try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")
         .expect("EffectsRows entity symbol pre-registered");
     let effects_expr_sym = kb.intern("effects_expr");
     kb.alloc(Term::Fn {
@@ -118,9 +124,14 @@ fn build_effects_rows_wrapping(kb: &mut KnowledgeBase, inner: anthill_core::kb::
 }
 
 fn build_nothing(kb: &mut KnowledgeBase) -> anthill_core::kb::term::TermId {
-    let nothing_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.Nothing")
+    let nothing_sym = kb
+        .try_resolve_symbol("anthill.prelude.TypeExtractor.Nothing")
         .expect("Nothing entity symbol pre-registered");
-    kb.alloc(Term::Fn { functor: nothing_sym, pos_args: SmallVec::new(), named_args: SmallVec::new() })
+    kb.alloc(Term::Fn {
+        functor: nothing_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    })
 }
 
 #[test]

@@ -163,7 +163,8 @@ fn same_scope_and_public_api_use_is_clean() {
 fn cross_scope_qualified_construction_of_internal_errors() {
     let errs = errors_of(&[BOX_SRC, BAD_QUALIFIED_SRC]);
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("mk")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("mk")),
         "constructing the internal `mk` from another scope must error naming it; got: {errs:?}",
     );
 }
@@ -174,7 +175,8 @@ fn cross_scope_qualified_construction_of_internal_errors() {
 fn cross_scope_bare_construction_via_requires_errors() {
     let errs = errors_of(&[BOX_SRC, BAD_REQUIRES_SRC]);
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("mk")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("mk")),
         "bare `mk` reached through `requires` must be hidden by internal; got: {errs:?}",
     );
 }
@@ -185,7 +187,8 @@ fn cross_scope_bare_construction_via_requires_errors() {
 fn cross_scope_selective_import_of_internal_errors() {
     let errs = errors_of(&[BOX_SRC, BAD_IMPORT_SRC]);
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("mk")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("mk")),
         "selective import of internal `mk` must be forbidden; got: {errs:?}",
     );
 }
@@ -196,7 +199,8 @@ fn cross_scope_selective_import_of_internal_errors() {
 fn cross_scope_field_projection_of_internal_errors() {
     let errs = errors_of(&[BOX_SRC, BAD_PROJECTION_SRC]);
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("v")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("v")),
         "projecting a field of the internal `mk` from another scope must error; got: {errs:?}",
     );
 }
@@ -205,8 +209,9 @@ fn cross_scope_field_projection_of_internal_errors() {
 /// one is still constructible cross-scope — `internal` hides only what is marked.
 #[test]
 fn public_sibling_entity_is_visible_cross_scope() {
-    crate::common::try_load_kb_with_files(&[BOX2_SRC, PUBLIC_SIBLING_SRC])
-        .unwrap_or_else(|errs| panic!("a public sibling of an internal entity must stay usable; got: {errs:?}"));
+    crate::common::try_load_kb_with_files(&[BOX2_SRC, PUBLIC_SIBLING_SRC]).unwrap_or_else(|errs| {
+        panic!("a public sibling of an internal entity must stay usable; got: {errs:?}")
+    });
 }
 
 /// Regression: an internal name reached TRANSITIVELY through a non-enclosing
@@ -215,7 +220,8 @@ fn public_sibling_entity_is_visible_cross_scope() {
 fn cross_scope_transitive_internal_via_requires_errors() {
     let errs = errors_of(&[BOX2_SRC, TRANSITIVE_LEAK_SRC]);
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("mk")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("mk")),
         "transitively-reached internal `mk` must be hidden; got: {errs:?}",
     );
 }
@@ -227,7 +233,8 @@ fn cross_scope_transitive_internal_via_requires_errors() {
 fn cross_scope_reexport_of_internal_errors() {
     let errs = errors_of(&[REEXPORT_BOX_SRC, REEXPORT_CONSUMER_SRC]);
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("mk")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("mk")),
         "re-exported internal `mk` must stay hidden at the consumer; got: {errs:?}",
     );
 }

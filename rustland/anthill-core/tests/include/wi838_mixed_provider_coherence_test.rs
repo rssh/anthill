@@ -41,7 +41,9 @@
 /// loader, the same one `interp_for` runs on, so a program asserted to load here
 /// is the program the eval assertions below actually run.
 fn load_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// THE FIX: the mixed pair is refused, by a diagnostic that names BOTH providers

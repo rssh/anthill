@@ -59,7 +59,9 @@ use smallvec::SmallVec;
 
 /// The load diagnostics of `src`, empty when it loads clean.
 fn load_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// Resolve `anthill.reflect.typing.<rel>` at the given arity with every argument a
@@ -294,8 +296,10 @@ end
             e.contains("ambiguous default: carrier 'Leaf' has 2 default providers")
                 && e.contains("test.wi860.two.Twig")
                 && e.contains("test.wi860.two.Branch")
-                && e.contains("keep exactly one `DefaultProvider(spec: Desc, provider: …)` row \
-                              per carrier")
+                && e.contains(
+                    "keep exactly one `DefaultProvider(spec: Desc, provider: …)` row \
+                              per carrier",
+                )
         }),
         "`one_default` must refuse the pair, name BOTH declarations, and give the \
          SAME-CARRIER repair — one carrier, one row: {errs:?}"
@@ -303,7 +307,11 @@ end
     // THE CONTROL: the same program with ONE mark loads. Without it the assertion above
     // would also pass on a check that refused every marked program.
     let one = src.replace("  fact DefaultProvider(spec: Desc, provider: Branch)\n", "");
-    assert!(load_errors(&one).is_empty(), "one mark must load: {:?}", load_errors(&one));
+    assert!(
+        load_errors(&one).is_empty(),
+        "one mark must load: {:?}",
+        load_errors(&one)
+    );
 }
 
 /// NO-DISPLACEMENT, and it needs NO RULE: for a self-providing carrier the inferred row
@@ -343,7 +351,10 @@ fn marking_a_rival_against_a_self_providing_carrier_is_refused() {
     // providers coexist (058 tier 3); only the DEFAULT is unique.
     let unmarked = rival.replace("  fact DefaultProvider(spec: Desc, provider: Rival)\n", "");
     let errs = load_errors(&program("test.wi860.coexist", &unmarked));
-    assert!(errs.is_empty(), "an unmarked rival must still coexist: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "an unmarked rival must still coexist: {errs:?}"
+    );
 }
 
 /// Two default rows whose carriers UNIFY are refused — a ground row beside a parametric
@@ -468,7 +479,10 @@ fn a_mark_on_a_sort_that_does_not_provide_the_spec_is_refused() {
     // `carriers_provided_by`'s dedup, not a displacement.)
     let marked = stray.replace("provider: Stray", "provider: Leaf");
     let errs = load_errors(&program("test.wi860.check1ok", &marked));
-    assert!(errs.is_empty(), "marking the actual provider must load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "marking the actual provider must load: {errs:?}"
+    );
 }
 
 /// A CONDITIONAL provision's default row is recorded AT THE CARRIER ITS PROVISION
@@ -519,7 +533,9 @@ end
     assert!(
         rows.contains(&"Desc | Box[T = E] | BoxDesc".to_string()),
         "the row must key the carrier the provision WROTE — `Box[T = E]`, not `Box`: {:?}",
-        rows.iter().filter(|r| r.contains("Box")).collect::<Vec<_>>()
+        rows.iter()
+            .filter(|r| r.contains("Box"))
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         index_rows_for(&kb, "test.wi860.conditional.Box"),
@@ -569,16 +585,27 @@ fn the_two_faces_of_each_refusal_are_one_message() {
     let loc = anthill_core::span::LineIndex::new("");
     for err in [&ambiguous, &not_a_provider] {
         let display = err.to_string();
-        assert!(!display.is_empty(), "a face that rendered nothing would pass a bare equality");
-        assert_eq!(display, err.format_at(&loc), "the two faces must render ONE message body");
+        assert!(
+            !display.is_empty(),
+            "a face that rendered nothing would pass a bare equality"
+        );
+        assert_eq!(
+            display,
+            err.format_at(&loc),
+            "the two faces must render ONE message body"
+        );
     }
     // The clauses whose absence is the defect this pins — the repair, not the complaint.
     assert!(
-        ambiguous.to_string().contains("fill silence, never overwrite speech"),
+        ambiguous
+            .to_string()
+            .contains("fill silence, never overwrite speech"),
         "the displacement repair must reach the face the CLI prints: {ambiguous}"
     );
     assert!(
-        not_a_provider.to_string().contains("would name no carrier and do nothing"),
+        not_a_provider
+            .to_string()
+            .contains("would name no carrier and do nothing"),
         "check 1's reason must reach the face the CLI prints: {not_a_provider}"
     );
 }
@@ -616,8 +643,10 @@ fn a_default_provider_written_as_a_rule_is_refused() {
     // THE CONTROL, and it is what makes the refusal about the RULE FORM rather than about
     // the mark: the same program with `rule …:- Marker` replaced by a plain fact is
     // refused for a DIFFERENT reason (displacement), i.e. it gets past this reader.
-    let as_fact = derived.replace("rule DefaultProvider(spec: Desc, provider: Rival) :- Marker(x: 1)",
-                                  "fact DefaultProvider(spec: Desc, provider: Rival)");
+    let as_fact = derived.replace(
+        "rule DefaultProvider(spec: Desc, provider: Rival) :- Marker(x: 1)",
+        "fact DefaultProvider(spec: Desc, provider: Rival)",
+    );
     let errs = load_errors(&program("test.wi860.derivedctl", &as_fact));
     assert!(
         errs.iter().all(|e| !e.contains("is written as a RULE")),
@@ -675,7 +704,8 @@ end
 "#;
     let errs = load_errors(&displacing);
     assert!(
-        errs.iter().any(|e| e.contains("default displaced: carrier 'Leaf' provides")),
+        errs.iter()
+            .any(|e| e.contains("default displaced: carrier 'Leaf' provides")),
         "the memberless carrier's inferred row must still refuse a displacing mark, with \
          the DISPLACEMENT wording: {errs:?}"
     );

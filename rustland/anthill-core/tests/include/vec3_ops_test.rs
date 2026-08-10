@@ -67,20 +67,27 @@ const MARKER: &str = r#"
 
 fn op_sym(kb: &KnowledgeBase, short: &str) -> Symbol {
     let qn = format!("anthill.geometry.Vec3.{short}");
-    kb.try_resolve_symbol(&qn).unwrap_or_else(|| panic!("missing Vec3 member: {qn}"))
+    kb.try_resolve_symbol(&qn)
+        .unwrap_or_else(|| panic!("missing Vec3 member: {qn}"))
 }
 
 /// A `Vec3(x:, y:, z:)` entity value. Field symbols are interned rather than
 /// resolved: `Value::Entity.named` keys on the field label, and the constructor's
 /// canonical order is the DECLARED one (x, y, z), which is the order written here.
 fn vec3(kb: &mut KnowledgeBase, x: f64, y: f64, z: f64) -> Value {
-    let functor = kb.try_resolve_symbol("anthill.geometry.Vec3").expect("Vec3 sort");
+    let functor = kb
+        .try_resolve_symbol("anthill.geometry.Vec3")
+        .expect("Vec3 sort");
     let named = vec![
         (kb.intern("x"), Value::Float(x)),
         (kb.intern("y"), Value::Float(y)),
         (kb.intern("z"), Value::Float(z)),
     ];
-    Value::Entity { functor, pos: vec![].into(), named: named.into() }
+    Value::Entity {
+        functor,
+        pos: vec![].into(),
+        named: named.into(),
+    }
 }
 
 /// WI-942 — `entry(Vec3(1,2,3))` must answer `Vec3(2,4,6)`, i.e. the vector added
@@ -94,7 +101,11 @@ fn assert_doubles_123(src: &str, entry: &str, why: &str) {
     let out = interp
         .call(entry, &[a])
         .unwrap_or_else(|e| panic!("{entry}: {why}; got {e}"));
-    assert_eq!(components(interp.kb(), &out), (2.0, 4.0, 6.0), "{entry}: {why}");
+    assert_eq!(
+        components(interp.kb(), &out),
+        (2.0, 4.0, 6.0),
+        "{entry}: {why}"
+    );
 }
 
 /// The (x, y, z) of a `Value::Entity` Vec3, by field label.
@@ -103,7 +114,8 @@ fn components(kb: &KnowledgeBase, v: &Value) -> (f64, f64, f64) {
         panic!("expected a Vec3 entity, got {v:?}");
     };
     let read = |label: &str| -> f64 {
-        named.iter()
+        named
+            .iter()
             .find(|(sym, _)| kb.local_name_of(*sym) == label)
             .map(|(_, val)| match val {
                 Value::Float(f) => *f,
@@ -142,14 +154,18 @@ fn the_four_members_evaluate() {
     let mut interp = crate::common::interp_for(MARKER);
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let b = vec3(interp.kb_mut(), 10.0, 20.0, 30.0);
-    let out = interp.call("anthill.geometry.Vec3.vec_add", &[a, b]).expect("vec_add runs");
+    let out = interp
+        .call("anthill.geometry.Vec3.vec_add", &[a, b])
+        .expect("vec_add runs");
     assert_eq!(components(interp.kb(), &out), (11.0, 22.0, 33.0));
 
     // vec_sub((1,2,3), (10,20,30)) = (-9,-18,-27)
     let mut interp = crate::common::interp_for(MARKER);
     let a = vec3(interp.kb_mut(), 1.0, 2.0, 3.0);
     let b = vec3(interp.kb_mut(), 10.0, 20.0, 30.0);
-    let out = interp.call("anthill.geometry.Vec3.vec_sub", &[a, b]).expect("vec_sub runs");
+    let out = interp
+        .call("anthill.geometry.Vec3.vec_sub", &[a, b])
+        .expect("vec_sub runs");
     assert_eq!(components(interp.kb(), &out), (-9.0, -18.0, -27.0));
 
     // vec_scale(2.0, (1,2,3)) = (2,4,6) — scalar FIRST, matching the spec's
@@ -164,7 +180,9 @@ fn the_four_members_evaluate() {
 
     // vec_zero() = (0,0,0)
     let mut interp = crate::common::interp_for(MARKER);
-    let out = interp.call("anthill.geometry.Vec3.vec_zero", &[]).expect("vec_zero runs");
+    let out = interp
+        .call("anthill.geometry.Vec3.vec_zero", &[])
+        .expect("vec_zero runs");
     assert_eq!(components(interp.kb(), &out), (0.0, 0.0, 0.0));
 }
 
@@ -179,7 +197,12 @@ fn the_four_members_evaluate() {
 #[test]
 fn the_relational_view_is_derived_from_the_body() {
     let mut kb = crate::common::load_kb_with(MARKER);
-    for (short, params) in [("vec_add", 2), ("vec_sub", 2), ("vec_scale", 2), ("vec_zero", 0)] {
+    for (short, params) in [
+        ("vec_add", 2),
+        ("vec_sub", 2),
+        ("vec_scale", 2),
+        ("vec_zero", 0),
+    ] {
         let op = op_sym(&kb, short);
         assert!(
             kb.rules_by_functor(op).is_empty(),
@@ -252,9 +275,16 @@ end
 "#,
     );
     let sols = crate::common::query_unary(&mut kb, "test.vec3.legacy.try_add");
-    assert_eq!(sols.len(), 1, "the imported short name must reach the derived view");
+    assert_eq!(
+        sols.len(),
+        1,
+        "the imported short name must reach the derived view"
+    );
     let (value, definite) = &sols[0];
-    assert!(definite, "the answer must be DEFINITE, not a residual: {value:?}");
+    assert!(
+        definite,
+        "the answer must be DEFINITE, not a residual: {value:?}"
+    );
     assert_eq!(components(&kb, value), (11.0, 22.0, 33.0));
 }
 
@@ -312,7 +342,10 @@ fn algebraic_law_rules_present() {
         "vec_scale_identity",
     ] {
         let qn = format!("anthill.prelude.algebra.VectorSpace.{law}");
-        assert!(kb.try_resolve_symbol(&qn).is_some(), "missing VectorSpace law: {qn}");
+        assert!(
+            kb.try_resolve_symbol(&qn).is_some(),
+            "missing VectorSpace law: {qn}"
+        );
         // …and the per-component copy in `anthill.geometry` is gone.
         let old = format!("anthill.geometry.{law}");
         assert!(
@@ -361,7 +394,12 @@ end
     .err()
     .expect("a namespace-level operation must not back a per-carrier provision");
 
-    assert_eq!(errs.len(), 4, "one report per unbacked member, got:\n{}", errs.join("\n"));
+    assert_eq!(
+        errs.len(),
+        4,
+        "one report per unbacked member, got:\n{}",
+        errs.join("\n")
+    );
     for member in ["vec_add", "vec_sub", "vec_scale", "vec_zero"] {
         assert!(
             errs.iter().any(|e| {
@@ -458,10 +496,18 @@ end
     // SUBJECT — the generic operation, called directly on a `Vec3`. This is the
     // whole point of the WI-138 lift: code written against `VectorSpace`, run at
     // `Vec3`. It answered `Err(OperationBodyMissing)` until WI-942.
-    assert_doubles_123(src, "test.vec3.generic.G.twice", "the generic route must dispatch to Vec3's member");
+    assert_doubles_123(
+        src,
+        "test.vec3.generic.G.twice",
+        "the generic route must dispatch to Vec3's member",
+    );
     // …and through a concrete anthill call site, not only the host entry point,
     // so the requirement is pinned by the call rather than by `Interpreter::call`.
-    assert_doubles_123(src, "test.vec3.generic.G.drive", "a concrete caller of the generic op must dispatch");
+    assert_doubles_123(
+        src,
+        "test.vec3.generic.G.drive",
+        "a concrete caller of the generic op must dispatch",
+    );
 }
 
 /// CONTROL — the same call at a CONCRETE carrier. It says the provision and the
@@ -481,7 +527,11 @@ namespace test.vec3.concrete
   end
 end
 "#;
-    assert_doubles_123(src, "test.vec3.concrete.C.twice_vec3", "the concrete route must work");
+    assert_doubles_123(
+        src,
+        "test.vec3.concrete.C.twice_vec3",
+        "the concrete route must work",
+    );
 }
 
 /// THE AGREEMENT WI-942 IS ABOUT: the same construct over a ONE-parameter spec.
@@ -529,8 +579,16 @@ end
     );
     for (entry, want, why) in [
         ("test.wi942.oneparam.Driver.viaOp", 1, "compare(7, 3) is 1"),
-        ("test.wi942.oneparam.Driver.viaOpLess", -1, "compare(3, 7) is -1"),
-        ("test.wi942.oneparam.Driver.viaSort", 1, "the sort-level twin, unchanged"),
+        (
+            "test.wi942.oneparam.Driver.viaOpLess",
+            -1,
+            "compare(3, 7) is -1",
+        ),
+        (
+            "test.wi942.oneparam.Driver.viaSort",
+            1,
+            "the sort-level twin, unchanged",
+        ),
     ] {
         let mut interp = crate::common::interp_for(src);
         match interp.call(entry, &[Value::Int(0)]) {
@@ -578,10 +636,15 @@ end
             "test.wi942.renamed.named.R.twice",
         ),
     ] {
-        crate::common::try_load_kb_with(src).map(|_| ()).unwrap_or_else(|errs| {
-            panic!("{label}: renaming the op's type params must not change the \
-                    meaning of its own `requires`; got:\n{}", errs.join("\n"))
-        });
+        crate::common::try_load_kb_with(src)
+            .map(|_| ())
+            .unwrap_or_else(|errs| {
+                panic!(
+                    "{label}: renaming the op's type params must not change the \
+                    meaning of its own `requires`; got:\n{}",
+                    errs.join("\n")
+                )
+            });
         assert_doubles_123(src, entry, label);
     }
 }
@@ -622,10 +685,12 @@ end
 "#;
     // The AGREEMENT: the construct the ticket found refused now loads, exactly as
     // its `VectorSpace` twin does.
-    crate::common::try_load_kb_with(generic).map(|_| ()).expect(
-        "the Ring-shaped generic must LOAD, agreeing with the VectorSpace one",
-    );
-    crate::common::try_load_kb_with(concrete).map(|_| ()).expect("the concrete control loads");
+    crate::common::try_load_kb_with(generic)
+        .map(|_| ())
+        .expect("the Ring-shaped generic must LOAD, agreeing with the VectorSpace one");
+    crate::common::try_load_kb_with(concrete)
+        .map(|_| ())
+        .expect("the concrete control loads");
 
     // The ATTRIBUTION: both routes fail the same way, so the abstract one is not
     // the cause. If `Ring[Float]` ever gains its backing (WI-944) both of these

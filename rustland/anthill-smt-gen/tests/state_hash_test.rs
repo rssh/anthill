@@ -21,7 +21,10 @@ fn hash_for(src: &str) -> String {
         "test.cache.d",
         "test.cache.d_a",
         "test.cache.d_b",
-    ].iter().map(|s| s.to_string()).collect();
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
 
     state_hash(&kb, &visited)
 }
@@ -82,8 +85,7 @@ fn changes_on_referenced_fact_change() {
 
     let kb1 = common::load_kb_with(&with_ref);
     let kb2 = common::load_kb_with(&mod_with_ref);
-    let visited: BTreeSet<String> =
-        std::iter::once("test.cache.proof_a".to_string()).collect();
+    let visited: BTreeSet<String> = std::iter::once("test.cache.proof_a".to_string()).collect();
     assert_ne!(state_hash(&kb1, &visited), state_hash(&kb2, &visited));
 }
 
@@ -95,8 +97,7 @@ fn ignores_smt_document_and_tactic() {
     // the same state hash so the registry can recognise "same kb
     // state, different tactic" without re-discharging.
     let kb = common::load_kb_with(BASE_SRC);
-    let visited: BTreeSet<String> =
-        std::iter::once("test.cache.proof_a".to_string()).collect();
+    let visited: BTreeSet<String> = std::iter::once("test.cache.proof_a".to_string()).collect();
     let h = state_hash(&kb, &visited);
     // The hash is purely a function of (kb, visited) — re-call yields
     // the same digest, and the helper has no other inputs to depend on.

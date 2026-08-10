@@ -51,7 +51,8 @@ struct Vec3 {
 
     // EulerAngles exercises declaration-order emission: roll/pitch/yaw
     // is the C++ field order, distinct from alphabetical pitch/roll/yaw.
-    let cpp_euler = emit_entity_struct(&mut kb, "anthill.geometry.EulerAngles").expect("emit EulerAngles");
+    let cpp_euler =
+        emit_entity_struct(&mut kb, "anthill.geometry.EulerAngles").expect("emit EulerAngles");
     let expected_euler = "\
 struct EulerAngles {
     double roll;
@@ -59,7 +60,10 @@ struct EulerAngles {
     double yaw;
 };
 ";
-    assert_eq!(cpp_euler, expected_euler, "lf1 EulerAngles mismatch:\n{cpp_euler}");
+    assert_eq!(
+        cpp_euler, expected_euler,
+        "lf1 EulerAngles mismatch:\n{cpp_euler}"
+    );
 }
 
 #[test]
@@ -72,8 +76,8 @@ fn lf1_types_namespace_emits_compilable_header() {
     let lf1_files = collect_anthill_files(&lf1_webots);
     let mut kb = load_kb_with_extras("namespace test.lf1_smoke end", &lf1_files);
 
-    let header = emit_namespace_header(&mut kb, "anthill.geometry")
-        .expect("emit anthill.geometry header");
+    let header =
+        emit_namespace_header(&mut kb, "anthill.geometry").expect("emit anthill.geometry header");
 
     assert!(header.contains("namespace anthill::geometry {"));
     assert!(header.contains("struct Vec3"));

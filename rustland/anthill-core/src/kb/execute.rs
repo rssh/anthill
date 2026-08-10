@@ -24,11 +24,11 @@ use smallvec::SmallVec;
 use crate::eval::value::Value;
 use crate::intern::Symbol;
 
-use super::ClauseKind;
 use super::node_occurrence::NodeOccurrence;
 use super::resolve::{PositionalPlan, ResolveConfig, SearchStream};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermView, ViewHead};
+use super::ClauseKind;
 use super::KnowledgeBase;
 
 /// WI-169: a stable, hash-consing-independent structural fingerprint of a
@@ -110,7 +110,10 @@ pub enum LowerError {
     NotALogicalQuery { got: String },
     /// A `LogicalQuery` constructor was recognized but its payload is
     /// missing a required named argument.
-    MissingField { entity: &'static str, field: &'static str },
+    MissingField {
+        entity: &'static str,
+        field: &'static str,
+    },
     /// A `sort_query`'s `sort` field is present but does not name a sort by
     /// reference (WI-632): a literal, a variable, or an aggregate carrier that
     /// `value_functor` can't resolve to a functor symbol. The query shape is
@@ -341,9 +344,9 @@ impl KnowledgeBase {
         match v {
             Value::Int(n) => Ok(self.terms.alloc(Term::Const(Literal::Int(*n)))),
             Value::BigInt(n) => Ok(self.terms.alloc(Term::Const(Literal::BigInt(n.clone())))),
-            Value::Float(f) => Ok(self.terms.alloc(Term::Const(
-                Literal::Float(ordered_float::OrderedFloat(*f)),
-            ))),
+            Value::Float(f) => Ok(self
+                .terms
+                .alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(*f))))),
             Value::Bool(b) => Ok(self.terms.alloc(Term::Const(Literal::Bool(*b)))),
             Value::Str(s) => Ok(self.terms.alloc(Term::Const(Literal::String(s.clone())))),
             Value::Term { id: tid, .. } => Ok(*tid),
@@ -353,7 +356,12 @@ impl KnowledgeBase {
             // Same round-trip losslessness for the other leaf: a `Value::SymbolRef`
             // lowers back to the `Term::Ref` it views as.
             Value::SymbolRef(sym) => Ok(self.terms.alloc(Term::Ref(*sym))),
-            Value::Entity { functor, pos, named, .. } => {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+                ..
+            } => {
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
                 for p in pos.iter() {
                     pos_args.push(self.alloc_from_value(p)?);
@@ -499,7 +507,8 @@ impl KnowledgeBase {
         // free-vars — built once and used both as the asserted rule head (on a
         // miss) and as the returned goal. On a hit it is the only allocation;
         // the rule itself is reused.
-        let pos_args: SmallVec<[TermId; 4]> = free_vars.iter()
+        let pos_args: SmallVec<[TermId; 4]> = free_vars
+            .iter()
             .map(|&v| self.terms.alloc(Term::Var(Var::Global(v))))
             .collect();
         let head = self.terms.alloc(Term::Fn {
@@ -544,7 +553,11 @@ impl KnowledgeBase {
         seen: &mut std::collections::HashSet<u32>,
     ) {
         match view.head(self) {
-            ViewHead::Functor { functor: Some(_), pos_arity, .. } => {
+            ViewHead::Functor {
+                functor: Some(_),
+                pos_arity,
+                ..
+            } => {
                 for i in 0..pos_arity {
                     match view.pos_arg(self, i) {
                         Some(child) => self.collect_goal_view_vars(&child, vars, seen),
@@ -592,14 +605,23 @@ impl KnowledgeBase {
     /// path's reify of a `Value::Node` goal (`occ_build_fn`) does NOT re-sort — it
     /// preserves the occurrence's named slice order — so the former reified-`Node`
     /// key used that identical order; there is no term-vs-occurrence sort skew here.
-    fn append_synth_key<V: TermView>(&self, view: &V, free_vars: &[VarId], out: &mut Vec<SynthKey>) {
+    fn append_synth_key<V: TermView>(
+        &self,
+        view: &V,
+        free_vars: &[VarId],
+        out: &mut Vec<SynthKey>,
+    ) {
         match view.head(self) {
             // A functor application (`Term::Fn` / `Value::Entity` / an
             // Apply/Constructor occurrence). Positional children inline, each named
             // child prefixed by `Named`, and a closing `EndFn` — so the node (and
             // its named-arg section) is self-delimiting and the stream stays
             // injective.
-            ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+            ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                ..
+            } => {
                 out.push(SynthKey::Functor(functor));
                 for i in 0..pos_arity {
                     match view.pos_arg(self, i) {
@@ -807,8 +829,11 @@ impl KnowledgeBase {
         // (the loader/guard path — `build_logical_query` builds `Term::Fn{no_q,…}`).
         // The old `match q { Value::Entity … }` rejected the term carrier, which is
         // why the guard engine needed its own parallel `lower_logical_query`.
-        let functor = super::term_view::TermView::head(q, self).functor_sym()
-            .ok_or_else(|| LowerError::NotALogicalQuery { got: q.type_name().into() })?;
+        let functor = super::term_view::TermView::head(q, self)
+            .functor_sym()
+            .ok_or_else(|| LowerError::NotALogicalQuery {
+                got: q.type_name().into(),
+            })?;
 
         // `empty_query` has no fields, handle up-front.
         if Some(functor) == syms.empty_query {
@@ -816,32 +841,46 @@ impl KnowledgeBase {
         }
 
         if Some(functor) == syms.pattern_query {
-            let term_v = self.lq_field(q, syms.term)
+            let term_v = self
+                .lq_field(q, syms.term)
                 .ok_or(LowerError::MissingField {
-                    entity: "pattern_query", field: "term",
+                    entity: "pattern_query",
+                    field: "term",
                 })?;
             return Ok(vec![self.lower_leaf(&term_v)?]);
         }
 
         if Some(functor) == syms.conjunction {
-            let left = self.lq_field(q, syms.left).ok_or(LowerError::MissingField {
-                entity: "conjunction", field: "left",
-            })?;
-            let right = self.lq_field(q, syms.right).ok_or(LowerError::MissingField {
-                entity: "conjunction", field: "right",
-            })?;
+            let left = self
+                .lq_field(q, syms.left)
+                .ok_or(LowerError::MissingField {
+                    entity: "conjunction",
+                    field: "left",
+                })?;
+            let right = self
+                .lq_field(q, syms.right)
+                .ok_or(LowerError::MissingField {
+                    entity: "conjunction",
+                    field: "right",
+                })?;
             let mut goals = self.lower_query_with(&left, syms)?;
             goals.extend(self.lower_query_with(&right, syms)?);
             return Ok(goals);
         }
 
         if Some(functor) == syms.guarded {
-            let inner = self.lq_field(q, syms.query).ok_or(LowerError::MissingField {
-                entity: "guarded", field: "query",
-            })?;
-            let cond = self.lq_field(q, syms.condition).ok_or(LowerError::MissingField {
-                entity: "guarded", field: "condition",
-            })?;
+            let inner = self
+                .lq_field(q, syms.query)
+                .ok_or(LowerError::MissingField {
+                    entity: "guarded",
+                    field: "query",
+                })?;
+            let cond = self
+                .lq_field(q, syms.condition)
+                .ok_or(LowerError::MissingField {
+                    entity: "guarded",
+                    field: "condition",
+                })?;
             let mut goals = self.lower_query_with(&inner, syms)?;
             goals.push(self.lower_leaf(&cond)?);
             return Ok(goals);
@@ -854,13 +893,17 @@ impl KnowledgeBase {
             // symbol via `value_functor` (the `facts_of` precedent); a `sort`
             // field that names no functor (a literal, a var, an aggregate) is a
             // caller bug, surfaced loudly.
-            let sort_v = self.lq_field(q, syms.sort).ok_or(LowerError::MissingField {
-                entity: "sort_query", field: "sort",
-            })?;
-            let sort_sym = crate::eval::eval::value_functor(self, &sort_v)
-                .ok_or_else(|| LowerError::NotASortReference {
-                    got: sort_v.type_name().to_string(),
+            let sort_v = self
+                .lq_field(q, syms.sort)
+                .ok_or(LowerError::MissingField {
+                    entity: "sort_query",
+                    field: "sort",
                 })?;
+            let sort_sym = crate::eval::eval::value_functor(self, &sort_v).ok_or_else(|| {
+                LowerError::NotASortReference {
+                    got: sort_v.type_name().to_string(),
+                }
+            })?;
             let is_entity_of = syms.is_entity_of.ok_or(LowerError::NotYetImplemented(
                 "sort_query without loaded anthill.reflect.typing.is_entity_of",
             ))?;
@@ -877,9 +920,12 @@ impl KnowledgeBase {
         }
 
         if Some(functor) == syms.negation {
-            let inner = self.lq_field(q, syms.query).ok_or(LowerError::MissingField {
-                entity: "negation", field: "query",
-            })?;
+            let inner = self
+                .lq_field(q, syms.query)
+                .ok_or(LowerError::MissingField {
+                    entity: "negation",
+                    field: "query",
+                })?;
             let inner_goals = self.lower_query_with(&inner, syms)?;
             let not_sym = syms.not.ok_or(LowerError::NotYetImplemented(
                 "negation without loaded anthill.reflect.not",
@@ -895,12 +941,18 @@ impl KnowledgeBase {
         // Multi-goal branches synthesize a fresh conjunction-rule head
         // (proposal 033 §M4 / WI-076).
         if Some(functor) == syms.disjunction {
-            let left = self.lq_field(q, syms.left).ok_or(LowerError::MissingField {
-                entity: "disjunction", field: "left",
-            })?;
-            let right = self.lq_field(q, syms.right).ok_or(LowerError::MissingField {
-                entity: "disjunction", field: "right",
-            })?;
+            let left = self
+                .lq_field(q, syms.left)
+                .ok_or(LowerError::MissingField {
+                    entity: "disjunction",
+                    field: "left",
+                })?;
+            let right = self
+                .lq_field(q, syms.right)
+                .ok_or(LowerError::MissingField {
+                    entity: "disjunction",
+                    field: "right",
+                })?;
             let l_goals = self.lower_query_with(&left, syms)?;
             let r_goals = self.lower_query_with(&right, syms)?;
             let or_sym = syms.or.ok_or(LowerError::NotYetImplemented(
@@ -937,9 +989,12 @@ impl KnowledgeBase {
         // applying projection/limit semantics on the resulting solution
         // sequence — the resolver itself has nothing to do differently.
         if Some(functor) == syms.projected || Some(functor) == syms.limited {
-            let inner = self.lq_field(q, syms.query).ok_or(LowerError::MissingField {
-                entity: "projected/limited", field: "query",
-            })?;
+            let inner = self
+                .lq_field(q, syms.query)
+                .ok_or(LowerError::MissingField {
+                    entity: "projected/limited",
+                    field: "query",
+                })?;
             return self.lower_query_with(&inner, syms);
         }
 
@@ -964,7 +1019,9 @@ impl KnowledgeBase {
 
         // Unknown functor — not a LogicalQuery constructor at all.
         let name = self.qualified_name_of(functor).to_string();
-        Err(LowerError::NotALogicalQuery { got: format!("entity {}", name) })
+        Err(LowerError::NotALogicalQuery {
+            got: format!("entity {}", name),
+        })
     }
 
     /// Construct a lazy search stream over the lowered goals of the given
@@ -980,7 +1037,6 @@ impl KnowledgeBase {
         let goals = self.lower_query(q)?;
         Ok(self.resolve_lazy(&goals, &ResolveConfig::default()))
     }
-
 }
 
 #[cfg(test)]
@@ -1016,14 +1072,30 @@ mod tests {
             Value::Bool(true),
             Value::Str("s".into()),
             Value::Unit,
-            Value::Tuple { pos: Rc::from(vec![]), named: Rc::from(vec![]) },
-            Value::Entity { functor: s, pos: Rc::from(vec![]), named: Rc::from(vec![]) },
-            Value::OpRef { op: s, dict: None, named: None },
+            Value::Tuple {
+                pos: Rc::from(vec![]),
+                named: Rc::from(vec![]),
+            },
+            Value::Entity {
+                functor: s,
+                pos: Rc::from(vec![]),
+                named: Rc::from(vec![]),
+            },
+            Value::OpRef {
+                op: s,
+                dict: None,
+                named: None,
+            },
             Value::Substitution(interp.alloc_subst(crate::kb::subst::Substitution::new())),
             Value::Map(interp.alloc_map(crate::eval::map_arena::MapBody::new())),
             Value::Cell(interp.alloc_cell(Value::Int(0))),
-            Value::Relation { query: Rc::new(Value::Unit), columns: Rc::from(vec![]) },
-            Value::FactRef(crate::kb::extent::FactRef::resident(crate::kb::RuleId::from_raw(0))),
+            Value::Relation {
+                query: Rc::new(Value::Unit),
+                columns: Rc::from(vec![]),
+            },
+            Value::FactRef(crate::kb::extent::FactRef::resident(
+                crate::kb::RuleId::from_raw(0),
+            )),
             Value::term(tid),
             Value::Var(Var::Global(vid)),
             Value::SymbolRef(s),
@@ -1040,16 +1112,33 @@ mod tests {
         // lambda / opening a stream — and both sit in `alloc_from_value`'s
         // `UnsupportedVariant` group next to `Map`/`Cell`/`Substitution`/`FactRef`,
         // which ARE sampled, so the group is driven even though those two are not.
-        let covered: std::collections::BTreeSet<&str> =
-            samples.iter().map(variant_name).collect();
+        let covered: std::collections::BTreeSet<&str> = samples.iter().map(variant_name).collect();
         let expected: std::collections::BTreeSet<&str> = [
-            "Int", "BigInt", "Float", "Bool", "Str", "Unit", "Tuple", "Entity", "OpRef",
-            "Substitution", "Map", "Cell", "Relation", "FactRef", "Term",
-            "Var", "SymbolRef", "Node",
+            "Int",
+            "BigInt",
+            "Float",
+            "Bool",
+            "Str",
+            "Unit",
+            "Tuple",
+            "Entity",
+            "OpRef",
+            "Substitution",
+            "Map",
+            "Cell",
+            "Relation",
+            "FactRef",
+            "Term",
+            "Var",
+            "SymbolRef",
+            "Node",
         ]
         .into_iter()
         .collect();
-        assert_eq!(covered, expected, "every constructible Value variant is sampled");
+        assert_eq!(
+            covered, expected,
+            "every constructible Value variant is sampled"
+        );
 
         let kb = interp.kb_mut();
         let disagreed: Vec<&str> = samples
@@ -1066,7 +1155,10 @@ mod tests {
             })
             .map(variant_name)
             .collect();
-        assert!(disagreed.is_empty(), "predicate and alloc_from_value disagreed: {disagreed:?}");
+        assert!(
+            disagreed.is_empty(),
+            "predicate and alloc_from_value disagreed: {disagreed:?}"
+        );
     }
 
     /// The exhaustiveness anchor for [`leaf_lowering_agrees_with_alloc`] — no `_`
@@ -1108,7 +1200,11 @@ mod tests {
             Var::Rigid(VarId::new(7, name)),
         ] {
             let tid = kb.alloc_from_value(&Value::Var(var)).expect("lowers");
-            assert_eq!(*kb.get_term(tid), Term::Var(var), "round-trips to the same Var");
+            assert_eq!(
+                *kb.get_term(tid),
+                Term::Var(var),
+                "round-trips to the same Var"
+            );
         }
     }
 
@@ -1131,10 +1227,7 @@ mod tests {
         let vx = kb.alloc(Term::Var(Var::Global(xid)));
         let vv = kb.alloc(Term::Var(Var::Global(vid)));
 
-        let mk = |kb: &mut KnowledgeBase,
-                  functor,
-                  pos: &[TermId],
-                  named: &[(Symbol, TermId)]| {
+        let mk = |kb: &mut KnowledgeBase, functor, pos: &[TermId], named: &[(Symbol, TermId)]| {
             kb.alloc(Term::Fn {
                 functor,
                 pos_args: SmallVec::from_slice(pos),
@@ -1165,7 +1258,10 @@ mod tests {
         let a2 = mk(&mut kb, f, &[g_x2], &[(k, vv2)]);
         let mut ka2 = Vec::new();
         kb.append_synth_key(&a2, &[x2, v2], &mut ka2);
-        assert_eq!(ka, ka2, "same shape with fresh vars must produce an identical key");
+        assert_eq!(
+            ka, ka2,
+            "same shape with fresh vars must produce an identical key"
+        );
     }
 
     /// WI-678 regression: a Global living ONLY in an occurrence goal's
@@ -1222,7 +1318,11 @@ mod tests {
         let mut free_vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
         kb.collect_goal_view_vars(&goal, &mut free_vars, &mut seen);
-        assert_eq!(free_vars, vec![a, b], "the view collector counts the type-arg var");
+        assert_eq!(
+            free_vars,
+            vec![a, b],
+            "the view collector counts the type-arg var"
+        );
 
         // The type-arg-aware stored-rule collector agrees — the two are no longer
         // divergent readings of one goal (pre-WI-1013 this answered `[a, b]` while the
@@ -1230,7 +1330,10 @@ mod tests {
         // was the whole of WI-678's fix).
         let (mut occ_vars, mut occ_seen) = (Vec::new(), std::collections::HashSet::new());
         kb.collect_value_head_vars(&goal, &mut occ_vars, &mut occ_seen);
-        assert_eq!(occ_vars, free_vars, "both collectors read one goal the same way");
+        assert_eq!(
+            occ_vars, free_vars,
+            "both collectors read one goal the same way"
+        );
 
         // The memo key references `Var(0)` (=`?a`) and `Var(1)` (=`?b`) and never the
         // `RawVar` fallback: key positions and `free_vars` are in lockstep, no arity gap.
@@ -1249,7 +1352,8 @@ mod tests {
             "?b keyed at position 1 — the bracket reaches the memo key too: {key:?}"
         );
         assert!(
-            key.iter().all(|t| !matches!(t, SynthKey::Var(pos) if *pos >= free_vars.len() as u32)),
+            key.iter()
+                .all(|t| !matches!(t, SynthKey::Var(pos) if *pos >= free_vars.len() as u32)),
             "every keyed Var indexes a real free-var slot: {key:?}"
         );
     }

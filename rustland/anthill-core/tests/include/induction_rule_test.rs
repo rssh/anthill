@@ -1,11 +1,10 @@
 //! Auto-generated `<Sort>.induction(?P) :- ho_apply(?P, ctor1), …`
 //! emitted by the loader for sorts/enums with constructors.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::node_occurrence::Expr;
+use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 #[allow(unused_imports)]
 use anthill_core::persistence::print::TermPrinter;
@@ -14,10 +13,14 @@ fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -49,9 +52,13 @@ fn finite_enum_induction_rule_is_emitted() {
         .expect("Color.induction rule missing");
     let printer = TermPrinter::new(&kb);
     match kb.get_term(head) {
-        Term::Fn { functor, pos_args, .. } => {
-            assert_eq!(kb.qualified_name_of(*functor),
-                "test.induction.color.Color.induction");
+        Term::Fn {
+            functor, pos_args, ..
+        } => {
+            assert_eq!(
+                kb.qualified_name_of(*functor),
+                "test.induction.color.Color.induction"
+            );
             assert_eq!(pos_args.len(), 1, "induction takes one arg ?P");
         }
         other => panic!("expected Fn head, got {other:?}"),
@@ -59,15 +66,21 @@ fn finite_enum_induction_rule_is_emitted() {
 
     // The rule body must reference each constructor exactly once
     // (via ho_apply). We can grep the body text.
-    let sym = kb.try_resolve_symbol("test.induction.color.Color.induction").unwrap();
+    let sym = kb
+        .try_resolve_symbol("test.induction.color.Color.induction")
+        .unwrap();
     let rid = kb.rules_by_functor(sym)[0];
-    let body_terms: Vec<String> = kb.rule_body_nodes(rid).iter()
+    let body_terms: Vec<String> = kb
+        .rule_body_nodes(rid)
+        .iter()
         .map(|atom| printer.print_occurrence(atom))
         .collect();
     let body_blob = body_terms.join(" || ");
     for ctor in ["red", "blue", "green"] {
-        assert!(body_blob.contains(ctor),
-            "induction body missing constructor `{ctor}`:\n{body_blob}");
+        assert!(
+            body_blob.contains(ctor),
+            "induction body missing constructor `{ctor}`:\n{body_blob}"
+        );
     }
 }
 
@@ -84,19 +97,35 @@ fn recursive_enum_induction_rule_has_one_case_per_constructor() {
         end
     "#;
     let kb = load_with(src);
-    let sym = kb.try_resolve_symbol("test.induction.list.IntList.induction")
+    let sym = kb
+        .try_resolve_symbol("test.induction.list.IntList.induction")
         .expect("IntList.induction symbol missing");
-    let rid = kb.rules_by_functor(sym).first().copied()
+    let rid = kb
+        .rules_by_functor(sym)
+        .first()
+        .copied()
         .expect("no rule for MyList.induction");
-    assert_eq!(kb.rule_body_nodes(rid).len(), 2,
-        "expected 2 body goals (one per ctor), got {}", kb.rule_body_nodes(rid).len());
+    assert_eq!(
+        kb.rule_body_nodes(rid).len(),
+        2,
+        "expected 2 body goals (one per ctor), got {}",
+        kb.rule_body_nodes(rid).len()
+    );
     let printer = TermPrinter::new(&kb);
-    let body_blob: String = kb.rule_body_nodes(rid).iter()
+    let body_blob: String = kb
+        .rule_body_nodes(rid)
+        .iter()
         .map(|atom| printer.print_occurrence(atom))
         .collect::<Vec<_>>()
         .join(" || ");
-    assert!(body_blob.contains("nil"), "body should mention `nil`: {body_blob}");
-    assert!(body_blob.contains("cons"), "body should mention `cons`: {body_blob}");
+    assert!(
+        body_blob.contains("nil"),
+        "body should mention `nil`: {body_blob}"
+    );
+    assert!(
+        body_blob.contains("cons"),
+        "body should mention `cons`: {body_blob}"
+    );
 }
 
 #[test]
@@ -109,7 +138,8 @@ fn no_entities_no_induction_rule() {
     "#;
     let kb = load_with(src);
     assert!(
-        kb.try_resolve_symbol("test.induction.empty.Pure.induction").is_none(),
+        kb.try_resolve_symbol("test.induction.empty.Pure.induction")
+            .is_none(),
         "should not emit induction for empty sort"
     );
 }
@@ -129,36 +159,50 @@ fn recursive_field_emits_inductive_hypothesis() {
         end
     "#;
     let kb = load_with(src);
-    let sym = kb.try_resolve_symbol("test.induction.ih.IntList.induction").unwrap();
+    let sym = kb
+        .try_resolve_symbol("test.induction.ih.IntList.induction")
+        .unwrap();
     let rid = kb.rules_by_functor(sym)[0];
     let body = kb.rule_body_nodes(rid);
     assert_eq!(body.len(), 2, "expected 2 body goals (nil + cons)");
 
     // Find the cons goal — must be a forall_impl occurrence.
     let printer = TermPrinter::new(&kb);
-    let cons_goal = body.iter().find(|g| {
-        matches!(g.as_expr(),
+    let cons_goal = body
+        .iter()
+        .find(|g| {
+            matches!(g.as_expr(),
             Some(Expr::Apply { functor, .. }) if kb.local_name_of(*functor) == "forall_impl")
-    }).unwrap_or_else(|| {
-        let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
-        panic!("no forall_impl in body: {dump:?}")
-    });
+        })
+        .unwrap_or_else(|| {
+            let dump: Vec<_> = body.iter().map(|t| printer.print_occurrence(t)).collect();
+            panic!("no forall_impl in body: {dump:?}")
+        });
 
     let printed = printer.print_occurrence(cons_goal);
     assert!(printed.contains("(forall("), "missing forall: {printed}");
     assert!(printed.contains(" -: "), "missing -: separator: {printed}");
     assert!(printed.contains("ho_apply"), "missing ho_apply: {printed}");
-    assert!(printed.contains("cons"), "consequent should reference cons: {printed}");
+    assert!(
+        printed.contains("cons"),
+        "consequent should reference cons: {printed}"
+    );
 
     // The other goal (nil base case) must be a flat ho_apply, not forall_impl.
-    let nil_goal = body.iter().find(|g| {
-        !matches!(g.as_expr(),
+    let nil_goal = body
+        .iter()
+        .find(|g| {
+            !matches!(g.as_expr(),
             Some(Expr::Apply { functor, .. }) if kb.local_name_of(*functor) == "forall_impl")
-    }).unwrap();
+        })
+        .unwrap();
     match nil_goal.as_expr() {
         Some(Expr::Apply { functor, .. }) => {
-            assert_eq!(kb.local_name_of(*functor), "ho_apply",
-                "nil case should be flat ho_apply");
+            assert_eq!(
+                kb.local_name_of(*functor),
+                "ho_apply",
+                "nil case should be flat ho_apply"
+            );
         }
         other => panic!("unexpected nil goal: {other:?}"),
     }
@@ -175,7 +219,9 @@ fn nullary_constructor_uses_ref_term() {
         end
     "#;
     let kb = load_with(src);
-    let sym = kb.try_resolve_symbol("test.induction.nullary.Bit.induction").unwrap();
+    let sym = kb
+        .try_resolve_symbol("test.induction.nullary.Bit.induction")
+        .unwrap();
     let rid = kb.rules_by_functor(sym)[0];
     for goal in kb.rule_body_nodes(rid) {
         match goal.as_expr() {

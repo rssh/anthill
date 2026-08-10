@@ -24,11 +24,10 @@ fn float_trig_calls_lower_to_std() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.math_trig.Calc")
-        .expect("emit Calc");
-    assert!(cpp.contains("return std::sin(x);"),       "sin:\n{cpp}");
-    assert!(cpp.contains("return std::cos(x);"),       "cos:\n{cpp}");
-    assert!(cpp.contains("return std::atan2(y, x);"),  "atan2:\n{cpp}");
+    let cpp = emit_traits_struct(&mut kb, "test.math_trig.Calc").expect("emit Calc");
+    assert!(cpp.contains("return std::sin(x);"), "sin:\n{cpp}");
+    assert!(cpp.contains("return std::cos(x);"), "cos:\n{cpp}");
+    assert!(cpp.contains("return std::atan2(y, x);"), "atan2:\n{cpp}");
 }
 
 #[test]
@@ -46,12 +45,11 @@ fn float_misc_math_calls_lower_to_std() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.math_misc.Calc")
-        .expect("emit Calc");
-    assert!(cpp.contains("return std::sqrt(x);"),       "sqrt:\n{cpp}");
-    assert!(cpp.contains("return std::hypot(a, b);"),   "hypot:\n{cpp}");
-    assert!(cpp.contains("return std::log10(x);"),      "log10:\n{cpp}");
-    assert!(cpp.contains("return std::fmod(a, b);"),    "fmod:\n{cpp}");
+    let cpp = emit_traits_struct(&mut kb, "test.math_misc.Calc").expect("emit Calc");
+    assert!(cpp.contains("return std::sqrt(x);"), "sqrt:\n{cpp}");
+    assert!(cpp.contains("return std::hypot(a, b);"), "hypot:\n{cpp}");
+    assert!(cpp.contains("return std::log10(x);"), "log10:\n{cpp}");
+    assert!(cpp.contains("return std::fmod(a, b);"), "fmod:\n{cpp}");
 }
 
 #[test]
@@ -66,8 +64,7 @@ fn pi_constant_lowers_to_literal() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.math_pi.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.math_pi.Calc").expect("emit Calc");
     assert!(
         cpp.contains("return 3.141592653589793;"),
         "pi as bare value should lower to a literal:\n{cpp}"
@@ -88,8 +85,7 @@ fn cmath_include_added_to_header() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&mut kb, "test.math_inc")
-        .expect("emit header");
+    let cpp = emit_namespace_header(&mut kb, "test.math_inc").expect("emit header");
     assert!(
         cpp.contains("#include <cmath>"),
         "namespace header missing <cmath> include:\n{cpp}"

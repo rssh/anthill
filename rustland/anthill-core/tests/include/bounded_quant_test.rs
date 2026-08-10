@@ -7,20 +7,23 @@
 //! hand-written recursive list walk. A non-ground collection is DELAYed (a
 //! floundered residual under WI-519), never silently decided.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap();
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p).unwrap();
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
@@ -34,18 +37,32 @@ fn resolve_one(kb: &mut KnowledgeBase, goal: TermId) -> bool {
 }
 
 fn make_call(kb: &mut KnowledgeBase, qn: &str, args: &[TermId]) -> TermId {
-    let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol {qn} not in KB"));
-    kb.alloc(Term::Fn { functor: sym, pos_args: SmallVec::from_slice(args), named_args: SmallVec::new() })
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("symbol {qn} not in KB"));
+    kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::from_slice(args),
+        named_args: SmallVec::new(),
+    })
 }
 
 /// Build a runtime `cons`/`nil` list of the given elements (the shape a list
 /// argument has at resolution time).
 fn make_list(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
-    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
-    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
+    let nil_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
+        .expect("List.nil");
+    let cons_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .expect("List.cons");
     let head_arg = kb.intern("head");
     let tail_arg = kb.intern("tail");
-    let mut list = kb.alloc(Term::Fn { functor: nil_sym, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    let mut list = kb.alloc(Term::Fn {
+        functor: nil_sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
     for &e in elems.iter().rev() {
         list = kb.alloc(Term::Fn {
             functor: cons_sym,
@@ -118,7 +135,8 @@ fn item(kb: &mut KnowledgeBase, name: &str) -> TermId {
     // Entity value as a `Term::Ref` (matching how source-parsed entity references
     // are stored in facts) — NOT `make_name_term`, which builds a nullary `Fn`
     // that would not unify with the facts' `Ref`.
-    let sym = kb.try_resolve_symbol(&format!("test.wi027.Item.{name}"))
+    let sym = kb
+        .try_resolve_symbol(&format!("test.wi027.Item.{name}"))
         .unwrap_or_else(|| panic!("Item.{name} not found"));
     kb.alloc(Term::Ref(sym))
 }
@@ -133,7 +151,10 @@ fn forall_in_loads_as_forall_in_term() {
     // The rule body's sole atom is a `forall_in(...)` occurrence — round-trip it
     // through the printer to confirm surface syntax is recovered.
     let printed = printed_body(&kb, "test.wi027.all_good");
-    assert!(printed.contains("(forall "), "expected forall opener: {printed}");
+    assert!(
+        printed.contains("(forall "),
+        "expected forall opener: {printed}"
+    );
     assert!(printed.contains(" in "), "expected `in`: {printed}");
     assert!(printed.contains("good"), "expected body goal: {printed}");
 }
@@ -142,14 +163,22 @@ fn forall_in_loads_as_forall_in_term() {
 fn some_in_round_trips_through_printer() {
     let kb = load_with(FIXTURE);
     let printed = printed_body(&kb, "test.wi027.some_good");
-    assert!(printed.contains("(some "), "expected some opener: {printed}");
+    assert!(
+        printed.contains("(some "),
+        "expected some opener: {printed}"
+    );
     assert!(printed.contains(" in "), "expected `in`: {printed}");
 }
 
 fn printed_body(kb: &KnowledgeBase, rule_qn: &str) -> String {
     use anthill_core::persistence::print::TermPrinter;
-    let sym = kb.try_resolve_symbol(rule_qn).unwrap_or_else(|| panic!("symbol {rule_qn} not found"));
-    let rid = kb.rules_by_functor(sym).first().copied()
+    let sym = kb
+        .try_resolve_symbol(rule_qn)
+        .unwrap_or_else(|| panic!("symbol {rule_qn} not found"));
+    let rid = kb
+        .rules_by_functor(sym)
+        .first()
+        .copied()
         .unwrap_or_else(|| panic!("no rule for {rule_qn}"));
     let body = kb.rule_body_nodes(rid);
     let printer = TermPrinter::new(kb);
@@ -165,7 +194,10 @@ fn forall_succeeds_when_all_elements_hold() {
     let mut kb = load_with(FIXTURE);
     let d = item(&mut kb, "a");
     let goal = make_call(&mut kb, "test.wi027.all_good", &[d]);
-    assert!(resolve_one(&mut kb, goal), "forall over [a,b,c] all good must succeed");
+    assert!(
+        resolve_one(&mut kb, goal),
+        "forall over [a,b,c] all good must succeed"
+    );
 }
 
 #[test]
@@ -173,7 +205,10 @@ fn forall_fails_when_one_element_fails() {
     let mut kb = load_with(FIXTURE);
     let d = item(&mut kb, "a");
     let goal = make_call(&mut kb, "test.wi027.not_all_good", &[d]);
-    assert!(!resolve_one(&mut kb, goal), "forall over [a,bad] must fail (bad is not good)");
+    assert!(
+        !resolve_one(&mut kb, goal),
+        "forall over [a,bad] must fail (bad is not good)"
+    );
 }
 
 #[test]
@@ -181,7 +216,10 @@ fn forall_over_nil_is_vacuously_true() {
     let mut kb = load_with(FIXTURE);
     let empty = make_list(&mut kb, &[]);
     let goal = make_call(&mut kb, "test.wi027.all_good_of", &[empty]);
-    assert!(resolve_one(&mut kb, goal), "forall over [] must hold vacuously");
+    assert!(
+        resolve_one(&mut kb, goal),
+        "forall over [] must hold vacuously"
+    );
 }
 
 // definite_only: a floundered/delayed solution is NOT counted, so a `true`
@@ -189,7 +227,10 @@ fn forall_over_nil_is_vacuously_true() {
 // not just residualized (`resolve_one`, with `definite_only:false`, would count
 // a residual and mask a delay).
 fn resolve_one_definite(kb: &mut KnowledgeBase, goal: TermId) -> bool {
-    let cfg = ResolveConfig { definite_only: true, ..ResolveConfig::default() };
+    let cfg = ResolveConfig {
+        definite_only: true,
+        ..ResolveConfig::default()
+    };
     !kb.resolve(&[goal], &cfg).is_empty()
 }
 
@@ -206,8 +247,10 @@ fn forall_over_head_unified_partial_cons() {
     let mut kb = load_with(FIXTURE);
     let d = item(&mut kb, "a");
     let goal = make_call(&mut kb, "test.wi027.all_good_chained", &[d]);
-    assert!(resolve_one_definite(&mut kb, goal),
-        "forall over a head-unified var list [a,b] must enumerate and decide true");
+    assert!(
+        resolve_one_definite(&mut kb, goal),
+        "forall over a head-unified var list [a,b] must enumerate and decide true"
+    );
 }
 
 #[test]
@@ -218,8 +261,10 @@ fn some_over_head_unified_partial_cons_witness_in_tail() {
     let mut kb = load_with(FIXTURE);
     let d = item(&mut kb, "a");
     let goal = make_call(&mut kb, "test.wi027.some_chained_tail", &[d]);
-    assert!(resolve_one_definite(&mut kb, goal),
-        "some over a head-unified var list [bad, a] must find the tail witness a");
+    assert!(
+        resolve_one_definite(&mut kb, goal),
+        "some over a head-unified var list [bad, a] must find the tail witness a"
+    );
 }
 
 #[test]
@@ -231,11 +276,17 @@ fn forall_over_variable_bound_list() {
 
     let ok = make_list(&mut kb, &[a, b]);
     let ok_goal = make_call(&mut kb, "test.wi027.all_good_of", &[ok]);
-    assert!(resolve_one(&mut kb, ok_goal), "forall over a bound [a,b] must succeed");
+    assert!(
+        resolve_one(&mut kb, ok_goal),
+        "forall over a bound [a,b] must succeed"
+    );
 
     let nope = make_list(&mut kb, &[a, bad]);
     let nope_goal = make_call(&mut kb, "test.wi027.all_good_of", &[nope]);
-    assert!(!resolve_one(&mut kb, nope_goal), "forall over a bound [a,bad] must fail");
+    assert!(
+        !resolve_one(&mut kb, nope_goal),
+        "forall over a bound [a,bad] must fail"
+    );
 }
 
 #[test]
@@ -245,11 +296,17 @@ fn forall_threads_free_var_across_elements() {
     // z links BOTH a and b → holds; w links only a → fails for b.
     let z = item(&mut kb, "z");
     let z_goal = make_call(&mut kb, "test.wi027.shared", &[z]);
-    assert!(resolve_one(&mut kb, z_goal), "shared(z) must hold — z links both a and b");
+    assert!(
+        resolve_one(&mut kb, z_goal),
+        "shared(z) must hold — z links both a and b"
+    );
 
     let w = item(&mut kb, "w");
     let w_goal = make_call(&mut kb, "test.wi027.shared", &[w]);
-    assert!(!resolve_one(&mut kb, w_goal), "shared(w) must fail — w does not link b");
+    assert!(
+        !resolve_one(&mut kb, w_goal),
+        "shared(w) must fail — w does not link b"
+    );
 }
 
 // =================================================================
@@ -261,7 +318,10 @@ fn some_succeeds_when_one_element_holds() {
     let mut kb = load_with(FIXTURE);
     let d = item(&mut kb, "a");
     let goal = make_call(&mut kb, "test.wi027.some_good", &[d]);
-    assert!(resolve_one(&mut kb, goal), "some over [bad,a] must succeed via a");
+    assert!(
+        resolve_one(&mut kb, goal),
+        "some over [bad,a] must succeed via a"
+    );
 }
 
 #[test]
@@ -269,7 +329,10 @@ fn some_fails_when_no_element_holds() {
     let mut kb = load_with(FIXTURE);
     let d = item(&mut kb, "a");
     let goal = make_call(&mut kb, "test.wi027.none_good", &[d]);
-    assert!(!resolve_one(&mut kb, goal), "some over [bad,ugly] must fail");
+    assert!(
+        !resolve_one(&mut kb, goal),
+        "some over [bad,ugly] must fail"
+    );
 }
 
 #[test]
@@ -277,7 +340,10 @@ fn some_over_nil_fails() {
     let mut kb = load_with(FIXTURE);
     let empty = make_list(&mut kb, &[]);
     let goal = make_call(&mut kb, "test.wi027.some_good_of", &[empty]);
-    assert!(!resolve_one(&mut kb, goal), "some over [] must fail — no witness");
+    assert!(
+        !resolve_one(&mut kb, goal),
+        "some over [] must fail — no witness"
+    );
 }
 
 // =================================================================
@@ -291,7 +357,14 @@ fn unground_collection_is_not_a_definite_solution() {
     let goal = make_call(&mut kb, "test.wi027.unground", &[d]);
     // definite_only: a floundered residual (the un-ground forall) must NOT count
     // as a definite solution — it is surfaced as undecided, never silently true.
-    let cfg = ResolveConfig { definite_only: true, ..ResolveConfig::default() };
+    let cfg = ResolveConfig {
+        definite_only: true,
+        ..ResolveConfig::default()
+    };
     let sols = kb.resolve(&[goal], &cfg);
-    assert!(sols.is_empty(), "un-ground forall must not yield a definite solution; got {}", sols.len());
+    assert!(
+        sols.is_empty(),
+        "un-ground forall must not yield a definite solution; got {}",
+        sols.len()
+    );
 }

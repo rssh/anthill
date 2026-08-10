@@ -16,8 +16,8 @@ use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::term_ser;
 
-use smallvec::SmallVec;
 use anthill_core::kb::ClauseKind;
+use smallvec::SmallVec;
 
 /// `Triple` declares its first two fields under the synthetic names themselves,
 /// which is what lets a mixed positional/named term reload through the ordinary
@@ -38,7 +38,9 @@ end
 /// only produced the unreachable `_0`; with two it also changed which value the
 /// reachable `_1` names, and that is the half that silently corrupts.
 fn assert_mixed_fact(kb: &mut KnowledgeBase) -> anthill_core::kb::RuleId {
-    let functor = kb.try_resolve_symbol("test.wi790.Triple").expect("Triple resolved");
+    let functor = kb
+        .try_resolve_symbol("test.wi790.Triple")
+        .expect("Triple resolved");
     let c_sym = kb.intern("c");
     let first = kb.alloc(Term::Const(Literal::String("first".into())));
     let second = kb.alloc(Term::Const(Literal::String("second".into())));
@@ -50,7 +52,11 @@ fn assert_mixed_fact(kb: &mut KnowledgeBase) -> anthill_core::kb::RuleId {
     let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     named_args.push((c_sym, named));
 
-    let term = kb.alloc(Term::Fn { functor, pos_args, named_args });
+    let term = kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    });
     let sort = ClauseKind::Fact;
     let domain = kb.intern("wi790_domain");
     kb.assert_fact(term, sort, domain, None)
@@ -79,7 +85,10 @@ fn positional_slots_serialize_under_their_minted_labels() {
     assert_eq!(data[positional_label(0)], serde_json::json!("first"));
     assert_eq!(data[positional_label(1)], serde_json::json!("second"));
     assert_eq!(data["c"], serde_json::json!("named"));
-    assert!(!json.contains("\"_0\""), "zero-based positional key in store: {json}");
+    assert!(
+        !json.contains("\"_0\""),
+        "zero-based positional key in store: {json}"
+    );
 }
 
 /// The ACCEPTANCE property: the slots reload to the SAME indices they were
@@ -105,7 +114,9 @@ fn positional_slots_reload_to_the_same_indices() {
     let count = term_ser::load_json(&mut reloaded, &json, domain).expect("load_json");
     assert_eq!(count, 1, "one fact reloaded");
 
-    let functor = reloaded.try_resolve_symbol("test.wi790.Triple").expect("Triple resolved");
+    let functor = reloaded
+        .try_resolve_symbol("test.wi790.Triple")
+        .expect("Triple resolved");
     let facts = reloaded.rules_by_functor(functor);
     assert_eq!(facts.len(), 1, "exactly one reloaded Triple fact");
 
@@ -175,7 +186,10 @@ end
         "`_01, _02` is a user-named parameter list and must not zip against `p, q`"
     );
     // …and it now behaves exactly like this control, which was always refused.
-    assert!(!loads("(a: Int64, b: Int64) -> Int64"), "control: user names must not zip");
+    assert!(
+        !loads("(a: Int64, b: Int64) -> Int64"),
+        "control: user names must not zip"
+    );
 
     // The genuinely synthetic spellings still zip — the escape hatch is intact,
     // and narrowing it away would have been the easy over-correction here. All
@@ -229,7 +243,9 @@ end
 "#;
     let kb = crate::common::load_kb_with(src);
     let printed = |op: &str| -> String {
-        let sym = kb.try_resolve_symbol(&format!("test.wi790.print.{op}")).expect("op symbol");
+        let sym = kb
+            .try_resolve_symbol(&format!("test.wi790.print.{op}"))
+            .expect("op symbol");
         let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("op info");
         match info.params.first().expect("param") {
             (_, anthill_core::eval::Value::Term { id, .. }) => {
@@ -241,8 +257,16 @@ end
 
     // THE TWO FIXES. Each printing is the source text verbatim, so it reparses to
     // the same type rather than to a renamed one.
-    assert_eq!(printed("leading_zero"), "(_01: Int64, b: Int64)", "`_01` is a user label");
-    assert_eq!(printed("wrong_index"), "(_2: Int64, b: Int64)", "`_2` in slot 0 is a user label");
+    assert_eq!(
+        printed("leading_zero"),
+        "(_01: Int64, b: Int64)",
+        "`_01` is a user label"
+    );
+    assert_eq!(
+        printed("wrong_index"),
+        "(_2: Int64, b: Int64)",
+        "`_2` in slot 0 is a user label"
+    );
 
     // A genuine positional tuple still prints WITHOUT labels — the point of the
     // recognizer, and what a blunt "keep every `_` label" fix would have broken.
@@ -272,7 +296,9 @@ end
     let printed_both = |src: &str| -> [String; 2] {
         let kb = crate::common::load_kb_with(src);
         ["a", "b"].map(|op| {
-            let sym = kb.try_resolve_symbol(&format!("test.wi790.fix.{op}")).expect("op symbol");
+            let sym = kb
+                .try_resolve_symbol(&format!("test.wi790.fix.{op}"))
+                .expect("op symbol");
             let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("op info");
             match info.params.first().expect("param") {
                 (_, anthill_core::eval::Value::Term { id, .. }) => {
@@ -283,11 +309,17 @@ end
         })
     };
 
-    let gen1 = printed_both(&program(["(_01: Int64, b: Int64)", "(_2: Int64, b: Int64)"]));
+    let gen1 = printed_both(&program([
+        "(_01: Int64, b: Int64)",
+        "(_2: Int64, b: Int64)",
+    ]));
     assert_eq!(gen1, ["(_01: Int64, b: Int64)", "(_2: Int64, b: Int64)"]);
 
     // Feed each printing back through the parser in the same position. Reaching
     // here at all proves the text PARSES; equality proves it means the same type.
     let gen2 = printed_both(&program([gen1[0].as_str(), gen1[1].as_str()]));
-    assert_eq!(gen2, gen1, "printing must be a fixpoint — reparsing may not rename a field");
+    assert_eq!(
+        gen2, gen1,
+        "printing must be a fixpoint — reparsing may not rename a field"
+    );
 }

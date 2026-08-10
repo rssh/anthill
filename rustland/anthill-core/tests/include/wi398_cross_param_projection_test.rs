@@ -16,8 +16,8 @@
 //! order"). As in WI-397 the member projected is a DIRECT type-param of the field's
 //! sort (`Inner[T = String].T`); a provided-spec member is the separate follow-on.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -26,8 +26,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -139,7 +139,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("cyclic") || e.contains("cycle")),
+        errs.iter()
+            .any(|e| e.contains("cyclic") || e.contains("cycle")),
         "a cyclic cross-parameter projection must be a loud load error; got: {errs:?}",
     );
 }
@@ -155,7 +156,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("cyclic") || e.contains("cycle")),
+        errs.iter()
+            .any(|e| e.contains("cyclic") || e.contains("cycle")),
         "a self-projecting parameter must be a loud load error; got: {errs:?}",
     );
 }
@@ -248,7 +250,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("cyclic") || e.contains("cycle")),
+        errs.iter()
+            .any(|e| e.contains("cyclic") || e.contains("cycle")),
         "a body-less FREE op with a cyclic signature must still be rejected; got: {errs:?}",
     );
 }
@@ -270,7 +273,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("cyclic") || e.contains("cycle")),
+        errs.iter()
+            .any(|e| e.contains("cyclic") || e.contains("cycle")),
         "a body-less SORT spec with a cyclic signature must be rejected; got: {errs:?}",
     );
 }

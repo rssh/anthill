@@ -13,8 +13,8 @@
 //!      typer never eliminates (an entity FIELD type) fails the load too —
 //!      previously it sat silent (WI-428 review feedback).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -23,8 +23,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -73,7 +73,8 @@ fn typo_head_in_type_position_is_hard_error() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("unresolved type name") && e.contains("MemStoer.Key")),
+        errs.iter()
+            .any(|e| e.contains("unresolved type name") && e.contains("MemStoer.Key")),
         "typo'd head must be the load-blocking UnresolvedTypeName; got: {errs:?}",
     );
 }
@@ -88,7 +89,8 @@ fn unresolvable_three_segment_type_name_is_hard_error() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("unresolved type name") && e.contains("Nope.Such.Thing")),
+        errs.iter()
+            .any(|e| e.contains("unresolved type name") && e.contains("Nope.Such.Thing")),
         "unresolvable 3-segment type name must be load-blocking; got: {errs:?}",
     );
 }
@@ -120,7 +122,8 @@ fn field_position_bare_spec_projection_is_hard_error() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("conflate distinct carriers")),
+        errs.iter()
+            .any(|e| e.contains("conflate distinct carriers")),
         "bare-spec projection in a field position must fail the load; got: {errs:?}",
     );
 }

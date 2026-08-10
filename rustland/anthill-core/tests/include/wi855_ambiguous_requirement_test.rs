@@ -130,7 +130,12 @@ fn drive(src: &str, ns: &str) -> Result<Value, EvalError> {
 fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers() {
     let ns = "wi855.tie";
     let err = drive(&program(ns, RIVAL_CONCRETE, "wrap(leaf())"), ns).unwrap_err();
-    let EvalError::AmbiguousRequirement { op, requirement, candidates } = &err else {
+    let EvalError::AmbiguousRequirement {
+        op,
+        requirement,
+        candidates,
+    } = &err
+    else {
         panic!(
             "expected an AmbiguousRequirement naming the tie; got {err:?} — an \
              `Internal(DeferToRequirement …)` here is the pre-WI-855 behaviour \

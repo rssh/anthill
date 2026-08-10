@@ -66,7 +66,9 @@ fn explicit_smt_tactic_named_arg() {
         end
     "#;
     let t = tactic_of(src);
-    let Tactic::App(_sym, args) = t else { panic!("expected App"); };
+    let Tactic::App(_sym, args) = t else {
+        panic!("expected App");
+    };
     assert_eq!(args.len(), 1);
     let arg = &args[0];
     let TacticArgValue::String(ref s) = arg.value else {
@@ -84,7 +86,9 @@ fn then_combinator_with_two_bare_tactics() {
         end
     "#;
     let t = tactic_of(src);
-    let Tactic::App(_sym, args) = t else { panic!("expected App") };
+    let Tactic::App(_sym, args) = t else {
+        panic!("expected App")
+    };
     assert_eq!(args.len(), 2);
     for arg in &args {
         let TacticArgValue::Tactic(inner) = &arg.value else {
@@ -106,7 +110,9 @@ fn or_else_with_nested_smt_apps() {
         end
     "#;
     let t = tactic_of(src);
-    let Tactic::App(_sym, args) = t else { panic!("expected App") };
+    let Tactic::App(_sym, args) = t else {
+        panic!("expected App")
+    };
     assert_eq!(args.len(), 2);
 }
 
@@ -138,9 +144,14 @@ fn induction_meta_tactic_with_over_and_step() {
         end
     "#;
     let t = tactic_of(src);
-    let Tactic::App(_sym, ind_args) = t else { panic!("expected induction App, got {t:?}") };
+    let Tactic::App(_sym, ind_args) = t else {
+        panic!("expected induction App, got {t:?}")
+    };
     assert_eq!(ind_args.len(), 2);
-    let over_arg = ind_args.iter().find(|a| a.name.is_some()).expect("named arg");
+    let over_arg = ind_args
+        .iter()
+        .find(|a| a.name.is_some())
+        .expect("named arg");
     match &over_arg.value {
         TacticArgValue::Name(_) | TacticArgValue::Tactic(_) => {}
         other => panic!("`over` value: {other:?}"),
@@ -158,18 +169,21 @@ fn non_z3_strategy_has_no_tactic_ir() {
         end
     "#;
     with_proof_strategy(src, |s| {
-        assert!(s.tactic.is_none(),
-            "non-z3 strategies should leave Tactic IR unset");
+        assert!(
+            s.tactic.is_none(),
+            "non-z3 strategies should leave Tactic IR unset"
+        );
     });
 }
 
 #[test]
 fn legacy_args_field_still_populated() {
     with_proof_strategy(legacy_z3_logic_lra(), |s| {
-        assert!(!s.args.is_empty(),
-            "legacy args must still be populated for dispatch_z3");
-        assert!(s.tactic.is_some(),
-            "tactic IR must also be populated");
+        assert!(
+            !s.args.is_empty(),
+            "legacy args must still be populated for dispatch_z3"
+        );
+        assert!(s.tactic.is_some(), "tactic IR must also be populated");
     });
 }
 
@@ -179,15 +193,18 @@ fn lf1_existing_proofs_parse_unchanged() {
     // parse and produce Tactic IR. Read each safety_*.anthill file
     // directly and check no parse errors.
     use std::path::PathBuf;
-    let lf1_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/webots-modelling/lf1");
-    if !lf1_dir.exists() { return; }  // skip if example missing
+    let lf1_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/webots-modelling/lf1");
+    if !lf1_dir.exists() {
+        return;
+    } // skip if example missing
     for name in ["safety_gps.anthill", "safety_transponder.anthill"] {
         let path = lf1_dir.join(name);
-        if !path.exists() { continue; }
+        if !path.exists() {
+            continue;
+        }
         let src = std::fs::read_to_string(&path).unwrap();
-        parse::parse(&src).unwrap_or_else(|e|
-            panic!("parse {name}: {e:?}"));
+        parse::parse(&src).unwrap_or_else(|e| panic!("parse {name}: {e:?}"));
     }
 }
 

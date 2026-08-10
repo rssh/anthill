@@ -32,10 +32,14 @@ fn by_derivation_discharges_simple_horn_rule() {
         .expect("run anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(),
-        "anthill prove failed:\nstdout:{stdout}\nstderr:{stderr}");
-    assert!(stdout.contains("shines") && stdout.contains("proved"),
-        "expected `shines: proved` in stdout, got:\n{stdout}");
+    assert!(
+        out.status.success(),
+        "anthill prove failed:\nstdout:{stdout}\nstderr:{stderr}"
+    );
+    assert!(
+        stdout.contains("shines") && stdout.contains("proved"),
+        "expected `shines: proved` in stdout, got:\n{stdout}"
+    );
 }
 
 #[test]
@@ -56,8 +60,12 @@ fn by_derivation_reports_unknown_when_unsatisfiable() {
         .output()
         .expect("run anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("dark") && stdout.contains("unknown"),
-        "expected `dark: unknown`, got:\n{stdout}");
-    assert!(!out.status.success(),
-        "exit status should be non-zero on a failed obligation");
+    assert!(
+        stdout.contains("dark") && stdout.contains("unknown"),
+        "expected `dark: unknown`, got:\n{stdout}"
+    );
+    assert!(
+        !out.status.success(),
+        "exit status should be non-zero on a failed obligation"
+    );
 }

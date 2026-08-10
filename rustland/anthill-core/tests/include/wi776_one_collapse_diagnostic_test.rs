@@ -46,7 +46,10 @@ fn load_errs(src: &str) -> Vec<String> {
 /// for the NESTED case below, where the outer type is not the one at fault.
 fn assert_collapse_note(src: &str, label: &str, elem: &str) {
     let errs = load_errs(src);
-    assert!(!errs.is_empty(), "expected a type mismatch, but it loaded clean:\n{src}");
+    assert!(
+        !errs.is_empty(),
+        "expected a type mismatch, but it loaded clean:\n{src}"
+    );
     let joined = errs.join("\n");
     assert!(
         joined.contains("1-collapses to its element type"),
@@ -62,7 +65,10 @@ fn assert_collapse_note(src: &str, label: &str, elem: &str) {
 
 fn assert_no_collapse_note(src: &str) {
     let joined = load_errs(src).join("\n");
-    assert!(!joined.is_empty(), "expected a type mismatch, but it loaded clean:\n{src}");
+    assert!(
+        !joined.is_empty(),
+        "expected a type mismatch, but it loaded clean:\n{src}"
+    );
     assert!(
         !joined.contains("1-collapses to its element type"),
         "the 1-collapse note must NOT fire here; got:\n{joined}"

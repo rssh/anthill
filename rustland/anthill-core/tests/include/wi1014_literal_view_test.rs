@@ -44,8 +44,8 @@ fn stdlib_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -106,15 +106,30 @@ fn set_literal_view_is_isomorphic_to_its_term_twin() {
     let node = set_occ(1);
 
     let (tf, tp, tn) = match TermView::head(&term, &kb) {
-        ViewHead::Functor { functor, pos_arity, named_arity } => (functor, pos_arity, named_arity),
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => (functor, pos_arity, named_arity),
         other => panic!("term twin must be a Functor head, got {other:?}"),
     };
     let (nf, np, nn) = match TermView::head(&node, &kb) {
-        ViewHead::Functor { functor, pos_arity, named_arity } => (functor, pos_arity, named_arity),
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => (functor, pos_arity, named_arity),
         other => panic!("the occurrence must read structurally, got {other:?}"),
     };
-    assert_eq!((tf, tp, tn), (nf, np, nn), "head must match the twin exactly");
-    assert_eq!(tp, 1, "one element, POSITIONAL — occ_build_fn does not re-label");
+    assert_eq!(
+        (tf, tp, tn),
+        (nf, np, nn),
+        "head must match the twin exactly"
+    );
+    assert_eq!(
+        tp, 1,
+        "one element, POSITIONAL — occ_build_fn does not re-label"
+    );
 
     // The child is reachable and is the element, not a placeholder.
     let child = TermView::pos_arg(&node, &kb, 0).expect("element 0 is supplied");
@@ -140,9 +155,18 @@ fn set_literals_compare_equal_through_the_occurrence_carrier() {
     let b = set_occ(1);
     let c = set_occ(2);
 
-    assert!(views_structurally_equal(&kb, &a, &a), "a set literal equals itself");
-    assert!(views_structurally_equal(&kb, &a, &b), "and an identical sibling");
-    assert!(!views_structurally_equal(&kb, &a, &c), "a different element does not");
+    assert!(
+        views_structurally_equal(&kb, &a, &a),
+        "a set literal equals itself"
+    );
+    assert!(
+        views_structurally_equal(&kb, &a, &b),
+        "and an identical sibling"
+    );
+    assert!(
+        !views_structurally_equal(&kb, &a, &c),
+        "a different element does not"
+    );
 
     // …and the same distinction at the KEY, which is what WI-815 made a
     // soundness surface: distinct literals must not share a `GoalKey`.
@@ -198,14 +222,20 @@ fn set_literal_cross_carrier_discrim_match() {
 #[test]
 fn tuple_literal_reads_its_twin_and_order_stays_identity() {
     let mut kb = stdlib_kb();
-    let f = kb.try_resolve_symbol("anthill.reflect.TupleLiteral").unwrap();
+    let f = kb
+        .try_resolve_symbol("anthill.reflect.TupleLiteral")
+        .unwrap();
     let (a, b) = (kb.intern("acomp"), kb.intern("bcomp"));
 
     let ab = tuple_occ([(a, 1), (b, 2)]);
     let ba = tuple_occ([(b, 2), (a, 1)]);
 
     match TermView::head(&ab, &kb) {
-        ViewHead::Functor { functor, pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
             assert_eq!(functor, Some(f), "the twin's functor");
             assert_eq!((pos_arity, named_arity), (0, 2), "two NAMED components");
         }
@@ -216,10 +246,21 @@ fn tuple_literal_reads_its_twin_and_order_stays_identity() {
     // disagree — the WI-814 shape-table discipline, and the WI-815 defect class
     // (a head promising N children and supplying fewer) it exists to prevent.
     let keys = TermView::named_keys(&ab, &kb);
-    assert_eq!(keys.len(), 2, "named_keys agrees with the head's named_arity");
-    assert_eq!(keys, vec![a, b], "in SOURCE order, which is the tuple's identity");
+    assert_eq!(
+        keys.len(),
+        2,
+        "named_keys agrees with the head's named_arity"
+    );
+    assert_eq!(
+        keys,
+        vec![a, b],
+        "in SOURCE order, which is the tuple's identity"
+    );
     for k in &keys {
-        assert!(TermView::named_arg(&ab, &kb, *k).is_some(), "every promised key has a child");
+        assert!(
+            TermView::named_arg(&ab, &kb, *k).is_some(),
+            "every promised key has a child"
+        );
     }
 
     let sigma = Substitution::new();
@@ -282,7 +323,9 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
     use anthill_core::kb::term::Var;
 
     let mut kb = stdlib_kb();
-    let tl = kb.try_resolve_symbol("anthill.reflect.TupleLiteral").unwrap();
+    let tl = kb
+        .try_resolve_symbol("anthill.reflect.TupleLiteral")
+        .unwrap();
     assert!(
         kb.entity_field_names(tl).is_some(),
         "TupleLiteral is a declared entity, so project_field's Dispatch 1 applies",
@@ -298,7 +341,9 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
         kb.fresh_var(n)
     };
     let recv = tuple_occ([(comp, 42), (kb.intern("ycomp"), 7)]);
-    let fa = kb.try_resolve_symbol("anthill.reflect.field_access").unwrap();
+    let fa = kb
+        .try_resolve_symbol("anthill.reflect.field_access")
+        .unwrap();
     let goal = Value::Node(occ(Expr::Apply {
         functor: fa,
         pos_args: vec![
@@ -311,7 +356,11 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
     }));
 
     let sols = kb.resolve_goals(vec![goal], &ResolveConfig::default());
-    assert_eq!(sols.len(), 1, "a tuple-literal occurrence receiver projects again");
+    assert_eq!(
+        sols.len(),
+        1,
+        "a tuple-literal occurrence receiver projects again"
+    );
     assert!(
         matches!(sols[0].subst.resolve_as_value(r_vid), Some(Value::Node(_))),
         "and the component comes back in its own carrier",
@@ -340,7 +389,9 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
 #[test]
 fn a_positional_tuple_literal_agrees_with_the_parsers_term() {
     let mut kb = stdlib_kb();
-    let f = kb.try_resolve_symbol("anthill.reflect.TupleLiteral").unwrap();
+    let f = kb
+        .try_resolve_symbol("anthill.reflect.TupleLiteral")
+        .unwrap();
 
     let node = occ(Expr::TupleLit {
         positional: vec![int_occ(1), int_occ(2)],
@@ -348,7 +399,11 @@ fn a_positional_tuple_literal_agrees_with_the_parsers_term() {
     });
 
     match TermView::head(&node, &kb) {
-        ViewHead::Functor { functor, pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
             assert_eq!(functor, Some(f));
             assert_eq!(
                 (pos_arity, named_arity),
@@ -367,7 +422,9 @@ fn a_positional_tuple_literal_agrees_with_the_parsers_term() {
         let child = TermView::named_arg(&node, &kb, *k).expect("every promised key has a child");
         assert!(
             matches!(child.to_value().head(&kb), ViewHead::Const(Literal::Int(n)) if n == i as i64 + 1),
-            "`_{}` is the {}th component", i + 1, i + 1,
+            "`_{}` is the {}th component",
+            i + 1,
+            i + 1,
         );
     }
 

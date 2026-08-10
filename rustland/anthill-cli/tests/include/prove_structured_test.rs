@@ -13,13 +13,19 @@ use std::process::Command;
 const ANTHILL_BIN: &str = env!("CARGO_BIN_EXE_anthill");
 
 fn z3_available() -> bool {
-    Command::new("z3").arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("anthill-structured-{}-{}", std::process::id(), name));
+    let dir = std::env::temp_dir().join(format!(
+        "anthill-structured-{}-{}",
+        std::process::id(),
+        name
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
@@ -28,7 +34,9 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 #[test]
 fn structured_proof_two_steps_chain_to_parent_discharge() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // Two-step chain. Step h1 establishes `?x >= 3` from the body
     // premise `?x >= 5`; step h2 establishes `?x >= 1` from h1's
     // claim. The concluding clause cites both steps to discharge
@@ -56,7 +64,8 @@ fn structured_proof_two_steps_chain_to_parent_discharge() {
     let path = write_temp("structured_chain.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("test.structured.chain.big_lemma: proved"),
@@ -66,7 +75,9 @@ fn structured_proof_two_steps_chain_to_parent_discharge() {
 
 #[test]
 fn structured_proof_step_failure_aborts_chain() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // Step h1's claim is unsatisfiable from its body premises
     // (?x >= 5 ⇒ ?x >= 100 is false). The structured-proof
     // dispatcher should abort the chain on h1's failure rather
@@ -90,7 +101,8 @@ fn structured_proof_step_failure_aborts_chain() {
     let path = write_temp("structured_fail.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("test.structured.fail.oops: proved"),
@@ -126,7 +138,8 @@ fn structured_proof_with_trust_step_produces_metacompose_witness() {
     let path = write_temp("structured_trust.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("test.structured.trust.claim: proved"),
@@ -136,7 +149,9 @@ fn structured_proof_with_trust_step_produces_metacompose_witness() {
 
 #[test]
 fn structured_proof_witness_sidecar_replays_through_check() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // Phase c: the MetaCompose witness produced by dispatch_structured
     // serializes into a sidecar JSON (per WI-124's witness persistence
     // layer); `anthill check` reads it and replays each sub-witness via
@@ -163,7 +178,8 @@ fn structured_proof_witness_sidecar_replays_through_check() {
     // Run prove WITHOUT --no-cache so sidecars are written.
     let prove_out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap()])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let prove_stdout = String::from_utf8_lossy(&prove_out.stdout);
     assert!(
         prove_stdout.contains("test.structured.replay.claim: proved"),
@@ -174,7 +190,8 @@ fn structured_proof_witness_sidecar_replays_through_check() {
     // via β.3's MetaCompose recursion.
     let check_out = Command::new(ANTHILL_BIN)
         .args(["check", path.to_str().unwrap()])
-        .output().expect("anthill check");
+        .output()
+        .expect("anthill check");
     let check_stdout = String::from_utf8_lossy(&check_out.stdout);
     let check_stderr = String::from_utf8_lossy(&check_out.stderr);
     assert!(

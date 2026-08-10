@@ -53,12 +53,14 @@
 mod common;
 
 use anthill_core::eval::Value;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::term_view::{TermView, ViewHead};
+use anthill_core::kb::KnowledgeBase;
 
-use common::{collect_anthill_files, example_source, examples_dir, query_unary,
-             try_load_kb_with, try_load_kb_with_files};
+use common::{
+    collect_anthill_files, example_source, examples_dir, query_unary, try_load_kb_with,
+    try_load_kb_with_files,
+};
 
 /// The stdlib + host bindings + every `.anthill` under `examples/sql-store/`, in
 /// DIRECTORY WALK order — so a file added to the example later is loaded rather than
@@ -83,14 +85,20 @@ fn load_example() -> KnowledgeBase {
         .iter()
         .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
         .collect();
-    assert!(!sources.is_empty(), "examples/sql-store/ must hold at least one .anthill file");
+    assert!(
+        !sources.is_empty(),
+        "examples/sql-store/ must hold at least one .anthill file"
+    );
     let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
 
     try_load_kb_with_files(&refs).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("load error: {e}");
         }
-        panic!("examples/sql-store must LOAD against the stdlib; got {} error(s)", errs.len());
+        panic!(
+            "examples/sql-store must LOAD against the stdlib; got {} error(s)",
+            errs.len()
+        );
     })
 }
 
@@ -111,7 +119,8 @@ fn the_sql_store_shape_left_the_stdlib() {
     let kb = try_load_kb_with("namespace wi934.probe\nend\n").expect("stdlib loads");
 
     assert!(
-        kb.try_resolve_symbol("anthill.persistence.QueryableStore").is_some(),
+        kb.try_resolve_symbol("anthill.persistence.QueryableStore")
+            .is_some(),
         "the abstract store algebra STAYS in the stdlib — only the SQL sketch moved",
     );
     for qn in [
@@ -151,9 +160,19 @@ fn the_shape_loads_from_examples() {
 fn the_demo_store_destructures_by_field() {
     let mut kb = load_example();
 
-    let sols = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.audit_connection");
-    assert_eq!(sols.len(), 1, "one `audit_db` fact, so exactly one connection string");
-    assert!(sols[0].1, "the answer must be DEFINITE — an undecided row would read as one");
+    let sols = query_unary(
+        &mut kb,
+        "anthill.examples.persistence.sql.demo.audit_connection",
+    );
+    assert_eq!(
+        sols.len(),
+        1,
+        "one `audit_db` fact, so exactly one connection string"
+    );
+    assert!(
+        sols[0].1,
+        "the answer must be DEFINITE — an undecided row would read as one"
+    );
     assert_eq!(
         text_of(&kb, &sols[0].0),
         "postgresql://localhost/anthill",
@@ -169,16 +188,25 @@ fn the_demo_store_destructures_by_field() {
 fn the_demo_store_carries_its_dialect_variant() {
     let mut kb = load_example();
 
-    let sols = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.audit_dialect");
+    let sols = query_unary(
+        &mut kb,
+        "anthill.examples.persistence.sql.demo.audit_dialect",
+    );
     assert_eq!(sols.len(), 1, "one `audit_db` fact, so exactly one dialect");
     let Value::Term { id } = sols[0].0 else {
-        panic!("a dialect must reach the head as a term, got {:?}", sols[0].0)
+        panic!(
+            "a dialect must reach the head as a term, got {:?}",
+            sols[0].0
+        )
     };
     // A nullary enum variant rides as a `Ref`, not a zero-arg application; refusing
     // `Term::Fn` here is deliberate, so a regression that re-wrapped it as a zero-arg
     // call would be reported rather than accepted.
     let Term::Ref(s) = kb.get_term(id) else {
-        panic!("a dialect variant must be a name, got {:?}", kb.get_term(id))
+        panic!(
+            "a dialect variant must be a name, got {:?}",
+            kb.get_term(id)
+        )
     };
     assert_eq!(
         kb.qualified_name_of(*s),
@@ -200,16 +228,33 @@ fn the_demo_binding_carries_its_quoted_sql() {
     let mut kb = load_example();
 
     let sols = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.audit_table");
-    assert_eq!(sols.len(), 1, "one `audit_binding` fact, so exactly one table");
-    assert_eq!(text_of(&kb, &sols[0].0), "audit_entries", "the `table` field reaches the head");
+    assert_eq!(
+        sols.len(),
+        1,
+        "one `audit_binding` fact, so exactly one table"
+    );
+    assert_eq!(
+        text_of(&kb, &sols[0].0),
+        "audit_entries",
+        "the `table` field reaches the head"
+    );
 
-    let sols = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.audit_retrieve_sql");
+    let sols = query_unary(
+        &mut kb,
+        "anthill.examples.persistence.sql.demo.audit_retrieve_sql",
+    );
     assert_eq!(sols.len(), 1, "…and exactly one retrieve fragment");
     let Value::Term { id } = sols[0].0 else {
         panic!("a Quoted fragment must ride as a term, got {:?}", sols[0].0)
     };
-    let Term::Fn { functor, pos_args, .. } = kb.get_term(id) else {
-        panic!("Quoted must reach the head as an application, got {:?}", kb.get_term(id))
+    let Term::Fn {
+        functor, pos_args, ..
+    } = kb.get_term(id)
+    else {
+        panic!(
+            "Quoted must reach the head as an application, got {:?}",
+            kb.get_term(id)
+        )
     };
     let (functor, pos_args) = (*functor, pos_args.clone());
     assert_eq!(
@@ -246,7 +291,10 @@ fn the_demo_binding_carries_its_quoted_sql() {
 fn the_demo_column_list_destructures_through_its_declared_type() {
     let mut kb = load_example();
 
-    let sols = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.account_column_type");
+    let sols = query_unary(
+        &mut kb,
+        "anthill.examples.persistence.sql.demo.account_column_type",
+    );
     assert_eq!(sols.len(), 1, "the spine's head matches exactly once");
     assert_eq!(
         text_of(&kb, &sols[0].0),
@@ -255,7 +303,10 @@ fn the_demo_column_list_destructures_through_its_declared_type() {
          own `sql_type`",
     );
 
-    let sols = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.action_column_at_head");
+    let sols = query_unary(
+        &mut kb,
+        "anthill.examples.persistence.sql.demo.action_column_at_head",
+    );
     assert!(
         sols.is_empty(),
         "`action` is the SECOND column; matching it at the spine's head must answer \
@@ -287,13 +338,20 @@ fn both_load_orders_of_the_example_answer_the_same() {
             }
             panic!("both orders must load; got {} error(s)", errs.len());
         });
-        let spine = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.account_column_type")
-            .iter()
-            .map(|(v, _)| text_of(&kb, v))
-            .collect::<Vec<_>>();
+        let spine = query_unary(
+            &mut kb,
+            "anthill.examples.persistence.sql.demo.account_column_type",
+        )
+        .iter()
+        .map(|(v, _)| text_of(&kb, v))
+        .collect::<Vec<_>>();
         // The quiet sibling: `columns` read as a WHOLE, which answered in both orders
         // even when the spine did not.
-        let whole = query_unary(&mut kb, "anthill.examples.persistence.sql.demo.audit_column_defs").len();
+        let whole = query_unary(
+            &mut kb,
+            "anthill.examples.persistence.sql.demo.audit_column_defs",
+        )
+        .len();
         answers.push((spine, whole));
     }
 
@@ -302,8 +360,15 @@ fn both_load_orders_of_the_example_answer_the_same() {
         "the two load orders disagree — `sql, demo` gave {:?} and `demo, sql` gave {:?}",
         answers[0], answers[1],
     );
-    assert_eq!(answers[0].0, ["text"], "the spine's head is the `account` column, in either order");
-    assert_eq!(answers[0].1, 1, "…and `columns` read as a whole answers once, in either order");
+    assert_eq!(
+        answers[0].0,
+        ["text"],
+        "the spine's head is the `account` column, in either order"
+    );
+    assert_eq!(
+        answers[0].1, 1,
+        "…and `columns` read as a whole answers once, in either order"
+    );
 }
 
 // ── local helper ────────────────────────────────────────────────────

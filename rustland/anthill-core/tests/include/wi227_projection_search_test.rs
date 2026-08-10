@@ -18,13 +18,12 @@
 //! Reference: docs/design/operation-call-model.md §"Call rewrite cases",
 //! §"Two primitives".
 
-
+use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     build_dep_projection, get_named_arg, ProjectionSyms, RequiresEntry,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -70,12 +69,18 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("Eq.eq");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref");
-    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
-    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
+    let cons_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .expect("List.cons");
+    let nil_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
+        .expect("List.nil");
 
     let mut rewritten_for_eq = None;
     for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
@@ -93,8 +98,12 @@ end
     // fn = Ref(Eq.eq) — spec-op symbol directly.
     let fn_tid = get_named_arg(kb, &named_args, "fn").expect("fn arg");
     match kb.get_term(fn_tid) {
-        Term::Ref(s) => assert_eq!(*s, eq_sym,
-            "fn must be Ref(Eq.eq); got Ref({})", kb.qualified_name_of(*s)),
+        Term::Ref(s) => assert_eq!(
+            *s,
+            eq_sym,
+            "fn must be Ref(Eq.eq); got Ref({})",
+            kb.qualified_name_of(*s)
+        ),
         other => panic!("fn must be Term::Ref(spec_op); got {other:?}"),
     }
 
@@ -103,28 +112,44 @@ end
     // requirement-param.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements").expect("requirements arg");
     let (reqs_functor, reqs_named) = match kb.get_term(reqs_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("requirements must be Fn; got {other:?}"),
     };
-    assert_eq!(reqs_functor, cons_sym,
+    assert_eq!(
+        reqs_functor,
+        cons_sym,
         "single dispatching dict wrapped in cons; got {}",
-        kb.qualified_name_of(reqs_functor));
+        kb.qualified_name_of(reqs_functor)
+    );
 
     let head_tid = get_named_arg(kb, &reqs_named, "head").expect("cons head");
     let (head_functor, head_named) = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("dispatching dict must be Fn; got {other:?}"),
     };
-    assert_eq!(head_functor, var_ref_sym,
+    assert_eq!(
+        head_functor,
+        var_ref_sym,
         "Strategy 1 emits var_ref (names model); got {}",
-        kb.qualified_name_of(head_functor));
+        kb.qualified_name_of(head_functor)
+    );
     let name_tid = get_named_arg(kb, &head_named, "name").expect("name arg");
     match kb.get_term(name_tid) {
         // WI-644: `eq`'s spec is the `PartialEq` base, so the param name is
         // `__req_partialeq`. WI-873: was "at CALLER chain[0]" — the map is KB-global
         // and the surviving entry may be another sort's, so only the spec is asserted.
         Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb, *s, "__req_partialeq",
+            kb,
+            *s,
+            "__req_partialeq",
             "Strategy 1's var_ref must name a requirement param synthesized from \
              `PartialEq`",
         ),
@@ -138,7 +163,10 @@ end
         Term::Ref(s) => *s,
         other => panic!("tail must be Fn (nil) or Ref (nil); got {other:?}"),
     };
-    assert_eq!(tail_functor, nil_sym, "single-entry list's tail must be nil");
+    assert_eq!(
+        tail_functor, nil_sym,
+        "single-entry list's tail must be nil"
+    );
 }
 
 #[test]
@@ -155,7 +183,9 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     let mut kb = load_stdlib_only();
     let syms = ProjectionSyms::resolve(&mut kb).expect("stdlib must define IR symbols");
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .expect("Eq sort");
     let ordered_sym = kb
         .try_resolve_symbol("anthill.prelude.Ord")
         .expect("Ord sort");
@@ -187,9 +217,14 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep,
+        &mut kb,
+        &dep,
         &anthill_core::kb::typing::DictChain::unnamed(caller_requires.clone()),
-        &caller_sub_chains, &syms, None, None, &[],
+        &caller_sub_chains,
+        &syms,
+        None,
+        None,
+        &[],
     );
     assert!(
         projection.is_none(),
@@ -217,8 +252,12 @@ fn ground_dep_emits_the_dictionary_node() {
     let mut kb = load_stdlib_only();
     let syms = ProjectionSyms::resolve(&mut kb).expect("stdlib must define IR symbols");
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .expect("Eq sort");
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 sort");
     let sort_view_sym = kb
         .try_resolve_symbol("anthill.reflect.SortView")
         .expect("SortView sort");
@@ -252,34 +291,45 @@ fn ground_dep_emits_the_dictionary_node() {
         .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
-        &mut kb, &dep,
+        &mut kb,
+        &dep,
         &anthill_core::kb::typing::DictChain::unnamed(caller_requires.clone()),
-        &caller_sub_chains, &syms, None, None, &[],
+        &caller_sub_chains,
+        &syms,
+        None,
+        None,
+        &[],
     )
-        .expect("Strategy 3 must resolve Eq[T=Int64] via SortProvidesInfo");
+    .expect("Strategy 3 must resolve Eq[T=Int64] via SortProvidesInfo");
 
     // Top-level must be `Dictionary(<subs …>, impl = Ref(<Eq impl>))`.
     let (functor, pos_args, named_args) = match kb.get_term(projection) {
-        Term::Fn { functor, pos_args, named_args } => {
-            (*functor, pos_args.clone(), named_args.clone())
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => (*functor, pos_args.clone(), named_args.clone()),
         other => panic!("projection must be Fn; got {other:?}"),
     };
     assert_eq!(
-        functor, syms.dict_ctor,
+        functor,
+        syms.dict_ctor,
         "Strategy 3 emits the `Dictionary` construction node; got {}",
         kb.qualified_name_of(functor)
     );
 
-    let impl_tid = named_args.iter().find(|(k, _)| *k == syms.dict_impl)
-        .map(|(_, v)| *v).expect("impl arg");
+    let impl_tid = named_args
+        .iter()
+        .find(|(k, _)| *k == syms.dict_impl)
+        .map(|(_, v)| *v)
+        .expect("impl arg");
     let impl_sym = match kb.get_term(impl_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            *functor
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
         other => panic!("impl must be a sort reference; got {other:?}"),
     };
     // The rustland binding (anthill-stl/anthill/int.anthill) declares
@@ -287,7 +337,8 @@ fn ground_dep_emits_the_dictionary_node() {
     // T = Int64. SortProvidesInfo's `sort_ref` is therefore the Int64
     // symbol, so the node's `impl` Ref's Int64.
     assert_eq!(
-        impl_sym, int_sym,
+        impl_sym,
+        int_sym,
         "Eq[T = Int64]'s SortProvidesInfo carrier is Int64 itself; \
          Dictionary.impl must point to it. Got {}",
         kb.qualified_name_of(impl_sym)
@@ -303,25 +354,37 @@ fn ground_dep_emits_the_dictionary_node() {
     // WI-1045 — POSITIONAL, not a `requirements` cons spine: the IR node's key set
     // is now the VALUE's, where a sub-dictionary is positional child `k`.
     assert_eq!(
-        pos_args.len(), 1,
+        pos_args.len(),
+        1,
         "the spec half is `Eq`'s `requires PartialEq[T]`, so the node carries one \
          positional sub-dictionary, not zero"
     );
     let head_tid = pos_args[0];
     let head_named = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } if *functor == syms.dict_ctor => named_args.clone(),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } if *functor == syms.dict_ctor => named_args.clone(),
         other => panic!("the bundled entry must itself be a `Dictionary` node; got {other:?}"),
     };
-    let inner_tid = head_named.iter().find(|(k, _)| *k == syms.dict_impl)
-        .map(|(_, v)| *v).expect("impl");
+    let inner_tid = head_named
+        .iter()
+        .find(|(k, _)| *k == syms.dict_impl)
+        .map(|(_, v)| *v)
+        .expect("impl");
     let inner_sym = match kb.get_term(inner_tid) {
         Term::Ref(s) | Term::Ident(s) => *s,
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() => *functor,
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
         other => panic!("impl_functor must be a sort reference; got {other:?}"),
     };
     assert_eq!(
-        inner_sym, int_sym,
+        inner_sym,
+        int_sym,
         "`PartialEq[T = Int64]` is provided by Int64 as well; got {}",
         kb.qualified_name_of(inner_sym)
     );

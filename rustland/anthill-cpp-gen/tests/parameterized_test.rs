@@ -83,8 +83,8 @@ fn nested_parameterization() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&mut kb, "test.params.OptionalSamples")
-        .expect("emit OptionalSamples");
+    let cpp =
+        emit_entity_struct(&mut kb, "test.params.OptionalSamples").expect("emit OptionalSamples");
     assert!(
         cpp.contains("std::optional<std::vector<double>> samples"),
         "expected nested optional<vector<double>>:\n{cpp}"
@@ -105,14 +105,28 @@ fn namespace_header_with_parameterized_emits_includes() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let header = emit_namespace_header(&mut kb, "test.params")
-        .expect("emit test.params header");
+    let header = emit_namespace_header(&mut kb, "test.params").expect("emit test.params header");
 
-    assert!(header.contains("#include <cstdint>"), "<cstdint> missing:\n{header}");
-    assert!(header.contains("#include <string>"),  "<string> missing:\n{header}");
-    assert!(header.contains("#include <vector>"),  "<vector> missing:\n{header}");
-    assert!(header.contains("#include <optional>"),"<optional> missing:\n{header}");
-    assert!(header.contains("namespace test::params {"), "namespace missing:\n{header}");
+    assert!(
+        header.contains("#include <cstdint>"),
+        "<cstdint> missing:\n{header}"
+    );
+    assert!(
+        header.contains("#include <string>"),
+        "<string> missing:\n{header}"
+    );
+    assert!(
+        header.contains("#include <vector>"),
+        "<vector> missing:\n{header}"
+    );
+    assert!(
+        header.contains("#include <optional>"),
+        "<optional> missing:\n{header}"
+    );
+    assert!(
+        header.contains("namespace test::params {"),
+        "namespace missing:\n{header}"
+    );
 
     // Compile if a compiler is available.
     let cxx = match find_cxx() {

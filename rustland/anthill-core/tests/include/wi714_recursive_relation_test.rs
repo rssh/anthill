@@ -107,7 +107,9 @@ fn collect_list<T>(v: &Value, head_of: impl Fn(&Value) -> Option<T>) -> Vec<T> {
 /// whose columns ride in head-declaration order (c, e).
 fn collect_pairs(v: &Value) -> Vec<(String, String)> {
     collect_list(v, |val| {
-        let Value::Tuple { named: fields, .. } = val else { return None };
+        let Value::Tuple { named: fields, .. } = val else {
+            return None;
+        };
         let cols: Vec<String> = fields
             .iter()
             .filter_map(|(_, v)| match v {
@@ -170,7 +172,10 @@ fn wi714_recursive_column_schema_is_the_base_clause_type() {
         "operation closure() -> List[(c: String, e: String)] effects Error =",
         "operation closure() -> List[(c: String, e: Int64)] effects Error =",
     );
-    assert_ne!(bad, SRC, "the closure signature must be the one being retyped");
+    assert_ne!(
+        bad, SRC,
+        "the closure signature must be the one being retyped"
+    );
     let errs = try_load_kb_with(&bad).err().unwrap_or_default();
     assert!(
         errs.iter().any(|e| e.contains("e: String")),
@@ -282,7 +287,10 @@ end
         ("bart".to_string(), "abe".to_string()),
     ];
     want.sort();
-    assert_eq!(got, want, "mutual recursion types via the same unconstrained-column rule");
+    assert_eq!(
+        got, want,
+        "mutual recursion types via the same unconstrained-column rule"
+    );
 }
 
 /// THE GUARD THAT MUST SURVIVE: two clauses that BOTH type a column concretely, at

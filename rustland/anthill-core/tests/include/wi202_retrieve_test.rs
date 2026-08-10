@@ -8,8 +8,8 @@ use anthill_core::persistence::file_store::FileConvention;
 use anthill_core::persistence::indexed_file_store::IndexedFileStore;
 use anthill_core::persistence::Store;
 
-use smallvec::SmallVec;
 use anthill_core::kb::ClauseKind;
+use smallvec::SmallVec;
 
 /// Allocate `WorkItem(id: "...", status: ...)` in the KB. Returns the
 /// term id and the rule id (the asserted fact's RuleId).
@@ -90,7 +90,8 @@ fn retrieve_fast_path_via_by_id() {
     // The hit's term is the rule's head — should be the WI-001 entry.
     let head_id = hits[0];
     if let Term::Fn { named_args, .. } = kb.get_term(head_id) {
-        let id_val = named_args.iter()
+        let id_val = named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "id")
             .expect("hit has id field");
         if let Term::Const(Literal::String(s)) = kb.get_term(id_val.1) {
@@ -131,7 +132,12 @@ fn retrieve_slow_path_by_status() {
 
     let pat = pattern_with_status(&mut kb, "Open");
     let hits = store.retrieve(&kb, pat).expect("retrieve");
-    assert_eq!(hits.len(), 2, "expected two Open WorkItems, got {}", hits.len());
+    assert_eq!(
+        hits.len(),
+        2,
+        "expected two Open WorkItems, got {}",
+        hits.len()
+    );
 }
 
 #[test]

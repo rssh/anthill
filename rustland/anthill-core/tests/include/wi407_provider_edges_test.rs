@@ -30,7 +30,9 @@
 /// moved the fixture into the host closure it became `try_load_kb_with_files`
 /// exactly, so it calls that.
 fn load_errors(extras: &[&str]) -> Vec<String> {
-    crate::common::try_load_kb_with_files(extras).err().unwrap_or_default()
+    crate::common::try_load_kb_with_files(extras)
+        .err()
+        .unwrap_or_default()
 }
 
 /// 1-hop, sort-body form: `sort QueryableStore { fact Store }` ⟹

@@ -6,9 +6,8 @@
 //! This is the lineage-preservation guarantee from proposal 026.1
 //! §"Scale: external-backed KBs".
 
-
-use anthill_core::eval::Value;
 use anthill_core::eval::stream::{ExternalStream, StreamSource};
+use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 
 use crate::common::interp_for;
@@ -41,10 +40,13 @@ impl ExternalStream for WorkItemRowStream {
             named: vec![
                 (self.id_field, Value::Str(row.id)),
                 (self.description_field, Value::Str(row.description)),
-            ].into(),
+            ]
+            .into(),
         })
     }
-    fn description(&self) -> &str { "WorkItemRowStream[in-memory]" }
+    fn description(&self) -> &str {
+        "WorkItemRowStream[in-memory]"
+    }
 }
 
 #[test]
@@ -56,8 +58,14 @@ fn q4_external_stream_yields_value_entity_rows() {
     let description_field = interp.kb_mut().intern("description");
 
     let rows = vec![
-        WorkItemRow { id: "WI-001".into(), description: "first".into() },
-        WorkItemRow { id: "WI-002".into(), description: "second".into() },
+        WorkItemRow {
+            id: "WI-001".into(),
+            description: "first".into(),
+        },
+        WorkItemRow {
+            id: "WI-002".into(),
+            description: "second".into(),
+        },
     ];
     let stream = Box::new(WorkItemRowStream {
         rows: rows.into_iter(),
@@ -73,7 +81,10 @@ fn q4_external_stream_yields_value_entity_rows() {
     let mut h = handle;
     loop {
         match interp.stream_split_first(&h).expect("split_first") {
-            Some((v, rest)) => { yielded.push(v); h = rest; }
+            Some((v, rest)) => {
+                yielded.push(v);
+                h = rest;
+            }
             None => break,
         }
     }
@@ -87,7 +98,11 @@ fn q4_external_stream_yields_value_entity_rows() {
     }
 
     drop(h);
-    assert_eq!(interp.stream_arena_live_count(), 0, "slot reclaimed after exhaustion");
+    assert_eq!(
+        interp.stream_arena_live_count(),
+        0,
+        "slot reclaimed after exhaustion"
+    );
 }
 
 /// Q4 acceptance: scanning 10K external rows must NOT grow the main
@@ -123,7 +138,10 @@ fn q4_ten_thousand_row_scan_does_not_grow_term_store() {
     let mut count = 0usize;
     loop {
         match interp.stream_split_first(&h).expect("split_first") {
-            Some((_v, rest)) => { count += 1; h = rest; }
+            Some((_v, rest)) => {
+                count += 1;
+                h = rest;
+            }
             None => break,
         }
     }

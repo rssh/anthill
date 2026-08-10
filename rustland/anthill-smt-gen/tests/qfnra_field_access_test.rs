@@ -74,33 +74,41 @@ fn qfnra_field_access_emits_well_formed_smtlib() {
         logic: Some("QF_NRA".to_string()),
         ..Default::default()
     };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.qfnra_field.violation", &cfg)
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.qfnra_field.violation", &cfg)
         .expect("emit");
-    assert!(smt.contains("(set-logic QF_NRA)"),
-        "expected QF_NRA logic line, got:\n{smt}");
+    assert!(
+        smt.contains("(set-logic QF_NRA)"),
+        "expected QF_NRA logic line, got:\n{smt}"
+    );
     // The leader/follower x-coords must reach the document as
     // literals — that is the whole point of fact-match + field_access.
-    assert!(smt.contains("(- 4.0)") || smt.contains("-4.0"),
-        "expected the follower's x = -4 to appear as a literal:\n{smt}");
+    assert!(
+        smt.contains("(- 4.0)") || smt.contains("-4.0"),
+        "expected the follower's x = -4 to appear as a literal:\n{smt}"
+    );
     // Nonlinear equality is lifted as an assertion, not a binding —
     // the LHS is `(* ?d ?d)`, not a bare DeBruijn var.
-    assert!(smt.contains("(assert (= (*"),
-        "expected `?d * ?d = ?d_sq` to surface as an assertion:\n{smt}");
+    assert!(
+        smt.contains("(assert (= (*"),
+        "expected `?d * ?d = ?d_sq` to surface as an assertion:\n{smt}"
+    );
 }
 
 #[test]
 fn qfnra_field_access_z3_says_unsat() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let kb = build_kb();
     let cfg = ProofConfig {
         logic: Some("QF_NRA".to_string()),
         ..Default::default()
     };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.qfnra_field.violation", &cfg)
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.qfnra_field.violation", &cfg)
         .expect("emit");
     let out = run_z3("qfnra_field_access", &smt);
-    assert_eq!(out, "unsat",
-        "concrete |Δ| = 4 ≥ 1 = d_min — no violation. SMT was:\n{smt}");
+    assert_eq!(
+        out, "unsat",
+        "concrete |Δ| = 4 ≥ 1 = d_min — no violation. SMT was:\n{smt}"
+    );
 }

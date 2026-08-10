@@ -106,15 +106,22 @@ pub fn stdio_console_error_handler() -> EffectHandler {
 fn stdio_console_write_handler<W: Write + 'static>(sink: W) -> EffectHandler {
     let sink = Rc::new(RefCell::new(sink));
     Box::new(move |interp, op_sym, args| {
-        let s = args.get(1).and_then(Value::as_str).ok_or_else(|| {
-            EvalError::TypeMismatch { expected: "String", got: "missing or non-String argument".into() }
-        })?;
+        let s = args
+            .get(1)
+            .and_then(Value::as_str)
+            .ok_or_else(|| EvalError::TypeMismatch {
+                expected: "String",
+                got: "missing or non-String argument".into(),
+            })?;
         let mut out = sink.borrow_mut();
-        out.write_all(s.as_bytes()).map_err(|e| EvalError::Internal(e.to_string()))?;
+        out.write_all(s.as_bytes())
+            .map_err(|e| EvalError::Internal(e.to_string()))?;
         if op_appends_newline(interp.kb().local_name_of(op_sym)) {
-            out.write_all(b"\n").map_err(|e| EvalError::Internal(e.to_string()))?;
+            out.write_all(b"\n")
+                .map_err(|e| EvalError::Internal(e.to_string()))?;
         }
-        out.flush().map_err(|e| EvalError::Internal(e.to_string()))?;
+        out.flush()
+            .map_err(|e| EvalError::Internal(e.to_string()))?;
         Ok(HandlerAction::Pure(Value::Unit))
     })
 }
@@ -125,10 +132,16 @@ pub fn stdio_console_input_handler() -> EffectHandler {
     let stdin = Rc::new(RefCell::new(io::BufReader::new(io::stdin())));
     Box::new(move |_interp, _op_sym, _args| {
         let mut buf = String::new();
-        stdin.borrow_mut().read_line(&mut buf)
+        stdin
+            .borrow_mut()
+            .read_line(&mut buf)
             .map_err(|e| EvalError::Internal(e.to_string()))?;
-        if buf.ends_with('\n') { buf.pop(); }
-        if buf.ends_with('\r') { buf.pop(); }
+        if buf.ends_with('\n') {
+            buf.pop();
+        }
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
         Ok(HandlerAction::Pure(Value::Str(buf)))
     })
 }
@@ -144,9 +157,13 @@ pub type SharedBuffer = Rc<RefCell<String>>;
 /// corresponding effect-sort qualified name.
 pub fn buffered_console_handler(buf: SharedBuffer) -> EffectHandler {
     Box::new(move |interp, op_sym, args| {
-        let s = args.get(1).and_then(Value::as_str).ok_or_else(|| {
-            EvalError::TypeMismatch { expected: "String", got: "missing or non-String argument".into() }
-        })?;
+        let s = args
+            .get(1)
+            .and_then(Value::as_str)
+            .ok_or_else(|| EvalError::TypeMismatch {
+                expected: "String",
+                got: "missing or non-String argument".into(),
+            })?;
         buf.borrow_mut().push_str(s);
         if op_appends_newline(interp.kb().local_name_of(op_sym)) {
             buf.borrow_mut().push('\n');
@@ -164,7 +181,9 @@ pub type SharedInputScript = Rc<RefCell<std::collections::VecDeque<String>>>;
 /// have supplied fewer lines than the program consumed.
 pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandler {
     Box::new(move |_interp, _op_sym, _args| {
-        script.borrow_mut().pop_front()
+        script
+            .borrow_mut()
+            .pop_front()
             .map(|s| HandlerAction::Pure(Value::Str(s)))
             .ok_or_else(|| EvalError::Internal("scripted console input exhausted".into()))
     })
@@ -194,12 +213,13 @@ pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandle
 /// runtime walk — proposal 037 §`Cell[V]` and WI-207's typer-side
 /// `acyclic_cell` rule make cycles inexpressible at the type level.
 pub fn default_modify_handler() -> EffectHandler {
-    let cells: Rc<RefCell<HashMap<Symbol, Value>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let cells: Rc<RefCell<HashMap<Symbol, Value>>> = Rc::new(RefCell::new(HashMap::new()));
 
     Box::new(move |interp, op_sym, args| {
         let target = args.first().ok_or_else(|| EvalError::ArityMismatch {
-            op: "Modify", expected: 1, got: 0,
+            op: "Modify",
+            expected: 1,
+            got: 0,
         })?;
         let op_name = interp.kb().local_name_of(op_sym);
 
@@ -210,49 +230,64 @@ pub fn default_modify_handler() -> EffectHandler {
             return match op_name {
                 "get" => Ok(HandlerAction::Pure(interp.read_cell(&handle))),
                 "set" => {
-                    let new_val = args.get(1).cloned().ok_or_else(|| {
-                        EvalError::ArityMismatch {
-                            op: "Modify.set", expected: 2, got: args.len(),
-                        }
-                    })?;
+                    let new_val = args
+                        .get(1)
+                        .cloned()
+                        .ok_or_else(|| EvalError::ArityMismatch {
+                            op: "Modify.set",
+                            expected: 2,
+                            got: args.len(),
+                        })?;
                     interp.write_cell(&handle, new_val);
                     Ok(HandlerAction::Pure(Value::Unit))
                 }
-                other => Err(EvalError::Internal(
-                    format!("Modify[Cell] handler: unknown op `{}`", other),
-                )),
+                other => Err(EvalError::Internal(format!(
+                    "Modify[Cell] handler: unknown op `{}`",
+                    other
+                ))),
             };
         }
 
         // Fallback: functor-keyed map for anonymous resources.
         let key = resource_key(interp, Some(target))?;
         match op_name {
-            "get" => {
-                cells.borrow()
-                    .get(&key)
-                    .cloned()
-                    .map(HandlerAction::Pure)
-                    .ok_or_else(|| EvalError::Internal(
-                        format!("Modify.get: no value set for `{}`",
-                                interp.kb().local_name_of(key))
+            "get" => cells
+                .borrow()
+                .get(&key)
+                .cloned()
+                .map(HandlerAction::Pure)
+                .ok_or_else(|| {
+                    EvalError::Internal(format!(
+                        "Modify.get: no value set for `{}`",
+                        interp.kb().local_name_of(key)
                     ))
-            }
+                }),
             "set" => {
-                let new_val = args.get(1).cloned().ok_or_else(|| {
-                    EvalError::ArityMismatch { op: "Modify.set", expected: 2, got: args.len() }
-                })?;
+                let new_val = args
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| EvalError::ArityMismatch {
+                        op: "Modify.set",
+                        expected: 2,
+                        got: args.len(),
+                    })?;
                 detect_cycle(interp, key, &new_val, 0)?;
                 cells.borrow_mut().insert(key, new_val);
                 Ok(HandlerAction::Pure(Value::Unit))
             }
-            other => Err(EvalError::Internal(format!("Modify handler: unknown op `{}`", other))),
+            other => Err(EvalError::Internal(format!(
+                "Modify handler: unknown op `{}`",
+                other
+            ))),
         }
     })
 }
 
 fn resource_key(interp: &Interpreter, arg: Option<&Value>) -> Result<Symbol, EvalError> {
     let v = arg.ok_or_else(|| EvalError::ArityMismatch {
-        op: "Modify", expected: 1, got: 0,
+        op: "Modify",
+        expected: 1,
+        got: 0,
     })?;
     crate::eval::eval::value_functor(interp.kb(), v).ok_or_else(|| EvalError::TypeMismatch {
         expected: "Entity, Cell, or nullary Term (resource identifier)",
@@ -274,7 +309,12 @@ fn detect_cycle(
         return Err(EvalError::CyclicReference);
     }
     match value {
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             if *functor == target {
                 return Err(EvalError::CyclicReference);
             }
@@ -283,13 +323,15 @@ fn detect_cycle(
             }
             Ok(())
         }
-        Value::Term { id: tid, .. } => {
-            detect_cycle_term(interp, target, *tid, depth)
-        }
+        Value::Term { id: tid, .. } => detect_cycle_term(interp, target, *tid, depth),
         // WI-787: through the owning accessor, not an open-coded chain. Order is
         // immaterial to a cycle search, but a half-read would MISS children.
         Value::Tuple { .. } => {
-            for v in value.tuple_components().expect("matched Value::Tuple").iter() {
+            for v in value
+                .tuple_components()
+                .expect("matched Value::Tuple")
+                .iter()
+            {
                 detect_cycle(interp, target, v, depth + 1)?;
             }
             Ok(())
@@ -300,7 +342,11 @@ fn detect_cycle(
         // `resource_key` reads its key through `value_functor`, which does accept
         // this carrier.
         Value::SymbolRef(sym) => {
-            if *sym == target { Err(EvalError::CyclicReference) } else { Ok(()) }
+            if *sym == target {
+                Err(EvalError::CyclicReference)
+            } else {
+                Ok(())
+            }
         }
         // WI-1025: `value_functor` accepts an occurrence too, so this guard has to
         // see through one or the same `_ => Ok(())` silently reports no cycle for a
@@ -362,7 +408,11 @@ fn detect_cycle_term(
     }
     use crate::kb::term::Term;
     match interp.kb().get_term(tid) {
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             if *functor == target {
                 return Err(EvalError::CyclicReference);
             }
@@ -374,7 +424,11 @@ fn detect_cycle_term(
             Ok(())
         }
         Term::Ref(sym) => {
-            if *sym == target { Err(EvalError::CyclicReference) } else { Ok(()) }
+            if *sym == target {
+                Err(EvalError::CyclicReference)
+            } else {
+                Ok(())
+            }
         }
         _ => Ok(()),
     }
@@ -392,9 +446,14 @@ fn detect_cycle_term(
 /// payload.
 pub fn default_error_handler() -> EffectHandler {
     Box::new(|_interp, _op_sym, args| {
-        let payload = args.first().cloned().ok_or_else(|| EvalError::ArityMismatch {
-            op: "Error.raise", expected: 1, got: 0,
-        })?;
+        let payload = args
+            .first()
+            .cloned()
+            .ok_or_else(|| EvalError::ArityMismatch {
+                op: "Error.raise",
+                expected: 1,
+                got: 0,
+            })?;
         Ok(HandlerAction::Throw(payload))
     })
 }
@@ -411,7 +470,9 @@ pub(crate) struct EffectRegistry {
 
 impl EffectRegistry {
     pub fn new() -> Self {
-        Self { handlers: HashMap::new() }
+        Self {
+            handlers: HashMap::new(),
+        }
     }
 
     pub fn insert(&mut self, effect_sym: Symbol, h: EffectHandler) -> Option<EffectHandler> {
@@ -426,7 +487,9 @@ impl EffectRegistry {
     /// Used by `raise_error` to decide between routing through the handler
     /// and the default Throw fallback.
     pub fn has(&self, effect_sym: Symbol) -> bool {
-        self.handlers.get(&effect_sym).map_or(false, |o| o.is_some())
+        self.handlers
+            .get(&effect_sym)
+            .map_or(false, |o| o.is_some())
     }
 
     /// Temporarily take the handler out of the map so the caller can run
@@ -458,7 +521,9 @@ impl Interpreter {
         h: EffectHandler,
     ) -> Result<(), EvalError> {
         let sym = self.kb.try_resolve_symbol(effect_qname).ok_or_else(|| {
-            EvalError::UnknownOperation { name: effect_qname.to_string() }
+            EvalError::UnknownOperation {
+                name: effect_qname.to_string(),
+            }
         })?;
         self.effect_handlers.insert(sym, h);
         Ok(())
@@ -481,11 +546,19 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, EvalError> {
         let effect_sym = self.kb.try_resolve_symbol(effect_qname).ok_or_else(|| {
-            EvalError::UnknownOperation { name: effect_qname.to_string() }
+            EvalError::UnknownOperation {
+                name: effect_qname.to_string(),
+            }
         })?;
-        let mut handler = self.effect_handlers.take_for_invoke(effect_sym).ok_or_else(|| {
-            EvalError::Internal(format!("no handler registered for effect `{}`", effect_qname))
-        })?;
+        let mut handler = self
+            .effect_handlers
+            .take_for_invoke(effect_sym)
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "no handler registered for effect `{}`",
+                    effect_qname
+                ))
+            })?;
         let action = handler(self, op_sym, args);
         self.effect_handlers.return_handler(effect_sym, handler);
         // Interpret the carrier. Only `Pure`/`Throw` are wired (WI-389);
@@ -585,7 +658,8 @@ impl Interpreter {
             let sym = self.kb_mut().intern(name);
             named_syms.push((sym, v));
         }
-        self.kb.canonicalize_record_named_args(functor, &mut named_syms);
+        self.kb
+            .canonicalize_record_named_args(functor, &mut named_syms);
         let payload = Value::Entity {
             functor,
             pos: Rc::from([]),
@@ -661,9 +735,18 @@ impl Interpreter {
     /// the handler's own state.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
         let entries: [(&str, fn() -> EffectHandler); 5] = [
-            ("anthill.prelude.Console.ConsoleOutput", stdio_console_output_handler),
-            ("anthill.prelude.Console.ConsoleError", stdio_console_error_handler),
-            ("anthill.prelude.Console.ConsoleInput", stdio_console_input_handler),
+            (
+                "anthill.prelude.Console.ConsoleOutput",
+                stdio_console_output_handler,
+            ),
+            (
+                "anthill.prelude.Console.ConsoleError",
+                stdio_console_error_handler,
+            ),
+            (
+                "anthill.prelude.Console.ConsoleInput",
+                stdio_console_input_handler,
+            ),
             ("Modify", default_modify_handler),
             ("anthill.prelude.Error", default_error_handler),
         ];

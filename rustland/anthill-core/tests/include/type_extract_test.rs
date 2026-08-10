@@ -28,7 +28,9 @@ fn entity_functor(v: &Value) -> Option<Symbol> {
 #[test]
 fn extract_sort_ref_reifies_sortref() {
     let mut kb = load_kb_with("");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 sort");
     let sortref = kb
         .try_resolve_symbol("anthill.prelude.TypeExtractor.SortRef")
         .expect("SortRef ctor");
@@ -50,8 +52,12 @@ fn extract_sort_ref_reifies_sortref() {
 #[test]
 fn extract_parameterized_reifies_parameterized_with_typebinding() {
     let mut kb = load_kb_with("");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
-    let list_sym = kb.try_resolve_symbol("anthill.prelude.List").expect("List sort");
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 sort");
+    let list_sym = kb
+        .try_resolve_symbol("anthill.prelude.List")
+        .expect("List sort");
     let param_ctor = kb
         .try_resolve_symbol("anthill.prelude.TypeExtractor.Parameterized")
         .expect("Parameterized ctor");
@@ -101,7 +107,9 @@ fn extract_term_backed_ref_reifies_sortref() {
     // WI-361 stage 2: a bare sort carried as the *term backing* `Ref(S)` (not the
     // deep `sort_ref(name: Ref(S))`) reifies as SortRef — the dual-form reader.
     let mut kb = load_kb_with("");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 sort");
     let sortref = kb
         .try_resolve_symbol("anthill.prelude.TypeExtractor.SortRef")
         .expect("SortRef ctor");
@@ -133,8 +141,12 @@ fn extract_term_backed_fn_reifies_parameterized() {
     // `Fn{S, named}` — the base sort IS the functor, the named args ARE the
     // bindings (no `parameterized` wrapper) — reifies as Parameterized.
     let mut kb = load_kb_with("");
-    let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64 sort");
-    let list_sym = kb.try_resolve_symbol("anthill.prelude.List").expect("List sort");
+    let int_sym = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64 sort");
+    let list_sym = kb
+        .try_resolve_symbol("anthill.prelude.List")
+        .expect("List sort");
     let param_ctor = kb
         .try_resolve_symbol("anthill.prelude.TypeExtractor.Parameterized")
         .expect("Parameterized ctor");
@@ -153,7 +165,11 @@ fn extract_term_backed_fn_reifies_parameterized() {
     let int_ref = kb.alloc(Term::Ref(int_sym));
     let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     named.push((t_param, int_ref));
-    let ty = kb.alloc(Term::Fn { functor: list_sym, pos_args: SmallVec::new(), named_args: named });
+    let ty = kb.alloc(Term::Fn {
+        functor: list_sym,
+        pos_args: SmallVec::new(),
+        named_args: named,
+    });
 
     let mut interp = Interpreter::new(kb);
     register_standard_builtins(&mut interp).expect("register builtins");

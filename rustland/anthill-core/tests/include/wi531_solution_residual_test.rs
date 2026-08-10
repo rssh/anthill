@@ -15,8 +15,8 @@
 //! yields exactly one `undecided(subst, residual)` whose `residual` is the
 //! pending `eq` goal — observed here from anthill by counting the residual list.
 
-use anthill_core::eval::Value;
 use crate::common::interp_for;
+use anthill_core::eval::Value;
 
 #[test]
 fn execute_streams_undecided_solution_carrying_residual() {

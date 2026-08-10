@@ -41,7 +41,8 @@ end
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("lack") && e.contains("Modify")),
         "Modify[c] callback vs -Modify[x] param must be rejected with the \
          lacks-constraint message; got: {errs:?}",
     );
@@ -62,7 +63,8 @@ end
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("lack") && e.contains("Modify")),
         "Modify[c] vs {{Eff, -Modify[x]}} must be rejected via the absent \
          label, not absorbed by the tail; got: {errs:?}",
     );
@@ -108,7 +110,10 @@ end
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().filter(|e| e.contains("closed row") && e.contains("Beep")).count() >= 2,
+        errs.iter()
+            .filter(|e| e.contains("closed row") && e.contains("Beep"))
+            .count()
+            >= 2,
         "a Beep callback must be rejected against BOTH closed forms \
          (-Modify[x] and {{}}); got: {errs:?}",
     );
@@ -150,7 +155,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("unresolved place") && e.contains("zzz_no_such")
+        errs.iter().any(|e| e.contains("unresolved place")
+            && e.contains("zzz_no_such")
             && e.contains("vacuous")),
         "a typo'd place in -Modify[…] must be the load-blocking \
          UnresolvedEffectPlace error; got: {errs:?}",

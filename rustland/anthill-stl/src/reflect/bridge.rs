@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anthill_core::eval::Value;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term as CoreTerm, TermId, Literal, Var, VarId};
+use anthill_core::kb::resolve::{ResolveConfig, SearchStream};
+use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var, VarId};
 use anthill_core::kb::term_view::TermView;
-use anthill_core::kb::resolve::{SearchStream, ResolveConfig};
+use anthill_core::kb::KnowledgeBase;
 
-use crate::prelude::{Stream, Modifiable, Type};
+use crate::prelude::{Modifiable, Stream, Type};
 use crate::reflect::reader;
 use crate::reflect::*;
 
@@ -63,7 +63,9 @@ impl reader::ReifyBuilder for TermReprBuilder {
     type Repr = TermRepr;
 
     fn on_literal(&mut self, _kb: &mut KnowledgeBase, lit: Literal) -> TermRepr {
-        TermRepr::ConstRepr { value: literal_to_repr(lit) }
+        TermRepr::ConstRepr {
+            value: literal_to_repr(lit),
+        }
     }
 
     fn on_var(&mut self, _kb: &mut KnowledgeBase, name: String) -> TermRepr {
@@ -71,7 +73,9 @@ impl reader::ReifyBuilder for TermReprBuilder {
     }
 
     fn on_ref(&mut self, _kb: &mut KnowledgeBase, name: anthill_core::intern::Symbol) -> TermRepr {
-        TermRepr::RefRepr { name: ReflectSymbol::new(name) }
+        TermRepr::RefRepr {
+            name: ReflectSymbol::new(name),
+        }
     }
 
     fn on_fn(
@@ -80,7 +84,10 @@ impl reader::ReifyBuilder for TermReprBuilder {
         functor: anthill_core::intern::Symbol,
         args: Vec<TermRepr>,
     ) -> TermRepr {
-        TermRepr::FnRepr { name: ReflectSymbol::new(functor), args }
+        TermRepr::FnRepr {
+            name: ReflectSymbol::new(functor),
+            args,
+        }
     }
 }
 
@@ -114,7 +121,11 @@ fn lq_entity(
     functor: anthill_core::intern::Symbol,
     named: Vec<(anthill_core::intern::Symbol, Value)>,
 ) -> Value {
-    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
+    Value::Entity {
+        functor,
+        pos: Vec::new().into(),
+        named: named.into(),
+    }
 }
 
 // ── KbBridge ────────────────────────────────────────────────────
@@ -129,7 +140,9 @@ impl Modifiable for KbBridge {}
 
 impl KbBridge {
     pub fn new(kb: KnowledgeBase) -> Self {
-        Self { kb: Rc::new(RefCell::new(kb)) }
+        Self {
+            kb: Rc::new(RefCell::new(kb)),
+        }
     }
 
     /// Lift a name `TermId` (a `Ref`/`Ident`) into the reflect `Symbol`. A
@@ -171,11 +184,10 @@ impl KbBridge {
     fn term_named_args(&self, id: TermId) -> Vec<(String, TermId)> {
         let kb = self.kb.borrow();
         match kb.get_term(id) {
-            CoreTerm::Fn { named_args, .. } => {
-                named_args.iter()
-                    .map(|&(sym, tid)| (kb.local_name_of(sym).to_string(), tid))
-                    .collect()
-            }
+            CoreTerm::Fn { named_args, .. } => named_args
+                .iter()
+                .map(|&(sym, tid)| (kb.local_name_of(sym).to_string(), tid))
+                .collect(),
             _ => vec![],
         }
     }
@@ -191,7 +203,10 @@ impl KbBridge {
             None => ReflectSymbol::new(self.kb.borrow_mut().intern("_")),
         };
         let type_name = fi_field("type_name").unwrap_or(fi_tid);
-        FieldInfo { name, type_name: term(type_name) }
+        FieldInfo {
+            name,
+            type_name: term(type_name),
+        }
     }
 
     /// The already-resolved functor symbol of a by-reference `Type` argument
@@ -202,11 +217,12 @@ impl KbBridge {
     /// `Vec`-returning surfaces have no error channel. `op` names the caller for
     /// the diagnostic.
     fn ref_functor(&self, sort: &Type, op: &str) -> anthill_core::intern::Symbol {
-        anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
-            .unwrap_or_else(|| panic!(
+        anthill_core::eval::value_functor(&self.kb.borrow(), sort.value()).unwrap_or_else(|| {
+            panic!(
                 "KB.{op}: argument is not an entity/sort reference (expected a \
                  Ref / Fn / Entity carrier that names a functor)"
-            ))
+            )
+        })
     }
 
     /// Given an already-resolved entity functor, return its field-name symbols.
@@ -217,7 +233,10 @@ impl KbBridge {
     /// arrives resolved by reference (the caller's `value_functor` extraction),
     /// so there is no name-string resolution and no short-name ambiguity here —
     /// the WI-631 loud-ambiguity stopgap is subsumed at the write site.
-    fn find_entity_schema(&self, functor: anthill_core::intern::Symbol) -> Option<Vec<anthill_core::intern::Symbol>> {
+    fn find_entity_schema(
+        &self,
+        functor: anthill_core::intern::Symbol,
+    ) -> Option<Vec<anthill_core::intern::Symbol>> {
         let kb = self.kb.borrow();
         if let Some(fields) = kb.entity_field_types(functor) {
             return Some(fields.iter().map(|&(sym, _)| sym).collect());
@@ -267,25 +286,29 @@ impl KbBridge {
                 // caller's write site); extract its already-qualified functor via
                 // the shared `value_functor` — no name-string resolution.
                 let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
-                    .ok_or_else(|| Error(
-                        "KB.sort_query: `sort` is not a sort reference (expected a \
-                         Ref / Fn / Entity carrier that names a functor)".to_string()
-                    ))?;
+                    .ok_or_else(|| {
+                        Error(
+                            "KB.sort_query: `sort` is not a sort reference (expected a \
+                         Ref / Fn / Entity carrier that names a functor)"
+                                .to_string(),
+                        )
+                    })?;
                 let field_syms = self.find_entity_schema(functor);
 
                 let mut kb = self.kb.borrow_mut();
                 match field_syms {
                     Some(field_syms) => {
-                        let named_args_vec: Vec<(anthill_core::intern::Symbol, TermId)> = field_syms
-                            .iter()
-                            .map(|&field_sym| {
-                                let sym_name = format!("?_{}", kb.local_name_of(field_sym));
-                                let var_name = kb.intern(&sym_name);
-                                let vid = kb.fresh_var(var_name);
-                                let var_term = kb.alloc(CoreTerm::Var(Var::Global(vid)));
-                                (field_sym, var_term)
-                            })
-                            .collect();
+                        let named_args_vec: Vec<(anthill_core::intern::Symbol, TermId)> =
+                            field_syms
+                                .iter()
+                                .map(|&field_sym| {
+                                    let sym_name = format!("?_{}", kb.local_name_of(field_sym));
+                                    let var_name = kb.intern(&sym_name);
+                                    let vid = kb.fresh_var(var_name);
+                                    let var_term = kb.alloc(CoreTerm::Var(Var::Global(vid)));
+                                    (field_sym, var_term)
+                                })
+                                .collect();
                         let goal = kb.alloc(CoreTerm::Fn {
                             functor,
                             pos_args: Default::default(),
@@ -345,10 +368,12 @@ impl KbBridge {
                 let k = kb.intern("sort");
                 lq_entity(f, vec![(k, sort.value().clone())])
             }
-            LogicalQuery::Conjunction { left, right } =>
-                Self::reify_binary(kb, "conjunction", left, right),
-            LogicalQuery::Disjunction { left, right } =>
-                Self::reify_binary(kb, "disjunction", left, right),
+            LogicalQuery::Conjunction { left, right } => {
+                Self::reify_binary(kb, "conjunction", left, right)
+            }
+            LogicalQuery::Disjunction { left, right } => {
+                Self::reify_binary(kb, "disjunction", left, right)
+            }
             LogicalQuery::Negation { query } => {
                 let f = Self::lq_ctor(kb, "negation");
                 let inner = Self::reify_logical_query(kb, query);
@@ -376,16 +401,31 @@ impl KbBridge {
             }
             // Quantifiers all share `{var, condition, body}` and lower to an
             // enforceable boolean guard (`eval_count_guard`/`eval_forall_guard`).
-            LogicalQuery::ForallQ { var, condition, body } =>
-                Self::reify_quantifier(kb, "forall_q", var, condition, body),
-            LogicalQuery::SomeQ { var, condition, body } =>
-                Self::reify_quantifier(kb, "some_q", var, condition, body),
-            LogicalQuery::OneQ { var, condition, body } =>
-                Self::reify_quantifier(kb, "one_q", var, condition, body),
-            LogicalQuery::LoneQ { var, condition, body } =>
-                Self::reify_quantifier(kb, "lone_q", var, condition, body),
-            LogicalQuery::NoQ { var, condition, body } =>
-                Self::reify_quantifier(kb, "no_q", var, condition, body),
+            LogicalQuery::ForallQ {
+                var,
+                condition,
+                body,
+            } => Self::reify_quantifier(kb, "forall_q", var, condition, body),
+            LogicalQuery::SomeQ {
+                var,
+                condition,
+                body,
+            } => Self::reify_quantifier(kb, "some_q", var, condition, body),
+            LogicalQuery::OneQ {
+                var,
+                condition,
+                body,
+            } => Self::reify_quantifier(kb, "one_q", var, condition, body),
+            LogicalQuery::LoneQ {
+                var,
+                condition,
+                body,
+            } => Self::reify_quantifier(kb, "lone_q", var, condition, body),
+            LogicalQuery::NoQ {
+                var,
+                condition,
+                body,
+            } => Self::reify_quantifier(kb, "no_q", var, condition, body),
             // Aggregations reduce a query to a *value*, not a boolean — they are
             // not constraints, so they cannot be guards. The guard engine cannot
             // lower them (`lower_query_with` → `NotYetImplemented`), so registering
@@ -399,7 +439,8 @@ impl KbBridge {
             | LogicalQuery::MinQ { .. }
             | LogicalQuery::MaxQ { .. } => panic!(
                 "KB.add_guard: an aggregation LogicalQuery (count_q/sum_q/min_q/max_q) \
-                 reduces to a value, not a boolean — it cannot be registered as a guard"),
+                 reduces to a value, not a boolean — it cannot be registered as a guard"
+            ),
         }
     }
 
@@ -446,18 +487,23 @@ impl KbBridge {
     /// loaded (the symbols `collect_trigger_sorts`/`evaluate_guard` key on).
     fn lq_ctor(kb: &KnowledgeBase, short: &str) -> anthill_core::intern::Symbol {
         kb.try_resolve_symbol(&format!("anthill.reflect.LogicalQuery.{short}"))
-            .unwrap_or_else(|| panic!(
-                "KB.add_guard: `anthill.reflect.LogicalQuery.{short}` unavailable — \
-                 is anthill.reflect loaded?"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "KB.add_guard: `anthill.reflect.LogicalQuery.{short}` unavailable — \
+                 is anthill.reflect loaded?"
+                )
+            })
     }
 
     /// Reify a `Vec<String>` into a prelude `List` cons/nil `Value` of `Value::Str`
     /// elements (the `projected.vars` field). Panics if the prelude `List` ctors
     /// are unavailable, mirroring [`lq_ctor`](Self::lq_ctor).
     fn reify_string_list(kb: &mut KnowledgeBase, items: &[String]) -> Value {
-        let cons = kb.try_resolve_symbol("anthill.prelude.List.cons")
+        let cons = kb
+            .try_resolve_symbol("anthill.prelude.List.cons")
             .unwrap_or_else(|| panic!("KB.add_guard: `anthill.prelude.List.cons` unavailable"));
-        let nil = kb.try_resolve_symbol("anthill.prelude.List.nil")
+        let nil = kb
+            .try_resolve_symbol("anthill.prelude.List.nil")
             .unwrap_or_else(|| panic!("KB.add_guard: `anthill.prelude.List.nil` unavailable"));
         let (head, tail) = (kb.intern("head"), kb.intern("tail"));
         let mut acc = lq_entity(nil, vec![]);
@@ -488,18 +534,25 @@ impl SearchStreamAdapter {
         let subst_bridge: Box<dyn Substitution> =
             Box::new(SubstBridge::from_core(subst, Rc::clone(&self.kb)));
         if residual.is_empty() {
-            Solution::Definite { subst: subst_bridge }
+            Solution::Definite {
+                subst: subst_bridge,
+            }
         } else {
             let residual = residual.into_iter().map(rterm).collect();
-            Solution::Undecided { subst: subst_bridge, residual }
+            Solution::Undecided {
+                subst: subst_bridge,
+                residual,
+            }
         }
     }
-
 }
 
 impl Stream<Solution, Error> for SearchStreamAdapter {
     fn split_first(&self) -> Result<Option<(Solution, Box<dyn Stream<Solution, Error>>)>, Error> {
-        let stream = self.inner.borrow_mut().take()
+        let stream = self
+            .inner
+            .borrow_mut()
+            .take()
             .ok_or_else(|| Error("stream already consumed".into()))?;
         let result = {
             let mut kb = self.kb.borrow_mut();
@@ -582,7 +635,8 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         // The host bridge has no `find` caller; surface a loud `Err` rather than a
         // silently wrong answer if one ever appears.
         Err(Error(
-            "Stream::find is unsupported on the reflect Solution stream (Solution is not Clone)".into(),
+            "Stream::find is unsupported on the reflect Solution stream (Solution is not Clone)"
+                .into(),
         ))
     }
 
@@ -640,7 +694,11 @@ impl KB for KbBridge {
                     None => ReflectSymbol::new(self.kb.borrow_mut().intern("sort")),
                 },
                 definition: term(rec.definition),
-                constructors: rec.constructors.into_iter().map(|t| self.sym_of(t)).collect(),
+                constructors: rec
+                    .constructors
+                    .into_iter()
+                    .map(|t| self.sym_of(t))
+                    .collect(),
                 operations: rec.operations.into_iter().map(|t| self.sym_of(t)).collect(),
                 parameters: rec.parameters.into_iter().map(|t| self.sym_of(t)).collect(),
                 requires: rec.requires.into_iter().map(term).collect(),
@@ -663,11 +721,23 @@ impl KB for KbBridge {
             .into_iter()
             .map(|rec| OperationInfo {
                 name: self.sym_of(rec.name),
-                params: rec.params.into_iter().map(|fi_tid| self.field_info_of(fi_tid)).collect(),
+                params: rec
+                    .params
+                    .into_iter()
+                    .map(|fi_tid| self.field_info_of(fi_tid))
+                    .collect(),
                 return_type: term(rec.return_type),
                 effects: rec.effects.into_iter().map(rterm).collect(),
-                requires: rec.requires.into_iter().map(ReflectNodeOccurrence::new).collect(),
-                ensures: rec.ensures.into_iter().map(ReflectNodeOccurrence::new).collect(),
+                requires: rec
+                    .requires
+                    .into_iter()
+                    .map(ReflectNodeOccurrence::new)
+                    .collect(),
+                ensures: rec
+                    .ensures
+                    .into_iter()
+                    .map(ReflectNodeOccurrence::new)
+                    .collect(),
                 meta: term(rec.meta),
             })
             .collect()
@@ -678,7 +748,10 @@ impl KB for KbBridge {
         // `let`-bind first to release the `borrow_mut()` RefMut before mapping (see
         // `fields`); the map here doesn't re-borrow, but keep the pattern uniform.
         let members = reader::members_of_kind(&mut self.kb.borrow_mut(), sort_sym, "Constructor");
-        members.into_iter().map(|n| reader::short_of(&n).to_string()).collect()
+        members
+            .into_iter()
+            .map(|n| reader::short_of(&n).to_string())
+            .collect()
     }
 
     fn fields(&self, entity: Type) -> Vec<FieldInfo> {
@@ -722,10 +795,7 @@ impl KB for KbBridge {
             .collect()
     }
 
-    fn execute(
-        &self,
-        query: LogicalQuery,
-    ) -> Result<Box<dyn Stream<Solution, Error>>, Error> {
+    fn execute(&self, query: LogicalQuery) -> Result<Box<dyn Stream<Solution, Error>>, Error> {
         let (goals, config) = self.query_to_goals_and_config(&query)?;
         let stream = self.kb.borrow().resolve_lazy_goals(goals, &config);
         Ok(Box::new(SearchStreamAdapter {
@@ -749,22 +819,23 @@ impl KB for KbBridge {
         // than returning an empty list a caller would misread as "none
         // asserted". The trait fixes the return as `Vec<Term>`, so a panic is
         // the only loud channel.
-        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value()).unwrap_or_else(|| {
-            panic!(
-                "KB.facts_of: `sort` is not an entity reference (expected a \
+        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+            .unwrap_or_else(|| {
+                panic!(
+                    "KB.facts_of: `sort` is not an entity reference (expected a \
                  Ref / Fn / Entity carrier that names a functor)"
-            )
-        });
+                )
+            });
         let kb = self.kb.borrow();
         kb.read_facts(
             functor,
             &[],
             anthill_core::kb::extent::BodiedRulePolicy::Refuse,
         )
-            .unwrap_or_else(|e| panic!("KB.facts_of: {e}"))
-            .into_iter()
-            .map(rterm)
-            .collect()
+        .unwrap_or_else(|e| panic!("KB.facts_of: {e}"))
+        .into_iter()
+        .map(rterm)
+        .collect()
     }
 
     fn stored_facts_of(&self, sort: Type) -> Vec<StoredRef<Term>> {
@@ -794,7 +865,9 @@ impl KB for KbBridge {
         // WI-632: the sort arrives by reference (a `Type` carrying a `Ref`),
         // stored verbatim as the `sort_query.sort` payload — resolution already
         // happened at the caller's write site.
-        LogicalQuery::SortQuery { sort: rterm(sort.value().clone()) }
+        LogicalQuery::SortQuery {
+            sort: rterm(sort.value().clone()),
+        }
     }
 
     /// Assert a fact with integrity checking (WI-546). The fact head must be a
@@ -901,7 +974,10 @@ impl Substitution for SubstBridge {
                 // Only insert when self lacks the variable — self's (already
                 // s2-applied) binding wins on overlap.
                 Some(vid) => {
-                    result.bindings.entry(vid).or_insert_with(|| val_term.into_value());
+                    result
+                        .bindings
+                        .entry(vid)
+                        .or_insert_with(|| val_term.into_value());
                 }
                 None => panic!(
                     "SubstBridge::compose: a `bindings()` entry's variable is not a \
@@ -909,7 +985,10 @@ impl Substitution for SubstBridge {
                 ),
             }
         }
-        Box::new(SubstBridge { inner: result, kb: Rc::clone(&self.kb) })
+        Box::new(SubstBridge {
+            inner: result,
+            kb: Rc::clone(&self.kb),
+        })
     }
 
     /// Spec semantics: returns the bound value for ANY variable whose SHORT
@@ -935,8 +1014,11 @@ impl Substitution for SubstBridge {
     /// `vid_of`); this is what lets `compose` merge by variable across the
     /// `&dyn Substitution` boundary.
     fn bindings(&self) -> Vec<(Term, Term)> {
-        let entries: Vec<(VarId, Value)> =
-            self.inner.iter().map(|(vid, val)| (*vid, val.clone())).collect();
+        let entries: Vec<(VarId, Value)> = self
+            .inner
+            .iter()
+            .map(|(vid, val)| (*vid, val.clone()))
+            .collect();
         let mut kb = self.kb.borrow_mut();
         entries
             .into_iter()
@@ -951,8 +1033,8 @@ impl Substitution for SubstBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anthill_core::kb::KnowledgeBase;
     use anthill_core::kb::load::{self, NullResolver};
+    use anthill_core::kb::KnowledgeBase;
     use anthill_core::parse;
 
     /// Parse and load a single source snippet into a KbBridge.
@@ -971,27 +1053,34 @@ mod tests {
         fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for e in std::fs::read_dir(dir).expect("read stdlib dir").flatten() {
                 let p = e.path();
-                if p.is_dir() { collect(&p, out); }
-                else if p.extension().and_then(|s| s.to_str()) == Some("anthill") { out.push(p); }
+                if p.is_dir() {
+                    collect(&p, out);
+                } else if p.extension().and_then(|s| s.to_str()) == Some("anthill") {
+                    out.push(p);
+                }
             }
         }
-        let stdlib_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../stdlib/anthill");
+        let stdlib_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
         let mut files = Vec::new();
         collect(&stdlib_dir, &mut files);
         assert!(!files.is_empty(), "stdlib empty");
-        let mut parsed: Vec<_> = files.iter().map(|f| {
-            let src = std::fs::read_to_string(f).expect("read stdlib");
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
-        }).collect();
+        let mut parsed: Vec<_> = files
+            .iter()
+            .map(|f| {
+                let src = std::fs::read_to_string(f).expect("read stdlib");
+                parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
+            })
+            .collect();
         parsed.push(parse::parse(source).expect("parse user source"));
         let refs: Vec<_> = parsed.iter().collect();
         let mut kb = KnowledgeBase::new();
-        load::load_all(&mut kb, &refs, &NullResolver)
-            .unwrap_or_else(|errs| {
-                for e in load::LoadError::render_all(&errs) { eprintln!("{e}"); }
-                panic!("load failed");
-            });
+        load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+            for e in load::LoadError::render_all(&errs) {
+                eprintln!("{e}");
+            }
+            panic!("load failed");
+        });
         KbBridge::new(kb)
     }
 
@@ -1026,31 +1115,48 @@ mod tests {
 
     #[test]
     fn execute_sort_query_finds_operations() {
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 sort Store {
   entity store
   operation persist(s: Store, fact: Int64) -> Int64
   operation retract(s: Store, id: Int64) -> Int64
   operation flush(s: Store) -> Int64
 }
-"#);
-        let query = LogicalQuery::SortQuery { sort: sort_ref(&bridge, "anthill.reflect.OperationInfo") };
+"#,
+        );
+        let query = LogicalQuery::SortQuery {
+            sort: sort_ref(&bridge, "anthill.reflect.OperationInfo"),
+        };
         let stream = bridge.execute(query).expect("execute failed");
         let results = drain(stream);
-        assert!(results.len() >= 3,
-            "should find at least 3 OperationInfo facts, got {}", results.len());
+        assert!(
+            results.len() >= 3,
+            "should find at least 3 OperationInfo facts, got {}",
+            results.len()
+        );
         // Each result is a definite Solution.
-        assert!(results.iter().all(|s| matches!(s, Solution::Definite { .. })),
-            "sort-query solutions should be definite");
+        assert!(
+            results
+                .iter()
+                .all(|s| matches!(s, Solution::Definite { .. })),
+            "sort-query solutions should be definite"
+        );
     }
 
     #[test]
     fn execute_sort_query_nonexistent_is_empty() {
         let bridge = load_source_bridge("sort Foo { entity bar }");
-        let query = LogicalQuery::SortQuery { sort: sort_ref(&bridge, "Nonexistent") };
+        let query = LogicalQuery::SortQuery {
+            sort: sort_ref(&bridge, "Nonexistent"),
+        };
         let stream = bridge.execute(query).expect("execute failed");
         let results = drain(stream);
-        assert_eq!(results.len(), 0, "nonexistent sort query should return 0 results");
+        assert_eq!(
+            results.len(),
+            0,
+            "nonexistent sort query should return 0 results"
+        );
     }
 
     #[test]
@@ -1059,45 +1165,64 @@ sort Store {
         let query = LogicalQuery::EmptyQuery;
         let stream = bridge.execute(query).expect("execute failed");
         let results = drain(stream);
-        assert_eq!(results.len(), 1, "empty query should return 1 result (trivial solution)");
+        assert_eq!(
+            results.len(),
+            1,
+            "empty query should return 1 result (trivial solution)"
+        );
         assert!(matches!(results[0], Solution::Definite { .. }));
     }
 
     #[test]
     fn execute_pattern_query() {
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 sort Animal { entity dog entity cat }
 fact dog
 fact cat
-"#);
+"#,
+        );
         let goal = {
             let mut kb = bridge.kb.borrow_mut();
             kb.resolve_qualified_name_term("Animal.dog")
         };
-        let query = LogicalQuery::PatternQuery { term: ReflectTerm::new(Value::term(goal)) };
+        let query = LogicalQuery::PatternQuery {
+            term: ReflectTerm::new(Value::term(goal)),
+        };
         let stream = bridge.execute(query).expect("execute failed");
         let results = drain(stream);
-        assert!(results.len() >= 1, "pattern query for 'dog' should find at least 1 result, got {}", results.len());
+        assert!(
+            results.len() >= 1,
+            "pattern query for 'dog' should find at least 1 result, got {}",
+            results.len()
+        );
     }
 
     #[test]
     fn execute_limited_query() {
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 sort Store {
   entity store
   operation persist(s: Store, fact: Int64) -> Int64
   operation retract(s: Store, id: Int64) -> Int64
   operation flush(s: Store) -> Int64
 }
-"#);
+"#,
+        );
         let query = LogicalQuery::Limited {
-            query: Box::new(LogicalQuery::SortQuery { sort: sort_ref(&bridge, "anthill.reflect.OperationInfo") }),
+            query: Box::new(LogicalQuery::SortQuery {
+                sort: sort_ref(&bridge, "anthill.reflect.OperationInfo"),
+            }),
             count: 2,
         };
         let stream = bridge.execute(query).expect("execute failed");
         let results = stream.take_n(2).expect("take_n failed");
-        assert!(results.len() <= 2,
-            "limited query should return at most 2 results, got {}", results.len());
+        assert!(
+            results.len() <= 2,
+            "limited query should return at most 2 results, got {}",
+            results.len()
+        );
         assert!(!results.is_empty(), "should return at least 1 result");
     }
 
@@ -1136,7 +1261,8 @@ sort Store {
         // Parity with the interpreter `kb_facts_of` (`rules_by_functor`): the
         // result is exactly the user DATA facts — WI-515 removed the synthetic
         // entity-declaration fact that used to ride along as an extra row.
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 sort Color {
   entity red(shade: Int64)
   entity blue(shade: Int64)
@@ -1144,14 +1270,19 @@ sort Color {
 fact red(shade: 1)
 fact red(shade: 2)
 fact blue(shade: 3)
-"#);
+"#,
+        );
         // Every returned head carries a GROUND `shade` literal (a data row).
         let ground_count = |facts: &[Term]| -> usize {
-            facts.iter().filter(|t| match bridge.reify((*t).clone()) {
-                TermRepr::FnRepr { args, .. } =>
-                    args.iter().any(|a| matches!(a, TermRepr::ConstRepr { .. })),
-                _ => false,
-            }).count()
+            facts
+                .iter()
+                .filter(|t| match bridge.reify((*t).clone()) {
+                    TermRepr::FnRepr { args, .. } => {
+                        args.iter().any(|a| matches!(a, TermRepr::ConstRepr { .. }))
+                    }
+                    _ => false,
+                })
+                .count()
         };
 
         let red_ref = {
@@ -1159,7 +1290,12 @@ fact blue(shade: 3)
             Value::term(kb.resolve_qualified_name_term("Color.red"))
         };
         let reds = bridge.facts_of(Type::new(red_ref));
-        assert_eq!(reds.len(), 2, "the 2 user facts and nothing else, got {}", reds.len());
+        assert_eq!(
+            reds.len(),
+            2,
+            "the 2 user facts and nothing else, got {}",
+            reds.len()
+        );
         assert_eq!(ground_count(&reds), 2, "two ground `red` user facts");
 
         let blue_ref = {
@@ -1207,12 +1343,14 @@ rule red(shade: 2) :- enabled()
         // WI-632: a short name WI-631 had to reject as ambiguous is now a
         // non-issue — `fields` takes the entity BY REFERENCE, so `Beta.dup` and
         // `Alpha.dup` are two distinct references, each answering its own schema.
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 namespace test.wi632_bridge
   sort Alpha { entity dup(x: Int64) }
   sort Beta { entity dup(y: String) }
 end
-"#);
+"#,
+        );
         let beta = bridge.fields(type_ref(&bridge, "test.wi632_bridge.Beta.dup"));
         assert_eq!(beta.len(), 1, "Beta.dup has one field");
         let alpha = bridge.fields(type_ref(&bridge, "test.wi632_bridge.Alpha.dup"));
@@ -1241,17 +1379,21 @@ end
         // non-issue — `sort_query` carries the sort BY REFERENCE, resolved at the
         // write site, so `Beta.dup` and `Alpha.dup` are simply two distinct
         // references. Each lowers to its own sort's goal with no runtime scan.
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 namespace test.wi632_bridge
   sort Alpha { entity dup(x: Int64) }
   sort Beta { entity dup(y: String) }
 end
 fact test.wi632_bridge.Beta.dup(y: "hi")
-"#);
+"#,
+        );
         let query = LogicalQuery::SortQuery {
             sort: sort_ref(&bridge, "test.wi632_bridge.Beta.dup"),
         };
-        let stream = bridge.execute(query).expect("a resolved reference never errors");
+        let stream = bridge
+            .execute(query)
+            .expect("a resolved reference never errors");
         let results = drain(stream);
         assert_eq!(results.len(), 1, "one Beta.dup fact, unambiguously");
     }
@@ -1261,14 +1403,19 @@ fact test.wi632_bridge.Beta.dup(y: "hi")
         // A BigInt larger than i64 reifies to `BigIntLiteral` (not a lossy
         // `StringLiteral`) and reflects back to a `Const(BigInt)` (WI-543).
         let bridge = load_source_bridge("sort Foo { entity bar }");
-        let big: num_bigint::BigInt =
-            "123456789012345678901234567890".parse().expect("parse bigint");
+        let big: num_bigint::BigInt = "123456789012345678901234567890"
+            .parse()
+            .expect("parse bigint");
         let term = {
             let mut kb = bridge.kb.borrow_mut();
-            ReflectTerm::new(Value::term(kb.alloc(CoreTerm::Const(Literal::BigInt(big.clone())))))
+            ReflectTerm::new(Value::term(
+                kb.alloc(CoreTerm::Const(Literal::BigInt(big.clone()))),
+            ))
         };
         match bridge.reify(term) {
-            TermRepr::ConstRepr { value: LiteralRepr::BigIntLiteral { value } } => {
+            TermRepr::ConstRepr {
+                value: LiteralRepr::BigIntLiteral { value },
+            } => {
                 assert_eq!(value, big, "BigInt should survive reify intact");
             }
             other => panic!("expected ConstRepr(BigIntLiteral), got {other:?}"),
@@ -1316,11 +1463,13 @@ fact test.wi632_bridge.Beta.dup(y: "hi")
 
         // Both variables are bound, both to the literal 5.
         for name in ["x", "y"] {
-            let bound = composed.lookup(name.to_string())
+            let bound = composed
+                .lookup(name.to_string())
                 .unwrap_or_else(|| panic!("compose result should bind `{name}`"));
             match bridge.reify(bound) {
-                TermRepr::ConstRepr { value: LiteralRepr::IntLiteral { value } } =>
-                    assert_eq!(value, 5, "`{name}` should be 5"),
+                TermRepr::ConstRepr {
+                    value: LiteralRepr::IntLiteral { value },
+                } => assert_eq!(value, 5, "`{name}` should be 5"),
                 other => panic!("`{name}` should reify to IntLiteral(5), got {other:?}"),
             }
         }
@@ -1343,7 +1492,9 @@ fact test.wi632_bridge.Beta.dup(y: "hi")
             (vz, vw, seven)
         };
         let mut s1_inner = anthill_core::kb::subst::Substitution::new();
-        s1_inner.bindings.insert(vid_z, Value::Var(Var::Global(vid_w)));
+        s1_inner
+            .bindings
+            .insert(vid_z, Value::Var(Var::Global(vid_w)));
         let mut s2_inner = anthill_core::kb::subst::Substitution::new();
         s2_inner.bindings.insert(vid_w, Value::term(seven));
 
@@ -1351,10 +1502,13 @@ fact test.wi632_bridge.Beta.dup(y: "hi")
         let s2 = SubstBridge::from_core(s2_inner, Rc::clone(&bridge.kb));
         let composed = s1.compose(&s2, &bridge);
 
-        let z = composed.lookup("z".to_string()).expect("compose should bind `z`");
+        let z = composed
+            .lookup("z".to_string())
+            .expect("compose should bind `z`");
         match bridge.reify(z) {
-            TermRepr::ConstRepr { value: LiteralRepr::IntLiteral { value } } =>
-                assert_eq!(value, 7, "`z` should chase through `w` to 7"),
+            TermRepr::ConstRepr {
+                value: LiteralRepr::IntLiteral { value },
+            } => assert_eq!(value, 7, "`z` should chase through `w` to 7"),
             other => panic!("`z` should reify to IntLiteral(7), got {other:?}"),
         }
     }
@@ -1364,22 +1518,33 @@ fact test.wi632_bridge.Beta.dup(y: "hi")
         // An op with explicit `requires`/`ensures` contract clauses surfaces
         // them as `NodeOccurrence` carriers (WI-545). `ensures` carries only
         // user clauses (no synthetic EffectsRuntime), so it's the clean signal.
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 sort Tank {
   entity tank(fuel: Int64)
   entity Full(t: Tank)
   operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
 }
-"#);
+"#,
+        );
         let ops = bridge.operations(type_ref(&bridge, "Tank"));
         let short_name = |o: &OperationInfo| {
             let kb = bridge.kb.borrow();
             let n = kb.local_name_of(o.name.symbol()).to_string();
             n.rsplit('.').next().unwrap_or(&n).to_string()
         };
-        let fill = ops.iter().find(|o| short_name(o) == "fill").expect("fill op");
-        assert!(!fill.ensures.is_empty(), "fill should surface its `ensures` clause");
-        assert!(!fill.requires.is_empty(), "fill should surface its `requires` clause");
+        let fill = ops
+            .iter()
+            .find(|o| short_name(o) == "fill")
+            .expect("fill op");
+        assert!(
+            !fill.ensures.is_empty(),
+            "fill should surface its `ensures` clause"
+        );
+        assert!(
+            !fill.requires.is_empty(),
+            "fill should surface its `requires` clause"
+        );
         // Each clause is carried as a goal-term Value.
         match fill.ensures[0].value() {
             Value::Term { .. } => {}
@@ -1399,17 +1564,24 @@ sort Tank {
             let n_sym = kb.intern("n");
             let val5 = kb.alloc(CoreTerm::Const(Literal::Int(5)));
             let s5 = kb.alloc(CoreTerm::Fn {
-                functor: slot_sym, pos_args: Default::default(),
+                functor: slot_sym,
+                pos_args: Default::default(),
                 named_args: vec![(n_sym, val5)].into(),
             });
             let sort_ref = kb.alloc(CoreTerm::Ref(slot_sort_sym));
             let entity_ref = kb.alloc(CoreTerm::Ref(slot_sym));
-            (s5, Type::new(Value::term(sort_ref)), Type::new(Value::term(entity_ref)))
+            (
+                s5,
+                Type::new(Value::term(sort_ref)),
+                Type::new(Value::term(entity_ref)),
+            )
         };
         let id = bridge.assert(ReflectTerm::new(Value::term(slot5)), slot_sort_type);
         assert!(id.is_some(), "asserting slot(n:5) should succeed");
         assert!(
-            bridge.facts_of(slot_entity_type).iter()
+            bridge
+                .facts_of(slot_entity_type)
+                .iter()
                 .any(|t| matches!(t.value(), Value::Term { id: tid, .. } if *tid == slot5)),
             "facts_of should see the asserted slot(n:5)",
         );
@@ -1423,7 +1595,8 @@ sort Tank {
         // (None) and retracted (WI-546). Mirrors the wi023 quantified-constraint
         // fixture; needs the full stdlib for the constraint's LogicalQuery
         // lowering + guard trigger-sort extraction.
-        let mut bridge = load_source_bridge_with_stdlib(r#"
+        let mut bridge = load_source_bridge_with_stdlib(
+            r#"
 namespace test.assert_guard
   sort Node
     entity a
@@ -1435,34 +1608,45 @@ namespace test.assert_guard
   fact edge(from: a, to: b)
   constraint no_two_cycle: no ?x: edge(from: a, to: ?x) -: edge(from: ?x, to: a)
 end
-"#);
+"#,
+        );
         let (edge_ba, rel_type) = {
             let mut kb = bridge.kb.borrow_mut();
-            let edge_sym = kb.try_resolve_symbol("test.assert_guard.Rel.edge").expect("edge");
+            let edge_sym = kb
+                .try_resolve_symbol("test.assert_guard.Rel.edge")
+                .expect("edge");
             let rel_sym = kb.try_resolve_symbol("test.assert_guard.Rel").expect("Rel");
-            let a_sym = kb.try_resolve_symbol("test.assert_guard.Node.a").expect("a");
-            let b_sym = kb.try_resolve_symbol("test.assert_guard.Node.b").expect("b");
+            let a_sym = kb
+                .try_resolve_symbol("test.assert_guard.Node.a")
+                .expect("a");
+            let b_sym = kb
+                .try_resolve_symbol("test.assert_guard.Node.b")
+                .expect("b");
             let a_ref = kb.alloc(CoreTerm::Ref(a_sym));
             let b_ref = kb.alloc(CoreTerm::Ref(b_sym));
             let from = kb.intern("from");
             let to = kb.intern("to");
             // edge(from: b, to: a) — named args canonical (from < to).
             let edge = kb.alloc(CoreTerm::Fn {
-                functor: edge_sym, pos_args: Default::default(),
+                functor: edge_sym,
+                pos_args: Default::default(),
                 named_args: vec![(from, b_ref), (to, a_ref)].into(),
             });
             let rel_ref = kb.alloc(CoreTerm::Ref(rel_sym));
             (edge, Type::new(Value::term(rel_ref)))
         };
         let rejected = bridge.assert(ReflectTerm::new(Value::term(edge_ba)), rel_type);
-        assert!(rejected.is_none(),
-            "asserting edge(b→a) completes a 2-cycle → rejected by `no_two_cycle`");
+        assert!(
+            rejected.is_none(),
+            "asserting edge(b→a) completes a 2-cycle → rejected by `no_two_cycle`"
+        );
     }
 
     /// A domain with `edge(a→b)` loaded, for the WI-549 `add_guard` tests. Returns
     /// the bridge plus `edge(b→a)` and the `Rel` sort `Type` (the assert args).
     fn guard_fixture() -> (KbBridge, TermId, Type) {
-        let bridge = load_source_bridge_with_stdlib(r#"
+        let bridge = load_source_bridge_with_stdlib(
+            r#"
 namespace test.add_guard
   sort Node
     entity a
@@ -1473,10 +1657,13 @@ namespace test.add_guard
   end
   fact edge(from: a, to: b)
 end
-"#);
+"#,
+        );
         let (edge_ba, rel_type) = {
             let mut kb = bridge.kb.borrow_mut();
-            let edge_sym = kb.try_resolve_symbol("test.add_guard.Rel.edge").expect("edge");
+            let edge_sym = kb
+                .try_resolve_symbol("test.add_guard.Rel.edge")
+                .expect("edge");
             let rel_sym = kb.try_resolve_symbol("test.add_guard.Rel").expect("Rel");
             let a_sym = kb.try_resolve_symbol("test.add_guard.Node.a").expect("a");
             let b_sym = kb.try_resolve_symbol("test.add_guard.Node.b").expect("b");
@@ -1484,7 +1671,8 @@ end
             let b_ref = kb.alloc(CoreTerm::Ref(b_sym));
             let (from, to) = (kb.intern("from"), kb.intern("to"));
             let edge_ba = kb.alloc(CoreTerm::Fn {
-                functor: edge_sym, pos_args: Default::default(),
+                functor: edge_sym,
+                pos_args: Default::default(),
                 named_args: vec![(from, b_ref), (to, a_ref)].into(),
             });
             let rel_ref = kb.alloc(CoreTerm::Ref(rel_sym));
@@ -1511,8 +1699,10 @@ end
         bridge.add_guard(guard);
 
         let rejected = bridge.assert(ReflectTerm::new(Value::term(edge_ba)), rel_type);
-        assert!(rejected.is_none(),
-            "asserting edge(b→a) violates the programmatic `not(edge(b→a))` guard → rejected");
+        assert!(
+            rejected.is_none(),
+            "asserting edge(b→a) violates the programmatic `not(edge(b→a))` guard → rejected"
+        );
     }
 
     #[test]
@@ -1526,7 +1716,9 @@ end
 
         let (cond_pat, body_pat, x_name) = {
             let mut kb = bridge.kb.borrow_mut();
-            let edge_sym = kb.try_resolve_symbol("test.add_guard.Rel.edge").expect("edge");
+            let edge_sym = kb
+                .try_resolve_symbol("test.add_guard.Rel.edge")
+                .expect("edge");
             let a_sym = kb.try_resolve_symbol("test.add_guard.Node.a").expect("a");
             let a_ref = kb.alloc(CoreTerm::Ref(a_sym));
             let (from, to) = (kb.intern("from"), kb.intern("to"));
@@ -1536,12 +1728,14 @@ end
             let x_term = kb.alloc(CoreTerm::Var(Var::Global(x_vid)));
             // condition: edge(from: a, to: ?x)
             let cond = kb.alloc(CoreTerm::Fn {
-                functor: edge_sym, pos_args: Default::default(),
+                functor: edge_sym,
+                pos_args: Default::default(),
                 named_args: vec![(from, a_ref), (to, x_term)].into(),
             });
             // body: edge(from: ?x, to: a)
             let body = kb.alloc(CoreTerm::Fn {
-                functor: edge_sym, pos_args: Default::default(),
+                functor: edge_sym,
+                pos_args: Default::default(),
                 named_args: vec![(from, x_term), (to, a_ref)].into(),
             });
             (cond, body, x_name)
@@ -1559,8 +1753,10 @@ end
         bridge.add_guard(guard);
 
         let rejected = bridge.assert(ReflectTerm::new(Value::term(edge_ba)), rel_type);
-        assert!(rejected.is_none(),
-            "asserting edge(b→a) completes the 2-cycle → rejected by the programmatic `no_q` guard");
+        assert!(
+            rejected.is_none(),
+            "asserting edge(b→a) completes the 2-cycle → rejected by the programmatic `no_q` guard"
+        );
     }
 
     #[test]
@@ -1590,7 +1786,8 @@ end
         // result correctness AND the borrow-safety of the `.map` closures (e.g.
         // `sorts`' `kind: None => self.kb.borrow_mut().intern("sort")` running while
         // the per-field `self.sym_of(..)` borrows the same RefCell).
-        let bridge = load_source_bridge(r#"
+        let bridge = load_source_bridge(
+            r#"
 namespace test.wi551_bridge
   sort Color
     entity red(shade: Int64)
@@ -1598,7 +1795,8 @@ namespace test.wi551_bridge
   end
   describe Color {< a color sort >}
 end
-"#);
+"#,
+        );
         let short = |sym: &ReflectSymbol| {
             let kb = bridge.kb.borrow();
             let n = kb.local_name_of(sym.symbol()).to_string();
@@ -1626,7 +1824,8 @@ end
         // The namespace filter is honored — a non-matching prefix yields nothing
         // for our sort.
         assert!(
-            !bridge.sorts(Some("no.such.namespace".into()))
+            !bridge
+                .sorts(Some("no.such.namespace".into()))
                 .iter()
                 .any(|s| short(&s.name) == "Color"),
             "a non-matching namespace filter should exclude Color",

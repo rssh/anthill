@@ -14,13 +14,19 @@ use std::process::Command;
 const ANTHILL_BIN: &str = env!("CARGO_BIN_EXE_anthill");
 
 fn z3_available() -> bool {
-    Command::new("z3").arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("anthill-body-derived-{}-{}", std::process::id(), name));
+    let dir = std::env::temp_dir().join(format!(
+        "anthill-body-derived-{}-{}",
+        std::process::id(),
+        name
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
@@ -30,8 +36,11 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 fn prove_stdout(name: &str, src: &str) -> String {
     let path = write_temp(name, src);
     let out = Command::new(ANTHILL_BIN)
-        .arg("prove").arg("--no-cache").arg(&path)
-        .output().expect("run anthill prove");
+        .arg("prove")
+        .arg("--no-cache")
+        .arg(&path)
+        .output()
+        .expect("run anthill prove");
     format!(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
@@ -61,7 +70,9 @@ fn src_with(rules: &str) -> String {
 
 #[test]
 fn bodied_op_properties_discharge_from_body_no_twin() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // TRUE properties, both discharged from the body-derived defining rule:
     //   clamp(x) >= 0  (single if)   — violation clamp(x) < 0 is unsat
     //   grade(x) >= 0  (nested if)   — every branch is 0/1/2, unsat below 0
@@ -84,7 +95,9 @@ fn bodied_op_properties_discharge_from_body_no_twin() {
 
 #[test]
 fn false_property_reports_counterexample() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // FALSE property clamp(x) > 0: the violation clamp(x) <= 0 is sat (x<0 → 0),
     // so the body-derived discharge must FIND the counterexample, not vacuously
     // "prove" it.

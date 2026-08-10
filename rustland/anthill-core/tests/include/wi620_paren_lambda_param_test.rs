@@ -18,11 +18,12 @@
 //! The grammar/parse side is exercised in
 //! `tree-sitter-anthill/test/corpus/expressions.txt`.
 
-use anthill_core::eval::{Interpreter, Value};
 use crate::common::{load_kb_with, try_load_kb_with};
+use anthill_core::eval::{Interpreter, Value};
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 fn call_ints(src: &str, calls: &[(&str, i64)]) {
@@ -59,11 +60,14 @@ namespace test.wi620.eval
     h((100, 200))
 end
 "#;
-    call_ints(src, &[
-        ("test.wi620.eval.call_bare", 5),
-        ("test.wi620.eval.call_typed", 10),
-        ("test.wi620.eval.call_tuple", 100),
-    ]);
+    call_ints(
+        src,
+        &[
+            ("test.wi620.eval.call_bare", 5),
+            ("test.wi620.eval.call_typed", 10),
+            ("test.wi620.eval.call_tuple", 100),
+        ],
+    );
 }
 
 /// Grouping in `match` case position (grouped literal and grouped binder
@@ -87,11 +91,14 @@ namespace test.wi620.positions
     k
 end
 "#;
-    call_ints(src, &[
-        ("test.wi620.positions.match_lit", 100),
-        ("test.wi620.positions.match_bind", 7),
-        ("test.wi620.positions.let_group", 3),
-    ]);
+    call_ints(
+        src,
+        &[
+            ("test.wi620.positions.match_lit", 100),
+            ("test.wi620.positions.match_bind", 7),
+            ("test.wi620.positions.let_group", 3),
+        ],
+    );
 }
 
 /// The WI repro positions: a parenthesized-binder lambda as a call argument

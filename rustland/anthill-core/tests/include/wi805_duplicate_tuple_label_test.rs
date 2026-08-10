@@ -59,7 +59,9 @@ fn assert_duplicate_located(src: &str, what: &str, needle: &str) {
         .iter()
         .find(|e| e.message.contains(&want))
         .unwrap_or_else(|| panic!("no `{want}` error; got: {errs:?}"));
-    let second = src.rfind(needle).expect("fixture spells the second occurrence") as u32;
+    let second = src
+        .rfind(needle)
+        .expect("fixture spells the second occurrence") as u32;
     assert_eq!(
         (dup.span.start, dup.span.end),
         (second, second + 1),
@@ -86,7 +88,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate tuple literal component label `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate tuple literal component label `a`")),
         "the duplicate literal label must be refused, naming `a`; got: {errs:?}",
     );
 }
@@ -125,7 +128,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate tuple type component label `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate tuple type component label `a`")),
         "the duplicate type label must be refused, naming `a`; got: {errs:?}",
     );
 }
@@ -169,11 +173,13 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate tuple type component label `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate tuple type component label `a`")),
         "the return TYPE's duplicate must be refused; got: {errs:?}",
     );
     assert!(
-        errs.iter().any(|e| e.contains("duplicate tuple literal component label `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate tuple literal component label `a`")),
         "the literal's duplicate must be refused too — two mints, two guards; \
          got: {errs:?}",
     );
@@ -213,7 +219,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate named argument `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate named argument `a`")),
         "a label written twice in one argument list must be refused, naming it; \
          got: {errs:?}",
     );
@@ -243,7 +250,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate named argument `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate named argument `a`")),
         "the duplicate is refused before it can reach the capture, let alone the \
          matcher; got: {errs:?}",
     );
@@ -260,7 +268,11 @@ namespace test.wi805.cap3
   operation drive() -> Int64 = cap(1, a: 2, b: 3).b
 end
 "#;
-    assert!(load_errs(src).is_empty(), "a distinct-label capture must load: {:?}", load_errs(src));
+    assert!(
+        load_errs(src).is_empty(),
+        "a distinct-label capture must load: {:?}",
+        load_errs(src)
+    );
     let mut interp = interp_for(src);
     match interp.call("test.wi805.cap3.drive", &[]).expect("drive") {
         anthill_core::eval::Value::Int(3) => {}
@@ -300,7 +312,8 @@ fn distinct_underscore_user_labels_are_legal_and_duplicates_still_are_not() {
          operation mk() -> Int64 = (_b: 1, _b: 2)._b\nend\n",
     );
     assert!(
-        errs.iter().any(|e| e.contains("duplicate tuple literal component label `_b`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate tuple literal component label `_b`")),
         "a repeated USER `_`-label is a duplicate like any other; got: {errs:?}",
     );
 }

@@ -512,10 +512,7 @@ fn conventional_data_files(paths: &[PathBuf]) -> Vec<PathBuf> {
 // ── Output naming ───────────────────────────────────────────────────
 
 fn output_filename(input: &Path) -> String {
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("out");
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     format!("{stem}.rs")
 }
 
@@ -563,8 +560,7 @@ fn load_kb_with_stdlib(
     verbose: bool,
     include_stdlib: bool,
     embedded_extras: &[(&str, &str)],
-) -> Result<KnowledgeBase, i32>
-{
+) -> Result<KnowledgeBase, i32> {
     let files = match collect_anthill_files(paths) {
         Ok(f) => f,
         Err(errs) => {
@@ -599,7 +595,10 @@ fn load_kb_with_stdlib(
         let (extra_files, extra_errors) =
             anthill::stdlib::parse_embedded_sources(embedded_extras, "host binding");
         if verbose {
-            eprintln!("included {} embedded host-binding file(s)", extra_files.len());
+            eprintln!(
+                "included {} embedded host-binding file(s)",
+                extra_files.len()
+            );
         }
         parsed_files.extend(extra_files);
         errors.extend(extra_errors);
@@ -650,7 +649,9 @@ fn load_kb_with_stdlib(
                 // stdlib/anthill/prelude/List.anthill
                 p.parent().map(|pp| pp.to_path_buf())
             } else {
-                p.parent().and_then(|pp| pp.parent()).map(|pp| pp.to_path_buf())
+                p.parent()
+                    .and_then(|pp| pp.parent())
+                    .map(|pp| pp.to_path_buf())
             }
         })
         .collect::<std::collections::HashSet<_>>()
@@ -769,7 +770,9 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
     let files = match collect_anthill_files(&args.paths) {
         Ok(f) => f,
         Err(errs) => {
-            for e in &errs { eprintln!("error: {e}"); }
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
             return Err(1);
         }
     };
@@ -791,8 +794,12 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
                 return Err(1);
             }
         };
-        let rel = relative_under_paths(file, &args.paths)
-            .unwrap_or_else(|| file.file_name().unwrap_or_default().to_string_lossy().into_owned());
+        let rel = relative_under_paths(file, &args.paths).unwrap_or_else(|| {
+            file.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
         user_sources.push((rel, content));
     }
 
@@ -807,13 +814,21 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
                     return Err(1);
                 }
             };
-            (stdlib_dir, anthill_rust_gen::CoreDep::Git { url: url.clone(), rev: rev.clone() })
+            (
+                stdlib_dir,
+                anthill_rust_gen::CoreDep::Git {
+                    url: url.clone(),
+                    rev: rev.clone(),
+                },
+            )
         }
         _ => {
             let (stdlib_dir, core_path) = match locate_workspace_paths() {
                 Some(t) => t,
                 None => {
-                    eprintln!("error: cannot locate stdlib or anthill-core relative to this binary");
+                    eprintln!(
+                        "error: cannot locate stdlib or anthill-core relative to this binary"
+                    );
                     return Err(1);
                 }
             };
@@ -866,7 +881,9 @@ fn locate_workspace_paths() -> Option<(PathBuf, PathBuf)> {
         let root = PathBuf::from(root);
         let stdlib = root.join("stdlib/anthill");
         let core = root.join("rustland/anthill-core");
-        if stdlib.is_dir() && core.is_dir() { return Some((stdlib, core)); }
+        if stdlib.is_dir() && core.is_dir() {
+            return Some((stdlib, core));
+        }
     }
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?.to_path_buf();
@@ -876,7 +893,9 @@ fn locate_workspace_paths() -> Option<(PathBuf, PathBuf)> {
         if stdlib.is_dir() && core.is_dir() {
             return Some((stdlib, core));
         }
-        if !dir.pop() { break; }
+        if !dir.pop() {
+            break;
+        }
     }
     None
 }
@@ -899,7 +918,10 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
 
     if !args.dry_run {
         if let Err(e) = fs::create_dir_all(&args.output_dir) {
-            eprintln!("error: cannot create output directory {}: {e}", args.output_dir.display());
+            eprintln!(
+                "error: cannot create output directory {}: {e}",
+                args.output_dir.display()
+            );
             return Err(1);
         }
     }
@@ -957,7 +979,11 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
         eprintln!();
     }
 
-    let verb = if args.dry_run { "would generate" } else { "generated" };
+    let verb = if args.dry_run {
+        "would generate"
+    } else {
+        "generated"
+    };
     eprintln!("{verb} {generated} file(s), {} error(s)", errors.len());
 
     if errors.is_empty() {
@@ -1003,31 +1029,39 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // TypeMapping / EffectMapping overlays. Read it from the namespace's
     // `Generated` fact (the spec-side declaration of what to emit); None when
     // nothing is declared, in which case only the language base applies.
-    let profile = profile_for_namespace(&kb, &args.namespace)
-        .map_err(|e| {
-            eprintln!("error: {}", e.message);
-            1
-        })?;
+    let profile = profile_for_namespace(&kb, &args.namespace).map_err(|e| {
+        eprintln!("error: {}", e.message);
+        1
+    })?;
 
-    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
-        .map_err(|e| {
-            eprintln!("error: {}", e.message);
-            1
-        })?;
+    let header = anthill_cpp_gen::emit_namespace_header_with_profile(
+        &mut kb,
+        &args.namespace,
+        profile.clone(),
+    )
+    .map_err(|e| {
+        eprintln!("error: {}", e.message);
+        1
+    })?;
 
     let short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
     let header_filename = format!("{short}.hpp");
 
     if args.dry_run {
-        println!("[dry-run] {} -> {}/{}",
+        println!(
+            "[dry-run] {} -> {}/{}",
             args.namespace,
             args.output_dir.display(),
-            header_filename);
+            header_filename
+        );
         return Ok(());
     }
 
     if let Err(e) = fs::create_dir_all(&args.output_dir) {
-        eprintln!("error: cannot create output dir {}: {e}", args.output_dir.display());
+        eprintln!(
+            "error: cannot create output dir {}: {e}",
+            args.output_dir.display()
+        );
         return Err(1);
     }
 
@@ -1052,7 +1086,11 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     // realize, WI-576) is now reported loudly and exits non-zero, instead of
     // being swallowed as if the only reason to fail were an empty namespace
     // (WI-761).
-    match anthill_cpp_gen::emit_optional_namespace_header_with_profile(&mut kb, "anthill.geometry", profile) {
+    match anthill_cpp_gen::emit_optional_namespace_header_with_profile(
+        &mut kb,
+        "anthill.geometry",
+        profile,
+    ) {
         Ok(Some(geometry_header)) => {
             let geometry_path = args.output_dir.join("anthill_geometry.hpp");
             if let Err(e) = fs::write(&geometry_path, &geometry_header) {
@@ -1100,9 +1138,11 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
         .filter(|t| t.source == args.namespace || t.source.starts_with(&ns_prefix))
         .collect();
     let controllers: Vec<String> = if declared.is_empty() {
-        anthill_cpp_gen::traits_classes_in_namespace(&mut kb, &args.namespace).map_err(render_err)?
+        anthill_cpp_gen::traits_classes_in_namespace(&mut kb, &args.namespace)
+            .map_err(render_err)?
     } else {
-        declared.iter()
+        declared
+            .iter()
             .map(|t| t.source.rsplit('.').next().unwrap_or(&t.source).to_string())
             .collect()
     };
@@ -1121,22 +1161,35 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     // helper as `run_codegen_cpp` so both entry points agree. None on the
     // traits-class fallback (no Generated facts declared).
     let profile = profile_for_namespace(&kb, &args.namespace).map_err(render_err)?;
-    let header = anthill_cpp_gen::emit_namespace_header_with_profile(&mut kb, &args.namespace, profile.clone())
-        .map_err(|e| { eprintln!("error: {}", e.message); 1 })?;
+    let header = anthill_cpp_gen::emit_namespace_header_with_profile(
+        &mut kb,
+        &args.namespace,
+        profile.clone(),
+    )
+    .map_err(|e| {
+        eprintln!("error: {}", e.message);
+        1
+    })?;
     // Optional geometry sidecar (WI-761): `Ok(None)` (namespace declares
     // nothing) leaves `geometry` `None` and is skipped below, as before; a
     // genuine lowering failure is reported loudly (via `render_err`, same as the
     // reads above) and exits non-zero, instead of being dropped by the old
     // `.ok()`.
-    let geometry = anthill_cpp_gen::emit_optional_namespace_header_with_profile(&mut kb, "anthill.geometry", profile)
-        .map_err(render_err)?;
+    let geometry = anthill_cpp_gen::emit_optional_namespace_header_with_profile(
+        &mut kb,
+        "anthill.geometry",
+        profile,
+    )
+    .map_err(render_err)?;
     let runtime = anthill_cpp_gen::emit_runtime_header();
 
     let cpp_files = match list_cpp_sources(&args.cpp_sources) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("error: scanning cpp sources at {}: {e}",
-                args.cpp_sources.display());
+            eprintln!(
+                "error: scanning cpp sources at {}: {e}",
+                args.cpp_sources.display()
+            );
             return Err(1);
         }
     };
@@ -1147,8 +1200,10 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     for ctor_name in &controllers {
         let dir = args.output_dir.join("controllers").join(ctor_name);
         if args.dry_run {
-            println!("[dry-run] would scaffold controller '{ctor_name}' under {}",
-                dir.display());
+            println!(
+                "[dry-run] would scaffold controller '{ctor_name}' under {}",
+                dir.display()
+            );
             continue;
         }
         if let Err(e) = fs::create_dir_all(&dir) {
@@ -1209,12 +1264,17 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
         let world_files = match list_world_files(&args.worlds_dir) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("error: scanning worlds at {}: {e}", args.worlds_dir.display());
+                eprintln!(
+                    "error: scanning worlds at {}: {e}",
+                    args.worlds_dir.display()
+                );
                 return Err(1);
             }
         };
         for src in &world_files {
-            let Some(fname) = src.file_name() else { continue };
+            let Some(fname) = src.file_name() else {
+                continue;
+            };
             let dst = worlds_dst.join(fname);
             if let Err(e) = fs::copy(src, &dst) {
                 eprintln!("error: copy {} → {}: {e}", src.display(), dst.display());
@@ -1222,8 +1282,11 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
             }
         }
         if !world_files.is_empty() {
-            println!("copied {} world file(s) → {}",
-                world_files.len(), worlds_dst.display());
+            println!(
+                "copied {} world file(s) → {}",
+                world_files.len(),
+                worlds_dst.display()
+            );
         }
     }
 
@@ -1238,7 +1301,9 @@ fn list_world_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if matches!(ext, "wbt" | "proto" | "wbproj") {
             out.push(path);
@@ -1256,13 +1321,19 @@ fn list_world_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 fn file_belongs_to_controller(fname: &str, current_ctor: &str, controllers: &[String]) -> bool {
     let stem = fname.rsplit_once('.').map(|(s, _)| s).unwrap_or(fname);
     for other in controllers {
-        if other == current_ctor { continue; }
-        if stem == other.as_str() { return false; }
+        if other == current_ctor {
+            continue;
+        }
+        if stem == other.as_str() {
+            return false;
+        }
         if let Some(rest) = stem.strip_prefix(other.as_str()) {
             // Match `<other>_main`, `<other>_impl`, etc. Don't match
             // `LeaderController_helper` against `Leader` (require a
             // separator after the prefix).
-            if rest.starts_with('_') || rest.is_empty() { return false; }
+            if rest.starts_with('_') || rest.is_empty() {
+                return false;
+            }
         }
     }
     true
@@ -1276,7 +1347,9 @@ fn list_cpp_sources(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if matches!(ext, "cpp" | "hpp" | "h" | "cc" | "cxx" | "hh") {
             out.push(path);
@@ -1338,7 +1411,11 @@ CFLAGS += -std=c++20 -Wall -Wextra
 
 fn run_load(args: &LoadArgs) -> Result<(), i32> {
     let kb = load_kb_with_stdlib(&args.paths, args.verbose, !args.no_stdlib, &[])?;
-    println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
+    println!(
+        "loaded: {} facts, {} rules",
+        kb.fact_count(),
+        kb.rule_count()
+    );
     Ok(())
 }
 
@@ -1363,7 +1440,9 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
         return Err(1);
     }
     if (listing_mode || args.match_heads) && args.max_depth.is_some() {
-        eprintln!("error: --max-depth applies only to resolution (--mode pattern, without --match)");
+        eprintln!(
+            "error: --max-depth applies only to resolution (--mode pattern, without --match)"
+        );
         return Err(1);
     }
 
@@ -1617,7 +1696,11 @@ fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(),
             Err(_) => failed = true,
         }
     }
-    if failed { Err(1) } else { Ok(()) }
+    if failed {
+        Err(1)
+    } else {
+        Ok(())
+    }
 }
 
 /// Collect query terms from either an inline pattern or a query file.
@@ -1707,7 +1790,10 @@ fn collect_queries(
             }
         }
         if queries.is_empty() {
-            eprintln!("error: no fact declarations found in {}", query_file.display());
+            eprintln!(
+                "error: no fact declarations found in {}",
+                query_file.display()
+            );
             return Err(1);
         }
         Ok((global_scope, queries))
@@ -1788,10 +1874,7 @@ fn report_contested_query_names(
 /// Unlocated, deliberately and unlike the load face: a query pattern is a whole
 /// argument, so `--pattern '<text>'` IS the location, and the multi-pattern
 /// `--query-file` path already prints a `--- query: <label> ---` header above it.
-fn report_ambiguous_query_dispatch(
-    kb: &KnowledgeBase,
-    qt: anthill_core::kb::term::TermId,
-) -> bool {
+fn report_ambiguous_query_dispatch(kb: &KnowledgeBase, qt: anthill_core::kb::term::TermId) -> bool {
     let ties = kb.ambiguous_query_dispatch(qt);
     for msg in &ties {
         eprintln!("error: {msg}");
@@ -1906,7 +1989,11 @@ fn resolve_listing_name(
 
 fn run_check(args: &CheckArgs) -> Result<(), i32> {
     let mut kb = load_kb_with_stdlib(&args.paths, false, true, &[])?;
-    println!("loaded: {} facts, {} rules", kb.fact_count(), kb.rule_count());
+    println!(
+        "loaded: {} facts, {} rules",
+        kb.fact_count(),
+        kb.rule_count()
+    );
     let opts = check::CheckOpts {
         shallow: args.shallow,
         report_stale_only: args.report_stale,
@@ -1935,15 +2022,17 @@ fn run_check(args: &CheckArgs) -> Result<(), i32> {
                  (re-run with --require-proofs to make this an error)"
             );
             if args.require_proofs {
-                eprintln!(
-                    "error: --require-proofs: {unverified} proof obligation(s) not verified"
-                );
+                eprintln!("error: --require-proofs: {unverified} proof obligation(s) not verified");
                 return Err(1);
             }
         }
     }
 
-    if failed > 0 { Err(1) } else { Ok(()) }
+    if failed > 0 {
+        Err(1)
+    } else {
+        Ok(())
+    }
 }
 
 /// WI-564: build the `prove` parameters for the discharge pass chained into
@@ -1989,7 +2078,12 @@ fn render_value(
         Value::Float(f) => f.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => format!("{s:?}"),
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
             parts.extend(named.iter().map(|(s, c)| {
                 format!("{}: {}", kb.local_name_of(*s), render_value(printer, kb, c))
@@ -2020,7 +2114,11 @@ fn render_value(
 
 fn print_program_clause_results(kb: &KnowledgeBase, results: &[ProgramClause], max: usize) {
     let printer = TermPrinter::new(kb);
-    let limit = if max == 0 { results.len() } else { max.min(results.len()) };
+    let limit = if max == 0 {
+        results.len()
+    } else {
+        max.min(results.len())
+    };
 
     for clause in &results[..limit] {
         let head = render_value(&printer, kb, &clause.head);
@@ -2029,8 +2127,10 @@ fn print_program_clause_results(kb: &KnowledgeBase, results: &[ProgramClause], m
         if body.is_empty() {
             println!("  {head}");
         } else {
-            let body_strs: Vec<String> =
-                body.iter().map(|atom| printer.print_occurrence(atom)).collect();
+            let body_strs: Vec<String> = body
+                .iter()
+                .map(|atom| printer.print_occurrence(atom))
+                .collect();
             println!("  {} :- {}", head, body_strs.join(", "));
         }
     }
@@ -2049,7 +2149,11 @@ fn print_program_clause_match_results(
     max: usize,
 ) {
     let printer = TermPrinter::new(kb);
-    let limit = if max == 0 { results.len() } else { max.min(results.len()) };
+    let limit = if max == 0 {
+        results.len()
+    } else {
+        max.min(results.len())
+    };
 
     for matched in &results[..limit] {
         let clause = &matched.clause;
@@ -2059,15 +2163,22 @@ fn print_program_clause_match_results(
         // (the WI-767 misread).
         let body = &clause.body_nodes;
         if !body.is_empty() {
-            let body_strs: Vec<String> =
-                body.iter().map(|atom| printer.print_occurrence(atom)).collect();
+            let body_strs: Vec<String> = body
+                .iter()
+                .map(|atom| printer.print_occurrence(atom))
+                .collect();
             print!(" :- {}", body_strs.join(", "));
         }
         // Print bindings if any — carrier-agnostic (a binding may be a Node).
-        let bindings: Vec<String> = matched.bindings
+        let bindings: Vec<String> = matched
+            .bindings
             .iter()
             .map(|(vid, val)| {
-                format!("?{} = {}", kb.local_name_of(vid.name()), render_value(&printer, kb, val))
+                format!(
+                    "?{} = {}",
+                    kb.local_name_of(vid.name()),
+                    render_value(&printer, kb, val)
+                )
             })
             .collect();
         if !bindings.is_empty() {
@@ -2096,12 +2207,18 @@ fn print_solutions(
     // (WI-628 / WI-767 review).
     let depth_note = || {
         if truncated {
-            println!("note: search truncated at --max-depth; a missing answer is UNDECIDED, not refuted");
+            println!(
+                "note: search truncated at --max-depth; a missing answer is UNDECIDED, not refuted"
+            );
         }
     };
 
     let printer = TermPrinter::new(kb);
-    let limit = if max == 0 { solutions.len() } else { max.min(solutions.len()) };
+    let limit = if max == 0 {
+        solutions.len()
+    } else {
+        max.min(solutions.len())
+    };
 
     if solutions.is_empty() {
         println!("  no solutions");
@@ -2119,28 +2236,45 @@ fn print_solutions(
                 // WI-348: read the binding as a Value — narrowing it to a term
                 // would drop a `Value::Node` binding (e.g. a `denoted` effect label).
                 sol.subst.resolve_as_value(*vid).map(|val| {
-                    format!("?{} = {}", kb.local_name_of(vid.name()), render_value(&printer, kb, val))
+                    format!(
+                        "?{} = {}",
+                        kb.local_name_of(vid.name()),
+                        render_value(&printer, kb, val)
+                    )
                 })
             })
             .collect();
         // A floundered solution proved nothing — saying "true" would present
         // an undischarged proof as an answer (WI-519's is_definite split).
         if bindings.is_empty() {
-            println!("  {}", if sol.residual.is_empty() { "true" } else { "conditional" });
+            println!(
+                "  {}",
+                if sol.residual.is_empty() {
+                    "true"
+                } else {
+                    "conditional"
+                }
+            );
         } else {
             println!("  {}", bindings.join(", "));
         }
         if !sol.residual.is_empty() {
             // WI-348: residual goals are carrier-agnostic `Value`s — render each
             // carrier (a delayed goal may mention a `Value::Node`).
-            let residuals: Vec<String> =
-                sol.residual.iter().map(|v| render_value(&printer, kb, v)).collect();
+            let residuals: Vec<String> = sol
+                .residual
+                .iter()
+                .map(|v| render_value(&printer, kb, v))
+                .collect();
             println!("    residual: {}", residuals.join(", "));
         }
     }
 
     let total = solutions.len();
-    let conditional = solutions[..limit].iter().filter(|s| !s.residual.is_empty()).count();
+    let conditional = solutions[..limit]
+        .iter()
+        .filter(|s| !s.residual.is_empty())
+        .count();
     let cond_suffix = if conditional > 0 {
         format!(", {conditional} conditional (residual goals undischarged)")
     } else {

@@ -145,8 +145,10 @@ fn wi714_materializes_multi_column_named_tuple_rows() {
 fn wi714_single_free_var_collapses_to_element() {
     let mut interp = interp_for(SRC);
     // age pinned to 30 → only alice matches; name is the sole free column.
-    let (query, columns) =
-        person_query(&mut interp, &[("name", None), ("age", Some(Value::Int(30)))]);
+    let (query, columns) = person_query(
+        &mut interp,
+        &[("name", None), ("age", Some(Value::Int(30)))],
+    );
     assert_eq!(columns.len(), 1, "one free var");
     let rows = materialized_rows(&mut interp, query, columns);
     assert_eq!(rows.len(), 1, "only alice is 30");

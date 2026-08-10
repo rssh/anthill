@@ -63,7 +63,10 @@ fn assert_refused_naming(src: &str, expected: &str, got: &str) {
 fn eval_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per case: after any trapped call, reusing one makes
     // every later call return a bogus `Internal(...)` that reads as a second bug.
-    match interp_for(src).call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp_for(src)
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -292,7 +295,10 @@ end
 "#;
     assert_refused_with(
         src,
-        &["go.return", "expected List[T = String], got List[T = Int64]"],
+        &[
+            "go.return",
+            "expected List[T = String], got List[T = Int64]",
+        ],
         "the return-position check must still own this",
     );
 }
@@ -423,7 +429,10 @@ fn the_bare_sort_ref_spelling_stays_with_the_member_tie() {
              \n  operation go() -> Box[T = Int64, O = Q] = Box.union(mkq(), mkr())\nend\n",
             box_sort("Box")
         ),
-        &["op-type-params", "consistent bindings for the sort's shared type parameter"],
+        &[
+            "op-type-params",
+            "consistent bindings for the sort's shared type parameter",
+        ],
         "the bare spelling stays WI-374's member tie",
     );
 }

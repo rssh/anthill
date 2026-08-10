@@ -20,8 +20,8 @@
 //! bare-vs-bare expansion is only needed when the producer erases the row
 //! (bare `-> Stream`).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra sources → load-error strings (empty Vec on clean load).
@@ -31,8 +31,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -131,7 +131,8 @@ end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Modify")),
         "a pure consumer observing a written-effectful stream (Stream[E = \
          {{Modify[p]}}]) must be rejected with an undeclared-effect diagnostic \
          naming Modify — the written row binds isEmpty's E to {{Modify[p]}}; \

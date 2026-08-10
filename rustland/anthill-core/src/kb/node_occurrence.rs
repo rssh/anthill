@@ -6,7 +6,6 @@
 /// all the way down. The tree is `Rc`-linked from the start so reflection
 /// bindings are cheap (`Rc::clone`), eval can stash on its frame stack
 /// without lifetime threading, and cross-pass identity is `Rc::ptr_eq`.
-
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
@@ -161,7 +160,12 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             }
         }
         TypeNode::EffectsRows { effects_expr } => drain_type_child(effects_expr, stack),
-        TypeNode::Arrow { param, result, effects, arity } => {
+        TypeNode::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             drain_type_child(param, stack);
             drain_type_child(result, stack);
             drain_type_child(effects, stack);
@@ -212,13 +216,23 @@ fn drain_pattern_children(pat: &mut Pattern, stack: &mut Vec<Rc<NodeOccurrence>>
         // WI-819: `type_ann` moved to the enclosing occurrence; the caller
         // (`drain_node`) drains it alongside this call.
         Pattern::Var { .. } | Pattern::Wildcard | Pattern::Literal { .. } => {}
-        Pattern::Constructor { pos_args, named_args, .. } => {
-            for c in std::mem::take(pos_args) { stack.push(c); }
-            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+        Pattern::Constructor {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            for c in std::mem::take(pos_args) {
+                stack.push(c);
+            }
+            for (_, c) in std::mem::take(named_args) {
+                stack.push(c);
+            }
         }
         // WI-803: `labels` holds Symbols — no Rc children to drain.
         Pattern::Tuple { positional, .. } => {
-            for c in std::mem::take(positional) { stack.push(c); }
+            for c in std::mem::take(positional) {
+                stack.push(c);
+            }
         }
     }
 }
@@ -234,33 +248,67 @@ fn drain_pattern_children(pat: &mut Pattern, stack: &mut Vec<Rc<NodeOccurrence>>
 fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
     let mk_placeholder = || NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
     match expr {
-        Expr::Apply { pos_args, named_args, type_args, .. } => {
-            for c in std::mem::take(pos_args) { stack.push(c); }
-            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+        Expr::Apply {
+            pos_args,
+            named_args,
+            type_args,
+            ..
+        } => {
+            for c in std::mem::take(pos_args) {
+                stack.push(c);
+            }
+            for (_, c) in std::mem::take(named_args) {
+                stack.push(c);
+            }
             // WI-342 S4b: a denoted-bearing type-arg is a `Value::Node`
             // occurrence — drain it (symmetric with `Let.type_annotation`).
             for (_, v) in std::mem::take(type_args) {
-                if let Value::Node(occ) = v { stack.push(occ); }
+                if let Value::Node(occ) = v {
+                    stack.push(occ);
+                }
             }
         }
-        Expr::Constructor { pos_args, named_args, .. }
-        | Expr::Instantiation { pos_args, named_args, .. } => {
-            for c in std::mem::take(pos_args) { stack.push(c); }
-            for (_, c) in std::mem::take(named_args) { stack.push(c); }
+        Expr::Constructor {
+            pos_args,
+            named_args,
+            ..
         }
-        Expr::If { condition, then_branch, else_branch } => {
+        | Expr::Instantiation {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            for c in std::mem::take(pos_args) {
+                stack.push(c);
+            }
+            for (_, c) in std::mem::take(named_args) {
+                stack.push(c);
+            }
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             stack.push(std::mem::replace(condition, mk_placeholder()));
             stack.push(std::mem::replace(then_branch, mk_placeholder()));
             stack.push(std::mem::replace(else_branch, mk_placeholder()));
         }
         // WI-819: three children, no annotation slot — the `: T` rides the
         // PATTERN occurrence and is drained by `drain_node`'s Pattern arm.
-        Expr::Let { pattern, value, body } => {
+        Expr::Let {
+            pattern,
+            value,
+            body,
+        } => {
             stack.push(std::mem::replace(pattern, mk_placeholder()));
             stack.push(std::mem::replace(value, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
         }
-        Expr::Match { scrutinee, branches } => {
+        Expr::Match {
+            scrutinee,
+            branches,
+        } => {
             stack.push(std::mem::replace(scrutinee, mk_placeholder()));
             for mut b in std::mem::take(branches) {
                 stack.push(std::mem::replace(&mut b.pattern, mk_placeholder()));
@@ -275,57 +323,122 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             stack.push(std::mem::replace(body, mk_placeholder()));
         }
         Expr::Proof { conclude, body, .. } => {
-            if let Some(c) = conclude.take() { stack.push(c); }
+            if let Some(c) = conclude.take() {
+                stack.push(c);
+            }
             stack.push(std::mem::replace(body, mk_placeholder()));
         }
-        Expr::LambdaWithin { param, body, requirements } => {
+        Expr::LambdaWithin {
+            param,
+            body,
+            requirements,
+        } => {
             stack.push(std::mem::replace(param, mk_placeholder()));
             stack.push(std::mem::replace(body, mk_placeholder()));
-            for r in std::mem::take(requirements) { stack.push(r); }
+            for r in std::mem::take(requirements) {
+                stack.push(r);
+            }
         }
         Expr::ListLit(es) | Expr::SetLit(es) => {
-            for e in std::mem::take(es) { stack.push(e); }
+            for e in std::mem::take(es) {
+                stack.push(e);
+            }
         }
         Expr::TupleLit { positional, named } => {
-            for e in std::mem::take(positional) { stack.push(e); }
-            for (_, e) in std::mem::take(named) { stack.push(e); }
+            for e in std::mem::take(positional) {
+                stack.push(e);
+            }
+            for (_, e) in std::mem::take(named) {
+                stack.push(e);
+            }
         }
         Expr::HoApply { predicate, args } => {
             stack.push(std::mem::replace(predicate, mk_placeholder()));
-            for a in std::mem::take(args) { stack.push(a); }
-        }
-        Expr::DotApply { receiver, pos_args, named_args, .. } => {
-            stack.push(std::mem::replace(receiver, mk_placeholder()));
-            for c in std::mem::take(pos_args) { stack.push(c); }
-            for (_, c) in std::mem::take(named_args) { stack.push(c); }
-        }
-        Expr::ApplyWithin { args, named_args, requirements, type_args, .. } => {
-            for a in std::mem::take(args) { stack.push(a); }
-            for (_, a) in std::mem::take(named_args) { stack.push(a); }
-            for r in std::mem::take(requirements) { stack.push(r); }
-            // WI-342 S4b: drain any denoted-bearing (`Value::Node`) type-arg.
-            for (_, v) in std::mem::take(type_args) {
-                if let Value::Node(occ) = v { stack.push(occ); }
+            for a in std::mem::take(args) {
+                stack.push(a);
             }
         }
-        Expr::HoApplyWithin { predicate, args, requirements } => {
-            stack.push(std::mem::replace(predicate, mk_placeholder()));
-            for a in std::mem::take(args) { stack.push(a); }
-            for r in std::mem::take(requirements) { stack.push(r); }
+        Expr::DotApply {
+            receiver,
+            pos_args,
+            named_args,
+            ..
+        } => {
+            stack.push(std::mem::replace(receiver, mk_placeholder()));
+            for c in std::mem::take(pos_args) {
+                stack.push(c);
+            }
+            for (_, c) in std::mem::take(named_args) {
+                stack.push(c);
+            }
         }
-        Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
-            for c in std::mem::take(pos_args) { stack.push(c); }
-            for (_, c) in std::mem::take(named_args) { stack.push(c); }
-            for r in std::mem::take(requirements) { stack.push(r); }
+        Expr::ApplyWithin {
+            args,
+            named_args,
+            requirements,
+            type_args,
+            ..
+        } => {
+            for a in std::mem::take(args) {
+                stack.push(a);
+            }
+            for (_, a) in std::mem::take(named_args) {
+                stack.push(a);
+            }
+            for r in std::mem::take(requirements) {
+                stack.push(r);
+            }
+            // WI-342 S4b: drain any denoted-bearing (`Value::Node`) type-arg.
+            for (_, v) in std::mem::take(type_args) {
+                if let Value::Node(occ) = v {
+                    stack.push(occ);
+                }
+            }
+        }
+        Expr::HoApplyWithin {
+            predicate,
+            args,
+            requirements,
+        } => {
+            stack.push(std::mem::replace(predicate, mk_placeholder()));
+            for a in std::mem::take(args) {
+                stack.push(a);
+            }
+            for r in std::mem::take(requirements) {
+                stack.push(r);
+            }
+        }
+        Expr::ConstructorWithin {
+            pos_args,
+            named_args,
+            requirements,
+            ..
+        } => {
+            for c in std::mem::take(pos_args) {
+                stack.push(c);
+            }
+            for (_, c) in std::mem::take(named_args) {
+                stack.push(c);
+            }
+            for r in std::mem::take(requirements) {
+                stack.push(r);
+            }
         }
         Expr::RequirementAtSort { chain, .. } => {
             stack.push(std::mem::replace(chain, mk_placeholder()));
         }
         Expr::Dictionary { subs, .. } => {
-            for r in std::mem::take(subs) { stack.push(r); }
+            for r in std::mem::take(subs) {
+                stack.push(r);
+            }
         }
-        Expr::Const(_) | Expr::Spliced(_) | Expr::Ref(_) | Expr::Ident(_)
-        | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
+        Expr::Const(_)
+        | Expr::Spliced(_)
+        | Expr::Ref(_)
+        | Expr::Ident(_)
+        | Expr::Var(_)
+        | Expr::Bottom
+        | Expr::VarRef { .. } => {}
     }
 }
 
@@ -369,9 +482,10 @@ impl NodeOccurrence {
     /// [`carry_typer_stamps_from`](Self::carry_typer_stamps_from).
     pub fn rebuilt_expr(&self, expr: Expr) -> Rc<Self> {
         let rebuilt = match &self.kind {
-            NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { from, by }, .. } => {
-                NodeOccurrence::synthesized_expr(expr, Rc::clone(from), *by, self.owner)
-            }
+            NodeKind::Expr {
+                origin: OccurrenceOrigin::Synthesized { from, by },
+                ..
+            } => NodeOccurrence::synthesized_expr(expr, Rc::clone(from), *by, self.owner),
             _ => NodeOccurrence::new_expr(expr, self.span, self.owner),
         };
         rebuilt.carry_typer_stamps_from(self);
@@ -536,7 +650,9 @@ impl NodeOccurrence {
         owner: Option<Symbol>,
     ) -> Rc<Self> {
         debug_assert!(
-            type_ann.as_ref().is_none_or(|t| matches!(t.kind, NodeKind::Expr { .. })),
+            type_ann
+                .as_ref()
+                .is_none_or(|t| matches!(t.kind, NodeKind::Expr { .. })),
             "WI-819: a pattern annotation must be Expr-kind (see value_to_pattern_annotation)"
         );
         Rc::new(NodeOccurrence {
@@ -680,7 +796,10 @@ impl NodeOccurrence {
     /// `[T1, T2, ...]` declaration order; each entry is the
     /// `(declared-name, resolved-type-term)`. No-op on non-Expr kinds.
     pub fn set_resolved_type_args(&self, args: Vec<(Symbol, TermId)>) {
-        if let NodeKind::Expr { resolved_type_args, .. } = &self.kind {
+        if let NodeKind::Expr {
+            resolved_type_args, ..
+        } = &self.kind
+        {
             *resolved_type_args.borrow_mut() = args;
         }
     }
@@ -691,12 +810,11 @@ impl NodeOccurrence {
     /// typer hasn't run yet for this occurrence (e.g. a hand-built
     /// test fixture). RefCell-borrowed callback avoids cloning the
     /// underlying Vec on the hot apply path.
-    pub fn with_resolved_type_args<R>(
-        &self,
-        f: impl FnOnce(&[(Symbol, TermId)]) -> R,
-    ) -> R {
+    pub fn with_resolved_type_args<R>(&self, f: impl FnOnce(&[(Symbol, TermId)]) -> R) -> R {
         match &self.kind {
-            NodeKind::Expr { resolved_type_args, .. } => f(&resolved_type_args.borrow()),
+            NodeKind::Expr {
+                resolved_type_args, ..
+            } => f(&resolved_type_args.borrow()),
             _ => f(&[]),
         }
     }
@@ -731,7 +849,10 @@ impl NodeOccurrence {
     /// frame, on the occurrence held in the dot's receiver slot. Stored WEAKLY; the
     /// twin is kept alive by the typing result that owns it.
     pub fn set_lowered_receiver(&self, lowered: &Rc<NodeOccurrence>) {
-        if let NodeKind::Expr { lowered_receiver, .. } = &self.kind {
+        if let NodeKind::Expr {
+            lowered_receiver, ..
+        } = &self.kind
+        {
             *lowered_receiver.borrow_mut() = Some(Rc::downgrade(lowered));
         }
     }
@@ -744,9 +865,9 @@ impl NodeOccurrence {
     /// caller is off that path and `None` is the honest answer for it too.
     pub fn lowered_receiver(&self) -> Option<Rc<NodeOccurrence>> {
         match &self.kind {
-            NodeKind::Expr { lowered_receiver, .. } => {
-                lowered_receiver.borrow().as_ref().and_then(Weak::upgrade)
-            }
+            NodeKind::Expr {
+                lowered_receiver, ..
+            } => lowered_receiver.borrow().as_ref().and_then(Weak::upgrade),
             _ => None,
         }
     }
@@ -1049,7 +1170,6 @@ pub enum Expr {
     },
 
     // ── Post-elaboration forms (req_insertion / typer rewrites) ─────
-
     /// `apply_within` — function application with a requirements channel.
     ApplyWithin {
         functor: Symbol,
@@ -1363,7 +1483,12 @@ pub fn visit_classifications(
     let mut stack: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(32);
     stack.push(Rc::clone(root));
     while let Some(occ) = stack.pop() {
-        let NodeKind::Expr { expr, classification, .. } = &occ.kind else {
+        let NodeKind::Expr {
+            expr,
+            classification,
+            ..
+        } = &occ.kind
+        else {
             continue;
         };
         if let Some(c) = classification.borrow().as_deref() {
@@ -1384,28 +1509,58 @@ pub fn visit_classifications(
 #[inline]
 pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match expr {
-        Expr::Apply { pos_args, named_args, .. }
-        | Expr::Constructor { pos_args, named_args, .. }
-        | Expr::Instantiation { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { f(c); }
-            for (_, c) in named_args.iter() { f(c); }
+        Expr::Apply {
+            pos_args,
+            named_args,
+            ..
         }
-        Expr::If { condition, then_branch, else_branch } => {
+        | Expr::Constructor {
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::Instantiation {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            for c in pos_args.iter() {
+                f(c);
+            }
+            for (_, c) in named_args.iter() {
+                f(c);
+            }
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             f(condition);
             f(then_branch);
             f(else_branch);
         }
-        Expr::Let { pattern, value, body, .. } => {
+        Expr::Let {
+            pattern,
+            value,
+            body,
+            ..
+        } => {
             f(pattern);
             f(value);
             f(body);
         }
-        Expr::Match { scrutinee, branches } => {
+        Expr::Match {
+            scrutinee,
+            branches,
+        } => {
             f(scrutinee);
             for b in branches.iter() {
                 f(&b.pattern);
                 f(&b.body);
-                if let Some(g) = &b.guard { f(g); }
+                if let Some(g) = &b.guard {
+                    f(g);
+                }
             }
         }
         Expr::Lambda { param, body } => {
@@ -1415,51 +1570,113 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
         Expr::Proof { conclude, body, .. } => {
             // WI-538: child order conclude?, body — must match
             // `drain_expr_children` and `simp_rewrite::reassemble`.
-            if let Some(c) = conclude { f(c); }
+            if let Some(c) = conclude {
+                f(c);
+            }
             f(body);
         }
         Expr::ListLit(es) | Expr::SetLit(es) => {
-            for e in es.iter() { f(e); }
+            for e in es.iter() {
+                f(e);
+            }
         }
         Expr::TupleLit { positional, named } => {
-            for e in positional.iter() { f(e); }
-            for (_, e) in named.iter() { f(e); }
+            for e in positional.iter() {
+                f(e);
+            }
+            for (_, e) in named.iter() {
+                f(e);
+            }
         }
         Expr::HoApply { predicate, args } => {
             f(predicate);
-            for a in args.iter() { f(a); }
+            for a in args.iter() {
+                f(a);
+            }
         }
-        Expr::DotApply { receiver, pos_args, named_args, .. } => {
+        Expr::DotApply {
+            receiver,
+            pos_args,
+            named_args,
+            ..
+        } => {
             f(receiver);
-            for c in pos_args.iter() { f(c); }
-            for (_, c) in named_args.iter() { f(c); }
+            for c in pos_args.iter() {
+                f(c);
+            }
+            for (_, c) in named_args.iter() {
+                f(c);
+            }
         }
-        Expr::ApplyWithin { args, named_args, requirements, .. } => {
-            for a in args.iter() { f(a); }
-            for (_, a) in named_args.iter() { f(a); }
-            for r in requirements.iter() { f(r); }
+        Expr::ApplyWithin {
+            args,
+            named_args,
+            requirements,
+            ..
+        } => {
+            for a in args.iter() {
+                f(a);
+            }
+            for (_, a) in named_args.iter() {
+                f(a);
+            }
+            for r in requirements.iter() {
+                f(r);
+            }
         }
-        Expr::HoApplyWithin { predicate, args, requirements } => {
+        Expr::HoApplyWithin {
+            predicate,
+            args,
+            requirements,
+        } => {
             f(predicate);
-            for a in args.iter() { f(a); }
-            for r in requirements.iter() { f(r); }
+            for a in args.iter() {
+                f(a);
+            }
+            for r in requirements.iter() {
+                f(r);
+            }
         }
-        Expr::ConstructorWithin { pos_args, named_args, requirements, .. } => {
-            for c in pos_args.iter() { f(c); }
-            for (_, c) in named_args.iter() { f(c); }
-            for r in requirements.iter() { f(r); }
+        Expr::ConstructorWithin {
+            pos_args,
+            named_args,
+            requirements,
+            ..
+        } => {
+            for c in pos_args.iter() {
+                f(c);
+            }
+            for (_, c) in named_args.iter() {
+                f(c);
+            }
+            for r in requirements.iter() {
+                f(r);
+            }
         }
-        Expr::LambdaWithin { param, body, requirements } => {
+        Expr::LambdaWithin {
+            param,
+            body,
+            requirements,
+        } => {
             f(param);
             f(body);
-            for r in requirements.iter() { f(r); }
+            for r in requirements.iter() {
+                f(r);
+            }
         }
         Expr::RequirementAtSort { chain, .. } => f(chain),
         Expr::Dictionary { subs, .. } => {
-            for r in subs.iter() { f(r); }
+            for r in subs.iter() {
+                f(r);
+            }
         }
-        Expr::Const(_) | Expr::Spliced(_) | Expr::Ref(_) | Expr::Ident(_)
-        | Expr::Var(_) | Expr::Bottom | Expr::VarRef { .. } => {}
+        Expr::Const(_)
+        | Expr::Spliced(_)
+        | Expr::Ref(_)
+        | Expr::Ident(_)
+        | Expr::Var(_)
+        | Expr::Bottom
+        | Expr::VarRef { .. } => {}
     }
 }
 
@@ -1492,9 +1709,13 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
 /// [`for_each_subpattern`] by name.
 #[inline]
 pub fn for_each_pattern_child(occ: &NodeOccurrence, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
-    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else { return };
+    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else {
+        return;
+    };
     for_each_subpattern(pattern, &mut f);
-    if let Some(t) = type_ann { f(t); }
+    if let Some(t) = type_ann {
+        f(t);
+    }
 }
 
 /// The SUB-PATTERN children of a pattern, excluding the WI-819 annotation —
@@ -1508,13 +1729,23 @@ pub fn for_each_pattern_child(occ: &NodeOccurrence, mut f: impl FnMut(&Rc<NodeOc
 pub fn for_each_subpattern(pat: &Pattern, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match pat {
         Pattern::Var { .. } | Pattern::Wildcard | Pattern::Literal { .. } => {}
-        Pattern::Constructor { pos_args, named_args, .. } => {
-            for c in pos_args.iter() { f(c); }
-            for (_, c) in named_args.iter() { f(c); }
+        Pattern::Constructor {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            for c in pos_args.iter() {
+                f(c);
+            }
+            for (_, c) in named_args.iter() {
+                f(c);
+            }
         }
         // WI-803: `labels` holds Symbols, not occurrences — no children there.
         Pattern::Tuple { positional, .. } => {
-            for c in positional.iter() { f(c); }
+            for c in positional.iter() {
+                f(c);
+            }
         }
     }
 }
@@ -1567,14 +1798,22 @@ pub fn reassemble_pattern(
     let new_pat = match pat {
         Pattern::Var { name } => Pattern::Var { name: *name },
         Pattern::Wildcard => Pattern::Wildcard,
-        Pattern::Literal { value } => Pattern::Literal { value: value.clone() },
-        Pattern::Constructor { name, pos_args, named_args } => {
+        Pattern::Literal { value } => Pattern::Literal {
+            value: value.clone(),
+        },
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let pos: Vec<Rc<NodeOccurrence>> = pos_args.iter().map(|_| take()).collect();
-            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
-                .iter()
-                .map(|(s, _)| (*s, take()))
-                .collect();
-            Pattern::Constructor { name: *name, pos_args: pos, named_args: named }
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> =
+                named_args.iter().map(|(s, _)| (*s, take())).collect();
+            Pattern::Constructor {
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+            }
         }
         Pattern::Tuple { positional, labels } => {
             let pos: Vec<Rc<NodeOccurrence>> = positional.iter().map(|_| take()).collect();
@@ -1583,7 +1822,10 @@ pub fn reassemble_pattern(
             // own component order — which is the WI-788 wrong answer, and the one
             // thing this reassembly must not do. It survives every walker that goes
             // through here: De Bruijn open/close and `substitute_occurrence`.
-            Pattern::Tuple { positional: pos, labels: labels.clone() }
+            Pattern::Tuple {
+                positional: pos,
+                labels: labels.clone(),
+            }
         }
     };
     // WI-819: the annotation is the LAST child for every variant — taken after
@@ -1629,7 +1871,9 @@ pub fn open_debruijn_node(
         return rewrite_type_occurrence(&OpenTypeRewrite { fresh }, kb, occ)
             .unwrap_or_else(|| Rc::clone(occ));
     }
-    let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
+    let Some(expr) = occ.as_expr() else {
+        return Rc::clone(occ);
+    };
     let rebuilt: Option<Expr> = match expr {
         Expr::Var(Var::DeBruijn(idx)) => fresh
             .get(*idx as usize)
@@ -1638,7 +1882,12 @@ pub fn open_debruijn_node(
         // vars from the rule's shared space — open it via `term_from_debruijn`
         // alongside the occurrence children, mirroring `close_type_args` on
         // the closing side (`node_to_debruijn`).
-        Expr::Apply { functor, pos_args, named_args, type_args } => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
             let (ta, c3) = open_type_args(kb, type_args, fresh);
@@ -1649,7 +1898,12 @@ pub fn open_debruijn_node(
                 type_args: ta,
             })
         }
-        Expr::Constructor { name, pos_args, named_args, from_projection } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            from_projection,
+        } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
             (c1 || c2).then(|| Expr::Constructor {
@@ -1659,16 +1913,27 @@ pub fn open_debruijn_node(
                 from_projection: *from_projection,
             })
         }
-        Expr::Instantiation { name, pos_args, named_args } => {
+        Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
-            (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
+            (c1 || c2).then(|| Expr::Instantiation {
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+            })
         }
         Expr::HoApply { predicate, args } => {
             let p = open_debruijn_node(kb, predicate, fresh);
             let (a, c2) = open_vec(kb, args, fresh);
             let c1 = !Rc::ptr_eq(&p, predicate);
-            (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
+            (c1 || c2).then(|| Expr::HoApply {
+                predicate: p,
+                args: a,
+            })
         }
         // WI-819: NO explicit `Expr::Let` arm. It existed only for
         // `type_annotation`, a `Value` field the generic `for_each_child` walk
@@ -1680,7 +1945,13 @@ pub fn open_debruijn_node(
         // `_` arm below would leave them un-remapped because `for_each_child`
         // doesn't enumerate TermId fields. Explicit arm closes that gap and
         // mirrors `node_to_debruijn`'s ApplyWithin handling.
-        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+        Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        } => {
             let (a, c1) = open_vec(kb, args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
             let (reqs, c3) = open_vec(kb, requirements, fresh);
@@ -1760,13 +2031,20 @@ pub fn node_to_debruijn(
         return rewrite_type_occurrence(&CloseTypeRewrite { var_order }, kb, occ)
             .unwrap_or_else(|| Rc::clone(occ));
     }
-    let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
+    let Some(expr) = occ.as_expr() else {
+        return Rc::clone(occ);
+    };
     let rebuilt: Option<Expr> = match expr {
         Expr::Var(Var::Global(vid)) => var_order
             .iter()
             .position(|v| v == vid)
             .map(|pos| Expr::Var(Var::DeBruijn((var_order.len() - 1 - pos) as u32))),
-        Expr::Apply { functor, pos_args, named_args, type_args } => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
             let (ta, c3) = close_type_args(kb, type_args, var_order);
@@ -1777,7 +2055,12 @@ pub fn node_to_debruijn(
                 type_args: ta,
             })
         }
-        Expr::Constructor { name, pos_args, named_args, from_projection } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            from_projection,
+        } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
             (c1 || c2).then(|| Expr::Constructor {
@@ -1787,16 +2070,27 @@ pub fn node_to_debruijn(
                 from_projection: *from_projection,
             })
         }
-        Expr::Instantiation { name, pos_args, named_args } => {
+        Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
-            (c1 || c2).then(|| Expr::Instantiation { name: *name, pos_args: pos, named_args: named })
+            (c1 || c2).then(|| Expr::Instantiation {
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+            })
         }
         Expr::HoApply { predicate, args } => {
             let p = node_to_debruijn(kb, predicate, var_order);
             let (a, c2) = close_vec(kb, args, var_order);
             let c1 = !Rc::ptr_eq(&p, predicate);
-            (c1 || c2).then(|| Expr::HoApply { predicate: p, args: a })
+            (c1 || c2).then(|| Expr::HoApply {
+                predicate: p,
+                args: a,
+            })
         }
         // Reflect-data forms with `TermId`-typed pattern/param fields: close
         // both their occurrence children and those `TermId` fields (the latter
@@ -1816,7 +2110,10 @@ pub fn node_to_debruijn(
         // WI-318: MatchBranch.pattern is now a Pattern-kind occurrence —
         // close it via the recursive node walker like any other child.
         // (Was: `kb.term_to_debruijn(br.pattern, var_order)`.)
-        Expr::Match { scrutinee, branches } => {
+        Expr::Match {
+            scrutinee,
+            branches,
+        } => {
             let s = node_to_debruijn(kb, scrutinee, var_order);
             let mut changed = !Rc::ptr_eq(&s, scrutinee);
             let mut new_branches: Vec<MatchBranch> = Vec::with_capacity(branches.len());
@@ -1839,11 +2136,25 @@ pub fn node_to_debruijn(
                 if !Rc::ptr_eq(&body, &br.body) {
                     changed = true;
                 }
-                new_branches.push(MatchBranch { pattern: new_pattern, guard, body, span: br.span });
+                new_branches.push(MatchBranch {
+                    pattern: new_pattern,
+                    guard,
+                    body,
+                    span: br.span,
+                });
             }
-            changed.then(|| Expr::Match { scrutinee: s, branches: new_branches })
+            changed.then(|| Expr::Match {
+                scrutinee: s,
+                branches: new_branches,
+            })
         }
-        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+        Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        } => {
             let (a, c1) = close_vec(kb, args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
             let (reqs, c3) = close_vec(kb, requirements, var_order);
@@ -2060,13 +2371,24 @@ fn map_type_node<R: TypeChildRewrite>(
                 changed |= ch;
                 nbind.push((*s, nc));
             }
-            (TypeNode::Parameterized { base: nbase, bindings: nbind }, changed)
+            (
+                TypeNode::Parameterized {
+                    base: nbase,
+                    bindings: nbind,
+                },
+                changed,
+            )
         }
         TypeNode::EffectsRows { effects_expr } => {
             let (ne, ch) = map_type_child(r, kb, effects_expr);
             (TypeNode::EffectsRows { effects_expr: ne }, ch)
         }
-        TypeNode::Arrow { param, result, effects, arity } => {
+        TypeNode::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             let (np, c1) = map_type_child(r, kb, param);
             let (nr, c2) = map_type_child(r, kb, result);
             let (nf, c3) = map_type_child(r, kb, effects);
@@ -2076,14 +2398,25 @@ fn map_type_node<R: TypeChildRewrite>(
             // lockstep) instead of a slot the next rewrite kind has to remember.
             let (na, c4) = map_type_child(r, kb, arity);
             (
-                TypeNode::Arrow { param: np, result: nr, effects: nf, arity: na },
+                TypeNode::Arrow {
+                    param: np,
+                    result: nr,
+                    effects: nf,
+                    arity: na,
+                },
                 c1 || c2 || c3 || c4,
             )
         }
         TypeNode::ExprCarried { value, member } => {
             let (nv, c1) = map_type_child(r, kb, value);
             let (nm, c2) = map_type_child(r, kb, member);
-            (TypeNode::ExprCarried { value: nv, member: nm }, c1 || c2)
+            (
+                TypeNode::ExprCarried {
+                    value: nv,
+                    member: nm,
+                },
+                c1 || c2,
+            )
         }
         TypeNode::NamedTuple { fields } => {
             let (nf, ch) = map_value_type(r, kb, fields);
@@ -2102,11 +2435,7 @@ fn map_type_node<R: TypeChildRewrite>(
 /// recurses into its children — matching the head-side `close_value_head_debruijn`
 /// and the occurs-check, which also descend that cons-list. A scalar / other
 /// carrier has no vars (no-op).
-fn map_value_type<R: TypeChildRewrite>(
-    r: &R,
-    kb: &mut KnowledgeBase,
-    v: &Value,
-) -> (Value, bool) {
+fn map_value_type<R: TypeChildRewrite>(r: &R, kb: &mut KnowledgeBase, v: &Value) -> (Value, bool) {
     match v {
         Value::Term { id: t, .. } => {
             let (nt, ch) = r.term(kb, *t);
@@ -2117,13 +2446,25 @@ fn map_value_type<R: TypeChildRewrite>(
             let ch = !Rc::ptr_eq(&nn, occ);
             (Value::Node(nn), ch)
         }
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             let (npos, c1) = map_value_seq(r, kb, pos);
             let (nnamed, c2) = map_value_named(r, kb, named);
             // Reuse the original (cheap Rc bump) when no child var changed — the
             // ptr-eq economy the Type/Expr rewriters keep.
             if c1 || c2 {
-                (Value::Entity { functor: *functor, pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
+                (
+                    Value::Entity {
+                        functor: *functor,
+                        pos: Rc::from(npos),
+                        named: Rc::from(nnamed),
+                    },
+                    true,
+                )
             } else {
                 (v.clone(), false)
             }
@@ -2132,7 +2473,13 @@ fn map_value_type<R: TypeChildRewrite>(
             let (npos, c1) = map_value_seq(r, kb, pos);
             let (nnamed, c2) = map_value_named(r, kb, named);
             if c1 || c2 {
-                (Value::Tuple { pos: Rc::from(npos), named: Rc::from(nnamed) }, true)
+                (
+                    Value::Tuple {
+                        pos: Rc::from(npos),
+                        named: Rc::from(nnamed),
+                    },
+                    true,
+                )
             } else {
                 (v.clone(), false)
             }
@@ -2181,7 +2528,13 @@ fn map_effect_node<R: TypeChildRewrite>(
         EffectExprNode::Merge { left, right } => {
             let (nl, c1) = map_type_child(r, kb, left);
             let (nr, c2) = map_type_child(r, kb, right);
-            (EffectExprNode::Merge { left: nl, right: nr }, c1 || c2)
+            (
+                EffectExprNode::Merge {
+                    left: nl,
+                    right: nr,
+                },
+                c1 || c2,
+            )
         }
         EffectExprNode::Present { label } => {
             let (nl, ch) = map_type_child(r, kb, label);
@@ -2190,7 +2543,13 @@ fn map_effect_node<R: TypeChildRewrite>(
         EffectExprNode::Guarded { label, guard } => {
             let (nl, c1) = map_type_child(r, kb, label);
             let (ng, c2) = map_value_type(r, kb, guard);
-            (EffectExprNode::Guarded { label: nl, guard: ng }, c1 || c2)
+            (
+                EffectExprNode::Guarded {
+                    label: nl,
+                    guard: ng,
+                },
+                c1 || c2,
+            )
         }
         EffectExprNode::Absent { label } => {
             let (nl, ch) = map_type_child(r, kb, label);
@@ -2549,7 +2908,12 @@ fn collect_type_node_vars(
             }
         }
         TypeNode::EffectsRows { effects_expr } => collect_type_child(kb, effects_expr, vars, seen),
-        TypeNode::Arrow { param, result, effects, arity } => {
+        TypeNode::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             collect_type_child(kb, param, vars, seen);
             collect_type_child(kb, result, vars, seen);
             collect_type_child(kb, effects, vars, seen);
@@ -2695,11 +3059,25 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // WI-1013: a CALL-SITE TYPE-ARGUMENT bracket lowers to ONE extra named arg
         // under `type_args`, so the twin carries what the view now presents (WI-425).
         // Byte-identical to `occ_build_fn` when the channel is empty.
-        Some(Expr::Apply { functor, pos_args, named_args, type_args }) => {
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        }) => {
             return occ_build_apply(kb, *functor, pos_args, named_args, type_args);
         }
-        Some(Expr::Constructor { name, pos_args, named_args, .. })
-        | Some(Expr::Instantiation { name, pos_args, named_args }) => {
+        Some(Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        })
+        | Some(Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        }) => {
             return occ_build_fn(kb, *name, pos_args, named_args);
         }
         // WI-302 (WI-390 lossless lowering): a value FIELD-PATH (`c.contents`,
@@ -2711,9 +3089,12 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // type round-trips through the term store instead of asserting to `⊥`. Only
         // the ARG-LESS field access is minted in a denoted; an args-bearing dot CALL
         // stays a non-goal `None` (reified by the `_` arm — not minted here).
-        Some(Expr::DotApply { receiver, name, pos_args, named_args })
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
+        Some(Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        }) if pos_args.is_empty() && named_args.is_empty() => {
             let recv = try_occurrence_to_term(kb, receiver)?;
             let dot_apply = kb.resolve_symbol("anthill.reflect.Expr.dot_apply");
             let name_ref = kb.alloc(Term::Ref(*name));
@@ -2891,7 +3272,11 @@ fn occ_build_fn_with(
         named.push((*s, try_occurrence_to_term(kb, c)?));
     }
     named.extend(extra);
-    Some(kb.alloc(Term::Fn { functor, pos_args: pos, named_args: named }))
+    Some(kb.alloc(Term::Fn {
+        functor,
+        pos_args: pos,
+        named_args: named,
+    }))
 }
 
 /// WI-1013: an `Expr::Apply`'s term twin — [`occ_build_fn`] plus, when the CALL-SITE
@@ -2998,7 +3383,12 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             let e = type_child_to_term(kb, effects_expr);
             kb.make_effects_rows_type(e)
         }
-        TypeNode::Arrow { param, result, effects, arity } => {
+        TypeNode::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             let p = type_child_to_term(kb, param);
             let r = type_child_to_term(kb, result);
             let e = type_child_to_term(kb, effects);
@@ -3033,7 +3423,8 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
                     let ec = kb.resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried");
                     let vk = kb.intern("value");
                     let mk = kb.intern("member");
-                    let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+                    let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> =
+                        smallvec::SmallVec::new();
                     named.push((vk, v));
                     named.push((mk, m));
                     // Canonicalize via the same funnel as `make_expr_carried` (WI-299) so this
@@ -3056,9 +3447,14 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             });
             let nt_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.NamedTuple");
             let fields_key = kb.intern("fields");
-            let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+            let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> =
+                smallvec::SmallVec::new();
             named_args.push((fields_key, fields_t));
-            kb.alloc(Term::Fn { functor: nt_sym, pos_args: smallvec::SmallVec::new(), named_args })
+            kb.alloc(Term::Fn {
+                functor: nt_sym,
+                pos_args: smallvec::SmallVec::new(),
+                named_args,
+            })
         }
     }
 }
@@ -3135,7 +3531,10 @@ pub fn value_to_pattern_annotation(
     span: SourceSpan,
 ) -> Rc<NodeOccurrence> {
     let tid = value_to_term(kb, v).unwrap_or_else(|e| {
-        debug_assert!(false, "WI-819: pattern annotation not term-representable: {e:?}");
+        debug_assert!(
+            false,
+            "WI-819: pattern annotation not term-representable: {e:?}"
+        );
         kb.alloc(Term::Bottom)
     });
     term_to_expr_leaf_occ(kb, tid, span)
@@ -3157,10 +3556,16 @@ fn rebuild_pattern_with(
     new_subpatterns: &[Rc<NodeOccurrence>],
     new_ann: Option<Rc<NodeOccurrence>>,
 ) -> Rc<NodeOccurrence> {
-    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else { return Rc::clone(occ) };
+    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else {
+        return Rc::clone(occ);
+    };
     debug_assert_eq!(
         new_subpatterns.len(),
-        { let mut n = 0; for_each_subpattern(pattern, |_| n += 1); n },
+        {
+            let mut n = 0;
+            for_each_subpattern(pattern, |_| n += 1);
+            n
+        },
         "rebuild_pattern_with: sub-pattern count must match the pattern's own"
     );
     let mut children: Vec<Rc<NodeOccurrence>> =
@@ -3191,7 +3596,9 @@ fn rebuild_pattern_with(
         cur.push(Rc::clone(a));
     }
     let rebuilt = reassemble_pattern(occ, &cur);
-    let NodeKind::Pattern { pattern: p, .. } = &rebuilt.kind else { return rebuilt };
+    let NodeKind::Pattern { pattern: p, .. } = &rebuilt.kind else {
+        return rebuilt;
+    };
     let mut subs: Vec<Rc<NodeOccurrence>> = Vec::new();
     for_each_subpattern(p, |c| subs.push(Rc::clone(c)));
     let mut children2: Vec<Rc<NodeOccurrence>> = subs;
@@ -3209,7 +3616,9 @@ fn reassemble_pattern_forcing(
     children: &[Rc<NodeOccurrence>],
     new_ann: Option<Rc<NodeOccurrence>>,
 ) -> Rc<NodeOccurrence> {
-    let NodeKind::Pattern { pattern: pat, .. } = &occ.kind else { return Rc::clone(occ) };
+    let NodeKind::Pattern { pattern: pat, .. } = &occ.kind else {
+        return Rc::clone(occ);
+    };
     let mut idx = 0;
     let mut take = || {
         let c = Rc::clone(&children[idx]);
@@ -3219,16 +3628,29 @@ fn reassemble_pattern_forcing(
     let new_pat = match pat {
         Pattern::Var { name } => Pattern::Var { name: *name },
         Pattern::Wildcard => Pattern::Wildcard,
-        Pattern::Literal { value } => Pattern::Literal { value: value.clone() },
-        Pattern::Constructor { name, pos_args, named_args } => {
+        Pattern::Literal { value } => Pattern::Literal {
+            value: value.clone(),
+        },
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let pos: Vec<Rc<NodeOccurrence>> = pos_args.iter().map(|_| take()).collect();
             let named: Vec<(Symbol, Rc<NodeOccurrence>)> =
                 named_args.iter().map(|(s, _)| (*s, take())).collect();
-            Pattern::Constructor { name: *name, pos_args: pos, named_args: named }
+            Pattern::Constructor {
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+            }
         }
         Pattern::Tuple { positional, labels } => {
             let pos: Vec<Rc<NodeOccurrence>> = positional.iter().map(|_| take()).collect();
-            Pattern::Tuple { positional: pos, labels: labels.clone() }
+            Pattern::Tuple {
+                positional: pos,
+                labels: labels.clone(),
+            }
         }
     };
     NodeOccurrence::new_pattern_annotated(new_pat, new_ann, occ.span, occ.owner)
@@ -3249,7 +3671,9 @@ pub fn with_pattern_annotation(
     occ: &Rc<NodeOccurrence>,
     ann: Rc<NodeOccurrence>,
 ) -> Rc<NodeOccurrence> {
-    let NodeKind::Pattern { pattern, .. } = &occ.kind else { return Rc::clone(occ) };
+    let NodeKind::Pattern { pattern, .. } = &occ.kind else {
+        return Rc::clone(occ);
+    };
     let mut subs: Vec<Rc<NodeOccurrence>> = Vec::new();
     for_each_subpattern(pattern, |c| subs.push(Rc::clone(c)));
     rebuild_pattern_with(occ, &subs, Some(ann))
@@ -3297,12 +3721,18 @@ pub fn value_to_term(
         // Recurse via value_to_term (NOT alloc_from_value) so a nested Node child
         // lowers faithfully instead of erroring. Canonical named-arg order mirrors
         // alloc_from_value (declared field order, else Symbol::index()).
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             let mut pos_args: smallvec::SmallVec<[TermId; 4]> = smallvec::SmallVec::new();
             for p in pos.iter() {
                 pos_args.push(value_to_term(kb, p)?);
             }
-            let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+            let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> =
+                smallvec::SmallVec::new();
             for (sym, nv) in named.iter() {
                 named_args.push((*sym, value_to_term(kb, nv)?));
             }
@@ -3336,7 +3766,11 @@ pub fn value_to_term(
             // single source of truth the discrim tree matches against) — declared
             // field order, else `Symbol::index()`.
             kb.canonicalize_record_named_args(*functor, &mut named_args);
-            Ok(kb.alloc(Term::Fn { functor: *functor, pos_args, named_args }))
+            Ok(kb.alloc(Term::Fn {
+                functor: *functor,
+                pos_args,
+                named_args,
+            }))
         }
         // Scalars / Term / Var convert; opaque + Unit + Tuple error — identical to
         // alloc_from_value, and none of these carry a Node, so reuse it.
@@ -3403,7 +3837,11 @@ pub fn term_to_param_occurrence(
     // falls to the `_ =>` arm below (`term_pattern_as_expr_occ` → `Expr::Ref`),
     // identical to the old Expr-leaf behaviour.
     let (functor, named_args): (Symbol, SmallVec<[(Symbol, TermId); 2]>) = match &term {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         Term::Ref(s) => (*s, SmallVec::new()),
         // Logical Var in pattern position → reflection meta-var.
         Term::Var(v) => return NodeOccurrence::new_expr(Expr::Var(*v), span, None),
@@ -3447,10 +3885,11 @@ pub fn term_to_param_occurrence(
         "anthill.reflect.Pattern.constructor_pattern" => {
             match extract_term_ref_sym(kb, &named_args, "name") {
                 Some(name) => {
-                    let pos_args: Vec<Rc<NodeOccurrence>> = extract_named_list(kb, &named_args, "args")
-                        .iter()
-                        .map(|&t| term_to_param_occurrence(kb, t, span))
-                        .collect();
+                    let pos_args: Vec<Rc<NodeOccurrence>> =
+                        extract_named_list(kb, &named_args, "args")
+                            .iter()
+                            .map(|&t| term_to_param_occurrence(kb, t, span))
+                            .collect();
                     // WI-445: named sub-patterns (`Box(v: some(x))`) ride a
                     // `named: List[NamedPattern]` field; surface each
                     // `(field, sub-pattern occurrence)` so the typer / eval
@@ -3461,16 +3900,21 @@ pub fn term_to_param_occurrence(
                             .filter_map(|&np| read_named_pattern_term(kb, np))
                             .map(|(field, sub)| (field, term_to_param_occurrence(kb, sub, span)))
                             .collect();
-                    Pattern::Constructor { name, pos_args, named_args: named_subs }
+                    Pattern::Constructor {
+                        name,
+                        pos_args,
+                        named_args: named_subs,
+                    }
                 }
                 None => return term_pattern_as_expr_occ(kb, tid, span),
             }
         }
         "anthill.reflect.Pattern.tuple_pattern" => {
-            let positional: Vec<Rc<NodeOccurrence>> = extract_named_list(kb, &named_args, "elements")
-                .iter()
-                .map(|&t| term_to_param_occurrence(kb, t, span))
-                .collect();
+            let positional: Vec<Rc<NodeOccurrence>> =
+                extract_named_list(kb, &named_args, "elements")
+                    .iter()
+                    .map(|&t| term_to_param_occurrence(kb, t, span))
+                    .collect();
             // WI-803: `labels` is empty here and can only be empty here — this
             // rebuilds a pattern from its REFLECTED TERM, and the term surface
             // (`tuple_pattern(elements: …)`) carries no labels because the surface
@@ -3499,7 +3943,11 @@ pub fn term_to_param_occurrence(
             // A partially-filled list can only come from a hand-built /
             // reflection-synthesized term; drop it rather than hand the matcher
             // a list it `debug_assert`s against.
-            let labels = if labels.len() == positional.len() { labels } else { Vec::new() };
+            let labels = if labels.len() == positional.len() {
+                labels
+            } else {
+                Vec::new()
+            };
             Pattern::Tuple { positional, labels }
         }
         _ => {
@@ -3557,17 +4005,17 @@ pub fn term_to_param_occurrence(
 /// same surface as the rest of the rule body. Compound types (Fn)
 /// surface as `Expr::Apply` (the parameterised/named/sort-ref shapes
 /// the typer reads as terms-as-types).
-fn term_to_expr_leaf_occ(
-    kb: &KnowledgeBase,
-    tid: TermId,
-    span: SourceSpan,
-) -> Rc<NodeOccurrence> {
+fn term_to_expr_leaf_occ(kb: &KnowledgeBase, tid: TermId, span: SourceSpan) -> Rc<NodeOccurrence> {
     match kb.get_term(tid).clone() {
         Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
         Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
         Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
         Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             // Surface a type-position Fn as an Expr::Apply with NO
             // type_args (these are types-as-terms; the args are the
             // type's structural components). Children pass through
@@ -3582,7 +4030,12 @@ fn term_to_expr_leaf_occ(
                 .map(|&(s, t)| (s, term_to_expr_leaf_occ(kb, t, span)))
                 .collect();
             NodeOccurrence::new_expr(
-                Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() },
+                Expr::Apply {
+                    functor,
+                    pos_args: pos,
+                    named_args: named,
+                    type_args: Vec::new(),
+                },
                 span,
                 None,
             )
@@ -3605,7 +4058,11 @@ fn term_pattern_as_expr_occ(
     span: SourceSpan,
 ) -> Rc<NodeOccurrence> {
     match kb.get_term(tid).clone() {
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let pos: Vec<Rc<NodeOccurrence>> = pos_args
                 .iter()
                 .map(|&t| term_pattern_child_as_occ(kb, t, span))
@@ -3615,7 +4072,12 @@ fn term_pattern_as_expr_occ(
                 .map(|&(s, t)| (s, term_pattern_child_as_occ(kb, t, span)))
                 .collect();
             NodeOccurrence::new_expr(
-                Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() },
+                Expr::Apply {
+                    functor,
+                    pos_args: pos,
+                    named_args: named,
+                    type_args: Vec::new(),
+                },
                 span,
                 None,
             )
@@ -3643,8 +4105,11 @@ fn term_pattern_child_as_occ(
             let name = kb.local_name_of(*functor);
             if matches!(
                 name,
-                "var_pattern" | "wildcard" | "literal_pattern"
-                    | "constructor_pattern" | "tuple_pattern"
+                "var_pattern"
+                    | "wildcard"
+                    | "literal_pattern"
+                    | "constructor_pattern"
+                    | "tuple_pattern"
             ) {
                 return term_to_param_occurrence(kb, tid, span);
             }
@@ -3692,7 +4157,9 @@ pub(crate) fn build_named_pattern_term(
 /// pattern's `named` list. Returns `None` for a malformed element. Shared by
 /// the typer (`bind_and_label_pattern`) and eval (`match_constructor_pattern`).
 pub(crate) fn read_named_pattern_term(kb: &KnowledgeBase, tid: TermId) -> Option<(Symbol, TermId)> {
-    let Term::Fn { named_args, .. } = kb.get_term(tid) else { return None; };
+    let Term::Fn { named_args, .. } = kb.get_term(tid) else {
+        return None;
+    };
     let field = extract_term_ref_sym(kb, named_args, "name")?;
     let pat = named_args
         .iter()
@@ -3706,7 +4173,9 @@ fn extract_term_ref_sym(
     named_args: &[(Symbol, TermId)],
     field: &str,
 ) -> Option<Symbol> {
-    let (_, tid) = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == field)?;
+    let (_, tid) = named_args
+        .iter()
+        .find(|(s, _)| kb.local_name_of(*s) == field)?;
     match kb.get_term(*tid) {
         Term::Ref(s) => Some(*s),
         Term::Ident(s) => Some(*s),
@@ -3718,7 +4187,9 @@ fn extract_literal_arg(
     named_args: &[(Symbol, TermId)],
     field: &str,
 ) -> Option<Literal> {
-    let (_, tid) = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == field)?;
+    let (_, tid) = named_args
+        .iter()
+        .find(|(s, _)| kb.local_name_of(*s) == field)?;
     match kb.get_term(*tid) {
         Term::Const(lit) => Some(lit.clone()),
         _ => None,
@@ -3729,7 +4200,10 @@ fn extract_named_list(
     named_args: &[(Symbol, TermId)],
     field: &str,
 ) -> Vec<TermId> {
-    let Some((_, tid)) = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == field) else {
+    let Some((_, tid)) = named_args
+        .iter()
+        .find(|(s, _)| kb.local_name_of(*s) == field)
+    else {
         return Vec::new();
     };
     list_to_vec(kb, *tid)
@@ -3782,14 +4256,17 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
     // the encoding. `occurrence_to_term` is total over the Expr-kind occurrence
     // the slot holds.
     let ann_tid: Option<TermId> = ann.as_ref().map(|t| occurrence_to_term(kb, t));
-    let with_ann = |kb: &mut KnowledgeBase,
-                    functor: Symbol,
-                    mut na: SmallVec<[(Symbol, TermId); 2]>| {
-        if let Some(t) = ann_tid {
-            na.push((type_ann_key, t));
-        }
-        kb.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args: na })
-    };
+    let with_ann =
+        |kb: &mut KnowledgeBase, functor: Symbol, mut na: SmallVec<[(Symbol, TermId); 2]>| {
+            if let Some(t) = ann_tid {
+                na.push((type_ann_key, t));
+            }
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: na,
+            })
+        };
     match pat {
         Pattern::Var { name } => {
             let name_ref = kb.alloc(Term::Ref(*name));
@@ -3805,7 +4282,11 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.literal_pattern");
             with_ann(kb, functor, SmallVec::from_slice(&[(value_key, value_tid)]))
         }
-        Pattern::Constructor { name, pos_args, named_args } => {
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => {
             // Constructor patterns canonically lower to
             // `constructor_pattern(name: Ref, args: List[Pattern])`, plus a
             // `named: List[NamedPattern]` (WI-445) for `Foo(field: pat)`
@@ -3813,10 +4294,7 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
             // `named` key is omitted when empty, keeping the positional form
             // byte-identical.
             let name_ref = kb.alloc(Term::Ref(*name));
-            let args: Vec<TermId> = pos_args
-                .iter()
-                .map(|c| pattern_to_term(kb, c))
-                .collect();
+            let args: Vec<TermId> = pos_args.iter().map(|c| pattern_to_term(kb, c)).collect();
             let args_list = kb.build_list(&args);
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern");
             let mut na: SmallVec<[(Symbol, TermId); 2]> =
@@ -3851,10 +4329,7 @@ pub fn pattern_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Term
             // reflect entity a second conditional key anyway (`type_ann`): the
             // surface change that had "no coverage to ship with" is now paid for,
             // and the two concerns land on the same arm and the same entity.
-            let elements: Vec<TermId> = positional
-                .iter()
-                .map(|c| pattern_to_term(kb, c))
-                .collect();
+            let elements: Vec<TermId> = positional.iter().map(|c| pattern_to_term(kb, c)).collect();
             let elements_list = kb.build_list(&elements);
             let functor = kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern");
             let mut na: SmallVec<[(Symbol, TermId); 2]> =
@@ -3883,7 +4358,9 @@ pub fn substitute_occurrence(
     // `open_debruijn_node` Pattern arm.
     if occ.as_pattern().is_some() {
         let mut subst_children: Vec<Rc<NodeOccurrence>> = Vec::new();
-        for_each_pattern_child(occ, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
+        for_each_pattern_child(occ, |c| {
+            subst_children.push(substitute_occurrence(kb, c, subst))
+        });
         return reassemble_pattern(occ, &subst_children);
     }
     // WI-378 step 2 / WI-342-P3: apply σ inside a Type/EffectExpr occurrence's
@@ -3893,13 +4370,20 @@ pub fn substitute_occurrence(
         return rewrite_type_occurrence(&SubstTypeRewrite { subst }, kb, occ)
             .unwrap_or_else(|| Rc::clone(occ));
     }
-    let Some(expr) = occ.as_expr() else { return Rc::clone(occ) };
+    let Some(expr) = occ.as_expr() else {
+        return Rc::clone(occ);
+    };
     let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
         Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
         // WI-298: Apply.type_args is a TermId field — apply σ to it via
         // `apply_subst` so a Global appearing in a type argument gets the same
         // rewrite as elsewhere, mirroring the opener's `open_type_args` arm.
-        Expr::Apply { functor, pos_args, named_args, type_args } => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             let (ta, c3) = subst_type_args(kb, type_args, subst);
@@ -3916,7 +4400,12 @@ pub fn substitute_occurrence(
                 )
             })
         }
-        Expr::Constructor { name, pos_args, named_args, from_projection } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            from_projection,
+        } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
@@ -3932,12 +4421,20 @@ pub fn substitute_occurrence(
                 )
             })
         }
-        Expr::Instantiation { name, pos_args, named_args } => {
+        Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
                 NodeOccurrence::new_expr(
-                    Expr::Instantiation { name: *name, pos_args: pos, named_args: named },
+                    Expr::Instantiation {
+                        name: *name,
+                        pos_args: pos,
+                        named_args: named,
+                    },
                     occ.span,
                     occ.owner,
                 )
@@ -3948,7 +4445,14 @@ pub fn substitute_occurrence(
             let (a, c2) = subst_vec(kb, args, subst);
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| {
-                NodeOccurrence::new_expr(Expr::HoApply { predicate: p, args: a }, occ.span, occ.owner)
+                NodeOccurrence::new_expr(
+                    Expr::HoApply {
+                        predicate: p,
+                        args: a,
+                    },
+                    occ.span,
+                    occ.owner,
+                )
             })
         }
         // WI-819: no explicit `Expr::Let` arm — it existed only to σ-apply the
@@ -3958,7 +4462,13 @@ pub fn substitute_occurrence(
         // WI-298: ApplyWithin.type_args mirrors Apply.type_args. The generic
         // fall-through would leave them un-substituted; explicit arm closes
         // that gap, parallel to the opener.
-        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
+        Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        } => {
             let (a, c1) = subst_vec(kb, args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             let (reqs, c3) = subst_vec(kb, requirements, subst);
@@ -3985,7 +4495,9 @@ pub fn substitute_occurrence(
         // no children, so `reassemble` returns `occ` unchanged.
         _ => {
             let mut subst_children: Vec<Rc<NodeOccurrence>> = Vec::new();
-            for_each_child(expr, |c| subst_children.push(substitute_occurrence(kb, c, subst)));
+            for_each_child(expr, |c| {
+                subst_children.push(substitute_occurrence(kb, c, subst))
+            });
             return super::simp_rewrite::reassemble(occ, &subst_children);
         }
     };
@@ -4032,7 +4544,12 @@ pub(crate) fn substitute_ref_syms_occ(
                 TypeNode::EffectsRows { effects_expr } => TypeNode::EffectsRows {
                     effects_expr: rewrite_ref_child(effects_expr, map),
                 },
-                TypeNode::Arrow { param, result, effects, arity } => TypeNode::Arrow {
+                TypeNode::Arrow {
+                    param,
+                    result,
+                    effects,
+                    arity,
+                } => TypeNode::Arrow {
                     param: rewrite_ref_child(param, map),
                     result: rewrite_ref_child(result, map),
                     effects: rewrite_ref_child(effects, map),
@@ -4096,14 +4613,25 @@ fn rewrite_ref_child(
 fn rewrite_ref_value(value: &Value, map: &std::collections::HashMap<Symbol, Symbol>) -> Value {
     match value {
         Value::Node(occ) => Value::Node(substitute_ref_syms_occ(occ, map)),
-        Value::Entity { functor, pos, named, .. } => Value::Entity {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => Value::Entity {
             functor: *functor,
             pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
-            named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
+            named: named
+                .iter()
+                .map(|(s, v)| (*s, rewrite_ref_value(v, map)))
+                .collect(),
         },
         Value::Tuple { pos, named, .. } => Value::Tuple {
             pos: pos.iter().map(|v| rewrite_ref_value(v, map)).collect(),
-            named: named.iter().map(|(s, v)| (*s, rewrite_ref_value(v, map))).collect(),
+            named: named
+                .iter()
+                .map(|(s, v)| (*s, rewrite_ref_value(v, map)))
+                .collect(),
         },
         other => other.clone(),
     }
@@ -4122,7 +4650,9 @@ fn rewrite_ref_expr(
     map: &std::collections::HashMap<Symbol, Symbol>,
 ) -> Rc<NodeOccurrence> {
     match &occ.kind {
-        NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+        NodeKind::Expr {
+            expr: Expr::Ref(s), ..
+        } => {
             if let Some(&new_sym) = map.get(s) {
                 return NodeOccurrence::new_expr(Expr::Ref(new_sym), occ.span, occ.owner);
             }
@@ -4131,7 +4661,13 @@ fn rewrite_ref_expr(
         // head `Ref` (the value being substituted at the call site); a field access
         // carries no call args.
         NodeKind::Expr {
-            expr: Expr::DotApply { receiver, name, pos_args, named_args },
+            expr:
+                Expr::DotApply {
+                    receiver,
+                    name,
+                    pos_args,
+                    named_args,
+                },
             ..
         } if pos_args.is_empty() && named_args.is_empty() => {
             let new_recv = rewrite_ref_expr(receiver, map);
@@ -4213,11 +4749,7 @@ fn subst_var_leaf(
             // was guarding against, and `Spliced` is the wiring the panic's own
             // text was waiting for.
             None => {
-                return NodeOccurrence::new_expr(
-                    Expr::Spliced(other.clone()),
-                    occ.span,
-                    occ.owner,
-                )
+                return NodeOccurrence::new_expr(Expr::Spliced(other.clone()), occ.span, occ.owner)
             }
         },
     };
@@ -4298,10 +4830,7 @@ fn subst_named(
 /// the 624-line typing-pass spec. The iterative version runs in
 /// constant host stack regardless of source nesting; the loop builds
 /// Exprs bottom-up by popping completed children off `results`.
-pub fn materialize_from_handle(
-    kb: &KnowledgeBase,
-    root: TermId,
-) -> Rc<NodeOccurrence> {
+pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccurrence> {
     materialize_from_handle_spanned(kb, root, None)
 }
 
@@ -4374,16 +4903,20 @@ pub(crate) fn build_expr_leaf(kb: &KnowledgeBase, t: TermId) -> Rc<NodeOccurrenc
         Term::Ref(s) => Expr::Ref(s),
         Term::Ident(s) => Expr::Ident(s),
         Term::Bottom => Expr::Bottom,
-        Term::Fn { functor, named_args, .. } => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
             let qn = kb.qualified_name_of(functor);
             let short = kb.local_name_of(functor);
             match expr_form_key(qn, short) {
                 "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
                     match get_named_arg(kb, &named_args, "value").map(|v| kb.get_term(v)) {
                         Some(Term::Const(lit)) => Expr::Const(lit.clone()),
-                        other => panic!(
-                            "build_expr_leaf: literal form with non-Const value: {other:?}",
-                        ),
+                        other => {
+                            panic!("build_expr_leaf: literal form with non-Const value: {other:?}",)
+                        }
                     }
                 }
                 "var_ref" => match named_ref(kb, &named_args, "name") {
@@ -4416,14 +4949,22 @@ enum WorkOp {
 pub(crate) enum BuildFrame {
     /// Empty / missing slot — push a synthesized Bottom occurrence.
     Bottom,
-    If { span: SourceSpan },
+    If {
+        span: SourceSpan,
+    },
     /// WI-819: NO `type_annotation`. A `let`'s `: T` is attached to the PATTERN
     /// TERM by the loader (`Loader::annotate_let_pattern`) before this frame is
     /// built, and `term_to_param_occurrence` reads it from there into the pattern
     /// occurrence's one annotation slot — so the term is the single source and
     /// the two carriers cannot disagree by construction.
-    Let { span: SourceSpan, pattern: TermId },
-    Lambda { span: SourceSpan, param: TermId },
+    Let {
+        span: SourceSpan,
+        pattern: TermId,
+    },
+    Lambda {
+        span: SourceSpan,
+        param: TermId,
+    },
     /// In-body / control-flow proof (WI-538). Children on the result
     /// stack are `[body, conclude?]`; the resolved target / strategy /
     /// using clauses are carried here.
@@ -4434,7 +4975,10 @@ pub(crate) enum BuildFrame {
         using: Vec<Symbol>,
         has_conclude: bool,
     },
-    Match { span: SourceSpan, branches: Vec<BranchMeta> },
+    Match {
+        span: SourceSpan,
+        branches: Vec<BranchMeta>,
+    },
     Apply {
         span: SourceSpan,
         functor: Symbol,
@@ -4453,27 +4997,56 @@ pub(crate) enum BuildFrame {
     },
     /// `dot_apply(receiver, name, args)` — the receiver is the single child
     /// visited after the args, so it pops last (see `build_frame`).
-    DotApply { span: SourceSpan, name: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+    DotApply {
+        span: SourceSpan,
+        name: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+    },
     ApplyWithin {
-        span: SourceSpan, functor: Symbol,
-        pos_count: usize, named_keys: Vec<Symbol>,
+        span: SourceSpan,
+        functor: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
         requirements_count: usize,
         type_args: Vec<(Option<Symbol>, Value)>,
     },
-    RequirementAtSort { span: SourceSpan, slot: i64 },
-    Dictionary { span: SourceSpan, impl_sort: Symbol, sub_count: usize },
-    ListLit { span: SourceSpan, count: usize },
-    SetLit { span: SourceSpan, count: usize },
+    RequirementAtSort {
+        span: SourceSpan,
+        slot: i64,
+    },
+    Dictionary {
+        span: SourceSpan,
+        impl_sort: Symbol,
+        sub_count: usize,
+    },
+    ListLit {
+        span: SourceSpan,
+        count: usize,
+    },
+    SetLit {
+        span: SourceSpan,
+        count: usize,
+    },
     /// A `TupleLiteral`'s elements ride in `named_args` (positional surface
     /// `(a, b)` becomes `_1`/`_2` labels; declared names stay) — so the frame
     /// carries the keys, like `UnknownFn`. `pos_count` covers any positional
     /// elements (always 0 for the converter's shape, kept for faithfulness).
-    TupleLit { span: SourceSpan, pos_count: usize, named_keys: Vec<Symbol> },
+    TupleLit {
+        span: SourceSpan,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+    },
     /// Fallback for unknown `Term::Fn` shapes — treated as a generic
     /// Apply with the functor as-is. `pos_count` and `named_keys`
     /// follow the original `Term::Fn` arg arrangement (not the
     /// ApplyArg cons-list shape used by recognised forms).
-    UnknownFn { span: SourceSpan, functor: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+    UnknownFn {
+        span: SourceSpan,
+        functor: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+    },
 }
 
 pub(crate) struct BranchMeta {
@@ -4503,11 +5076,25 @@ fn visit_term(
         Term::Ref(s) => results.push(NodeOccurrence::new_expr(Expr::Ref(s), span, None)),
         Term::Ident(s) => results.push(NodeOccurrence::new_expr(Expr::Ident(s), span, None)),
         Term::Bottom => results.push(NodeOccurrence::new_expr(Expr::Bottom, span, None)),
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let qn = kb.qualified_name_of(functor);
             let short = kb.local_name_of(functor);
             let key = expr_form_key(qn, short);
-            visit_fn(kb, t, span, functor, &pos_args, &named_args, key, work, results);
+            visit_fn(
+                kb,
+                t,
+                span,
+                functor,
+                &pos_args,
+                &named_args,
+                key,
+                work,
+                results,
+            );
         }
         Term::ParseAux(_) => unreachable!(
             "parse-only Term::ParseAux variant reached node_occurrence materialization",
@@ -4535,7 +5122,11 @@ fn visit_fn(
             match get_named_arg(kb, named_args, "value").map(|v| kb.get_term(v)) {
                 // Concrete op-body literal → the internal literal leaf.
                 Some(Term::Const(lit)) => {
-                    results.push(NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None));
+                    results.push(NodeOccurrence::new_expr(
+                        Expr::Const(lit.clone()),
+                        span,
+                        None,
+                    ));
                 }
                 // Non-literal `value` ⇒ reflection data (a pattern such as
                 // `int_lit(value: ?)`); keep it structural (WI-297) so
@@ -4546,7 +5137,11 @@ fn visit_fn(
         "var_ref" => {
             match named_ref(kb, named_args, "name") {
                 Some(sym) => {
-                    results.push(NodeOccurrence::new_expr(Expr::VarRef { name: sym }, span, None));
+                    results.push(NodeOccurrence::new_expr(
+                        Expr::VarRef { name: sym },
+                        span,
+                        None,
+                    ));
                 }
                 // Non-name `name` (e.g. `var_ref(name: ?n)`) ⇒ reflection data;
                 // keep structural (WI-297).
@@ -4654,14 +5249,20 @@ fn visit_fn(
             let mut child_visits: Vec<WorkOp> = Vec::new();
             if let Some(list_tid) = branches_tid {
                 for br_tid in list_to_vec(kb, list_tid) {
-                    let Term::Fn { named_args: ba, .. } = kb.get_term(br_tid) else { continue };
+                    let Term::Fn { named_args: ba, .. } = kb.get_term(br_tid) else {
+                        continue;
+                    };
                     let pattern = get_named_arg(kb, ba, "pattern").unwrap_or(br_tid);
                     let body = get_named_arg(kb, ba, "body");
-                    let guard_slot = get_named_arg(kb, ba, "guard")
-                        .and_then(|opt| unwrap_option(kb, opt));
+                    let guard_slot =
+                        get_named_arg(kb, ba, "guard").and_then(|opt| unwrap_option(kb, opt));
                     let has_guard = guard_slot.is_some();
                     let branch_span = empty_span();
-                    branches.push(BranchMeta { pattern, has_guard, span: branch_span });
+                    branches.push(BranchMeta {
+                        pattern,
+                        has_guard,
+                        span: branch_span,
+                    });
                     // Push children in REVERSE of pop order: results
                     // stack will then have, top→bottom, b0_body,
                     // b0_guard?, b1_body, b1_guard?, ... Build's pop
@@ -4684,31 +5285,40 @@ fn visit_fn(
             let args_tid = get_named_arg(kb, named_args, "args");
             let type_args = collect_type_args(kb, get_named_arg(kb, named_args, "type_args"));
             push_apply_like_args(
-                kb, args_tid,
-                |span_, pos_count, named_keys| {
-                    BuildFrame::Apply {
-                        span: span_, functor: fn_sym, pos_count, named_keys,
-                        type_args: type_args.clone(),
-                    }
+                kb,
+                args_tid,
+                |span_, pos_count, named_keys| BuildFrame::Apply {
+                    span: span_,
+                    functor: fn_sym,
+                    pos_count,
+                    named_keys,
+                    type_args: type_args.clone(),
                 },
-                span, work,
+                span,
+                work,
             );
         }
         "constructor" => {
             let name = named_ref(kb, named_args, "name").unwrap_or(functor);
             let args_tid = get_named_arg(kb, named_args, "args");
             push_apply_like_args(
-                kb, args_tid,
+                kb,
+                args_tid,
                 |span_, pos_count, named_keys| {
                     // WI-762: rematerialization from a KB term. A term carries no
                     // parse provenance, and a named tuple recovered from one IS a
                     // plain tuple — by the time anything materializes, a projection
                     // has already been resolved into a `project_run` call.
                     BuildFrame::Constructor {
-                        span: span_, name, pos_count, named_keys, from_projection: false,
+                        span: span_,
+                        name,
+                        pos_count,
+                        named_keys,
+                        from_projection: false,
                     }
                 },
-                span, work,
+                span,
+                work,
             );
         }
         "dot_apply" => {
@@ -4716,10 +5326,17 @@ fn visit_fn(
             let receiver = get_named_arg(kb, named_args, "receiver");
             let args_tid = get_named_arg(kb, named_args, "args");
             let (pos_count, named_keys, arg_visits) = collect_apply_arg_visits(kb, args_tid);
-            work.push(WorkOp::Build(BuildFrame::DotApply { span, name, pos_count, named_keys }));
+            work.push(WorkOp::Build(BuildFrame::DotApply {
+                span,
+                name,
+                pos_count,
+                named_keys,
+            }));
             // Args first (reversed → pop in source order), receiver last so
             // it pops after the args in `build_frame`.
-            for v in arg_visits.into_iter().rev() { work.push(v); }
+            for v in arg_visits.into_iter().rev() {
+                work.push(v);
+            }
             push_visit_or_bottom(work, receiver);
         }
         "apply_within" => {
@@ -4732,13 +5349,20 @@ fn visit_fn(
             let (pos_count, named_keys, arg_visits) = collect_apply_arg_visits(kb, args_tid);
             let (req_count, req_visits) = collect_list_visits(kb, reqs_tid);
             work.push(WorkOp::Build(BuildFrame::ApplyWithin {
-                span, functor: fn_sym, pos_count, named_keys,
+                span,
+                functor: fn_sym,
+                pos_count,
+                named_keys,
                 requirements_count: req_count,
                 type_args,
             }));
             // Push requirements first (pop last), then args.
-            for v in req_visits.into_iter().rev() { work.push(v); }
-            for v in arg_visits.into_iter().rev() { work.push(v); }
+            for v in req_visits.into_iter().rev() {
+                work.push(v);
+            }
+            for v in arg_visits.into_iter().rev() {
+                work.push(v);
+            }
         }
         "requirement_at_sort" => {
             let chain = get_named_arg(kb, named_args, "chain");
@@ -4774,9 +5398,13 @@ fn visit_fn(
                 .expect("is_dictionary_node just read `impl` off this term");
             let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
             work.push(WorkOp::Build(BuildFrame::Dictionary {
-                span, impl_sort, sub_count: visits.len(),
+                span,
+                impl_sort,
+                sub_count: visits.len(),
             }));
-            for v in visits.into_iter().rev() { work.push(v); }
+            for v in visits.into_iter().rev() {
+                work.push(v);
+            }
         }
         "ListLiteral" => {
             // A `ListLiteral` term stores its elements as `pos_args` (see the
@@ -4789,7 +5417,9 @@ fn visit_fn(
             let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
             let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::ListLit { span, count }));
-            for v in visits.into_iter().rev() { work.push(v); }
+            for v in visits.into_iter().rev() {
+                work.push(v);
+            }
         }
         "SetLiteral" => {
             // WI-559: a `SetLiteral` stores its elements as `pos_args` (the
@@ -4801,7 +5431,9 @@ fn visit_fn(
             let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
             let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::SetLit { span, count }));
-            for v in visits.into_iter().rev() { work.push(v); }
+            for v in visits.into_iter().rev() {
+                work.push(v);
+            }
         }
         "TupleLiteral" => {
             // WI-559: a `TupleLiteral` stores its elements as `named_args` —
@@ -4812,9 +5444,17 @@ fn visit_fn(
             // expect (named reversed, then pos reversed).
             let pos_count = pos_args.len();
             let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-            work.push(WorkOp::Build(BuildFrame::TupleLit { span, pos_count, named_keys }));
-            for &(_, v) in named_args.iter().rev() { work.push(WorkOp::Visit(v)); }
-            for &v in pos_args.iter().rev() { work.push(WorkOp::Visit(v)); }
+            work.push(WorkOp::Build(BuildFrame::TupleLit {
+                span,
+                pos_count,
+                named_keys,
+            }));
+            for &(_, v) in named_args.iter().rev() {
+                work.push(WorkOp::Visit(v));
+            }
+            for &v in pos_args.iter().rev() {
+                work.push(WorkOp::Visit(v));
+            }
         }
         _ => push_unknown_fn(span, functor, pos_args, named_args, work),
     }
@@ -4838,7 +5478,12 @@ fn push_unknown_fn(
 ) {
     let pos_count = pos_args.len();
     let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-    work.push(WorkOp::Build(BuildFrame::UnknownFn { span, functor, pos_count, named_keys }));
+    work.push(WorkOp::Build(BuildFrame::UnknownFn {
+        span,
+        functor,
+        pos_count,
+        named_keys,
+    }));
     for &(_, v) in named_args.iter().rev() {
         work.push(WorkOp::Visit(v));
     }
@@ -4858,14 +5503,24 @@ fn collect_apply_arg_visits(
     let mut pos_count = 0usize;
     let mut named_keys: Vec<Symbol> = Vec::new();
     let mut visits: Vec<WorkOp> = Vec::new();
-    let Some(tid) = list_tid else { return (0, named_keys, visits); };
+    let Some(tid) = list_tid else {
+        return (0, named_keys, visits);
+    };
     for arg_tid in list_to_vec(kb, tid) {
-        let Term::Fn { named_args: aa, .. } = kb.get_term(arg_tid) else { continue };
+        let Term::Fn { named_args: aa, .. } = kb.get_term(arg_tid) else {
+            continue;
+        };
         let value = get_named_arg(kb, aa, "value");
         let arg_name = get_named_arg(kb, aa, "name").and_then(|t| some_name(kb, t));
         match arg_name {
-            None => { pos_count += 1; visits.push(visit_or_bottom_op(value)); }
-            Some(s) => { named_keys.push(s); visits.push(visit_or_bottom_op(value)); }
+            None => {
+                pos_count += 1;
+                visits.push(visit_or_bottom_op(value));
+            }
+            Some(s) => {
+                named_keys.push(s);
+                visits.push(visit_or_bottom_op(value));
+            }
         }
     }
     (pos_count, named_keys, visits)
@@ -4880,7 +5535,9 @@ pub(crate) fn collect_type_args(
     kb: &KnowledgeBase,
     list_tid: Option<TermId>,
 ) -> Vec<(Option<Symbol>, Value)> {
-    let Some(tid) = list_tid else { return Vec::new(); };
+    let Some(tid) = list_tid else {
+        return Vec::new();
+    };
     list_to_vec(kb, tid)
         .into_iter()
         .filter_map(|entry| {
@@ -4888,8 +5545,7 @@ pub(crate) fn collect_type_args(
                 Term::Fn { named_args, .. } => named_args.clone(),
                 _ => return None,
             };
-            let name_opt = get_named_arg(kb, &entry_args, "name")
-                .and_then(|t| some_name(kb, t));
+            let name_opt = get_named_arg(kb, &entry_args, "name").and_then(|t| some_name(kb, t));
             let value = get_named_arg(kb, &entry_args, "value")?;
             // WI-342 S4b: the term-side handle holds a ground `TermId`, so the
             // materialized occurrence type-arg is `Value::Term`. The loader's
@@ -4901,11 +5557,10 @@ pub(crate) fn collect_type_args(
         .collect()
 }
 
-fn collect_list_visits(
-    kb: &KnowledgeBase,
-    list_tid: Option<TermId>,
-) -> (usize, Vec<WorkOp>) {
-    let Some(tid) = list_tid else { return (0, Vec::new()); };
+fn collect_list_visits(kb: &KnowledgeBase, list_tid: Option<TermId>) -> (usize, Vec<WorkOp>) {
+    let Some(tid) = list_tid else {
+        return (0, Vec::new());
+    };
     let elems = list_to_vec(kb, tid);
     let visits: Vec<WorkOp> = elems.into_iter().map(WorkOp::Visit).collect();
     (visits.len(), visits)
@@ -4922,7 +5577,9 @@ fn push_apply_like_args(
 ) {
     let (pos_count, named_keys, visits) = collect_apply_arg_visits(kb, args_tid);
     work.push(WorkOp::Build(mk(span, pos_count, named_keys)));
-    for v in visits.into_iter().rev() { work.push(v); }
+    for v in visits.into_iter().rev() {
+        work.push(v);
+    }
 }
 
 #[inline]
@@ -4951,7 +5608,11 @@ pub(crate) fn build_frame(
             let else_branch = results.pop().expect("if: missing else_branch");
             let then_branch = results.pop().expect("if: missing then_branch");
             let condition = results.pop().expect("if: missing condition");
-            let expr = Expr::If { condition, then_branch, else_branch };
+            let expr = Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Let { span, pattern } => {
@@ -4962,7 +5623,11 @@ pub(crate) fn build_frame(
             let body = results.pop().expect("let: missing body");
             let value = results.pop().expect("let: missing value");
             let pattern_occ = term_to_param_occurrence(kb, pattern, span);
-            let expr = Expr::Let { pattern: pattern_occ, value, body };
+            let expr = Expr::Let {
+                pattern: pattern_occ,
+                value,
+                body,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Lambda { span, param } => {
@@ -4972,10 +5637,19 @@ pub(crate) fn build_frame(
             // ... shape and produces the structural Pattern equivalent.
             let body = results.pop().expect("lambda: missing body");
             let param_occ = term_to_param_occurrence(kb, param, span);
-            let expr = Expr::Lambda { param: param_occ, body };
+            let expr = Expr::Lambda {
+                param: param_occ,
+                body,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Proof { span, target, strategy, using, has_conclude } => {
+        BuildFrame::Proof {
+            span,
+            target,
+            strategy,
+            using,
+            has_conclude,
+        } => {
             // WI-538: results stack (top → bottom): conclude?, body.
             let conclude = if has_conclude {
                 Some(results.pop().expect("proof: missing conclude"))
@@ -4983,7 +5657,13 @@ pub(crate) fn build_frame(
                 None
             };
             let body = results.pop().expect("proof: missing body");
-            let expr = Expr::Proof { target, strategy, using, conclude, body };
+            let expr = Expr::Proof {
+                target,
+                strategy,
+                using,
+                conclude,
+                body,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::Match { span, mut branches } => {
@@ -5011,29 +5691,69 @@ pub(crate) fn build_frame(
             }
             built_branches.reverse();
             let scrutinee = results.pop().expect("match: missing scrutinee");
-            let expr = Expr::Match { scrutinee, branches: built_branches };
+            let expr = Expr::Match {
+                scrutinee,
+                branches: built_branches,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Apply { span, functor, pos_count, named_keys, type_args } => {
+        BuildFrame::Apply {
+            span,
+            functor,
+            pos_count,
+            named_keys,
+            type_args,
+        } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::Apply { functor, pos_args, named_args, type_args };
+            let expr = Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                type_args,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Constructor { span, name, pos_count, named_keys, from_projection } => {
+        BuildFrame::Constructor {
+            span,
+            name,
+            pos_count,
+            named_keys,
+            from_projection,
+        } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::Constructor { name, pos_args, named_args, from_projection };
+            let expr = Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                from_projection,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::DotApply { span, name, pos_count, named_keys } => {
+        BuildFrame::DotApply {
+            span,
+            name,
+            pos_count,
+            named_keys,
+        } => {
             // Args are on top (pushed after the receiver Visit); pop them
             // first, then the receiver underneath.
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let receiver = results.pop().expect("dot_apply: missing receiver");
-            let expr = Expr::DotApply { receiver, name, pos_args, named_args };
+            let expr = Expr::DotApply {
+                receiver,
+                name,
+                pos_args,
+                named_args,
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
         BuildFrame::ApplyWithin {
-            span, functor, pos_count, named_keys, requirements_count, type_args,
+            span,
+            functor,
+            pos_count,
+            named_keys,
+            requirements_count,
+            type_args,
         } => {
             // results stack (top → bottom):
             //   req_{R-1}, ..., req_0, named_{N-1}, ..., named_0, pos_{P-1}, ..., pos_0
@@ -5044,7 +5764,11 @@ pub(crate) fn build_frame(
             requirements.reverse();
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::ApplyWithin {
-                functor, args: pos_args, named_args, requirements, type_args,
+                functor,
+                args: pos_args,
+                named_args,
+                requirements,
+                type_args,
             };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
@@ -5053,7 +5777,11 @@ pub(crate) fn build_frame(
             let expr = Expr::RequirementAtSort { chain, slot };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::Dictionary { span, impl_sort, sub_count } => {
+        BuildFrame::Dictionary {
+            span,
+            impl_sort,
+            sub_count,
+        } => {
             let mut subs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(sub_count);
             for _ in 0..sub_count {
                 subs.push(results.pop().expect("Dictionary: missing sub-dictionary"));
@@ -5070,14 +5798,28 @@ pub(crate) fn build_frame(
             let elems = pop_n(results, count);
             results.push(NodeOccurrence::new_expr(Expr::SetLit(elems), span, None));
         }
-        BuildFrame::TupleLit { span, pos_count, named_keys } => {
+        BuildFrame::TupleLit {
+            span,
+            pos_count,
+            named_keys,
+        } => {
             let (positional, named) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::TupleLit { positional, named };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
-        BuildFrame::UnknownFn { span, functor, pos_count, named_keys } => {
+        BuildFrame::UnknownFn {
+            span,
+            functor,
+            pos_count,
+            named_keys,
+        } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
-            let expr = Expr::Apply { functor, pos_args, named_args, type_args: Vec::new() };
+            let expr = Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                type_args: Vec::new(),
+            };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }
     }
@@ -5126,7 +5868,11 @@ fn bottom_node() -> Rc<NodeOccurrence> {
 /// back to the short name.
 fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
     let last = qn.rsplit('.').next().unwrap_or(qn);
-    if last.is_empty() { short } else { last }
+    if last.is_empty() {
+        short
+    } else {
+        last
+    }
 }
 
 /// WI-246: whether `materialize_from_handle` special-cases a `Term::Fn` with
@@ -5144,12 +5890,25 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
     let short = kb.local_name_of(functor);
     matches!(
         expr_form_key(qn, short),
-        "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit"
-            | "var_ref" | "if_expr" | "let_expr" | "lambda_expr" | "match_expr"
+        "int_lit"
+            | "float_lit"
+            | "bigint_lit"
+            | "string_lit"
+            | "bool_lit"
+            | "var_ref"
+            | "if_expr"
+            | "let_expr"
+            | "lambda_expr"
+            | "match_expr"
             | "proof_stmt"
-            | "apply" | "constructor" | "dot_apply" | "apply_within"
+            | "apply"
+            | "constructor"
+            | "dot_apply"
+            | "apply_within"
             | "requirement_at_sort"
-            | "ListLiteral" | "SetLiteral" | "TupleLiteral"
+            | "ListLiteral"
+            | "SetLiteral"
+            | "TupleLiteral"
     )
 }
 
@@ -5175,8 +5934,7 @@ fn is_dictionary_node(
     functor: Symbol,
     named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
-    super::term_view::dictionary_view_syms(kb)
-        .is_some_and(|(ctor, _)| ctor == functor)
+    super::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, _)| ctor == functor)
         && named_args.len() == 1
         && named_ref(kb, named_args, "impl").is_some()
 }
@@ -5219,11 +5977,7 @@ mod tests {
         let mut symbols = SymbolTable::new();
         let f = symbols.intern("f");
         let span = make_span();
-        let const42 = NodeOccurrence::new_expr(
-            Expr::Const(Literal::Int(42)),
-            span,
-            None,
-        );
+        let const42 = NodeOccurrence::new_expr(Expr::Const(Literal::Int(42)), span, None);
         let apply = NodeOccurrence::new_expr(
             Expr::Apply {
                 functor: f,
@@ -5235,7 +5989,9 @@ mod tests {
             None,
         );
         match apply.as_expr().unwrap() {
-            Expr::Apply { functor, pos_args, .. } => {
+            Expr::Apply {
+                functor, pos_args, ..
+            } => {
                 assert_eq!(*functor, f);
                 assert_eq!(pos_args.len(), 1);
             }
@@ -5259,7 +6015,11 @@ mod tests {
         let then_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let else_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
         let if_occ = NodeOccurrence::new_expr(
-            Expr::If { condition: cond, then_branch: then_b, else_branch: else_b },
+            Expr::If {
+                condition: cond,
+                then_branch: then_b,
+                else_branch: else_b,
+            },
             span,
             None,
         );
@@ -5278,11 +6038,7 @@ mod tests {
         // returned the original, discarding opened children — WI-296 review):
         // RequirementAtSort. Its child must still open DeBruijn -> Global.
         let chain = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
-        let req = NodeOccurrence::new_expr(
-            Expr::RequirementAtSort { chain, slot: 0 },
-            span,
-            None,
-        );
+        let req = NodeOccurrence::new_expr(Expr::RequirementAtSort { chain, slot: 0 }, span, None);
         match open_debruijn_node(&mut kb, &req, &fresh).as_expr().unwrap() {
             Expr::RequirementAtSort { chain, .. } => match chain.as_expr().unwrap() {
                 Expr::Var(Var::Global(vid)) => assert_eq!(vid.raw(), 7),
@@ -5313,9 +6069,17 @@ mod tests {
 
         let occ = materialize_from_handle(&kb, term);
         match occ.as_expr() {
-            Some(Expr::DotApply { receiver, name: n, pos_args, named_args }) => {
+            Some(Expr::DotApply {
+                receiver,
+                name: n,
+                pos_args,
+                named_args,
+            }) => {
                 assert_eq!(*n, name);
-                assert!(pos_args.is_empty() && named_args.is_empty(), "field form has no args");
+                assert!(
+                    pos_args.is_empty() && named_args.is_empty(),
+                    "field form has no args"
+                );
                 assert!(
                     matches!(receiver.as_expr(), Some(Expr::Const(Literal::Int(5)))),
                     "receiver should materialize as Const(5)"
@@ -5374,7 +6138,12 @@ mod tests {
 
         let occ = materialize_from_handle(&kb, term);
         match occ.as_expr() {
-            Some(Expr::DotApply { receiver, name: n, pos_args, named_args }) => {
+            Some(Expr::DotApply {
+                receiver,
+                name: n,
+                pos_args,
+                named_args,
+            }) => {
                 assert_eq!(*n, name);
                 assert!(named_args.is_empty());
                 assert_eq!(pos_args.len(), 1, "one positional arg");
@@ -5417,14 +6186,19 @@ mod tests {
         let v0 = VarId::new(7, xname);
         let opened = open_debruijn_node(&mut kb, &atom, &[v0]);
         match opened.as_expr() {
-            Some(Expr::Apply { functor, pos_args, .. }) => {
+            Some(Expr::Apply {
+                functor, pos_args, ..
+            }) => {
                 assert_eq!(*functor, gt);
                 assert!(
                     matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v0),
                     "DeBruijn(0) should open to Global(v0), got {:?}",
                     pos_args[0].as_expr()
                 );
-                assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged const child keeps identity");
+                assert!(
+                    Rc::ptr_eq(&pos_args[1], &three),
+                    "unchanged const child keeps identity"
+                );
             }
             other => panic!("expected Apply, got {other:?}"),
         }
@@ -5458,14 +6232,19 @@ mod tests {
         // Single-var order: v0 is the only (=last) entry → DeBruijn 0.
         let closed = node_to_debruijn(&mut kb, &atom, &[v0]);
         match closed.as_expr() {
-            Some(Expr::Apply { functor, pos_args, .. }) => {
+            Some(Expr::Apply {
+                functor, pos_args, ..
+            }) => {
                 assert_eq!(*functor, gt);
                 assert!(
                     matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
                     "Global(v0) should close to DeBruijn(0), got {:?}",
                     pos_args[0].as_expr()
                 );
-                assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged const child keeps identity");
+                assert!(
+                    Rc::ptr_eq(&pos_args[1], &three),
+                    "unchanged const child keeps identity"
+                );
             }
             other => panic!("expected Apply, got {other:?}"),
         }
@@ -5509,9 +6288,17 @@ mod tests {
             None,
         );
         let closed = node_to_debruijn(&mut kb, &atom, &[a, b]);
-        let Some(Expr::Apply { pos_args, .. }) = closed.as_expr() else { panic!("expected Apply") };
-        assert!(matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::DeBruijn(1)))));
-        assert!(matches!(pos_args[1].as_expr(), Some(Expr::Var(Var::DeBruijn(0)))));
+        let Some(Expr::Apply { pos_args, .. }) = closed.as_expr() else {
+            panic!("expected Apply")
+        };
+        assert!(matches!(
+            pos_args[0].as_expr(),
+            Some(Expr::Var(Var::DeBruijn(1)))
+        ));
+        assert!(matches!(
+            pos_args[1].as_expr(),
+            Some(Expr::Var(Var::DeBruijn(0)))
+        ));
     }
 
     #[test]
@@ -5529,11 +6316,7 @@ mod tests {
         let xname = kb.intern("x");
         let span = make_span();
         let v0 = VarId::new(7, xname);
-        let param = NodeOccurrence::new_pattern(
-            Pattern::Var { name: xname },
-            span,
-            None,
-        );
+        let param = NodeOccurrence::new_pattern(Pattern::Var { name: xname }, span, None);
         let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
         let lambda = NodeOccurrence::new_expr(Expr::Lambda { param, body }, span, None);
 
@@ -5594,16 +6377,28 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         collect_occurrence_global_vars_ordered(&kb, &apply, &mut vars, &mut seen);
 
-        assert!(vars.contains(&vx), "type_args-only var vx must be collected, got {vars:?}");
-        assert!(vars.contains(&vy), "body-arg var vy must be collected, got {vars:?}");
-        assert_eq!(vars, vec![vy, vx], "child vars first, then TermId-field vars");
+        assert!(
+            vars.contains(&vx),
+            "type_args-only var vx must be collected, got {vars:?}"
+        );
+        assert!(
+            vars.contains(&vy),
+            "body-arg var vy must be collected, got {vars:?}"
+        );
+        assert_eq!(
+            vars,
+            vec![vy, vx],
+            "child vars first, then TermId-field vars"
+        );
 
         // Closing leaves NO stray Global:
         let closed = node_to_debruijn(&mut kb, &apply, &vars);
         let Some(Expr::Apply { type_args, .. }) = closed.as_expr() else {
             panic!("expected Apply");
         };
-        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else {
+            panic!("type-arg must be Value::Term")
+        };
         assert!(
             matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(_))),
             "type_args var must close to DeBruijn (no stray Global), got {:?}",
@@ -5642,11 +6437,19 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = opened.as_expr() else {
             panic!("expected Apply");
         };
-        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
-        let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
-            panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
+        let Value::Term { id: ta, .. } = &type_args[0].1 else {
+            panic!("type-arg must be Value::Term")
         };
-        assert_eq!(*vid, v0, "type_args DeBruijn(0) must open to fresh Global(v0)");
+        let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
+            panic!(
+                "type_args entry should open to Global, got {:?}",
+                kb.get_term(*ta)
+            );
+        };
+        assert_eq!(
+            *vid, v0,
+            "type_args DeBruijn(0) must open to fresh Global(v0)"
+        );
     }
 
     /// WI-815 — the identity property `wi471_cached_term_recovers_hash_cons_identity`
@@ -5692,7 +6495,11 @@ mod tests {
         };
 
         // (1) identical structure → identical key, across distinct `Rc`s.
-        assert_eq!(key(&o1), key(&o2), "structurally-identical occurrences share one key");
+        assert_eq!(
+            key(&o1),
+            key(&o2),
+            "structurally-identical occurrences share one key"
+        );
 
         // (2) different structure → different key.
         let o3 = build(43);
@@ -5720,7 +6527,11 @@ mod tests {
         //     and not a `+1` pinned for the KB's lifetime.
         let before = kb.terms.len();
         let _ = key(&o1);
-        assert_eq!(kb.terms.len(), before, "fingerprinting allocates nothing in the store");
+        assert_eq!(
+            kb.terms.len(),
+            before,
+            "fingerprinting allocates nothing in the store"
+        );
     }
 
     #[test]
@@ -5750,7 +6561,11 @@ mod tests {
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(0)), span, None);
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let { pattern, value, body },
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            },
             span,
             None,
         );
@@ -5758,17 +6573,25 @@ mod tests {
         let Some(Expr::Let { pattern, body, .. }) = opened.as_expr() else {
             panic!("expected Let");
         };
-        let ta = pattern.pattern_type_ann().expect("annotation must survive open");
+        let ta = pattern
+            .pattern_type_ann()
+            .expect("annotation must survive open");
         let Some(Expr::Var(Var::Global(ta_vid))) = ta.as_expr() else {
             panic!("annotation should open to Global, got {:?}", ta.as_expr());
         };
-        assert_eq!(*ta_vid, v0, "annotation DeBruijn(0) must open to fresh Global(v0)");
+        assert_eq!(
+            *ta_vid, v0,
+            "annotation DeBruijn(0) must open to fresh Global(v0)"
+        );
         // And the body's ?p must have opened to the SAME global — the
         // observable property the acceptance criterion calls for.
         let Some(Expr::Var(Var::Global(body_vid))) = body.as_expr() else {
             panic!("body should be Global, got {:?}", body.as_expr());
         };
-        assert_eq!(*body_vid, v0, "body var and annotation var must share the same fresh global");
+        assert_eq!(
+            *body_vid, v0,
+            "body var and annotation var must share the same fresh global"
+        );
     }
 
     #[test]
@@ -5793,7 +6616,11 @@ mod tests {
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Var(Var::Global(v0)), span, None);
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let { pattern, value, body },
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            },
             span,
             None,
         );
@@ -5801,7 +6628,9 @@ mod tests {
         let Some(Expr::Let { pattern, body, .. }) = closed.as_expr() else {
             panic!("expected Let");
         };
-        let ta = pattern.pattern_type_ann().expect("annotation must survive close");
+        let ta = pattern
+            .pattern_type_ann()
+            .expect("annotation must survive close");
         assert!(
             matches!(ta.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
             "the pattern annotation's Global must close to DeBruijn(0), got {:?}",
@@ -5847,9 +6676,12 @@ mod tests {
         let Some(Expr::Apply { type_args, .. }) = out.as_expr() else {
             panic!("expected Apply, got {:?}", out.as_expr());
         };
-        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else {
+            panic!("type-arg must be Value::Term")
+        };
         assert_eq!(
-            *ta, int_ref,
+            *ta,
+            int_ref,
             "Apply.type_args must be substituted to Ref(Int) under σ; got {:?}",
             kb.get_term(*ta),
         );
@@ -5878,7 +6710,11 @@ mod tests {
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let { pattern, value, body },
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            },
             span,
             None,
         );
@@ -5890,7 +6726,9 @@ mod tests {
         let Some(Expr::Let { pattern, .. }) = out.as_expr() else {
             panic!("expected Let, got {:?}", out.as_expr());
         };
-        let ta = pattern.pattern_type_ann().expect("annotation must survive subst");
+        let ta = pattern
+            .pattern_type_ann()
+            .expect("annotation must survive subst");
         assert!(
             matches!(ta.as_expr(), Some(Expr::Ref(s)) if *s == int_sym),
             "the pattern annotation must be substituted to Ref(Int64) under σ; got {:?}",
@@ -5926,7 +6764,9 @@ mod tests {
         let Some(Expr::ApplyWithin { type_args, .. }) = closed.as_expr() else {
             panic!("expected ApplyWithin after close");
         };
-        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else {
+            panic!("type-arg must be Value::Term")
+        };
         assert!(
             matches!(kb.get_term(*ta), Term::Var(Var::DeBruijn(0))),
             "ApplyWithin.type_args Global must close to DeBruijn(0); got {:?}",
@@ -5938,9 +6778,14 @@ mod tests {
         let Some(Expr::ApplyWithin { type_args, .. }) = reopened.as_expr() else {
             panic!("expected ApplyWithin after open");
         };
-        let Value::Term { id: ta, .. } = &type_args[0].1 else { panic!("type-arg must be Value::Term") };
+        let Value::Term { id: ta, .. } = &type_args[0].1 else {
+            panic!("type-arg must be Value::Term")
+        };
         let Term::Var(Var::Global(vid)) = kb.get_term(*ta) else {
-            panic!("type_args entry should open to Global, got {:?}", kb.get_term(*ta));
+            panic!(
+                "type_args entry should open to Global, got {:?}",
+                kb.get_term(*ta)
+            );
         };
         assert_eq!(*vid, v_fresh, "round-trip must yield the fresh global");
     }
@@ -5971,7 +6816,11 @@ mod tests {
         let mut vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
         collect_occurrence_global_vars_ordered(&kb, &atom, &mut vars, &mut seen);
-        assert_eq!(vars, vec![vt], "type-arg var must be collected, got {vars:?}");
+        assert_eq!(
+            vars,
+            vec![vt],
+            "type-arg var must be collected, got {vars:?}"
+        );
     }
 
     /// Build the rule-body atom `gt(Global(v0), 3)` and return `(atom, v0,
@@ -6004,7 +6853,10 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let (atom, v0, _gt, _three) = gt_atom(&mut kb);
         let out = substitute_occurrence(&mut kb, &atom, &Substitution::new());
-        assert!(Rc::ptr_eq(&out, &atom), "no bound leaf → atom unchanged (identity)");
+        assert!(
+            Rc::ptr_eq(&out, &atom),
+            "no bound leaf → atom unchanged (identity)"
+        );
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => assert!(
                 matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v0),
@@ -6030,7 +6882,10 @@ mod tests {
                     "bound var → Const(42), got {:?}",
                     pos_args[0].as_expr()
                 );
-                assert!(Rc::ptr_eq(&pos_args[1], &three), "unchanged sibling keeps identity");
+                assert!(
+                    Rc::ptr_eq(&pos_args[1], &three),
+                    "unchanged sibling keeps identity"
+                );
             }
             other => panic!("expected Apply, got {other:?}"),
         }
@@ -6063,7 +6918,10 @@ mod tests {
         let mut subst = Substitution::new();
         subst.bind_value(&kb, v0, Value::Int(42)); // change a child → forces rebuild
         let out = substitute_occurrence(&mut kb, &atom, &subst);
-        assert!(!Rc::ptr_eq(&out, &atom), "the atom should have been rebuilt");
+        assert!(
+            !Rc::ptr_eq(&out, &atom),
+            "the atom should have been rebuilt"
+        );
         assert!(
             matches!(out.inferred_type(), Some(Value::Term { id: t, .. }) if t == bool_ty),
             "substitute_occurrence must carry the parent atom's inferred_type",
@@ -6112,7 +6970,11 @@ mod tests {
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => match pos_args[0].as_expr() {
-                Some(Expr::Apply { functor, pos_args: inner, .. }) => {
+                Some(Expr::Apply {
+                    functor,
+                    pos_args: inner,
+                    ..
+                }) => {
                     assert_eq!(*functor, s);
                     assert!(
                         matches!(inner[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == v1),
@@ -6155,14 +7017,21 @@ mod tests {
         subst.bind_value(&kb, vy, Value::Int(99)); // bind only the named arg
         let out = substitute_occurrence(&mut kb, &atom, &subst);
         match out.as_expr() {
-            Some(Expr::Apply { pos_args, named_args, .. }) => {
+            Some(Expr::Apply {
+                pos_args,
+                named_args,
+                ..
+            }) => {
                 assert!(
                     matches!(pos_args[0].as_expr(), Some(Expr::Var(Var::Global(v))) if *v == vx),
                     "unbound positional preserved",
                 );
                 assert_eq!(named_args[0].0, key, "field symbol survives");
                 assert!(
-                    matches!(named_args[0].1.as_expr(), Some(Expr::Const(Literal::Int(99)))),
+                    matches!(
+                        named_args[0].1.as_expr(),
+                        Some(Expr::Const(Literal::Int(99)))
+                    ),
                     "named-arg var substituted, got {:?}",
                     named_args[0].1.as_expr()
                 );
@@ -6191,10 +7060,16 @@ mod tests {
             None,
         );
         let out = substitute_occurrence(&mut kb, &atom, &Substitution::new());
-        assert!(Rc::ptr_eq(&out, &atom), "no substitutable leaf → whole atom keeps identity");
+        assert!(
+            Rc::ptr_eq(&out, &atom),
+            "no substitutable leaf → whole atom keeps identity"
+        );
         match out.as_expr() {
             Some(Expr::Apply { pos_args, .. }) => {
-                assert!(Rc::ptr_eq(&pos_args[0], &ref_child), "Ref leaf preserved by identity");
+                assert!(
+                    Rc::ptr_eq(&pos_args[0], &ref_child),
+                    "Ref leaf preserved by identity"
+                );
             }
             other => panic!("expected Apply, got {other:?}"),
         }
@@ -6260,7 +7135,11 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         collect_value_type(&kb, &Value::Node(Rc::clone(&ty)), &mut vars, &mut seen);
         // base (ground const) has no var; bindings collect vg then vn, in order.
-        assert_eq!(vars, vec![vg, vn], "both ground- and node-child vars collected, in order");
+        assert_eq!(
+            vars,
+            vec![vg, vn],
+            "both ground- and node-child vars collected, in order"
+        );
     }
 
     #[test]
@@ -6277,14 +7156,16 @@ mod tests {
         match bg {
             TypeChild::Ground(t) => assert!(
                 matches!(kb.terms.get(t), Term::Var(Var::DeBruijn(1))),
-                "ground binding var closes to DeBruijn(1), got {:?}", kb.terms.get(t),
+                "ground binding var closes to DeBruijn(1), got {:?}",
+                kb.terms.get(t),
             ),
             other => panic!("expected Ground, got {other:?}"),
         }
         match bn {
             TypeChild::Node(n) => assert!(
                 matches!(n.as_expr(), Some(Expr::Var(Var::DeBruijn(0)))),
-                "node-child var closes to DeBruijn(0), got {:?}", n.as_expr(),
+                "node-child var closes to DeBruijn(0), got {:?}",
+                n.as_expr(),
             ),
             other => panic!("expected Node, got {other:?}"),
         }
@@ -6300,7 +7181,8 @@ mod tests {
         match bg {
             TypeChild::Ground(t) => assert!(
                 matches!(kb.terms.get(t), Term::Var(Var::Global(v)) if *v == fb),
-                "ground binding DeBruijn(1) re-opens to Global(fresh[1]=fb), got {:?}", kb.terms.get(t),
+                "ground binding DeBruijn(1) re-opens to Global(fresh[1]=fb), got {:?}",
+                kb.terms.get(t),
             ),
             other => panic!("expected Ground, got {other:?}"),
         }
@@ -6325,7 +7207,10 @@ mod tests {
         let ty = type_with_vars(&mut kb, vg, vn);
         let other = VarId::new(99, name);
         let closed = node_to_debruijn(&mut kb, &ty, &[other]);
-        assert!(Rc::ptr_eq(&closed, &ty), "no var in order → occurrence keeps identity");
+        assert!(
+            Rc::ptr_eq(&closed, &ty),
+            "no var in order → occurrence keeps identity"
+        );
     }
 
     #[test]
@@ -6353,20 +7238,25 @@ mod tests {
         let mut vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
         collect_value_type(&kb, &Value::Node(Rc::clone(&nt)), &mut vars, &mut seen);
-        assert_eq!(vars, vec![v], "var inside a NamedTuple field type is collected");
+        assert_eq!(
+            vars,
+            vec![v],
+            "var inside a NamedTuple field type is collected"
+        );
 
         // Close descends and turns it into DeBruijn(0) (single-var order).
         let closed = node_to_debruijn(&mut kb, &nt, &[v]);
         match &closed.kind {
-            NodeKind::Type(TypeNode::NamedTuple { fields: Value::Entity { pos, .. } }) => {
-                match &pos[0] {
-                    Value::Term { id: t, .. } => assert!(
-                        matches!(kb.terms.get(*t), Term::Var(Var::DeBruijn(0))),
-                        "field-type var closes to DeBruijn(0), got {:?}", kb.terms.get(*t),
-                    ),
-                    other => panic!("expected Term field type, got {other:?}"),
-                }
-            }
+            NodeKind::Type(TypeNode::NamedTuple {
+                fields: Value::Entity { pos, .. },
+            }) => match &pos[0] {
+                Value::Term { id: t, .. } => assert!(
+                    matches!(kb.terms.get(*t), Term::Var(Var::DeBruijn(0))),
+                    "field-type var closes to DeBruijn(0), got {:?}",
+                    kb.terms.get(*t),
+                ),
+                other => panic!("expected Term field type, got {other:?}"),
+            },
             other => panic!("expected NamedTuple Entity fields, got {other:?}"),
         }
     }
@@ -6415,7 +7305,10 @@ mod tests {
 
         assert_eq!(synth.span, source_span);
         match &synth.kind {
-            NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { from, by }, .. } => {
+            NodeKind::Expr {
+                origin: OccurrenceOrigin::Synthesized { from, by },
+                ..
+            } => {
                 assert!(Rc::ptr_eq(from, &source));
                 assert_eq!(by.symbol(), pass_sym);
             }
@@ -6447,14 +7340,23 @@ mod tests {
         match occ.as_expr() {
             Some(Expr::SetLit(elems)) => {
                 assert_eq!(elems.len(), 2, "both set elements must survive the build");
-                assert!(matches!(elems[0].as_expr(), Some(Expr::Const(Literal::Int(1)))));
-                assert!(matches!(elems[1].as_expr(), Some(Expr::Const(Literal::Int(2)))));
+                assert!(matches!(
+                    elems[0].as_expr(),
+                    Some(Expr::Const(Literal::Int(1)))
+                ));
+                assert!(matches!(
+                    elems[1].as_expr(),
+                    Some(Expr::Const(Literal::Int(2)))
+                ));
             }
             other => panic!("expected SetLit, got {other:?}"),
         }
 
         let round = occurrence_to_term(&mut kb, &occ);
-        assert_eq!(round, set_tid, "set literal must reify to its original term twin");
+        assert_eq!(
+            round, set_tid,
+            "set literal must reify to its original term twin"
+        );
     }
 
     #[test]
@@ -6487,14 +7389,23 @@ mod tests {
                 assert_eq!(named.len(), 2, "both tuple elements must survive the build");
                 assert_eq!(named[0].0, k1);
                 assert_eq!(named[1].0, k2);
-                assert!(matches!(named[0].1.as_expr(), Some(Expr::Const(Literal::Int(1)))));
-                assert!(matches!(named[1].1.as_expr(), Some(Expr::Const(Literal::Int(2)))));
+                assert!(matches!(
+                    named[0].1.as_expr(),
+                    Some(Expr::Const(Literal::Int(1)))
+                ));
+                assert!(matches!(
+                    named[1].1.as_expr(),
+                    Some(Expr::Const(Literal::Int(2)))
+                ));
             }
             other => panic!("expected TupleLit, got {other:?}"),
         }
 
         let round = occurrence_to_term(&mut kb, &occ);
-        assert_eq!(round, tuple_tid, "tuple literal must reify to its original term twin");
+        assert_eq!(
+            round, tuple_tid,
+            "tuple literal must reify to its original term twin"
+        );
     }
     /// WI-819: a pattern annotation is `Expr`-kind even when the type it came from
     /// rode the `Value::Node` (denoted) carrier — and collect/close therefore stay
@@ -6538,12 +7449,17 @@ mod tests {
         );
 
         let pattern = NodeOccurrence::new_pattern_annotated(
-            Pattern::Var { name: xname }, Some(ann), span, None,
+            Pattern::Var { name: xname },
+            Some(ann),
+            span,
+            None,
         );
 
         // The closer rewrites the annotation...
         let closed = node_to_debruijn(&mut kb, &pattern, &[v0]);
-        let closed_ann = closed.pattern_type_ann().expect("annotation survives close");
+        let closed_ann = closed
+            .pattern_type_ann()
+            .expect("annotation survives close");
         let closer_saw_it = !Rc::ptr_eq(closed_ann, pattern.pattern_type_ann().unwrap());
 
         // ...and the collector must see the SAME var, or the rule body keeps a
@@ -6552,9 +7468,13 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         collect_occurrence_global_vars_ordered(&kb, &pattern, &mut vars, &mut seen);
 
-        assert!(closer_saw_it, "control: the closer must actually rewrite this annotation");
+        assert!(
+            closer_saw_it,
+            "control: the closer must actually rewrite this annotation"
+        );
         assert_eq!(
-            vars, vec![v0],
+            vars,
+            vec![v0],
             "collect/close LOCKSTEP: the closer rewrote the annotation, so the collector \
              must have reported its var",
         );

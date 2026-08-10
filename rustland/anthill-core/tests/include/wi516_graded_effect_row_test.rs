@@ -47,7 +47,10 @@ end
         for e in &errs {
             eprintln!("{e}");
         }
-        panic!("delay instance (let workaround) failed to load: {} errors", errs.len());
+        panic!(
+            "delay instance (let workaround) failed to load: {} errors",
+            errs.len()
+        );
     }
 }
 
@@ -84,6 +87,9 @@ end
         for e in &errs {
             eprintln!("{e}");
         }
-        panic!("delay instance (nested arg) failed to load: {} errors", errs.len());
+        panic!(
+            "delay instance (nested arg) failed to load: {} errors",
+            errs.len()
+        );
     }
 }

@@ -3,16 +3,15 @@
 /// Generic over `TermSource` so it works against either a `KnowledgeBase`
 /// (hash-consed) or a `ParsedFile` (parse-IR). The canonical printed form
 /// is the same in both cases — used by persistence-side retract matching.
-
 use std::rc::Rc;
 
 use crate::eval::value::Value;
 use crate::intern::{is_positional_label_at, Symbol};
-use crate::kb::KnowledgeBase;
 use crate::kb::node_occurrence::{
     EffectExprNode, Expr, NodeKind, NodeOccurrence, TypeChild, TypeNode,
 };
 use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
+use crate::kb::KnowledgeBase;
 
 /// Append `s` quoted with `.anthill`-syntax escapes for `"`, `\`, `\n`,
 /// `\r`, `\t`. Shared by `TermPrinter` and any other code that needs to
@@ -111,17 +110,25 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             Pattern::Var { name } => buf.push_str(self.view.sym_name(*name)),
             Pattern::Wildcard => buf.push('_'),
             Pattern::Literal { value } => self.write_literal(value, buf),
-            Pattern::Constructor { name, pos_args, named_args } => {
+            Pattern::Constructor {
+                name,
+                pos_args,
+                named_args,
+            } => {
                 buf.push_str(self.view.sym_name(*name));
                 buf.push('(');
                 for (i, p) in pos_args.iter().enumerate() {
-                    if i > 0 { buf.push_str(", "); }
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
                     self.write_pattern(p, buf);
                 }
                 // WI-445: named sub-patterns render `field: pat` after the
                 // positionals (the `Foo(field: pat)` surface form).
                 for (i, (field, p)) in named_args.iter().enumerate() {
-                    if i > 0 || !pos_args.is_empty() { buf.push_str(", "); }
+                    if i > 0 || !pos_args.is_empty() {
+                        buf.push_str(", ");
+                    }
                     buf.push_str(self.view.sym_name(*field));
                     buf.push_str(": ");
                     self.write_pattern(p, buf);
@@ -131,7 +138,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             Pattern::Tuple { positional, .. } => {
                 buf.push('(');
                 for (i, p) in positional.iter().enumerate() {
-                    if i > 0 { buf.push_str(", "); }
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
                     self.write_pattern(p, buf);
                 }
                 buf.push(')');
@@ -176,7 +185,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_type_child(base, buf);
                 buf.push('[');
                 for (i, (sym, val)) in bindings.iter().enumerate() {
-                    if i > 0 { buf.push_str(", "); }
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
                     buf.push_str(self.view.sym_name(*sym));
                     buf.push_str(" = ");
                     self.write_type_child(val, buf);
@@ -188,7 +199,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 self.write_type_child(effects_expr, buf);
                 buf.push(')');
             }
-            TypeNode::Arrow { param, result, effects, arity } => {
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
                 // WI-791: at arity one the `param` child is the sole parameter's
                 // TYPE, so a tuple there is that parameter's type and needs its own
                 // parens — without them `((a: A, b: B)) -> R` renders as the
@@ -342,7 +358,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(self.view.sym_name(*sym));
             }
             Expr::Bottom => buf.push_str("bottom"),
-            Expr::Apply { functor, pos_args, named_args, .. } => {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let fname = self.view.sym_name(*functor);
                 // Round-trip the forall_impl encoding to surface syntax — the
                 // occurrence twin of `write_term`'s special case.
@@ -369,7 +390,11 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                     && named_args.is_empty()
                 {
                     if let Some(body) = self.occ_unwrap_tuple(&pos_args[2]) {
-                        let kw = if fname == "forall_in" { "forall" } else { "some" };
+                        let kw = if fname == "forall_in" {
+                            "forall"
+                        } else {
+                            "some"
+                        };
                         buf.push('(');
                         buf.push_str(kw);
                         buf.push(' ');
@@ -384,15 +409,39 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 }
                 self.write_occ_fn(fname, pos_args, named_args, buf);
             }
-            Expr::ApplyWithin { functor, args, named_args, .. } => {
+            Expr::ApplyWithin {
+                functor,
+                args,
+                named_args,
+                ..
+            } => {
                 self.write_occ_fn(self.view.sym_name(*functor), args, named_args, buf);
             }
-            Expr::Constructor { name, pos_args, named_args, .. }
-            | Expr::Instantiation { name, pos_args, named_args }
-            | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
+            }
+            | Expr::Instantiation {
+                name,
+                pos_args,
+                named_args,
+            }
+            | Expr::ConstructorWithin {
+                name,
+                pos_args,
+                named_args,
+                ..
+            } => {
                 self.write_occ_fn(self.view.sym_name(*name), pos_args, named_args, buf);
             }
-            Expr::DotApply { receiver, name, pos_args, named_args } => {
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args,
+                named_args,
+            } => {
                 self.write_occurrence(receiver, buf);
                 buf.push('.');
                 buf.push_str(self.view.sym_name(*name));
@@ -401,11 +450,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 }
             }
             Expr::HoApply { predicate, args }
-            | Expr::HoApplyWithin { predicate, args, .. } => {
+            | Expr::HoApplyWithin {
+                predicate, args, ..
+            } => {
                 self.write_occurrence(predicate, buf);
                 self.write_occ_args(args, &[], buf);
             }
-            Expr::If { condition, then_branch, else_branch } => {
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 buf.push_str("if ");
                 self.write_occurrence(condition, buf);
                 buf.push_str(" then ");
@@ -413,7 +468,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(" else ");
                 self.write_occurrence(else_branch, buf);
             }
-            Expr::Let { pattern, value, body, .. } => {
+            Expr::Let {
+                pattern,
+                value,
+                body,
+                ..
+            } => {
                 // WI-318: pattern is a Pattern-kind occurrence.
                 buf.push_str("let ");
                 self.write_pattern(pattern, buf);
@@ -422,8 +482,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(" in ");
                 self.write_occurrence(body, buf);
             }
-            Expr::Lambda { param, body }
-            | Expr::LambdaWithin { param, body, .. } => {
+            Expr::Lambda { param, body } | Expr::LambdaWithin { param, body, .. } => {
                 // WI-318: `param` is a Pattern-kind occurrence — render
                 // structurally via `write_pattern`.
                 buf.push('(');
@@ -431,14 +490,22 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(") => ");
                 self.write_occurrence(body, buf);
             }
-            Expr::Proof { target, strategy, using, conclude, body } => {
+            Expr::Proof {
+                target,
+                strategy,
+                using,
+                conclude,
+                body,
+            } => {
                 // WI-538: proof <target> [using …] [by …] [conclude …] end <body>
                 buf.push_str("proof ");
                 buf.push_str(self.view.sym_name(*target));
                 if !using.is_empty() {
                     buf.push_str(" using ");
                     for (i, u) in using.iter().enumerate() {
-                        if i > 0 { buf.push_str(", "); }
+                        if i > 0 {
+                            buf.push_str(", ");
+                        }
                         buf.push_str(self.view.sym_name(*u));
                     }
                 }
@@ -453,7 +520,10 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(" end ");
                 self.write_occurrence(body, buf);
             }
-            Expr::Match { scrutinee, branches } => {
+            Expr::Match {
+                scrutinee,
+                branches,
+            } => {
                 buf.push_str("match ");
                 self.write_occurrence(scrutinee, buf);
                 buf.push_str(" { ");
@@ -526,12 +596,16 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     ) {
         let mut first = true;
         for c in pos.iter() {
-            if !first { buf.push_str(", "); }
+            if !first {
+                buf.push_str(", ");
+            }
             first = false;
             self.write_occurrence(c, buf);
         }
         for (sym, c) in named.iter() {
-            if !first { buf.push_str(", "); }
+            if !first {
+                buf.push_str(", ");
+            }
             first = false;
             buf.push_str(self.view.sym_name(*sym));
             buf.push_str(": ");
@@ -539,16 +613,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
-    fn write_occ_seq(
-        &self,
-        open: char,
-        close: char,
-        es: &[Rc<NodeOccurrence>],
-        buf: &mut String,
-    ) {
+    fn write_occ_seq(&self, open: char, close: char, es: &[Rc<NodeOccurrence>], buf: &mut String) {
         buf.push(open);
         for (i, e) in es.iter().enumerate() {
-            if i > 0 { buf.push_str(", "); }
+            if i > 0 {
+                buf.push_str(", ");
+            }
             self.write_occurrence(e, buf);
         }
         buf.push(close);
@@ -559,11 +629,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// `unwrap_tuple`, used by the `forall_impl` surface-syntax rendering.
     fn occ_unwrap_tuple<'o>(&self, occ: &'o NodeOccurrence) -> Option<&'o [Rc<NodeOccurrence>]> {
         match occ.as_expr()? {
-            Expr::Apply { functor, pos_args, named_args, .. }
-                if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() =>
-            {
-                Some(pos_args)
-            }
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() => Some(pos_args),
             _ => None,
         }
     }
@@ -587,9 +658,11 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// `forall_impl` pretty-printer.
     fn unwrap_tuple(&self, id: TermId) -> Option<&[TermId]> {
         match self.view.term(id) {
-            Term::Fn { functor, pos_args, named_args }
-                if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() =>
-            {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() => {
                 Some(pos_args.as_slice())
             }
             _ => None,
@@ -598,7 +671,9 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
 
     fn write_comma_sep(&self, ts: &[TermId], buf: &mut String) {
         for (i, &t) in ts.iter().enumerate() {
-            if i > 0 { buf.push_str(", "); }
+            if i > 0 {
+                buf.push_str(", ");
+            }
             self.write_term(t, buf);
         }
     }
@@ -616,7 +691,11 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         let mut cur = id;
         loop {
             match self.view.term(cur) {
-                Term::Fn { functor, pos_args, named_args } => {
+                Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                } => {
                     let fname = self.view.sym_name(*functor);
                     let short = fname.rsplit('.').next().unwrap_or(fname);
                     if short == "nil" && pos_args.is_empty() && named_args.is_empty() {
@@ -637,9 +716,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                         // EXACTLY head+tail — a cons carrying extra named or
                         // positional args is not a list spine; folding it
                         // would silently drop the extras.
-                        (Some(h), Some(t))
-                            if named_args.len() == 2 && pos_args.is_empty() =>
-                        {
+                        (Some(h), Some(t)) if named_args.len() == 2 && pos_args.is_empty() => {
                             (h, t)
                         }
                         (None, None) if pos_args.len() == 2 && named_args.is_empty() => {
@@ -677,7 +754,11 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 buf.push('!');
                 buf.push_str(self.view.sym_name(vid.name()));
             }
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 // A ground cons/nil spine prints as a list literal (see
                 // `unwrap_list_spine` for why the cons form must not be
                 // written to disk).
@@ -701,10 +782,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 }
                 // Round-trip the forall_impl encoding produced by
                 // convert_nested_implication back to surface syntax.
-                if fname == "forall_impl"
-                    && pos_args.len() == 3
-                    && named_args.is_empty()
-                {
+                if fname == "forall_impl" && pos_args.len() == 3 && named_args.is_empty() {
                     if let (Some(binders), Some(ants), Some(cons)) = (
                         self.unwrap_tuple(pos_args[0]),
                         self.unwrap_tuple(pos_args[1]),
@@ -726,7 +804,11 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     && named_args.is_empty()
                 {
                     if let Some(body) = self.unwrap_tuple(pos_args[2]) {
-                        let kw = if fname == "forall_in" { "forall" } else { "some" };
+                        let kw = if fname == "forall_in" {
+                            "forall"
+                        } else {
+                            "some"
+                        };
                         buf.push('(');
                         buf.push_str(kw);
                         buf.push(' ');
@@ -757,12 +839,16 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     buf.push('(');
                     let mut first = true;
                     for &tid in pos_args.iter() {
-                        if !first { buf.push_str(", "); }
+                        if !first {
+                            buf.push_str(", ");
+                        }
                         first = false;
                         self.write_term(tid, buf);
                     }
                     for &(sym, tid) in named_args.iter() {
-                        if !first { buf.push_str(", "); }
+                        if !first {
+                            buf.push_str(", ");
+                        }
                         first = false;
                         buf.push_str(self.view.sym_name(sym));
                         buf.push_str(": ");
@@ -865,11 +951,13 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 buf.push_str("nothing")
             }
             Term::Ref(s) | Term::Ident(s) => buf.push_str(self.view.sym_name(*s)),
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 match self.view.qualified_name(*functor) {
-                    "anthill.prelude.TypeExtractor.Arrow" => {
-                        self.write_arrow_type(named_args, buf)
-                    }
+                    "anthill.prelude.TypeExtractor.Arrow" => self.write_arrow_type(named_args, buf),
                     "anthill.prelude.TypeExtractor.NamedTuple" => {
                         self.write_named_tuple_type(named_args, buf)
                     }
@@ -926,12 +1014,16 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                             buf.push('[');
                             let mut first = true;
                             for &t in pos_args.iter() {
-                                if !first { buf.push_str(", "); }
+                                if !first {
+                                    buf.push_str(", ");
+                                }
                                 first = false;
                                 self.write_type_term(t, buf);
                             }
                             for &(sym, t) in named_args.iter() {
-                                if !first { buf.push_str(", "); }
+                                if !first {
+                                    buf.push_str(", ");
+                                }
                                 first = false;
                                 buf.push_str(self.view.sym_name(sym));
                                 buf.push_str(" = ");
@@ -1029,7 +1121,9 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         if let Some(fields) = self.named_arg(named, "fields") {
             if let Some(elems) = self.unwrap_list_spine(fields) {
                 for (i, &elem) in elems.iter().enumerate() {
-                    if i > 0 { buf.push_str(", "); }
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
                     self.write_named_tuple_element(elem, i, buf);
                 }
             }
@@ -1094,7 +1188,9 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// any other shape — the caller then keeps the pre-WI-791 rendering rather
     /// than inventing a parenthesisation.
     fn type_child_arity(&self, child: &TypeChild) -> Option<usize> {
-        let TypeChild::Ground(t) = child else { return None };
+        let TypeChild::Ground(t) = child else {
+            return None;
+        };
         match self.view.term(*t) {
             Term::Const(crate::kb::term::Literal::Int(n)) if *n >= 0 => Some(*n as usize),
             _ => None,
@@ -1111,7 +1207,9 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// (see `write_arrow_type`); a shape this cannot read returns 0, which routes to
     /// the unchanged pre-WI-766 behaviour rather than inventing parens.
     fn named_tuple_arity(&self, id: TermId) -> usize {
-        let Term::Fn { named_args, .. } = self.view.term(id) else { return 0 };
+        let Term::Fn { named_args, .. } = self.view.term(id) else {
+            return 0;
+        };
         self.named_arg(named_args, "fields")
             .and_then(|f| self.unwrap_list_spine(f))
             .map_or(0, |elems| elems.len())
@@ -1137,7 +1235,12 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     }
 
     fn collect_effect_atoms(&self, ee: TermId, out: &mut Vec<String>) {
-        let Term::Fn { functor, named_args, .. } = self.view.term(ee) else {
+        let Term::Fn {
+            functor,
+            named_args,
+            ..
+        } = self.view.term(ee)
+        else {
             return;
         };
         match self.view.qualified_name(*functor) {
@@ -1198,7 +1301,12 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         let mut goals: Vec<String> = Vec::new();
         let mut cur = guard;
         while let Some(g) = cur {
-            let Term::Fn { functor, named_args, .. } = self.view.term(g) else {
+            let Term::Fn {
+                functor,
+                named_args,
+                ..
+            } = self.view.term(g)
+            else {
                 break;
             };
             if self.view.qualified_name(*functor) != "anthill.prelude.List.cons" {
@@ -1337,10 +1445,7 @@ mod tests {
         let t = kb.alloc(Term::Fn {
             functor: f,
             pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[
-                (id_sym, id_val),
-                (name_sym, name_val),
-            ]),
+            named_args: SmallVec::from_slice(&[(id_sym, id_val), (name_sym, name_val)]),
         });
         let printer = TermPrinter::new(&kb);
         assert_eq!(

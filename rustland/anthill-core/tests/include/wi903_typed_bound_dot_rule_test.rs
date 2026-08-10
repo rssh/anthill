@@ -147,12 +147,17 @@ namespace test.wi903guarded
   end
 end
 "#;
-    let errs = try_load_kb_with(SRC).err().expect("a guarded equation cannot enforce a bound");
+    let errs = try_load_kb_with(SRC)
+        .err()
+        .expect("a guarded equation cannot enforce a bound");
     let found = mentioning(&errs, "WI-582");
     let [msg] = found[..] else {
         panic!("expected exactly one typed-pattern refusal, got: {errs:?}");
     };
-    assert!(msg.contains("pk"), "the refusal must name the offending rule: {msg}");
+    assert!(
+        msg.contains("pk"),
+        "the refusal must name the offending rule: {msg}"
+    );
     assert!(
         msg.contains("bodyless"),
         "a TAGGED rule's refusal must name what actually disqualifies it — the \
@@ -244,7 +249,9 @@ namespace test.wi903macro
   end
 end
 "#;
-    let errs = try_load_kb_with(SRC).err().expect("the typed bound must fail the load");
+    let errs = try_load_kb_with(SRC)
+        .err()
+        .expect("the typed bound must fail the load");
     assert_eq!(
         mentioning(&errs, WI903).len(),
         1,

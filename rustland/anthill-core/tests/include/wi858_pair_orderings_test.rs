@@ -196,7 +196,10 @@ fn the_prelude_makes_a_pair_lawful_with_no_language_binding() {
         .filter_map(|rid| kb.fact_head_named_args(rid))
         .filter_map(|named| {
             let get = |key: &str| {
-                named.iter().find(|(s, _)| kb.local_name_of(*s) == key).map(|(_, t)| *t)
+                named
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == key)
+                    .map(|(_, t)| *t)
             };
             let (sort_ref, spec) = (get("sort_ref")?, get("spec")?);
             if functor_qn(sort_ref).as_deref() != Some("anthill.prelude.Pair") {
@@ -268,8 +271,14 @@ fn swapping_the_brackets_swaps_the_answers() {
         ),
     );
     // The entry NAMES are deliberately left as they were: only the brackets moved.
-    assert_eq!(eval_str(&src, "wi858.swap.Driver.byFst", "the pin, swapped"), "(2,1)(1,9)");
-    assert_eq!(eval_str(&src, "wi858.swap.Driver.bySnd", "the pin, swapped"), "(1,9)(2,1)");
+    assert_eq!(
+        eval_str(&src, "wi858.swap.Driver.byFst", "the pin, swapped"),
+        "(2,1)(1,9)"
+    );
+    assert_eq!(
+        eval_str(&src, "wi858.swap.Driver.bySnd", "the pin, swapped"),
+        "(1,9)(2,1)"
+    );
 }
 
 /// …AND THE PRICE OF COEXISTENCE, which is 058's whole subject: with both declared, a
@@ -294,9 +303,15 @@ fn a_bracketless_compare_with_two_orderings_names_both() {
         ),
     );
     let errs = load_errs(&src);
-    let tie: Vec<&String> =
-        errs.iter().filter(|e| e.contains("ambiguous dispatch of")).collect();
-    assert_eq!(tie.len(), 1, "one ambiguous call, one error; all errors: {errs:?}");
+    let tie: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("ambiguous dispatch of"))
+        .collect();
+    assert_eq!(
+        tie.len(),
+        1,
+        "one ambiguous call, one error; all errors: {errs:?}"
+    );
     assert!(
         tie[0].contains("wi858.bare.ByFst") && tie[0].contains("wi858.bare.BySnd"),
         "the tie must name BOTH declared orderings: {}",
@@ -309,7 +324,6 @@ fn a_bracketless_compare_with_two_orderings_names_both() {
         tie[0]
     );
 }
-
 
 /// §3.4's merge safety, over two RIVALS — two differently-ordered sets have two TYPES,
 /// so `union` is a type error before it is a wrong answer. Two locally-declared
@@ -354,7 +368,10 @@ fn union_within_one_ordering_merges() {
              render(SortedSet.toList(SortedSet.union(a, b)))\n  end"
         ),
     );
-    assert_eq!(eval_str(&src, "wi858.agree.Driver.same", "two agreeing sets merge"), "(1,9)(2,1)");
+    assert_eq!(
+        eval_str(&src, "wi858.agree.Driver.same", "two agreeing sets merge"),
+        "(1,9)(2,1)"
+    );
 }
 
 /// The ELEMENT orderings are independent of the pair ordering: a HETEROGENEOUS
@@ -377,7 +394,11 @@ fn a_heterogeneous_pair_orders_through_two_element_orderings() {
         ),
     );
     assert_eq!(
-        eval_int(&src, "wi858.het.Driver.sndDecides", "Int64 fst ties, String snd decides"),
+        eval_int(
+            &src,
+            "wi858.het.Driver.sndDecides",
+            "Int64 fst ties, String snd decides"
+        ),
         1,
         "`fst` ties at 1, so `snd` decides through the OTHER element ordering: \
          \"zz\" > \"aaa\"",
@@ -389,7 +410,6 @@ fn a_heterogeneous_pair_orders_through_two_element_orderings() {
          only `snd` would pass the assertion above",
     );
 }
-
 
 // ── What `Pair` gaining `Eq` did, and did not, do ────────────────────
 
@@ -532,7 +552,10 @@ fn nested_pair_equality_is_componentwise_in_every_slot() {
          pair(fst: pair(fst: 1, snd: 2), snd: pair(fst: 3, snd: 4))) then 1 else 0\n  end",
     );
     for (entry, why) in [
-        ("carrierOnLeft", "carrier FIRST — the arm WI-871 recorded as failing"),
+        (
+            "carrierOnLeft",
+            "carrier FIRST — the arm WI-871 recorded as failing",
+        ),
         ("carrierOnRight", "carrier SECOND"),
         ("carrierBothSides", "carrier BOTH"),
     ] {
@@ -586,7 +609,10 @@ namespace wi858.localnest
 end
 "#;
     for (entry, why) in [
-        ("carrierOnLeft", "carrier FIRST — the cell WI-871 recorded as failing"),
+        (
+            "carrierOnLeft",
+            "carrier FIRST — the cell WI-871 recorded as failing",
+        ),
         ("carrierOnRight", "carrier SECOND"),
         ("carrierBothSides", "carrier BOTH"),
         ("bothPrimitive", "neither component is the carrier"),
@@ -625,7 +651,11 @@ fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
         )
     };
     assert_eq!(
-        eval_int(&composite("Duple", "duple"), "wi872.shadow.Use.same", "the CONTROL"),
+        eval_int(
+            &composite("Duple", "duple"),
+            "wi872.shadow.Use.same",
+            "the CONTROL"
+        ),
         1,
         "a composite under a name no prelude sort provides for compares structurally — \
          without this the two arms below would prove nothing about the NAME",
@@ -702,7 +732,8 @@ fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
     );
     let errs = load_errs(&nonsense);
     assert!(
-        errs.iter().any(|e| e.contains("bound slot `OA` of") && e.contains("ByFst")),
+        errs.iter()
+            .any(|e| e.contains("bound slot `OA` of") && e.contains("ByFst")),
         "`ByFst` provides `Ord` at `Pair`, never at `Int64`, so the binding is now \
          refused where it used to be dropped — and named in the author's own \
          vocabulary, the SLOT rather than the sub-goal it became: {errs:?}"
@@ -723,6 +754,12 @@ fn primitive_orderings_are_unchanged() {
          operation strings(n: Int64) -> Int64 = Ord.compare(\"b\", \"a\")\n    \
          operation ints(n: Int64) -> Int64 = Ord.compare(7, 3)\n  end",
     );
-    assert_eq!(eval_int(&src, "wi858.primitives.Driver.strings", "String compare"), 1);
-    assert_eq!(eval_int(&src, "wi858.primitives.Driver.ints", "Int64 compare"), 1);
+    assert_eq!(
+        eval_int(&src, "wi858.primitives.Driver.strings", "String compare"),
+        1
+    );
+    assert_eq!(
+        eval_int(&src, "wi858.primitives.Driver.ints", "Int64 compare"),
+        1
+    );
 }

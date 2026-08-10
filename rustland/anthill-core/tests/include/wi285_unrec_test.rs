@@ -35,7 +35,9 @@ fn occ(expr: Expr) -> Rc<NodeOccurrence> {
 /// A sort symbol resolves to `name` exactly or to a qualified path
 /// ending in `.name`.
 fn sort_is(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, name: &str) {
-    let ms = occ.inferred_type().and_then(|t| sort_functor_of_view(kb, &t))
+    let ms = occ
+        .inferred_type()
+        .and_then(|t| sort_functor_of_view(kb, &t))
         .expect("occurrence should carry a declared sort");
     let full = kb.local_name_of(ms);
     assert!(
@@ -57,11 +59,19 @@ fn deeply_nested_else_if_types_without_host_stack_overflow() {
     for _ in 0..DEPTH {
         let condition = occ(Expr::Const(Literal::Bool(true)));
         let then_branch = occ(Expr::Const(Literal::Int(0)));
-        node = occ(Expr::If { condition, then_branch, else_branch: node });
+        node = occ(Expr::If {
+            condition,
+            then_branch,
+            else_branch: node,
+        });
     }
     let env = TypingEnv::empty();
     let r = type_check_node(&mut kb, &env, &node, None);
-    assert!(r.is_ok(), "deep else-if chain should type-check; got {:?}", r.err());
+    assert!(
+        r.is_ok(),
+        "deep else-if chain should type-check; got {:?}",
+        r.err()
+    );
     // The if's type is the then-branch's type (Int64) — confirms the
     // IfExpr frame *assembles* the result, not merely survives.
     sort_is(&kb, &node, "Int64");
@@ -80,13 +90,19 @@ fn collection_literal_frames_assemble_types() {
         occ(Expr::Const(Literal::Int(2))),
         occ(Expr::Const(Literal::Int(3))),
     ]));
-    assert!(type_check_node(&mut kb, &env, &list, None).is_ok(), "list literal should type");
+    assert!(
+        type_check_node(&mut kb, &env, &list, None).is_ok(),
+        "list literal should type"
+    );
     sort_is(&kb, &list, "List");
     sort_is(&kb, &first, "Int64"); // child stamping preserved
 
     // {1} : Set[T = Int64].
     let set = occ(Expr::SetLit(vec![occ(Expr::Const(Literal::Int(1)))]));
-    assert!(type_check_node(&mut kb, &env, &set, None).is_ok(), "set literal should type");
+    assert!(
+        type_check_node(&mut kb, &env, &set, None).is_ok(),
+        "set literal should type"
+    );
     sort_is(&kb, &set, "Set");
 
     // (1, true) : named-tuple — types Ok, fields stamped.
@@ -95,6 +111,9 @@ fn collection_literal_frames_assemble_types() {
         positional: vec![Rc::clone(&tup_int), occ(Expr::Const(Literal::Bool(true)))],
         named: vec![],
     });
-    assert!(type_check_node(&mut kb, &env, &tup, None).is_ok(), "tuple literal should type");
+    assert!(
+        type_check_node(&mut kb, &env, &tup, None).is_ok(),
+        "tuple literal should type"
+    );
     sort_is(&kb, &tup_int, "Int64"); // positional field stamped
 }

@@ -21,8 +21,8 @@
 //! carrier is a wildcard too, so the param never pins); this extends the same
 //! leniency to the carrier-concrete / sibling-abstract mix.
 
-use anthill_core::eval::Value;
 use crate::common::{interp_for, register_modify_handler};
+use anthill_core::eval::Value;
 
 const SRC: &str = r#"
 namespace test.wi507
@@ -77,9 +77,13 @@ fn wi507_concrete_bare_clear_empties() {
 
     let s = interp.call("test.wi507.fresh", &[]).expect("fresh");
     for x in [10, 20, 30] {
-        interp.call("test.wi507.pushN", &[s.clone(), Value::Int(x)]).expect("push");
+        interp
+            .call("test.wi507.pushN", &[s.clone(), Value::Int(x)])
+            .expect("push");
     }
-    interp.call("test.wi507.wipeBare", &[s.clone()]).expect("bare clear (concrete)");
+    interp
+        .call("test.wi507.wipeBare", &[s.clone()])
+        .expect("bare clear (concrete)");
     assert_eq!(
         interp.call("test.wi507.depth", &[s]).unwrap().as_int(),
         Some(0),
@@ -93,7 +97,11 @@ fn wi507_abstract_carrier_only_clear_empties() {
     let mut interp = interp_for(SRC);
     register_modify_handler(&mut interp);
     let r = interp.call("test.wi507.driveBare", &[]).expect("driveBare");
-    assert_eq!(r.as_int(), Some(0), "abstract carrier-only bare clear empties");
+    assert_eq!(
+        r.as_int(),
+        Some(0),
+        "abstract carrier-only bare clear empties"
+    );
 }
 
 /// Guard: the sibling carrier+value `insert(c, x)` keeps working (it never broke,
@@ -102,6 +110,8 @@ fn wi507_abstract_carrier_only_clear_empties() {
 fn wi507_abstract_insert_still_works() {
     let mut interp = interp_for(SRC);
     register_modify_handler(&mut interp);
-    let r = interp.call("test.wi507.driveInsert", &[]).expect("driveInsert");
+    let r = interp
+        .call("test.wi507.driveInsert", &[])
+        .expect("driveInsert");
     assert_eq!(r.as_int(), Some(2), "abstract insert adds two");
 }

@@ -8,7 +8,6 @@
 //!      not a wall of unresolved-import errors (the heimdall regression);
 //!   3. `init` scaffolds a project that carries no drift-prone domain/rules.
 
-
 use std::process::Command;
 
 use crate::common::setup_domainless_project;
@@ -67,10 +66,20 @@ fn domainless_project_runs_status_list_next() {
         .args(["-d", dir, "list"])
         .output()
         .unwrap();
-    assert!(list.status.success(), "list failed: {}", String::from_utf8_lossy(&list.stderr));
+    assert!(
+        list.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
     let list_out = String::from_utf8_lossy(&list.stdout);
-    assert!(list_out.contains("WI-001"), "WI-001 missing from list: {list_out}");
-    assert!(list_out.contains("blocked"), "expected a blocked section: {list_out}");
+    assert!(
+        list_out.contains("WI-001"),
+        "WI-001 missing from list: {list_out}"
+    );
+    assert!(
+        list_out.contains("blocked"),
+        "expected a blocked section: {list_out}"
+    );
 
     // next: the unblocked WI-001 is the claimable item — exercises the
     // bundled `anthill.stage0.workflow.claimable` rule via KB.execute.
@@ -78,10 +87,20 @@ fn domainless_project_runs_status_list_next() {
         .args(["-d", dir, "next"])
         .output()
         .unwrap();
-    assert!(next.status.success(), "next failed: {}", String::from_utf8_lossy(&next.stderr));
+    assert!(
+        next.status.success(),
+        "next failed: {}",
+        String::from_utf8_lossy(&next.stderr)
+    );
     let next_out = String::from_utf8_lossy(&next.stdout);
-    assert!(next_out.contains("WI-001"), "expected WI-001 as next, got: {next_out}");
-    assert!(!next_out.contains("WI-002"), "blocked WI-002 must not be claimable: {next_out}");
+    assert!(
+        next_out.contains("WI-001"),
+        "expected WI-001 as next, got: {next_out}"
+    );
+    assert!(
+        !next_out.contains("WI-002"),
+        "blocked WI-002 must not be claimable: {next_out}"
+    );
 }
 
 #[test]
@@ -110,7 +129,10 @@ fn stale_domain_does_not_cascade_into_unresolved_imports() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Open: 2"), "items lost with stale domain: {stdout}");
+    assert!(
+        stdout.contains("Open: 2"),
+        "items lost with stale domain: {stdout}"
+    );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     // The key regression: no wall of unresolved-import errors, and load is not
@@ -141,11 +163,21 @@ fn init_scaffolds_no_domain_or_rules() {
         .current_dir(&proj)
         .output()
         .unwrap();
-    assert!(init.status.success(), "init failed: {}", String::from_utf8_lossy(&init.stderr));
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
 
     let inner = proj.join("anthill-todo");
-    assert!(inner.join("project.anthill").exists(), "project.anthill missing");
-    assert!(inner.join("workitems.anthill").exists(), "workitems.anthill missing");
+    assert!(
+        inner.join("project.anthill").exists(),
+        "project.anthill missing"
+    );
+    assert!(
+        inner.join("workitems.anthill").exists(),
+        "workitems.anthill missing"
+    );
     // The drift-prone scaffolds are gone — the domain/rules ship bundled.
     assert!(
         !inner.join("domain.anthill").exists(),
@@ -161,12 +193,20 @@ fn init_scaffolds_no_domain_or_rules() {
         .args(["-d", proj.to_str().unwrap(), "add", "first task"])
         .output()
         .unwrap();
-    assert!(add.status.success(), "add failed: {}", String::from_utf8_lossy(&add.stderr));
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
     let list = Command::new(ANTHILL_TODO_BIN)
         .args(["-d", proj.to_str().unwrap(), "list"])
         .output()
         .unwrap();
-    assert!(list.status.success(), "list failed: {}", String::from_utf8_lossy(&list.stderr));
+    assert!(
+        list.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
     assert!(
         String::from_utf8_lossy(&list.stdout).contains("first task"),
         "added item missing from list"

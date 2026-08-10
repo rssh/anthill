@@ -23,9 +23,8 @@
 //! ("Output ResolvedRequiresNode is the direct input to the requirement-
 //! insertion pass"); WI-227 commit 91578d2 for the IR emitter.
 
-
-use anthill_core::kb::typing::{CallClass, ResolvedRequiresNode};
 use crate::common::interp_for;
+use anthill_core::kb::typing::{CallClass, ResolvedRequiresNode};
 
 #[test]
 fn pin_now_threads_conditional_tree_into_nested_dictionary_nodes() {
@@ -94,22 +93,22 @@ end
                 callee_spec_sort,
                 resolved_tree,
                 ..
-            } if *fn_target_sym == impl_eq_sym => Some((
-                *fn_target_sym,
-                *callee_spec_sort,
-                resolved_tree.clone(),
-            )),
+            } if *fn_target_sym == impl_eq_sym => {
+                Some((*fn_target_sym, *callee_spec_sort, resolved_tree.clone()))
+            }
             _ => None,
         })
         .expect("Driver.drive's eq() must classify as ConcreteApplyWithin → EqList.eq");
 
     assert_eq!(
-        fn_target_sym, impl_eq_sym,
+        fn_target_sym,
+        impl_eq_sym,
         "fn_target_sym must be EqList.eq; got {}",
         kb.qualified_name_of(fn_target_sym)
     );
     assert_eq!(
-        callee_spec_sort, eqlist_sym,
+        callee_spec_sort,
+        eqlist_sym,
         "callee_spec_sort must be EqList (the carrier sort); got {}",
         kb.qualified_name_of(callee_spec_sort)
     );
@@ -120,16 +119,19 @@ end
     let tree = resolved_tree
         .expect("ConcreteApplyWithin for Pin-now Conditional must carry resolved_tree");
     let (outer_impl_sort, sub_resolutions) = match tree {
-        ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
-            (impl_sort, sub_resolutions)
-        }
+        ResolvedRequiresNode::Conditional {
+            impl_sort,
+            sub_resolutions,
+            ..
+        } => (impl_sort, sub_resolutions),
         other => panic!(
             "resolved_tree must be Conditional (EqList has a `requires` chain); \
              got {other:?}"
         ),
     };
     assert_eq!(
-        outer_impl_sort, eqlist_sym,
+        outer_impl_sort,
+        eqlist_sym,
         "outer impl_sort must be EqList; got {}",
         kb.qualified_name_of(outer_impl_sort)
     );
@@ -147,7 +149,8 @@ end
         ),
     };
     assert_eq!(
-        inner_impl_sort, int_sym,
+        inner_impl_sort,
+        int_sym,
         "Eq[T = Int64]'s carrier is Int64 (per stdlib's `fact Eq[T = Int64]`); got {}",
         kb.qualified_name_of(inner_impl_sort)
     );

@@ -36,7 +36,9 @@ namespace test.wi644.mapfloat
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_nonEq_key_error(&errs, "Map", "Float");
 }
 
@@ -50,7 +52,9 @@ namespace test.wi644.setfloat
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_nonEq_key_error(&errs, "Set", "Float");
 }
 
@@ -69,7 +73,9 @@ namespace test.wi644.mapcomposite
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_nonEq_key_error(&errs, "Map", "Pt");
 }
 
@@ -79,27 +85,31 @@ end
 /// proposal's named escape hatch for "floats as keys".
 #[test]
 fn map_with_totalfloat_key_loads() {
-    assert_loads_clean(r#"
+    assert_loads_clean(
+        r#"
 namespace test.wi644.maptf
   import anthill.prelude.{Map, TotalFloat, Int64}
   sort Holder
     entity holder(m: Map[K = TotalFloat, V = Int64])
   end
 end
-"#);
+"#,
+    );
 }
 
 /// A lawful primitive key loads.
 #[test]
 fn map_with_int_key_loads() {
-    assert_loads_clean(r#"
+    assert_loads_clean(
+        r#"
 namespace test.wi644.mapint
   import anthill.prelude.{Map, Int64, String}
   sort Holder
     entity holder(m: Map[K = Int64, V = String])
   end
 end
-"#);
+"#,
+    );
 }
 
 /// An ALL-`Eq` composite key loads — it is lawfully `Eq` (WI-664 does not derive
@@ -107,7 +117,8 @@ end
 /// a positive "must provide Eq" check, since no `Eq` fact is derived for it).
 #[test]
 fn map_with_all_eq_composite_key_loads() {
-    assert_loads_clean(r#"
+    assert_loads_clean(
+        r#"
 namespace test.wi644.mapokcomposite
   import anthill.prelude.{Map, Int64}
   sort Q
@@ -117,7 +128,8 @@ namespace test.wi644.mapokcomposite
     entity holder(m: Map[K = Q, V = Int64])
   end
 end
-"#);
+"#,
+    );
 }
 
 /// An ABSTRACT key binding (a parametric holder whose own param is the map key)
@@ -125,7 +137,8 @@ end
 /// fire on a type-param).
 #[test]
 fn map_over_abstract_param_key_loads() {
-    assert_loads_clean(r#"
+    assert_loads_clean(
+        r#"
 namespace test.wi644.mapabstract
   import anthill.prelude.{Map, Int64}
   sort Holder
@@ -133,5 +146,6 @@ namespace test.wi644.mapabstract
     entity holder(m: Map[K = K, V = Int64])
   end
 end
-"#);
+"#,
+    );
 }

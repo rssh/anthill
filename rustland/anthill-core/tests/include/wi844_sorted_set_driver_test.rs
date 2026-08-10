@@ -197,8 +197,15 @@ fn two_string_orderings_make_a_bare_compare_ambiguous() {
         "  sort Use\n    operation cmp(a: String, b: String) -> Int64 = Ord.compare(a, b)\n  end",
     );
     let errs = load_errs(&src);
-    let tie: Vec<&String> = errs.iter().filter(|e| e.contains("ambiguous dispatch of")).collect();
-    assert_eq!(tie.len(), 1, "one ambiguous call, one error; all errors: {errs:?}");
+    let tie: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("ambiguous dispatch of"))
+        .collect();
+    assert_eq!(
+        tie.len(),
+        1,
+        "one ambiguous call, one error; all errors: {errs:?}"
+    );
     let text = tie[0];
     assert!(
         text.contains("anthill.prelude.String")
@@ -297,12 +304,22 @@ fn union_merges_ascending_and_deduplicates() {
         "sorted, and the shared 3 appears ONCE — `123345` would mean the seam duplicated",
     );
     assert_eq!(
-        eval_str(&src, "wi844.merge.Driver.ba", "the same union, operands swapped"),
+        eval_str(
+            &src,
+            "wi844.merge.Driver.ba",
+            "the same union, operands swapped"
+        ),
         "12345",
         "a merge that dropped one side's tail passes one direction and fails the other",
     );
-    assert_eq!(eval_str(&src, "wi844.merge.Driver.aEmpty", "x u {} = x"), "135");
-    assert_eq!(eval_str(&src, "wi844.merge.Driver.emptyA", "{} u x = x"), "135");
+    assert_eq!(
+        eval_str(&src, "wi844.merge.Driver.aEmpty", "x u {} = x"),
+        "135"
+    );
+    assert_eq!(
+        eval_str(&src, "wi844.merge.Driver.emptyA", "{} u x = x"),
+        "135"
+    );
 }
 
 /// THE WI-844 MECHANISM ITSELF, isolated: after ONE pinned construction, every
@@ -322,7 +339,11 @@ fn the_ordering_is_read_from_the_argument_type_not_only_the_bracket() {
         ),
     );
     assert_eq!(
-        eval_str(&src, "wi844.read.Driver.shortestFirst", "one pin, then no brackets"),
+        eval_str(
+            &src,
+            "wi844.read.Driver.shortestFirst",
+            "one pin, then no brackets"
+        ),
         "zz",
         "`zz` (2 chars) sorts before `aaa` (3) under ByLength — and the two `insert`s \
          and the `toList` carry no bracket at all",
@@ -343,11 +364,19 @@ fn each_construction_site_selects_its_own_ordering() {
         ),
     );
     assert_eq!(
-        eval_str(&src, "wi844.thread.Driver.byLength", "the length ordering, selected"),
+        eval_str(
+            &src,
+            "wi844.thread.Driver.byLength",
+            "the length ordering, selected"
+        ),
         "zz",
     );
     assert_eq!(
-        eval_str(&src, "wi844.thread.Driver.alphabetical", "the alphabetic ordering, selected"),
+        eval_str(
+            &src,
+            "wi844.thread.Driver.alphabetical",
+            "the alphabetic ordering, selected"
+        ),
         "aaa",
         "the SAME body shape over the SAME two strings, differing only in the bracket \
          at `empty` — so `zz` twice would mean the construction-site selection decided \
@@ -411,9 +440,20 @@ fn an_etad_op_takes_its_ordering_from_the_expected_arrow() {
              operation alphabetical(n: Int64) -> String = viaAlphabetical(insert)\n  end"
         ),
     );
-    assert_eq!(eval_str(&src, "wi844.eta.Driver.byLength", "eta'd against a ByLength arrow"), "zz");
     assert_eq!(
-        eval_str(&src, "wi844.eta.Driver.alphabetical", "eta'd against an Alphabetical arrow"),
+        eval_str(
+            &src,
+            "wi844.eta.Driver.byLength",
+            "eta'd against a ByLength arrow"
+        ),
+        "zz"
+    );
+    assert_eq!(
+        eval_str(
+            &src,
+            "wi844.eta.Driver.alphabetical",
+            "eta'd against an Alphabetical arrow"
+        ),
         "aaa",
         "the SAME bare `insert` reference, differing only in the expected arrow's `O` — \
          so one answer twice would mean the eta's σ was not read",
@@ -451,11 +491,19 @@ fn an_abstract_ordering_parameter_forwards_the_callers_choice() {
         ),
     );
     assert_eq!(
-        eval_str(&src, "wi844.abstract.Driver.viaByLength", "abstract O, ByLength argument"),
+        eval_str(
+            &src,
+            "wi844.abstract.Driver.viaByLength",
+            "abstract O, ByLength argument"
+        ),
         "zz",
     );
     assert_eq!(
-        eval_str(&src, "wi844.abstract.Driver.viaAlphabetical", "abstract O, Alphabetical argument"),
+        eval_str(
+            &src,
+            "wi844.abstract.Driver.viaAlphabetical",
+            "abstract O, Alphabetical argument"
+        ),
         "aaa",
         "ONE polymorphic body, two answers — the dictionary is forwarded from the \
          argument's type, not re-resolved against the carrier",
@@ -499,7 +547,11 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
     };
     // (namespace, the call, what wrote the two witnesses)
     let cases = [
-        ("wi844.twoslot", "Both.cmp(s, \"q\")", "both read off the argument's TYPE"),
+        (
+            "wi844.twoslot",
+            "Both.cmp(s, \"q\")",
+            "both read off the argument's TYPE",
+        ),
         (
             "wi844.twoslotmixed",
             "Both.cmp[A = ByLength](s, \"q\")",
@@ -644,13 +696,21 @@ fn wi857_control_the_same_hole_with_no_058_vocabulary() {
          let b = HolderEq.same(7, 7)\n      1\n  end",
     );
     assert_eq!(
-        eval_int(&src, "wi844.wi857.Driver.viaPartialEq", "PartialEq has an EMPTY own chain"),
+        eval_int(
+            &src,
+            "wi844.wi857.Driver.viaPartialEq",
+            "PartialEq has an EMPTY own chain"
+        ),
         1,
         "the control must PASS, else it proves nothing about what distinguishes the \
          case that used to fail",
     );
     assert_eq!(
-        eval_int(&src, "wi844.wi857.Driver.viaEq", "the `Eq` twin runs since WI-857"),
+        eval_int(
+            &src,
+            "wi844.wi857.Driver.viaEq",
+            "the `Eq` twin runs since WI-857"
+        ),
         1,
         "`Eq requires PartialEq`, so its dictionary bundles one sub-entry — which the \
          producer now supplies and the transitive `PartialEq.eq` read projects out. \
@@ -684,8 +744,14 @@ fn a_string_set_and_an_int_set_keep_their_own_orderings() {
             int_pipeline("descending", "Descending")
         ),
     );
-    assert_eq!(eval_str(&src, "wi844.mixed.Driver.strings", "pinned String set"), "zz");
-    assert_eq!(eval_int(&src, "wi844.mixed.Driver.ascending", "Int64, ascending"), 3);
+    assert_eq!(
+        eval_str(&src, "wi844.mixed.Driver.strings", "pinned String set"),
+        "zz"
+    );
+    assert_eq!(
+        eval_int(&src, "wi844.mixed.Driver.ascending", "Int64, ascending"),
+        3
+    );
     assert_eq!(
         eval_int(&src, "wi844.mixed.Driver.descending", "Int64, descending"),
         7,
@@ -707,10 +773,17 @@ fn one_ordering_alone_behaves_the_same() {
     let src = program_with(
         "wi844.sole",
         BY_LENGTH,
-        &format!("  sort Driver\n{FIRST}{}  end", string_pipeline("pinned", "ByLength")),
+        &format!(
+            "  sort Driver\n{FIRST}{}  end",
+            string_pipeline("pinned", "ByLength")
+        ),
     );
     assert_eq!(
-        eval_str(&src, "wi844.sole.Driver.pinned", "one witness beside the prelude's own"),
+        eval_str(
+            &src,
+            "wi844.sole.Driver.pinned",
+            "one witness beside the prelude's own"
+        ),
         "zz",
     );
 }

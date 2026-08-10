@@ -164,7 +164,9 @@ fn a_supplier_conflict_behind_a_self_provision_reports_by_route() {
     ));
     assert!(
         msg.contains(&format!("the carrier's own member '{ns}.Leaf.describe'"))
-            && msg.contains(&format!("an instance fact binding `describe = {ns}.otherDescribe`")),
+            && msg.contains(&format!(
+                "an instance fact binding `describe = {ns}.otherDescribe`"
+            )),
         "the conflict must be named by SUPPLY ROUTE — which text to delete: {msg}",
     );
     assert_eq!(

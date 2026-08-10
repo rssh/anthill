@@ -49,7 +49,10 @@ fn mismatch_sides(msg: &str) -> (String, String) {
     let (expected, actual) = pair.split_once(", got ").unwrap_or_else(|| {
         panic!("type-mismatch diagnostic has no `, got` half: {msg}");
     });
-    (expected.trim().to_string(), strip_origin_suffix(actual.trim()).to_string())
+    (
+        expected.trim().to_string(),
+        strip_origin_suffix(actual.trim()).to_string(),
+    )
 }
 
 /// Strip the WI-510 provenance suffix — ` [Kind @ file:line]`, which
@@ -99,7 +102,10 @@ end
 /// is what makes them controls rather than filler.
 #[test]
 fn the_two_rendered_sides_of_an_arity_mismatch_differ() {
-    let msg = reject(TICKET_REPRO, "a 2-binder lambda does not fit a 3-parameter slot");
+    let msg = reject(
+        TICKET_REPRO,
+        "a 2-binder lambda does not fit a 3-parameter slot",
+    );
     let (expected, actual) = mismatch_sides(&msg);
     assert_ne!(
         expected, actual,
@@ -118,7 +124,10 @@ fn the_two_rendered_sides_of_an_arity_mismatch_differ() {
 /// direction needs this test) and the two unchanged-rendering controls.
 #[test]
 fn the_diagnostic_states_the_arity_of_each_side() {
-    let msg = reject(TICKET_REPRO, "a 2-binder lambda does not fit a 3-parameter slot");
+    let msg = reject(
+        TICKET_REPRO,
+        "a 2-binder lambda does not fit a 3-parameter slot",
+    );
     let (expected, actual) = mismatch_sides(&msg);
     assert!(
         expected.starts_with("a 3-parameter function"),
@@ -136,7 +145,10 @@ fn the_diagnostic_states_the_arity_of_each_side() {
 /// message, and it contradicts the count standing beside it.
 #[test]
 fn a_context_supplied_parameter_list_is_not_attributed_to_the_lambda() {
-    let msg = reject(TICKET_REPRO, "a 2-binder lambda does not fit a 3-parameter slot");
+    let msg = reject(
+        TICKET_REPRO,
+        "a 2-binder lambda does not fit a 3-parameter slot",
+    );
     let (expected, actual) = mismatch_sides(&msg);
     assert!(
         expected.contains("(a: Int64, b: Int64, c: Int64)"),
@@ -175,8 +187,14 @@ end
         "a 3-parameter operation does not fit a 2-parameter slot",
     );
     let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(expected, "a 2-parameter function (a: Int64, b: Int64) -> Int64");
-    assert_eq!(actual, "a 3-parameter function (_1: Int64, _2: Int64, _3: Int64) -> Int64");
+    assert_eq!(
+        expected,
+        "a 2-parameter function (a: Int64, b: Int64) -> Int64"
+    );
+    assert_eq!(
+        actual,
+        "a 3-parameter function (_1: Int64, _2: Int64, _3: Int64) -> Int64"
+    );
 }
 
 /// THE ZERO BOUNDARY, measured rather than reasoned about: a 0-parameter arrow's slot is
@@ -231,8 +249,14 @@ end
         "a 1-binder lambda does not fit a 2-parameter slot",
     );
     let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(expected, "a 2-parameter function (a: Int64, b: Int64) -> Int64");
-    assert_eq!(actual, "a 1-parameter function ((a: Int64, b: Int64)) -> Int64");
+    assert_eq!(
+        expected,
+        "a 2-parameter function (a: Int64, b: Int64) -> Int64"
+    );
+    assert_eq!(
+        actual,
+        "a 1-parameter function ((a: Int64, b: Int64)) -> Int64"
+    );
     assert_ne!(expected, actual, "the sides must still differ even here");
 }
 
@@ -286,8 +310,14 @@ end
         "a 2-parameter (Int64, String) operation does not fit a 3-parameter slot",
     );
     let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(expected, "a 3-parameter function (a: Int64, b: Int64, c: Int64) -> Int64");
-    assert_eq!(actual, "a 2-parameter function (_1: Int64, _2: String) -> Int64");
+    assert_eq!(
+        expected,
+        "a 3-parameter function (a: Int64, b: Int64, c: Int64) -> Int64"
+    );
+    assert_eq!(
+        actual,
+        "a 2-parameter function (_1: Int64, _2: String) -> Int64"
+    );
 }
 
 /// A non-arrow mismatch is untouched — the pair renderer must not reach for an `arity`

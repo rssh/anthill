@@ -27,11 +27,11 @@ use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal, TermView, ViewHead};
+use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
-use anthill_core::kb::ClauseKind;
 
 /// A KB with the full stdlib loaded — every reflect / prelude symbol the
 /// lambda_expr and Pattern encodings use is resolved, as in any loader-built KB.
@@ -41,8 +41,8 @@ fn stdlib_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -81,9 +81,15 @@ fn fn_term(kb: &mut KnowledgeBase, functor: Symbol, named: &[(Symbol, TermId)]) 
 /// `none()` payload say the same thing), which is also what keeps an
 /// unannotated `wildcard` nullary.
 fn lambda_term(kb: &mut KnowledgeBase, binder: Symbol) -> TermId {
-    let lambda = kb.try_resolve_symbol("anthill.reflect.Expr.lambda_expr").unwrap();
-    let var_pattern = kb.try_resolve_symbol("anthill.reflect.Pattern.var_pattern").unwrap();
-    let var_ref = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref").unwrap();
+    let lambda = kb
+        .try_resolve_symbol("anthill.reflect.Expr.lambda_expr")
+        .unwrap();
+    let var_pattern = kb
+        .try_resolve_symbol("anthill.reflect.Pattern.var_pattern")
+        .unwrap();
+    let var_ref = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .unwrap();
     let (k_param, k_body) = (kb.intern("param"), kb.intern("body"));
     let k_name = kb.intern("name");
 
@@ -112,8 +118,16 @@ fn lambda_view_is_isomorphic_to_term_twin() {
 
     match (node.head(&kb), term.head(&kb)) {
         (
-            ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
-            ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+            ViewHead::Functor {
+                functor: fa,
+                pos_arity: pa,
+                named_arity: na,
+            },
+            ViewHead::Functor {
+                functor: fb,
+                pos_arity: pb,
+                named_arity: nb,
+            },
         ) => {
             assert_eq!(fa, fb, "same lambda_expr functor");
             assert_eq!((pa, na), (0, 2), "occurrence head is arity-2 named");
@@ -124,24 +138,42 @@ fn lambda_view_is_isomorphic_to_term_twin() {
 
     // Identical named keys, in the same order — the discrim walk descends in
     // `named_keys` order, so order divergence alone would desync the walk.
-    assert_eq!(node.named_keys(&kb), term.named_keys(&kb), "`param`, `body` in builder order");
+    assert_eq!(
+        node.named_keys(&kb),
+        term.named_keys(&kb),
+        "`param`, `body` in builder order"
+    );
 
     // The `param` child is the Pattern-kind occurrence, and it too must read as
     // its own twin — a `Functor` head over an `Opaque` child would make the
     // `named_keys` loop below compare nothing.
     let (occ_param, term_param) = (
-        node.named_arg(&kb, kb.lookup_symbol("param").unwrap()).expect("occ param"),
-        term.named_arg(&kb, kb.lookup_symbol("param").unwrap()).expect("term param"),
+        node.named_arg(&kb, kb.lookup_symbol("param").unwrap())
+            .expect("occ param"),
+        term.named_arg(&kb, kb.lookup_symbol("param").unwrap())
+            .expect("term param"),
     );
     assert!(
-        matches!(occ_param.head(&kb), ViewHead::Functor { named_arity: 1, .. }),
+        matches!(
+            occ_param.head(&kb),
+            ViewHead::Functor { named_arity: 1, .. }
+        ),
         "param reads as var_pattern(name), not Opaque: {:?}",
         occ_param.head(&kb),
     );
-    assert!(views_structurally_equal(&kb, &occ_param, &term_param), "param ≡ its twin");
+    assert!(
+        views_structurally_equal(&kb, &occ_param, &term_param),
+        "param ≡ its twin"
+    );
 
-    assert!(views_structurally_equal(&kb, &node, &term), "occurrence ≡ term through TermView");
-    assert!(views_structurally_equal(&kb, &term, &node), "term ≡ occurrence through TermView");
+    assert!(
+        views_structurally_equal(&kb, &node, &term),
+        "occurrence ≡ term through TermView"
+    );
+    assert!(
+        views_structurally_equal(&kb, &term, &node),
+        "term ≡ occurrence through TermView"
+    );
 }
 
 /// Every `Pattern` variant reads as its `pattern_to_term` twin's head — the
@@ -156,40 +188,77 @@ fn every_pattern_variant_has_a_structural_head() {
     let cases: Vec<(&str, Rc<NodeOccurrence>, usize)> = vec![
         // WI-819: arity ONE — `type_ann` is emitted only when written.
         ("var", pat(Pattern::Var { name: x }), 1),
-        ("literal", pat(Pattern::Literal { value: Literal::Int(1) }), 1),
-        ("constructor", pat(Pattern::Constructor {
-            name: c,
-            pos_args: vec![sub()],
-            named_args: Vec::new(),
-        }), 2),
+        (
+            "literal",
+            pat(Pattern::Literal {
+                value: Literal::Int(1),
+            }),
+            1,
+        ),
+        (
+            "constructor",
+            pat(Pattern::Constructor {
+                name: c,
+                pos_args: vec![sub()],
+                named_args: Vec::new(),
+            }),
+            2,
+        ),
         // WI-445: the `named` key appears only when non-empty, exactly as
         // `pattern_to_term` omits it.
-        ("constructor+named", pat(Pattern::Constructor {
-            name: c,
-            pos_args: Vec::new(),
-            named_args: vec![(x, sub())],
-        }), 3),
-        ("tuple", pat(Pattern::Tuple { positional: vec![sub()], labels: Vec::new() }), 1),
+        (
+            "constructor+named",
+            pat(Pattern::Constructor {
+                name: c,
+                pos_args: Vec::new(),
+                named_args: vec![(x, sub())],
+            }),
+            3,
+        ),
+        (
+            "tuple",
+            pat(Pattern::Tuple {
+                positional: vec![sub()],
+                labels: Vec::new(),
+            }),
+            1,
+        ),
     ];
     for (label, p, arity) in cases {
         match p.head(&kb) {
-            ViewHead::Functor { named_arity, pos_arity, .. } => {
+            ViewHead::Functor {
+                named_arity,
+                pos_arity,
+                ..
+            } => {
                 assert_eq!((pos_arity, named_arity), (0, arity), "{label} arity");
             }
             other => panic!("{label} pattern head is not a Functor: {other:?}"),
         }
-        assert_eq!(p.named_keys(&kb).len(), arity, "{label}: named_keys agrees with named_arity");
+        assert_eq!(
+            p.named_keys(&kb).len(),
+            arity,
+            "{label}: named_keys agrees with named_arity"
+        );
         for k in p.named_keys(&kb) {
-            assert!(p.named_arg(&kb, k).is_some(), "{label}: key {k:?} has a child");
+            assert!(
+                p.named_arg(&kb, k).is_some(),
+                "{label}: key {k:?} has a child"
+            );
         }
     }
 
     // `wildcard` is nullary, so BOTH carriers canonicalize it to `Ref` through
     // `functor_view_head` (WI-436) rather than a 0-arity `Functor`.
     let wild = pat(Pattern::Wildcard);
-    let wild_sym = kb.try_resolve_symbol("anthill.reflect.Pattern.wildcard").unwrap();
+    let wild_sym = kb
+        .try_resolve_symbol("anthill.reflect.Pattern.wildcard")
+        .unwrap();
     let wild_term = fn_term(&mut kb, wild_sym, &[]);
-    assert!(views_structurally_equal(&kb, &wild, &wild_term), "wildcard ≡ its nullary twin");
+    assert!(
+        views_structurally_equal(&kb, &wild, &wild_term),
+        "wildcard ≡ its nullary twin"
+    );
 }
 
 /// The WI-762 question, in the small: ONE source lambda duplicated (the N copies
@@ -215,7 +284,10 @@ fn one_source_lambda_equal_two_distinct_sources_not() {
         "two occurrences of ONE source lambda are structurally equal",
     );
     // Self-comparison: `Opaque` used to answer false even here.
-    assert!(views_structurally_equal(&kb, &copy_a, &copy_a), "a lambda equals itself");
+    assert!(
+        views_structurally_equal(&kb, &copy_a, &copy_a),
+        "a lambda equals itself"
+    );
 
     let distinct = Value::Node(lambda_occ(other));
     assert!(
@@ -248,15 +320,26 @@ fn lambda_cross_carrier_discrim_match() {
     kb.assert_fact(term, fact_sort, domain, None);
 
     let node = Value::Node(lambda_occ(b));
-    assert_eq!(kb.browse_program_clauses_matching(&node).len(), 1, "occurrence query matches the term-indexed fact");
+    assert_eq!(
+        kb.browse_program_clauses_matching(&node).len(),
+        1,
+        "occurrence query matches the term-indexed fact"
+    );
 
     // Precision: a different binder must NOT match — the candidate set really is
     // keyed on the lambda's structure, not merely widened.
     let other_b = kb.intern("b#2");
     let other = Value::Node(lambda_occ(other_b));
-    assert_eq!(kb.browse_program_clauses_matching(&other).len(), 0, "a different binder does not match");
+    assert_eq!(
+        kb.browse_program_clauses_matching(&other).len(),
+        0,
+        "a different binder does not match"
+    );
 
-    assert!(kb.match_view(term, &node).is_some(), "term pattern matches the occurrence target");
+    assert!(
+        kb.match_view(term, &node).is_some(),
+        "term pattern matches the occurrence target"
+    );
 }
 
 /// The other reflect-WRAPPED control-flow forms read as their loader twins too:
@@ -298,14 +381,32 @@ fn control_flow_forms_read_as_their_loader_twins() {
     });
 
     for (label, o, qname, keys) in [
-        ("if", &if_occ, "anthill.reflect.Expr.if_expr",
-         &["cond", "then_branch", "else_branch"][..]),
-        ("let", &let_occ, "anthill.reflect.Expr.let_expr", &["pattern", "value", "body"][..]),
-        ("match", &match_occ, "anthill.reflect.Expr.match_expr", &["scrutinee", "branches"][..]),
+        (
+            "if",
+            &if_occ,
+            "anthill.reflect.Expr.if_expr",
+            &["cond", "then_branch", "else_branch"][..],
+        ),
+        (
+            "let",
+            &let_occ,
+            "anthill.reflect.Expr.let_expr",
+            &["pattern", "value", "body"][..],
+        ),
+        (
+            "match",
+            &match_occ,
+            "anthill.reflect.Expr.match_expr",
+            &["scrutinee", "branches"][..],
+        ),
     ] {
         let expected_functor = kb.try_resolve_symbol(qname).unwrap();
         match o.head(&kb) {
-            ViewHead::Functor { functor: Some(f), pos_arity, named_arity } => {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } => {
                 assert_eq!(f, expected_functor, "{label}: twin functor");
                 assert_eq!((pos_arity, named_arity), (0, keys.len()), "{label}: arity");
             }
@@ -314,11 +415,17 @@ fn control_flow_forms_read_as_their_loader_twins() {
         // `named_keys` must agree with `named_arity` IN ORDER — a shorter list
         // would make `views_structurally_equal`'s key loop compare fewer
         // children than the head promises, silently over-matching.
-        let got: Vec<String> =
-            o.named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect();
+        let got: Vec<String> = o
+            .named_keys(&kb)
+            .iter()
+            .map(|s| kb.local_name_of(*s).to_string())
+            .collect();
         assert_eq!(got, keys, "{label}: keys in the loader's builder order");
         for k in o.named_keys(&kb) {
-            assert!(o.named_arg(&kb, k).is_some(), "{label}: key {k:?} has a child");
+            assert!(
+                o.named_arg(&kb, k).is_some(),
+                "{label}: key {k:?} has a child"
+            );
         }
     }
 
@@ -328,8 +435,14 @@ fn control_flow_forms_read_as_their_loader_twins() {
         then_branch: one(),
         else_branch: occ(Expr::Const(Literal::Int(9))),
     });
-    assert!(views_structurally_equal(&kb, &if_occ, &if_occ), "an if equals itself");
-    assert!(!views_structurally_equal(&kb, &if_occ, &other_if), "a differing else-branch is unequal");
+    assert!(
+        views_structurally_equal(&kb, &if_occ, &if_occ),
+        "an if equals itself"
+    );
+    assert!(
+        !views_structurally_equal(&kb, &if_occ, &other_if),
+        "a differing else-branch is unequal"
+    );
 }
 
 /// `proof_stmt` has CONDITIONAL keys — `strategy` / `conclude` present exactly
@@ -350,7 +463,11 @@ fn conditional_keys_track_the_occurrence() {
     let int64 = kb.try_resolve_symbol("anthill.prelude.Int64").unwrap();
     let one = || occ(Expr::Const(Literal::Int(1)));
     let mk_let = |p: Rc<NodeOccurrence>| {
-        occ(Expr::Let { pattern: p, value: one(), body: occ(Expr::VarRef { name: x }) })
+        occ(Expr::Let {
+            pattern: p,
+            value: one(),
+            body: occ(Expr::VarRef { name: x }),
+        })
     };
 
     let bare = mk_let(pat(Pattern::Var { name: x }));
@@ -361,12 +478,16 @@ fn conditional_keys_track_the_occurrence() {
         None,
     ));
     for (label, l) in [("unannotated", &bare), ("annotated", &annotated)] {
-        let got: Vec<String> =
-            l.named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect();
+        let got: Vec<String> = l
+            .named_keys(&kb)
+            .iter()
+            .map(|s| kb.local_name_of(*s).to_string())
+            .collect();
         assert_eq!(got, ["pattern", "value", "body"], "{label} let is arity-3");
     }
     assert!(
-        kb.lookup_symbol("type_name").is_none_or(|k| annotated.named_arg(&kb, k).is_none()),
+        kb.lookup_symbol("type_name")
+            .is_none_or(|k| annotated.named_arg(&kb, k).is_none()),
         "there is no `type_name` child to reach",
     );
 
@@ -384,20 +505,38 @@ fn conditional_keys_track_the_occurrence() {
     let induction = kb.intern("induction");
     for (strategy, conclude, expected) in [
         (None, false, vec!["target", "using", "body"]),
-        (Some(induction), false, vec!["target", "strategy", "using", "body"]),
+        (
+            Some(induction),
+            false,
+            vec!["target", "strategy", "using", "body"],
+        ),
         (None, true, vec!["target", "using", "body", "conclude"]),
-        (Some(induction), true, vec!["target", "strategy", "using", "body", "conclude"]),
+        (
+            Some(induction),
+            true,
+            vec!["target", "strategy", "using", "body", "conclude"],
+        ),
     ] {
         let p = mk_proof(strategy, conclude);
-        let got: Vec<String> =
-            p.named_keys(&kb).iter().map(|s| kb.local_name_of(*s).to_string()).collect();
-        assert_eq!(got, expected, "proof_stmt keys track the occurrence's optional slots");
+        let got: Vec<String> = p
+            .named_keys(&kb)
+            .iter()
+            .map(|s| kb.local_name_of(*s).to_string())
+            .collect();
+        assert_eq!(
+            got, expected,
+            "proof_stmt keys track the occurrence's optional slots"
+        );
         for k in p.named_keys(&kb) {
             assert!(p.named_arg(&kb, k).is_some(), "proof key {k:?} has a child");
         }
         match p.head(&kb) {
             ViewHead::Functor { named_arity, .. } => {
-                assert_eq!(named_arity, expected.len(), "head arity agrees with named_keys");
+                assert_eq!(
+                    named_arity,
+                    expected.len(),
+                    "head arity agrees with named_keys"
+                );
             }
             other => panic!("proof is not structural: {other:?}"),
         }
@@ -464,9 +603,18 @@ fn lambda_goal_keys_separate_and_become_cacheable() {
     let k1_again = goal_fingerprint(&kb, &Value::Node(lambda_occ(b1)), &subst);
     let k2 = goal_fingerprint(&kb, &Value::Node(lambda_occ(b2)), &subst);
 
-    assert_eq!(k1, k1_again, "identical lambda goals still key identically — dedup preserved");
-    assert_ne!(k1, k2, "distinct lambdas no longer collapse to one Opaque token");
-    assert!(k1.is_cacheable(), "a ground lambda goal is now cacheable (no Opaque leaf)");
+    assert_eq!(
+        k1, k1_again,
+        "identical lambda goals still key identically — dedup preserved"
+    );
+    assert_ne!(
+        k1, k2,
+        "distinct lambdas no longer collapse to one Opaque token"
+    );
+    assert!(
+        k1.is_cacheable(),
+        "a ground lambda goal is now cacheable (no Opaque leaf)"
+    );
 
     // The term twin fingerprints identically — the carrier really is invisible.
     let term = lambda_term(&mut kb, b1);
@@ -513,12 +661,17 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
     );
     let (x, goal, lemma) = (kb.intern("x#9"), kb.intern("my_goal"), kb.intern("lemma_a"));
     let (k_head, k_tail, k_value) = (kb.intern("head"), kb.intern("tail"), kb.intern("value"));
-    let (k_cond, k_then, k_else) =
-        (kb.intern("cond"), kb.intern("then_branch"), kb.intern("else_branch"));
-    let (k_pattern, k_body, k_name) =
-        (kb.intern("pattern"), kb.intern("body"), kb.intern("name"));
-    let (k_scrut, k_branches, k_guard) =
-        (kb.intern("scrutinee"), kb.intern("branches"), kb.intern("guard"));
+    let (k_cond, k_then, k_else) = (
+        kb.intern("cond"),
+        kb.intern("then_branch"),
+        kb.intern("else_branch"),
+    );
+    let (k_pattern, k_body, k_name) = (kb.intern("pattern"), kb.intern("body"), kb.intern("name"));
+    let (k_scrut, k_branches, k_guard) = (
+        kb.intern("scrutinee"),
+        kb.intern("branches"),
+        kb.intern("guard"),
+    );
     let (k_target, k_using) = (kb.intern("target"), kb.intern("using"));
 
     let one_t = kb.alloc(Term::Const(Literal::Int(1)));
@@ -528,7 +681,11 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
 
     // ── if_expr(cond, then_branch, else_branch) ──
     let tru_t = kb.alloc(Term::Const(Literal::Bool(true)));
-    let if_t = fn_term(&mut kb, s_if, &[(k_cond, tru_t), (k_then, one_t), (k_else, one_t)]);
+    let if_t = fn_term(
+        &mut kb,
+        s_if,
+        &[(k_cond, tru_t), (k_then, one_t), (k_else, one_t)],
+    );
     let if_o = Value::Node(occ(Expr::If {
         condition: occ(Expr::Const(Literal::Bool(true))),
         then_branch: one(),
@@ -540,8 +697,11 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
     let var_pat_t = fn_term(&mut kb, s_varpat, &[(k_name, x_ref)]);
     let x_ref2 = kb.alloc(Term::Ref(x));
     let vref_t = fn_term(&mut kb, s_vref, &[(k_name, x_ref2)]);
-    let let_t =
-        fn_term(&mut kb, s_let, &[(k_pattern, var_pat_t), (k_value, one_t), (k_body, vref_t)]);
+    let let_t = fn_term(
+        &mut kb,
+        s_let,
+        &[(k_pattern, var_pat_t), (k_value, one_t), (k_body, vref_t)],
+    );
     let let_o = Value::Node(occ(Expr::Let {
         pattern: pat(Pattern::Var { name: x }),
         value: one(),
@@ -550,10 +710,17 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
 
     // ── match_expr(scrutinee, branches: List[MatchBranch(pattern, guard, body)]) ──
     let wild_t = fn_term(&mut kb, s_wild, &[]);
-    let branch_t =
-        fn_term(&mut kb, s_branch, &[(k_pattern, wild_t), (k_guard, none_t), (k_body, one_t)]);
+    let branch_t = fn_term(
+        &mut kb,
+        s_branch,
+        &[(k_pattern, wild_t), (k_guard, none_t), (k_body, one_t)],
+    );
     let branches_t = fn_term(&mut kb, cons, &[(k_head, branch_t), (k_tail, nil_t)]);
-    let match_t = fn_term(&mut kb, s_match, &[(k_scrut, one_t), (k_branches, branches_t)]);
+    let match_t = fn_term(
+        &mut kb,
+        s_match,
+        &[(k_scrut, one_t), (k_branches, branches_t)],
+    );
     let match_o = Value::Node(occ(Expr::Match {
         scrutinee: one(),
         branches: vec![anthill_core::kb::node_occurrence::MatchBranch {
@@ -568,8 +735,11 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
     let target_t = kb.alloc(Term::Ident(goal));
     let lemma_t = kb.alloc(Term::Ident(lemma));
     let using_t = fn_term(&mut kb, cons, &[(k_head, lemma_t), (k_tail, nil_t)]);
-    let proof_t =
-        fn_term(&mut kb, s_proof, &[(k_target, target_t), (k_using, using_t), (k_body, one_t)]);
+    let proof_t = fn_term(
+        &mut kb,
+        s_proof,
+        &[(k_target, target_t), (k_using, using_t), (k_body, one_t)],
+    );
     let proof_o = Value::Node(occ(Expr::Proof {
         target: goal,
         strategy: None,
@@ -591,7 +761,13 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
             "{label}: occurrence and loader twin expose the same keys IN THE SAME ORDER \
              (the discrim walk descends in this order)",
         );
-        assert!(views_structurally_equal(&kb, node, &term), "{label}: occurrence \u{2261} term");
-        assert!(views_structurally_equal(&kb, &term, node), "{label}: term \u{2261} occurrence");
+        assert!(
+            views_structurally_equal(&kb, node, &term),
+            "{label}: occurrence \u{2261} term"
+        );
+        assert!(
+            views_structurally_equal(&kb, &term, node),
+            "{label}: term \u{2261} occurrence"
+        );
     }
 }

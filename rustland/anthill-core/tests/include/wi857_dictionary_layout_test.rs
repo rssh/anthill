@@ -34,10 +34,10 @@
 //! invisible to the load: every reproducer below loaded clean before the fix.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::typing::{
-    dict_layout, resolve, ResolutionResult, ResolvedRequiresNode, ResolutionScope, SortGoal,
-};
 use anthill_core::kb::term::Term;
+use anthill_core::kb::typing::{
+    dict_layout, resolve, ResolutionResult, ResolutionScope, ResolvedRequiresNode, SortGoal,
+};
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
 
@@ -58,7 +58,10 @@ fn eval_err(src: &str, entry: &str, needle: &str, why: &str) {
         Err(e) => format!("{e}"),
         Ok(v) => panic!("{why}; expected a failure, got {v:?}"),
     };
-    assert!(err.contains(needle), "{why}; expected {needle:?}, got: {err}");
+    assert!(
+        err.contains(needle),
+        "{why}; expected {needle:?}, got: {err}"
+    );
 }
 
 // ── (1)+(2) the ticket's reproducers and their controls ───────────────────
@@ -111,7 +114,11 @@ end
 #[test]
 fn a_requires_partialeq_holder_runs_the_control() {
     assert_eq!(
-        eval_int(HOLDERS, "wi857.holder.Driver.viaPartialEq", "the CONTROL must pass"),
+        eval_int(
+            HOLDERS,
+            "wi857.holder.Driver.viaPartialEq",
+            "the CONTROL must pass"
+        ),
         1,
         "`PartialEq`'s own chain is empty, so this ran before the fix too — it is here \
          to make the two assertions below non-vacuous",
@@ -125,14 +132,22 @@ fn a_requires_eq_holder_reaches_partialeq_transitively() {
     // dictionary now bundles its spec half — `PartialEq[Int64]` — at slot 0, which is
     // exactly what the projection reads.
     assert_eq!(
-        eval_int(HOLDERS, "wi857.holder.Driver.viaEq", "the `Eq` reproducer must run"),
+        eval_int(
+            HOLDERS,
+            "wi857.holder.Driver.viaEq",
+            "the `Eq` reproducer must run"
+        ),
         1,
         "eq(7, 7) is true",
     );
     // …and it DECIDES, rather than answering the same way regardless: a dictionary
     // that dispatched somewhere wrong could still return a Bool.
     assert_eq!(
-        eval_int(HOLDERS, "wi857.holder.Driver.viaEqFalse", "the negative arm"),
+        eval_int(
+            HOLDERS,
+            "wi857.holder.Driver.viaEqFalse",
+            "the negative arm"
+        ),
         0,
         "eq(7, 8) is false — without this the test would pass on a constant `true`",
     );
@@ -145,7 +160,11 @@ fn a_requires_ordered_holder_dispatches_the_specs_own_op() {
     // member, so dispatch lands on the spec's own builtin and the frame is named from
     // `Ord`'s chain (`Eq`, `PartialOrd`) — which the dictionary now carries.
     assert_eq!(
-        eval_int(HOLDERS, "wi857.holder.Driver.viaOrd", "the `Ord` reproducer"),
+        eval_int(
+            HOLDERS,
+            "wi857.holder.Driver.viaOrd",
+            "the `Ord` reproducer"
+        ),
         1,
         "compare(7, 3) is 1 for the prelude's ascending Int64 order",
     );
@@ -176,7 +195,11 @@ namespace wi857.witness
 end
 "#;
     assert_eq!(
-        eval_int(src, "wi857.witness.Driver.viaWitness", "the witness control"),
+        eval_int(
+            src,
+            "wi857.witness.Driver.viaWitness",
+            "the witness control"
+        ),
         -4,
         "`Descending.compare` is `sub(b, a)` = 3 - 7; the prelude's own ascending \
          `Ord[Int64]` would answer 1, so the value also proves the witness — not \
@@ -249,7 +272,11 @@ end
 #[test]
 fn a_parametric_chain_bearing_witness_threads_both_halves() {
     assert_eq!(
-        eval_int(PARAMETRIC_WITNESS, "wi857.parametric.Driver.searched", "q4e's route"),
+        eval_int(
+            PARAMETRIC_WITNESS,
+            "wi857.parametric.Driver.searched",
+            "q4e's route"
+        ),
         -1,
         "first components 1 < 2, so the lexicographic answer is negative",
     );
@@ -258,7 +285,11 @@ fn a_parametric_chain_bearing_witness_threads_both_halves() {
     // slice off by one would take slot 0's dictionary here and still be a valid
     // `Ord[Int64]`, so `searched` alone would not catch it.
     assert_eq!(
-        eval_int(PARAMETRIC_WITNESS, "wi857.parametric.Driver.tiebreaks", "the tie branch"),
+        eval_int(
+            PARAMETRIC_WITNESS,
+            "wi857.parametric.Driver.tiebreaks",
+            "the tie branch"
+        ),
         1,
         "first components tie at 5, so the second decides: 9 > 1",
     );
@@ -358,11 +389,19 @@ end
 // ── (5) the layout itself, and the recorded absence ───────────────────────
 
 fn goal_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> SortGoal {
-    let spec = kb.try_resolve_symbol(spec_qn).unwrap_or_else(|| panic!("{spec_qn}"));
-    let carrier = kb.try_resolve_symbol(carrier_qn).unwrap_or_else(|| panic!("{carrier_qn}"));
+    let spec = kb
+        .try_resolve_symbol(spec_qn)
+        .unwrap_or_else(|| panic!("{spec_qn}"));
+    let carrier = kb
+        .try_resolve_symbol(carrier_qn)
+        .unwrap_or_else(|| panic!("{carrier_qn}"));
     let carrier_ref = kb.alloc(Term::Ref(carrier));
     let t = kb.intern("T");
-    SortGoal { spec_sort: spec, bindings: SmallVec::from_slice(&[(t, carrier_ref)]), carrier: None }
+    SortGoal {
+        spec_sort: spec,
+        bindings: SmallVec::from_slice(&[(t, carrier_ref)]),
+        carrier: None,
+    }
 }
 
 /// The layout is a PUBLIC, shared reading — `dict_layout` is the one owner both the
@@ -374,11 +413,17 @@ fn the_layout_counts_what_resolve_bundles() {
     let mut kb = crate::common::load_kb_with(
         "namespace wi857.shape\n  import anthill.prelude.{Int64}\nend\n",
     );
-    for (spec_qn, expect_spec_half) in
-        [("anthill.prelude.PartialEq", 0), ("anthill.prelude.Eq", 1), ("anthill.prelude.Ord", 2)]
-    {
+    for (spec_qn, expect_spec_half) in [
+        ("anthill.prelude.PartialEq", 0),
+        ("anthill.prelude.Eq", 1),
+        ("anthill.prelude.Ord", 2),
+    ] {
         let goal = goal_at(&mut kb, spec_qn, "anthill.prelude.Int64");
-        let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
+        let scope = ResolutionScope {
+            available_requires: &[],
+            sigma: None,
+            selected: &[],
+        };
         let tree = match resolve(&mut kb, &goal, &scope) {
             ResolutionResult::Resolved(t) => t,
             other => panic!("{spec_qn}[T = Int64] must resolve; got {other:?}"),
@@ -386,19 +431,23 @@ fn the_layout_counts_what_resolve_bundles() {
         let provider = tree.impl_sort().expect("a resolved provision pins an impl");
         let layout = dict_layout(&mut kb, goal.spec_sort, provider);
         assert_eq!(
-            layout.arity(), expect_spec_half,
+            layout.arity(),
+            expect_spec_half,
             "{spec_qn} declares {expect_spec_half} `requires`, and `Int64` — a \
              carrier-keyed provider — declares none, so the whole dictionary IS the \
              spec half: {}",
             layout.describe(&kb),
         );
         let bundled = match &tree {
-            ResolvedRequiresNode::Conditional { sub_resolutions, .. } => sub_resolutions.len(),
+            ResolvedRequiresNode::Conditional {
+                sub_resolutions, ..
+            } => sub_resolutions.len(),
             ResolvedRequiresNode::Leaf { .. } => 0,
             other => panic!("expected Leaf/Conditional; got {other:?}"),
         };
         assert_eq!(
-            bundled, layout.arity(),
+            bundled,
+            layout.arity(),
             "the producer must bundle exactly what the layout counts for {spec_qn}",
         );
     }
@@ -478,7 +527,9 @@ fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
     let mut kb = crate::common::load_kb_with(UNPROVIDED_SPEC_HALF);
     // Goal `Top[T = Wrap[E = Int64]]` — what `Driver.go`'s call pins.
     let wrap = kb.try_resolve_symbol("wi857.gap.Wrap").expect("Wrap");
-    let int64 = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+    let int64 = kb
+        .try_resolve_symbol("anthill.prelude.Int64")
+        .expect("Int64");
     let int_ref = kb.alloc(Term::Ref(int64));
     let e = kb.intern("E");
     let t = kb.intern("T");
@@ -488,22 +539,33 @@ fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
         named_args: SmallVec::from_slice(&[(e, int_ref)]),
     });
     let top = kb.try_resolve_symbol("wi857.gap.Top").expect("Top");
-    let goal =
-        SortGoal { spec_sort: top, bindings: SmallVec::from_slice(&[(t, wrap_int)]), carrier: None };
-    let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
+    let goal = SortGoal {
+        spec_sort: top,
+        bindings: SmallVec::from_slice(&[(t, wrap_int)]),
+        carrier: None,
+    };
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: None,
+        selected: &[],
+    };
     match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
-            impl_sort, sub_resolutions, ..
+            impl_sort,
+            sub_resolutions,
+            ..
         }) => {
             assert_eq!(kb.qualified_name_of(impl_sort), "wi857.gap.WTop");
             assert_eq!(
-                sub_resolutions.len(), 1,
+                sub_resolutions.len(),
+                1,
                 "`Top`'s chain is one entry and `WTop` declares no `requires`, so the \
                  dictionary is the spec half alone: {sub_resolutions:?}",
             );
             match &sub_resolutions[0] {
                 ResolvedRequiresNode::Unavailable { spec_sort } => assert_eq!(
-                    kb.qualified_name_of(*spec_sort), "wi857.gap.Base",
+                    kb.qualified_name_of(*spec_sort),
+                    "wi857.gap.Base",
                     "the recorded absence must name the requirement it is missing",
                 ),
                 other => panic!(

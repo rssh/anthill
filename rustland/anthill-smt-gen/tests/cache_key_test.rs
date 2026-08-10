@@ -20,16 +20,22 @@ fn key_for(src: &str) -> String {
         "test.cache.d",
         "test.cache.d_a",
         "test.cache.d_b",
-    ].iter().map(|s| s.to_string()).collect();
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
 
-    build_key(&kb, &KeyInputs {
-        emitted_smt_lib: "(set-logic LRA)\n(check-sat)\n",
-        tactic_canon: "smt(logic: \"LRA\")",
-        hint_qns: &[],
-        visited_rules: &visited,
-        stdlib_version: "test-stdlib-v0",
-        z3_version: "Z3 version 4.13.0",
-    })
+    build_key(
+        &kb,
+        &KeyInputs {
+            emitted_smt_lib: "(set-logic LRA)\n(check-sat)\n",
+            tactic_canon: "smt(logic: \"LRA\")",
+            hint_qns: &[],
+            visited_rules: &visited,
+            stdlib_version: "test-stdlib-v0",
+            z3_version: "Z3 version 4.13.0",
+        },
+    )
 }
 
 const BASE_SRC: &str = r#"
@@ -90,8 +96,7 @@ fn key_changes_on_referenced_fact_change() {
 
     let kb1 = common::load_kb_with(&with_ref);
     let kb2 = common::load_kb_with(&mod_with_ref);
-    let visited: BTreeSet<String> =
-        std::iter::once("test.cache.proof_a".to_string()).collect();
+    let visited: BTreeSet<String> = std::iter::once("test.cache.proof_a".to_string()).collect();
     let inputs = KeyInputs {
         emitted_smt_lib: "(set-logic LRA)\n(check-sat)\n",
         tactic_canon: "smt(logic: \"LRA\")",
@@ -108,14 +113,17 @@ fn key_changes_on_smt_lib_change() {
     let kb = common::load_kb_with(BASE_SRC);
     let visited: BTreeSet<String> = std::iter::once("test.cache.proof_a".to_string()).collect();
     let mk = |smt: &str| {
-        build_key(&kb, &KeyInputs {
-            emitted_smt_lib: smt,
-            tactic_canon: "smt(logic: \"LRA\")",
-            hint_qns: &[],
-            visited_rules: &visited,
-            stdlib_version: "v0",
-            z3_version: "Z3 version 4.13.0",
-        })
+        build_key(
+            &kb,
+            &KeyInputs {
+                emitted_smt_lib: smt,
+                tactic_canon: "smt(logic: \"LRA\")",
+                hint_qns: &[],
+                visited_rules: &visited,
+                stdlib_version: "v0",
+                z3_version: "Z3 version 4.13.0",
+            },
+        )
     };
     assert_ne!(mk("(check-sat)\n"), mk("(check-sat)\n; comment\n"));
 }
@@ -125,14 +133,17 @@ fn key_changes_on_z3_version() {
     let kb = common::load_kb_with(BASE_SRC);
     let visited: BTreeSet<String> = std::iter::once("test.cache.proof_a".to_string()).collect();
     let mk = |v: &str| {
-        build_key(&kb, &KeyInputs {
-            emitted_smt_lib: "(check-sat)\n",
-            tactic_canon: "smt",
-            hint_qns: &[],
-            visited_rules: &visited,
-            stdlib_version: "v0",
-            z3_version: v,
-        })
+        build_key(
+            &kb,
+            &KeyInputs {
+                emitted_smt_lib: "(check-sat)\n",
+                tactic_canon: "smt",
+                hint_qns: &[],
+                visited_rules: &visited,
+                stdlib_version: "v0",
+                z3_version: v,
+            },
+        )
     };
     assert_ne!(mk("Z3 version 4.13.0"), mk("Z3 version 4.14.0"));
 }

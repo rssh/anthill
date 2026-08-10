@@ -29,8 +29,7 @@ fn generic_entity_emits_template_prefix() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&mut kb, "test.gen_box.Box")
-        .expect("emit Box");
+    let cpp = emit_entity_struct(&mut kb, "test.gen_box.Box").expect("emit Box");
 
     assert!(
         cpp.contains("template<typename T>\nstruct Box {\n    T value;\n};"),
@@ -50,8 +49,7 @@ fn multi_param_entity_emits_template_with_two_args() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&mut kb, "test.gen_pair.Pair")
-        .expect("emit Pair");
+    let cpp = emit_entity_struct(&mut kb, "test.gen_pair.Pair").expect("emit Pair");
 
     assert!(
         cpp.contains("template<typename A, typename B>"),
@@ -73,8 +71,7 @@ fn non_generic_entity_keeps_no_prefix() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&mut kb, "test.plain.Pose")
-        .expect("emit Pose");
+    let cpp = emit_entity_struct(&mut kb, "test.plain.Pose").expect("emit Pose");
 
     assert!(
         !cpp.contains("template<"),
@@ -96,8 +93,7 @@ fn generic_traits_class_emits_template_prefix() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.gen_id.Identity")
-        .expect("emit Identity");
+    let cpp = emit_traits_struct(&mut kb, "test.gen_id.Identity").expect("emit Identity");
 
     assert!(
         cpp.contains("template<typename T>\nstruct Identity {"),
@@ -123,8 +119,7 @@ fn keyword_clash_gets_suffixed() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&mut kb, "test.gen_kw.Holder")
-        .expect("emit Holder");
+    let cpp = emit_entity_struct(&mut kb, "test.gen_kw.Holder").expect("emit Holder");
 
     assert!(
         cpp.contains("template<typename class0>"),

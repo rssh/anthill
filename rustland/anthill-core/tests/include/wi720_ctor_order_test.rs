@@ -1,3 +1,6 @@
+use crate::common::load_kb_bare as load_kb;
+use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Literal, Term, Var};
 /// WI-720: the `Fn{c,[],[]}`→`Ref(c)` alloc/discrim canon must be
 /// load-order-independent for EVERY constructor, not just the four prelude ones
 /// WI-719 pre-registers.
@@ -15,11 +18,7 @@
 /// any body loads), so the canon is settled before any fact/rule converts. A
 /// WRITTEN bare `red` already lowered to `Ref(red)` directly and so was never
 /// affected; the reproducing surface is the Fn-built `red()`.
-
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, Var, Literal};
-use anthill_core::kb::resolve::ResolveConfig;
-use crate::common::load_kb_bare as load_kb;
 use smallvec::SmallVec;
 
 /// Declares the sort (`enum Color`), the fact shape (`entity Paint`), and the
@@ -51,11 +50,11 @@ namespace demo720
 end
 "#;
 
-
 /// Resolve `demo720.<rule>(?id)` and return the sorted `?id` bindings. Loud: a
 /// solution whose `?id` is unbound / not a String panics rather than dropping.
 fn ids_of(kb: &mut KnowledgeBase, rule_qn: &str) -> Vec<String> {
-    let sym = kb.try_resolve_symbol(rule_qn)
+    let sym = kb
+        .try_resolve_symbol(rule_qn)
         .unwrap_or_else(|| panic!("symbol '{rule_qn}' not found"));
     let id_sym = kb.intern("id");
     let vid = kb.fresh_var(id_sym);
@@ -65,11 +64,17 @@ fn ids_of(kb: &mut KnowledgeBase, rule_qn: &str) -> Vec<String> {
         pos_args: SmallVec::from_slice(&[v]),
         named_args: SmallVec::new(),
     });
-    let cfg = ResolveConfig { max_solutions: 20, ..ResolveConfig::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 20,
+        ..ResolveConfig::default()
+    };
     let solutions = kb.resolve(&[query], &cfg);
-    let mut ids: Vec<String> = solutions.iter()
+    let mut ids: Vec<String> = solutions
+        .iter()
         .map(|sol| {
-            let t = sol.subst.resolve_as_value(vid)
+            let t = sol
+                .subst
+                .resolve_as_value(vid)
                 .map(|val| val.expect_term())
                 .unwrap_or_else(|| panic!("?id unbound in solution"));
             match kb.get_term(t) {
@@ -86,12 +91,18 @@ fn ids_of(kb: &mut KnowledgeBase, rule_qn: &str) -> Vec<String> {
 #[test]
 fn facts_before_decl_resolve_user_constructor() {
     let mut kb = load_kb(&[FACT_SRC, DECL_SRC]);
-    assert_eq!(ids_of(&mut kb, "demo720.is_red"), vec!["P1"],
+    assert_eq!(
+        ids_of(&mut kb, "demo720.is_red"),
+        vec!["P1"],
         "the omitted/Fn-built `red()` in a fact converted before the enum body \
-         must key `Ref(red)` (WI-720), so is_red matches exactly P1");
+         must key `Ref(red)` (WI-720), so is_red matches exactly P1"
+    );
     // Discriminating: a var-fill / mis-key would let P2's `green()` leak in.
-    assert_eq!(ids_of(&mut kb, "demo720.is_green"), vec!["P2"],
-        "is_green matches exactly P2");
+    assert_eq!(
+        ids_of(&mut kb, "demo720.is_green"),
+        vec!["P2"],
+        "is_green matches exactly P2"
+    );
 }
 
 /// Control: the natural order (declaration first) must resolve identically —

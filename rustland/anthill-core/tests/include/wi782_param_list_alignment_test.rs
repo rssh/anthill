@@ -50,7 +50,10 @@
 use crate::common::{interp_for, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -70,7 +73,8 @@ fn assert_refused_naming(src: &str, expected: &str, got: &str) {
     };
     let wanted = format!("expected {expected}, got {got}");
     assert!(
-        errs.iter().any(|e| e.contains("type mismatch") && e.contains(&wanted)),
+        errs.iter()
+            .any(|e| e.contains("type mismatch") && e.contains(&wanted)),
         "rejection must be a type mismatch reading `{wanted}`; got: {errs:?}",
     );
 }

@@ -57,7 +57,8 @@ end
             ),
         };
         assert!(
-            errs.iter().any(|e| e.contains("no type parameter named 'W'")),
+            errs.iter()
+                .any(|e| e.contains("no type parameter named 'W'")),
             "{position}: expected the shared undeclared-type-argument diagnostic, got {errs:?}"
         );
     }
@@ -152,7 +153,9 @@ end
         .unwrap_or_else(|e| panic!("{op}: {e:?}"))
     {
         Value::Term { id, .. } => id,
-        other => panic!("{op}: a type application must evaluate to a Term-carried type, got {other:?}"),
+        other => {
+            panic!("{op}: a type application must evaluate to a Term-carried type, got {other:?}")
+        }
     };
 
     assert_eq!(

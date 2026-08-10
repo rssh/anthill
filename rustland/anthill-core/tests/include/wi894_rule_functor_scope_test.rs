@@ -53,7 +53,11 @@ fn each_sort_uses_its_own_rules() {
     let mut interp = crate::common::interp_for(INVERTED_PAIR);
     for (op, expected, why) in [
         ("A.driveA", 10, "A's `pickTrue` selects the THEN argument"),
-        ("B.driveB", 20, "B's `pickTrue` selects the ELSE argument — its own law, not A's"),
+        (
+            "B.driveB",
+            20,
+            "B's `pickTrue` selects the ELSE argument — its own law, not A's",
+        ),
     ] {
         let path = format!("wi894.inverted.{op}");
         match interp.call(&path, &[Value::Int(0)]) {
@@ -149,30 +153,102 @@ end
 fn which_name_a_rule_head_introduces() {
     let kb = crate::common::load_kb_with(HEAD_SHAPES);
     for (q, want, why) in [
-        ("S.labeledEq894", true, "a labeled equation still defines its LHS function"),
-        ("S.bareEq894", true, "an unlabeled equation defines its LHS function"),
-        ("S.labeledUnify894", true, "`<=>` is the same definition as `=` here"),
-        ("S.barePred894", true, "an unlabeled predicate head IS the rule's identity"),
-        ("S.labeledPred894", true, "WI-896: a label names the CLAUSE, so it does not decide \
+        (
+            "S.labeledEq894",
+            true,
+            "a labeled equation still defines its LHS function",
+        ),
+        (
+            "S.bareEq894",
+            true,
+            "an unlabeled equation defines its LHS function",
+        ),
+        (
+            "S.labeledUnify894",
+            true,
+            "`<=>` is the same definition as `=` here",
+        ),
+        (
+            "S.barePred894",
+            true,
+            "an unlabeled predicate head IS the rule's identity",
+        ),
+        (
+            "S.labeledPred894",
+            true,
+            "WI-896: a label names the CLAUSE, so it does not decide \
                                     whether the head introduces — this row read `false` \
-                                    while the carve-out stood"),
-        ("S.bodied894", false, "a bodied `=` head is a predicate rule ABOUT `eq`, not about \
-                                its LHS — the label is not what stops it"),
-        ("S.eq", false, "WI-530: a bodied equation-SHAPED head must never mint the connective"),
-        ("S.unify", false, "same for `<=>` — a local shadow silently reclassifies the rule"),
-        ("S.bareBodied894", false, "nor its subject: a bodied rule is not an equation, so \
-                                    its LHS is not what the head is about (unchanged pre-WI-894)"),
-        ("M.dot_apply", false, "`?x.m(?y)` carries the converter's functor, not the rule's \
-                                — on the EQUATION and the PREDICATE path alike"),
-        ("M.field_access", false, "`?x.f` likewise — and a local copy shadows kernel vocab"),
-        ("M.add", false, "a minted INFIX head (`?a + ?b`) is the desugar's functor too"),
-        ("M.p894", true, "…while an ordinary unlabeled predicate head still introduces"),
-        ("C.cons", false, "`cons` already resolves through the implicit prelude"),
-        ("C.some", false, "same — capturing it changes what the law is about"),
-        ("C.eq", false, "same, and WI-530 is the precedent for the connective itself"),
-        ("C.String.isEmpty894", false, "a dotted subject is a REFERENCE — minting it would \
-                                        define a symbol whose short name contains a dot"),
-        ("C.isEmpty894", false, "…and it must not be re-homed under the short name either"),
+                                    while the carve-out stood",
+        ),
+        (
+            "S.bodied894",
+            false,
+            "a bodied `=` head is a predicate rule ABOUT `eq`, not about \
+                                its LHS — the label is not what stops it",
+        ),
+        (
+            "S.eq",
+            false,
+            "WI-530: a bodied equation-SHAPED head must never mint the connective",
+        ),
+        (
+            "S.unify",
+            false,
+            "same for `<=>` — a local shadow silently reclassifies the rule",
+        ),
+        (
+            "S.bareBodied894",
+            false,
+            "nor its subject: a bodied rule is not an equation, so \
+                                    its LHS is not what the head is about (unchanged pre-WI-894)",
+        ),
+        (
+            "M.dot_apply",
+            false,
+            "`?x.m(?y)` carries the converter's functor, not the rule's \
+                                — on the EQUATION and the PREDICATE path alike",
+        ),
+        (
+            "M.field_access",
+            false,
+            "`?x.f` likewise — and a local copy shadows kernel vocab",
+        ),
+        (
+            "M.add",
+            false,
+            "a minted INFIX head (`?a + ?b`) is the desugar's functor too",
+        ),
+        (
+            "M.p894",
+            true,
+            "…while an ordinary unlabeled predicate head still introduces",
+        ),
+        (
+            "C.cons",
+            false,
+            "`cons` already resolves through the implicit prelude",
+        ),
+        (
+            "C.some",
+            false,
+            "same — capturing it changes what the law is about",
+        ),
+        (
+            "C.eq",
+            false,
+            "same, and WI-530 is the precedent for the connective itself",
+        ),
+        (
+            "C.String.isEmpty894",
+            false,
+            "a dotted subject is a REFERENCE — minting it would \
+                                        define a symbol whose short name contains a dot",
+        ),
+        (
+            "C.isEmpty894",
+            false,
+            "…and it must not be re-homed under the short name either",
+        ),
     ] {
         let qn = format!("wi894.labels.{q}");
         assert_eq!(kb.has_qualified_name(&qn), want, "`{qn}`: {why}");

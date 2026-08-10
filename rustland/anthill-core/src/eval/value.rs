@@ -14,8 +14,8 @@ use crate::kb::term::{TermId, Var, VarId};
 
 pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
-pub use super::map_arena::MapHandle;
 pub use super::dictionary::{BoxedDictionary, Dictionary};
+pub use super::map_arena::MapHandle;
 pub use super::stream::StreamHandle;
 pub use super::subst_arena::SubstHandle;
 
@@ -348,7 +348,11 @@ impl Value {
     }
 
     pub fn as_int(&self) -> Option<i64> {
-        if let Value::Int(n) = self { Some(*n) } else { None }
+        if let Value::Int(n) = self {
+            Some(*n)
+        } else {
+            None
+        }
     }
 
     /// Unwrap the hash-consed `Value::Term` variant, panicking LOUDLY on any
@@ -372,11 +376,19 @@ impl Value {
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self { Some(*b) } else { None }
+        if let Value::Bool(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        if let Value::Str(s) = self { Some(s.as_str()) } else { None }
+        if let Value::Str(s) = self {
+            Some(s.as_str())
+        } else {
+            None
+        }
     }
 
     /// WI-787: a tuple's components in SOURCE order, or `None` when this is not
@@ -554,7 +566,8 @@ impl<'a> TupleComponents<'a> {
     /// Step 2 cannot compete with step 1 for the same tuple, per the one-half
     /// invariant stated on [`Self::is_name_keyed`].
     pub fn by_label(&self, kb: &crate::kb::KnowledgeBase, label: &str) -> Option<&'a Value> {
-        self.by_label_index(kb, label).and_then(|i| self.component_at(i))
+        self.by_label_index(kb, label)
+            .and_then(|i| self.component_at(i))
     }
 
     /// [`Self::by_label`]'s answer as a component INDEX, in [`Self::iter`] order
@@ -696,8 +709,16 @@ mod tests {
         #[test]
         fn var_not_equal_to_non_var() {
             let kb = KnowledgeBase::new();
-            assert!(!views_structurally_equal(&kb, &global(0, 0), &Value::Int(0)));
-            assert!(!views_structurally_equal(&kb, &Value::Int(0), &global(0, 0)));
+            assert!(!views_structurally_equal(
+                &kb,
+                &global(0, 0),
+                &Value::Int(0)
+            ));
+            assert!(!views_structurally_equal(
+                &kb,
+                &Value::Int(0),
+                &global(0, 0)
+            ));
         }
     }
 
@@ -722,13 +743,21 @@ mod tests {
         fn named_tuple(kb: &mut KnowledgeBase, fields: &[(&str, i64)]) -> Value {
             Value::Tuple {
                 pos: Vec::new().into(),
-                named: fields.iter().map(|(n, v)| (kb.intern(n), Value::Int(*v))).collect::<Vec<_>>().into(),
+                named: fields
+                    .iter()
+                    .map(|(n, v)| (kb.intern(n), Value::Int(*v)))
+                    .collect::<Vec<_>>()
+                    .into(),
             }
         }
 
         fn positional_tuple(vals: &[i64]) -> Value {
             Value::Tuple {
-                pos: vals.iter().map(|v| Value::Int(*v)).collect::<Vec<_>>().into(),
+                pos: vals
+                    .iter()
+                    .map(|v| Value::Int(*v))
+                    .collect::<Vec<_>>()
+                    .into(),
                 named: Vec::new().into(),
             }
         }

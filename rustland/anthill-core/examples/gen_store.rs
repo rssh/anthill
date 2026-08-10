@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use anthill_core::parse;
 use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_context};
+use anthill_core::parse;
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -11,21 +11,27 @@ fn main() {
     let files = [
         ("reflect", "../../stdlib/anthill/reflect/reflect.anthill"),
         ("store", "../../stdlib/anthill/persistence/store.anthill"),
-        ("filesystem", "../../stdlib/anthill/persistence/filesystem.anthill"),
+        (
+            "filesystem",
+            "../../stdlib/anthill/persistence/filesystem.anthill",
+        ),
         // WI-934: `sql` is gone from this list with its source — the SQL store
         // was a shape no host realizes and moved to `examples/sql-store/`.
         ("stream", "../../stdlib/anthill/prelude/stream.anthill"),
-        ("logical_stream", "../../stdlib/anthill/prelude/logical_stream.anthill"),
+        (
+            "logical_stream",
+            "../../stdlib/anthill/prelude/logical_stream.anthill",
+        ),
     ];
 
     // Parse all files first
-    let parsed: Vec<(&str, anthill_core::parse::ir::ParsedFile)> = files.iter()
+    let parsed: Vec<(&str, anthill_core::parse::ir::ParsedFile)> = files
+        .iter()
         .map(|(name, rel_path)| {
             let path = manifest_dir.join(rel_path);
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let p = parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {name}: {e:?}"));
+            let p = parse::parse(&source).unwrap_or_else(|e| panic!("parse {name}: {e:?}"));
             (*name, p)
         })
         .collect();

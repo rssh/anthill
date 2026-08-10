@@ -228,7 +228,10 @@ fn constrained_twin_forwards_and_evals() {
     );
     let mut interp = crate::common::interp_for(&src);
     let got = interp.call("wi828.ok.Driver.drive", &[Value::Int(0)]);
-    assert!(matches!(got, Ok(Value::Int(11))), "expected Ok(Int(11)); got {got:?}");
+    assert!(
+        matches!(got, Ok(Value::Int(11))),
+        "expected Ok(Int(11)); got {got:?}"
+    );
 }
 
 /// Positive control 2 — the CONCRETE twin of (a): the call pins `MT := Leaf`
@@ -250,5 +253,8 @@ fn concrete_twin_constructs_and_evals() {
     );
     let mut interp = crate::common::interp_for(&src);
     let got = interp.call("wi828.conc.Driver.drive", &[Value::Int(0)]);
-    assert!(matches!(got, Ok(Value::Int(1))), "expected Ok(Int(1)); got {got:?}");
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "expected Ok(Int(1)); got {got:?}"
+    );
 }

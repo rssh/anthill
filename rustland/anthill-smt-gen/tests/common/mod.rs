@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::parse::ir::ParsedFile;
 
@@ -21,12 +21,12 @@ pub fn stdlib_dir() -> PathBuf {
 
 static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     let files = collect_anthill_files(&stdlib_dir());
-    files.iter()
+    files
+        .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect()
 });
@@ -93,8 +93,11 @@ pub fn load_kb_with_lenient(source: &str) -> (KnowledgeBase, Vec<String>) {
 
 #[allow(dead_code)]
 pub fn z3_available() -> bool {
-    std::process::Command::new("z3").arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    std::process::Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Write `smt` to `${TMPDIR}/anthill_${slug}.smt2`, invoke z3 on it,
@@ -104,7 +107,9 @@ pub fn z3_available() -> bool {
 pub fn run_z3(slug: &str, smt: &str) -> String {
     let path = std::env::temp_dir().join(format!("anthill_{slug}.smt2"));
     std::fs::write(&path, smt).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
-    let out = std::process::Command::new("z3").arg(&path).output()
+    let out = std::process::Command::new("z3")
+        .arg(&path)
+        .output()
         .unwrap_or_else(|e| panic!("z3 spawn for {slug}: {e}"));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

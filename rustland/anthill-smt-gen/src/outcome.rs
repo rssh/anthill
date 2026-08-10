@@ -79,10 +79,14 @@ fn split_top_level_sexprs(s: &str) -> Vec<String> {
         match c {
             '"' if prev != '\\' => {
                 in_string = !in_string;
-                if depth > 0 { current.push(c); }
+                if depth > 0 {
+                    current.push(c);
+                }
             }
             '(' if !in_string => {
-                if depth == 0 { current.clear(); }
+                if depth == 0 {
+                    current.clear();
+                }
                 depth += 1;
                 current.push(c);
             }
@@ -109,8 +113,7 @@ fn looks_like_unsat_core(s: &str) -> bool {
         Some(i) => i,
         None => return false,
     };
-    !inner.contains('(') && !inner.contains("define-fun")
-        && !inner.contains("model")
+    !inner.contains('(') && !inner.contains("define-fun") && !inner.contains("model")
 }
 
 fn extract_unsat_core(s: &str) -> Vec<String> {
@@ -140,7 +143,9 @@ fn extract_define_funs(model: &str) -> Vec<(String, String)> {
             continue;
         }
         let after_arity = after_name[2..].trim_start();
-        let sort_end = after_arity.find(char::is_whitespace).unwrap_or(after_arity.len());
+        let sort_end = after_arity
+            .find(char::is_whitespace)
+            .unwrap_or(after_arity.len());
         let after_sort = after_arity[sort_end..].trim_start();
         let value = take_balanced_value(after_sort);
         if !name.is_empty() && !value.is_empty() {
@@ -165,9 +170,14 @@ fn take_balanced_value(s: &str) -> String {
                 in_string = !in_string;
                 out.push(c);
             }
-            '(' if !in_string => { depth += 1; out.push(c); }
+            '(' if !in_string => {
+                depth += 1;
+                out.push(c);
+            }
             ')' if !in_string => {
-                if depth == 0 { break; }
+                if depth == 0 {
+                    break;
+                }
                 depth -= 1;
                 out.push(c);
             }
@@ -215,7 +225,10 @@ mod tests {
         let z3 = "unsat\n(a1 a2 a3)\n";
         let d = parse_z3_output(z3);
         assert_eq!(d.verdict, "unsat");
-        assert_eq!(d.unsat_core, vec!["a1".to_string(), "a2".into(), "a3".into()]);
+        assert_eq!(
+            d.unsat_core,
+            vec!["a1".to_string(), "a2".into(), "a3".into()]
+        );
     }
 
     #[test]

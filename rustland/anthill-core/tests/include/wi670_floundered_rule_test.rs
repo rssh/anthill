@@ -9,11 +9,11 @@
 //!      (kept — the case a naive "drop any un-opened rule-goal residual" fix
 //!      would wrongly discard).
 
-use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, Var};
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Term, Var};
+use anthill_core::kb::KnowledgeBase;
+use anthill_core::parse;
 use smallvec::SmallVec;
 
 #[test]
@@ -43,7 +43,8 @@ end
     let s_sym = kb.intern("s");
     let s_vid = kb.fresh_var(s_sym);
     let s_term = kb.alloc(Term::Var(Var::Global(s_vid)));
-    let p_sym = kb.try_resolve_symbol("test.wi670.p")
+    let p_sym = kb
+        .try_resolve_symbol("test.wi670.p")
         .or_else(|| kb.try_resolve_symbol("p"))
         .expect("p symbol");
     let goal = kb.alloc(Term::Fn {
@@ -52,7 +53,10 @@ end
         named_args: SmallVec::new(),
     });
 
-    let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+    let config = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
     let results = kb.resolve(&[goal], &config);
     assert_eq!(
         results.len(),
@@ -93,7 +97,8 @@ end
     let s_sym = kb.intern("s");
     let s_vid = kb.fresh_var(s_sym);
     let s_term = kb.alloc(Term::Var(Var::Global(s_vid)));
-    let check_sym = kb.try_resolve_symbol("test.wi670b.check")
+    let check_sym = kb
+        .try_resolve_symbol("test.wi670b.check")
         .or_else(|| kb.try_resolve_symbol("check"))
         .expect("check symbol");
     let goal = kb.alloc(Term::Fn {
@@ -102,7 +107,10 @@ end
         named_args: SmallVec::new(),
     });
 
-    let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+    let config = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
     let results = kb.resolve(&[goal], &config);
     assert_eq!(
         results.len(),
@@ -136,9 +144,16 @@ fn genuine_stuck_builtin_residual_still_counts() {
         named_args: SmallVec::new(),
     });
 
-    let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+    let config = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
     let results = kb.resolve(&[goal], &config);
-    assert_eq!(results.len(), 1, "a stuck-builtin residual must still be a solution");
+    assert_eq!(
+        results.len(),
+        1,
+        "a stuck-builtin residual must still be a solution"
+    );
     assert_eq!(
         results[0].residual.len(),
         1,

@@ -16,13 +16,19 @@ use std::process::Command;
 const ANTHILL_BIN: &str = env!("CARGO_BIN_EXE_anthill");
 
 fn z3_available() -> bool {
-    Command::new("z3").arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("anthill-induction-test-{}-{}", std::process::id(), name));
+    let dir = std::env::temp_dir().join(format!(
+        "anthill-induction-test-{}-{}",
+        std::process::id(),
+        name
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
@@ -31,7 +37,9 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 #[test]
 fn induction_with_base_and_step_proved_combines_to_proved() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let src = r#"
         namespace test.induction.ok
           entity Bound(lo: Int64, hi: Int64)
@@ -65,17 +73,24 @@ fn induction_with_base_and_step_proved_combines_to_proved() {
     let path = write_temp("ok.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("induction(over:") && stdout.contains("sub-queries:"),
-        "verbose must surface the meta-tactic dispatch: {stdout}");
-    assert!(stdout.contains("ind_ok: proved"),
-        "both base+step unsat ⇒ induction proved: {stdout}");
+    assert!(
+        stdout.contains("induction(over:") && stdout.contains("sub-queries:"),
+        "verbose must surface the meta-tactic dispatch: {stdout}"
+    );
+    assert!(
+        stdout.contains("ind_ok: proved"),
+        "both base+step unsat ⇒ induction proved: {stdout}"
+    );
 }
 
 #[test]
 fn induction_with_failing_step_disproves() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // Step is satisfiable — the obligation has a counterexample.
     let src = r#"
         namespace test.induction.fail
@@ -103,10 +118,13 @@ fn induction_with_failing_step_disproves() {
     let path = write_temp("fail.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("induction case `test.induction.fail.step_sat` failed"),
-        "failing step must surface in the diagnostic: {stdout}");
+    assert!(
+        stdout.contains("induction case `test.induction.fail.step_sat` failed"),
+        "failing step must surface in the diagnostic: {stdout}"
+    );
 }
 
 #[test]
@@ -115,7 +133,9 @@ fn induction_dispatches_three_positional_cases() {
     // For Bool (2 cases) or larger enums (4+) the induction tactic
     // accepts a flat list. v1 also supports base/step shorthand for
     // numeric induction.
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let src = r#"
         namespace test.induction.multi
           entity Cfg(scale: Int64)
@@ -138,10 +158,15 @@ fn induction_dispatches_three_positional_cases() {
     let path = write_temp("multi.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("ind_multi: proved"),
-        "all positional cases unsat ⇒ proved: {stdout}");
-    assert!(stdout.contains("c1") && stdout.contains("c2") && stdout.contains("c3"),
-        "verbose must list all sub-queries: {stdout}");
+    assert!(
+        stdout.contains("ind_multi: proved"),
+        "all positional cases unsat ⇒ proved: {stdout}"
+    );
+    assert!(
+        stdout.contains("c1") && stdout.contains("c2") && stdout.contains("c3"),
+        "verbose must list all sub-queries: {stdout}"
+    );
 }

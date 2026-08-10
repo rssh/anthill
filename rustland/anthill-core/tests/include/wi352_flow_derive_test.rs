@@ -79,7 +79,9 @@ fn flow_facts_for_reduce_match_046() {
     let mut actual: HashSet<(Symbol, String, Symbol)> = HashSet::new();
     for rid in kb.rules_by_functor(flow_sym) {
         let head = kb.rule_head(rid);
-        let Term::Fn { named_args, .. } = kb.get_term(head) else { continue };
+        let Term::Fn { named_args, .. } = kb.get_term(head) else {
+            continue;
+        };
         let (mut from, mut to, mut kind) = (None, None, None);
         for (f, v) in named_args {
             match kb.local_name_of(*f) {
@@ -107,7 +109,10 @@ fn flow_facts_for_reduce_match_046() {
     .map(|(a, k, b)| (a, k.to_string(), b))
     .collect();
 
-    assert_eq!(actual, expected, "derived flow facts must match 046 §Derived-from-a-body");
+    assert_eq!(
+        actual, expected,
+        "derived flow facts must match 046 §Derived-from-a-body"
+    );
 }
 
 /// Whether `keep_modify(place, into)` holds — a genuine (residual-free)
@@ -142,15 +147,33 @@ fn keep_modify_for_reduce_callback_params() {
 
     // Modifying the accumulator param `f.a` surfaces on the seed `z` (an input)
     // and on `result` (its loop-carried fresh output escapes), and NOT on `xs`.
-    assert!(keep_modify_holds(&mut kb, fa, z), "f.a modify must keep on z");
-    assert!(keep_modify_holds(&mut kb, fa, result), "f.a modify must keep on result");
-    assert!(!keep_modify_holds(&mut kb, fa, xs), "f.a modify must NOT surface on xs");
+    assert!(
+        keep_modify_holds(&mut kb, fa, z),
+        "f.a modify must keep on z"
+    );
+    assert!(
+        keep_modify_holds(&mut kb, fa, result),
+        "f.a modify must keep on result"
+    );
+    assert!(
+        !keep_modify_holds(&mut kb, fa, xs),
+        "f.a modify must NOT surface on xs"
+    );
 
     // Modifying the element param `f.t` surfaces on `xs` (the list it came from)
     // only — not on the seed `z` or the `result`.
-    assert!(keep_modify_holds(&mut kb, ft, xs), "f.t modify must keep on xs");
-    assert!(!keep_modify_holds(&mut kb, ft, z), "f.t modify must NOT surface on z");
-    assert!(!keep_modify_holds(&mut kb, ft, result), "f.t modify must NOT surface on result");
+    assert!(
+        keep_modify_holds(&mut kb, ft, xs),
+        "f.t modify must keep on xs"
+    );
+    assert!(
+        !keep_modify_holds(&mut kb, ft, z),
+        "f.t modify must NOT surface on z"
+    );
+    assert!(
+        !keep_modify_holds(&mut kb, ft, result),
+        "f.t modify must NOT surface on result"
+    );
 }
 
 #[test]

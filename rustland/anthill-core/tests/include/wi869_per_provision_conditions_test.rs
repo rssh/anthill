@@ -104,11 +104,19 @@ fn a_pair_of_floats_still_compares_for_equality() {
          if PartialEq.eq(pair(fst: 1.5, snd: 1), pair(fst: 2.5, snd: 1)) then 1 else 0\n  end",
     );
     assert_eq!(
-        eval_int(&src, "wi869.floateq.Driver.same", "a pair of floats must compare EQUAL"),
+        eval_int(
+            &src,
+            "wi869.floateq.Driver.same",
+            "a pair of floats must compare EQUAL"
+        ),
         1,
     );
     assert_eq!(
-        eval_int(&src, "wi869.floateq.Driver.diff", "…and unequal pairs must not"),
+        eval_int(
+            &src,
+            "wi869.floateq.Driver.diff",
+            "…and unequal pairs must not"
+        ),
         0,
         "an `eq` that answered `true` unconditionally would pass the arm above",
     );
@@ -158,9 +166,16 @@ fn an_int_pair_orders_lexicographically() {
          operation equalPairs(n: Int64) -> Int64 =\n      \
          Ord.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1))\n  end",
     );
-    assert_eq!(eval_int(&src, "wi869.intord.Driver.fstWins", "`fst` decides"), 1);
     assert_eq!(
-        eval_int(&src, "wi869.intord.Driver.sndBreaksTie", "`snd` breaks a `fst` tie"),
+        eval_int(&src, "wi869.intord.Driver.fstWins", "`fst` decides"),
+        1
+    );
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi869.intord.Driver.sndBreaksTie",
+            "`snd` breaks a `fst` tie"
+        ),
         -1,
         "a `fst`-only comparison would answer 0 here",
     );
@@ -247,7 +262,11 @@ fn the_mechanism_on_a_local_tower() {
     // The WEAK provision is conditioned on the WEAK goal alone, so a component that
     // provides only the weak floor is admitted.
     assert_eq!(
-        eval_int(&src, "wi869.tower.Driver.weakOnWeak", "`Weak[Box[OnlyWeak]]` holds"),
+        eval_int(
+            &src,
+            "wi869.tower.Driver.weakOnWeak",
+            "`Weak[Box[OnlyWeak]]` holds"
+        ),
         7,
         "the value comes from `OnlyWeak.weak`, so the call really reached the \
          component's own member and did not stop at `Box`",
@@ -255,7 +274,11 @@ fn the_mechanism_on_a_local_tower() {
     // The STRONG provision is conditioned on the STRONG goal, so a component that has
     // both floors is admitted…
     assert_eq!(
-        eval_int(&src, "wi869.tower.Driver.strongOnBoth", "`Strong[Box[Both]]` holds"),
+        eval_int(
+            &src,
+            "wi869.tower.Driver.strongOnBoth",
+            "`Strong[Box[Both]]` holds"
+        ),
         2,
     );
     // …and one that has only the weak floor is REFUSED, naming the unmet condition.
@@ -300,9 +323,16 @@ fn a_carrier_with_no_conditional_provision_is_unchanged() {
         "    operation bare(n: Int64) -> Int64 = Weak.weak(ow)\n    \
          operation bareStrong(n: Int64) -> Int64 = Strong.strong(bo)\n",
     );
-    assert_eq!(eval_int(&src, "wi869.tower.Driver.bare", "an unconditioned `Weak`"), 7);
     assert_eq!(
-        eval_int(&src, "wi869.tower.Driver.bareStrong", "…and an unconditioned `Strong`"),
+        eval_int(&src, "wi869.tower.Driver.bare", "an unconditioned `Weak`"),
+        7
+    );
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi869.tower.Driver.bareStrong",
+            "…and an unconditioned `Strong`"
+        ),
         2,
     );
 }
@@ -324,15 +354,25 @@ fn two_provisions_sharing_one_condition_own_one_slot() {
         "case box(v) -> Strong.strong(v)",
         "case box(v) -> Weak.weak(v)",
     );
-    assert_eq!(eval_int(&src, "wi869.tower.Driver.weakOnWeak", "the shared slot serves `Weak`"), 7);
     assert_eq!(
-        eval_int(&src, "wi869.tower.Driver.strongOnBoth", "…and the same slot serves `Strong`"),
+        eval_int(
+            &src,
+            "wi869.tower.Driver.weakOnWeak",
+            "the shared slot serves `Weak`"
+        ),
+        7
+    );
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi869.tower.Driver.strongOnBoth",
+            "…and the same slot serves `Strong`"
+        ),
         1,
         "a slot recorded as owned by only the FIRST provision would be `Unavailable` \
          under the second, and `Box.strong`'s read of it would be refused",
     );
 }
-
 
 /// A CONDITION SLOT IS EVIDENCE, and it composes: `Pair.compare`'s component compares
 /// go through the `Ord` provision's own slots, so a pair whose component is itself
@@ -357,11 +397,19 @@ fn a_pair_of_pairs_orders_recursively() {
          pair(fst: pair(fst: 1, snd: 2), snd: 7))\n  end",
     );
     assert_eq!(
-        eval_int(&src, "wi869.nested.Driver.innerDecides", "the INNER pair breaks the tie"),
+        eval_int(
+            &src,
+            "wi869.nested.Driver.innerDecides",
+            "the INNER pair breaks the tie"
+        ),
         -1,
     );
     assert_eq!(
-        eval_int(&src, "wi869.nested.Driver.outerSndDecides", "…and `snd` breaks a full `fst` tie"),
+        eval_int(
+            &src,
+            "wi869.nested.Driver.outerSndDecides",
+            "…and `snd` breaks a full `fst` tie"
+        ),
         1,
         "an implementation that only compared the inner pair would answer 0 here",
     );
@@ -381,8 +429,10 @@ fn a_pair_of_pairs_orders_recursively() {
 /// attributed to the wrong sort.
 #[test]
 fn reading_a_sibling_provisions_evidence_is_loud() {
-    let src = tower(PER_PROVISION)
-        .replace("case box(v) -> Weak.weak(v)", "case box(v) -> Strong.strong(v)");
+    let src = tower(PER_PROVISION).replace(
+        "case box(v) -> Weak.weak(v)",
+        "case box(v) -> Strong.strong(v)",
+    );
     crate::common::try_load_kb_with(&src)
         .expect("the read TYPES — the slot is in `Box`'s dictionary chain");
     let err = eval_fresh(&src, "wi869.tower.Driver.weakOnWeak")
@@ -405,7 +455,11 @@ fn a_sort_level_requires_and_a_provision_condition_compose() {
                    provides Strong[T = Box] :- Strong[A]\n";
     let src = tower(clauses);
     assert_eq!(
-        eval_int(&src, "wi869.tower.Driver.weakOnWeak", "the sort-level condition holds"),
+        eval_int(
+            &src,
+            "wi869.tower.Driver.weakOnWeak",
+            "the sort-level condition holds"
+        ),
         7,
     );
     let refused = load_errs(&tower_with(clauses, STRONG_ON_WEAK));
@@ -430,9 +484,16 @@ fn a_condition_restating_a_sort_level_requires_is_one_slot() {
          provides Weak[T = Box] :- Weak[A]\n    \
          provides Strong[T = Box] :- Strong[A]\n",
     );
-    assert_eq!(eval_int(&src, "wi869.tower.Driver.weakOnWeak", "the weak floor runs"), 7);
     assert_eq!(
-        eval_int(&src, "wi869.tower.Driver.strongOnBoth", "…and so does the strong one"),
+        eval_int(&src, "wi869.tower.Driver.weakOnWeak", "the weak floor runs"),
+        7
+    );
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi869.tower.Driver.strongOnBoth",
+            "…and so does the strong one"
+        ),
         2,
         "a duplicated `Weak[A]` slot would shift every slot after it",
     );
@@ -448,7 +509,8 @@ fn a_condition_naming_an_unknown_spec_is_refused() {
          provides Strong[T = Box] :- Strong[A]\n",
     ));
     assert!(
-        errs.iter().any(|e| e.contains("unresolved name 'NoSuchSpec'")),
+        errs.iter()
+            .any(|e| e.contains("unresolved name 'NoSuchSpec'")),
         "the unknown condition must be named at its own site; got {errs:?}",
     );
 }
@@ -481,12 +543,25 @@ fn the_inherited_comparison_surface_works_from_compare_alone() {
          match Ord.min(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n  end",
     );
     // Both directions of each, so an implementation that answered a constant fails.
-    assert_eq!(eval_int(&src, "wi877.surface.Driver.gt", "(2,1) > (1,9)"), 1);
+    assert_eq!(
+        eval_int(&src, "wi877.surface.Driver.gt", "(2,1) > (1,9)"),
+        1
+    );
     assert_eq!(eval_int(&src, "wi877.surface.Driver.lt", "…and not <"), 0);
     assert_eq!(eval_int(&src, "wi877.surface.Driver.gte", "a tie is >="), 1);
     assert_eq!(eval_int(&src, "wi877.surface.Driver.lte", "…and <="), 1);
-    assert_eq!(eval_int(&src, "wi877.surface.Driver.maxFst", "max reads back the winner"), 2);
-    assert_eq!(eval_int(&src, "wi877.surface.Driver.minFst", "…and min the loser"), 1);
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi877.surface.Driver.maxFst",
+            "max reads back the winner"
+        ),
+        2
+    );
+    assert_eq!(
+        eval_int(&src, "wi877.surface.Driver.minFst", "…and min the loser"),
+        1
+    );
 }
 
 /// …and the ONE-ness is asserted STRUCTURALLY, not inferred from the arms above: only
@@ -496,7 +571,9 @@ fn the_inherited_comparison_surface_works_from_compare_alone() {
 #[test]
 fn pair_supplies_only_compare_and_eq() {
     let mut kb = crate::common::load_stdlib_kb();
-    let pair = kb.try_resolve_symbol("anthill.prelude.Pair").expect("Pair must exist");
+    let pair = kb
+        .try_resolve_symbol("anthill.prelude.Pair")
+        .expect("Pair must exist");
     for (short, expected) in [
         ("compare", "anthill.prelude.Pair.compare"),
         ("eq", "anthill.prelude.Pair.eq"),
@@ -595,9 +672,10 @@ fn a_provision_certified_by_a_weaker_conditioned_one_is_refused() {
     let errs = load_errs(&cell_tower("Lawful[E]"));
     assert!(
         errs.iter().any(|e| {
-            e.contains("provides 'anthill.prelude.Ord', which requires \
-                        'anthill.prelude.Eq'")
-                && e.contains("DOES provide")
+            e.contains(
+                "provides 'anthill.prelude.Ord', which requires \
+                        'anthill.prelude.Eq'",
+            ) && e.contains("DOES provide")
                 && e.contains("`wi1033.cell.Lawful[T = wi1033.cell.Cell.E]`")
         }),
         "the refusal must name the UNENTAILED condition, and must not say the carrier \
@@ -665,7 +743,9 @@ fn each_condition_is_joined_to_its_own_provision() {
         .try_resolve_symbol("anthill.reflect.ProvidesConditionInfo")
         .expect("the entity must be registered");
     let base_qn = |t| match kb.get_term(t) {
-        Term::Fn { functor, pos_args, .. } => match pos_args.first().map(|a| kb.get_term(*a)) {
+        Term::Fn {
+            functor, pos_args, ..
+        } => match pos_args.first().map(|a| kb.get_term(*a)) {
             // A `SortView(Base, …)` wrapper carries the base in pos_args[0].
             Some(Term::Fn { functor: b, .. }) | Some(Term::Ref(b)) => {
                 Some(kb.qualified_name_of(*b).to_string())
@@ -682,7 +762,10 @@ fn each_condition_is_joined_to_its_own_provision() {
         .filter_map(|rid| kb.fact_head_named_args(rid))
         .filter_map(|named| {
             let get = |k: &str| {
-                named.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
+                named
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == k)
+                    .map(|(_, t)| *t)
             };
             let owner = match kb.get_term(get("sort_ref")?) {
                 Term::Fn { functor, .. } | Term::Ref(functor) => {
@@ -715,8 +798,9 @@ fn each_condition_is_joined_to_its_own_provision() {
     // …and NOT the cross pairing: a reader that ignored `provided` and merely listed
     // every condition of the carrier would pass the loop above and fail here.
     assert!(
-        !pairs.iter().any(|(p, c)| p == "anthill.prelude.PartialEq"
-            && c == "anthill.prelude.Ord"),
+        !pairs
+            .iter()
+            .any(|(p, c)| p == "anthill.prelude.PartialEq" && c == "anthill.prelude.Ord"),
         "each condition must be joined to ITS OWN provision; found {pairs:?}",
     );
 }
@@ -788,8 +872,9 @@ fn an_outer_condition_richer_than_the_inner_still_entails_it() {
 /// load into a refusal — which is what grouping conditions by the provided BASE did.
 #[test]
 fn a_second_clause_for_one_spec_only_widens() {
-    let tower = |extra: &str| format!(
-        "\nnamespace wi1033.alt\n  import anthill.prelude.{{Int64}}\n\
+    let tower = |extra: &str| {
+        format!(
+            "\nnamespace wi1033.alt\n  import anthill.prelude.{{Int64}}\n\
   sort SA\n    sort T = ?\n    operation sa(x: T) -> Int64\n  end\n\
   sort SB\n    sort T = ?\n    operation sb(x: T) -> Int64\n  end\n\
   sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
@@ -798,7 +883,8 @@ fn a_second_clause_for_one_spec_only_widens() {
     provides Hi[T = D] :- SA[T = P]\n    \
     provides Lo[T = D] :- SA[T = P]\n{extra}    \
     operation hi(x: D) -> Int64 = 1\n    operation lo(x: D) -> Int64 = 1\n  end\nend\n"
-    );
+        )
+    };
     // The control: one adequate clause loads.
     if let Err(errs) = crate::common::try_load_kb_with(&tower("")) {
         panic!("the adequate clause alone must load; got {errs:?}");

@@ -19,7 +19,8 @@
 use anthill_core::eval::Value;
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // A plain (effect-free) carrier so the feature is exercised end-to-end without
@@ -97,7 +98,9 @@ namespace wi491.headline
   operation iterator(m: MappedStream) -> m.Sort = m
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "`iterator(m: MappedStream) -> m.Sort = m` must type-check (covariant \
@@ -117,9 +120,12 @@ namespace wi491.bogusmember
   operation bad(m: MappedStream) -> m.Nonexistent = m
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("Nonexistent") && e.contains("no member")),
+        errs.iter()
+            .any(|e| e.contains("Nonexistent") && e.contains("no member")),
         "a bogus projection-return member must report the precise elimination error \
          ('no member ...'), not a vague conformance mismatch; got: {errs:?}",
     );
@@ -136,9 +142,12 @@ namespace wi491.hole
   operation bad(m: MappedStream) -> Stream = m
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape")),
+        errs.iter()
+            .any(|e| e.contains("abstracting return") || e.contains("escape")),
         "a bare `-> Stream` return must stay rejected (abstract members escape); \
          got: {errs:?}",
     );

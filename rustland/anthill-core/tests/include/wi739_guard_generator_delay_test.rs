@@ -42,10 +42,10 @@
 //! the gate cannot answer and does not need to ask.
 
 use anthill_core::eval::value::Value;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -87,7 +87,6 @@ namespace wi739.guard
 end
 "#;
 
-
 /// `.fix()` over the floundering rule — the case WI-739's feedback flagged.
 const FIX_SRC: &str = r#"
 namespace wi739.fixcase
@@ -117,8 +116,8 @@ fn load_src(src: &str) -> KnowledgeBase {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -160,7 +159,10 @@ fn ground_pairs(kb: &mut KnowledgeBase, qn: &str) -> Vec<(i64, i64)> {
     let x = fresh(kb, "x");
     let y = fresh(kb, "y");
     let g = goal(kb, qn, &[x, y]);
-    let cfg = ResolveConfig { max_solutions: 100, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 100,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
     let mut out = Vec::new();
     for sol in &sols {
@@ -201,7 +203,10 @@ fn int_of(kb: &mut KnowledgeBase, sol: &Solution, v: TermId) -> Option<i64> {
 fn definite_ints(kb: &mut KnowledgeBase, qn: &str) -> Vec<i64> {
     let v = fresh(kb, "v");
     let g = goal(kb, qn, &[v]);
-    let cfg = ResolveConfig { max_solutions: 10, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
     let mut out = Vec::new();
     for sol in &sols {
@@ -258,7 +263,11 @@ fn wi739_neq_and_naf_spellings_agree() {
          enumerate identically — the divergence WAS the bug. neq gave {guard:?}, \
          not(eq(..)) gave {naf:?}",
     );
-    assert_eq!(naf.len(), 6, "the NAF oracle itself must still give 6; got {naf:?}");
+    assert_eq!(
+        naf.len(),
+        6,
+        "the NAF oracle itself must still give 6; got {naf:?}"
+    );
 }
 
 /// Mode (in,out) must be unaffected: with the first column bound at the call the
@@ -270,7 +279,10 @@ fn wi739_bound_first_column_still_yields_two() {
     let one = kb.alloc(Term::Const(Literal::Int(1)));
     let y = fresh(&mut kb, "y");
     let g = goal(&mut kb, "wi739.guard.distinct_pair", &[one, y]);
-    let cfg = ResolveConfig { max_solutions: 100, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 100,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
     let mut got: Vec<i64> = Vec::new();
     for sol in &sols {
@@ -297,7 +309,11 @@ fn wi739_bound_first_column_still_yields_two() {
 fn wi739_zero_head_param_spelling_still_proves() {
     let mut kb = load_kb();
     let g = goal(&mut kb, "wi739.guard.distinct_local", &[]);
-    let cfg = ResolveConfig { max_solutions: 100, definite_only: true, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 100,
+        definite_only: true,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
     assert_eq!(
         sols.len(),
@@ -324,9 +340,17 @@ fn wi739_guard_on_unbindable_var_still_flounders_honestly() {
     let mut kb = load_kb();
     let x = fresh(&mut kb, "x");
     let g = goal(&mut kb, "wi739.guard.unbindable", &[x]);
-    let cfg = ResolveConfig { max_solutions: 10, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
-    assert_eq!(sols.len(), 1, "expected the single floundered answer; got {}", sols.len());
+    assert_eq!(
+        sols.len(),
+        1,
+        "expected the single floundered answer; got {}",
+        sols.len()
+    );
     assert!(
         !sols[0].is_definite() && !sols[0].residual.is_empty(),
         "unbindable(?x) :- neq(?x, 1) must stay UNDECIDED and carry its pending \
@@ -355,7 +379,10 @@ fn wi739_hard_failing_builtin_is_not_reordered() {
     let mut kb = load_kb();
     let p = fresh(&mut kb, "p");
     let g = goal(&mut kb, "anthill.prelude.BigInt.induction", &[p]);
-    let cfg = ResolveConfig { max_solutions: 10, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
     assert!(
         !sols.is_empty(),

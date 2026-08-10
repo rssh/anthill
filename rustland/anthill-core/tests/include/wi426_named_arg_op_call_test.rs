@@ -16,8 +16,8 @@
 //! (`reorder_named_args_in_apply`). Constructor named args already worked (eval's
 //! `start_constructor` preserves labels), so this only touches operation calls.
 
-use anthill_core::eval::{Interpreter, Value};
 use crate::common::{interp_for, try_load_kb_with};
+use anthill_core::eval::{Interpreter, Value};
 
 fn load_errors(source: &str) -> Vec<String> {
     match try_load_kb_with(source) {
@@ -27,7 +27,8 @@ fn load_errors(source: &str) -> Vec<String> {
 }
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // ── Type-checking ──────────────────────────────────────────────────
@@ -134,7 +135,9 @@ namespace test.wi426.eval1
 end
 "#,
     );
-    let r = interp.call("test.wi426.eval1.main", &[]).expect("call main");
+    let r = interp
+        .call("test.wi426.eval1.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(r), 200, "named arg a: 200 must bind to param a");
 }
 
@@ -151,7 +154,9 @@ namespace test.wi426.eval2
 end
 "#,
     );
-    let r = interp.call("test.wi426.eval2.main", &[]).expect("call main");
+    let r = interp
+        .call("test.wi426.eval2.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(r), 2, "named arg b: 2 must bind to param b");
 }
 
@@ -203,7 +208,11 @@ fn carrier_param_spec_op_by_name_typechecks_and_evaluates() {
     let f = interp
         .call("test.wi426.sib.bag_find_byname", &[b])
         .expect("find(c: b, pred: big)");
-    assert_eq!(expect_int(f), 2, "find(c: b, pred: big) → first element > 1");
+    assert_eq!(
+        expect_int(f),
+        2,
+        "find(c: b, pred: big) → first element > 1"
+    );
 }
 
 /// COVERAGE: a label naming NO parameter is a loud error, not a silent drop

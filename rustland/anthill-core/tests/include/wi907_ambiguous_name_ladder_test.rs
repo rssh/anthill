@@ -158,7 +158,10 @@ fn an_ambiguous_host_name_is_refused_as_ambiguous_not_absent() {
     };
     assert_eq!(
         candidates,
-        &["wi907.alpha.SortView".to_owned(), "wi907.beta.SortView".to_owned()],
+        &[
+            "wi907.alpha.SortView".to_owned(),
+            "wi907.beta.SortView".to_owned()
+        ],
         "and it must name what it could not choose between",
     );
 }

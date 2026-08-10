@@ -74,10 +74,17 @@ end
 
 #[test]
 fn a_named_bracket_on_an_eponymous_sort_is_a_type_application() {
-    let ctl = errors(&control("  rule ok(?x) :- eq(?x, takes_type927(Holder[T = Int64]))"));
-    assert!(ctl.is_empty(), "the non-eponymous control must load clean; got {ctl:?}");
+    let ctl = errors(&control(
+        "  rule ok(?x) :- eq(?x, takes_type927(Holder[T = Int64]))",
+    ));
+    assert!(
+        ctl.is_empty(),
+        "the non-eponymous control must load clean; got {ctl:?}"
+    );
 
-    let errs = errors(&eponymous("  rule ok(?x) :- eq(?x, takes_type927(Box[T = Int64]))"));
+    let errs = errors(&eponymous(
+        "  rule ok(?x) :- eq(?x, takes_type927(Box[T = Int64]))",
+    ));
     assert!(
         errs.is_empty(),
         "a bracketed type application over an eponymous sort must load — its \
@@ -90,10 +97,17 @@ fn a_positional_bracket_is_not_desugared_into_a_field() {
     // The nastier half: the positional->named desugar filled the entity's `value`
     // field with the type argument, so the type-arg check downstream complained
     // about a label the author never wrote.
-    let ctl = errors(&control("  rule ok(?x) :- eq(?x, takes_type927(Holder[Int64]))"));
-    assert!(ctl.is_empty(), "the non-eponymous control must load clean; got {ctl:?}");
+    let ctl = errors(&control(
+        "  rule ok(?x) :- eq(?x, takes_type927(Holder[Int64]))",
+    ));
+    assert!(
+        ctl.is_empty(),
+        "the non-eponymous control must load clean; got {ctl:?}"
+    );
 
-    let errs = errors(&eponymous("  rule ok(?x) :- eq(?x, takes_type927(Box[Int64]))"));
+    let errs = errors(&eponymous(
+        "  rule ok(?x) :- eq(?x, takes_type927(Box[Int64]))",
+    ));
     assert!(
         errs.is_empty(),
         "a POSITIONAL bracket binds the sort's declared type param, not the \
@@ -110,7 +124,8 @@ fn a_positional_bracket_is_not_desugared_into_a_field() {
 fn a_stray_type_argument_stays_loud_and_names_a_type_parameter() {
     let errs = errors(&eponymous("  rule bad(?x) :- eq(?x, Box[W = Int64])"));
     assert!(
-        errs.iter().any(|e| e.contains("no type parameter named 'W'")),
+        errs.iter()
+            .any(|e| e.contains("no type parameter named 'W'")),
         "a stray bracket argument must still be refused by the shared \
          type-argument gate; got {errs:?}"
     );
@@ -127,11 +142,15 @@ fn a_stray_type_argument_stays_loud_and_names_a_type_parameter() {
 #[test]
 fn the_parenthesized_surface_still_constructs_and_still_checks_fields() {
     let errs = errors(&eponymous("  fact Box(value: 1)"));
-    assert!(errs.is_empty(), "parens over an eponymous sort construct; got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "parens over an eponymous sort construct; got {errs:?}"
+    );
 
     let bad = errors(&eponymous("  fact Box(valu: 1)"));
     assert!(
-        bad.iter().any(|e| e.contains("has no field") && e.contains("valu")),
+        bad.iter()
+            .any(|e| e.contains("has no field") && e.contains("valu")),
         "a misspelled FIELD through parens must still be refused; got {bad:?}"
     );
 }
@@ -143,5 +162,8 @@ fn a_bracket_in_type_position_is_unaffected() {
     let errs = errors(&eponymous(
         "  sort Use\n    entity use(b: Box[T = Int64])\n  end",
     ));
-    assert!(errs.is_empty(), "an annotation over an eponymous sort loads; got {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "an annotation over an eponymous sort loads; got {errs:?}"
+    );
 }

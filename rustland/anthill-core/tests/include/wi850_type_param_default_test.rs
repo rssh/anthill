@@ -68,8 +68,14 @@ end
         .iter()
         .find(|e| e.contains("carries a default"))
         .unwrap_or_else(|| panic!("the defaulted declaration must be refused; got: {errs:?}"));
-    assert!(hit.contains("`foo`"), "the diagnostic must name the OPERATION; got: {hit}");
-    assert!(hit.contains("`T`"), "the diagnostic must name the PARAMETER; got: {hit}");
+    assert!(
+        hit.contains("`foo`"),
+        "the diagnostic must name the OPERATION; got: {hit}"
+    );
+    assert!(
+        hit.contains("`T`"),
+        "the diagnostic must name the PARAMETER; got: {hit}"
+    );
     assert!(
         hit.contains("`T = Int64`"),
         "the diagnostic must quote what was WRITTEN, so the author can see the dropped \
@@ -114,9 +120,15 @@ namespace test.wi850.several
 end
 "#,
     );
-    let defaults: Vec<&String> =
-        errs.iter().filter(|e| e.contains("carries a default")).collect();
-    assert_eq!(defaults.len(), 2, "one diagnostic per defaulted param; got: {errs:?}");
+    let defaults: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("carries a default"))
+        .collect();
+    assert_eq!(
+        defaults.len(),
+        2,
+        "one diagnostic per defaulted param; got: {errs:?}"
+    );
     assert!(
         defaults.iter().any(|e| e.contains("`B`")) && defaults.iter().any(|e| e.contains("`C`")),
         "both defaulted params must be named; got: {defaults:?}",
@@ -143,7 +155,10 @@ end
 "#;
     parses_clean(src);
     let mut interp = interp_for(src);
-    match interp.call("test.wi850.bare.Driver.drive", &[]).expect("drive") {
+    match interp
+        .call("test.wi850.bare.Driver.drive", &[])
+        .expect("drive")
+    {
         anthill_core::eval::Value::Int(7) => {}
         other => panic!("a bare `[T]` op must still evaluate; got {other:?}"),
     }
@@ -164,7 +179,10 @@ namespace test.wi850.pinned
 end
 "#;
     let mut interp = interp_for(src);
-    match interp.call("test.wi850.pinned.Driver.drive", &[]).expect("drive") {
+    match interp
+        .call("test.wi850.pinned.Driver.drive", &[])
+        .expect("drive")
+    {
         anthill_core::eval::Value::Int(7) => {}
         other => panic!("a call-site pin is the advertised alternative; got {other:?}"),
     }

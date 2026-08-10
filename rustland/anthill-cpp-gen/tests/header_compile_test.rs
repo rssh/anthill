@@ -23,21 +23,34 @@ fn namespace_header_emits_compilable_cpp() {
     "#;
 
     let mut kb = load_kb_with(source);
-    let header = emit_namespace_header(&mut kb, "test.geom")
-        .expect("emit test.geom header");
+    let header = emit_namespace_header(&mut kb, "test.geom").expect("emit test.geom header");
 
     // Sanity-check the structure before invoking the compiler.
-    assert!(header.contains("#pragma once"), "missing #pragma once:\n{header}");
-    assert!(header.contains("#include <cstdint>"),
-            "missing <cstdint> for int64_t:\n{header}");
-    assert!(header.contains("#include <string>"),
-            "missing <string> for std::string:\n{header}");
-    assert!(header.contains("namespace test::geom {"),
-            "missing namespace open:\n{header}");
-    assert!(header.contains("}  // namespace test::geom"),
-            "missing namespace close comment:\n{header}");
+    assert!(
+        header.contains("#pragma once"),
+        "missing #pragma once:\n{header}"
+    );
+    assert!(
+        header.contains("#include <cstdint>"),
+        "missing <cstdint> for int64_t:\n{header}"
+    );
+    assert!(
+        header.contains("#include <string>"),
+        "missing <string> for std::string:\n{header}"
+    );
+    assert!(
+        header.contains("namespace test::geom {"),
+        "missing namespace open:\n{header}"
+    );
+    assert!(
+        header.contains("}  // namespace test::geom"),
+        "missing namespace close comment:\n{header}"
+    );
     assert!(header.contains("struct Vec3"), "missing Vec3:\n{header}");
-    assert!(header.contains("struct Account"), "missing Account:\n{header}");
+    assert!(
+        header.contains("struct Account"),
+        "missing Account:\n{header}"
+    );
 
     // Now actually compile it.
     let cxx = match find_cxx() {
@@ -96,11 +109,13 @@ int main() {{
 
 #[test]
 fn missing_namespace_returns_error() {
-    let mut kb = load_kb_with(r#"
+    let mut kb = load_kb_with(
+        r#"
         namespace test.empty
           import anthill.prelude.{Float}
         end
-    "#);
+    "#,
+    );
     let result = emit_namespace_header(&mut kb, "test.empty");
     assert!(result.is_err(), "expected error for empty namespace");
 }

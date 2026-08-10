@@ -37,7 +37,10 @@ fn eval_int(src: &str, op: &str) -> i64 {
     if let Err(errs) = try_load_kb_with(src) {
         panic!("expected a clean load; got: {errs:?}");
     }
-    match interp_for(src).call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp_for(src)
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -45,7 +48,9 @@ fn eval_int(src: &str, op: &str) -> i64 {
 
 /// Load `src`, expecting rejection, and return the diagnostics.
 fn reject(src: &str, why: &str) -> Vec<String> {
-    try_load_kb_with(src).err().unwrap_or_else(|| panic!("{why}"))
+    try_load_kb_with(src)
+        .err()
+        .unwrap_or_else(|| panic!("{why}"))
 }
 
 /// Reject, AND pin that it was THIS check that rejected — the `binder-annotation` kind
@@ -77,7 +82,10 @@ namespace test.wi794.one
   operation drive() -> Int64 = apply1(lambda (a: String) -> 1)
 end
 "#;
-    let errs = reject(src, "a String binder in an Int64 slot must be refused at arity 1");
+    let errs = reject(
+        src,
+        "a String binder in an Int64 slot must be refused at arity 1",
+    );
     let msg = errs.join("\n");
     assert!(
         msg.contains("String"),
@@ -151,14 +159,23 @@ end
     let msg = reject_as_binder_annotation(src, "a contradicting middle binder must be refused");
     // The binder that is actually wrong, and ONLY that one — `a` and `c` agree with
     // their slots and naming them would send the reader to the wrong annotation.
-    assert!(msg.contains(".b "), "must name the offending binder `b`; got: {msg}");
+    assert!(
+        msg.contains(".b "),
+        "must name the offending binder `b`; got: {msg}"
+    );
     assert!(
         !msg.contains(".a ") && !msg.contains(".c "),
         "must not implicate the agreeing binders; got: {msg}",
     );
     // Both types: what the slot is, and what was written.
-    assert!(msg.contains("Int64"), "must name the slot type Int64; got: {msg}");
-    assert!(msg.contains("String"), "must name the written type String; got: {msg}");
+    assert!(
+        msg.contains("Int64"),
+        "must name the slot type Int64; got: {msg}"
+    );
+    assert!(
+        msg.contains("String"),
+        "must name the written type String; got: {msg}"
+    );
     // Located. Line 7 is the lambda. The span is the LAMBDA's, not the written type's —
     // the loader lowers a binder annotation through hash-consed KB terms, which own no
     // span, so the annotation occurrence inherits its parent pattern's. That is exactly
@@ -230,7 +247,8 @@ namespace test.wi794.partbad
 end
 "#;
     reject_as_binder_annotation(
-        bad, "a written contradiction beside a bare binder must still be refused",
+        bad,
+        "a written contradiction beside a bare binder must still be refused",
     );
 }
 
@@ -293,7 +311,8 @@ namespace test.wi794.narrower
 end
 "#;
     let msg = reject_as_binder_annotation(
-        narrower, "a narrower binder annotation is a false claim and must be refused",
+        narrower,
+        "a narrower binder annotation is a false claim and must be refused",
     );
     // Order matters here and is the point: the SLOT is `expected`, the WRITTEN type is
     // `actual`. Asserting both names would pass under a swap; asserting their order does
@@ -339,7 +358,8 @@ namespace test.wi794.fnslot
 end
 "#;
     reject_as_binder_annotation(
-        src, "a contradicting binder under a Function[...] slot must be refused",
+        src,
+        "a contradicting binder under a Function[...] slot must be refused",
     );
 }
 
@@ -358,7 +378,10 @@ namespace test.wi794.letpat
     b
 end
 "#;
-    reject_as_binder_annotation(bad, "a contradicting let-destructure annotation must be refused");
+    reject_as_binder_annotation(
+        bad,
+        "a contradicting let-destructure annotation must be refused",
+    );
 
     let good = r#"
 namespace test.wi794.letpatok
@@ -393,7 +416,10 @@ namespace test.wi794.arity
   operation drive() -> Int64 = apply3(lambda (x: Int64, y: Int64) -> x)
 end
 "#;
-    let errs = reject(src, "a 2-binder lambda at a 3-parameter slot must be refused");
+    let errs = reject(
+        src,
+        "a 2-binder lambda at a 3-parameter slot must be refused",
+    );
     let msg = errs.join("\n");
     assert!(
         !msg.contains("binder-annotation"),

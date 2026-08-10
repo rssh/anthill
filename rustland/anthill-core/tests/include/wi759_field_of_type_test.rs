@@ -22,9 +22,9 @@
 //! the repo's first STRING-valued type arguments (the channel was previously exercised only
 //! by integers, `Vec[T = Int64, N = 3]`).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, LoadResult, NullResolver};
 use anthill_core::kb::typing::{sort_functor_of_view, type_check_sorts};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 use crate::common::try_load_kb_with;
@@ -58,8 +58,14 @@ fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
 fn retype_errors(source: &str) -> Vec<String> {
     let (mut kb, result) = load_with_result(source);
     let first = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(first.is_empty(), "first type-check must be clean, got: {first:?}");
-    type_check_sorts(&mut kb, &[]).iter().map(|e| e.to_string()).collect()
+    assert!(
+        first.is_empty(),
+        "first type-check must be clean, got: {first:?}"
+    );
+    type_check_sorts(&mut kb, &[])
+        .iter()
+        .map(|e| e.to_string())
+        .collect()
 }
 
 /// Re-type as above, then read the SHORT sort name the re-typed body node actually carries.
@@ -70,9 +76,15 @@ fn retype_errors(source: &str) -> Vec<String> {
 fn retyped_body_sort(source: &str, op_qn: &str) -> String {
     let (mut kb, result) = load_with_result(source);
     let first = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(first.is_empty(), "first type-check must be clean, got: {first:?}");
+    assert!(
+        first.is_empty(),
+        "first type-check must be clean, got: {first:?}"
+    );
     let second = type_check_sorts(&mut kb, &[]);
-    assert!(second.is_empty(), "re-type-check must be clean, got: {second:?}");
+    assert!(
+        second.is_empty(),
+        "re-type-check must be clean, got: {second:?}"
+    );
     let op = kb
         .try_resolve_symbol(op_qn)
         .unwrap_or_else(|| panic!("no symbol for {op_qn}"));
@@ -309,7 +321,8 @@ end
         Err(e) => e,
     };
     assert!(
-        errs.iter().any(|e| e.contains("internal") && e.contains("v")),
+        errs.iter()
+            .any(|e| e.contains("internal") && e.contains("v")),
         "reducing a FieldOf onto an internal entity's field from another scope must be \
          refused, naming the field; got: {errs:?}",
     );

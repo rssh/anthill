@@ -27,7 +27,10 @@ fn walk_labels(root: &Path, dir: &Path, prefix: &str, out: &mut BTreeSet<String>
             walk_labels(root, &p, prefix, out);
         } else if ft.is_file() && p.extension().is_some_and(|e| e == "anthill") {
             let rel = p.strip_prefix(root).unwrap().with_extension("");
-            out.insert(format!("{prefix}/{}", rel.to_string_lossy().replace('\\', "/")));
+            out.insert(format!(
+                "{prefix}/{}",
+                rel.to_string_lossy().replace('\\', "/")
+            ));
         }
     }
 }
@@ -48,8 +51,10 @@ fn embedded_sources_match_on_disk_trees() {
         walk_labels(&dir, &dir, prefix, &mut on_disk);
     }
 
-    let embedded: BTreeSet<String> =
-        anthill::stdlib::SOURCES.iter().map(|(label, _)| label.to_string()).collect();
+    let embedded: BTreeSet<String> = anthill::stdlib::SOURCES
+        .iter()
+        .map(|(label, _)| label.to_string())
+        .collect();
 
     let missing: Vec<&String> = on_disk.difference(&embedded).collect();
     let extra: Vec<&String> = embedded.difference(&on_disk).collect();

@@ -27,8 +27,8 @@
 //! fails if the inline spelling stays inert (→ 1 fact). Backing the change out and
 //! double-emitting move it in opposite directions, so one number decides both.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 
 use crate::common::load_kb_with;
 
@@ -154,7 +154,10 @@ end
     let kb = load_kb_with(SRC);
     assert_eq!(
         descriptions_of(&kb, "wi1070.multi.show"),
-        vec![(0, "first line".to_string()), (1, "second line".to_string())],
+        vec![
+            (0, "first line".to_string()),
+            (1, "second line".to_string())
+        ],
         "repeated blocks must all reach the KB, indexed per target in source order",
     );
 }
@@ -215,7 +218,10 @@ end
     let kb = load_kb_with(SRC);
     assert_eq!(
         descriptions_of(&kb, "wi1070.both.show"),
-        vec![(0, "inline block".to_string()), (1, "standalone describe".to_string())],
+        vec![
+            (0, "inline block".to_string()),
+            (1, "standalone describe".to_string())
+        ],
         "the two spellings must contribute one fact each — neither dropped nor doubled",
     );
 }

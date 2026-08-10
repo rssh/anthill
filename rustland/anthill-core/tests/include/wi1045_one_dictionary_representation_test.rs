@@ -184,17 +184,21 @@ fn a_sigma_dictionary_dispatches_an_operation_frame() {
         );
         match got {
             Ok(Value::Int(n)) => n,
-            other => panic!("Driver.run under the {rule} dictionary must answer an Int, got {other:?}"),
+            other => {
+                panic!("Driver.run under the {rule} dictionary must answer an Int, got {other:?}")
+            }
         }
     };
 
     assert_eq!(
-        run("leafDict"), 7,
+        run("leafDict"),
+        7,
         "the frame must dispatch through the dictionary σ bound — `7` is `Leaf`'s \
          own `describe`, and `1` would be the spec default (no dictionary read)",
     );
     assert_eq!(
-        run("otherDict"), 9,
+        run("otherDict"),
+        9,
         "and the dictionary DECIDES: the same op on the same argument answers \
          `Other`'s `9` when the frame carries `Other`'s dictionary",
     );
@@ -217,11 +221,15 @@ fn the_value_the_resolver_bound_is_the_value_the_frame_reads() {
     // Seed a frame with the σ dictionary and run a body that reads it back by
     // name — the `var_ref(__req_*)` read, which is where a body meets its
     // requirement channel.
-    let var_ref_sym = interp.kb().try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("reflect.Expr.var_ref is in the stdlib");
     let req_name = interp.kb_mut().intern("__req_probe");
     let name_field = interp.kb_mut().intern("name");
-    let name_ref = interp.kb_mut().alloc(anthill_core::kb::term::Term::Ref(req_name));
+    let name_ref = interp
+        .kb_mut()
+        .alloc(anthill_core::kb::term::Term::Ref(req_name));
     let expr = interp.kb_mut().alloc(anthill_core::kb::term::Term::Fn {
         functor: var_ref_sym,
         pos_args: smallvec::SmallVec::new(),
@@ -237,7 +245,8 @@ fn the_value_the_resolver_bound_is_the_value_the_frame_reads() {
         "the frame read must present the same shape σ bound — got {read_back:?}",
     );
     assert_eq!(
-        as_dictionary(&interp, &read_back), dict,
+        as_dictionary(&interp, &read_back),
+        dict,
         "and it must BE the same dictionary: one type, compared directly. Before \
          WI-1045 the frame held an arena handle, so this comparison could not even \
          be spelled — only the view above could",
@@ -247,12 +256,16 @@ fn the_value_the_resolver_bound_is_the_value_the_frame_reads() {
     // other carrier's dictionary through the same body must deliver that one.
     let (_, other_bound) = sigma_dictionary("otherDict");
     let other = as_dictionary(&interp, &other_bound);
-    assert_ne!(other, dict, "the two rules must bind different dictionaries");
+    assert_ne!(
+        other, dict,
+        "the two rules must bind different dictionaries"
+    );
     let read_other = interp
         .run_with_requirements(expr, smallvec::smallvec![(req_name, other.clone())])
         .expect("the same body under the other dictionary must reduce");
     assert_eq!(
-        as_dictionary(&interp, &read_other), other,
+        as_dictionary(&interp, &read_other),
+        other,
         "the frame read follows what was seeded — without this, both assertions \
          above would hold for a body that ignored its channel and answered a \
          constant",
@@ -281,7 +294,8 @@ fn a_conditional_provisions_sub_dictionary_projects_by_index_on_both_sides() {
     let dict = as_dictionary(&interp, &bound);
 
     assert_eq!(
-        dict.arity(), 1,
+        dict.arity(),
+        1,
         "WI-857: a `Desc` dictionary carries the SPEC's own chain as its prefix, and \
          `Desc requires Base[T]` — so it bundles exactly one sub-dictionary",
     );
@@ -289,10 +303,14 @@ fn a_conditional_provisions_sub_dictionary_projects_by_index_on_both_sides() {
 
     // The reflect face, over the SAME value — the read anthill code makes.
     let via_builtin = interp
-        .call("anthill.realization.runtime.Dictionary.sub", &[bound.clone(), Value::Int(0)])
+        .call(
+            "anthill.realization.runtime.Dictionary.sub",
+            &[bound.clone(), Value::Int(0)],
+        )
         .expect("Dictionary.sub must project slot 0");
     assert_eq!(
-        as_dictionary(&interp, &via_builtin), sub,
+        as_dictionary(&interp, &via_builtin),
+        sub,
         "slot 0 read through the reflect face and through the internal projection \
          must be ONE value — there is no second representation for them to differ in",
     );
@@ -324,7 +342,9 @@ fn the_marker_is_refused_at_every_dispatch_read() {
     let mut interp = crate::common::interp_for(SRC);
     let marker_sym = interp.kb_mut().intern("anthill.reflect.NoProvider");
     let marker = crate::common::dict(&interp, marker_sym, []).into_value();
-    let eq_op = interp.kb().try_resolve_symbol("anthill.prelude.PartialEq.eq")
+    let eq_op = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("PartialEq.eq is in the stdlib");
 
     let err = interp
@@ -372,7 +392,9 @@ fn the_marker_is_refused_at_every_dispatch_read() {
 #[test]
 fn the_ir_construction_node_and_the_value_share_one_constructor() {
     let mut interp = crate::common::interp_for(SRC);
-    let leaf = interp.kb().try_resolve_symbol("test.wi1045.Leaf")
+    let leaf = interp
+        .kb()
+        .try_resolve_symbol("test.wi1045.Leaf")
         .expect("Leaf is declared above");
     let inner = crate::common::dict_term(interp.kb_mut(), leaf, &[]);
     let node = crate::common::dict_term(interp.kb_mut(), leaf, &[inner]);
@@ -386,19 +408,26 @@ fn the_ir_construction_node_and_the_value_share_one_constructor() {
     let occ_head = Value::Node(occ).head(interp.kb());
     let value_head = value.head(interp.kb());
     assert_eq!(
-        format!("{term_head:?}"), format!("{value_head:?}"),
+        format!("{term_head:?}"),
+        format!("{value_head:?}"),
         "the construction node and the value it evaluates to must present the SAME \
          head — one functor, one key set (requirement-channel.md §9)",
     );
     assert_eq!(
-        format!("{occ_head:?}"), format!("{value_head:?}"),
+        format!("{occ_head:?}"),
+        format!("{value_head:?}"),
         "and so must the OCCURRENCE carrier — three carriers of one dictionary, \
          one head",
     );
     match value_head {
-        ViewHead::Functor { functor: Some(f), pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity,
+        } => {
             assert_eq!(
-                interp.kb().qualified_name_of(f), "anthill.realization.runtime.Dictionary",
+                interp.kb().qualified_name_of(f),
+                "anthill.realization.runtime.Dictionary",
                 "and that functor is the DICTIONARY's, not a second constructor's",
             );
             assert_eq!(pos_arity, 1, "one positional sub-dictionary");

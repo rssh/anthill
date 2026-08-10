@@ -4,8 +4,8 @@
 //! reject as an unknown functor, rather than being silently rescued by a scan
 //! over every qualified name in the KB.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(src: &str) -> Vec<String> {

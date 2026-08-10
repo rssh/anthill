@@ -96,7 +96,11 @@ end
     for (op, expect) in [("wi818.b.Widget.tag", 111), ("wi818.b.Box.same", 111)] {
         // Fresh interpreter per call — a trapped call poisons later ones.
         let mut interp = crate::common::interp_for(src);
-        let widget = entity(&mut interp, "wi818.b.Widget.widget", &[("id", Value::Int(1))]);
+        let widget = entity(
+            &mut interp,
+            "wi818.b.Widget.widget",
+            &[("id", Value::Int(1))],
+        );
         let got = interp.call(op, &[widget]);
         assert!(
             matches!(got, Ok(Value::Int(n)) if n == expect),
@@ -240,10 +244,17 @@ namespace wi818.stdlib
   end
 end
 "#;
-    let cases: &[(&str, fn(&mut anthill_core::eval::Interpreter, &Result<Value, EvalError>) -> bool)] = &[
+    let cases: &[(
+        &str,
+        fn(&mut anthill_core::eval::Interpreter, &Result<Value, EvalError>) -> bool,
+    )] = &[
         ("first", |_, r| matches!(r, Ok(Value::Int(7)))),
-        ("ho", |i, r| entity_functor_is(i, r, "anthill.prelude.Option.some")),
-        ("ho_empty", |i, r| entity_functor_is(i, r, "anthill.prelude.Option.none")),
+        ("ho", |i, r| {
+            entity_functor_is(i, r, "anthill.prelude.Option.some")
+        }),
+        ("ho_empty", |i, r| {
+            entity_functor_is(i, r, "anthill.prelude.Option.none")
+        }),
         ("third", |_, r| matches!(r, Ok(Value::Int(7)))),
         ("empty", |_, r| matches!(r, Ok(Value::Bool(true)))),
     ];
@@ -349,9 +360,9 @@ namespace wi818.neg
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src)
-        .err()
-        .expect("raising Error[Boom] under a row declaring only guarded Error[EmptyStream] must be refused");
+    let errs = crate::common::try_load_kb_with(src).err().expect(
+        "raising Error[Boom] under a row declaring only guarded Error[EmptyStream] must be refused",
+    );
     let text = errs.join("\n");
     assert!(
         text.contains("undeclared effect") && text.contains("Boom"),
@@ -446,7 +457,9 @@ end
 #[test]
 fn raise_bodies_typecheck() {
     let cases: &[(&str, &str)] = &[
-        ("concrete return", r#"
+        (
+            "concrete return",
+            r#"
 namespace wi818.q1
   import anthill.prelude.{Int64, EmptyStream}
   import anthill.prelude.EmptyStream.{empty_stream}
@@ -454,8 +467,11 @@ namespace wi818.q1
     operation f(x: Int64) -> Int64 effects Error[EmptyStream] = Error.raise(empty_stream)
   end
 end
-"#),
-        ("projection return", r#"
+"#,
+        ),
+        (
+            "projection return",
+            r#"
 namespace wi818.q2
   import anthill.prelude.{List, EmptyStream}
   import anthill.prelude.EmptyStream.{empty_stream}
@@ -463,8 +479,11 @@ namespace wi818.q2
     operation g(xs: List) -> xs.T effects Error[EmptyStream] = Error.raise(empty_stream)
   end
 end
-"#),
-        ("match-arm join", r#"
+"#,
+        ),
+        (
+            "match-arm join",
+            r#"
 namespace wi818.q3
   import anthill.prelude.{Int64, List, Option, Pair, EmptyStream}
   import anthill.prelude.Option.{some, none}
@@ -477,11 +496,15 @@ namespace wi818.q3
         case some(pair(a, b)) -> 1
   end
 end
-"#),
+"#,
+        ),
     ];
     for (label, src) in cases {
         if let Err(errs) = crate::common::try_load_kb_with(src) {
-            panic!("raise body must typecheck ({label}); got:\n{}", errs.join("\n"));
+            panic!(
+                "raise body must typecheck ({label}); got:\n{}",
+                errs.join("\n")
+            );
         }
     }
 }
@@ -502,7 +525,11 @@ fn entity(
         .iter()
         .map(|(n, v)| (interp.kb_mut().intern(n), v.clone()))
         .collect();
-    Value::Entity { functor, pos: vec![].into(), named: named.into() }
+    Value::Entity {
+        functor,
+        pos: vec![].into(),
+        named: named.into(),
+    }
 }
 
 /// Does `r` hold an entity whose functor's qualified name is `qn`?

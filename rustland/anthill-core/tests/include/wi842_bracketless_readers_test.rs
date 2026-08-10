@@ -110,29 +110,52 @@ fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
 fn a_two_provider_value_directed_dispatch_names_both_candidates() {
     let ns = "wi842.vd.tie";
     let err = probe_leaf(ns, RIVAL).unwrap_err();
-    let EvalError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair } = &err else {
+    let EvalError::AmbiguousSpecOpDispatch {
+        op,
+        carrier,
+        candidates,
+        repair,
+    } = &err
+    else {
         panic!(
             "expected AmbiguousSpecOpDispatch; got {err:?} — `Ok(Int(1))` here is the \
              pre-WI-842 behaviour (first match: the carrier's own member), and \
              `Ok(Int(7))` would be the same defect with the other winner"
         )
     };
-    assert!(op.ends_with("Desc.describe"), "the error must name the spec op; got `{op}`");
-    assert!(carrier.ends_with("Leaf"), "the error must name the carrier; got `{carrier}`");
-    assert_eq!(candidates.len(), 2, "exactly the two suppliers expected; got {candidates:?}");
+    assert!(
+        op.ends_with("Desc.describe"),
+        "the error must name the spec op; got `{op}`"
+    );
+    assert!(
+        carrier.ends_with("Leaf"),
+        "the error must name the carrier; got `{carrier}`"
+    );
+    assert_eq!(
+        candidates.len(),
+        2,
+        "exactly the two suppliers expected; got {candidates:?}"
+    );
     // Rendered BY ROUTE: the two are written in different syntaxes (a member of the
     // carrier vs a witness sort's `fact`), and only the route says which text to delete.
     assert!(
-        candidates.iter().any(|c| c.contains("own member") && c.ends_with("Leaf.describe'")),
+        candidates
+            .iter()
+            .any(|c| c.contains("own member") && c.ends_with("Leaf.describe'")),
         "one candidate is the carrier's OWN member; got {candidates:?}"
     );
     assert!(
-        candidates.iter().any(|c| c.contains("witness sort") && c.contains("Rival")),
+        candidates
+            .iter()
+            .any(|c| c.contains("witness sort") && c.contains("Rival")),
         "the other is the WITNESS sort; got {candidates:?}"
     );
     let rendered = err.to_string();
     for want in ["Desc.describe", "Leaf", "Rival"] {
-        assert!(rendered.contains(want), "the rendered diagnostic must mention `{want}`: {rendered}");
+        assert!(
+            rendered.contains(want),
+            "the rendered diagnostic must mention `{want}`: {rendered}"
+        );
     }
     // WI-1012 — THE REPAIR THIS TIE HAS, and the control the message had been missing.
     // `Rival` is a WITNESS sort: a nameable provider distinct from the carrier, and
@@ -149,8 +172,10 @@ fn a_two_provider_value_directed_dispatch_names_both_candidates() {
         "a witness rival on a body-less op is nameable at a bracket-capable call",
     );
     assert!(
-        rendered.contains("route the call through an operation that can write \
-                           `[Spec = Witness]`"),
+        rendered.contains(
+            "route the call through an operation that can write \
+                           `[Spec = Witness]`"
+        ),
         "the witness repair must survive into the rendered message: {rendered}",
     );
 }
@@ -221,8 +246,14 @@ fn rule_answers(ns: &str, extra: &str, rule: &str) -> (usize, usize) {
             pos_args: SmallVec::from_slice(&[leaf, a]),
             named_args: SmallVec::new(),
         });
-        let cfg = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
-        kb.resolve(&[goal], &cfg).iter().filter(|s| s.is_definite()).count()
+        let cfg = ResolveConfig {
+            max_solutions: 10,
+            ..ResolveConfig::default()
+        };
+        kb.resolve(&[goal], &cfg)
+            .iter()
+            .filter(|s| s.is_definite())
+            .count()
     };
     (definite_for(1), definite_for(7))
 }

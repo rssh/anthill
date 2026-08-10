@@ -2,7 +2,6 @@
 //! satisfied (Delivered/Verified). Covers the plain grouped view and the
 //! `--tag` sequence view, plus the interaction with `--status`/`--all`.
 
-
 use std::process::Command;
 
 use crate::common::setup_project;
@@ -57,9 +56,15 @@ fact Tag(workitem: "WI-999", name: "seq")
 fn run(proj: &std::path::Path, args: &[&str]) -> String {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    let out = Command::new(BIN).args(&full).output().expect("run anthill-todo");
-    assert!(out.status.success(),
-        "command failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo");
+    assert!(
+        out.status.success(),
+        "command failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -74,9 +79,14 @@ fn plain_unblocked_drops_blocked_rows_keeps_deps_met() {
     assert!(stdout.contains("WI-001 [Open]"), "stdout: {stdout}");
     assert!(stdout.contains("WI-003 [Open]"), "stdout: {stdout}");
     assert!(stdout.contains("WI-004 [Open]"), "stdout: {stdout}");
-    assert!(!stdout.contains("WI-002"), "blocked WI-002 must be hidden: {stdout}");
-    assert!(!stdout.contains("-- blocked --"),
-        "no blocked section under --unblocked: {stdout}");
+    assert!(
+        !stdout.contains("WI-002"),
+        "blocked WI-002 must be hidden: {stdout}"
+    );
+    assert!(
+        !stdout.contains("-- blocked --"),
+        "no blocked section under --unblocked: {stdout}"
+    );
     assert!(stdout.ends_with("3 item(s)\n"), "stdout: {stdout}");
 }
 
@@ -84,7 +94,9 @@ fn plain_unblocked_drops_blocked_rows_keeps_deps_met() {
 fn plain_unblocked_reports_none_when_all_blocked() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // A mutual/dangling block: nothing is ever unblocked.
-    let proj = setup_project(&tmp, r#"
+    let proj = setup_project(
+        &tmp,
+        r#"
 fact WorkItem(
   id: "WI-010",
   description: "blocked on undelivered dep",
@@ -98,7 +110,8 @@ fact WorkItem(
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-010"],
   status: Open)
-"#);
+"#,
+    );
 
     let stdout = run(&proj, &["list", "--unblocked"]);
     assert_eq!(stdout, "No work items found.\n");

@@ -24,8 +24,8 @@
 //! All checked through RETURN-type conformance (`check_operation_bodies`), which
 //! is enforced today: `operation f(x: A) -> B = x` loads clean iff `A <: B`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -34,8 +34,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -227,7 +227,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape")),
+        errs.iter()
+            .any(|e| e.contains("abstracting return") || e.contains("escape")),
         "S[A = String] upcast to bare MemberSpec leaves member K unbound; the WI-401 gate must \
          still reject the abstracting return, got: {errs:?}",
     );

@@ -36,7 +36,10 @@
 use crate::common::{interp_for, load_kb_with, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -72,7 +75,8 @@ fn assert_refused_naming(src: &str, expected: (usize, &str), got: (usize, &str))
          got a {got_arity}-parameter function {got_type}"
     );
     assert!(
-        errs.iter().any(|e| e.contains("type mismatch") && e.contains(&wanted)),
+        errs.iter()
+            .any(|e| e.contains("type mismatch") && e.contains(&wanted)),
         "rejection must be a type mismatch reading `{wanted}`; got: {errs:?}",
     );
 }
@@ -326,8 +330,8 @@ fn the_two_arrow_spellings_print_distinctly_and_round_trip() {
             .iter()
             .map(|name| {
                 let sym = kb.try_resolve_symbol(name).expect("op symbol");
-                let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
-                    .expect("op info");
+                let info =
+                    anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("op info");
                 let (_, ty) = info.params.first().expect("callback param");
                 match ty {
                     anthill_core::eval::Value::Term { id, .. } => {
@@ -354,7 +358,10 @@ end
     );
     assert_eq!(
         gen1,
-        vec!["((a: Int64, b: Int64)) -> Int64", "(a: Int64, b: Int64) -> Int64"],
+        vec![
+            "((a: Int64, b: Int64)) -> Int64",
+            "(a: Int64, b: Int64) -> Int64"
+        ],
         "the one-tuple-parameter and two-parameter spellings must render differently",
     );
 
@@ -372,7 +379,10 @@ end
 "#,
         gen1[0], gen1[1]
     ));
-    assert_eq!(gen2, gen1, "printing must be a fixpoint — no layer may accumulate");
+    assert_eq!(
+        gen2, gen1,
+        "printing must be a fixpoint — no layer may accumulate"
+    );
 }
 
 // ── the gap this ticket left open, CLOSED by WI-792 ────────────

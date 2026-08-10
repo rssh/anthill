@@ -153,7 +153,9 @@ end
 "#;
     let errs = parse::parse(src).expect_err("a bare `(Int64)` must not be accepted as a type");
     assert!(
-        errs.iter().any(|e| e.message.contains("single parenthesized type is not a type")),
+        errs.iter().any(|e| e
+            .message
+            .contains("single parenthesized type is not a type")),
         "the rejection must be the located non-type diagnostic, not an incidental failure; \
          got: {errs:?}",
     );

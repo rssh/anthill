@@ -13,8 +13,8 @@
 //! declared order) or the fallback sort to become unstable, a tuple reaching the
 //! record path would silently reorder; the exemption forecloses both.
 
-use anthill_core::eval::{Interpreter, Value};
 use crate::common::load_kb_with;
+use anthill_core::eval::{Interpreter, Value};
 
 #[test]
 fn named_tuple_value_preserves_source_field_order() {
@@ -42,7 +42,12 @@ end
         Value::Tuple { named, .. } => {
             let shape: Vec<(&str, i64)> = named
                 .iter()
-                .map(|(s, val)| (interp.kb().local_name_of(*s), val.as_int().expect("int field")))
+                .map(|(s, val)| {
+                    (
+                        interp.kb().local_name_of(*s),
+                        val.as_int().expect("int field"),
+                    )
+                })
                 .collect();
             // source order is (zqzeta: 1, zqalpha: 2)
             assert_eq!(

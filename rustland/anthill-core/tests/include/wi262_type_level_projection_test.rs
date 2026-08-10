@@ -32,8 +32,8 @@
 //! legitimately-deferred case (an abstract receiver whose fields are unknowable
 //! until the carrier is concrete — `s.T` / `s.E`, WI-376/WI-475) still loads.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -42,8 +42,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -71,7 +71,10 @@ namespace wi262.resulttuple
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "Modify[result.a/b] must typecheck via projection; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "Modify[result.a/b] must typecheck via projection; got: {errs:?}"
+    );
 }
 
 /// `Modify[c.backend]` for a param `c` of ENTITY type — the generalization WI-262
@@ -93,7 +96,10 @@ namespace wi262.entityparam
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "Modify[c.backend] (entity param) must typecheck; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "Modify[c.backend] (entity param) must typecheck; got: {errs:?}"
+    );
 }
 
 /// `Modify[c.x]` for a param `c` of TUPLE type.
@@ -107,7 +113,10 @@ namespace wi262.tupleparam
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "Modify[c.x] (tuple param) must typecheck; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "Modify[c.x] (tuple param) must typecheck; got: {errs:?}"
+    );
 }
 
 /// Multi-level projection `c.inner.slot` (open-design Q2): the projection path
@@ -129,7 +138,10 @@ namespace wi262.multi
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "multi-level Modify[c.inner.slot] must typecheck; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "multi-level Modify[c.inner.slot] must typecheck; got: {errs:?}"
+    );
 }
 
 /// Positional tuple projection `result._1` (open-design Q4).
@@ -143,7 +155,10 @@ namespace wi262.positional
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "positional Modify[result._1] must typecheck; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "positional Modify[result._1] must typecheck; got: {errs:?}"
+    );
 }
 
 /// A sort/namespace HEAD keeps qualified-name resolution (the projection path
@@ -158,7 +173,10 @@ namespace wi262.sorthead
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "a sort-headed parameterized type must still load; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a sort-headed parameterized type must still load; got: {errs:?}"
+    );
 }
 
 /// WI-489: a projection onto a NON-EXISTENT field of a concrete-typed head —
@@ -176,7 +194,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("field projection") && e.contains("nonexistent")),
+        errs.iter()
+            .any(|e| e.contains("field projection") && e.contains("nonexistent")),
         "a bogus field in a value-in-type projection off a concrete-typed head must \
          be a loud load error; got: {errs:?}",
     );
@@ -198,7 +217,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("field projection") && e.contains("bogus")),
+        errs.iter()
+            .any(|e| e.contains("field projection") && e.contains("bogus")),
         "a bogus field off a concrete entity param must be rejected; got: {errs:?}",
     );
 }
@@ -224,7 +244,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("field projection") && e.contains("bogus")),
+        errs.iter()
+            .any(|e| e.contains("field projection") && e.contains("bogus")),
         "a bogus field at a deeper path level must be rejected; got: {errs:?}",
     );
 }
@@ -279,7 +300,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Modify")),
         "a pure caller of an op with `effects Modify[c.backend]` must be rejected \
          with an undeclared-effect diagnostic naming Modify — proving the \
          projected effect propagates; got: {errs:?}",
@@ -301,7 +323,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("unresolved") && e.contains("nonexistent")),
+        errs.iter()
+            .any(|e| e.contains("unresolved") && e.contains("nonexistent")),
         "a projection whose HEAD resolves to nothing must be a loud unresolved-name \
          error; got: {errs:?}",
     );

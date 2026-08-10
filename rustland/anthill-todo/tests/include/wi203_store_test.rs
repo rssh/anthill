@@ -9,7 +9,6 @@
 //! verifies the whole file loads + type-checks under the bundle path:
 //! parse, resolution, and typing all succeed.
 
-
 use std::process::Command;
 
 use crate::common::setup_project;
@@ -23,17 +22,21 @@ fn store_anthill_loads_alongside_domain() {
     // had a parse or resolution error, the bundle would print warnings
     // to stderr.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp, "\
+    let proj = setup_project(
+        &tmp,
+        "\
 fact WorkItem(
   id: \"WI-001\",
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
   status: Open)
-");
+",
+    );
     let out = Command::new(ANTHILL_TODO_BIN)
         .args(["--anthill", "-d", proj.to_str().unwrap(), "list"])
-        .output().expect("run");
+        .output()
+        .expect("run");
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -52,5 +55,8 @@ fact WorkItem(
     );
     // The stage0 WorkItem is still discoverable; the store.anthill load
     // didn't break the existing list-by-functor query.
-    assert!(stdout.contains("WI-001"), "expected WI-001 in list: {stdout}");
+    assert!(
+        stdout.contains("WI-001"),
+        "expected WI-001 in list: {stdout}"
+    );
 }

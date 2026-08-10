@@ -28,7 +28,8 @@
 use anthill_core::eval::Value;
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const SRC: &str = r#"
@@ -94,7 +95,9 @@ end
 #[test]
 fn filtered_stream_iterator_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi492.transitive.mk_list", &[]).expect("build list");
+    let xs = interp
+        .call("wi492.transitive.mk_list", &[])
+        .expect("build list");
     let got = interp
         .call("wi492.transitive.filter_then_map_sum", &[xs])
         .unwrap_or_else(|e| panic!("call filter_then_map_sum: {e:?}"));
@@ -104,7 +107,9 @@ fn filtered_stream_iterator_resolves_transitively() {
 #[test]
 fn mapped_stream_iterator_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi492.transitive.mk_list", &[]).expect("build list");
+    let xs = interp
+        .call("wi492.transitive.mk_list", &[])
+        .expect("build list");
     let got = interp
         .call("wi492.transitive.map_then_size", &[xs])
         .unwrap_or_else(|e| panic!("call map_then_size: {e:?}"));
@@ -114,7 +119,9 @@ fn mapped_stream_iterator_resolves_transitively() {
 #[test]
 fn iterable_find_on_mapped_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi492.transitive.mk_list", &[]).expect("build list");
+    let xs = interp
+        .call("wi492.transitive.mk_list", &[])
+        .expect("build list");
     let got = interp
         .call("wi492.transitive.map_then_find", &[xs])
         .unwrap_or_else(|e| panic!("call map_then_find: {e:?}"));
@@ -124,11 +131,17 @@ fn iterable_find_on_mapped_stream_resolves_transitively() {
 #[test]
 fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi492.transitive.mk_list", &[]).expect("build list");
+    let xs = interp
+        .call("wi492.transitive.mk_list", &[])
+        .expect("build list");
     let got = interp
         .call("wi492.transitive.filter_then_is_empty", &[xs])
         .unwrap_or_else(|e| panic!("call filter_then_is_empty: {e:?}"));
-    assert_eq!(got.as_bool(), Some(true), "filtered-out stream is empty; got {got:?}");
+    assert_eq!(
+        got.as_bool(),
+        Some(true),
+        "filtered-out stream is empty; got {got:?}"
+    );
 }
 
 /// The LAZY carrier's transitive provision (the original WI-492 path), preserved
@@ -141,7 +154,9 @@ fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
 #[test]
 fn iterable_iterator_on_lazy_mapped_stream_resolves_transitively() {
     let mut interp = crate::common::interp_for(SRC);
-    let xs = interp.call("wi492.transitive.mk_list", &[]).expect("build list");
+    let xs = interp
+        .call("wi492.transitive.mk_list", &[])
+        .expect("build list");
     let got = interp
         .call("wi492.transitive.lazy_map_iterator_count", &[xs])
         .unwrap_or_else(|e| panic!("call lazy_map_iterator_count: {e:?}"));

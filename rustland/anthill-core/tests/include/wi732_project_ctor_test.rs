@@ -27,8 +27,8 @@
 //! needs no denoted for the same job because it reads only its `Drop` record's FIELD NAMES —
 //! a projection cannot, because a rename has a source AND a result.
 
+use anthill_core::kb::typing::{extract_type, type_check_sorts, TypeExtractor};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::typing::{TypeExtractor, extract_type, type_check_sorts};
 
 use crate::common::{load_stdlib_kb_with_source, try_load_kb_with};
 
@@ -44,10 +44,18 @@ use crate::common::{load_stdlib_kb_with_source, try_load_kb_with};
 fn retyped_body_schema(source: &str, op_qn: &str) -> String {
     let (mut kb, result) = load_stdlib_kb_with_source(source);
     let first = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(first.is_empty(), "first type-check must be clean, got: {first:?}");
+    assert!(
+        first.is_empty(),
+        "first type-check must be clean, got: {first:?}"
+    );
     let second = type_check_sorts(&mut kb, &[]);
-    assert!(second.is_empty(), "re-type-check must be clean, got: {second:?}");
-    let op = kb.try_resolve_symbol(op_qn).unwrap_or_else(|| panic!("no symbol for {op_qn}"));
+    assert!(
+        second.is_empty(),
+        "re-type-check must be clean, got: {second:?}"
+    );
+    let op = kb
+        .try_resolve_symbol(op_qn)
+        .unwrap_or_else(|| panic!("no symbol for {op_qn}"));
     let body = kb
         .op_body_node(op)
         .cloned()
@@ -80,7 +88,13 @@ fn render_schema(kb: &KnowledgeBase, ty: &anthill_core::eval::Value) -> String {
         TypeExtractor::NamedTuple(fields) => {
             let inner: Vec<String> = fields
                 .iter()
-                .map(|(n, t)| format!("{}: {}", short_of(kb.qualified_name_of(*n)), render_schema(kb, t)))
+                .map(|(n, t)| {
+                    format!(
+                        "{}: {}",
+                        short_of(kb.qualified_name_of(*n)),
+                        render_schema(kb, t)
+                    )
+                })
                 .collect();
             format!("({})", inner.join(", "))
         }
@@ -88,9 +102,19 @@ fn render_schema(kb: &KnowledgeBase, ty: &anthill_core::eval::Value) -> String {
         TypeExtractor::Parameterized { base, bindings } => {
             let inner: Vec<String> = bindings
                 .iter()
-                .map(|(n, t)| format!("{} = {}", short_of(kb.qualified_name_of(*n)), render_schema(kb, t)))
+                .map(|(n, t)| {
+                    format!(
+                        "{} = {}",
+                        short_of(kb.qualified_name_of(*n)),
+                        render_schema(kb, t)
+                    )
+                })
                 .collect();
-            format!("{}[{}]", short_of(kb.qualified_name_of(base)), inner.join(", "))
+            format!(
+                "{}[{}]",
+                short_of(kb.qualified_name_of(base)),
+                inner.join(", ")
+            )
         }
         other => format!("<{other:?}>"),
     }

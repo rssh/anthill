@@ -30,11 +30,11 @@
 //! the command at the top is the one whose warnings count.
 #![allow(rustdoc::private_intra_doc_links)]
 
-pub mod intern;
-pub mod span;
-pub mod fs_util;
-pub mod parse;
-pub mod kb;
 pub mod codegen;
 pub mod eval;
+pub mod fs_util;
+pub mod intern;
+pub mod kb;
+pub mod parse;
 pub mod persistence;
+pub mod span;

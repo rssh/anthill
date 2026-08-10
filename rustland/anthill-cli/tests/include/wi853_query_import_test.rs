@@ -18,7 +18,6 @@
 //! control that fails without the flag — a non-zero solution count alone would
 //! pass on a query that resolves for unrelated reasons.
 
-
 use crate::common::{anthill, fixtures_dir, Output};
 use std::path::PathBuf;
 
@@ -62,13 +61,22 @@ fn an_import_flag_puts_the_name_in_query_scope() {
     );
 
     let with = query(&["-i", "wi853.kb", "mk(x: ?v)"]);
-    assert_eq!(with.code, 0, "the query must succeed; stderr:\n{}", with.stderr);
+    assert_eq!(
+        with.code, 0,
+        "the query must succeed; stderr:\n{}",
+        with.stderr
+    );
     assert!(
         with.has_stdout_line("?v = 7"),
         "expected the imported `mk` to match the KB's fact; stdout:\n{}\nstderr:\n{}",
-        with.stdout, with.stderr
+        with.stdout,
+        with.stderr
     );
-    assert!(with.has_stdout_line("1 solution(s)"), "stdout:\n{}", with.stdout);
+    assert!(
+        with.has_stdout_line("1 solution(s)"),
+        "stdout:\n{}",
+        with.stdout
+    );
 }
 
 /// The other input path: a `--query-file` reads its patterns from a file, and the
@@ -78,11 +86,16 @@ fn an_import_flag_puts_the_name_in_query_scope() {
 fn an_import_flag_reaches_a_query_file() {
     let q = fixture("query.anthill");
     let with = query(&["-i", "wi853.kb", "--query-file", q.to_str().unwrap()]);
-    assert_eq!(with.code, 0, "the query must succeed; stderr:\n{}", with.stderr);
+    assert_eq!(
+        with.code, 0,
+        "the query must succeed; stderr:\n{}",
+        with.stderr
+    );
     assert!(
         with.has_stdout_line("?v = 7"),
         "expected the imported `mk` to match; stdout:\n{}\nstderr:\n{}",
-        with.stdout, with.stderr
+        with.stdout,
+        with.stderr
     );
 }
 
@@ -91,10 +104,15 @@ fn an_import_flag_reaches_a_query_file() {
 #[test]
 fn an_unresolvable_import_flag_blocks() {
     let out = query(&["-i", "nosuch.ns", "mk(x: ?v)"]);
-    assert_eq!(out.code, 1, "an import that resolves nowhere must block; stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 1,
+        "an import that resolves nowhere must block; stdout:\n{}",
+        out.stdout
+    );
     assert!(
-        out.diagnostics("error:").any(|l| l.starts_with("error: --import `nosuch.ns`: ")
-            && l.contains("unresolved import 'nosuch.ns'")),
+        out.diagnostics("error:")
+            .any(|l| l.starts_with("error: --import `nosuch.ns`: ")
+                && l.contains("unresolved import 'nosuch.ns'")),
         "expected the fault blamed on the flag it came from; stderr:\n{}",
         out.stderr
     );
@@ -108,12 +126,21 @@ fn an_unresolvable_import_flag_blocks() {
 #[test]
 fn a_malformed_flag_names_only_itself() {
     let out = query(&["-i", "wi853.kb", "-i", "not a name!!", "mk(x: ?v)"]);
-    assert_eq!(out.code, 1, "a malformed flag must block; stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 1,
+        "a malformed flag must block; stdout:\n{}",
+        out.stdout
+    );
 
     let errs: Vec<&str> = out.diagnostics("error:").collect();
-    assert!(!errs.is_empty(), "expected a diagnostic; stderr:\n{}", out.stderr);
     assert!(
-        errs.iter().all(|l| l.starts_with("error: --import `not a name!!`: ")),
+        !errs.is_empty(),
+        "expected a diagnostic; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        errs.iter()
+            .all(|l| l.starts_with("error: --import `not a name!!`: ")),
         "every diagnostic must name the flag at fault, and only it; stderr:\n{}",
         out.stderr
     );
@@ -125,16 +152,22 @@ fn a_malformed_flag_names_only_itself() {
 #[test]
 fn every_malformed_flag_is_reported() {
     let out = query(&["-i", "not a name!!", "-i", "nosuch.ns", "mk(x: ?v)"]);
-    assert_eq!(out.code, 1, "a malformed flag must block; stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 1,
+        "a malformed flag must block; stdout:\n{}",
+        out.stdout
+    );
 
     let errs: Vec<&str> = out.diagnostics("error:").collect();
     assert!(
-        errs.iter().any(|l| l.starts_with("error: --import `not a name!!`: ")),
+        errs.iter()
+            .any(|l| l.starts_with("error: --import `not a name!!`: ")),
         "the first flag's fault must be reported; stderr:\n{}",
         out.stderr
     );
     assert!(
-        errs.iter().any(|l| l.starts_with("error: --import `nosuch.ns`: ")),
+        errs.iter()
+            .any(|l| l.starts_with("error: --import `nosuch.ns`: ")),
         "the second flag's fault must be reported too; stderr:\n{}",
         out.stderr
     );
@@ -164,14 +197,18 @@ fn a_query_file_load_error_names_the_file() {
         args.extend_from_slice(&["--query-file", q.to_str().unwrap()]);
         let out = query(&args);
 
-        assert_eq!(out.code, 1, "the unresolved import must block; stderr:\n{}", out.stderr);
+        assert_eq!(
+            out.code, 1,
+            "the unresolved import must block; stderr:\n{}",
+            out.stderr
+        );
         // Line 3, column 8: `nosuch.ns` in `import nosuch.ns`, after two comment
         // lines — the same position with `-i` as without, since nothing is
         // prepended to the file any more.
         let expected = format!("error: {}:3:8: ", q.display());
         assert!(
-            out.diagnostics("error:").any(|l| l.starts_with(&expected)
-                && l.contains("unresolved import 'nosuch.ns'")),
+            out.diagnostics("error:")
+                .any(|l| l.starts_with(&expected) && l.contains("unresolved import 'nosuch.ns'")),
             "a load error from the query file must name the file and where in it \
              (flags: {flags:?}); stderr:\n{}",
             out.stderr

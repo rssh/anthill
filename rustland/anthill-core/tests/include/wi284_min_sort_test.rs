@@ -16,13 +16,11 @@
 use std::rc::Rc;
 
 use anthill_core::intern::Symbol;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, Var};
-use anthill_core::kb::typing::{
-    sort_functor_of, sort_functor_of_view, type_check_node, TypingEnv,
-};
+use anthill_core::kb::typing::{sort_functor_of, sort_functor_of_view, type_check_node, TypingEnv};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 
@@ -34,8 +32,8 @@ fn load_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -43,8 +41,8 @@ fn load_kb() -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load failed");
 
-    let color = parse::parse("sort Color {\n  entity red\n  entity green\n}\n")
-        .expect("parse Color");
+    let color =
+        parse::parse("sort Color {\n  entity red\n  entity green\n}\n").expect("parse Color");
     load::load(&mut kb, &color, &NullResolver).expect("Color load failed");
     kb
 }
@@ -58,14 +56,19 @@ fn occ(expr: Expr) -> Rc<NodeOccurrence> {
 /// and widen it. WI-578 removed `min_sort` (a source-less reader) in favor of reading
 /// the carried type directly via `sort_functor_of_view` — this is exactly its body.
 fn occ_sort(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    occ.inferred_type().and_then(|t| sort_functor_of_view(kb, &t))
+    occ.inferred_type()
+        .and_then(|t| sort_functor_of_view(kb, &t))
 }
 
 /// Type the occurrence (asserting success), then return its sort head.
 fn typed_min_sort(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
     let env = TypingEnv::empty();
     let r = type_check_node(kb, &env, occ, None);
-    assert!(r.is_ok(), "expected the occurrence to type-check; got {:?}", r.err());
+    assert!(
+        r.is_ok(),
+        "expected the occurrence to type-check; got {:?}",
+        r.err()
+    );
     occ_sort(kb, occ)
 }
 
@@ -86,7 +89,10 @@ fn min_sort_of_int_literal_is_int() {
     let ms = typed_min_sort(&mut kb, &n3).expect("min_sort(3) should be Some");
     assert_sort_named(&kb, ms, "Int64");
     // The occurrence carries its inferred type, not just a derived sort.
-    assert!(n3.inferred_type().is_some(), "typer must keep the inferred type");
+    assert!(
+        n3.inferred_type().is_some(),
+        "typer must keep the inferred type"
+    );
 }
 
 #[test]
@@ -102,13 +108,23 @@ fn min_sort_of_list_constructor_is_list() {
     let tail = kb.intern("tail");
 
     // nil() — a no-arg List constructor.
-    let onil = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![], from_projection: false });
+    let onil = occ(Expr::Constructor {
+        name: nil,
+        pos_args: vec![],
+        named_args: vec![],
+        from_projection: false,
+    });
     let nil_sort = typed_min_sort(&mut kb, &onil).expect("min_sort(nil()) Some");
     assert_sort_named(&kb, nil_sort, "List");
 
     // cons(head: 1, tail: nil()) — the acceptance example.
     let o1 = occ(Expr::Const(Literal::Int(1)));
-    let onil2 = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![], from_projection: false });
+    let onil2 = occ(Expr::Constructor {
+        name: nil,
+        pos_args: vec![],
+        named_args: vec![],
+        from_projection: false,
+    });
     let ocons = occ(Expr::Constructor {
         name: cons,
         pos_args: vec![],
@@ -121,7 +137,11 @@ fn min_sort_of_list_constructor_is_list() {
     // Uniform stamping: the child occurrences carry their own type too —
     // the head arg `1` -> Int64, the tail `nil()` -> List.
     assert_sort_named(&kb, occ_sort(&kb, &o1).expect("child `1` typed"), "Int64");
-    assert_sort_named(&kb, occ_sort(&kb, &onil2).expect("child `nil()` typed"), "List");
+    assert_sort_named(
+        &kb,
+        occ_sort(&kb, &onil2).expect("child `nil()` typed"),
+        "List",
+    );
 }
 
 #[test]
@@ -133,7 +153,12 @@ fn min_sort_of_entity_value_is_its_sort() {
         Term::Ref(s) => *s,
         other => panic!("Color.red resolved to unexpected term: {other:?}"),
     };
-    let ored = occ(Expr::Constructor { name: red, pos_args: vec![], named_args: vec![], from_projection: false });
+    let ored = occ(Expr::Constructor {
+        name: red,
+        pos_args: vec![],
+        named_args: vec![],
+        from_projection: false,
+    });
     let ms = typed_min_sort(&mut kb, &ored).expect("min_sort(red) should be Some");
     assert_sort_named(&kb, ms, "Color");
 }
@@ -148,7 +173,11 @@ fn min_sort_of_unresolved_type_var_is_none() {
     // A bare logical var types to a fresh type var (Ok), so the
     // occurrence IS typed — but its type has no declared sort head.
     let r = type_check_node(&mut kb, &env, &ovar, None);
-    assert!(r.is_ok(), "bare var should type to a fresh type var; got {:?}", r.err());
+    assert!(
+        r.is_ok(),
+        "bare var should type to a fresh type var; got {:?}",
+        r.err()
+    );
     assert!(ovar.inferred_type().is_some(), "the type var is still kept");
     assert!(
         occ_sort(&kb, &ovar).is_none(),

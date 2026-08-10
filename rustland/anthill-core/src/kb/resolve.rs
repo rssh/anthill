@@ -9,26 +9,25 @@
 ///
 /// Goals are always maximally concrete (no unresolved var chains). The answer
 /// substitution is always flat (path-compressed on merge) — no `walk` needed.
-
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use super::subst::{Constraint, Substitution};
-use super::node_occurrence::{
-    self, EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode,
-};
-use super::term::{Literal, Term, TermId, Var, VarId};
-use super::term_view::{goal_fingerprint, GoalKey, ReflectedExpr, ReflectSyms, TermIdView, TermView, ViewHead, ViewItem};
-use super::persist_subst::BindValue;
 use super::discrim::SubstTree;
 use super::extent::{ArgKey, QueryPattern};
-use crate::intern::Symbol;
+use super::node_occurrence::{self, EffectExprNode, Expr, NodeOccurrence, TypeChild, TypeNode};
+use super::persist_subst::BindValue;
+use super::subst::{Constraint, Substitution};
+use super::term::{Literal, Term, TermId, Var, VarId};
+use super::term_view::{
+    goal_fingerprint, GoalKey, ReflectSyms, ReflectedExpr, TermIdView, TermView, ViewHead, ViewItem,
+};
+use super::KnowledgeBase;
+use super::RuleId;
 use crate::eval::value::Value;
 use crate::eval::{EvalConfig, EvalError, Interpreter};
-use super::RuleId;
-use super::KnowledgeBase;
+use crate::intern::Symbol;
 
 /// WI-625 gap 1: max eval↔SLD bridge crossings before
 /// [`KnowledgeBase::bridge_op_to_eval`] residualizes instead of recursing
@@ -97,7 +96,10 @@ pub(crate) enum PositionalPlan {
     /// More positional args than unfilled fields — the loud, never-a-silent-
     /// never-match case. `declared` is the full declared field list (for the
     /// error message); `unfilled` is how many fields were actually open.
-    OverArity { declared: SmallVec<[Symbol; 4]>, unfilled: usize },
+    OverArity {
+        declared: SmallVec<[Symbol; 4]>,
+        unfilled: usize,
+    },
 }
 
 /// Capture a `TermView`'s top-level carrier as an owned `Value` goal (WI-349) —
@@ -110,9 +112,9 @@ fn bind_value_to_value(bv: BindValue) -> Value {
         // `Path` is the discrim tree's deferred fact-leaf extraction; a goal's
         // own `as_bind_value` (TermId / Value / occurrence carriers) never
         // yields it, so reaching it here is a broken invariant, not a fallback.
-        BindValue::Path(_) => unreachable!(
-            "bind_value_to_value: a goal view produced BindValue::Path (WI-349)",
-        ),
+        BindValue::Path(_) => {
+            unreachable!("bind_value_to_value: a goal view produced BindValue::Path (WI-349)",)
+        }
     }
 }
 
@@ -277,7 +279,11 @@ impl BuiltinResult {
 /// WI-616 — map an "equal?" answer to the requested verdict: `positive` is
 /// `true` for `eq` (equal ⇒ Success) and `false` for `neq` (equal ⇒ Failure).
 fn sem_verdict(equal: bool, positive: bool) -> BuiltinResult {
-    if equal == positive { BuiltinResult::Success } else { BuiltinResult::Failure }
+    if equal == positive {
+        BuiltinResult::Success
+    } else {
+        BuiltinResult::Failure
+    }
 }
 
 /// WI-625 — the three-way outcome of proving a rule-backed predicate goal by a
@@ -477,7 +483,9 @@ impl DelayMode {
     fn reset(&self) -> DelayMode {
         match self {
             DelayMode::Normal => DelayMode::Normal,
-            DelayMode::Delayed { .. } => DelayMode::Delayed { consecutive_delays: 0 },
+            DelayMode::Delayed { .. } => DelayMode::Delayed {
+                consecutive_delays: 0,
+            },
         }
     }
 }
@@ -773,7 +781,11 @@ impl SearchStream {
                 None => break,
             }
         }
-        DrainVerdict { definite, residual, truncated: self.truncated }
+        DrainVerdict {
+            definite,
+            residual,
+            truncated: self.truncated,
+        }
     }
 
     /// WI-628 — collect ALL solutions (up to `max_solutions`, 0 = unlimited)
@@ -788,7 +800,11 @@ impl SearchStream {
     /// ground-NAF one). Draining by hand keeps the stream alive so
     /// `self.truncated` is still readable after the search runs dry — this is
     /// the ONE place the live flag becomes an observable result.
-    fn drain_all(mut self, kb: &mut KnowledgeBase, max_solutions: usize) -> (Vec<Solution>, ResolveStats) {
+    fn drain_all(
+        mut self,
+        kb: &mut KnowledgeBase,
+        max_solutions: usize,
+    ) -> (Vec<Solution>, ResolveStats) {
         let mut solutions = Vec::new();
         loop {
             if self.is_empty() {
@@ -956,9 +972,11 @@ impl SearchStream {
         // `__pop_assumption` classifies carrier-neutrally; the forall/quant
         // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
-            ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
-                is_scoping_marker(kb.local_name_of(f), pos_arity)
-            }
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                ..
+            } => is_scoping_marker(kb.local_name_of(f), pos_arity),
             _ => false,
         };
         if is_marker {
@@ -971,7 +989,9 @@ impl SearchStream {
                 f.assumed_facts.truncate(drop_from);
                 f.goals.remove(0);
                 f.depth += 1;
-                f.state = FrameState::Init { delay_mode: delay_mode.reset() };
+                f.state = FrameState::Init {
+                    delay_mode: delay_mode.reset(),
+                };
                 return Some(StepResult::Continue);
             }
             // forall_impl / forall_in / some_in classify carrier-neutrally off
@@ -1067,7 +1087,9 @@ impl SearchStream {
                 let f = self.stack.last_mut().unwrap();
                 f.goals.remove(0);
                 f.depth += 1;
-                f.state = FrameState::Init { delay_mode: new_delay };
+                f.state = FrameState::Init {
+                    delay_mode: new_delay,
+                };
                 return Some(StepResult::Continue);
             }
             // WI-537 (proposal 050): a Γ fact can discharge a builtin guard the
@@ -1155,7 +1177,9 @@ impl SearchStream {
                     f.goals = new_goals;
                     f.subst = new_subst;
                     f.depth = new_depth;
-                    f.state = FrameState::Init { delay_mode: new_delay };
+                    f.state = FrameState::Init {
+                        delay_mode: new_delay,
+                    };
                     return Some(StepResult::Continue);
                 }
                 BuiltinResult::SuccessWithBindings(extra) => {
@@ -1215,7 +1239,9 @@ impl SearchStream {
                     f.goals = new_goals;
                     f.subst = new_subst;
                     f.depth = new_depth;
-                    f.state = FrameState::Init { delay_mode: new_delay };
+                    f.state = FrameState::Init {
+                        delay_mode: new_delay,
+                    };
                     return Some(StepResult::Continue);
                 }
                 BuiltinResult::Failure => {
@@ -1242,7 +1268,10 @@ impl SearchStream {
                                     return Some(StepResult::Continue);
                                 }
                                 self.record_solution_in_ancestors();
-                                return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                                return Some(StepResult::YieldSolution(Solution {
+                                    subst,
+                                    residual,
+                                }));
                             } else {
                                 // Rotate to end, enter Delayed mode
                                 let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
@@ -1252,7 +1281,9 @@ impl SearchStream {
                                 f.goals = rotated;
                                 f.depth = new_depth;
                                 f.state = FrameState::Init {
-                                    delay_mode: DelayMode::Delayed { consecutive_delays: 1 },
+                                    delay_mode: DelayMode::Delayed {
+                                        consecutive_delays: 1,
+                                    },
                                 };
                                 return Some(StepResult::Continue);
                             }
@@ -1287,7 +1318,10 @@ impl SearchStream {
         // only for a non-builtin goal (the builtin block above returns first);
         // fires only once a functor's unification twins are retired, and never for
         // a rule-backed relation (`Set.member`) — see `bare_bodied_bool_relation`.
-        if let ViewHead::Functor { functor: Some(f), .. } = goal_val.head(kb) {
+        if let ViewHead::Functor {
+            functor: Some(f), ..
+        } = goal_val.head(kb)
+        {
             if kb.bare_bodied_bool_relation(f) {
                 let eq_sym = kb.eq_functor();
                 let eq_goal = kb.make_goal_value(eq_sym, vec![goal_val.clone(), Value::Bool(true)]);
@@ -1332,11 +1366,12 @@ impl SearchStream {
         // an unrecognized goal — never a wrong answer.
         let woven_head: Option<(Symbol, usize)> = match &goal_val {
             Value::Node(o) => match o.as_expr() {
-                Some(Expr::ApplyWithin { functor, args, named_args, .. })
-                    if named_args.is_empty() =>
-                {
-                    Some((*functor, args.len()))
-                }
+                Some(Expr::ApplyWithin {
+                    functor,
+                    args,
+                    named_args,
+                    ..
+                }) if named_args.is_empty() => Some((*functor, args.len())),
                 _ => None,
             },
             _ => None,
@@ -1345,157 +1380,167 @@ impl SearchStream {
             // Named args are not a functional-relation call shape — the result
             // column is POSITIONAL and last. A named-arg goal falls through to
             // ordinary candidate selection rather than being silently re-read.
-            ViewHead::Functor { functor: Some(f), pos_arity, named_arity: 0 } => {
-                Some((f, pos_arity))
-            }
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity: 0,
+            } => Some((f, pos_arity)),
             _ => None,
         }) {
             {
-            if pos_arity > 0
-                && kb.dispatched_relation_arity(&goal_val, f) == Some(pos_arity - 1)
-            {
-                let n = pos_arity - 1;
-                // Rebuild the call in the OCCURRENCE carrier: `reduce_op_value`
-                // folds a `Value::Node` and returns anything else untouched, so an
-                // `Entity`-carried call would silently never reduce. The args are
-                // reused from the goal's own occurrence rather than round-tripped
-                // through `Value`, which keeps their occurrence identity (WI-621).
-                let goal_occ: Option<Rc<NodeOccurrence>> = match &goal_val {
-                    Value::Node(o) => Some(Rc::clone(o)),
-                    Value::Term { id, .. } => {
-                        Some(node_occurrence::materialize_from_handle(kb, *id))
-                    }
-                    _ => None,
-                };
-                // WI-1040: a woven goal's args live in `ApplyWithin.args` and its
-                // dictionary in `requirements` — both carried through the rebuild
-                // below, so the n-ary call the resolver reduces is still woven and
-                // `reduce_op_value` still dispatches it through the dictionary.
-                let call_parts: Option<(&Vec<Rc<NodeOccurrence>>, &Vec<(Option<Symbol>, Value)>, &[Rc<NodeOccurrence>])> =
-                    goal_occ.as_ref().and_then(|o| match o.as_expr() {
-                        Some(Expr::Apply { pos_args, type_args, .. }) => {
-                            Some((pos_args, type_args, &[][..]))
-                        }
-                        Some(Expr::ApplyWithin { args, type_args, requirements, .. }) => {
-                            Some((args, type_args, requirements.as_slice()))
+                if pos_arity > 0
+                    && kb.dispatched_relation_arity(&goal_val, f) == Some(pos_arity - 1)
+                {
+                    let n = pos_arity - 1;
+                    // Rebuild the call in the OCCURRENCE carrier: `reduce_op_value`
+                    // folds a `Value::Node` and returns anything else untouched, so an
+                    // `Entity`-carried call would silently never reduce. The args are
+                    // reused from the goal's own occurrence rather than round-tripped
+                    // through `Value`, which keeps their occurrence identity (WI-621).
+                    let goal_occ: Option<Rc<NodeOccurrence>> = match &goal_val {
+                        Value::Node(o) => Some(Rc::clone(o)),
+                        Value::Term { id, .. } => {
+                            Some(node_occurrence::materialize_from_handle(kb, *id))
                         }
                         _ => None,
+                    };
+                    // WI-1040: a woven goal's args live in `ApplyWithin.args` and its
+                    // dictionary in `requirements` — both carried through the rebuild
+                    // below, so the n-ary call the resolver reduces is still woven and
+                    // `reduce_op_value` still dispatches it through the dictionary.
+                    let call_parts: Option<(
+                        &Vec<Rc<NodeOccurrence>>,
+                        &Vec<(Option<Symbol>, Value)>,
+                        &[Rc<NodeOccurrence>],
+                    )> = goal_occ.as_ref().and_then(|o| match o.as_expr() {
+                        Some(Expr::Apply {
+                            pos_args,
+                            type_args,
+                            ..
+                        }) => Some((pos_args, type_args, &[][..])),
+                        Some(Expr::ApplyWithin {
+                            args,
+                            type_args,
+                            requirements,
+                            ..
+                        }) => Some((args, type_args, requirements.as_slice())),
+                        _ => None,
                     });
-                if let (Some(goal_occ), Some((pos_args, type_args, reqs))) =
-                    (goal_occ.as_ref(), call_parts)
-                {
+                    if let (Some(goal_occ), Some((pos_args, type_args, reqs))) =
+                        (goal_occ.as_ref(), call_parts)
                     {
-                        if pos_args.len() == pos_arity {
-                            // WI-1026: `rebuilt_expr`, not a bare `new_expr` — the
-                            // GOAL is the site the typer classified, and the pin
-                            // has to reach `reduce_op_value` or it folds
-                            // `op_body_node(f)`, a DEFAULTED spec op's own default,
-                            // over the implementation the carrier supplies (a rule
-                            // body answered `1` where an operation body answered
-                            // `7`). It also carries the goal's `owner`, which the
-                            // hand-rolled `new_expr` here dropped.
-                            //
-                            // This is NOT a rebuild of the same expression — it
-                            // drops the goal's RESULT COLUMN (`pos_args[..n]` of
-                            // `n + 1`). That is fine for the pin, whose subject is
-                            // the callee, and benign for the `inferred_type` the
-                            // same helper carries: `check_apply_iter` ignores
-                            // positional args past the declared params, so the
-                            // goal's stamped type already IS the n-ary call's
-                            // return type, not something about the extra column.
-                            let call_occ = if reqs.is_empty() {
-                                goal_occ.rebuilt_expr(Expr::Apply {
-                                    functor: f,
-                                    pos_args: pos_args[..n].to_vec(),
-                                    named_args: Vec::new(),
-                                    type_args: type_args.clone(),
-                                })
-                            } else {
-                                goal_occ.rebuilt_expr(Expr::ApplyWithin {
-                                    functor: f,
-                                    args: pos_args[..n].to_vec(),
-                                    named_args: Vec::new(),
-                                    requirements: reqs.to_vec(),
-                                    type_args: type_args.clone(),
-                                })
-                            };
-                            let result = Value::Node(Rc::clone(&pos_args[n]));
-                            let subst = self.stack.last().unwrap().subst.clone();
-                            // WI-1057 — `reduce_dispatched_goal_call`, not
-                            // `reduce_operand`: this frame BUILT the call and is
-                            // deciding it, which is the one context in which a
-                            // body-less spec op may be dispatched. See that method.
-                            let reduced =
-                                kb.reduce_dispatched_goal_call(Value::Node(call_occ), &subst);
-                            // ONLY route once the body actually reduced. `unify` is
-                            // structural and never dispatches (proposal 049's
-                            // invariant), so handing it an unreduced call would bind
-                            // the result var to the CALL TERM — measured, and a
-                            // definite-looking wrong answer. An unreduced call falls
-                            // through to ordinary candidate selection instead, which
-                            // is the pre-WI-938 behaviour (no answer) rather than a
-                            // wrong one. Making that case DELAY instead of answering
-                            // nothing is the open half — see WI-938's feedback.
-                            // WI-1040 — a WOVEN call routes to `unify` even when it
-                            // did NOT reduce, and that is safe for the exact reason
-                            // the comment above gives for why it is otherwise not:
-                            // `unify_values` delays on an unevaluated call
-                            // (`operand_is_unevaluated_call`, which counts an
-                            // `ApplyWithin` as one), so the result variable is never
-                            // bound to the call term. Falling through instead would
-                            // answer NOTHING for a woven call whose dictionary is not
-                            // bound yet — a silent failure where the clause must
-                            // DELAY and re-fire once a later goal binds the carrier.
-                            // WI-1057 — the third way the reduction can come back
-                            // undecided, and the one WI-1057's own goal shape newly
-                            // admits: a BODY-LESS spec op whose eval bridge declined
-                            // (an un-ground argument, no supplier, or a supplier tie).
-                            // Its own predicate rather than a clause inside
-                            // `is_unreduced_op_call`, because that one also decides
-                            // `eq`'s domain, where a body-less spec op may be symbolic
-                            // ALGEBRA — measured, folding the two broke 5 wi616 cases.
-                            let undecided = kb.is_unreduced_op_call(&reduced)
-                                || kb.reduction_left_body_less_call(&reduced);
-                            // WI-1057 — the WOVEN bypass is narrowed by that same
-                            // predicate, so "never `unify` on an undecided call" is a
-                            // TOTAL invariant of this site rather than one with an
-                            // exception. WI-1040's reason for the bypass survives
-                            // intact: an unresolved call comes back as the
-                            // `Expr::ApplyWithin` it went in as, which
-                            // `reduction_left_body_less_call` does not match (it reads
-                            // `Expr::Apply` only), so a woven goal whose dictionary is
-                            // not bound yet still routes and still DELAYS. What the
-                            // clause removes is the other exit: once the dictionary
-                            // resolves, `reduce_op_value` continues on the impl MEMBER
-                            // as a plain `Apply`, and a body-less member the bridge
-                            // declined is a bare call that `unify_values` would NOT
-                            // delay on — `operand_is_unevaluated_call` reads bodied ops
-                            // and `ApplyWithin`, neither of which that is.
-                            //
-                            // NOT DRIVEN, and said so deliberately. Reaching it needs a
-                            // woven call — so a BODIED functor, since
-                            // `collect_covered_calls` weaves only what
-                            // `functional_relation_arity` admits — whose dictionary
-                            // selects a BODY-LESS member of a concrete provider, which
-                            // is what WI-818's backing check refuses. Both halves of
-                            // that argument are load-bearing; a change to either makes
-                            // this reachable, which is why the clause is here rather
-                            // than the argument alone.
-                            if (!reqs.is_empty() && !kb.reduction_left_body_less_call(&reduced))
-                                || !undecided
-                            {
-                                let unify_sym = kb.unify_functor();
-                                let unify_goal =
-                                    kb.make_goal_value(unify_sym, vec![result, reduced]);
-                                let fr = self.stack.last_mut().unwrap();
-                                fr.goals[0] = unify_goal;
-                                fr.state = FrameState::Init { delay_mode };
-                                return Some(StepResult::Continue);
+                        {
+                            if pos_args.len() == pos_arity {
+                                // WI-1026: `rebuilt_expr`, not a bare `new_expr` — the
+                                // GOAL is the site the typer classified, and the pin
+                                // has to reach `reduce_op_value` or it folds
+                                // `op_body_node(f)`, a DEFAULTED spec op's own default,
+                                // over the implementation the carrier supplies (a rule
+                                // body answered `1` where an operation body answered
+                                // `7`). It also carries the goal's `owner`, which the
+                                // hand-rolled `new_expr` here dropped.
+                                //
+                                // This is NOT a rebuild of the same expression — it
+                                // drops the goal's RESULT COLUMN (`pos_args[..n]` of
+                                // `n + 1`). That is fine for the pin, whose subject is
+                                // the callee, and benign for the `inferred_type` the
+                                // same helper carries: `check_apply_iter` ignores
+                                // positional args past the declared params, so the
+                                // goal's stamped type already IS the n-ary call's
+                                // return type, not something about the extra column.
+                                let call_occ = if reqs.is_empty() {
+                                    goal_occ.rebuilt_expr(Expr::Apply {
+                                        functor: f,
+                                        pos_args: pos_args[..n].to_vec(),
+                                        named_args: Vec::new(),
+                                        type_args: type_args.clone(),
+                                    })
+                                } else {
+                                    goal_occ.rebuilt_expr(Expr::ApplyWithin {
+                                        functor: f,
+                                        args: pos_args[..n].to_vec(),
+                                        named_args: Vec::new(),
+                                        requirements: reqs.to_vec(),
+                                        type_args: type_args.clone(),
+                                    })
+                                };
+                                let result = Value::Node(Rc::clone(&pos_args[n]));
+                                let subst = self.stack.last().unwrap().subst.clone();
+                                // WI-1057 — `reduce_dispatched_goal_call`, not
+                                // `reduce_operand`: this frame BUILT the call and is
+                                // deciding it, which is the one context in which a
+                                // body-less spec op may be dispatched. See that method.
+                                let reduced =
+                                    kb.reduce_dispatched_goal_call(Value::Node(call_occ), &subst);
+                                // ONLY route once the body actually reduced. `unify` is
+                                // structural and never dispatches (proposal 049's
+                                // invariant), so handing it an unreduced call would bind
+                                // the result var to the CALL TERM — measured, and a
+                                // definite-looking wrong answer. An unreduced call falls
+                                // through to ordinary candidate selection instead, which
+                                // is the pre-WI-938 behaviour (no answer) rather than a
+                                // wrong one. Making that case DELAY instead of answering
+                                // nothing is the open half — see WI-938's feedback.
+                                // WI-1040 — a WOVEN call routes to `unify` even when it
+                                // did NOT reduce, and that is safe for the exact reason
+                                // the comment above gives for why it is otherwise not:
+                                // `unify_values` delays on an unevaluated call
+                                // (`operand_is_unevaluated_call`, which counts an
+                                // `ApplyWithin` as one), so the result variable is never
+                                // bound to the call term. Falling through instead would
+                                // answer NOTHING for a woven call whose dictionary is not
+                                // bound yet — a silent failure where the clause must
+                                // DELAY and re-fire once a later goal binds the carrier.
+                                // WI-1057 — the third way the reduction can come back
+                                // undecided, and the one WI-1057's own goal shape newly
+                                // admits: a BODY-LESS spec op whose eval bridge declined
+                                // (an un-ground argument, no supplier, or a supplier tie).
+                                // Its own predicate rather than a clause inside
+                                // `is_unreduced_op_call`, because that one also decides
+                                // `eq`'s domain, where a body-less spec op may be symbolic
+                                // ALGEBRA — measured, folding the two broke 5 wi616 cases.
+                                let undecided = kb.is_unreduced_op_call(&reduced)
+                                    || kb.reduction_left_body_less_call(&reduced);
+                                // WI-1057 — the WOVEN bypass is narrowed by that same
+                                // predicate, so "never `unify` on an undecided call" is a
+                                // TOTAL invariant of this site rather than one with an
+                                // exception. WI-1040's reason for the bypass survives
+                                // intact: an unresolved call comes back as the
+                                // `Expr::ApplyWithin` it went in as, which
+                                // `reduction_left_body_less_call` does not match (it reads
+                                // `Expr::Apply` only), so a woven goal whose dictionary is
+                                // not bound yet still routes and still DELAYS. What the
+                                // clause removes is the other exit: once the dictionary
+                                // resolves, `reduce_op_value` continues on the impl MEMBER
+                                // as a plain `Apply`, and a body-less member the bridge
+                                // declined is a bare call that `unify_values` would NOT
+                                // delay on — `operand_is_unevaluated_call` reads bodied ops
+                                // and `ApplyWithin`, neither of which that is.
+                                //
+                                // NOT DRIVEN, and said so deliberately. Reaching it needs a
+                                // woven call — so a BODIED functor, since
+                                // `collect_covered_calls` weaves only what
+                                // `functional_relation_arity` admits — whose dictionary
+                                // selects a BODY-LESS member of a concrete provider, which
+                                // is what WI-818's backing check refuses. Both halves of
+                                // that argument are load-bearing; a change to either makes
+                                // this reachable, which is why the clause is here rather
+                                // than the argument alone.
+                                if (!reqs.is_empty() && !kb.reduction_left_body_less_call(&reduced))
+                                    || !undecided
+                                {
+                                    let unify_sym = kb.unify_functor();
+                                    let unify_goal =
+                                        kb.make_goal_value(unify_sym, vec![result, reduced]);
+                                    let fr = self.stack.last_mut().unwrap();
+                                    fr.goals[0] = unify_goal;
+                                    fr.state = FrameState::Init { delay_mode };
+                                    return Some(StepResult::Continue);
+                                }
                             }
                         }
                     }
                 }
-            }
             }
         }
 
@@ -1524,7 +1569,10 @@ impl SearchStream {
             let key = goal_fingerprint(kb, &goal_val, &Substitution::default());
             key.is_cacheable().then_some(key)
         };
-        let rule_candidates = match cache_key.as_ref().and_then(|k| self.query_cache.get(k).cloned()) {
+        let rule_candidates = match cache_key
+            .as_ref()
+            .and_then(|k| self.query_cache.get(k).cloned())
+        {
             Some(cached) => cached,
             None => {
                 let mut rc = kb.query_view(&goal_val);
@@ -1542,8 +1590,7 @@ impl SearchStream {
                         // than reading headless under an empty subst (C1). O(1)
                         // imbl clone.
                         let eq_subst = self.stack.last().unwrap().subst.clone();
-                        let (rewritten, changes) =
-                            kb.apply_eq_rules(&goal_val, 100, &eq_subst);
+                        let (rewritten, changes) = kb.apply_eq_rules(&goal_val, 100, &eq_subst);
                         // WI-634: when the WHOLE goal is a var-projecting simp
                         // redex (`pick(?q, 7)` under `[simp] eq(pick(?a,?b),?a)`),
                         // the rewrite is a bare caller var `?q`. Re-querying a bare
@@ -1554,9 +1601,7 @@ impl SearchStream {
                         // matching everything. The intended use — a redex nested in
                         // a compound goal (`found(pick(?q,7))` → `found(?q)`) —
                         // keeps the goal a compound and re-queries normally.
-                        if !changes.is_empty()
-                            && !matches!(rewritten.head(kb), ViewHead::Var(_))
-                        {
+                        if !changes.is_empty() && !matches!(rewritten.head(kb), ViewHead::Var(_)) {
                             rc = kb.query_view(&rewritten);
                         }
                     }
@@ -1569,7 +1614,11 @@ impl SearchStream {
             }
         };
 
-        candidates.extend(rule_candidates.into_iter().map(|(rid, s)| Candidate::Rule(rid, s)));
+        candidates.extend(
+            rule_candidates
+                .into_iter()
+                .map(|(rid, s)| Candidate::Rule(rid, s)),
+        );
 
         // Mounted extent rows (WI-797 / proposal 057 §"Mounts", successor to the
         // retired `RouteHandler`). A functor owned by a registered `ExtentSource`
@@ -1680,9 +1729,11 @@ impl SearchStream {
         // `else` is a defensive fallback for a malformed occurrence, not a reachable
         // path (the old separate `if pos_arity != 3` re-check is now dead: a non-3
         // `forall_impl` never passes the gate to reach here).
-        let (Some(binders_arg), Some(antes_arg), Some(cons_arg)) =
-            (goal.pos_arg(kb, 0), goal.pos_arg(kb, 1), goal.pos_arg(kb, 2))
-        else {
+        let (Some(binders_arg), Some(antes_arg), Some(cons_arg)) = (
+            goal.pos_arg(kb, 0),
+            goal.pos_arg(kb, 1),
+            goal.pos_arg(kb, 2),
+        ) else {
             self.stack.pop();
             return Some(StepResult::Continue);
         };
@@ -1727,8 +1778,10 @@ impl SearchStream {
                 }
             })
             .collect();
-        let skolemized_consequents: Vec<Value> =
-            consequents.iter().map(|c| kb.reify_value(c, &skolem)).collect();
+        let skolemized_consequents: Vec<Value> = consequents
+            .iter()
+            .map(|c| kb.reify_value(c, &skolem))
+            .collect();
 
         // Append a pop_assumption marker after the consequents so the assumed
         // antecedents go out of scope before the surrounding rule's remaining
@@ -1751,7 +1804,9 @@ impl SearchStream {
             goals: new_goals,
             subst: new_subst,
             depth: depth + 1,
-            state: FrameState::Init { delay_mode: new_delay },
+            state: FrameState::Init {
+                delay_mode: new_delay,
+            },
             assumed_facts: new_assumed,
         });
         Some(StepResult::Continue)
@@ -1763,7 +1818,9 @@ impl SearchStream {
     /// the caller passes the already-σ-applied goal, so no walk is needed.
     fn bounded_quant_kind(kb: &KnowledgeBase, goal: &Value) -> Option<bool> {
         match goal.head(kb) {
-            ViewHead::Functor { functor: Some(f), .. } => match kb.local_name_of(f) {
+            ViewHead::Functor {
+                functor: Some(f), ..
+            } => match kb.local_name_of(f) {
                 "forall_in" => Some(true),
                 "some_in" => Some(false),
                 _ => None,
@@ -1911,9 +1968,11 @@ impl SearchStream {
         // the SOLE arity authority — so all three positional args are present. The
         // `else` is a defensive fallback for a malformed occurrence, not a reachable
         // path (the old separate `if pos_arity != 3` re-check is now dead).
-        let (Some(binder_arg), Some(coll_arg), Some(body_arg)) =
-            (goal.pos_arg(kb, 0), goal.pos_arg(kb, 1), goal.pos_arg(kb, 2))
-        else {
+        let (Some(binder_arg), Some(coll_arg), Some(body_arg)) = (
+            goal.pos_arg(kb, 0),
+            goal.pos_arg(kb, 1),
+            goal.pos_arg(kb, 2),
+        ) else {
             self.stack.pop();
             return Some(StepResult::Continue);
         };
@@ -1971,7 +2030,9 @@ impl SearchStream {
                 goals: new_goals,
                 subst: new_subst,
                 depth: depth + 1,
-                state: FrameState::Init { delay_mode: delay_mode.reset() },
+                state: FrameState::Init {
+                    delay_mode: delay_mode.reset(),
+                },
                 assumed_facts: new_assumed,
             });
             Some(StepResult::Continue)
@@ -2036,7 +2097,9 @@ impl SearchStream {
         f.goals = rotated;
         f.depth = new_depth;
         f.state = FrameState::Init {
-            delay_mode: DelayMode::Delayed { consecutive_delays: consecutive },
+            delay_mode: DelayMode::Delayed {
+                consecutive_delays: consecutive,
+            },
         };
         Some(StepResult::Continue)
     }
@@ -2056,11 +2119,16 @@ impl SearchStream {
         subst: &Substitution,
     ) -> Option<TermId> {
         let pos_arity = match goal.head(kb) {
-            ViewHead::Functor { functor: Some(f), pos_arity, .. }
-                if kb.local_name_of(f) == "ho_apply" => pos_arity,
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                ..
+            } if kb.local_name_of(f) == "ho_apply" => pos_arity,
             _ => return None,
         };
-        if pos_arity == 0 { return None; }
+        if pos_arity == 0 {
+            return None;
+        }
         // Collect the predicate (arg 0) and args (arg 1…) as raw owned values
         // first — each `pos_arg` borrows `kb`, so this must finish before the
         // `&mut kb` reify/alloc. The args are copied as-is (unwalked), mirroring
@@ -2098,7 +2166,11 @@ impl SearchStream {
         // `Ident` or an applied `f(x)` — the pre-existing shape, unwidened.
         let pred_sym = match pred.head(kb) {
             ViewHead::Ref(s) => s,
-            ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => s,
+            ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } => s,
             _ => return None,
         };
         // Create a term for each argument (a `Value::Node` arg lowers via
@@ -2139,7 +2211,11 @@ impl SearchStream {
         subst: &Substitution,
     ) -> Option<(Value, Value)> {
         match goal.head(kb) {
-            ViewHead::Functor { pos_arity: 2, named_arity: 0, .. } => {
+            ViewHead::Functor {
+                pos_arity: 2,
+                named_arity: 0,
+                ..
+            } => {
                 let goal_a = kb.walk_arg(goal.pos_arg(kb, 0), subst)?;
                 let goal_b = kb.walk_arg(goal.pos_arg(kb, 1), subst)?;
                 Some((goal_a, goal_b))
@@ -2190,9 +2266,17 @@ impl SearchStream {
             // body to open it. Intentional: `apply_cut(None)` commits the query.
             // (`cut` is a builtin, not a constructor, so it never canonicalizes to
             // the bare `Ref` spelling — the 0-ary `Functor` head is exact.)
-            ViewHead::Functor { pos_arity: 0, named_arity: 0, .. } => None,
+            ViewHead::Functor {
+                pos_arity: 0,
+                named_arity: 0,
+                ..
+            } => None,
             // The baked form `cut(IntLit(B))`.
-            ViewHead::Functor { pos_arity: 1, named_arity: 0, .. } => {
+            ViewHead::Functor {
+                pos_arity: 1,
+                named_arity: 0,
+                ..
+            } => {
                 match goal.pos_arg(kb, 0) {
                     Some(arg) => match arg.head(kb) {
                         ViewHead::Const(Literal::Int(n)) => Some(n),
@@ -2259,7 +2343,13 @@ impl SearchStream {
             }
         };
         for frame in self.stack[floor_idx..top].iter_mut() {
-            if let FrameState::ChoicePoint { next, candidates, any_delayed, .. } = &mut frame.state {
+            if let FrameState::ChoicePoint {
+                next,
+                candidates,
+                any_delayed,
+                ..
+            } = &mut frame.state
+            {
                 *next = candidates.len();
                 *any_delayed = false;
             }
@@ -2275,14 +2365,14 @@ impl SearchStream {
     /// Returns None for anything else.
     fn pop_assumption_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<usize> {
         match goal.head(kb) {
-            ViewHead::Functor { functor: Some(f), pos_arity: 1, named_arity: 0 }
-                if kb.local_name_of(f) == "__pop_assumption" =>
-            {
-                match goal.pos_arg(kb, 0)?.head(kb) {
-                    ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
-                    _ => None,
-                }
-            }
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity: 1,
+                named_arity: 0,
+            } if kb.local_name_of(f) == "__pop_assumption" => match goal.pos_arg(kb, 0)?.head(kb) {
+                ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2325,7 +2415,9 @@ impl SearchStream {
         f.goals = rotated;
         f.depth = depth + 1;
         f.state = FrameState::Init {
-            delay_mode: DelayMode::Delayed { consecutive_delays: new_consecutive },
+            delay_mode: DelayMode::Delayed {
+                consecutive_delays: new_consecutive,
+            },
         };
     }
 
@@ -2342,7 +2434,10 @@ impl SearchStream {
         // Inner goal P of `not(P)`, read through TermView and σ-walked. The
         // groundness gate and sub-resolution read it carrier-faithfully as a
         // `Value` — no lowering to a hash-consed term (WI-348).
-        let inner = match goal.pos_arg(kb, 0).and_then(|item| kb.walk_arg(Some(item), &subst)) {
+        let inner = match goal
+            .pos_arg(kb, 0)
+            .and_then(|item| kb.walk_arg(Some(item), &subst))
+        {
             Some(v) => v,
             None => {
                 self.stack.pop();
@@ -2359,7 +2454,8 @@ impl SearchStream {
         // soundness contract effect discharge (048 §"constructive refutation") and
         // the in-body proof bridge rely on. Outside a Γ query, `var_ref` is a
         // closed reflect datum and keeps its ordinary ground reading.
-        let open_world_param = self.config.gamma.is_some() && kb.value_has_open_world_ref(&inner, &subst);
+        let open_world_param =
+            self.config.gamma.is_some() && kb.value_has_open_world_ref(&inner, &subst);
         if open_world_param || !kb.value_is_ground(&inner, &subst) {
             // Delay — same mechanism as other builtins
             match delay_mode {
@@ -2490,7 +2586,9 @@ impl SearchStream {
                 f.goals = new_goals;
                 f.subst = subst;
                 f.depth = depth + 1;
-                f.state = FrameState::Init { delay_mode: new_delay };
+                f.state = FrameState::Init {
+                    delay_mode: new_delay,
+                };
                 return Some(StepResult::Continue);
             }
         }
@@ -2506,7 +2604,9 @@ impl SearchStream {
         {
             let frame = self.stack.last_mut().unwrap();
             match &mut frame.state {
-                FrameState::ChoicePoint { candidates, next, .. } => {
+                FrameState::ChoicePoint {
+                    candidates, next, ..
+                } => {
                     if *next < candidates.len() {
                         let c = candidates[*next].clone();
                         *next += 1;
@@ -2538,7 +2638,11 @@ impl SearchStream {
             let row = {
                 let frame = self.stack.last_mut().unwrap();
                 match &mut frame.state {
-                    FrameState::ChoicePoint { extent_rows, extent_next, .. } => {
+                    FrameState::ChoicePoint {
+                        extent_rows,
+                        extent_next,
+                        ..
+                    } => {
                         if *extent_next >= extent_rows.len() {
                             return None;
                         }
@@ -2722,7 +2826,9 @@ impl SearchStream {
                 goals: new_goals,
                 subst: frame.subst.clone(),
                 depth: frame.depth + 1,
-                state: FrameState::Init { delay_mode: delay_mode.reset() },
+                state: FrameState::Init {
+                    delay_mode: delay_mode.reset(),
+                },
                 assumed_facts: frame.assumed_facts.clone(),
             });
             return Some(StepResult::Continue);
@@ -2845,7 +2951,9 @@ impl SearchStream {
                 goals: remaining,
                 subst: merged,
                 depth: frame.depth + 1,
-                state: FrameState::Init { delay_mode: new_delay },
+                state: FrameState::Init {
+                    delay_mode: new_delay,
+                },
                 assumed_facts: inherited,
             });
         } else {
@@ -2897,7 +3005,9 @@ impl SearchStream {
             // non-Term into this row (which `iter_terms` would then silently drop)
             // trips loudly in test/dev.
             debug_assert!(
-                answer_links.iter().all(|(_, v)| matches!(v, Value::Term { .. })),
+                answer_links
+                    .iter()
+                    .all(|(_, v)| matches!(v, Value::Term { .. })),
                 "answer_links must be Term-only by construction; a non-Term entry \
                  would be silently dropped by iter_terms (WI-636)",
             );
@@ -2906,7 +3016,11 @@ impl SearchStream {
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
-                && kb.body_builtins_delay_on_caller_vars_nodes(&fresh_nodes, &caller_fresh_vars, &merged)
+                && kb.body_builtins_delay_on_caller_vars_nodes(
+                    &fresh_nodes,
+                    &caller_fresh_vars,
+                    &merged,
+                )
             {
                 // WI-670: before delaying the WHOLE rule on a caller var, refute
                 // it if one of its OTHER conjuncts is already provably
@@ -2952,8 +3066,9 @@ impl SearchStream {
                 match self.cut_cache.get(&rid) {
                     Some(&cached) => cached,
                     None => {
-                        let detected =
-                            fresh_nodes.iter().find_map(|n| Self::cut_marker_functor(kb, n));
+                        let detected = fresh_nodes
+                            .iter()
+                            .find_map(|n| Self::cut_marker_functor(kb, n));
                         self.cut_cache.insert(rid, detected);
                         detected
                     }
@@ -2995,7 +3110,9 @@ impl SearchStream {
                 goals: new_goals,
                 subst: merged,
                 depth: parent_depth + 1,
-                state: FrameState::Init { delay_mode: new_delay },
+                state: FrameState::Init {
+                    delay_mode: new_delay,
+                },
                 assumed_facts: inherited,
             });
         }
@@ -3050,7 +3167,12 @@ impl SearchStream {
             return false;
         }
         for frame in self.stack.iter_mut().rev() {
-            if let FrameState::ChoicePoint { original_goal, seen_goals, .. } = &mut frame.state {
+            if let FrameState::ChoicePoint {
+                original_goal,
+                seen_goals,
+                ..
+            } = &mut frame.state
+            {
                 // Carrier-agnostic structural fingerprint of the goal reified
                 // through σ — keys a `Value::Node` answer by its structure, with
                 // no `TermId` materialization and no `TermStore` growth (WI-348).
@@ -3068,7 +3190,10 @@ impl SearchStream {
     /// `ChoicePoint` ancestor and increment its `child_solutions` counter.
     fn record_solution_in_ancestors(&mut self) {
         for frame in self.stack.iter_mut().rev() {
-            if let FrameState::ChoicePoint { child_solutions, .. } = &mut frame.state {
+            if let FrameState::ChoicePoint {
+                child_solutions, ..
+            } = &mut frame.state
+            {
                 *child_solutions += 1;
                 return;
             }
@@ -3100,7 +3225,9 @@ fn collect_param_var_bindings(
             fold.bind_value(kb, *vid, arg.clone());
         }
     }
-    node_occurrence::for_each_child(expr, |c| collect_param_var_bindings(kb, c, param_args, fold));
+    node_occurrence::for_each_child(expr, |c| {
+        collect_param_var_bindings(kb, c, param_args, fold)
+    });
 }
 
 // ── SLD Resolution ──────────────────────────────────────────────
@@ -3267,9 +3394,9 @@ impl HeadCheck {
                 _ => HeadVerdict::Recurse,
             },
             HeadCheck::BodiedOpCall => match head {
-                ViewHead::Functor { functor: Some(f), .. }
-                    if kb.builtins.get(f).is_none() && kb.op_body_node(*f).is_some() =>
-                {
+                ViewHead::Functor {
+                    functor: Some(f), ..
+                } if kb.builtins.get(f).is_none() && kb.op_body_node(*f).is_some() => {
                     HeadVerdict::Stop(true)
                 }
                 _ => HeadVerdict::Recurse,
@@ -3302,7 +3429,10 @@ impl KnowledgeBase {
     /// (the mutable search frame needs ownership) via its `as_bind_value`.
     /// [`Self::resolve_lazy_goals`] is the canonical `Vec<Value>` core.
     pub fn resolve_lazy<V: TermView>(&self, goals: &[V], config: &ResolveConfig) -> SearchStream {
-        let value_goals = goals.iter().map(|g| bind_value_to_value(g.as_bind_value())).collect();
+        let value_goals = goals
+            .iter()
+            .map(|g| bind_value_to_value(g.as_bind_value()))
+            .collect();
         self.resolve_lazy_goals(value_goals, config)
     }
 
@@ -3315,7 +3445,9 @@ impl KnowledgeBase {
             goals,
             subst: Substitution::new(),
             depth: 0,
-            state: FrameState::Init { delay_mode: DelayMode::Normal },
+            state: FrameState::Init {
+                delay_mode: DelayMode::Normal,
+            },
             assumed_facts: Vec::new(),
         };
         SearchStream {
@@ -3396,7 +3528,6 @@ impl KnowledgeBase {
         let stream = self.resolve_lazy(goals, config);
         stream.drain_all(self, config.max_solutions)
     }
-
 
     // ── Equational Rewriting ────────────────────────────────────
 
@@ -3512,9 +3643,9 @@ impl KnowledgeBase {
             // with NO macro expansion: macros are the typer's, 043.1 §5); a term redex
             // rebuilds its hash-consed term.
             let rewritten = match redex {
-                Value::Node(occ) => Value::Node(
-                    super::simp_rewrite::instantiate_rhs_verbatim(self, rhs, &msubst, occ),
-                ),
+                Value::Node(occ) => Value::Node(super::simp_rewrite::instantiate_rhs_verbatim(
+                    self, rhs, &msubst, occ,
+                )),
                 _ => Value::term(self.apply_subst(rhs, &msubst)),
             };
             return Some((rid, rewritten));
@@ -3560,7 +3691,10 @@ impl KnowledgeBase {
             return (redex.clone(), vec![]);
         }
         let mut changes = Vec::new();
-        let mut firer = ResolverSimpFirer { subst, changes: &mut changes };
+        let mut firer = ResolverSimpFirer {
+            subst,
+            changes: &mut changes,
+        };
         let rewritten = super::simp_rewrite::rewrite(self, redex, &mut firer, fuel);
         (rewritten, changes)
     }
@@ -3664,10 +3798,16 @@ impl KnowledgeBase {
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::DispatchCarrier => self.builtin_dispatch_carrier(goal, answer_subst),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
-            BuiltinTag::HoApply => unreachable!("HoApply is handled in step_init, not execute_builtin"),
-            BuiltinTag::PushChoice => unreachable!("PushChoice is handled in step_init, not execute_builtin"),
+            BuiltinTag::HoApply => {
+                unreachable!("HoApply is handled in step_init, not execute_builtin")
+            }
+            BuiltinTag::PushChoice => {
+                unreachable!("PushChoice is handled in step_init, not execute_builtin")
+            }
             BuiltinTag::Cut => unreachable!("Cut is handled in step_init, not execute_builtin"),
-            BuiltinTag::ResolveSortInstParam => self.builtin_resolve_sort_inst_param(goal, answer_subst),
+            BuiltinTag::ResolveSortInstParam => {
+                self.builtin_resolve_sort_inst_param(goal, answer_subst)
+            }
             BuiltinTag::Scope => self.builtin_scope(goal, answer_subst),
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
@@ -3676,13 +3816,39 @@ impl KnowledgeBase {
             BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst),
             BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst),
             BuiltinTag::Unify => self.builtin_unify(goal, answer_subst),
-            BuiltinTag::Gt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater),
-            BuiltinTag::Lt => self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less),
-            BuiltinTag::Gte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less),
-            BuiltinTag::Lte => self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater),
-            BuiltinTag::Add => self.builtin_arith(goal, answer_subst, |a, b| Some(a + b), |a, b| Some(a + b), |a, b| Some(a + b)),
-            BuiltinTag::Sub => self.builtin_arith(goal, answer_subst, |a, b| Some(a - b), |a, b| Some(a - b), |a, b| Some(a - b)),
-            BuiltinTag::Mul => self.builtin_arith(goal, answer_subst, |a, b| Some(a * b), |a, b| Some(a * b), |a, b| Some(a * b)),
+            BuiltinTag::Gt => {
+                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater)
+            }
+            BuiltinTag::Lt => {
+                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less)
+            }
+            BuiltinTag::Gte => {
+                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less)
+            }
+            BuiltinTag::Lte => {
+                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater)
+            }
+            BuiltinTag::Add => self.builtin_arith(
+                goal,
+                answer_subst,
+                |a, b| Some(a + b),
+                |a, b| Some(a + b),
+                |a, b| Some(a + b),
+            ),
+            BuiltinTag::Sub => self.builtin_arith(
+                goal,
+                answer_subst,
+                |a, b| Some(a - b),
+                |a, b| Some(a - b),
+                |a, b| Some(a - b),
+            ),
+            BuiltinTag::Mul => self.builtin_arith(
+                goal,
+                answer_subst,
+                |a, b| Some(a * b),
+                |a, b| Some(a * b),
+                |a, b| Some(a * b),
+            ),
             // div/mod are PARTIAL: a zero divisor → None → Failure — the SLD reading
             // of the declared `Error[DivisionByZero] :- eq(b, 0)` (eval raises the
             // catchable effect). div truncates, mod is Euclidean (always
@@ -3693,8 +3859,20 @@ impl KnowledgeBase {
             // where eval's unchecked `int_mod` overflow-panics; the sole cost is
             // i64::MIN mod -1, whose answer 0 is dropped as `no solution` (see the
             // overflow-panic WI-875). Float has no `mod` op → None. WI-863.
-            BuiltinTag::Div => self.builtin_arith(goal, answer_subst, |a, b| a.checked_div(b), Self::bigint_checked_div, |a, b| Some(a / b)),
-            BuiltinTag::Mod => self.builtin_arith(goal, answer_subst, |a, b| a.checked_rem_euclid(b), Self::bigint_rem_euclid, |_, _| None),
+            BuiltinTag::Div => self.builtin_arith(
+                goal,
+                answer_subst,
+                |a, b| a.checked_div(b),
+                Self::bigint_checked_div,
+                |a, b| Some(a / b),
+            ),
+            BuiltinTag::Mod => self.builtin_arith(
+                goal,
+                answer_subst,
+                |a, b| a.checked_rem_euclid(b),
+                Self::bigint_rem_euclid,
+                |_, _| None,
+            ),
             BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
             BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
             // Occurrence reflection builtins (WI-297).
@@ -3720,9 +3898,10 @@ impl KnowledgeBase {
             ViewItem::Value(v) => v.clone(),
             ViewItem::Owned(v) => v,
             ViewItem::Node(occ) => match occ.as_expr() {
-                Some(Expr::Var(Var::Global(vid))) => {
-                    subst.resolve_as_value(*vid).cloned().unwrap_or(Value::Node(occ))
-                }
+                Some(Expr::Var(Var::Global(vid))) => subst
+                    .resolve_as_value(*vid)
+                    .cloned()
+                    .unwrap_or(Value::Node(occ)),
                 _ => Value::Node(occ),
             },
         })
@@ -3856,13 +4035,23 @@ impl KnowledgeBase {
     pub(crate) fn value_has_open_world_ref(&self, v: &Value, subst: &Substitution) -> bool {
         // No `var_ref` symbol interned (a prelude-less KB) ⇒ no binder references
         // can exist ⇒ nothing is open-world.
-        match self.symbols.by_qualified_name.get("anthill.reflect.Expr.var_ref").copied() {
+        match self
+            .symbols
+            .by_qualified_name
+            .get("anthill.reflect.Expr.var_ref")
+            .copied()
+        {
             Some(var_ref) => self.value_has_open_world_ref_inner(v, var_ref, subst),
             None => false,
         }
     }
 
-    fn value_has_open_world_ref_inner(&self, v: &Value, var_ref: crate::intern::Symbol, subst: &Substitution) -> bool {
+    fn value_has_open_world_ref_inner(
+        &self,
+        v: &Value,
+        var_ref: crate::intern::Symbol,
+        subst: &Substitution,
+    ) -> bool {
         match v {
             Value::Term { id: t, .. } => self.term_has_var_ref(*t, var_ref, subst),
             Value::Node(occ) => node_occurrence::occurrence_has_var_ref(occ),
@@ -3873,8 +4062,11 @@ impl KnowledgeBase {
             // FLOUNDER over the symbolic binder (unsound negation under Γ). Same
             // recursion as `value_is_ground` / `value_deep_ground`.
             Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
-                pos.iter().any(|a| self.value_has_open_world_ref_inner(a, var_ref, subst))
-                    || named.iter().any(|(_, a)| self.value_has_open_world_ref_inner(a, var_ref, subst))
+                pos.iter()
+                    .any(|a| self.value_has_open_world_ref_inner(a, var_ref, subst))
+                    || named
+                        .iter()
+                        .any(|(_, a)| self.value_has_open_world_ref_inner(a, var_ref, subst))
             }
             _ => false,
         }
@@ -3883,17 +4075,30 @@ impl KnowledgeBase {
     /// Recursive `var_ref`-functor search over a hash-consed goal term — a binder
     /// reference (`var_ref(name: …)`) anywhere in the term. A bare `Ref`/`Ident`
     /// is closed (see [`value_has_open_world_ref`]).
-    fn term_has_var_ref(&self, term: TermId, var_ref: crate::intern::Symbol, subst: &Substitution) -> bool {
+    fn term_has_var_ref(
+        &self,
+        term: TermId,
+        var_ref: crate::intern::Symbol,
+        subst: &Substitution,
+    ) -> bool {
         let walked = self.walk(term, subst);
         match self.terms.get(walked) {
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 if *functor == var_ref {
                     return true;
                 }
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
-                pos_args.iter().any(|&a| self.term_has_var_ref(a, var_ref, subst))
-                    || named_args.iter().any(|&(_, a)| self.term_has_var_ref(a, var_ref, subst))
+                pos_args
+                    .iter()
+                    .any(|&a| self.term_has_var_ref(a, var_ref, subst))
+                    || named_args
+                        .iter()
+                        .any(|&(_, a)| self.term_has_var_ref(a, var_ref, subst))
             }
             _ => false,
         }
@@ -3905,10 +4110,14 @@ impl KnowledgeBase {
         match self.terms.get(walked) {
             Term::Var(_) => GroundCheck::HasVar,
             Term::Const(_) | Term::Ref(_) | Term::Bottom | Term::Ident(_) => GroundCheck::Ground,
-            Term::ParseAux(_) => unreachable!(
-                "parse-only Term::ParseAux variant reached the KB resolver",
-            ),
-            Term::Fn { pos_args, named_args, .. } => {
+            Term::ParseAux(_) => {
+                unreachable!("parse-only Term::ParseAux variant reached the KB resolver",)
+            }
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
                 for &arg in pos_args.iter() {
@@ -3939,7 +4148,11 @@ impl KnowledgeBase {
     /// symbol, bind `?result` to its full qualified-name string. Delay if `?sym`
     /// is unbound. Goal AND symbol carrier both read through [`TermView`]
     /// ([`Self::value_symbol`]) — no reify.
-    fn builtin_qualified_name<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_qualified_name<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
             return BuiltinResult::Failure;
         }
@@ -3998,7 +4211,11 @@ impl KnowledgeBase {
     /// search the symbol table for that qualified name and bind `?result` to
     /// `Ref(symbol)` if found, fail if not. Delay if `?name_str` is unbound.
     /// Goal AND name carrier both read through [`TermView`] — no reify.
-    fn builtin_lookup_symbol<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_lookup_symbol<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 2) {
             return BuiltinResult::Failure;
         }
@@ -4032,7 +4249,11 @@ impl KnowledgeBase {
 
     /// `is_entity_of(?sub, ?sup)`: succeeds if sub is an entity of sup (via KB indexes).
     /// Both args must be non-var (delay otherwise).
-    fn builtin_is_entity_of<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_is_entity_of<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let (sub, sup) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -4056,7 +4277,11 @@ impl KnowledgeBase {
     /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq[T = Int]` (represented as
     /// `ParameterizedType(Eq(), T=Int())`) or a simple `Ref(Eq)`, extract the sort symbol
     /// and bind `?result` to `Ref(sort_sym)`. Delays if `?inst` is unbound.
-    fn builtin_extract_sort<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_extract_sort<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let inst = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             Some(v) => v,
             None => return BuiltinResult::Failure,
@@ -4073,7 +4298,11 @@ impl KnowledgeBase {
             // `SortView(sort_name, bindings…)` — the first positional child is the
             // sort name; read ITS head symbol. Any other functor is the sort itself
             // (e.g. `Eq()` / `SortInfo(...)`).
-            ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+            ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                ..
+            } => {
                 if self.symbols.local_name(functor) == "SortView" && pos_arity > 0 {
                     inst.pos_arg(self, 0)
                         .and_then(|name| name.head(self).functor_sym())
@@ -4189,7 +4418,9 @@ impl KnowledgeBase {
         };
         let prov_qn = match self.kind_of(sym) {
             Some(crate::intern::SymbolKind::Param) => "anthill.reflect.feed.Provenance.input",
-            Some(crate::intern::SymbolKind::OpResult) => "anthill.reflect.feed.Provenance.op_result",
+            Some(crate::intern::SymbolKind::OpResult) => {
+                "anthill.reflect.feed.Provenance.op_result"
+            }
             Some(crate::intern::SymbolKind::CallbackResult) => {
                 "anthill.reflect.feed.Provenance.fresh_output"
             }
@@ -4314,7 +4545,11 @@ impl KnowledgeBase {
     /// identity — an unbound result var binds to the `Value::Node` itself, a
     /// reflect pattern (`int_lit(value: ?)`, …) matches structurally against
     /// the lens.
-    fn builtin_occurrence_term<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_occurrence_term<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
             Ok(pair) => pair,
             Err(r) => return r,
@@ -4331,7 +4566,11 @@ impl KnowledgeBase {
     /// constructs the anthill `source_span(file:, start_byte:, end_byte:)`
     /// entity (plain `Int` fields, the raw `SourceId` for `file`) and unifies
     /// the second arg against it.
-    fn builtin_occurrence_span<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_occurrence_span<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
             Ok(pair) => pair,
             Err(r) => return r,
@@ -4349,7 +4588,11 @@ impl KnowledgeBase {
     /// `occurrence_owner(occ, sym)` — WI-297. The owner is a `Symbol` (interned
     /// name), whose term form is `Term::Ref` (per `anthill.reflect.Symbol`).
     /// Fails when the occurrence has no owner (top-level / unknown context).
-    fn builtin_occurrence_owner<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_occurrence_owner<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
             Ok(pair) => pair,
             Err(r) => return r,
@@ -4367,7 +4610,11 @@ impl KnowledgeBase {
     /// `sub_occurrences(occ, list)` — WI-297. Shows the occurrence's direct
     /// child occurrences as a `List[Occurrence]`: the children keep their
     /// identity (the existing `Rc`s), only the cons-list spine is built.
-    fn builtin_sub_occurrences<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_sub_occurrences<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let (occ, pattern) = match self.occurrence_arg_and_pattern(goal, subst) {
             Ok(pair) => pair,
             Err(r) => return r,
@@ -4394,7 +4641,11 @@ impl KnowledgeBase {
     /// the op has no body (declaration-only). The body lives in the `op_body_node`
     /// side-table (not a fact field), so this builtin is how anthill code reaches
     /// it. arg0 is the operation Symbol (Ref/Ident/Fn-functor).
-    fn builtin_operation_body<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_operation_body<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let op_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             None => return BuiltinResult::Failure,
             Some(v) if self.value_is_unbound_var(&v) => return BuiltinResult::delay(),
@@ -4588,7 +4839,11 @@ impl KnowledgeBase {
         if fields.is_empty() {
             return "none".to_string();
         }
-        fields.iter().map(|s| self.local_name_of(*s).to_string()).collect::<Vec<_>>().join(", ")
+        fields
+            .iter()
+            .map(|s| self.local_name_of(*s).to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// WI-500: plan the positional→named desugar for a constructor — the loader's
@@ -4611,7 +4866,9 @@ impl KnowledgeBase {
         // carry a positional shape that IS the reflect encoding, not user
         // named-field application — mirrors the loader's exclusion.
         if node_occurrence::is_reflect_form_functor(self, functor)
-            || self.qualified_name_of(functor).starts_with("anthill.reflect.")
+            || self
+                .qualified_name_of(functor)
+                .starts_with("anthill.reflect.")
         {
             return PositionalPlan::Skip;
         }
@@ -4641,7 +4898,11 @@ impl KnowledgeBase {
     /// `?value` to the instance's binding for that param (fail if none). Delays
     /// if `?spec` or `?param_name` is unbound. Goal, param symbol AND `SortView`
     /// instance all read through [`TermView`] — no reify anywhere on the path.
-    fn builtin_resolve_sort_inst_param<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_resolve_sort_inst_param<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         if !matches!(goal.head(self), ViewHead::Functor { pos_arity, .. } if pos_arity >= 3) {
             return BuiltinResult::Failure;
         }
@@ -4673,7 +4934,9 @@ impl KnowledgeBase {
         if self.symbols.local_name(functor) != "SortView" {
             return BuiltinResult::Failure;
         }
-        let binding = inst_val.named_arg(self, param_sym).map(|item| item.to_value());
+        let binding = inst_val
+            .named_arg(self, param_sym)
+            .map(|item| item.to_value());
         match binding {
             Some(val) => self.finish_result_value(target, val),
             None => BuiltinResult::Failure,
@@ -4690,7 +4953,11 @@ impl KnowledgeBase {
         match self.eq_operands(goal, subst) {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Ready(a, b) => {
-                if self.values_equal(&a, &b) { BuiltinResult::Success } else { BuiltinResult::Failure }
+                if self.values_equal(&a, &b) {
+                    BuiltinResult::Success
+                } else {
+                    BuiltinResult::Failure
+                }
             }
             EqOperands::Absent => BuiltinResult::Failure,
         }
@@ -4798,9 +5065,7 @@ impl KnowledgeBase {
             return self.sem_eq_dispatch(target, a, b, subst, positive);
         }
         // (5) Buried override → suspend rather than mis-decide structurally.
-        if self.value_reaches_eq_override(&a, subst)
-            || self.value_reaches_eq_override(&b, subst)
-        {
+        if self.value_reaches_eq_override(&a, subst) || self.value_reaches_eq_override(&b, subst) {
             return BuiltinResult::delay();
         }
         // (6) Structural verdict.
@@ -4859,7 +5124,9 @@ impl KnowledgeBase {
             }
         }
         if saw_delay {
-            return Some(BuiltinResult::Delay { truncated: saw_truncated });
+            return Some(BuiltinResult::Delay {
+                truncated: saw_truncated,
+            });
         }
         Some(sem_verdict(true, positive))
     }
@@ -4870,7 +5137,10 @@ impl KnowledgeBase {
     /// lookup; scalars and headless values read `None` (structural).
     pub(crate) fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
         let functor = match v.head(self) {
-            ViewHead::Ref(s) | ViewHead::Functor { functor: Some(s), .. } => s,
+            ViewHead::Ref(s)
+            | ViewHead::Functor {
+                functor: Some(s), ..
+            } => s,
             _ => return None,
         };
         self.eq_dispatch_target(functor)
@@ -4950,7 +5220,11 @@ impl KnowledgeBase {
     /// passes already-ground interpreter values. The sub-proof is a closed TEST —
     /// its bindings never reach the caller's frame — and three-way, never
     /// wrong-by-truncation (see [`PredicateProof`]).
-    pub(crate) fn prove_rule_predicate(&mut self, pred: Symbol, args: Vec<Value>) -> PredicateProof {
+    pub(crate) fn prove_rule_predicate(
+        &mut self,
+        pred: Symbol,
+        args: Vec<Value>,
+    ) -> PredicateProof {
         // Generous but bounded: the relational instances consume one depth unit
         // per goal along a branch (Set: O(n²) for n elements), so the outer
         // default of 100 would truncate at ~10 elements. Truncation degrades to
@@ -4962,7 +5236,10 @@ impl KnowledgeBase {
         #[cfg(test)]
         let max_depth = self.sem_eq_sub_depth;
         let goal = self.make_goal_value(pred, args);
-        let config = ResolveConfig { max_depth, ..ResolveConfig::default() };
+        let config = ResolveConfig {
+            max_depth,
+            ..ResolveConfig::default()
+        };
         let stream = self.resolve_lazy_goals(vec![goal], &config);
         // WI-628: shared drain — `truncated` rides with the verdict so a depth-cut
         // search degrades to UNDECIDED, never a wrong Refuted. Truncation is kept
@@ -5251,7 +5528,9 @@ impl KnowledgeBase {
         fn head_symbol(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
             match v.head(kb) {
                 ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
-                ViewHead::Functor { functor: Some(s), .. } => Some(s),
+                ViewHead::Functor {
+                    functor: Some(s), ..
+                } => Some(s),
                 _ => None,
             }
         }
@@ -5346,49 +5625,48 @@ impl KnowledgeBase {
         out: Value,
     ) -> BuiltinResult {
         use super::typing::{FindDictFetch, FindDictOutcome};
-        let dict = match super::typing::fetch_dictionary(
-            self, subst, spec_sort, op_functor, arg_vals,
-        ) {
-            FindDictFetch::Fetched(dict) => dict,
-            FindDictFetch::Guard(FindDictOutcome::Fire) => {
-                unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
-            }
-            FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
-            // The carried type is not readable yet (the witness value is unbound).
-            // DELAY, and the wake condition needs no new machinery: the goal
-            // MENTIONS the witness value variables, so binding one re-fires it
-            // through ordinary rotation. This is what replaced WI-300's bespoke
-            // `FindDictOutcome::Suspend` reading with the general mechanism.
-            FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
-            FindDictFetch::Undecided { detail } => {
-                // Undecided, not failed. `out` says the clause asked to be PASSED a
-                // dictionary; answering "no solution" here would be the silent skip
-                // a delay exists to refuse, and it is also the row where a SUPPLIED
-                // `?d` is allowed to decide — which it cannot do if the goal has
-                // already failed.
-                //
-                // `detail` IS DROPPED, and that is a known gap with an owner rather
-                // than an oversight: a resolver builtin has no diagnostic channel
-                // (`BuiltinResult` is Success / Bindings / Delay / Failure), so a
-                // `require[X]` whose provider tree genuinely cannot be built delays
-                // with nothing saying why. Routing it — a flounder report on the
-                // WI-737 path is the obvious candidate — is WI-1040 residue, recorded
-                // in that ticket's feedback. Built only on this failure edge, never
-                // on the resolving path.
-                let _ = detail;
-                return BuiltinResult::delay();
-            }
-            // §4: a run-time tie is UNREACHABLE, not refused — overlap between
-            // provider heads is decided at typing/load. Reaching it means the
-            // coherence machinery let one through, so it is a defect: loud in
-            // debug/test (the repo's loud-over-silent rule, spelled the way
-            // `bridge_op_to_eval` spells the same class), and a delay in release
-            // rather than picking one of the two.
-            FindDictFetch::Defect { detail } => {
-                debug_assert!(false, "find_dictionary: {detail}");
-                return BuiltinResult::delay();
-            }
-        };
+        let dict =
+            match super::typing::fetch_dictionary(self, subst, spec_sort, op_functor, arg_vals) {
+                FindDictFetch::Fetched(dict) => dict,
+                FindDictFetch::Guard(FindDictOutcome::Fire) => {
+                    unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
+                }
+                FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
+                // The carried type is not readable yet (the witness value is unbound).
+                // DELAY, and the wake condition needs no new machinery: the goal
+                // MENTIONS the witness value variables, so binding one re-fires it
+                // through ordinary rotation. This is what replaced WI-300's bespoke
+                // `FindDictOutcome::Suspend` reading with the general mechanism.
+                FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
+                FindDictFetch::Undecided { detail } => {
+                    // Undecided, not failed. `out` says the clause asked to be PASSED a
+                    // dictionary; answering "no solution" here would be the silent skip
+                    // a delay exists to refuse, and it is also the row where a SUPPLIED
+                    // `?d` is allowed to decide — which it cannot do if the goal has
+                    // already failed.
+                    //
+                    // `detail` IS DROPPED, and that is a known gap with an owner rather
+                    // than an oversight: a resolver builtin has no diagnostic channel
+                    // (`BuiltinResult` is Success / Bindings / Delay / Failure), so a
+                    // `require[X]` whose provider tree genuinely cannot be built delays
+                    // with nothing saying why. Routing it — a flounder report on the
+                    // WI-737 path is the obvious candidate — is WI-1040 residue, recorded
+                    // in that ticket's feedback. Built only on this failure edge, never
+                    // on the resolving path.
+                    let _ = detail;
+                    return BuiltinResult::delay();
+                }
+                // §4: a run-time tie is UNREACHABLE, not refused — overlap between
+                // provider heads is decided at typing/load. Reaching it means the
+                // coherence machinery let one through, so it is a defect: loud in
+                // debug/test (the repo's loud-over-silent rule, spelled the way
+                // `bridge_op_to_eval` spells the same class), and a delay in release
+                // rather than picking one of the two.
+                FindDictFetch::Defect { detail } => {
+                    debug_assert!(false, "find_dictionary: {detail}");
+                    return BuiltinResult::delay();
+                }
+            };
         // BIND (unbound `?d`) or CHECK (bound) — one operation, because unification
         // IS both: against an unbound variable it binds, against a supplied
         // dictionary it compares structurally through the WI-1019 view.
@@ -5469,7 +5747,13 @@ impl KnowledgeBase {
     /// work a bottom-first derive pass would forfeit. The bind-enabled twin of
     /// [`views_structurally_equal`] (which only tests).
     fn unify_concrete(&mut self, a: &Value, b: &Value, work: &mut Substitution) -> UnifyOutcome {
-        let eq_or = |same: bool| if same { UnifyOutcome::Ok } else { UnifyOutcome::Fail };
+        let eq_or = |same: bool| {
+            if same {
+                UnifyOutcome::Ok
+            } else {
+                UnifyOutcome::Fail
+            }
+        };
         // Rigid (skolem) / DeBruijn vars now head as `ViewHead::Var`, but the
         // concrete-head match below has no `Var` arm — mirror
         // [`views_structurally_equal`] (WI-108): two occurrences of the SAME such
@@ -5490,8 +5774,16 @@ impl KnowledgeBase {
             (ViewHead::Ident(sa), ViewHead::Ident(sb)) => eq_or(sa == sb),
             (ViewHead::Bottom, ViewHead::Bottom) => UnifyOutcome::Ok,
             (
-                ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
-                ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+                ViewHead::Functor {
+                    functor: fa,
+                    pos_arity: pa,
+                    named_arity: na,
+                },
+                ViewHead::Functor {
+                    functor: fb,
+                    pos_arity: pb,
+                    named_arity: nb,
+                },
             ) => {
                 if fa != fb || pa != pb || na != nb {
                     return UnifyOutcome::Fail; // step 4: fail-fast, no child reduction
@@ -5600,8 +5892,16 @@ impl KnowledgeBase {
             (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
             (ViewHead::Bottom, ViewHead::Bottom) => true,
             (
-                ViewHead::Functor { functor: ffa, pos_arity: pa, named_arity: na },
-                ViewHead::Functor { functor: ffb, pos_arity: pb, named_arity: nb },
+                ViewHead::Functor {
+                    functor: ffa,
+                    pos_arity: pa,
+                    named_arity: na,
+                },
+                ViewHead::Functor {
+                    functor: ffb,
+                    pos_arity: pb,
+                    named_arity: nb,
+                },
             ) => {
                 if ffa != ffb || pa != pb || na != nb {
                     return false;
@@ -5645,7 +5945,9 @@ impl KnowledgeBase {
     fn chase_value(&self, v: Value, work: &Substitution) -> Value {
         let mut cur = v;
         loop {
-            let Some(vid) = self.unify_flex_var(&cur) else { return cur };
+            let Some(vid) = self.unify_flex_var(&cur) else {
+                return cur;
+            };
             match work.resolve_as_value(vid) {
                 Some(bound) => {
                     let bound = bound.clone();
@@ -5730,8 +6032,10 @@ impl KnowledgeBase {
         // WI-483/WI-738: an operand that is an unevaluated call (complex body, or
         // a builtin nested in operand position — `lt(sub(?x,?y), 1)`) is
         // un-ground → delay.
-        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
-            || self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b)
+        if self.value_is_unbound_var(&a)
+            || self.value_is_unbound_var(&b)
+            || self.operand_is_unevaluated_call(&a)
+            || self.operand_is_unevaluated_call(&b)
         {
             return BuiltinResult::delay();
         }
@@ -5757,7 +6061,11 @@ impl KnowledgeBase {
             // unbound handled above; cross-type / non-numeric → fail
             _ => return BuiltinResult::Failure,
         };
-        if pred(ord) { BuiltinResult::Success } else { BuiltinResult::Failure }
+        if pred(ord) {
+            BuiltinResult::Success
+        } else {
+            BuiltinResult::Failure
+        }
     }
 
     /// Extract a comparable number from a σ-walked `Value` — an unboxed
@@ -5819,7 +6127,11 @@ impl KnowledgeBase {
     /// [`ResultTarget`] — the view-based front half of the old
     /// `try_bind_result`. Consumes the `ViewItem` so no borrow is held across
     /// the caller's subsequent `&mut self` value computation.
-    fn resolve_result_target(&self, result: Option<ViewItem>, subst: &Substitution) -> ResultTarget {
+    fn resolve_result_target(
+        &self,
+        result: Option<ViewItem>,
+        subst: &Substitution,
+    ) -> ResultTarget {
         match self.walk_arg(result, subst) {
             None => ResultTarget::Compare(None),
             Some(v) => match self.value_global_var(&v) {
@@ -5906,12 +6218,15 @@ impl KnowledgeBase {
         // WI-483/WI-738: an operand that is an unevaluated call is un-ground →
         // delay. Includes a NESTED arithmetic builtin (`add(sub(?x,?y), 1, ?z)`),
         // so nested arithmetic composes: the inner call delays until it grounds.
-        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b)
-            || self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b)
+        if self.value_is_unbound_var(&a)
+            || self.value_is_unbound_var(&b)
+            || self.operand_is_unevaluated_call(&a)
+            || self.operand_is_unevaluated_call(&b)
         {
             return BuiltinResult::delay();
         }
-        let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
+        let target =
+            (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
         // WI-685: `value_num` reads a numeric literal carrier-neutrally through
         // the view (Term or Node), so no collapse-to-Term step is needed.
@@ -5964,7 +6279,11 @@ impl KnowledgeBase {
         }
         let r = a % b;
         Some(if r.sign() == num_bigint::Sign::Minus {
-            if b.sign() == num_bigint::Sign::Minus { r - b } else { r + b }
+            if b.sign() == num_bigint::Sign::Minus {
+                r - b
+            } else {
+                r + b
+            }
         } else {
             r
         })
@@ -5983,7 +6302,9 @@ impl KnowledgeBase {
         }
         let target = self.resolve_result_target(goal.pos_arg(self, 1), subst);
         let value = match self.value_num(&arg) {
-            Some(Num::Int(n)) => self.alloc(Term::Const(Literal::BigInt(num_bigint::BigInt::from(n)))),
+            Some(Num::Int(n)) => {
+                self.alloc(Term::Const(Literal::BigInt(num_bigint::BigInt::from(n))))
+            }
             // Already a BigInt — pass the term through, or promote a scalar.
             Some(Num::Big(n)) => match &arg {
                 Value::Term { id: t, .. } => *t,
@@ -6087,7 +6408,9 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
 
-        let kind_term = self.alloc(Term::Const(super::term::Literal::String(kind_str.to_owned())));
+        let kind_term = self.alloc(Term::Const(super::term::Literal::String(
+            kind_str.to_owned(),
+        )));
         self.finish_result(target, kind_term)
     }
 
@@ -6103,7 +6426,11 @@ impl KnowledgeBase {
     ///
     /// The 3-arg form binds/compares a `?result`; the 2-arg form (a desugared
     /// bare `?x.y`) is a projection test — success iff the field exists.
-    fn builtin_field_access<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_field_access<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } if pos_arity >= 2 => pos_arity,
             _ => return BuiltinResult::Failure,
@@ -6122,7 +6449,8 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&obj) || self.value_is_unbound_var(&field) {
             return BuiltinResult::delay();
         }
-        let target = (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
+        let target =
+            (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
         let Some(field_name) = self.field_name_from_value(&field) else {
             return BuiltinResult::Failure;
@@ -6153,9 +6481,9 @@ impl KnowledgeBase {
         match v.head(self) {
             ViewHead::Const(Literal::String(s)) => Some(s),
             ViewHead::Ref(s) | ViewHead::Ident(s) => Some(self.symbols.local_name(s).to_owned()),
-            ViewHead::Functor { functor: Some(s), .. } => {
-                Some(self.symbols.local_name(s).to_owned())
-            }
+            ViewHead::Functor {
+                functor: Some(s), ..
+            } => Some(self.symbols.local_name(s).to_owned()),
             _ => None,
         }
     }
@@ -6224,11 +6552,12 @@ impl KnowledgeBase {
     pub fn value_head_symbol(&self, v: &Value) -> Option<Symbol> {
         match v.head(self) {
             ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
-            ViewHead::Functor { functor: Some(s), .. } => Some(s),
+            ViewHead::Functor {
+                functor: Some(s), ..
+            } => Some(s),
             _ => None,
         }
     }
-
 
     /// WI-482: the field-projection core shared by the `field_access` builtin (a
     /// dot goal) and [`Self::reduce_dot_value`] (a dot in operand position).
@@ -6448,10 +6777,10 @@ impl KnowledgeBase {
         functor: Symbol,
         subst: &Substitution,
     ) -> UnstampedDispatch {
-        use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
         use super::typing::{
             carrier_override_suppliers, classify_pin_or_apply_within, defaulted_spec_op_parent,
         };
+        use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
         if defaulted_spec_op_parent(self, functor).is_none() {
             return UnstampedDispatch::NotApplicable;
         }
@@ -6542,8 +6871,13 @@ impl KnowledgeBase {
         // outcome: the enclosing goal delays and re-fires once the binding lands.
         // Never a fall-through to the spec's own default — that is the wrong answer
         // this weave exists to stop.
-        if let Some(Expr::ApplyWithin { functor, args, named_args, requirements, type_args }) =
-            occ.as_expr()
+        if let Some(Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        }) = occ.as_expr()
         {
             let target = self.dictionary_dispatch_target(*functor, requirements, subst);
             let Some(target) = target else { return v };
@@ -6632,7 +6966,8 @@ impl KnowledgeBase {
             d => d,
         };
         let op = match dispatch {
-            node_occurrence::ApplyDispatch::Pin(s) | node_occurrence::ApplyDispatch::NeedsDict(s) => s,
+            node_occurrence::ApplyDispatch::Pin(s)
+            | node_occurrence::ApplyDispatch::NeedsDict(s) => s,
             node_occurrence::ApplyDispatch::Unclassified => functor,
         };
         let needs_dict = matches!(dispatch, node_occurrence::ApplyDispatch::NeedsDict(_));
@@ -6711,7 +7046,9 @@ impl KnowledgeBase {
         for (i, &p) in params.iter().enumerate() {
             let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p));
             match self.walk_arg(item, subst) {
-                Some(a) => { param_args.insert(p, a); }
+                Some(a) => {
+                    param_args.insert(p, a);
+                }
                 None => return v,
             }
         }
@@ -6744,7 +7081,9 @@ impl KnowledgeBase {
         // internal-error assert. Bridging the callee HERE resolves its `requires` at
         // the concrete argument types instead, which is the one entry that can.
         if needs_dict {
-            return self.bridge_op_to_eval(op, &params, &param_args, subst).unwrap_or(v);
+            return self
+                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .unwrap_or(v);
         }
         // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
         // bridge below IS the whole reduction. It runs under the same gates the
@@ -6756,7 +7095,9 @@ impl KnowledgeBase {
         // hook declines to `unify` on it instead of binding the result variable to
         // the call term and calling that a definite answer.
         let Some(body) = body else {
-            return self.bridge_op_to_eval(op, &params, &param_args, subst).unwrap_or(v);
+            return self
+                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .unwrap_or(v);
         };
         // Build the fold substitution: every op-body var named after a param maps
         // to its call arg. WI-487 mints a FRESH VarId per param occurrence (all
@@ -6814,16 +7155,25 @@ impl KnowledgeBase {
         requirements: &[Rc<NodeOccurrence>],
         subst: &Substitution,
     ) -> Option<Symbol> {
-        let [dict_occ] = requirements else { return None };
+        let [dict_occ] = requirements else {
+            return None;
+        };
         let dict = self.walk_arg(Some(ViewItem::Node(Rc::clone(dict_occ))), subst)?;
         // Read through the ORDINARY view — the same `impl` accessor WI-1019 answers
         // for an eval handle, so this reader does not care which side built the
         // dictionary. That is the point of one representation: there is no carrier
         // test here to get wrong.
         let (_ctor, impl_key) = super::term_view::dictionary_view_syms(self)?;
-        let impl_sym = match self.walk_arg(dict.named_arg(self, impl_key), subst)?.head(self) {
+        let impl_sym = match self
+            .walk_arg(dict.named_arg(self, impl_key), subst)?
+            .head(self)
+        {
             ViewHead::Ref(s) | ViewHead::Ident(s) => s,
-            ViewHead::Functor { functor: Some(s), pos_arity: 0, .. } => s,
+            ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                ..
+            } => s,
             _ => return None,
         };
         super::typing::resolve_op_target_checked(self, impl_sym, spec_op).ok()
@@ -6906,8 +7256,10 @@ impl KnowledgeBase {
         // (`Value::Term(box(…))` / `Value::Node` → `Value::Entity`), else a body
         // that reads a field errors with "receiver is not an entity".
         let outcome = self.run_in_bridge_interp(|interp| {
-            let native: Vec<Value> =
-                args.into_iter().map(|a| interp.materialize_value(a)).collect();
+            let native: Vec<Value> = args
+                .into_iter()
+                .map(|a| interp.materialize_value(a))
+                .collect();
             interp.call_op_bridged(op, &native)
         })?;
         match outcome {
@@ -6966,7 +7318,10 @@ impl KnowledgeBase {
         }
         BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() + 1));
         let kb = std::mem::take(self);
-        let config = EvalConfig { bridge_mode: true, ..EvalConfig::default() };
+        let config = EvalConfig {
+            bridge_mode: true,
+            ..EvalConfig::default()
+        };
         let mut interp = Interpreter::with_config(kb, config);
         let outcome = match crate::eval::builtins::register_standard_builtins(&mut interp) {
             Ok(()) => f(&mut interp),
@@ -7219,7 +7574,9 @@ impl KnowledgeBase {
     /// assumption that the first operand shields it.
     fn reduction_left_body_less_call(&self, v: &Value) -> bool {
         let Value::Node(occ) = v else { return false };
-        let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return false };
+        let Some(Expr::Apply { functor, .. }) = occ.as_expr() else {
+            return false;
+        };
         self.builtins.get(functor).is_none() && self.body_less_dispatchable(*functor)
     }
 
@@ -7562,12 +7919,18 @@ impl KnowledgeBase {
             return None;
         };
         let (op, pos_args, named_args) = match occ.as_expr() {
-            Some(Expr::Apply { functor, pos_args, named_args, .. }) => {
-                (*functor, pos_args.clone(), named_args.clone())
-            }
+            Some(Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            }) => (*functor, pos_args.clone(), named_args.clone()),
             _ => return None,
         };
-        if self.rules_by_functor_iter(op).any(|rid| !self.is_equation(rid)) {
+        if self
+            .rules_by_functor_iter(op)
+            .any(|rid| !self.is_equation(rid))
+        {
             return None;
         }
         let (scrutinee_occ, arms) =
@@ -7624,7 +7987,10 @@ impl KnowledgeBase {
             // it is sound but may be incomplete — eq-variant solutions need element
             // narrowing and stay WI-519 residual, per design §5). Element `eq`
             // semantics live in the body's own `eq` calls (hoisted below as `SemEq`).
-            let unify_g = mk_unify(vec![Rc::clone(&scrutinee_occ), pattern_occ], scrutinee_occ.span);
+            let unify_g = mk_unify(
+                vec![Rc::clone(&scrutinee_occ), pattern_occ],
+                scrutinee_occ.span,
+            );
             let result_g = mk_unify(vec![result_occ, Rc::clone(&other_occ)], arm.body.span);
             // Order: unify scrutinee shape → unify(result, OTHER) (binds the
             // hoist vars against the finite OTHER, bounding the recursion) → the
@@ -7669,18 +8035,30 @@ impl KnowledgeBase {
                 // pattern's occurrence leaf, so the pattern and the arm body share
                 // one binder identity.
                 rename.push((name, v));
-                Some(NodeOccurrence::new_expr(Expr::Var(Var::Global(v)), span, None))
+                Some(NodeOccurrence::new_expr(
+                    Expr::Var(Var::Global(v)),
+                    span,
+                    None,
+                ))
             }
             Pattern::Wildcard => {
                 let anon = self.intern("_");
                 let v = self.fresh_var(anon);
-                Some(NodeOccurrence::new_expr(Expr::Var(Var::Global(v)), span, None))
+                Some(NodeOccurrence::new_expr(
+                    Expr::Var(Var::Global(v)),
+                    span,
+                    None,
+                ))
             }
             Pattern::Literal { value } => {
                 let lit = value.clone();
                 Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
-            Pattern::Constructor { name, pos_args, named_args } => {
+            Pattern::Constructor {
+                name,
+                pos_args,
+                named_args,
+            } => {
                 let name = *name;
                 let pos_p = pos_args.clone();
                 let named_p = named_args.clone();
@@ -7756,14 +8134,18 @@ impl KnowledgeBase {
                     // `fresh_pattern_occ`); emit its occurrence leaf so the same
                     // `VarId` is shared between the pattern occurrence and this
                     // body — the var identity the unfold relies on.
-                    Some((_, vid)) => NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None),
+                    Some((_, vid)) => {
+                        NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None)
+                    }
                     None => NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, None),
                 })
             }
             Expr::Ref(s) | Expr::Ident(s) => {
                 let s = *s;
                 Some(match rename.iter().rev().find(|(sy, _)| *sy == s) {
-                    Some((_, vid)) => NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None),
+                    Some((_, vid)) => {
+                        NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None)
+                    }
                     None => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
                 })
             }
@@ -7771,7 +8153,12 @@ impl KnowledgeBase {
                 let lit = lit.clone();
                 Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
-            Expr::Constructor { name, pos_args, named_args, from_projection } => {
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                from_projection,
+            } => {
                 let name = *name;
                 let from_projection = *from_projection;
                 let pos_c = pos_args.clone();
@@ -7813,7 +8200,12 @@ impl KnowledgeBase {
                     ))
                 }
             }
-            Expr::Apply { functor, pos_args, named_args, .. } => {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let functor = *functor;
                 let pos_c = pos_args.clone();
                 let named_c = named_args.clone();
@@ -7831,7 +8223,12 @@ impl KnowledgeBase {
                 // fresh var + a `Value::Node` `eq` goal that re-triggers the
                 // unfold on its now-smaller arguments.
                 let call = NodeOccurrence::new_expr(
-                    Expr::Apply { functor, pos_args: pos, named_args: named, type_args: Vec::new() },
+                    Expr::Apply {
+                        functor,
+                        pos_args: pos,
+                        named_args: named,
+                        type_args: Vec::new(),
+                    },
                     span,
                     None,
                 );
@@ -7859,7 +8256,9 @@ impl KnowledgeBase {
             Expr::VarRef { name } => {
                 let name = *name;
                 Some(match rename.iter().rev().find(|(sy, _)| *sy == name) {
-                    Some((_, vid)) => NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None),
+                    Some((_, vid)) => {
+                        NodeOccurrence::new_expr(Expr::Var(Var::Global(*vid)), span, None)
+                    }
                     None => NodeOccurrence::new_expr(Expr::Ref(name), span, None),
                 })
             }
@@ -7877,7 +8276,11 @@ impl KnowledgeBase {
                 }
             }
             Term::Var(Var::DeBruijn(_)) => {}
-            Term::Fn { pos_args, named_args, .. } => {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
                 for &arg in pos_args.iter() {
@@ -7936,11 +8339,15 @@ impl KnowledgeBase {
         subst: &Substitution,
     ) -> bool {
         for node in nodes {
-            let Some(tag) = self.get_builtin_view(node) else { continue };
+            let Some(tag) = self.get_builtin_view(node) else {
+                continue;
+            };
             if tag == BuiltinTag::Not || tag == BuiltinTag::PushChoice || tag == BuiltinTag::Unify {
                 continue;
             }
-            let Some(arg) = node_first_pos_arg(node) else { continue };
+            let Some(arg) = node_first_pos_arg(node) else {
+                continue;
+            };
 
             // TYPE-position delay (WI-322): a caller var inside the first arg's
             // own `type_args` (`f[T = ?caller_var](…)`)
@@ -8027,7 +8434,10 @@ impl KnowledgeBase {
     /// skipped wholesale above (NAF delays via rotation; `PushChoice` fires
     /// immediately; `<=>`'s bare-var operand is the var the goal exists to BIND).
     fn builtin_is_reorderable(tag: BuiltinTag) -> bool {
-        !matches!(tag, BuiltinTag::NonVar | BuiltinTag::Ground | BuiltinTag::HoApply)
+        !matches!(
+            tag,
+            BuiltinTag::NonVar | BuiltinTag::Ground | BuiltinTag::HoApply
+        )
     }
 
     /// WI-670: would this opened rule body be REFUTED by one of its own
@@ -8091,7 +8501,11 @@ impl KnowledgeBase {
             // Need a concrete functor to look up; a var-/non-functor-headed goal
             // is not refutable here.
             let (functor, pos_arity) = match walked.head(self) {
-                ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
+                ViewHead::Functor {
+                    functor: Some(f),
+                    pos_arity,
+                    ..
+                } => (f, pos_arity),
                 _ => continue,
             };
             // Skip every non-builtin functor that `step_init` resolves off the
@@ -8325,7 +8739,12 @@ impl KnowledgeBase {
             TypeNode::EffectsRows { effects_expr } => {
                 self.collect_type_child_unbound_vars(effects_expr, subst, out)
             }
-            TypeNode::Arrow { param, result, effects, arity } => {
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
                 self.collect_type_child_unbound_vars(param, subst, out);
                 self.collect_type_child_unbound_vars(result, subst, out);
                 self.collect_type_child_unbound_vars(effects, subst, out);
@@ -8389,7 +8808,6 @@ impl KnowledgeBase {
             TypeChild::Node(n) => self.collect_unbound_vars_node(n, subst, out),
         }
     }
-
 }
 
 /// First positional child of a builtin occurrence goal (`eq(a, b)` → `a`).
@@ -8453,9 +8871,9 @@ pub(crate) fn is_scoping_marker(name: &str, pos_arity: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kb::ClauseKind;
     use crate::intern::Symbol;
     use crate::kb::term::{Literal, Term};
+    use crate::kb::ClauseKind;
     use smallvec::SmallVec;
 
     /// A KB with the kernel vocabulary registered — the configuration in which
@@ -8686,7 +9104,13 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         // answer_subst is flat — resolve directly, no walk needed
-        assert_eq!(results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()), Some(alice));
+        assert_eq!(
+            results[0]
+                .subst
+                .resolve_as_value(vx)
+                .map(|v| v.expect_term()),
+            Some(alice)
+        );
     }
 
     /// WI-512: a non-linear goal (a query var repeated within one atom) must
@@ -8729,9 +9153,16 @@ mod tests {
 
         let config = ResolveConfig::default();
         let results = kb.resolve(&[goal], &config);
-        assert_eq!(results.len(), 1, "rel(?x,?x) must match only the self-loop rel(a,a)");
         assert_eq!(
-            results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()),
+            results.len(),
+            1,
+            "rel(?x,?x) must match only the self-loop rel(a,a)"
+        );
+        assert_eq!(
+            results[0]
+                .subst
+                .resolve_as_value(vx)
+                .map(|v| v.expect_term()),
             Some(a),
         );
     }
@@ -8899,11 +9330,15 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 20, ..Default::default() };
+        let config = ResolveConfig {
+            max_depth: 20,
+            ..Default::default()
+        };
         let results = kb.resolve(&[goal], &config);
 
         // Should find: ancestor(alice, bob) and ancestor(alice, charlie)
-        let bound: Vec<TermId> = results.iter()
+        let bound: Vec<TermId> = results
+            .iter()
             .map(|sol| kb.reify(var_w, &sol.subst).expect_term())
             .collect();
         assert_eq!(bound.len(), 2);
@@ -8976,7 +9411,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_solutions: 2, ..Default::default() };
+        let config = ResolveConfig {
+            max_solutions: 2,
+            ..Default::default()
+        };
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 2);
     }
@@ -9011,7 +9449,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 5, ..Default::default() };
+        let config = ResolveConfig {
+            max_depth: 5,
+            ..Default::default()
+        };
         let results = kb.resolve(&[goal], &config);
         assert!(results.is_empty());
     }
@@ -9062,7 +9503,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 8, ..Default::default() };
+        let config = ResolveConfig {
+            max_depth: 8,
+            ..Default::default()
+        };
         let results = kb.resolve(&[not_loop_1], &config);
         // A truncated inner search is UNDECIDED: `not(loop(1))` must NOT yield a
         // DEFINITE (empty-residual) solution. Pre-fix it did (the bug); post-fix
@@ -9078,7 +9522,11 @@ mod tests {
         // solution carrying the single undischarged `not(loop(1))` as residual —
         // not the verdict dropped entirely (0 solutions), which the negative
         // assertion above would pass vacuously.
-        assert_eq!(results.len(), 1, "expected exactly one (residual) solution for not(loop(1))");
+        assert_eq!(
+            results.len(),
+            1,
+            "expected exactly one (residual) solution for not(loop(1))"
+        );
         assert_eq!(
             results[0].residual.len(),
             1,
@@ -9164,8 +9612,13 @@ mod tests {
         // definite_only: true is the guard/quantifier discharge mode — the frame is
         // skipped WITHOUT a residual, so ONLY the surfaced `truncated` flag carries
         // the undecidedness.
-        let config = ResolveConfig { max_depth: 8, definite_only: true, ..Default::default() };
-        let (sols, truncated) = kb.resolve_goals_with_truncation(vec![Value::term(not_loop_1)], &config);
+        let config = ResolveConfig {
+            max_depth: 8,
+            definite_only: true,
+            ..Default::default()
+        };
+        let (sols, truncated) =
+            kb.resolve_goals_with_truncation(vec![Value::term(not_loop_1)], &config);
         assert!(
             truncated,
             "a truncated inner not(loop(1)) must set the OUTER stream's truncated flag \
@@ -9182,7 +9635,8 @@ mod tests {
         // outer flag stays clear.
         let g_sym = kb.intern("g");
         let not_g_1 = mk_not(&mut kb, g_sym);
-        let (sols2, truncated2) = kb.resolve_goals_with_truncation(vec![Value::term(not_g_1)], &config);
+        let (sols2, truncated2) =
+            kb.resolve_goals_with_truncation(vec![Value::term(not_g_1)], &config);
         assert!(
             !truncated2,
             "not(g(1)) completes (g undefined) — the outer truncated flag must stay clear"
@@ -9257,7 +9711,10 @@ mod tests {
         // definite_only is the guard/quantifier discharge mode — the frame is skipped
         // WITHOUT a residual, so ONLY the surfaced `truncated` flag carries the
         // undecidedness. This is the exact path `eval_negation_guard` &co. drive.
-        let config = ResolveConfig { definite_only: true, ..Default::default() };
+        let config = ResolveConfig {
+            definite_only: true,
+            ..Default::default()
+        };
         let (sols, truncated) =
             kb.resolve_goals_with_truncation(vec![Value::term(eq_goal)], &config);
         assert!(
@@ -9314,7 +9771,11 @@ mod tests {
             truncated_d,
             "truncation must taint the outer flag in default delay mode too, not only definite_only"
         );
-        assert_eq!(sols_d.len(), 1, "the truncating eq residualizes to exactly one solution");
+        assert_eq!(
+            sols_d.len(),
+            1,
+            "the truncating eq residualizes to exactly one solution"
+        );
         assert!(
             !sols_d[0].residual.is_empty(),
             "the residualized solution carries the undischarged eq goal, not a definite verdict"
@@ -9681,7 +10142,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { simplify: true, ..Default::default() };
+        let config = ResolveConfig {
+            simplify: true,
+            ..Default::default()
+        };
         let results = kb.resolve(&[f_42], &config);
         assert_eq!(results.len(), 1);
     }
@@ -9747,7 +10211,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { simplify: true, ..Default::default() };
+        let config = ResolveConfig {
+            simplify: true,
+            ..Default::default()
+        };
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1, "rewritten found(?q) matches found(7)");
         assert_eq!(
@@ -9811,7 +10278,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { simplify: true, ..Default::default() };
+        let config = ResolveConfig {
+            simplify: true,
+            ..Default::default()
+        };
         let results = kb.resolve(&[goal], &config);
         assert_eq!(
             results.len(),
@@ -9895,7 +10365,11 @@ mod tests {
         });
 
         let (result, changes) = kb.apply_eq_rules(&Value::term(pick_57), 100, &Substitution::new());
-        assert_eq!(result.expect_term(), five, "var-RHS rule must instantiate to the matched first arg");
+        assert_eq!(
+            result.expect_term(),
+            five,
+            "var-RHS rule must instantiate to the matched first arg"
+        );
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].rewritten.expect_term(), five);
     }
@@ -9955,7 +10429,11 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let (result, changes) = kb.apply_eq_rules(&Value::term(redex), 100, &Substitution::new());
-        assert_eq!(result.expect_term(), redex, "half-ground nonlinear match must not rewrite (would drop ?x = 42)");
+        assert_eq!(
+            result.expect_term(),
+            redex,
+            "half-ground nonlinear match must not rewrite (would drop ?x = 42)"
+        );
         assert!(changes.is_empty());
 
         // Doubly-ground redex: sub(f(42), f(42)) → 0.
@@ -9964,8 +10442,13 @@ mod tests {
             pos_args: SmallVec::from_slice(&[f_42, f_42]),
             named_args: SmallVec::new(),
         });
-        let (result, changes) = kb.apply_eq_rules(&Value::term(redex_ground), 100, &Substitution::new());
-        assert_eq!(result.expect_term(), zero, "ground nonlinear match still fires");
+        let (result, changes) =
+            kb.apply_eq_rules(&Value::term(redex_ground), 100, &Substitution::new());
+        assert_eq!(
+            result.expect_term(),
+            zero,
+            "ground nonlinear match still fires"
+        );
         assert_eq!(changes.len(), 1);
     }
 
@@ -10014,9 +10497,17 @@ mod tests {
         });
 
         let (result, changes) = kb.apply_eq_rules(&Value::term(pick_q7), 100, &Substitution::new());
-        assert_eq!(result.expect_term(), var_q, "a linear query-var link threads to the caller's ?q");
+        assert_eq!(
+            result.expect_term(),
+            var_q,
+            "a linear query-var link threads to the caller's ?q"
+        );
         assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].rewritten.expect_term(), var_q, "record keeps ?q, no DeBruijn leak");
+        assert_eq!(
+            changes[0].rewritten.expect_term(),
+            var_q,
+            "record keeps ?q, no DeBruijn leak"
+        );
 
         // Subterm case: g(pick(?q, 7)) rewrites innermost to g(?q), so the
         // parent keeps ?q — resolution binds it through the rewrite.
@@ -10032,7 +10523,11 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let (result, changes) = kb.apply_eq_rules(&Value::term(g_pick), 100, &Substitution::new());
-        assert_eq!(result.expect_term(), g_q, "innermost rewrite of a subterm preserves ?q in the parent");
+        assert_eq!(
+            result.expect_term(),
+            g_q,
+            "innermost rewrite of a subterm preserves ?q in the parent"
+        );
         assert_eq!(changes.len(), 1);
     }
 
@@ -10084,7 +10579,11 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let (result, changes) = kb.apply_eq_rules(&Value::term(redex), 100, &Substitution::new());
-        assert_eq!(result.expect_term(), redex, "nonlinear query-var match must not rewrite (drops ?q = f(42))");
+        assert_eq!(
+            result.expect_term(),
+            redex,
+            "nonlinear query-var match must not rewrite (drops ?q = f(42))"
+        );
         assert!(changes.is_empty());
     }
 
@@ -10140,13 +10639,19 @@ mod tests {
         }
 
         let (result, changes) = kb.apply_eq_rules(&Value::term(node), 100, &Substitution::new());
-        assert_eq!(changes.len(), 1, "exactly the innermost add(7, 0) should fire");
+        assert_eq!(
+            changes.len(),
+            1,
+            "exactly the innermost add(7, 0) should fire"
+        );
 
         // Walk down the wrap chain and confirm the innermost add(7, 0) → 7.
         let mut cur = result.expect_term();
         for _ in 0..DEPTH {
             cur = match kb.get_term(cur) {
-                Term::Fn { functor, pos_args, .. } if *functor == wrap => pos_args[0],
+                Term::Fn {
+                    functor, pos_args, ..
+                } if *functor == wrap => pos_args[0],
                 other => panic!("expected wrap(...), got {other:?}"),
             };
         }
@@ -10234,7 +10739,11 @@ mod tests {
 
         // No directional rule yet: the gate computes (and caches) `false`, so
         // `simplify` returns the redex unchanged.
-        assert_eq!(kb.simplify(redex), redex, "empty KB: add(7, 0) is left as-is");
+        assert_eq!(
+            kb.simplify(redex),
+            redex,
+            "empty KB: add(7, 0) is left as-is"
+        );
 
         // Assert `[simp] eq(add(?x, 0), ?x)` — this must invalidate the cached
         // gate (via `push_value_head_entry`).
@@ -10396,14 +10905,23 @@ mod tests {
         );
         for _ in 0..DEPTH {
             node = NodeOccurrence::new_expr(
-                Expr::Apply { functor: wrap, pos_args: vec![node], named_args: vec![], type_args: vec![] },
+                Expr::Apply {
+                    functor: wrap,
+                    pos_args: vec![node],
+                    named_args: vec![],
+                    type_args: vec![],
+                },
                 span,
                 None,
             );
         }
 
         let (result, changes) = kb.apply_eq_rules(&Value::Node(node), 100, &Substitution::new());
-        assert_eq!(changes.len(), 1, "exactly the innermost add(7, 0) should fire");
+        assert_eq!(
+            changes.len(),
+            1,
+            "exactly the innermost add(7, 0) should fire"
+        );
 
         // Walk down the wrap chain and confirm the innermost add(7, 0) → 7.
         let mut cur = match result {
@@ -10412,9 +10930,9 @@ mod tests {
         };
         for _ in 0..DEPTH {
             cur = match cur.as_expr() {
-                Some(Expr::Apply { functor, pos_args, .. }) if *functor == wrap => {
-                    std::rc::Rc::clone(&pos_args[0])
-                }
+                Some(Expr::Apply {
+                    functor, pos_args, ..
+                }) if *functor == wrap => std::rc::Rc::clone(&pos_args[0]),
                 other => panic!("expected wrap(...), got {other:?}"),
             };
         }
@@ -10423,7 +10941,10 @@ mod tests {
             "innermost add(7, 0) should have rewritten to 7, got {:?}",
             cur.as_expr()
         );
-        assert!(std::rc::Rc::ptr_eq(&cur, &seven), "innermost redex should reuse the matched `7`");
+        assert!(
+            std::rc::Rc::ptr_eq(&cur, &seven),
+            "innermost redex should reuse the matched `7`"
+        );
     }
 
     #[test]
@@ -10456,16 +10977,27 @@ mod tests {
         let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
         let one_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let goal = NodeOccurrence::new_expr(
-            Expr::Apply { functor: wrap, pos_args: vec![one_occ], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: wrap,
+                pos_args: vec![one_occ],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span,
             None,
         );
 
         let (result, changes) = kb.apply_eq_rules(&Value::Node(goal), 100, &Substitution::new());
-        assert_eq!(changes.len(), 1, "the bare-Const leaf `1` should fire to `2`");
+        assert_eq!(
+            changes.len(),
+            1,
+            "the bare-Const leaf `1` should fire to `2`"
+        );
         match result {
             Value::Node(n) => match n.as_expr() {
-                Some(Expr::Apply { functor, pos_args, .. }) => {
+                Some(Expr::Apply {
+                    functor, pos_args, ..
+                }) => {
                     assert_eq!(*functor, wrap);
                     assert!(
                         matches!(pos_args[0].as_expr(), Some(Expr::Const(Literal::Int(2)))),
@@ -10666,7 +11198,10 @@ mod tests {
         let config = ResolveConfig::default();
         let results = kb.resolve(&[goal_f, goal_ground], &config);
         assert_eq!(results.len(), 1);
-        assert!(!results[0].residual.is_empty(), "ground should residualize when argument contains unbound var");
+        assert!(
+            !results[0].residual.is_empty(),
+            "ground should residualize when argument contains unbound var"
+        );
     }
 
     #[test]
@@ -10698,7 +11233,13 @@ mod tests {
         let results = kb.resolve(&[goal], &config);
         assert_eq!(results.len(), 1);
         assert!(results[0].residual.is_empty());
-        assert_eq!(results[0].subst.resolve_as_value(vx).map(|v| v.expect_term()), Some(val));
+        assert_eq!(
+            results[0]
+                .subst
+                .resolve_as_value(vx)
+                .map(|v| v.expect_term()),
+            Some(val)
+        );
     }
 
     #[test]
@@ -10732,7 +11273,11 @@ mod tests {
         // not succeed (which would happen if the ground fact were matched)
         let results = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(results.len(), 1, "should residualize");
-        assert_eq!(results[0].residual.len(), 1, "nonvar(?x) should be in residual");
+        assert_eq!(
+            results[0].residual.len(),
+            1,
+            "nonvar(?x) should be in residual"
+        );
     }
 
     // ── Delay propagation through rules ────────────────────────
@@ -10792,7 +11337,13 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(check_head, vec![nonvar_goal, is_thing_goal], sort, domain, None);
+        kb.assert_rule(
+            check_head,
+            vec![nonvar_goal, is_thing_goal],
+            sort,
+            domain,
+            None,
+        );
 
         // Query: check(?a), bind_a(?a)
         let a_sym = kb.intern("a");
@@ -10857,7 +11408,13 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(check_head, vec![nonvar_goal, is_thing_goal], sort, domain, None);
+        kb.assert_rule(
+            check_head,
+            vec![nonvar_goal, is_thing_goal],
+            sort,
+            domain,
+            None,
+        );
 
         // Query: check(?a) alone — ?a never bound
         let a_sym = kb.intern("a");
@@ -10873,7 +11430,10 @@ mod tests {
         let config = ResolveConfig::default();
         let results = kb.resolve(&[q_check], &config);
         assert_eq!(results.len(), 1);
-        assert!(!results[0].residual.is_empty(), "check(?a) should residualize when ?a is unbound");
+        assert!(
+            !results[0].residual.is_empty(),
+            "check(?a) should residualize when ?a is unbound"
+        );
     }
 
     #[test]
@@ -10935,7 +11495,13 @@ mod tests {
             pos_args: SmallVec::from_slice(&[var_y, var_x]),
             named_args: SmallVec::new(),
         });
-        kb.assert_rule(foo_head, vec![bar_body, nonvar_body, baz_body], sort, domain, None);
+        kb.assert_rule(
+            foo_head,
+            vec![bar_body, nonvar_body, baz_body],
+            sort,
+            domain,
+            None,
+        );
 
         // Query: foo(?a) — ?y is internal, bar binds it, nonvar reorders within body
         let a_sym = kb.intern("a");
@@ -10993,10 +11559,14 @@ mod tests {
         let stream = kb.resolve_lazy(&[goal], &config);
         assert!(!stream.is_empty());
 
-        let (sol1, stream) = stream.split_first(&mut kb).expect("should have first solution");
+        let (sol1, stream) = stream
+            .split_first(&mut kb)
+            .expect("should have first solution");
         assert!(sol1.residual.is_empty());
 
-        let (sol2, stream) = stream.split_first(&mut kb).expect("should have second solution");
+        let (sol2, stream) = stream
+            .split_first(&mut kb)
+            .expect("should have second solution");
         assert!(sol2.residual.is_empty());
 
         // Exhausted
@@ -11173,7 +11743,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 20, ..Default::default() };
+        let config = ResolveConfig {
+            max_depth: 20,
+            ..Default::default()
+        };
         let stream = kb.resolve_lazy(&[goal], &config);
 
         let (sol1, stream) = stream.split_first(&mut kb).expect("first ancestor");
@@ -11200,7 +11773,8 @@ mod tests {
 
         // Define a symbol "foo.Bar" via the symbol table
         let g = kb.global_scope();
-        kb.symbols.define("Bar", "foo.Bar", crate::intern::SymbolKind::Sort, g);
+        kb.symbols
+            .define("Bar", "foo.Bar", crate::intern::SymbolKind::Sort, g);
 
         // Look up the symbol and build: qualified_name(Ref(Bar), ?result)
         let bar_sym = *kb.symbols.by_qualified_name.get("foo.Bar").unwrap();
@@ -11220,8 +11794,16 @@ mod tests {
         // (No fact needed — builtins are dispatched directly by the resolver)
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 1, "qualified_name should produce 1 solution");
-        let resolved = solutions[0].subst.resolve_as_value(result_vid).map(|v| v.expect_term()).expect("result should be bound");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "qualified_name should produce 1 solution"
+        );
+        let resolved = solutions[0]
+            .subst
+            .resolve_as_value(result_vid)
+            .map(|v| v.expect_term())
+            .expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Const(Literal::String(s)) => assert_eq!(s, "foo.Bar"),
             other => panic!("expected String const 'foo.Bar', got {:?}", other),
@@ -11233,7 +11815,8 @@ mod tests {
         let mut kb = kb_with_prelude();
 
         let g = kb.global_scope();
-        kb.symbols.define("Baz", "alpha.beta.Baz", crate::intern::SymbolKind::Sort, g);
+        kb.symbols
+            .define("Baz", "alpha.beta.Baz", crate::intern::SymbolKind::Sort, g);
 
         let baz_sym = *kb.symbols.by_qualified_name.get("alpha.beta.Baz").unwrap();
         let baz_ref = kb.alloc(Term::Ref(baz_sym));
@@ -11251,7 +11834,11 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1);
-        let resolved = solutions[0].subst.resolve_as_value(result_vid).map(|v| v.expect_term()).expect("result should be bound");
+        let resolved = solutions[0]
+            .subst
+            .resolve_as_value(result_vid)
+            .map(|v| v.expect_term())
+            .expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Const(Literal::String(s)) => assert_eq!(s, "Baz"),
             other => panic!("expected String const 'Baz', got {:?}", other),
@@ -11263,7 +11850,8 @@ mod tests {
         let mut kb = kb_with_prelude();
 
         let g = kb.global_scope();
-        kb.symbols.define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, g);
+        kb.symbols
+            .define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, g);
         let qux_sym = *kb.symbols.by_qualified_name.get("ns.Qux").unwrap();
 
         let name_str = kb.alloc(Term::Const(Literal::String("ns.Qux".into())));
@@ -11281,7 +11869,11 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1);
-        let resolved = solutions[0].subst.resolve_as_value(result_vid).map(|v| v.expect_term()).expect("result should be bound");
+        let resolved = solutions[0]
+            .subst
+            .resolve_as_value(result_vid)
+            .map(|v| v.expect_term())
+            .expect("result should be bound");
         match kb.get_term(resolved) {
             Term::Ref(sym) => assert_eq!(*sym, qux_sym),
             other => panic!("expected Ref(Qux), got {:?}", other),
@@ -11306,7 +11898,11 @@ mod tests {
         });
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 0, "lookup_symbol for unknown name should fail");
+        assert_eq!(
+            solutions.len(),
+            0,
+            "lookup_symbol for unknown name should fail"
+        );
     }
 
     /// The name argument is read by CONTENT, not by carrier: a SPLICED string —
@@ -11334,7 +11930,8 @@ mod tests {
 
         let mut kb = kb_with_prelude();
         let g = kb.global_scope();
-        kb.symbols.define("Quux", "ns.Quux", crate::intern::SymbolKind::Sort, g);
+        kb.symbols
+            .define("Quux", "ns.Quux", crate::intern::SymbolKind::Sort, g);
         let quux_sym = *kb.symbols.by_qualified_name.get("ns.Quux").unwrap();
 
         let result_sym = kb.intern("?result");
@@ -11344,13 +11941,9 @@ mod tests {
 
         // The name rides as a SPLICED unboxed string — no hash-consed term on the
         // argument side, and no reifiable occurrence shape either.
-        let name_occ = NodeOccurrence::new_expr(
-            Expr::Spliced(Value::Str("ns.Quux".into())),
-            span,
-            None,
-        );
-        let var_occ =
-            NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None);
+        let name_occ =
+            NodeOccurrence::new_expr(Expr::Spliced(Value::Str("ns.Quux".into())), span, None);
+        let var_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None);
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
                 functor: ls_sym,
@@ -11370,7 +11963,11 @@ mod tests {
         );
         assert_eq!(
             kb.value_symbol(
-                &solutions[0].subst.resolve_as_value(result_vid).cloned().expect("bound"),
+                &solutions[0]
+                    .subst
+                    .resolve_as_value(result_vid)
+                    .cloned()
+                    .expect("bound"),
             ),
             Some(quux_sym),
         );
@@ -11421,11 +12018,7 @@ mod tests {
                 functor: fa_sym,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Spliced(recv), span, None),
-                    NodeOccurrence::new_expr(
-                        Expr::Const(Literal::String("x".into())),
-                        span,
-                        None,
-                    ),
+                    NodeOccurrence::new_expr(Expr::Const(Literal::String("x".into())), span, None),
                     NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None),
                 ],
                 named_args: Vec::new(),
@@ -11464,11 +12057,7 @@ mod tests {
                 functor: fa_sym,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Spliced(positional), span, None),
-                    NodeOccurrence::new_expr(
-                        Expr::Const(Literal::String("x".into())),
-                        span,
-                        None,
-                    ),
+                    NodeOccurrence::new_expr(Expr::Const(Literal::String("x".into())), span, None),
                     NodeOccurrence::new_expr(Expr::Var(Var::Global(result2)), span, None),
                 ],
                 named_args: Vec::new(),
@@ -11478,9 +12067,16 @@ mod tests {
             None,
         ));
         let solutions2 = kb.resolve_goals(vec![goal2], &ResolveConfig::default());
-        assert_eq!(solutions2.len(), 1, "a positional entity has the same field");
+        assert_eq!(
+            solutions2.len(),
+            1,
+            "a positional entity has the same field"
+        );
         assert!(
-            matches!(solutions2[0].subst.resolve_as_value(result2), Some(Value::Int(7))),
+            matches!(
+                solutions2[0].subst.resolve_as_value(result2),
+                Some(Value::Int(7))
+            ),
             "the positional spelling projects the same field, same carrier",
         );
     }
@@ -11527,11 +12123,7 @@ mod tests {
             Expr::Apply {
                 functor: ha_sym,
                 pos_args: vec![
-                    NodeOccurrence::new_expr(
-                        Expr::Spliced(Value::SymbolRef(pred)),
-                        span,
-                        None,
-                    ),
+                    NodeOccurrence::new_expr(Expr::Spliced(Value::SymbolRef(pred)), span, None),
                     NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None),
                 ],
                 named_args: Vec::new(),
@@ -11542,7 +12134,8 @@ mod tests {
         ));
 
         assert_eq!(
-            kb.resolve_goals(vec![goal], &ResolveConfig::default()).len(),
+            kb.resolve_goals(vec![goal], &ResolveConfig::default())
+                .len(),
             1,
             "a predicate that names a symbol is applicable whatever carries it",
         );
@@ -11587,11 +12180,7 @@ mod tests {
                     NodeOccurrence::new_expr(Expr::Spliced(inst), span, None),
                     // The param names itself as a `SymbolRef` — the carrier
                     // `carrier_term` also declined.
-                    NodeOccurrence::new_expr(
-                        Expr::Spliced(Value::SymbolRef(t_param)),
-                        span,
-                        None,
-                    ),
+                    NodeOccurrence::new_expr(Expr::Spliced(Value::SymbolRef(t_param)), span, None),
                     NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None),
                 ],
                 named_args: Vec::new(),
@@ -11602,7 +12191,11 @@ mod tests {
         ));
 
         let solutions = kb.resolve_goals(vec![goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 1, "a value-carried SortView is still a SortView");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "a value-carried SortView is still a SortView"
+        );
         match solutions[0].subst.resolve_as_value(result_vid) {
             Some(Value::Int(42)) => {}
             other => panic!("the binding must keep its own carrier, got {other:?}"),
@@ -11671,7 +12264,10 @@ mod tests {
         let sols_ok = kb.resolve(&[goal_ok], &ResolveConfig::default());
         assert_eq!(sols_ok.len(), 1, "an acyclic projection still binds");
         assert!(
-            matches!(sols_ok[0].subst.resolve_as_value(ok_vid), Some(Value::Term { .. })),
+            matches!(
+                sols_ok[0].subst.resolve_as_value(ok_vid),
+                Some(Value::Term { .. })
+            ),
             "and binds to the projected child",
         );
     }
@@ -11698,7 +12294,10 @@ mod tests {
         // With only one goal that delays, it should residualize
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "should residualize");
-        assert!(!solutions[0].residual.is_empty(), "should have residual goal");
+        assert!(
+            !solutions[0].residual.is_empty(),
+            "should have residual goal"
+        );
     }
 
     // ── Arithmetic and comparison builtin tests ──────────────────
@@ -11745,7 +12344,11 @@ mod tests {
             named_args: SmallVec::new(),
         });
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 1, "neq(\"hello\", \"world\") should succeed");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "neq(\"hello\", \"world\") should succeed"
+        );
     }
 
     #[test]
@@ -11813,7 +12416,10 @@ mod tests {
         });
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "should residualize");
-        assert!(!solutions[0].residual.is_empty(), "gt(?x, 3) should be in residual");
+        assert!(
+            !solutions[0].residual.is_empty(),
+            "gt(?x, 3) should be in residual"
+        );
     }
 
     // ── NAF (negation-as-failure) tests ──────────────────────────
@@ -11838,7 +12444,11 @@ mod tests {
         });
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 1, "not(p(a)) should succeed when p(a) is absent");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "not(p(a)) should succeed when p(a) is absent"
+        );
         assert!(solutions[0].residual.is_empty(), "should have no residual");
     }
 
@@ -11900,7 +12510,10 @@ mod tests {
 
         let solutions = kb.resolve(&[goal], &ResolveConfig::default());
         assert_eq!(solutions.len(), 1, "should residualize");
-        assert!(!solutions[0].residual.is_empty(), "should have residual not(p(?x))");
+        assert!(
+            !solutions[0].residual.is_empty(),
+            "should have residual not(p(?x))"
+        );
     }
 
     #[test]
@@ -11950,7 +12563,10 @@ mod tests {
         assert_eq!(solutions.len(), 1, "should have one solution");
         assert!(solutions[0].residual.is_empty(), "no residual expected");
         // ?x should be bound to a
-        let bound = solutions[0].subst.resolve_as_value(vx).map(|v| v.expect_term());
+        let bound = solutions[0]
+            .subst
+            .resolve_as_value(vx)
+            .map(|v| v.expect_term());
         assert!(bound.is_some(), "?x should be bound");
     }
 
@@ -12018,7 +12634,10 @@ mod tests {
             solutions[0].residual
         );
         let bound = kb.reify(var_x, &solutions[0].subst).expect_term();
-        assert_eq!(bound, a, "?x must be bound to a (f(?x) was attempted, not dropped)");
+        assert_eq!(
+            bound, a,
+            "?x must be bound to a (f(?x) was attempted, not dropped)"
+        );
     }
 
     #[test]
@@ -12079,8 +12698,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let solutions =
-            kb.resolve_goals(vec![not_r, Value::term(s_a)], &ResolveConfig::default());
+        let solutions = kb.resolve_goals(vec![not_r, Value::term(s_a)], &ResolveConfig::default());
         assert_eq!(
             solutions.len(),
             0,
@@ -12182,8 +12800,7 @@ mod tests {
         let not_r = kb.make_goal_value(not_sym, vec![Value::term(r_call)]);
         let not_u = kb.make_goal_value(not_sym, vec![Value::term(u_call)]);
 
-        let solutions =
-            kb.resolve_goals(vec![not_r, not_u], &ResolveConfig::default());
+        let solutions = kb.resolve_goals(vec![not_r, not_u], &ResolveConfig::default());
         assert_eq!(
             solutions.len(),
             1,
@@ -12245,7 +12862,10 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 20, ..ResolveConfig::default() };
+        let config = ResolveConfig {
+            max_depth: 20,
+            ..ResolveConfig::default()
+        };
         let solutions = kb.resolve(&[goal], &config);
         // Terminates (no hang) AND stays honest: no DEFINITE (empty-residual)
         // solution — the truncated inner search leaves `not(r(a))` undecided
@@ -12259,7 +12879,11 @@ mod tests {
             solutions.len(),
             solutions.iter().filter(|s| s.residual.is_empty()).count()
         );
-        assert_eq!(solutions.len(), 1, "expected exactly one (residual) solution for not(r(a))");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "expected exactly one (residual) solution for not(r(a))"
+        );
         assert_eq!(
             solutions[0].residual.len(),
             1,
@@ -12344,7 +12968,11 @@ mod tests {
         });
 
         let solutions = kb.resolve(&[safe_q], &ResolveConfig::default());
-        assert_eq!(solutions.len(), 1, "should have exactly one solution (safe(a))");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "should have exactly one solution (safe(a))"
+        );
         assert!(solutions[0].residual.is_empty(), "no residual expected");
         // Reify to follow the full binding chain through fresh vars
         let resolved = kb.reify(var_q, &solutions[0].subst).expect_term();
@@ -12410,7 +13038,13 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_depth: 20, max_solutions: 4, simplify: false, definite_only: false, ..Default::default() };
+        let config = ResolveConfig {
+            max_depth: 20,
+            max_solutions: 4,
+            simplify: false,
+            definite_only: false,
+            ..Default::default()
+        };
         let solutions = kb.resolve(&[query], &config);
 
         assert_eq!(solutions.len(), 4, "should get 4 solutions");
@@ -12422,7 +13056,9 @@ mod tests {
         // Solution 1: nat(succ(zero())) → ?x = succ(zero())
         let r1 = kb.reify(var_x, &solutions[1].subst).expect_term();
         match kb.get_term(r1) {
-            Term::Fn { functor, pos_args, .. } => {
+            Term::Fn {
+                functor, pos_args, ..
+            } => {
                 assert_eq!(*functor, succ_sym);
                 assert_eq!(pos_args.len(), 1);
                 assert_eq!(pos_args[0], zero_term, "succ arg should be zero()");
@@ -12433,10 +13069,16 @@ mod tests {
         // Solution 2: nat(succ(succ(zero()))) → ?x = succ(succ(zero()))
         let r2 = kb.reify(var_x, &solutions[2].subst).expect_term();
         match kb.get_term(r2) {
-            Term::Fn { functor, pos_args, .. } => {
+            Term::Fn {
+                functor, pos_args, ..
+            } => {
                 assert_eq!(*functor, succ_sym);
                 match kb.get_term(pos_args[0]) {
-                    Term::Fn { functor: f2, pos_args: p2, .. } => {
+                    Term::Fn {
+                        functor: f2,
+                        pos_args: p2,
+                        ..
+                    } => {
                         assert_eq!(*f2, succ_sym);
                         assert_eq!(p2[0], zero_term, "inner succ arg should be zero()");
                     }
@@ -12562,10 +13204,14 @@ mod tests {
         let state = kb.intern("state");
         let active = kb.alloc(Term::Const(Literal::String("active".into())));
         let state_active = kb.alloc(Term::Fn {
-            functor: state, pos_args: SmallVec::from_elem(active, 1), named_args: SmallVec::new(),
+            functor: state,
+            pos_args: SmallVec::from_elem(active, 1),
+            named_args: SmallVec::new(),
         });
         let fact = kb.alloc(Term::Fn {
-            functor: holds, pos_args: SmallVec::from_elem(state_active, 1), named_args: SmallVec::new(),
+            functor: holds,
+            pos_args: SmallVec::from_elem(state_active, 1),
+            named_args: SmallVec::new(),
         });
         kb.assert_fact(fact, sort, domain, None);
 
@@ -12573,16 +13219,24 @@ mod tests {
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
         let state_x = kb.alloc(Term::Fn {
-            functor: state, pos_args: SmallVec::from_elem(var_x, 1), named_args: SmallVec::new(),
+            functor: state,
+            pos_args: SmallVec::from_elem(var_x, 1),
+            named_args: SmallVec::new(),
         });
         let query = kb.alloc(Term::Fn {
-            functor: holds, pos_args: SmallVec::from_elem(state_x, 1), named_args: SmallVec::new(),
+            functor: holds,
+            pos_args: SmallVec::from_elem(state_x, 1),
+            named_args: SmallVec::new(),
         });
         let config = ResolveConfig::default();
         let sols = kb.resolve(&[query], &config);
         assert_eq!(sols.len(), 1, "holds(state(?x)) should find the fact");
         let bound = kb.reify(var_x, &sols[0].subst).expect_term();
-        assert_eq!(bound, active, "nested ?x must bind to active, got {:?}", bound);
+        assert_eq!(
+            bound, active,
+            "nested ?x must bind to active, got {:?}",
+            bound
+        );
     }
 
     /// Multiple anonymous variables get distinct DeBruijn indices.
@@ -12661,14 +13315,20 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+        let config = ResolveConfig {
+            max_solutions: 10,
+            ..ResolveConfig::default()
+        };
         let solutions = kb.resolve(&[query], &config);
         // 3 independent anonymous vars → left has 2 facts, right has 2 facts
         // head ? is independent from body, so pair(?) matches any.
         // Body: left(?) × right(?) = 2 × 2 = 4 solutions.
-        assert_eq!(solutions.len(), 4,
+        assert_eq!(
+            solutions.len(),
+            4,
             "3 independent anonymous vars should yield 2×2=4 solutions, got {}",
-            solutions.len());
+            solutions.len()
+        );
     }
 
     /// Stress test: rule with N=1000 head args and N body goals.
@@ -12693,17 +13353,17 @@ mod tests {
 
                 let big_sym = kb.intern("big");
 
-                let f_syms: Vec<Symbol> = (0..n)
-                    .map(|i| kb.intern(&format!("f_{i}")))
-                    .collect();
+                let f_syms: Vec<Symbol> = (0..n).map(|i| kb.intern(&format!("f_{i}"))).collect();
                 let vals: Vec<TermId> = (0..n)
                     .map(|i| kb.alloc(Term::Const(Literal::String(format!("v{i}")))))
                     .collect();
-                let var_terms: Vec<TermId> = (0..n).map(|i| {
-                    let sym = kb.intern(&format!("x{i}"));
-                    let vid = kb.fresh_var(sym);
-                    kb.alloc(Term::Var(Var::Global(vid)))
-                }).collect();
+                let var_terms: Vec<TermId> = (0..n)
+                    .map(|i| {
+                        let sym = kb.intern(&format!("x{i}"));
+                        let vid = kb.fresh_var(sym);
+                        kb.alloc(Term::Var(Var::Global(vid)))
+                    })
+                    .collect();
 
                 // Rule head: big(?v0, ..., ?v999)
                 let head = kb.alloc(Term::Fn {
@@ -12713,13 +13373,15 @@ mod tests {
                 });
 
                 // Body: f_i(?v_i) for each i
-                let body: Vec<TermId> = (0..n).map(|i| {
-                    kb.alloc(Term::Fn {
-                        functor: f_syms[i],
-                        pos_args: SmallVec::from_elem(var_terms[i], 1),
-                        named_args: SmallVec::new(),
+                let body: Vec<TermId> = (0..n)
+                    .map(|i| {
+                        kb.alloc(Term::Fn {
+                            functor: f_syms[i],
+                            pos_args: SmallVec::from_elem(var_terms[i], 1),
+                            named_args: SmallVec::new(),
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let body_nodes = kb.term_body_to_nodes(&body);
                 kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
@@ -12777,9 +13439,7 @@ mod tests {
         let domain = kb.intern("test");
         let big_sym = kb.intern("big");
 
-        let f_syms: Vec<Symbol> = (0..n)
-            .map(|i| kb.intern(&format!("f_{i}")))
-            .collect();
+        let f_syms: Vec<Symbol> = (0..n).map(|i| kb.intern(&format!("f_{i}"))).collect();
         let vals: Vec<TermId> = (0..n)
             .map(|i| kb.alloc(Term::Const(Literal::String(format!("v{i}")))))
             .collect();
@@ -12836,7 +13496,7 @@ mod tests {
             max_solutions: 1,
             simplify: false,
             definite_only: false,
-                    ..Default::default()
+            ..Default::default()
         };
         let (sols, stats) = kb.resolve_with_stats(&[query], &config);
         assert_eq!(sols.len(), 1);
@@ -12883,14 +13543,8 @@ mod tests {
                 let s_small = run(small);
                 let s_large = run(large);
 
-                eprintln!(
-                    "  n={small}: lazy_walk_calls={}",
-                    s_small.lazy_walk_calls,
-                );
-                eprintln!(
-                    "  n={large}: lazy_walk_calls={}",
-                    s_large.lazy_walk_calls,
-                );
+                eprintln!("  n={small}: lazy_walk_calls={}", s_small.lazy_walk_calls,);
+                eprintln!("  n={large}: lazy_walk_calls={}", s_large.lazy_walk_calls,);
 
                 // Linear bound: lazy_walk_calls must stay below 8·n. With
                 // eager apply_subst_each in place, the equivalent metric
@@ -12906,8 +13560,7 @@ mod tests {
                 // Ratio sanity check: large/small ought to be ≤ ~6× for
                 // linear growth (allow constant slack), not ≥ ~16× as
                 // quadratic gives.
-                let ratio = s_large.lazy_walk_calls as f64
-                    / s_small.lazy_walk_calls.max(1) as f64;
+                let ratio = s_large.lazy_walk_calls as f64 / s_small.lazy_walk_calls.max(1) as f64;
                 assert!(
                     ratio < 6.0,
                     "growth ratio {ratio:.1}× between n={small} and \
@@ -12960,11 +13613,7 @@ mod tests {
         // Facts: check("ok", 1, 10), check("ok", 2, 20), check("fail", 1, 1)
         let ok = kb.alloc(Term::Const(Literal::String("ok".into())));
         let fail = kb.alloc(Term::Const(Literal::String("fail".into())));
-        for (s, n1, n2) in [
-            (ok, 1i64, 10i64),
-            (ok, 2, 20),
-            (fail, 1, 1),
-        ] {
+        for (s, n1, n2) in [(ok, 1i64, 10i64), (ok, 2, 20), (fail, 1, 1)] {
             let v1 = kb.alloc(Term::Const(Literal::Int(n1)));
             let v2 = kb.alloc(Term::Const(Literal::Int(n2)));
             let fact = kb.alloc(Term::Fn {
@@ -13017,15 +13666,22 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let config = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+        let config = ResolveConfig {
+            max_solutions: 10,
+            ..ResolveConfig::default()
+        };
         let solutions = kb.resolve(&[query], &config);
 
         // Anonymous ? in f's body correctly flow through to p's ?b, ?c.
         // check has 3 facts → p matches all 3 → f gets all 3.
         // Two have ?x="ok", one has ?x="fail".
-        assert!(solutions.len() >= 2, "should find at least 2 solutions (ok + fail)");
+        assert!(
+            solutions.len() >= 2,
+            "should find at least 2 solutions (ok + fail)"
+        );
 
-        let mut xs: Vec<String> = solutions.iter()
+        let mut xs: Vec<String> = solutions
+            .iter()
             .filter_map(|sol| {
                 let t = kb.reify(var_q, &sol.subst).expect_term();
                 match kb.get_term(t) {
@@ -13037,8 +13693,11 @@ mod tests {
         xs.sort();
         xs.dedup();
         // Head-var dedup: "ok" and "fail" each appear once
-        assert_eq!(xs, vec!["fail", "ok"],
-            "head-var dedup should yield exactly 2 distinct solutions");
+        assert_eq!(
+            xs,
+            vec!["fail", "ok"],
+            "head-var dedup should yield exactly 2 distinct solutions"
+        );
     }
 
     // ── WI-322: caller-var delay through op type_args ────────────
@@ -13186,7 +13845,10 @@ mod tests {
         out.sort_by_key(|v| v.raw());
         let mut expected = vec![vx, vy];
         expected.sort_by_key(|v| v.raw());
-        assert_eq!(out, expected, "both the type-arg var and the value var must be collected");
+        assert_eq!(
+            out, expected,
+            "both the type-arg var and the value var must be collected"
+        );
     }
 
     /// WI-322 (review fix): a caller var inside a `Value::Node` type-arg spine —
@@ -13350,13 +14012,14 @@ mod tests {
 
         // effects_rows(present(label: ?free)) — caller var in an EffectExpr spine.
         let present = NodeOccurrence::new_effect_expr(
-            EffectExprNode::Present { label: TypeChild::Ground(free_term) },
+            EffectExprNode::Present {
+                label: TypeChild::Ground(free_term),
+            },
             span,
             None,
         );
         // A Denoted Expr leaf carrying ?denoted via a TypeChild::Node.
-        let denoted_leaf =
-            NodeOccurrence::new_expr(Expr::Var(Var::Global(v_denoted)), span, None);
+        let denoted_leaf = NodeOccurrence::new_expr(Expr::Var(Var::Global(v_denoted)), span, None);
         // arrow(param: «effects_rows…», result: Denoted(?denoted), effects: ?bound,
         // arity: 1) — three spine children of distinct kinds, plus a bound var.
         // WI-791's `arity` child is ground and contributes no var, which is
@@ -13367,7 +14030,9 @@ mod tests {
             TypeNode::Arrow {
                 param: TypeChild::Node(present),
                 result: TypeChild::Node(NodeOccurrence::new_type(
-                    TypeNode::Denoted { value: denoted_leaf },
+                    TypeNode::Denoted {
+                        value: denoted_leaf,
+                    },
                     span,
                     None,
                 )),

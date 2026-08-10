@@ -45,7 +45,11 @@ pub enum ViewHead {
     /// Function / constructor application. Used for both `Term::Fn` and
     /// `Value::Entity` / `Value::Tuple`, distinguished by whether `functor`
     /// is `Some`.
-    Functor { functor: Option<Symbol>, pos_arity: usize, named_arity: usize },
+    Functor {
+        functor: Option<Symbol>,
+        pos_arity: usize,
+        named_arity: usize,
+    },
     /// Reference to a named symbol.
     Ref(Symbol),
     /// Bare identifier (not yet resolved).
@@ -71,12 +75,13 @@ impl ViewHead {
     /// identity can't collide with a same-named user sort.
     pub(crate) fn functor_sym(&self) -> Option<Symbol> {
         match self {
-            ViewHead::Functor { functor: Some(s), .. } => Some(*s),
+            ViewHead::Functor {
+                functor: Some(s), ..
+            } => Some(*s),
             ViewHead::Ref(s) => Some(*s),
             _ => None,
         }
     }
-
 }
 
 /// WI-436 — canonicalize a functor application head: a **0-ary application of a
@@ -103,7 +108,11 @@ fn functor_view_head(
     if pos_arity == 0 && named_arity == 0 && kb.is_constructor_symbol(functor) {
         ViewHead::Ref(functor)
     } else {
-        ViewHead::Functor { functor: Some(functor), pos_arity, named_arity }
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            named_arity,
+        }
     }
 }
 
@@ -237,7 +246,12 @@ fn synth_ctor(
     named: Vec<(Symbol, Rc<NodeOccurrence>)>,
 ) -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(
-        Expr::Constructor { name, pos_args: Vec::new(), named_args: named, from_projection: false },
+        Expr::Constructor {
+            name,
+            pos_args: Vec::new(),
+            named_args: named,
+            from_projection: false,
+        },
         occ.span,
         occ.owner,
     )
@@ -307,7 +321,10 @@ fn optionally_named_cell_list(
             }
             None => Rc::clone(&none_occ),
         };
-        items.push(mk(cell, vec![(k_name, name_child), (k_value, Rc::clone(value))]));
+        items.push(mk(
+            cell,
+            vec![(k_name, name_child), (k_value, Rc::clone(value))],
+        ));
     }
     let mut list = mk(nil, Vec::new());
     for item in items.into_iter().rev() {
@@ -570,18 +587,20 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
     Some(match expr {
         // WI-278 / WI-397 / WI-425 — always arity-3, `args = nil` for a bare
         // field access.
-        Expr::DotApply { .. } => {
-            ("anthill.reflect.Expr.dot_apply", &["receiver", "name", "args"])
-        }
+        Expr::DotApply { .. } => (
+            "anthill.reflect.Expr.dot_apply",
+            &["receiver", "name", "args"],
+        ),
         // WI-537.
         Expr::VarRef { .. } => ("anthill.reflect.Expr.var_ref", &["name"]),
         // WI-814 — `LoadBuildFrame::Lambda`.
         Expr::Lambda { .. } => ("anthill.reflect.Expr.lambda_expr", &["param", "body"]),
         // WI-814 — `LoadBuildFrame::IfExpr`. Binds nothing at all; it was opaque
         // only because no `[simp]` LHS had ever needed it.
-        Expr::If { .. } => {
-            ("anthill.reflect.Expr.if_expr", &["cond", "then_branch", "else_branch"])
-        }
+        Expr::If { .. } => (
+            "anthill.reflect.Expr.if_expr",
+            &["cond", "then_branch", "else_branch"],
+        ),
         // WI-814 — `LoadBuildFrame::LetExpr`, exactly THREE keys, unconditionally.
         //
         // `Expr::Let.type_annotation` is NOT among them, and that is now exact
@@ -605,7 +624,10 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         // so the annotation CAN be restored to the `let_expr` term and to this
         // key list. The older "a denoted type cannot be hash-consed" reasoning is
         // out of date and must not be repeated here.
-        Expr::Let { .. } => ("anthill.reflect.Expr.let_expr", &["pattern", "value", "body"]),
+        Expr::Let { .. } => (
+            "anthill.reflect.Expr.let_expr",
+            &["pattern", "value", "body"],
+        ),
         // WI-814 — `LoadBuildFrame::ProofStmt`, in its push order
         // `target, strategy?, using, body, conclude?`.
         //
@@ -626,7 +648,9 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         // conditionally; that is a faithful mirror, not a loss — an absent key
         // and a `none()` payload carry the same information, and the arity
         // difference keeps the two shapes distinct on both carriers.
-        Expr::Proof { strategy, conclude, .. } => (
+        Expr::Proof {
+            strategy, conclude, ..
+        } => (
             "anthill.reflect.Expr.proof_stmt",
             match (strategy.is_some(), conclude.is_some()) {
                 (false, false) => &["target", "using", "body"],
@@ -637,7 +661,10 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         ),
         // WI-814 — `LoadBuildFrame::MatchExpr`; `branches` is a `List[MatchBranch]`
         // cons/nil spine (see [`match_branches_child`]).
-        Expr::Match { .. } => ("anthill.reflect.Expr.match_expr", &["scrutinee", "branches"]),
+        Expr::Match { .. } => (
+            "anthill.reflect.Expr.match_expr",
+            &["scrutinee", "branches"],
+        ),
         _ => return None,
     })
 }
@@ -673,14 +700,20 @@ fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
     // instead of an error. That is the silent skip CLAUDE.md forbids, on the path
     // WI-815 made a soundness surface.
     let f = reflect_ctor_sym(kb, qname, qname.rsplit('.').next().unwrap_or(qname));
-    Some(ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: keys.len() })
+    Some(ViewHead::Functor {
+        functor: Some(f),
+        pos_arity: 0,
+        named_arity: keys.len(),
+    })
 }
 
 /// `expr`'s reflect-wrapped named keys, in builder order — empty when the form
 /// is not wrapped or reflect isn't loaded (consistent with the `Opaque` head
 /// [`wrapped_expr_head`] then yields).
 fn wrapped_expr_keys(expr: &Expr, kb: &KnowledgeBase) -> Vec<Symbol> {
-    let Some((qname, keys)) = expr_wrapped_shape(expr) else { return Vec::new() };
+    let Some((qname, keys)) = expr_wrapped_shape(expr) else {
+        return Vec::new();
+    };
     // WI-1014 Part C — the head's twin guard, and it must stay in lockstep with
     // it: an early `return Vec::new()` here while `wrapped_expr_head` announced
     // `named_arity: keys.len()` would be the WI-815 shape defect (a head promising
@@ -688,7 +721,9 @@ fn wrapped_expr_keys(expr: &Expr, kb: &KnowledgeBase) -> Vec<Symbol> {
     // with the head it was "consistent with".
     let form = qname.rsplit('.').next().unwrap_or(qname);
     let _ = reflect_ctor_sym(kb, qname, form);
-    keys.iter().map(|k| reflect_field_key(kb, k, form)).collect()
+    keys.iter()
+        .map(|k| reflect_field_key(kb, k, form))
+        .collect()
 }
 
 /// The named child `sym` of a reflect-WRAPPED form, mirroring the child the
@@ -716,15 +751,22 @@ fn wrapped_expr_child(
     // the discrim / `views_structurally_equal` / `goal_fingerprint` paths, so the
     // allocation was pure waste (the code this replaced used a stack array).
     let form = qname.rsplit('.').next().unwrap_or(qname);
-    let idx = names.iter().position(|k| reflect_field_key(kb, k, form) == sym)?;
+    let idx = names
+        .iter()
+        .position(|k| reflect_field_key(kb, k, form) == sym)?;
     let name = names[idx];
     let leaf = |e: Expr| NodeOccurrence::new_expr(e, occ.span, occ.owner);
     Some(match (expr, name) {
         (Expr::DotApply { receiver, .. }, "receiver") => Rc::clone(receiver),
         (Expr::DotApply { name: m, .. }, "name") => leaf(Expr::Ref(*m)),
-        (Expr::DotApply { pos_args, named_args, .. }, "args") => {
-            dot_apply_args_child(occ, kb, pos_args, named_args)
-        }
+        (
+            Expr::DotApply {
+                pos_args,
+                named_args,
+                ..
+            },
+            "args",
+        ) => dot_apply_args_child(occ, kb, pos_args, named_args),
         (Expr::VarRef { name: n }, "name") => leaf(Expr::Ref(*n)),
         (Expr::Lambda { param, .. }, "param") => Rc::clone(param),
         (Expr::Lambda { body, .. }, "body") => Rc::clone(body),
@@ -738,14 +780,24 @@ fn wrapped_expr_child(
         // proof target and the strategy as `Term::Ident`, and a synthesized
         // `Ref` would head as `ViewHead::Ref` against the term's `Ident`.
         (Expr::Proof { target, .. }, "target") => leaf(Expr::Ident(*target)),
-        (Expr::Proof { strategy: Some(s), .. }, "strategy") => leaf(Expr::Ident(*s)),
+        (
+            Expr::Proof {
+                strategy: Some(s), ..
+            },
+            "strategy",
+        ) => leaf(Expr::Ident(*s)),
         // The premise set, as the `List[Ident]` the loader now emits.
         (Expr::Proof { using, .. }, "using") => {
             let cites = using.iter().map(|s| leaf(Expr::Ident(*s))).collect();
             synth_cons_list(occ, kb, cites)
         }
         (Expr::Proof { body, .. }, "body") => Rc::clone(body),
-        (Expr::Proof { conclude: Some(c), .. }, "conclude") => Rc::clone(c),
+        (
+            Expr::Proof {
+                conclude: Some(c), ..
+            },
+            "conclude",
+        ) => Rc::clone(c),
         (Expr::Match { scrutinee, .. }, "scrutinee") => Rc::clone(scrutinee),
         (Expr::Match { branches, .. }, "branches") => match_branches_child(occ, kb, branches),
         _ => {
@@ -785,7 +837,10 @@ fn match_branches_child(
                 branch_sym,
                 vec![
                     (k_pattern, Rc::clone(&b.pattern)),
-                    (k_guard, synth_option(occ, kb, b.guard.as_ref().map(Rc::clone))),
+                    (
+                        k_guard,
+                        synth_option(occ, kb, b.guard.as_ref().map(Rc::clone)),
+                    ),
                     (k_body, Rc::clone(&b.body)),
                 ],
             )
@@ -842,10 +897,7 @@ fn pattern_shape(pat: &Pattern, annotated: bool) -> (&'static str, &'static [&'s
 /// The key is declared for EVERY variant and only when present, exactly as the
 /// twin emits it — which is what keeps an unannotated `wildcard` NULLARY, so it
 /// still heads as `ViewHead::Ref` on both carriers (WI-436).
-fn pattern_shape_inner(
-    pat: &Pattern,
-    annotated: bool,
-) -> (&'static str, &'static [&'static str]) {
+fn pattern_shape_inner(pat: &Pattern, annotated: bool) -> (&'static str, &'static [&'static str]) {
     match (pat, annotated) {
         (Pattern::Var { .. }, false) => ("anthill.reflect.Pattern.var_pattern", &["name"]),
         (Pattern::Var { .. }, true) => {
@@ -853,12 +905,11 @@ fn pattern_shape_inner(
         }
         (Pattern::Wildcard, false) => ("anthill.reflect.Pattern.wildcard", &[]),
         (Pattern::Wildcard, true) => ("anthill.reflect.Pattern.wildcard", &["type_ann"]),
-        (Pattern::Literal { .. }, false) => {
-            ("anthill.reflect.Pattern.literal_pattern", &["value"])
-        }
-        (Pattern::Literal { .. }, true) => {
-            ("anthill.reflect.Pattern.literal_pattern", &["value", "type_ann"])
-        }
+        (Pattern::Literal { .. }, false) => ("anthill.reflect.Pattern.literal_pattern", &["value"]),
+        (Pattern::Literal { .. }, true) => (
+            "anthill.reflect.Pattern.literal_pattern",
+            &["value", "type_ann"],
+        ),
         (Pattern::Constructor { named_args, .. }, ann) => (
             "anthill.reflect.Pattern.constructor_pattern",
             match (named_args.is_empty(), ann) {
@@ -898,7 +949,9 @@ fn pattern_named_keys(pat: &Pattern, annotated: bool, kb: &KnowledgeBase) -> Vec
     if kb.try_resolve_symbol(qname).is_none() {
         return Vec::new();
     }
-    keys.iter().map(|k| reflect_field_key(kb, k, "pattern")).collect()
+    keys.iter()
+        .map(|k| reflect_field_key(kb, k, "pattern"))
+        .collect()
 }
 
 /// A cons/nil spine of occurrences over the prelude List constructors, mirroring
@@ -913,8 +966,10 @@ fn synth_cons_list(
 ) -> Rc<NodeOccurrence> {
     let cons = reflect_ctor_sym(kb, "anthill.prelude.List.cons", "pattern");
     let nil = reflect_ctor_sym(kb, "anthill.prelude.List.nil", "pattern");
-    let (k_head, k_tail) =
-        (reflect_field_key(kb, "head", "pattern"), reflect_field_key(kb, "tail", "pattern"));
+    let (k_head, k_tail) = (
+        reflect_field_key(kb, "head", "pattern"),
+        reflect_field_key(kb, "tail", "pattern"),
+    );
     let mut acc = synth_ctor(occ, nil, Vec::new());
     for item in items.into_iter().rev() {
         acc = synth_ctor(occ, cons, vec![(k_head, item), (k_tail, acc)]);
@@ -932,7 +987,11 @@ fn synth_option(
     match inner {
         Some(v) => {
             let some = reflect_ctor_sym(kb, "anthill.prelude.Option.some", "pattern");
-            synth_ctor(occ, some, vec![(reflect_field_key(kb, "value", "pattern"), v)])
+            synth_ctor(
+                occ,
+                some,
+                vec![(reflect_field_key(kb, "value", "pattern"), v)],
+            )
         }
         None => {
             let none = reflect_ctor_sym(kb, "anthill.prelude.Option.none", "pattern");
@@ -955,11 +1014,13 @@ fn pattern_named_child(
 ) -> Option<Rc<NodeOccurrence>> {
     let (qname, names) = pattern_shape(pat, occ.pattern_type_ann().is_some());
     kb.try_resolve_symbol(qname)?; // reflect not loaded ⇒ head reads Opaque (no children)
-    // Located by NAME via the shape table, mirroring `wrapped_expr_child` — so
-    // the two halves of the WI-814 view share one dispatch shape, and a key with
-    // no arm is caught by the same tripwire rather than silently yielding `None`.
-    // `Wildcard` declares no keys, so it exits here without needing an arm.
-    let idx = names.iter().position(|k| reflect_field_key(kb, k, "pattern") == sym)?;
+                                   // Located by NAME via the shape table, mirroring `wrapped_expr_child` — so
+                                   // the two halves of the WI-814 view share one dispatch shape, and a key with
+                                   // no arm is caught by the same tripwire rather than silently yielding `None`.
+                                   // `Wildcard` declares no keys, so it exits here without needing an arm.
+    let idx = names
+        .iter()
+        .position(|k| reflect_field_key(kb, k, "pattern") == sym)?;
     let name = names[idx];
     let leaf = |e: Expr| NodeOccurrence::new_expr(e, occ.span, occ.owner);
     // WI-819: `type_ann` is a key of EVERY variant (declared only when present),
@@ -991,7 +1052,10 @@ fn pattern_named_child(
                     synth_ctor(
                         occ,
                         named_pattern,
-                        vec![(k_name, leaf(Expr::Ref(*field))), (k_pattern, Rc::clone(sub))],
+                        vec![
+                            (k_name, leaf(Expr::Ref(*field))),
+                            (k_pattern, Rc::clone(sub)),
+                        ],
                     )
                 })
                 .collect();
@@ -1048,7 +1112,12 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // WI-1013: a CALL-SITE TYPE-ARGUMENT bracket is one extra named child under
         // `type_args`, declared only when the channel is non-empty — see the WI-1013
         // note above. A bracket-less call heads exactly as before.
-        Some(Expr::Apply { functor, pos_args, named_args, type_args }) => functor_view_head(
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        }) => functor_view_head(
             kb,
             *functor,
             pos_args.len(),
@@ -1059,10 +1128,17 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // `Term::Fn{name, …}` twin — so it reads the same `Functor` head (a
         // reflect-`Expr` instantiation occurrence must match its own term twin,
         // not collapse to `Opaque`).
-        Some(Expr::Constructor { name, pos_args, named_args, .. })
-        | Some(Expr::Instantiation { name, pos_args, named_args }) => {
-            functor_view_head(kb, *name, pos_args.len(), named_args.len())
-        }
+        Some(Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        })
+        | Some(Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        }) => functor_view_head(kb, *name, pos_args.len(), named_args.len()),
         // WI-1045 — the DICTIONARY construction node reads as the dictionary it
         // builds: same functor, positional sub-dictionaries, one named `impl`.
         // That is the third carrier of the one representation
@@ -1211,7 +1287,11 @@ fn occ_index_var(occ: &Rc<NodeOccurrence>) -> Option<Var> {
 /// The i-th positional child occurrence of an Apply/Constructor occurrence.
 /// Type / EffectExpression occurrences expose only named children (none
 /// positional), so this is `None` for them.
-fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<Rc<NodeOccurrence>> {
+fn occ_pos_child(
+    occ: &NodeOccurrence,
+    _kb: &KnowledgeBase,
+    i: usize,
+) -> Option<Rc<NodeOccurrence>> {
     match occ.as_expr()? {
         // WI-425: a DotApply has NO positional children — its call args live
         // inside the `args` named child, mirroring the term twin.
@@ -1247,7 +1327,11 @@ fn occ_pos_child(occ: &NodeOccurrence, _kb: &KnowledgeBase, i: usize) -> Option<
 /// `occ_named_child` cannot return as an `Rc<NodeOccurrence>` — Type/EffectExpr
 /// callers go through [`type_node_named`] / [`effect_expr_named`] (returning a
 /// `ViewItem`) instead. This `Rc`-returning helper stays Expr-only.
-fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Option<Rc<NodeOccurrence>> {
+fn occ_named_child(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    sym: Symbol,
+) -> Option<Rc<NodeOccurrence>> {
     // WI-814: a Pattern-kind occurrence's children mirror its `pattern_to_term`
     // twin (checked before `as_expr()`, which is `None` for a Pattern).
     if let Some(pat) = occ.as_pattern() {
@@ -1293,7 +1377,10 @@ fn occ_named_child(occ: &NodeOccurrence, kb: &KnowledgeBase, sym: Symbol) -> Opt
         }
         _ => return None,
     };
-    named.iter().find(|(s, _)| *s == sym).map(|(_, c)| Rc::clone(c))
+    named
+        .iter()
+        .find(|(s, _)| *s == sym)
+        .map(|(_, c)| Rc::clone(c))
 }
 
 fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
@@ -1437,7 +1524,11 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         TypeNode::ExprCarried { .. } => (type_functor_sym(kb, "ExprCarried"), 2),
     };
     match functor {
-        Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },
+        Some(f) => ViewHead::Functor {
+            functor: Some(f),
+            pos_arity: 0,
+            named_arity,
+        },
         None => ViewHead::Opaque,
     }
 }
@@ -1456,7 +1547,10 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         TypeNode::NamedTuple { .. } => &["fields"],
         TypeNode::ExprCarried { .. } => &["value", "member"],
     };
-    short_keys.iter().filter_map(|k| kb.lookup_symbol(k)).collect()
+    short_keys
+        .iter()
+        .filter_map(|k| kb.lookup_symbol(k))
+        .collect()
 }
 
 fn type_node_named<'a>(tn: &'a TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
@@ -1478,7 +1572,12 @@ fn type_node_named<'a>(tn: &'a TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Opt
         TypeNode::EffectsRows { effects_expr } if Some(sym) == key("effects_expr") => {
             Some(type_child_view_item(effects_expr))
         }
-        TypeNode::Arrow { param, result, effects, arity } => {
+        TypeNode::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             if Some(sym) == key("param") {
                 Some(type_child_view_item(param))
             } else if Some(sym) == key("result") {
@@ -1517,7 +1616,11 @@ fn effect_expr_head(en: &EffectExprNode, kb: &KnowledgeBase) -> ViewHead {
         EffectExprNode::EmptyRow => ("empty_row", 0),
     };
     match effect_functor_sym(kb, short) {
-        Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity },
+        Some(f) => ViewHead::Functor {
+            functor: Some(f),
+            pos_arity: 0,
+            named_arity,
+        },
         None => ViewHead::Opaque,
     }
 }
@@ -1655,14 +1758,17 @@ pub trait TermView {
         match self.head(kb) {
             ViewHead::Opaque => true,
             ViewHead::Functor { pos_arity, .. } => {
-                (0..pos_arity).any(|i| {
-                    self.pos_arg(kb, i).map_or(false, |a| a.bears_opaque(kb))
-                }) || self.named_keys(kb).into_iter().any(|s| {
-                    self.named_arg(kb, s).map_or(false, |a| a.bears_opaque(kb))
-                })
+                (0..pos_arity).any(|i| self.pos_arg(kb, i).map_or(false, |a| a.bears_opaque(kb)))
+                    || self
+                        .named_keys(kb)
+                        .into_iter()
+                        .any(|s| self.named_arg(kb, s).map_or(false, |a| a.bears_opaque(kb)))
             }
             // Leaves: a var, a literal, a name, `⊥`. Nothing beneath them.
-            ViewHead::Var(_) | ViewHead::Const(_) | ViewHead::Ref(_) | ViewHead::Ident(_)
+            ViewHead::Var(_)
+            | ViewHead::Const(_)
+            | ViewHead::Ref(_)
+            | ViewHead::Ident(_)
             | ViewHead::Bottom => false,
         }
     }
@@ -1710,8 +1816,16 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
         (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
         (ViewHead::Bottom, ViewHead::Bottom) => true,
         (
-            ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
-            ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+            ViewHead::Functor {
+                functor: fa,
+                pos_arity: pa,
+                named_arity: na,
+            },
+            ViewHead::Functor {
+                functor: fb,
+                pos_arity: pb,
+                named_arity: nb,
+            },
         ) => {
             if fa != fb || pa != pb || na != nb {
                 return false;
@@ -1750,12 +1864,10 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
         // Both sides must be `Value`-backed to have a value to compare: a
         // `TermId`-backed view never heads `Opaque` (`TermIdView::head` has an
         // arm for every `Term`), so this costs nothing on the term path.
-        (ViewHead::Opaque, ViewHead::Opaque) => {
-            match (a.as_bind_value(), b.as_bind_value()) {
-                (BindValue::Value(va), BindValue::Value(vb)) => va.opaque_carrier_eq(&vb),
-                _ => false,
-            }
-        }
+        (ViewHead::Opaque, ViewHead::Opaque) => match (a.as_bind_value(), b.as_bind_value()) {
+            (BindValue::Value(va), BindValue::Value(vb)) => va.opaque_carrier_eq(&vb),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -1853,7 +1965,10 @@ impl GoalKey {
     /// rejects these heads for the third, adjacent reason: they carry no
     /// discrimination key.
     pub fn has_named_functors(&self) -> bool {
-        !self.0.iter().any(|t| matches!(t, StructToken::Open(None, _, _)))
+        !self
+            .0
+            .iter()
+            .any(|t| matches!(t, StructToken::Open(None, _, _)))
     }
 
     /// True when this key may safely index the resolver's per-query cache. Two
@@ -1874,9 +1989,9 @@ impl GoalKey {
     ///   locally, mirroring the explicit non-`Term`/`Node` guard the answer-dedup
     ///   sibling `is_duplicate_projection` already applies for the same reason.
     pub fn is_cacheable(&self) -> bool {
-        self.0.iter().all(|t| {
-            Self::token_bears_payload(t) && !matches!(t, StructToken::Var(Var::Global(_)))
-        })
+        self.0
+            .iter()
+            .all(|t| Self::token_bears_payload(t) && !matches!(t, StructToken::Var(Var::Global(_))))
     }
 }
 
@@ -1895,9 +2010,7 @@ fn fingerprint_into<V: TermView>(
         // Only a flex `Global` resolves through σ; a `Rigid` skolem / `DeBruijn`
         // binder is a constant whose identity IS the fingerprint (two distinct
         // skolems must key distinct goals), so emit its `Var` token directly.
-        ViewHead::Var(var @ (Var::Rigid(_) | Var::DeBruijn(_))) => {
-            out.push(StructToken::Var(var))
-        }
+        ViewHead::Var(var @ (Var::Rigid(_) | Var::DeBruijn(_))) => out.push(StructToken::Var(var)),
         ViewHead::Var(var) => match subst.resolve_as_value(var.as_vid()) {
             None => out.push(StructToken::Var(var)),
             // Self-referential binding (a var bound to itself) — stop, mirroring
@@ -1905,9 +2018,7 @@ fn fingerprint_into<V: TermView>(
             Some(Value::Var(Var::Global(w))) if *w == var.as_vid() => {
                 out.push(StructToken::Var(var))
             }
-            Some(Value::Term { id: t, .. })
-                if matches!(kb.get_term(*t), Term::Var(Var::Global(w)) if *w == var.as_vid()) =>
-            {
+            Some(Value::Term { id: t, .. }) if matches!(kb.get_term(*t), Term::Var(Var::Global(w)) if *w == var.as_vid()) => {
                 out.push(StructToken::Var(var))
             }
             // Resolve through σ and fingerprint the binding's own view.
@@ -1921,7 +2032,11 @@ fn fingerprint_into<V: TermView>(
         ViewHead::Ident(s) => out.push(StructToken::Ident(s)),
         ViewHead::Bottom => out.push(StructToken::Bottom),
         ViewHead::Opaque => out.push(StructToken::Opaque),
-        ViewHead::Functor { functor, pos_arity, named_arity } => {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
             out.push(StructToken::Open(functor, pos_arity, named_arity));
             for i in 0..pos_arity {
                 match view.pos_arg(kb, i) {
@@ -2024,15 +2139,17 @@ impl TermView for TermIdView {
             // goal var keys `RigidVar(id)`, which can't match a concrete fact.
             Term::Var(v) => ViewHead::Var(*v),
             Term::Const(lit) => ViewHead::Const(lit.clone()),
-            Term::Fn { functor, pos_args, named_args } => {
-                functor_view_head(kb, *functor, pos_args.len(), named_args.len())
-            }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => functor_view_head(kb, *functor, pos_args.len(), named_args.len()),
             Term::Ref(s) => ViewHead::Ref(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
-            Term::ParseAux(_) => unreachable!(
-                "parse-only Term::ParseAux variant reached the KB-side TermIdView",
-            ),
+            Term::ParseAux(_) => {
+                unreachable!("parse-only Term::ParseAux variant reached the KB-side TermIdView",)
+            }
         }
     }
 
@@ -2055,7 +2172,8 @@ impl TermView for TermIdView {
 
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
         match kb.get_term(self.0) {
-            Term::Fn { named_args, .. } => named_args.iter()
+            Term::Fn { named_args, .. } => named_args
+                .iter()
                 .find(|(s, _)| *s == sym)
                 .map(|(_, t)| ViewItem::Term(*t)),
             _ => None,
@@ -2098,9 +2216,11 @@ impl TermView for TermId {
             // A var of ANY kind surfaces its `Var` (see `TermIdView::head`).
             Term::Var(v) => ViewHead::Var(*v),
             Term::Const(lit) => ViewHead::Const(lit.clone()),
-            Term::Fn { functor, pos_args, named_args } => {
-                functor_view_head(kb, *functor, pos_args.len(), named_args.len())
-            }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => functor_view_head(kb, *functor, pos_args.len(), named_args.len()),
             Term::Ref(s) => ViewHead::Ref(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
@@ -2117,7 +2237,8 @@ impl TermView for TermId {
     }
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
         match kb.get_term(*self) {
-            Term::Fn { named_args, .. } => named_args.iter()
+            Term::Fn { named_args, .. } => named_args
+                .iter()
                 .find(|(s, _)| *s == sym)
                 .map(|(_, t)| ViewItem::Term(*t)),
             _ => None,
@@ -2206,7 +2327,9 @@ const DICT_QNAME: &str = "anthill.realization.runtime.Dictionary";
 /// resolves lazily instead of through `wrapped_expr_keys`).
 fn accessor_key(kb: &KnowledgeBase, sort: &str, accessor: &'static str, form: &str) -> Symbol {
     debug_assert!(
-        accessor.strip_prefix(sort).is_some_and(|rest| rest.starts_with('.')),
+        accessor
+            .strip_prefix(sort)
+            .is_some_and(|rest| rest.starts_with('.')),
         "accessor `{accessor}` is not a member of `{sort}` — the head functor and \
          its field keys would resolve in different namespaces",
     );
@@ -2246,7 +2369,12 @@ fn dictionary_ctor_sym(kb: &KnowledgeBase) -> Symbol {
 
 /// The `impl` key, same rule as [`dictionary_ctor_sym`].
 fn dictionary_impl_key(kb: &KnowledgeBase) -> Symbol {
-    accessor_key(kb, DICT_QNAME, "anthill.realization.runtime.Dictionary.impl", "Dictionary")
+    accessor_key(
+        kb,
+        DICT_QNAME,
+        "anthill.realization.runtime.Dictionary.impl",
+        "Dictionary",
+    )
 }
 
 pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol)> {
@@ -2306,9 +2434,12 @@ impl TermView for Value {
                 pos_arity: pos.len(),
                 named_arity: named.len(),
             },
-            Value::Entity { functor, pos, named, .. } => {
-                functor_view_head(kb, *functor, pos.len(), named.len())
-            }
+            Value::Entity {
+                functor,
+                pos,
+                named,
+                ..
+            } => functor_view_head(kb, *functor, pos.len(), named.len()),
             // WI-276: a reflect Expr occurrence is structural — expose its Expr.
             // WI-342: Type / EffectExpr occurrences expose their functor too.
             Value::Node(occ) => occ_head(occ, kb),
@@ -2326,9 +2457,7 @@ impl TermView for Value {
             Value::SymbolRef(s) => ViewHead::Ref(*s),
             // WI-1019 — the two RESOLVED values read structurally; see the
             // section above for why these two and not the rest.
-            Value::OpRef { dict, named, .. } => {
-                opref_head(dict.is_some(), named.is_some(), kb)
-            }
+            Value::OpRef { dict, named, .. } => opref_head(dict.is_some(), named.is_some(), kb),
             // WHAT IS STILL `Opaque`, AND WHY — a payload-free head is the right
             // answer for a carrier with no shape to present, NOT a gap. Equality
             // is carrier identity ([`Value::opaque_carrier_eq`]) and the key stays
@@ -2375,17 +2504,20 @@ impl TermView for Value {
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
         match self {
             Value::Term { id: tid, .. } => match kb.get_term(*tid) {
-                Term::Fn { named_args, .. } => named_args.iter()
+                Term::Fn { named_args, .. } => named_args
+                    .iter()
                     .find(|(s, _)| *s == sym)
                     .map(|(_, t)| ViewItem::Term(*t)),
                 _ => None,
             },
-            Value::Tuple { named, .. } => {
-                named.iter().find(|(s, _)| *s == sym).map(|(_, v)| ViewItem::Value(v))
-            }
-            Value::Entity { named, .. } => {
-                named.iter().find(|(s, _)| *s == sym).map(|(_, v)| ViewItem::Value(v))
-            }
+            Value::Tuple { named, .. } => named
+                .iter()
+                .find(|(s, _)| *s == sym)
+                .map(|(_, v)| ViewItem::Value(v)),
+            Value::Entity { named, .. } => named
+                .iter()
+                .find(|(s, _)| *s == sym)
+                .map(|(_, v)| ViewItem::Value(v)),
             // WI-342: a Type/EffectExpr child may be ground (`Term`) — handle
             // both via `occ_type_named`; fall back to the Expr `Rc` reader.
             Value::Node(occ) => occ_view_named_arg(occ, kb, sym),
@@ -2403,9 +2535,9 @@ impl TermView for Value {
                         .expect("opref_shape listed `dict` without one")
                         .as_value()
                         .clone(),
-                    "named" => Value::SymbolRef(
-                        named.expect("opref_shape listed `named` without one"),
-                    ),
+                    "named" => {
+                        Value::SymbolRef(named.expect("opref_shape listed `named` without one"))
+                    }
                     other => unreachable!("opref named_arg: no arm for key `{other}`"),
                 }))
             }
@@ -2615,7 +2747,8 @@ impl TermView for ViewItem<'_> {
     fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
         match self {
             ViewItem::Term(t) => match kb.get_term(*t) {
-                Term::Fn { named_args, .. } => named_args.iter()
+                Term::Fn { named_args, .. } => named_args
+                    .iter()
                     .find(|(s, _)| *s == sym)
                     .map(|(_, t)| ViewItem::Term(*t)),
                 _ => None,
@@ -2737,7 +2870,11 @@ impl TermView for ReflectedExpr {
             // A literal reflects as `*_lit(value: <the literal>)` — one named
             // arg, no positionals.
             Some(Expr::Const(lit)) => match self.lit_functor(lit) {
-                Some(f) => ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 1 },
+                Some(f) => ViewHead::Functor {
+                    functor: Some(f),
+                    pos_arity: 0,
+                    named_arity: 1,
+                },
                 None => ViewHead::Opaque,
             },
             _ => ViewHead::Opaque,
@@ -2837,7 +2974,12 @@ mod wi436_tests {
 
         // Every carrier's head is the bare `Ref(red)` — not a `Functor` — and
         // `functor_sym` reads `red` off it.
-        for h in [bare_ref.head(&kb), nullary_fn.head(&kb), entity_val.head(&kb), ctor_occ.head(&kb)] {
+        for h in [
+            bare_ref.head(&kb),
+            nullary_fn.head(&kb),
+            entity_val.head(&kb),
+            ctor_occ.head(&kb),
+        ] {
             assert!(matches!(h, ViewHead::Ref(s) if s == red));
             assert_eq!(h.functor_sym(), Some(red));
         }

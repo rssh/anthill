@@ -24,7 +24,6 @@
 //! error too). Provoking it needs a chmod-000 directory, which is a no-op for a
 //! root test runner and would be flaky in CI.
 
-
 use crate::common::{anthill, fixtures_dir, Output};
 
 /// `anthill load <fixtures/load/{rel}>` — `rel` may name a directory or a file.
@@ -43,28 +42,46 @@ fn query(rel: &str, pattern: &str) -> Output {
 /// the warn-and-continue demotion WI-744 killed.
 fn assert_blocks(out: &Output, file: &str, fault: &str) {
     assert_eq!(out.code, 1, "the load must block; stderr:\n{}", out.stderr);
-    assert!(!out.stdout.contains("loaded:"),
-            "the load must not report success; got stdout:\n{}", out.stdout);
-    assert!(out.has_diagnostic("error:", file) && out.stderr.contains(fault),
-            "expected a loud `error:` naming {file} and reporting `{fault}`; got stderr:\n{}",
-            out.stderr);
+    assert!(
+        !out.stdout.contains("loaded:"),
+        "the load must not report success; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.has_diagnostic("error:", file) && out.stderr.contains(fault),
+        "expected a loud `error:` naming {file} and reporting `{fault}`; got stderr:\n{}",
+        out.stderr
+    );
     // Line-wise, and anchored on the file rather than on a `warning: /`
     // path-shape proxy: unrelated advisories share this stderr (the stdlib's
     // requires-shadow pair), and WI-745 put `path:line:col` on the advisory
     // channel too, so any proxy for "looks like a path" would fire on them. What
     // must not exist is a WARNING LINE about THIS file.
-    assert!(!out.has_diagnostic("warning:", file),
-            "the data-file failure must not be demoted to a warning:\n{}", out.stderr);
+    assert!(
+        !out.has_diagnostic("warning:", file),
+        "the data-file failure must not be demoted to a warning:\n{}",
+        out.stderr
+    );
 }
 
 /// Assert the load succeeded and said nothing about any of `unread`.
 fn assert_clean(out: &Output, unread: &[&str]) {
-    assert_eq!(out.code, 0, "the load must succeed; stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("loaded:"),
-            "expected a `loaded:` summary; got stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "the load must succeed; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("loaded:"),
+        "expected a `loaded:` summary; got stdout:\n{}",
+        out.stdout
+    );
     for file in unread {
-        assert!(!out.stderr.contains(file),
-                "`{file}` must not be mentioned; got stderr:\n{}", out.stderr);
+        assert!(
+            !out.stderr.contains(file),
+            "`{file}` must not be mentioned; got stderr:\n{}",
+            out.stderr
+        );
     }
 }
 
@@ -79,13 +96,23 @@ fn assert_clean(out: &Output, unread: &[&str]) {
 #[test]
 fn declared_data_reaches_the_kb() {
     let out = query("good-data", "data.good.Person(name: ?n, age: ?a)");
-    assert_eq!(out.code, 0, "the query must succeed; stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "the query must succeed; stderr:\n{}",
+        out.stderr
+    );
     for expected in ["\"abe\"", "42", "\"bea\"", "37"] {
-        assert!(out.stdout.contains(expected),
-                "expected {expected} among the answers; got stdout:\n{}", out.stdout);
+        assert!(
+            out.stdout.contains(expected),
+            "expected {expected} among the answers; got stdout:\n{}",
+            out.stdout
+        );
     }
-    assert!(out.has_stdout_line("2 solution(s)"),
-            "expected exactly the 2 facts from anthill.toml; got stdout:\n{}", out.stdout);
+    assert!(
+        out.has_stdout_line("2 solution(s)"),
+        "expected exactly the 2 facts from anthill.toml; got stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// When a directory declares data in BOTH conventional formats, both load. Each
@@ -99,10 +126,17 @@ fn declared_data_reaches_the_kb() {
 #[test]
 fn both_conventional_formats_load() {
     let out = query("both-formats", "data.both.Person(name: ?n, age: ?a)");
-    assert_eq!(out.code, 0, "the query must succeed; stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "the query must succeed; stderr:\n{}",
+        out.stderr
+    );
     for expected in ["from-toml", "from-json"] {
-        assert!(out.stdout.contains(expected),
-                "expected `{expected}` among the answers; got stdout:\n{}", out.stdout);
+        assert!(
+            out.stdout.contains(expected),
+            "expected `{expected}` among the answers; got stdout:\n{}",
+            out.stdout
+        );
     }
 }
 
@@ -171,7 +205,11 @@ fn unparseable_data_file_blocks_the_load() {
 /// Sniffing could never have told these apart; it had only the content to go on.
 #[test]
 fn envelope_less_data_file_blocks_the_load() {
-    assert_blocks(&load("envelope-less-data"), "anthill.toml", "meta.entity must be a string");
+    assert_blocks(
+        &load("envelope-less-data"),
+        "anthill.toml",
+        "meta.entity must be a string",
+    );
 }
 
 /// Files that were never ours must be ignored outright — not loaded, not warned
@@ -189,8 +227,15 @@ fn envelope_less_data_file_blocks_the_load() {
 /// key; they now stand as ordinary foreign files, which is what they always were.
 #[test]
 fn foreign_data_files_are_not_our_business() {
-    assert_clean(&load("foreign-files"),
-                 &["Cargo.toml", "settings.json", "config.toml", "manifest.json"]);
+    assert_clean(
+        &load("foreign-files"),
+        &[
+            "Cargo.toml",
+            "settings.json",
+            "config.toml",
+            "manifest.json",
+        ],
+    );
 }
 
 /// The convention is `<dir>/anthill.toml` for a directory NAMED on the command

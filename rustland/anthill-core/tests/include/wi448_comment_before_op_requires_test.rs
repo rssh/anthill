@@ -19,8 +19,8 @@
 //! diagnostics are from the snippet itself. `load_all` returns ALL errors (blocking or
 //! not) in its `Err`, so the otherwise-non-blocking `UnresolvedName` is observable here.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load ONLY `src` (no stdlib) and return every load error as a string.

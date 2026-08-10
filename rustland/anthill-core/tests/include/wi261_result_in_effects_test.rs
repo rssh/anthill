@@ -8,14 +8,15 @@
 //!
 //! No grammar or new IR — only the loader's scope registration changes.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_stdlib_kb() -> KnowledgeBase {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
@@ -96,7 +97,8 @@ end
         Ok(_) => panic!("loading an operation with param named 'result' should error"),
         Err(errs) => errs,
     };
-    let conflict_match: Vec<_> = errors.iter()
+    let conflict_match: Vec<_> = errors
+        .iter()
         .filter(|e| {
             let m = format!("{}", e);
             m.contains("result") && m.contains("reserved")

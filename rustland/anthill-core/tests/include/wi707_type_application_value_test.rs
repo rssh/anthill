@@ -70,7 +70,9 @@ namespace test.wi707b
 end
 "#;
     let mut interp = interp_for(src);
-    interp.call("test.wi707b.facts", &[]).expect("facts_of with a parameterized type");
+    interp
+        .call("test.wi707b.facts", &[])
+        .expect("facts_of with a parameterized type");
 }
 
 /// The assembled value is the SAME hash-consed type term the loader builds for a
@@ -98,10 +100,14 @@ end
     let mut interp = interp_for(src);
 
     let term_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
-        let v = interp.call(&format!("test.wi707c.{op}"), &[]).unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        let v = interp
+            .call(&format!("test.wi707c.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         match v {
             Value::Term { id, .. } => id,
-            other => panic!("{op}: a type application must evaluate to a Term-carried type, got {other:?}"),
+            other => panic!(
+                "{op}: a type application must evaluate to a Term-carried type, got {other:?}"
+            ),
         }
     };
     let named_id = term_of(&mut interp, "named_form");
@@ -115,15 +121,31 @@ end
 
     // Shape: the base sort is the functor, the binding is keyed by the type-param name.
     let (functor, named) = match interp.kb().get_term(named_id).clone() {
-        Term::Fn { functor, named_args, .. } => (functor, named_args),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (functor, named_args),
         other => panic!("expected a parameterized `Fn` type term, got {other:?}"),
     };
-    assert_eq!(interp.kb().local_name_of(functor), "Cell", "the base sort is the functor");
+    assert_eq!(
+        interp.kb().local_name_of(functor),
+        "Cell",
+        "the base sort is the functor"
+    );
     assert_eq!(named.len(), 1, "one type argument");
-    assert_eq!(interp.kb().local_name_of(named[0].0), "V", "keyed by the declared type-param name");
+    assert_eq!(
+        interp.kb().local_name_of(named[0].0),
+        "V",
+        "keyed by the declared type-param name"
+    );
     match interp.kb().get_term(named[0].1).clone() {
         Term::Ref(s) | Term::Ident(s) => {
-            assert_eq!(interp.kb().local_name_of(s), "Int64", "the type argument is Int64")
+            assert_eq!(
+                interp.kb().local_name_of(s),
+                "Int64",
+                "the type argument is Int64"
+            )
         }
         other => panic!("expected the argument to be a sort reference, got {other:?}"),
     }
@@ -136,7 +158,9 @@ end
     let canonical = {
         let kb = interp.kb_mut();
         let cell = kb.try_resolve_symbol("anthill.prelude.Cell").expect("Cell");
-        let int64 = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let int64 = kb
+            .try_resolve_symbol("anthill.prelude.Int64")
+            .expect("Int64");
         let v = kb.intern("V");
         let base = kb.make_sort_ref(cell);
         let int_ref = kb.make_sort_ref(int64);

@@ -10,20 +10,19 @@
 /// - **Variable edges** (`Vec<(VarId, Node)>`): match anything, bind VarId
 ///
 /// See: docs/stage0/rust-term-store-design.md §7.6
-
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::eval::value::Value;
-use crate::intern::Symbol;
 use super::node_occurrence::NodeOccurrence;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
 use super::subst::Substitution;
+#[cfg(test)]
+use super::term::Term;
 use super::term::{Literal, TermId, Var, VarId};
 use super::term_view::{TermView, ViewHead, ViewItem};
 use super::KnowledgeBase;
-#[cfg(test)]
-use super::term::Term;
+use crate::eval::value::Value;
+use crate::intern::Symbol;
 
 // ── DiscrimKey — concrete edge labels ───────────────────────────
 
@@ -71,7 +70,11 @@ struct DiscrimNode<L> {
 
 impl<L> DiscrimNode<L> {
     fn new() -> Self {
-        DiscrimNode { concrete: HashMap::new(), var_edges: Vec::new(), leaves: Vec::new() }
+        DiscrimNode {
+            concrete: HashMap::new(),
+            var_edges: Vec::new(),
+            leaves: Vec::new(),
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -106,10 +109,14 @@ fn steal_discrim_children<L>(node: &mut DiscrimNode<L>, stack: &mut Vec<DiscrimN
     // shared by another snapshot is left to its other owners — its `Rc` here
     // just decrements: no recursion, no double free.
     for (_, child) in std::mem::take(&mut node.concrete) {
-        if let Some(inner) = Rc::into_inner(child) { stack.push(inner); }
+        if let Some(inner) = Rc::into_inner(child) {
+            stack.push(inner);
+        }
     }
     for (_, child) in std::mem::take(&mut node.var_edges) {
-        if let Some(inner) = Rc::into_inner(child) { stack.push(inner); }
+        if let Some(inner) = Rc::into_inner(child) {
+            stack.push(inner);
+        }
     }
     // `leaves` are owned `L` values (RuleId-shaped in practice) — no
     // recursive Drop concern.
@@ -124,7 +131,10 @@ fn make_mut_child<L: Clone>(
     map: &mut HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
     key: DiscrimKey,
 ) -> &mut DiscrimNode<L> {
-    Rc::make_mut(map.entry(key).or_insert_with(|| Rc::new(DiscrimNode::new())))
+    Rc::make_mut(
+        map.entry(key)
+            .or_insert_with(|| Rc::new(DiscrimNode::new())),
+    )
 }
 
 /// As [`make_mut_child`] but for the remove path: fork an *existing* child for
@@ -146,7 +156,9 @@ pub(crate) struct SubstTree<L> {
 
 impl<L> SubstTree<L> {
     pub(crate) fn new() -> Self {
-        SubstTree { root: DiscrimNode::new() }
+        SubstTree {
+            root: DiscrimNode::new(),
+        }
     }
 
     /// No stored pattern. The proposal-050 Γ overlay uses this to read whether
@@ -174,11 +186,17 @@ pub(crate) fn view_is_indexable<V: TermView>(kb: &KnowledgeBase, view: &V) -> bo
         return true;
     }
     match view.head(kb) {
-        ViewHead::Functor { functor: Some(_), pos_arity, .. } => {
+        ViewHead::Functor {
+            functor: Some(_),
+            pos_arity,
+            ..
+        } => {
             (0..pos_arity).all(|i| {
-                view.pos_arg(kb, i).map_or(false, |a| view_is_indexable(kb, &a))
+                view.pos_arg(kb, i)
+                    .map_or(false, |a| view_is_indexable(kb, &a))
             }) && view.named_keys(kb).into_iter().all(|s| {
-                view.named_arg(kb, s).map_or(false, |a| view_is_indexable(kb, &a))
+                view.named_arg(kb, s)
+                    .map_or(false, |a| view_is_indexable(kb, &a))
             })
         }
         ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Ref(_) | ViewHead::Bottom => true,
@@ -279,7 +297,11 @@ impl<L: Clone> SubstTree<L> {
             };
         }
         match view.head(kb) {
-            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+            ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                named_arity,
+            } => {
                 let arity = pos_arity + named_arity;
                 let n = make_mut_child(&mut node.concrete, DiscrimKey::Functor(functor));
                 let n = make_mut_child(&mut n.concrete, DiscrimKey::Arity(arity as u16));
@@ -328,7 +350,9 @@ impl<L: Clone> SubstTree<L> {
             cur = Self::insert_walk(cur, kb, &arg);
         }
         for sym in view.named_keys(kb) {
-            let arg = view.named_arg(kb, sym).expect("named_arg present during insert");
+            let arg = view
+                .named_arg(kb, sym)
+                .expect("named_arg present during insert");
             cur = make_mut_child(&mut cur.concrete, DiscrimKey::NamedKey(sym));
             cur = Self::insert_walk(cur, kb, &arg);
         }
@@ -338,7 +362,8 @@ impl<L: Clone> SubstTree<L> {
     // ── View-driven remove ──────────────────────────────────────
 
     pub(crate) fn remove_ground<V: TermView>(&mut self, kb: &KnowledgeBase, view: &V, leaf: &L)
-    where L: PartialEq,
+    where
+        L: PartialEq,
     {
         Self::remove_walk(&mut self.root, kb, view, leaf);
     }
@@ -352,7 +377,8 @@ impl<L: Clone> SubstTree<L> {
         view: &V,
         leaf: &L,
     ) -> bool
-    where L: PartialEq,
+    where
+        L: PartialEq,
     {
         // Removing a var-headed pattern by structure is never requested — the
         // callers retract stored ground/`TermId` heads. Mirror the old
@@ -361,19 +387,32 @@ impl<L: Clone> SubstTree<L> {
             return node.is_empty();
         }
         match view.head(kb) {
-            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+            ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                named_arity,
+            } => {
                 let arity = pos_arity + named_arity;
                 let fk = DiscrimKey::Functor(functor);
                 let prune_fn = if let Some(fn_child) = get_mut_child(&mut node.concrete, &fk) {
                     let ak = DiscrimKey::Arity(arity as u16);
-                    let prune_ar = if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
-                        let arg_seq = Self::owned_arg_seq(kb, view, pos_arity);
-                        Self::remove_walk_args(ar_child, kb, &arg_seq, 0, leaf)
-                    } else { false };
-                    if prune_ar { fn_child.concrete.remove(&ak); }
+                    let prune_ar =
+                        if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
+                            let arg_seq = Self::owned_arg_seq(kb, view, pos_arity);
+                            Self::remove_walk_args(ar_child, kb, &arg_seq, 0, leaf)
+                        } else {
+                            false
+                        };
+                    if prune_ar {
+                        fn_child.concrete.remove(&ak);
+                    }
                     fn_child.is_empty()
-                } else { false };
-                if prune_fn { node.concrete.remove(&fk); }
+                } else {
+                    false
+                };
+                if prune_fn {
+                    node.concrete.remove(&fk);
+                }
                 node.is_empty()
             }
             ViewHead::Const(lit) => Self::remove_at_leaf_key(node, DiscrimKey::Lit(lit), leaf),
@@ -409,26 +448,27 @@ impl<L: Clone> SubstTree<L> {
             seq.push((DiscrimKey::Positional, OwnedView::from_item(&item)));
         }
         for sym in view.named_keys(kb) {
-            let item = view.named_arg(kb, sym).expect("named_arg present during remove");
+            let item = view
+                .named_arg(kb, sym)
+                .expect("named_arg present during remove");
             seq.push((DiscrimKey::NamedKey(sym), OwnedView::from_item(&item)));
         }
         seq
     }
 
     /// Remove leaf at a terminal key, prune if empty.
-    fn remove_at_leaf_key(
-        node: &mut DiscrimNode<L>,
-        key: DiscrimKey,
-        leaf: &L,
-    ) -> bool
-    where L: PartialEq,
+    fn remove_at_leaf_key(node: &mut DiscrimNode<L>, key: DiscrimKey, leaf: &L) -> bool
+    where
+        L: PartialEq,
     {
         let prune = if let Some(child) = get_mut_child(&mut node.concrete, &key) {
             if let Some(pos) = child.leaves.iter().position(|l| l == leaf) {
                 child.leaves.swap_remove(pos);
             }
             child.is_empty()
-        } else { false };
+        } else {
+            false
+        };
         if prune {
             node.concrete.remove(&key);
         }
@@ -443,7 +483,8 @@ impl<L: Clone> SubstTree<L> {
         idx: usize,
         leaf: &L,
     ) -> bool
-    where L: PartialEq,
+    where
+        L: PartialEq,
     {
         if idx == arg_seq.len() {
             if let Some(pos) = node.leaves.iter().position(|l| l == leaf) {
@@ -455,8 +496,12 @@ impl<L: Clone> SubstTree<L> {
         let marker = arg_seq[idx].0.clone();
         let prune = if let Some(marker_child) = get_mut_child(&mut node.concrete, &marker) {
             Self::remove_walk_arg_value(marker_child, kb, &arg_seq[idx].1, arg_seq, idx, leaf)
-        } else { false };
-        if prune { node.concrete.remove(&marker); }
+        } else {
+            false
+        };
+        if prune {
+            node.concrete.remove(&marker);
+        }
         node.is_empty()
     }
 
@@ -469,35 +514,54 @@ impl<L: Clone> SubstTree<L> {
         idx: usize,
         leaf: &L,
     ) -> bool
-    where L: PartialEq,
+    where
+        L: PartialEq,
     {
         let view = arg.view();
         if view.index_var(kb).is_some() {
             return node.is_empty();
         }
         match view.head(kb) {
-            ViewHead::Functor { functor: Some(functor), pos_arity, named_arity } => {
+            ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                named_arity,
+            } => {
                 let arity = pos_arity + named_arity;
                 let fk = DiscrimKey::Functor(functor);
                 let prune_fn = if let Some(fn_child) = get_mut_child(&mut node.concrete, &fk) {
                     let ak = DiscrimKey::Arity(arity as u16);
-                    let prune_ar = if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
-                        let mut combined = Self::owned_arg_seq(kb, &view, pos_arity);
-                        combined.extend(arg_seq[idx + 1..].iter().cloned());
-                        Self::remove_walk_args(ar_child, kb, &combined, 0, leaf)
-                    } else { false };
-                    if prune_ar { fn_child.concrete.remove(&ak); }
+                    let prune_ar =
+                        if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
+                            let mut combined = Self::owned_arg_seq(kb, &view, pos_arity);
+                            combined.extend(arg_seq[idx + 1..].iter().cloned());
+                            Self::remove_walk_args(ar_child, kb, &combined, 0, leaf)
+                        } else {
+                            false
+                        };
+                    if prune_ar {
+                        fn_child.concrete.remove(&ak);
+                    }
                     fn_child.is_empty()
-                } else { false };
-                if prune_fn { node.concrete.remove(&fk); }
+                } else {
+                    false
+                };
+                if prune_fn {
+                    node.concrete.remove(&fk);
+                }
                 node.is_empty()
             }
             ViewHead::Const(lit) => {
                 Self::remove_value_then_continue(node, DiscrimKey::Lit(lit), kb, arg_seq, idx, leaf)
             }
-            ViewHead::Ident(sym) => {
-                Self::remove_value_then_continue(node, DiscrimKey::Ident(sym), kb, arg_seq, idx, leaf)
-            }
+            ViewHead::Ident(sym) => Self::remove_value_then_continue(
+                node,
+                DiscrimKey::Ident(sym),
+                kb,
+                arg_seq,
+                idx,
+                leaf,
+            ),
             ViewHead::Ref(sym) => {
                 Self::remove_value_then_continue(node, DiscrimKey::Ref(sym), kb, arg_seq, idx, leaf)
             }
@@ -526,12 +590,17 @@ impl<L: Clone> SubstTree<L> {
         idx: usize,
         leaf: &L,
     ) -> bool
-    where L: PartialEq,
+    where
+        L: PartialEq,
     {
         let prune = if let Some(child) = get_mut_child(&mut node.concrete, &key) {
             Self::remove_walk_args(child, kb, arg_seq, idx + 1, leaf)
-        } else { false };
-        if prune { node.concrete.remove(&key); }
+        } else {
+            false
+        };
+        if prune {
+            node.concrete.remove(&key);
+        }
         node.is_empty()
     }
 }
@@ -568,7 +637,15 @@ impl<L: Clone> SubstTree<L> {
         match_mode: bool,
     ) -> Vec<(L, SmallSubst)> {
         let mut results = Vec::new();
-        Self::query_node(&self.root, kb, query, VarPath::root(), SmallSubst::new(), match_mode, &mut results);
+        Self::query_node(
+            &self.root,
+            kb,
+            query,
+            VarPath::root(),
+            SmallSubst::new(),
+            match_mode,
+            &mut results,
+        );
         results
     }
 
@@ -605,7 +682,8 @@ impl<L: Clone> SubstTree<L> {
     where
         F: Fn(&L) -> TermId,
     {
-        self.query_raw_mode(kb, query, match_mode).into_iter()
+        self.query_raw_mode(kb, query, match_mode)
+            .into_iter()
             .map(|(leaf, subst)| {
                 let fact_term = resolve_term(&leaf);
                 let s = subst.resolve_leaf(kb, fact_term, false);
@@ -640,7 +718,8 @@ impl<L: Clone> SubstTree<L> {
     where
         F: Fn(&L) -> Value,
     {
-        self.query_raw(kb, query).into_iter()
+        self.query_raw(kb, query)
+            .into_iter()
             .map(|(leaf, subst)| {
                 let head = resolve_head(&leaf);
                 let s = match &head {
@@ -686,11 +765,17 @@ impl<L: Clone> SubstTree<L> {
             // key — all three route to universal var-edges only.
             ViewHead::Var(Var::Global(_) | Var::DeBruijn(_)) | ViewHead::Opaque => {
                 for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
+                    let branch = subst
+                        .clone()
+                        .with_binding(tree_var.as_vid(), query.as_bind_value());
                     Self::collect_all_leaves(child, branch, results);
                 }
             }
-            ViewHead::Functor { functor, pos_arity, named_arity } => {
+            ViewHead::Functor {
+                functor,
+                pos_arity,
+                named_arity,
+            } => {
                 let arity = pos_arity + named_arity;
                 if let Some(fsym) = functor {
                     if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
@@ -704,14 +789,26 @@ impl<L: Clone> SubstTree<L> {
                             // `path` is the prefix to this head's args — root at
                             // the top level; the args' own paths extend it.
                             Self::query_args(
-                                n2, kb, query, 0, pos_arity, &named_keys, 0,
-                                &path, subst.clone(), match_mode, results, &collect_leaves,
+                                n2,
+                                kb,
+                                query,
+                                0,
+                                pos_arity,
+                                &named_keys,
+                                0,
+                                &path,
+                                subst.clone(),
+                                match_mode,
+                                results,
+                                &collect_leaves,
                             );
                         }
                     }
                 }
                 for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
+                    let branch = subst
+                        .clone()
+                        .with_binding(tree_var.as_vid(), query.as_bind_value());
                     Self::collect_all_leaves(child, branch, results);
                 }
             }
@@ -743,7 +840,9 @@ impl<L: Clone> SubstTree<L> {
             }
         }
         for (tree_var, child) in &node.var_edges {
-            let branch = subst.clone().with_binding(tree_var.as_vid(), query.as_bind_value());
+            let branch = subst
+                .clone()
+                .with_binding(tree_var.as_vid(), query.as_bind_value());
             Self::collect_all_leaves(child, branch, results);
         }
     }
@@ -779,9 +878,20 @@ impl<L: Clone> SubstTree<L> {
             if let Some(mc) = node.concrete.get(&DiscrimKey::Positional) {
                 if let Some(arg) = query.pos_arg(kb, pos_idx) {
                     Self::query_arg_value(
-                        mc, kb, arg, arg_path, prefix, query,
-                        pos_idx + 1, pos_total, named_keys, named_idx,
-                        subst, match_mode, results, on_done,
+                        mc,
+                        kb,
+                        arg,
+                        arg_path,
+                        prefix,
+                        query,
+                        pos_idx + 1,
+                        pos_total,
+                        named_keys,
+                        named_idx,
+                        subst,
+                        match_mode,
+                        results,
+                        on_done,
                     );
                 }
             }
@@ -791,9 +901,20 @@ impl<L: Clone> SubstTree<L> {
             if let Some(mc) = node.concrete.get(&DiscrimKey::NamedKey(sym)) {
                 if let Some(arg) = query.named_arg(kb, sym) {
                     Self::query_arg_value(
-                        mc, kb, arg, arg_path, prefix, query,
-                        pos_idx, pos_total, named_keys, named_idx + 1,
-                        subst, match_mode, results, on_done,
+                        mc,
+                        kb,
+                        arg,
+                        arg_path,
+                        prefix,
+                        query,
+                        pos_idx,
+                        pos_total,
+                        named_keys,
+                        named_idx + 1,
+                        subst,
+                        match_mode,
+                        results,
+                        on_done,
                     );
                 }
             }
@@ -831,8 +952,8 @@ impl<L: Clone> SubstTree<L> {
             ViewHead::Var(Var::Global(vid)) if !match_mode => {
                 let s = subst.with_binding(vid, BindValue::Path(arg_path));
                 Self::skip_subtree_then_continue(
-                    node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                    prefix, s, match_mode, results, on_done,
+                    node, kb, outer, pos_idx, pos_total, named_keys, named_idx, prefix, s,
+                    match_mode, results, on_done,
                 );
             }
             // `Rigid` skolem: a CONSTANT arg — follows only the same-id
@@ -840,9 +961,20 @@ impl<L: Clone> SubstTree<L> {
             // it), never a concrete arg or a different skolem.
             ViewHead::Var(Var::Rigid(vid)) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::RigidVar(vid), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, match_mode, results, on_done,
+                    node,
+                    &DiscrimKey::RigidVar(vid),
+                    arg,
+                    kb,
+                    outer,
+                    pos_idx,
+                    pos_total,
+                    named_keys,
+                    named_idx,
+                    prefix,
+                    subst,
+                    match_mode,
+                    results,
+                    on_done,
                 );
             }
             // MATCH mode's flex `Global` joins `DeBruijn`/`Opaque`: an INERT arg
@@ -851,14 +983,20 @@ impl<L: Clone> SubstTree<L> {
             // `Opaque` has no concrete key.
             ViewHead::Var(Var::Global(_) | Var::DeBruijn(_)) | ViewHead::Opaque => {
                 for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
+                    let branch = subst
+                        .clone()
+                        .with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
-                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        prefix, branch, match_mode, results, on_done,
+                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx, prefix,
+                        branch, match_mode, results, on_done,
                     );
                 }
             }
-            ViewHead::Functor { functor, pos_arity, named_arity } => {
+            ViewHead::Functor {
+                functor,
+                pos_arity,
+                named_arity,
+            } => {
                 let arity = pos_arity + named_arity;
                 if let Some(fsym) = functor {
                     if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
@@ -873,46 +1011,102 @@ impl<L: Clone> SubstTree<L> {
                             // Descend with `arg_path` as the nested container's
                             // prefix — nested vars extend it, not restart at root.
                             Self::query_args(
-                                n2, kb, &arg, 0, pos_arity, &inner_named_keys, 0,
-                                &arg_path, subst.clone(), match_mode, results, &nested_cont,
+                                n2,
+                                kb,
+                                &arg,
+                                0,
+                                pos_arity,
+                                &inner_named_keys,
+                                0,
+                                &arg_path,
+                                subst.clone(),
+                                match_mode,
+                                results,
+                                &nested_cont,
                             );
                         }
                     }
                 }
                 for (tree_var, child) in &node.var_edges {
-                    let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
+                    let branch = subst
+                        .clone()
+                        .with_binding(tree_var.as_vid(), arg.as_bind_value());
                     Self::query_args(
-                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                        prefix, branch, match_mode, results, on_done,
+                        child, kb, outer, pos_idx, pos_total, named_keys, named_idx, prefix,
+                        branch, match_mode, results, on_done,
                     );
                 }
             }
             ViewHead::Const(lit) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Lit(lit), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, match_mode, results, on_done,
+                    node,
+                    &DiscrimKey::Lit(lit),
+                    arg,
+                    kb,
+                    outer,
+                    pos_idx,
+                    pos_total,
+                    named_keys,
+                    named_idx,
+                    prefix,
+                    subst,
+                    match_mode,
+                    results,
+                    on_done,
                 );
             }
             ViewHead::Ident(sym) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Ident(sym), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, match_mode, results, on_done,
+                    node,
+                    &DiscrimKey::Ident(sym),
+                    arg,
+                    kb,
+                    outer,
+                    pos_idx,
+                    pos_total,
+                    named_keys,
+                    named_idx,
+                    prefix,
+                    subst,
+                    match_mode,
+                    results,
+                    on_done,
                 );
             }
             ViewHead::Ref(sym) => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Ref(sym), arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, match_mode, results, on_done,
+                    node,
+                    &DiscrimKey::Ref(sym),
+                    arg,
+                    kb,
+                    outer,
+                    pos_idx,
+                    pos_total,
+                    named_keys,
+                    named_idx,
+                    prefix,
+                    subst,
+                    match_mode,
+                    results,
+                    on_done,
                 );
             }
             ViewHead::Bottom => {
                 Self::follow_key_then_continue(
-                    node, &DiscrimKey::Bottom, arg, kb, outer,
-                    pos_idx, pos_total, named_keys, named_idx, prefix,
-                    subst, match_mode, results, on_done,
+                    node,
+                    &DiscrimKey::Bottom,
+                    arg,
+                    kb,
+                    outer,
+                    pos_idx,
+                    pos_total,
+                    named_keys,
+                    named_idx,
+                    prefix,
+                    subst,
+                    match_mode,
+                    results,
+                    on_done,
                 );
             }
         }
@@ -938,15 +1132,27 @@ impl<L: Clone> SubstTree<L> {
     ) {
         if let Some(child) = node.concrete.get(key) {
             Self::query_args(
-                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, subst.clone(), match_mode, results, on_done,
+                child,
+                kb,
+                outer,
+                pos_idx,
+                pos_total,
+                named_keys,
+                named_idx,
+                prefix,
+                subst.clone(),
+                match_mode,
+                results,
+                on_done,
             );
         }
         for (tree_var, child) in &node.var_edges {
-            let branch = subst.clone().with_binding(tree_var.as_vid(), arg.as_bind_value());
+            let branch = subst
+                .clone()
+                .with_binding(tree_var.as_vid(), arg.as_bind_value());
             Self::query_args(
-                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, branch, match_mode, results, on_done,
+                child, kb, outer, pos_idx, pos_total, named_keys, named_idx, prefix, branch,
+                match_mode, results, on_done,
             );
         }
     }
@@ -968,19 +1174,49 @@ impl<L: Clone> SubstTree<L> {
         on_done: &dyn Fn(&DiscrimNode<L>, SmallSubst, &mut Vec<(L, SmallSubst)>),
     ) {
         Self::query_args(
-            node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-            prefix, subst.clone(), match_mode, results, on_done,
+            node,
+            kb,
+            outer,
+            pos_idx,
+            pos_total,
+            named_keys,
+            named_idx,
+            prefix,
+            subst.clone(),
+            match_mode,
+            results,
+            on_done,
         );
         for (_, child) in &node.concrete {
             Self::skip_subtree_then_continue(
-                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, subst.clone(), match_mode, results, on_done,
+                child,
+                kb,
+                outer,
+                pos_idx,
+                pos_total,
+                named_keys,
+                named_idx,
+                prefix,
+                subst.clone(),
+                match_mode,
+                results,
+                on_done,
             );
         }
         for (_, child) in &node.var_edges {
             Self::skip_subtree_then_continue(
-                child, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                prefix, subst.clone(), match_mode, results, on_done,
+                child,
+                kb,
+                outer,
+                pos_idx,
+                pos_total,
+                named_keys,
+                named_idx,
+                prefix,
+                subst.clone(),
+                match_mode,
+                results,
+                on_done,
             );
         }
     }
@@ -1020,10 +1256,17 @@ mod tests {
 
     impl TestEnv {
         fn new() -> Self {
-            TestEnv { kb: KnowledgeBase::new(), next_var: 0 }
+            TestEnv {
+                kb: KnowledgeBase::new(),
+                next_var: 0,
+            }
         }
-        fn intern(&mut self, s: &str) -> Symbol { self.kb.intern(s) }
-        fn alloc(&mut self, term: Term) -> TermId { self.kb.alloc(term) }
+        fn intern(&mut self, s: &str) -> Symbol {
+            self.kb.intern(s)
+        }
+        fn alloc(&mut self, term: Term) -> TermId {
+            self.kb.alloc(term)
+        }
         fn fresh_var(&mut self, name: &str) -> VarId {
             let sym = self.kb.intern(name);
             let id = self.next_var;
@@ -1050,7 +1293,9 @@ mod tests {
         let f = env.intern("account");
         let val = env.alloc(Term::Const(Literal::String("A001".into())));
         let term = env.alloc(Term::Fn {
-            functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new(),
+            functor: f,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
         });
         tree.insert_ground(&env.kb, &view(term), 1);
         let results = tree.query_resolved(&env.kb, &view(term), |_| term);
@@ -1065,8 +1310,16 @@ mod tests {
         let f = env.intern("f");
         let v1 = env.alloc(Term::Const(Literal::Int(1)));
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
-        let t1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
-        let t2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
+        let t1 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(v1, 1),
+            named_args: SmallVec::new(),
+        });
+        let t2 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(v2, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(t1), 1);
         assert!(tree.query_raw(&env.kb, &view(t2)).is_empty());
     }
@@ -1082,7 +1335,9 @@ mod tests {
         let color = env.intern("Color");
         // register `red` as a constructor of sort `Color` (Fn-form entity identity).
         let red_entity = env.alloc(Term::Fn {
-            functor: red, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+            functor: red,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         });
         let color_t = env.alloc(Term::Ref(color));
         env.kb.register_entity_of(red_entity, color_t);
@@ -1090,29 +1345,41 @@ mod tests {
 
         let holds = env.intern("holds");
         let red_fn = env.alloc(Term::Fn {
-            functor: red, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+            functor: red,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         });
         let red_ref = env.alloc(Term::Ref(red));
         let fact_fn = env.alloc(Term::Fn {
-            functor: holds, pos_args: SmallVec::from_elem(red_fn, 1), named_args: SmallVec::new(),
+            functor: holds,
+            pos_args: SmallVec::from_elem(red_fn, 1),
+            named_args: SmallVec::new(),
         });
         let query_ref = env.alloc(Term::Fn {
-            functor: holds, pos_args: SmallVec::from_elem(red_ref, 1), named_args: SmallVec::new(),
+            functor: holds,
+            pos_args: SmallVec::from_elem(red_ref, 1),
+            named_args: SmallVec::new(),
         });
 
         // fact stored in `Fn{red}` form, queried in bare `Ref(red)` form → match.
         let mut tree: SubstTree<u32> = SubstTree::new();
         tree.insert_ground(&env.kb, &view(fact_fn), 1);
         let res = make_resolver(vec![(1, fact_fn)]);
-        assert_eq!(tree.query_resolved(&env.kb, &view(query_ref), &res).len(), 1,
-            "bare Ref(red) query must match a stored nullary Fn{{red}} fact");
+        assert_eq!(
+            tree.query_resolved(&env.kb, &view(query_ref), &res).len(),
+            1,
+            "bare Ref(red) query must match a stored nullary Fn{{red}} fact"
+        );
 
         // …and the reverse: fact stored bare `Ref(red)`, queried as `Fn{red}`.
         let mut tree2: SubstTree<u32> = SubstTree::new();
         tree2.insert_ground(&env.kb, &view(query_ref), 2);
         let res2 = make_resolver(vec![(2, query_ref)]);
-        assert_eq!(tree2.query_resolved(&env.kb, &view(fact_fn), &res2).len(), 1,
-            "nullary Fn{{red}} query must match a stored bare Ref(red) fact");
+        assert_eq!(
+            tree2.query_resolved(&env.kb, &view(fact_fn), &res2).len(),
+            1,
+            "nullary Fn{{red}} query must match a stored bare Ref(red) fact"
+        );
     }
 
     #[test]
@@ -1123,8 +1390,16 @@ mod tests {
         let a = env.alloc(Term::Const(Literal::String("alice".into())));
         let b = env.alloc(Term::Const(Literal::String("bob".into())));
         let c = env.alloc(Term::Const(Literal::String("charlie".into())));
-        let f1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[a, b]), named_args: SmallVec::new() });
-        let f2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_slice(&[b, c]), named_args: SmallVec::new() });
+        let f1 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_slice(&[a, b]),
+            named_args: SmallVec::new(),
+        });
+        let f2 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_slice(&[b, c]),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(f1), 1);
         tree.insert_ground(&env.kb, &view(f2), 2);
         let res = make_resolver(vec![(1, f1), (2, f2)]);
@@ -1139,20 +1414,39 @@ mod tests {
         let f = env.intern("f");
         let v1 = env.alloc(Term::Const(Literal::Int(1)));
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
-        let t1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
-        let t2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
+        let t1 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(v1, 1),
+            named_args: SmallVec::new(),
+        });
+        let t2 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(v2, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(t1), 1);
         tree.insert_ground(&env.kb, &view(t2), 2);
 
         let vid = env.fresh_var("x");
         let var = env.alloc(Term::Var(Var::Global(vid)));
-        let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var, 1), named_args: SmallVec::new() });
+        let pat = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(var, 1),
+            named_args: SmallVec::new(),
+        });
         let res = make_resolver(vec![(1, t1), (2, t2)]);
         let results = tree.query_resolved(&env.kb, &view(pat), &res);
         assert_eq!(results.len(), 2);
         for (leaf, subst) in &results {
-            let bound = subst.resolve_as_value(vid).map(|v| v.expect_term()).expect("bound");
-            match leaf { 1 => assert_eq!(bound, v1), 2 => assert_eq!(bound, v2), _ => panic!() }
+            let bound = subst
+                .resolve_as_value(vid)
+                .map(|v| v.expect_term())
+                .expect("bound");
+            match leaf {
+                1 => assert_eq!(bound, v1),
+                2 => assert_eq!(bound, v2),
+                _ => panic!(),
+            }
         }
     }
 
@@ -1181,7 +1475,14 @@ mod tests {
         });
         let results = tree.query_resolved(&env.kb, &view(pat), |_| fact);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1.resolve_as_value(xv).map(|v| v.expect_term()).unwrap(), vid);
+        assert_eq!(
+            results[0]
+                .1
+                .resolve_as_value(xv)
+                .map(|v| v.expect_term())
+                .unwrap(),
+            vid
+        );
     }
 
     #[test]
@@ -1191,8 +1492,16 @@ mod tests {
         let f = env.intern("f");
         let g = env.intern("g");
         let val = env.alloc(Term::Const(Literal::Int(1)));
-        let tf = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
-        let tg = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+        let tf = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
+        let tg = env.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(tf), 1);
         tree.insert_ground(&env.kb, &view(tg), 2);
 
@@ -1202,8 +1511,15 @@ mod tests {
         let results = tree.query_resolved(&env.kb, &view(var_q), &res);
         assert_eq!(results.len(), 2);
         for (leaf, subst) in &results {
-            let bound = subst.resolve_as_value(vid).map(|v| v.expect_term()).unwrap();
-            match leaf { 1 => assert_eq!(bound, tf), 2 => assert_eq!(bound, tg), _ => panic!() }
+            let bound = subst
+                .resolve_as_value(vid)
+                .map(|v| v.expect_term())
+                .unwrap();
+            match leaf {
+                1 => assert_eq!(bound, tf),
+                2 => assert_eq!(bound, tg),
+                _ => panic!(),
+            }
         }
     }
 
@@ -1218,18 +1534,39 @@ mod tests {
         let f = env.intern("f");
         let g = env.intern("g");
         let v42 = env.alloc(Term::Const(Literal::Int(42)));
-        let g42 = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(v42, 1), named_args: SmallVec::new() });
-        let fact = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g42, 1), named_args: SmallVec::new() });
+        let g42 = env.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(v42, 1),
+            named_args: SmallVec::new(),
+        });
+        let fact = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(g42, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(fact), 1);
 
         let yv = env.fresh_var("y");
         let var_y = env.alloc(Term::Var(Var::Global(yv)));
-        let gy = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(var_y, 1), named_args: SmallVec::new() });
-        let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(gy, 1), named_args: SmallVec::new() });
+        let gy = env.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        let pat = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(gy, 1),
+            named_args: SmallVec::new(),
+        });
         let results = tree.query_resolved(&env.kb, &view(pat), |_| fact);
         assert_eq!(results.len(), 1, "fact should be found");
         let bound = results[0].1.resolve_as_value(yv).map(|v| v.expect_term());
-        assert_eq!(bound, Some(v42), "nested ?y must bind to 42, got {:?}", bound);
+        assert_eq!(
+            bound,
+            Some(v42),
+            "nested ?y must bind to 42, got {:?}",
+            bound
+        );
     }
 
     #[test]
@@ -1240,10 +1577,26 @@ mod tests {
         let g = env.intern("g");
         let v1 = env.alloc(Term::Const(Literal::Int(1)));
         let v2 = env.alloc(Term::Const(Literal::Int(2)));
-        let g1 = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(v1, 1), named_args: SmallVec::new() });
-        let g2 = env.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(v2, 1), named_args: SmallVec::new() });
-        let fg1 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g1, 1), named_args: SmallVec::new() });
-        let fg2 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(g2, 1), named_args: SmallVec::new() });
+        let g1 = env.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(v1, 1),
+            named_args: SmallVec::new(),
+        });
+        let g2 = env.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(v2, 1),
+            named_args: SmallVec::new(),
+        });
+        let fg1 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(g1, 1),
+            named_args: SmallVec::new(),
+        });
+        let fg2 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(g2, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(fg1), 1);
         tree.insert_ground(&env.kb, &view(fg2), 2);
 
@@ -1264,7 +1617,11 @@ mod tests {
         let mut tree: SubstTree<u32> = SubstTree::new();
         let f = env.intern("f");
         let val = env.alloc(Term::Const(Literal::Int(42)));
-        let term = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
+        let term = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(term), 1);
         assert_eq!(tree.query_raw(&env.kb, &view(term)).len(), 1);
         tree.remove_ground(&env.kb, &view(term), &1);
@@ -1278,7 +1635,11 @@ mod tests {
         let mut tree: SubstTree<u32> = SubstTree::new();
         let f = env.intern("f");
         let val = env.alloc(Term::Const(Literal::Int(1)));
-        let term = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
+        let term = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(term), 1);
         tree.insert_ground(&env.kb, &view(term), 2);
         tree.remove_ground(&env.kb, &view(term), &1);
@@ -1296,10 +1657,18 @@ mod tests {
         let f = env.intern("f");
         let vid = env.fresh_var("x");
         let var_term = env.alloc(Term::Var(Var::Global(vid)));
-        let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
+        let pat = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(var_term, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_pattern(&env.kb, &view(pat), 100);
         let val = env.alloc(Term::Const(Literal::Int(42)));
-        let ground = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(val, 1), named_args: SmallVec::new() });
+        let ground = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(val, 1),
+            named_args: SmallVec::new(),
+        });
         let results = tree.query_raw(&env.kb, &view(ground));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);
@@ -1311,17 +1680,29 @@ mod tests {
         let mut tree: SubstTree<u32> = SubstTree::new();
         let f = env.intern("f");
         let v42 = env.alloc(Term::Const(Literal::Int(42)));
-        let ground = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v42, 1), named_args: SmallVec::new() });
+        let ground = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(v42, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_ground(&env.kb, &view(ground), 1);
 
         let vid = env.fresh_var("x");
         let var_term = env.alloc(Term::Var(Var::Global(vid)));
-        let pat = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_term, 1), named_args: SmallVec::new() });
+        let pat = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(var_term, 1),
+            named_args: SmallVec::new(),
+        });
         tree.insert_pattern(&env.kb, &view(pat), 2);
 
         assert_eq!(tree.query_raw(&env.kb, &view(ground)).len(), 2);
         let v99 = env.alloc(Term::Const(Literal::Int(99)));
-        let q99 = env.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(v99, 1), named_args: SmallVec::new() });
+        let q99 = env.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(v99, 1),
+            named_args: SmallVec::new(),
+        });
         let r = tree.query_raw(&env.kb, &view(q99));
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, 2);

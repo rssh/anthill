@@ -153,7 +153,9 @@ fn the_refusal_names_the_sort_the_name_and_both_sites() {
 #[test]
 fn arity_is_order_dependent_without_the_refusal() {
     for src in [TWO_ARY_FIRST, ONE_ARY_FIRST] {
-        let Ok(kb) = crate::common::try_load_kb_with(src) else { continue };
+        let Ok(kb) = crate::common::try_load_kb_with(src) else {
+            continue;
+        };
         let op = kb
             .try_resolve_symbol("wi1049dup.a.Q.q_op")
             .expect("q_op resolves");
@@ -184,10 +186,22 @@ fn prelude_and_full_stdlib_still_load_clean() {
         .filter(|(_, &n)| n > 1)
         .map(|(s, n)| format!("{} × {n}", kb.qualified_name_of(*s)))
         .collect();
-    assert!(dups.is_empty(), "stdlib carries duplicate OperationInfo facts: {dups:#?}");
-    for qn in ["anthill.prelude.PartialEq.eq", "anthill.prelude.Ord.compare"] {
-        let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol {qn}"));
-        assert_eq!(counts.get(&sym), Some(&1), "{qn} reads exactly one OperationInfo");
+    assert!(
+        dups.is_empty(),
+        "stdlib carries duplicate OperationInfo facts: {dups:#?}"
+    );
+    for qn in [
+        "anthill.prelude.PartialEq.eq",
+        "anthill.prelude.Ord.compare",
+    ] {
+        let sym = kb
+            .try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("no symbol {qn}"));
+        assert_eq!(
+            counts.get(&sym),
+            Some(&1),
+            "{qn} reads exactly one OperationInfo"
+        );
     }
 }
 
@@ -208,7 +222,10 @@ fn a_rule_naming_an_operation_is_not_a_second_declaration() {
         end
     "#;
     let errs = duplicate_errors(src);
-    assert!(errs.is_empty(), "a rule head is not a redeclaration: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "a rule head is not a redeclaration: {errs:#?}"
+    );
 }
 
 #[test]
@@ -230,7 +247,10 @@ fn same_name_on_two_sorts_is_not_a_duplicate() {
         end
     "#;
     let errs = duplicate_errors(src);
-    assert!(errs.is_empty(), "cross-sort same name is not a duplicate: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "cross-sort same name is not a duplicate: {errs:#?}"
+    );
 }
 
 /// The case the ticket's proposed instrument — count the `OperationInfo` facts —
@@ -285,7 +305,10 @@ fn two_identical_files_are_two_declarations() {
         Ok(_) => Vec::new(),
         Err(e) => e,
     };
-    let dups: Vec<&String> = errs.iter().filter(|e| e.contains("declared more than once")).collect();
+    let dups: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("declared more than once"))
+        .collect();
     assert_eq!(
         dups.len(),
         1,
@@ -322,8 +345,14 @@ fn re_presenting_the_same_files_is_not_a_duplicate() {
         Ok(_) => Vec::new(),
         Err(e) => e.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
     };
-    let dups: Vec<&String> = errs.iter().filter(|e| e.contains("declared more than once")).collect();
-    assert!(dups.is_empty(), "a re-load is not a redeclaration: {dups:#?}");
+    let dups: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("declared more than once"))
+        .collect();
+    assert!(
+        dups.is_empty(),
+        "a re-load is not a redeclaration: {dups:#?}"
+    );
     // And the second load DID re-emit: the fact count moved even though the
     // declaration count did not. Without this the test would pass vacuously on a
     // KB where the re-load had been skipped entirely.
@@ -331,7 +360,11 @@ fn re_presenting_the_same_files_is_not_a_duplicate() {
         .try_resolve_symbol("anthill.prelude.MappedStream.map")
         .expect("MappedStream.map resolves");
     assert!(
-        op_info::operation_info_fact_counts(&kb).get(&op).copied().unwrap_or(0) > 1,
+        op_info::operation_info_fact_counts(&kb)
+            .get(&op)
+            .copied()
+            .unwrap_or(0)
+            > 1,
         "the re-load must actually re-emit OperationInfo, else this control is vacuous"
     );
 }

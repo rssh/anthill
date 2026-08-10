@@ -53,7 +53,10 @@ fn assert_refused(src: &str, what: &str) {
 /// after a trapped call returns a bogus `Internal` on every later call.
 fn run_int(src: &str, op: &str) -> i64 {
     let mut interp = interp_for(src);
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -186,7 +189,10 @@ namespace test.wi803.nested
       case none() -> 0
 end
 "#;
-    assert_loads(src, "a permuted value destructured under a constructor pattern");
+    assert_loads(
+        src,
+        "a permuted value destructured under a constructor pattern",
+    );
     assert_eq!(run_int(src, "test.wi803.nested.drive"), -7);
 }
 
@@ -326,7 +332,8 @@ end
 "#;
     let errs = load_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("1 parameter") && e.contains("2 parameters")),
+        errs.iter()
+            .any(|e| e.contains("1 parameter") && e.contains("2 parameters")),
         "the diagnostic must name the binder count against the component count, \
          not accept the shape; got: {errs:?}",
     );

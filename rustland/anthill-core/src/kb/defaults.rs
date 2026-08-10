@@ -153,7 +153,11 @@ pub(crate) fn default_provider_not_a_provider_message(
         format!(
             "'{}' is provided by {}",
             spec,
-            provides.iter().map(|p| format!("'{}'", p)).collect::<Vec<_>>().join(", ")
+            provides
+                .iter()
+                .map(|p| format!("'{}'", p))
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     format!(
@@ -273,8 +277,13 @@ impl DefaultProviderIndex {
     /// no-displacement diagnostic prints, and the half that says whether a row was
     /// inferred from the carrier's own provision or written by hand.
     pub fn rendered_rows_for_carrier(&self, kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
-        let Some(sym) = kb.try_resolve_symbol(carrier_qn) else { return Vec::new() };
-        self.rows_for_carrier(kb, sym).iter().map(|r| render_row(kb, r, true)).collect()
+        let Some(sym) = kb.try_resolve_symbol(carrier_qn) else {
+            return Vec::new();
+        };
+        self.rows_for_carrier(kb, sym)
+            .iter()
+            .map(|r| render_row(kb, r, true))
+            .collect()
     }
 }
 
@@ -331,7 +340,10 @@ pub fn build_default_provider_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     errors.extend(row_errors);
     let mut by_carrier_base: HashMap<Symbol, Vec<DefaultRow>> = HashMap::new();
     for row in rows {
-        by_carrier_base.entry(row.carrier_base).or_default().push(row);
+        by_carrier_base
+            .entry(row.carrier_base)
+            .or_default()
+            .push(row);
     }
     kb.set_default_provider_index(DefaultProviderIndex { by_carrier_base });
     errors
@@ -392,7 +404,13 @@ fn derive_rows(
         for (carrier, carrier_base) in carriers {
             push_row(
                 &mut rows,
-                DefaultRow { spec, carrier, carrier_base, provider, origin: DefaultOrigin::Declared },
+                DefaultRow {
+                    spec,
+                    carrier,
+                    carrier_base,
+                    provider,
+                    origin: DefaultOrigin::Declared,
+                },
             );
         }
     }
@@ -401,8 +419,7 @@ fn derive_rows(
     // "The carrier's own provision is its default" (058 §3.6) — the clause that lets the
     // shipped standard library carry defaults with no edits at all.
     for p in provisions {
-        if typing::witness_dispatch_carrier_view(kb, p.spec_decl, p.provider, p.spec_view)
-            .is_some()
+        if typing::witness_dispatch_carrier_view(kb, p.spec_decl, p.provider, p.spec_view).is_some()
         {
             // A WITNESS: its carrier is some other sort, so it is a rival that may be
             // MARKED default, never one that is inferred to be.
@@ -481,7 +498,9 @@ fn declared_default_rows(kb: &KnowledgeBase) -> (Vec<(Symbol, Symbol)>, Vec<Load
             });
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
         // `sort_ref_functor`, not the spec-view reader: both fields are plain SORT
         // REFERENCES, the shape `matches_variance_fact` reads for the `fact Covariant(sort:
         // List, param: T)` precedent this entity copies. `provides_spec_base_sym` peels a
@@ -544,15 +563,11 @@ fn carriers_provided_by(
         // the same row said twice, which `push_row` collapses (so a DECLARED row may
         // carry `provider == carrier_base` too, which is why the origin is stored rather
         // than derived from that equality).
-        let entry = match typing::witness_dispatch_carrier_view(
-            kb,
-            p.spec_decl,
-            p.provider,
-            p.spec_view,
-        ) {
-            Some(pair) => pair,
-            None => (p.provider_name, p.provider),
-        };
+        let entry =
+            match typing::witness_dispatch_carrier_view(kb, p.spec_decl, p.provider, p.spec_view) {
+                Some(pair) => pair,
+                None => (p.provider_name, p.provider),
+            };
         // Two applications of one provider stay two carriers (`Console provides Effect`
         // ×3, and equally `Box[T = E]` beside `Box[T = Int64]`); only the identical
         // carrier collapses — see [`push_row`] for why this is identity and not overlap.
@@ -600,7 +615,10 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
         }
     }
     collisions.sort_by_key(|(a, _)| {
-        (kb.qualified_name_of(a.spec).to_string(), typing::type_display_name(kb, a.carrier))
+        (
+            kb.qualified_name_of(a.spec).to_string(),
+            typing::type_display_name(kb, a.carrier),
+        )
     });
     collisions
         .into_iter()

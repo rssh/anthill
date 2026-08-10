@@ -24,13 +24,25 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         pos: vec![].into(),
         named: vec![
             (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (convention_sym, Value::Entity {
-                functor: flat, pos: vec![].into(), named: vec![].into(),
-            }),
-        ].into(),
+            (
+                convention_sym,
+                Value::Entity {
+                    functor: flat,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
+        ]
+        .into(),
     };
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)))
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    interp
+        .register_mirror(
+            key,
+            Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)),
+        )
         .expect("a file store declares no intrinsic policy, so nothing is resolved");
     store_val
 }
@@ -39,29 +51,51 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
 /// the fact's head functor and the `fact_monotonicity(<qname>)` rule share one
 /// symbol (the guard keys on the functor symbol, so identity must line up).
 fn declared_fact(interp: &mut Interpreter, qname: &str) -> Value {
-    let sym = interp.kb_mut().try_resolve_symbol(qname)
+    let sym = interp
+        .kb_mut()
+        .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}` — is it declared?"));
-    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into() }
+    Value::Entity {
+        functor: sym,
+        pos: vec![].into(),
+        named: vec![].into(),
+    }
 }
 
-fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value, anthill_core::eval::EvalError> {
-    interp.call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
+fn persist(
+    interp: &mut Interpreter,
+    store: &Value,
+    fact: Value,
+) -> Result<Value, anthill_core::eval::EvalError> {
+    interp.call(
+        "anthill.persistence.Store.persist",
+        &[store.clone(), fact, Value::Unit],
+    )
 }
 
 fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
     let reference = interp.kb_mut().intern("reference");
     match stored {
-        Value::Entity { named, .. } => named.iter().find(|(name, _)| *name == reference)
+        Value::Entity { named, .. } => named
+            .iter()
+            .find(|(name, _)| *name == reference)
             .map(|(_, value)| value.clone())
             .expect("StoredRef carries reference"),
         other => panic!("persist must return StoredRef, got {other:?}"),
     }
 }
 
-fn retract(interp: &mut Interpreter, store: &Value, stored: Value) -> Result<Value, anthill_core::eval::EvalError> {
+fn retract(
+    interp: &mut Interpreter,
+    store: &Value,
+    stored: Value,
+) -> Result<Value, anthill_core::eval::EvalError> {
     let reference = stored_reference(interp, &stored);
     // `retract` moved to the NonMonotonicStore trait (proposal 053 / 007 §2).
-    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+    interp.call(
+        "anthill.persistence.NonMonotonicStore.retract",
+        &[store.clone(), reference],
+    )
 }
 
 #[test]
@@ -72,7 +106,10 @@ fn assert_of_monotone_functor_succeeds() {
     let store = setup_store(&mut interp, dir.path());
     let fact = declared_fact(&mut interp, "test.mono.Widget");
     let stored = persist(&mut interp, &store, fact).expect("monotone functor asserts");
-    assert!(matches!(stored, Value::Entity { .. }), "persist returns StoredRef");
+    assert!(
+        matches!(stored, Value::Entity { .. }),
+        "persist returns StoredRef"
+    );
 }
 
 #[test]
@@ -84,7 +121,10 @@ fn retract_of_monotone_functor_is_loud_error() {
     let fact = declared_fact(&mut interp, "test.mono.Widget");
     let id = persist(&mut interp, &store, fact).expect("persist ok");
     let err = retract(&mut interp, &store, id).expect_err("retract of monotone must be refused");
-    assert!(format!("{err:?}").contains("not non_monotone"), "wrong error: {err:?}");
+    assert!(
+        format!("{err:?}").contains("not non_monotone"),
+        "wrong error: {err:?}"
+    );
 }
 
 #[test]
@@ -115,7 +155,10 @@ fn assert_of_constant_functor_is_loud_error() {
     let store = setup_store(&mut interp, dir.path());
     let fact = declared_fact(&mut interp, "test.mono.Frozen");
     let err = persist(&mut interp, &store, fact).expect_err("assert of constant must be refused");
-    assert!(format!("{err:?}").contains("constant"), "wrong error: {err:?}");
+    assert!(
+        format!("{err:?}").contains("constant"),
+        "wrong error: {err:?}"
+    );
 }
 
 #[test]
@@ -130,10 +173,17 @@ fn reflection_index_functors_are_constant() {
     let dir = tempfile::tempdir().unwrap();
     let mut interp = interp_for("namespace test.reflectmono\n  entity Widget\nend\n");
     let store = setup_store(&mut interp, dir.path());
-    for qname in ["anthill.reflect.OperationInfo", "anthill.reflect.SortProvidesInfo"] {
+    for qname in [
+        "anthill.reflect.OperationInfo",
+        "anthill.reflect.SortProvidesInfo",
+    ] {
         let fact = declared_fact(&mut interp, qname);
-        let err = persist(&mut interp, &store, fact)
-            .expect_err(&format!("assert of constant reflection functor {qname} must be refused"));
-        assert!(format!("{err:?}").contains("constant"), "wrong error for {qname}: {err:?}");
+        let err = persist(&mut interp, &store, fact).expect_err(&format!(
+            "assert of constant reflection functor {qname} must be refused"
+        ));
+        assert!(
+            format!("{err:?}").contains("constant"),
+            "wrong error for {qname}: {err:?}"
+        );
     }
 }

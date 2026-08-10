@@ -122,7 +122,9 @@ pub struct MacroRejection {
 /// on an unfold-only KB. (The resolver's `has_directional_rewrite` gate, by
 /// contrast, IS `[simp]` OR `[unfold]` — it fronts a firer that fires both.)
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
-    kb.simp_equation_rids().into_iter().any(|rid| is_simp_equation(kb, rid))
+    kb.simp_equation_rids()
+        .into_iter()
+        .any(|rid| is_simp_equation(kb, rid))
 }
 
 /// WI-646: the typer's per-rule fire predicate — `rid` is a `[simp]`-tagged
@@ -164,7 +166,10 @@ pub(super) fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
 /// a caller is apt to hold a shared borrow. A `&mut` here would push such a caller into
 /// re-deriving the counts, the duplication this function exists to prevent.
 pub(super) fn equation_clause_census(kb: &KnowledgeBase, functor: Symbol) -> ClauseCensus {
-    let mut census = ClauseCensus { defining: 0, simp_tagged: 0 };
+    let mut census = ClauseCensus {
+        defining: 0,
+        simp_tagged: 0,
+    };
     // Streamed, not `live_rule_ids()`: that would materialize a Vec of EVERY
     // non-retracted rule (thousands, on a stdlib-sized KB) to then keep a handful.
     // `is_simp_equation` re-asks `is_equation` — left alone deliberately, because it is
@@ -205,9 +210,18 @@ pub(super) fn equation_lhs_shapes(
             continue;
         }
         let head = kb.fact_head_term(rid)?;
-        let Term::Fn { pos_args, .. } = kb.get_term(head) else { return None };
+        let Term::Fn { pos_args, .. } = kb.get_term(head) else {
+            return None;
+        };
         let lhs = *pos_args.first()?;
-        let Term::Fn { pos_args, named_args, .. } = kb.get_term(lhs) else { return None };
+        let Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } = kb.get_term(lhs)
+        else {
+            return None;
+        };
         let shape = (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect());
         if !out.contains(&shape) {
             out.push(shape);
@@ -311,8 +325,10 @@ pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
     let mut firer = TyperFirer { rejected: None };
     // Snapshot (op_sym, body) so we don't hold a borrow on `op_bodies` while
     // rewriting (which mutates `kb` — fresh vars, interning).
-    let bodies: Vec<(Symbol, Rc<NodeOccurrence>)> =
-        kb.op_bodies_iter().map(|(s, n)| (s, Rc::clone(n))).collect();
+    let bodies: Vec<(Symbol, Rc<NodeOccurrence>)> = kb
+        .op_bodies_iter()
+        .map(|(s, n)| (s, Rc::clone(n)))
+        .collect();
     for (op_sym, body) in bodies {
         // The driver is carrier-neutral (WI-643): wrap the occurrence body as a
         // `Value::Node` and unwrap the result. The occurrence carrier is closed
@@ -373,15 +389,29 @@ pub(super) fn rewrite<F: SimpFirer>(
     // former per-node `rules_by_functor` re-scan (amplified by WI-641/643
     // per-node firing).
     let rids = kb.simp_equation_rids();
-    let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit { node: root.clone(), fuel }];
+    let mut work: Vec<RewriteOp> = vec![RewriteOp::Visit {
+        node: root.clone(),
+        fuel,
+    }];
     let mut results: Vec<Value> = Vec::new();
 
     while let Some(op) = work.pop() {
         match op {
             RewriteOp::Visit { node, fuel } => visit_node(kb, node, fuel, &mut work, &mut results),
-            RewriteOp::Build { node, fuel, child_count } => {
-                build_node(kb, node, fuel, child_count, firer, &rids, &mut work, &mut results)
-            }
+            RewriteOp::Build {
+                node,
+                fuel,
+                child_count,
+            } => build_node(
+                kb,
+                node,
+                fuel,
+                child_count,
+                firer,
+                &rids,
+                &mut work,
+                &mut results,
+            ),
         }
     }
 
@@ -398,11 +428,18 @@ pub(super) fn rewrite<F: SimpFirer>(
 /// the fire→refire chain is bounded per-chain (descending to children
 /// unchanged), as in the former recursion.
 enum RewriteOp {
-    Visit { node: Value, fuel: usize },
+    Visit {
+        node: Value,
+        fuel: usize,
+    },
     /// `child_count` is the number of child `Visit`s scheduled alongside this
     /// frame — captured at `visit_node` time so `build_node` knows how many
     /// results to claim without re-walking the node.
-    Build { node: Value, fuel: usize, child_count: usize },
+    Build {
+        node: Value,
+        fuel: usize,
+        child_count: usize,
+    },
 }
 
 /// Examine a node: schedule a `Build` (which ATTEMPTS a fire at this node) and,
@@ -433,7 +470,11 @@ fn visit_node(
         return;
     }
     let children = children_of(kb, &node);
-    work.push(RewriteOp::Build { node, fuel, child_count: children.len() });
+    work.push(RewriteOp::Build {
+        node,
+        fuel,
+        child_count: children.len(),
+    });
     for child in children.into_iter().rev() {
         work.push(RewriteOp::Visit { node: child, fuel });
     }
@@ -487,7 +528,10 @@ fn build_node<F: SimpFirer>(
     let reassembled = reassemble_value(kb, &node, &new_children);
     match firer.fire(kb, &reassembled, rids) {
         // Re-normalize the firing result to fixpoint on the stack (fuel - 1).
-        Some(fired) => work.push(RewriteOp::Visit { node: fired, fuel: fuel - 1 }),
+        Some(fired) => work.push(RewriteOp::Visit {
+            node: fired,
+            fuel: fuel - 1,
+        }),
         None => results.push(reassembled),
     }
 }
@@ -506,13 +550,19 @@ fn children_of(kb: &KnowledgeBase, node: &Value) -> Vec<Value> {
             let mut children: Vec<Value> = Vec::new();
             if is_rewritable(occ.as_expr()) {
                 if let Some(expr) = occ.as_expr() {
-                    node_occurrence::for_each_child(expr, |c| children.push(Value::Node(Rc::clone(c))));
+                    node_occurrence::for_each_child(expr, |c| {
+                        children.push(Value::Node(Rc::clone(c)))
+                    });
                 }
             }
             children
         }
         Value::Term { id, .. } => match kb.get_term(*id) {
-            Term::Fn { pos_args, named_args, .. } => {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let mut children = Vec::with_capacity(pos_args.len() + named_args.len());
                 children.extend(pos_args.iter().map(|&c| Value::term(c)));
                 children.extend(named_args.iter().map(|&(_, c)| Value::term(c)));
@@ -550,16 +600,19 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
                 .iter()
                 .map(|c| match c {
                     Value::Node(n) => Rc::clone(n),
-                    other => unreachable!(
-                        "occurrence child must be a Node, got {}",
-                        other.type_name()
-                    ),
+                    other => {
+                        unreachable!("occurrence child must be a Node, got {}", other.type_name())
+                    }
                 })
                 .collect();
             Value::Node(reassemble(occ, &occs))
         }
         Value::Term { id, .. } => match kb.get_term(*id).clone() {
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 let np = pos_args.len();
                 // Unchanged-check (WI-646): if every rewritten child is the SAME
                 // `TermId` as the original, return the node unchanged — skipping
@@ -588,7 +641,11 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
                     .enumerate()
                     .map(|(i, &(sym, _))| (sym, new_children[np + i].expect_term()))
                     .collect();
-                Value::term(kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named }))
+                Value::term(kb.alloc(Term::Fn {
+                    functor,
+                    pos_args: new_pos,
+                    named_args: new_named,
+                }))
             }
             _ => node.clone(),
         },
@@ -659,7 +716,8 @@ pub(super) fn try_fire(
         // WI-655: evaluate the type-directed guard ONCE per node (a spec/sort law holds
         // only for carriers satisfying its sort), memoized across sibling rids of the
         // same functor and kept BEFORE the allocate-heavy `open_equation`.
-        let guard_holds = *guard.get_or_insert_with(|| super::typing::simp_fire_guard_holds(kb, occ));
+        let guard_holds =
+            *guard.get_or_insert_with(|| super::typing::simp_fire_guard_holds(kb, occ));
         // WI-714: a MACRO-headed RHS (`where <=> guarded_of`) is a definitional
         // compile-time LOWERING, not a conditional typeclass law — it bypasses the
         // carrier guard (the macro is its own validity check; its carrier need not
@@ -793,9 +851,11 @@ pub(super) fn macro_expanded_rhs_head(kb: &KnowledgeBase, rid: RuleId) -> Option
         _ => return None,
     };
     match kb.get_term(rhs) {
-        Term::Fn { functor, named_args, .. } if named_args.is_empty() => {
-            Some(*functor).filter(|f| super::typing::is_macro(kb, *f))
-        }
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } if named_args.is_empty() => Some(*functor).filter(|f| super::typing::is_macro(kb, *f)),
         _ => None,
     }
 }
@@ -856,7 +916,13 @@ fn try_expand_macro(
     // head must be a positional `apply` — a macro is called on the matched
     // pattern-var occurrences; named / type args are not part of the Inc-1 surface,
     // so a macro carrying those declines to expand and stays a template.
-    let Some(Expr::Apply { functor, pos_args, named_args, type_args }) = template.as_expr() else {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        type_args,
+    }) = template.as_expr()
+    else {
         return Ok(None);
     };
     let functor = *functor;
@@ -870,7 +936,8 @@ fn try_expand_macro(
     // carries the occurrence build builtins (`make_apply`, …). `None` = re-entry
     // cap hit (`run_in_bridge_interp` mem::takes the KB and reclaims it).
     let node_args: Vec<Value> = pos_args.iter().map(|o| Value::Node(Rc::clone(o))).collect();
-    let Some(outcome) = kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args))
+    let Some(outcome) =
+        kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args))
     else {
         return Ok(None);
     };
@@ -890,9 +957,11 @@ fn try_expand_macro(
         // WI-757: the macro's DIAGNOSTIC channel — it read the occurrences, found
         // them definitively untranslatable, and said why. Carry it out, span and
         // all; a macro that named no span leaves the location to the reporter.
-        Err(crate::eval::EvalError::MacroRejected { detail, span }) => {
-            Err(MacroRejection { macro_name: functor, detail, span })
-        }
+        Err(crate::eval::EvalError::MacroRejected { detail, span }) => Err(MacroRejection {
+            macro_name: functor,
+            detail,
+            span,
+        }),
         // WI-757 — the SAME channel, reached from anthill: a macro rejects by
         // RAISING (proposal 043.1 §3.6). A macro's declared row is capped at `Error`
         // (`check_macro_purity`) and its call is evaluated away at compile time, so
@@ -1048,16 +1117,24 @@ fn substitute_to_occurrence(
     while let Some(op) = work.pop() {
         match op {
             SubstOp::Visit(t) => subst_visit(kb, t, subst, from, pass, &mut work, &mut results),
-            SubstOp::BuildApply { functor, pos_count, named_keys } => {
+            SubstOp::BuildApply {
+                functor,
+                pos_count,
+                named_keys,
+            } => {
                 // Children are on top of `results` in source order
                 // (pos then named); peel them back off.
                 let total = pos_count + named_keys.len();
                 let start = results.len() - total;
                 let mut children = results.split_off(start).into_iter();
                 let pos_args: Vec<_> = (&mut children).take(pos_count).collect();
-                let named_args: Vec<_> =
-                    named_keys.into_iter().zip(children).collect();
-                let expr = Expr::Apply { functor, pos_args, named_args, type_args: Vec::new() };
+                let named_args: Vec<_> = named_keys.into_iter().zip(children).collect();
+                let expr = Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    type_args: Vec::new(),
+                };
                 results.push(NodeOccurrence::synthesized_expr(
                     expr,
                     Rc::clone(from),
@@ -1067,7 +1144,11 @@ fn substitute_to_occurrence(
             }
         }
     }
-    debug_assert_eq!(results.len(), 1, "substitute_to_occurrence: expected one result");
+    debug_assert_eq!(
+        results.len(),
+        1,
+        "substitute_to_occurrence: expected one result"
+    );
     results.pop().expect("RHS produced no NodeOccurrence")
 }
 
@@ -1076,7 +1157,11 @@ fn substitute_to_occurrence(
 /// `BuildApply` once its children land on `results`.
 enum SubstOp {
     Visit(TermId),
-    BuildApply { functor: Symbol, pos_count: usize, named_keys: Vec<Symbol> },
+    BuildApply {
+        functor: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+    },
 }
 
 /// Resolve one RHS term to a synthesized occurrence (leaf), or schedule a
@@ -1091,12 +1176,17 @@ fn subst_visit(
     work: &mut Vec<SubstOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
-    let synth = |expr: Expr| NodeOccurrence::synthesized_expr(expr, Rc::clone(from), pass, from.owner);
+    let synth =
+        |expr: Expr| NodeOccurrence::synthesized_expr(expr, Rc::clone(from), pass, from.owner);
     match kb.walk_view(term, subst) {
         // Reused matched child — keep its identity (and provenance).
         Value::Node(occ) => results.push(occ),
         Value::Term { id: t, .. } => match kb.get_term(t) {
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
                 work.push(SubstOp::BuildApply {
                     functor: *functor,
@@ -1149,7 +1239,11 @@ struct ChildCursor<'a> {
 
 impl<'a> ChildCursor<'a> {
     fn new(new: &'a [Rc<NodeOccurrence>]) -> Self {
-        ChildCursor { new, idx: 0, changed: false }
+        ChildCursor {
+            new,
+            idx: 0,
+            changed: false,
+        }
     }
     /// Take the next rewritten child, recording whether it differs from
     /// `original` (the slot it replaces).
@@ -1184,13 +1278,23 @@ pub(super) fn reassemble(
     };
     let mut cur = ChildCursor::new(new_children);
     let new_expr: Expr = match expr {
-        Expr::Apply { functor, pos_args, named_args, type_args } => Expr::Apply {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        } => Expr::Apply {
             functor: *functor,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
             type_args: type_args.clone(),
         },
-        Expr::Constructor { name, pos_args, named_args, from_projection } => Expr::Constructor {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            from_projection,
+        } => Expr::Constructor {
             name: *name,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
@@ -1198,7 +1302,11 @@ pub(super) fn reassemble(
             // projection desugared into — the receiver moved, the form did not.
             from_projection: *from_projection,
         },
-        Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
+        Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } => Expr::Instantiation {
             name: *name,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
@@ -1207,20 +1315,33 @@ pub(super) fn reassemble(
             predicate: cur.take(predicate),
             args: cur.take_vec(args),
         },
-        Expr::DotApply { receiver, name, pos_args, named_args } => Expr::DotApply {
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        } => Expr::DotApply {
             receiver: cur.take(receiver),
             name: *name,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
         },
-        Expr::If { condition, then_branch, else_branch } => Expr::If {
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => Expr::If {
             condition: cur.take(condition),
             then_branch: cur.take(then_branch),
             else_branch: cur.take(else_branch),
         },
         // WI-819: three children, no annotation slot to carry across — the
         // `: T` rides the PATTERN occurrence, so `cur.take(pattern)` brings it.
-        Expr::Let { pattern, value, body } => Expr::Let {
+        Expr::Let {
+            pattern,
+            value,
+            body,
+        } => Expr::Let {
             pattern: cur.take(pattern),
             value: cur.take(value),
             body: cur.take(body),
@@ -1229,7 +1350,10 @@ pub(super) fn reassemble(
             param: cur.take(param),
             body: cur.take(body),
         },
-        Expr::Match { scrutinee, branches } => {
+        Expr::Match {
+            scrutinee,
+            branches,
+        } => {
             let scr = cur.take(scrutinee);
             // WI-318: `for_each_child` now visits each branch as
             // pattern, body, guard? — consume in that order.
@@ -1239,10 +1363,18 @@ pub(super) fn reassemble(
                     let pattern = cur.take(&br.pattern);
                     let body = cur.take(&br.body);
                     let guard = br.guard.as_ref().map(|g| cur.take(g));
-                    MatchBranch { pattern, guard, body, span: br.span }
+                    MatchBranch {
+                        pattern,
+                        guard,
+                        body,
+                        span: br.span,
+                    }
                 })
                 .collect();
-            Expr::Match { scrutinee: scr, branches: new_branches }
+            Expr::Match {
+                scrutinee: scr,
+                branches: new_branches,
+            }
         }
         Expr::ListLit(es) => Expr::ListLit(cur.take_vec(es)),
         Expr::SetLit(es) => Expr::SetLit(cur.take_vec(es)),
@@ -1257,29 +1389,44 @@ pub(super) fn reassemble(
         // `requirement_at_sort(...)`, etc. as data reaches here. Rebuild them,
         // consuming children in `for_each_child` order (else their opened/
         // substituted children would be silently dropped).
-        Expr::ApplyWithin { functor, args, named_args, requirements, type_args } => {
-            Expr::ApplyWithin {
-                functor: *functor,
-                args: cur.take_vec(args),
-                named_args: cur.take_named(named_args),
-                requirements: cur.take_vec(requirements),
-                type_args: type_args.clone(),
-            }
-        }
-        Expr::HoApplyWithin { predicate, args, requirements } => Expr::HoApplyWithin {
+        Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        } => Expr::ApplyWithin {
+            functor: *functor,
+            args: cur.take_vec(args),
+            named_args: cur.take_named(named_args),
+            requirements: cur.take_vec(requirements),
+            type_args: type_args.clone(),
+        },
+        Expr::HoApplyWithin {
+            predicate,
+            args,
+            requirements,
+        } => Expr::HoApplyWithin {
             predicate: cur.take(predicate),
             args: cur.take_vec(args),
             requirements: cur.take_vec(requirements),
         },
-        Expr::ConstructorWithin { name, pos_args, named_args, requirements } => {
-            Expr::ConstructorWithin {
-                name: *name,
-                pos_args: cur.take_vec(pos_args),
-                named_args: cur.take_named(named_args),
-                requirements: cur.take_vec(requirements),
-            }
-        }
-        Expr::LambdaWithin { param, body, requirements } => Expr::LambdaWithin {
+        Expr::ConstructorWithin {
+            name,
+            pos_args,
+            named_args,
+            requirements,
+        } => Expr::ConstructorWithin {
+            name: *name,
+            pos_args: cur.take_vec(pos_args),
+            named_args: cur.take_named(named_args),
+            requirements: cur.take_vec(requirements),
+        },
+        Expr::LambdaWithin {
+            param,
+            body,
+            requirements,
+        } => Expr::LambdaWithin {
             param: cur.take(param),
             body: cur.take(body),
             requirements: cur.take_vec(requirements),
@@ -1296,7 +1443,13 @@ pub(super) fn reassemble(
         // order [conclude?, body] so a `[simp]` rewrite (or a WI-408
         // `some(…)` coercion) inside the goal or continuation propagates
         // up instead of being silently dropped.
-        Expr::Proof { target, strategy, using, conclude, body } => Expr::Proof {
+        Expr::Proof {
+            target,
+            strategy,
+            using,
+            conclude,
+            body,
+        } => Expr::Proof {
             target: *target,
             strategy: *strategy,
             using: using.clone(),
@@ -1321,9 +1474,9 @@ pub(super) fn reassemble(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kb::ClauseKind;
     use crate::kb::node_occurrence::{NodeKind, OccurrenceOrigin};
     use crate::kb::term::{Literal, Var};
+    use crate::kb::ClauseKind;
     use crate::span::{SourceId, SourceSpan};
     use smallvec::SmallVec;
 
@@ -1413,8 +1566,16 @@ mod tests {
         let head = Value::Entity {
             functor: eq,
             pos: vec![
-                Value::Entity { functor: a, pos: Vec::new().into(), named: Vec::new().into() },
-                Value::Entity { functor: b, pos: Vec::new().into(), named: Vec::new().into() },
+                Value::Entity {
+                    functor: a,
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
+                },
+                Value::Entity {
+                    functor: b,
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
+                },
             ]
             .into(),
             named: Vec::new().into(),
@@ -1523,12 +1684,22 @@ mod tests {
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let inner = NodeOccurrence::new_expr(
-            Expr::Apply { functor: add, pos_args: vec![Rc::clone(&seven), zero_occ], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: add,
+                pos_args: vec![Rc::clone(&seven), zero_occ],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span(),
             None,
         );
         let body = NodeOccurrence::new_expr(
-            Expr::Apply { functor: wrap, pos_args: vec![inner], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: wrap,
+                pos_args: vec![inner],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span(),
             None,
         );
@@ -1539,7 +1710,9 @@ mod tests {
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         match rewritten.as_expr() {
-            Some(Expr::Apply { functor, pos_args, .. }) => {
+            Some(Expr::Apply {
+                functor, pos_args, ..
+            }) => {
                 assert_eq!(*functor, wrap);
                 assert_eq!(pos_args.len(), 1);
                 assert!(
@@ -1574,7 +1747,12 @@ mod tests {
         let seven_o = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let zero_o = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let body = NodeOccurrence::new_expr(
-            Expr::Apply { functor: add, pos_args: vec![Rc::clone(&seven_o), zero_o], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: add,
+                pos_args: vec![Rc::clone(&seven_o), zero_o],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span(),
             None,
         );
@@ -1601,7 +1779,12 @@ mod tests {
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let body = NodeOccurrence::new_expr(
-            Expr::Apply { functor: add, pos_args: vec![Rc::clone(&seven), zero_occ], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: add,
+                pos_args: vec![Rc::clone(&seven), zero_occ],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span(),
             None,
         );
@@ -1636,21 +1819,46 @@ mod tests {
         let vy = kb.fresh_var(y_sym);
         let var_y = kb.alloc(Term::Var(Var::Global(vy)));
         let zero = kb.alloc(Term::Const(Literal::Int(0)));
-        let add_y0 = kb.alloc(Term::Fn { functor: add, pos_args: SmallVec::from_slice(&[var_y, zero]), named_args: SmallVec::new() });
-        let g_add = kb.alloc(Term::Fn { functor: g, pos_args: SmallVec::from_elem(add_y0, 1), named_args: SmallVec::new() });
-        let f_y = kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(var_y, 1), named_args: SmallVec::new() });
-        let eq_head = kb.alloc(Term::Fn { functor: eq_sym, pos_args: SmallVec::from_slice(&[f_y, g_add]), named_args: SmallVec::new() });
+        let add_y0 = kb.alloc(Term::Fn {
+            functor: add,
+            pos_args: SmallVec::from_slice(&[var_y, zero]),
+            named_args: SmallVec::new(),
+        });
+        let g_add = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(add_y0, 1),
+            named_args: SmallVec::new(),
+        });
+        let f_y = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(var_y, 1),
+            named_args: SmallVec::new(),
+        });
+        let eq_head = kb.alloc(Term::Fn {
+            functor: eq_sym,
+            pos_args: SmallVec::from_slice(&[f_y, g_add]),
+            named_args: SmallVec::new(),
+        });
         let meta = {
             let simp_sym = kb.intern("simp");
             let meta_sym = kb.intern("meta");
             let tru = kb.alloc(Term::Const(Literal::Bool(true)));
-            kb.alloc(Term::Fn { functor: meta_sym, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(simp_sym, tru)]) })
+            kb.alloc(Term::Fn {
+                functor: meta_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[(simp_sym, tru)]),
+            })
         };
         kb.assert_fact(eq_head, sort, domain, Some(meta));
 
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let body = NodeOccurrence::new_expr(
-            Expr::Apply { functor: f, pos_args: vec![seven], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: f,
+                pos_args: vec![seven],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span(),
             None,
         );
@@ -1661,7 +1869,9 @@ mod tests {
 
         let rewritten = kb.op_body_node(foo).expect("op body present");
         match rewritten.as_expr() {
-            Some(Expr::Apply { functor, pos_args, .. }) => {
+            Some(Expr::Apply {
+                functor, pos_args, ..
+            }) => {
                 assert_eq!(*functor, g, "f(7) should reduce to g(...)");
                 assert!(
                     matches!(pos_args[0].as_expr(), Some(Expr::Const(Literal::Int(7)))),
@@ -1671,7 +1881,13 @@ mod tests {
             other => panic!("expected g(7), got {other:?}"),
         }
         assert!(
-            matches!(&rewritten.kind, NodeKind::Expr { origin: OccurrenceOrigin::Synthesized { .. }, .. }),
+            matches!(
+                &rewritten.kind,
+                NodeKind::Expr {
+                    origin: OccurrenceOrigin::Synthesized { .. },
+                    ..
+                }
+            ),
             "the rebuilt g node should keep its Synthesized origin"
         );
     }
@@ -1692,13 +1908,23 @@ mod tests {
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let mut node = NodeOccurrence::new_expr(
-            Expr::Apply { functor: add, pos_args: vec![Rc::clone(&seven), zero_occ], named_args: vec![], type_args: vec![] },
+            Expr::Apply {
+                functor: add,
+                pos_args: vec![Rc::clone(&seven), zero_occ],
+                named_args: vec![],
+                type_args: vec![],
+            },
             span(),
             None,
         );
         for _ in 0..DEPTH {
             node = NodeOccurrence::new_expr(
-                Expr::Apply { functor: wrap, pos_args: vec![node], named_args: vec![], type_args: vec![] },
+                Expr::Apply {
+                    functor: wrap,
+                    pos_args: vec![node],
+                    named_args: vec![],
+                    type_args: vec![],
+                },
                 span(),
                 None,
             );
@@ -1712,9 +1938,9 @@ mod tests {
         let mut cur = Rc::clone(kb.op_body_node(foo).expect("op body present"));
         for _ in 0..DEPTH {
             cur = match cur.as_expr() {
-                Some(Expr::Apply { functor, pos_args, .. }) if *functor == wrap => {
-                    Rc::clone(&pos_args[0])
-                }
+                Some(Expr::Apply {
+                    functor, pos_args, ..
+                }) if *functor == wrap => Rc::clone(&pos_args[0]),
                 other => panic!("expected wrap(...), got {other:?}"),
             };
         }
@@ -1723,6 +1949,9 @@ mod tests {
             "innermost add(7, 0) should have rewritten to 7, got {:?}",
             cur.as_expr()
         );
-        assert!(Rc::ptr_eq(&cur, &seven), "innermost redex should reuse the matched `7`");
+        assert!(
+            Rc::ptr_eq(&cur, &seven),
+            "innermost redex should reuse the matched `7`"
+        );
     }
 }

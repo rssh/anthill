@@ -78,9 +78,7 @@ fn solutions_for_rows(build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<Value>>)
     kb.resolve(&[goal], &ResolveConfig::default()).len()
 }
 
-fn fixture(
-    build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<Value>>,
-) -> (KnowledgeBase, TermId) {
+fn fixture(build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<Value>>) -> (KnowledgeBase, TermId) {
     let (kb, _q, goal) = crate::common::one_goal_carrier_fixture("wi1023_p", build);
     (kb, goal)
 }
@@ -153,7 +151,8 @@ fn a_structural_binding_keeps_answer_dedup_on() {
             let n = solutions_for(move |kb| {
                 let carrier = mint(kb);
                 let twin = Value::term(
-                    kb.alloc_from_value(&carrier).unwrap_or_else(|e| panic!("{name}: {e:?}")),
+                    kb.alloc_from_value(&carrier)
+                        .unwrap_or_else(|e| panic!("{name}: {e:?}")),
                 );
                 assert_ne!(
                     std::mem::discriminant(&carrier),
@@ -165,7 +164,11 @@ fn a_structural_binding_keeps_answer_dedup_on() {
             (name, n)
         })
         .collect();
-    expect_all(got, 1, "two carriers of one answer are one answer; still separate");
+    expect_all(
+        got,
+        1,
+        "two carriers of one answer are one answer; still separate",
+    );
 }
 
 /// The direction where being wrong LOSES data, and the reason each admitted
@@ -191,7 +194,10 @@ fn two_genuinely_different_bindings_are_two_answers() {
             )
         }),
         ("SymbolRef", |kb| {
-            (Value::SymbolRef(kb.intern("wi1023_c")), Value::SymbolRef(kb.intern("wi1023_d")))
+            (
+                Value::SymbolRef(kb.intern("wi1023_c")),
+                Value::SymbolRef(kb.intern("wi1023_d")),
+            )
         }),
         ("Var", |kb| {
             let n = kb.intern("wi1023_r");
@@ -204,7 +210,9 @@ fn two_genuinely_different_bindings_are_two_answers() {
             let c = kb.intern("wi1023_e");
             (entity_of(c, Value::Int(1)), entity_of(c, Value::Int(2)))
         }),
-        ("Tuple", |_| (tuple_of(Value::Int(1)), tuple_of(Value::Int(2)))),
+        ("Tuple", |_| {
+            (tuple_of(Value::Int(1)), tuple_of(Value::Int(2)))
+        }),
     ];
     let got: Vec<(&str, usize)> = rows
         .into_iter()
@@ -239,7 +247,10 @@ fn two_genuinely_different_bindings_are_two_answers() {
 #[test]
 fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
     let interp = crate::common::interp_for("namespace test.wi1023_op\nend\n");
-    let (a, b) = (tuple_of(opaque_value(&interp, 1)), tuple_of(opaque_value(&interp, 2)));
+    let (a, b) = (
+        tuple_of(opaque_value(&interp, 1)),
+        tuple_of(opaque_value(&interp, 2)),
+    );
     let n = solutions_for(move |kb| {
         // PREMISE, asserted: the CHILD is opaque and the PARENT is not. If the
         // parent headed `Opaque` the σ-wide scan would already stop dedup and this
@@ -250,11 +261,19 @@ fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
             matches!(a.head(kb), ViewHead::Functor { functor: None, .. }),
             "premise: a Tuple presents a shape to the shallow scan",
         );
-        let Value::Tuple { pos, .. } = &a else { unreachable!() };
-        assert!(matches!(pos[0].head(kb), ViewHead::Opaque), "premise: the child presents none");
+        let Value::Tuple { pos, .. } = &a else {
+            unreachable!()
+        };
+        assert!(
+            matches!(pos[0].head(kb), ViewHead::Opaque),
+            "premise: the child presents none"
+        );
         vec![a, b]
     });
-    assert_eq!(n, 2, "an opaque child makes the key non-injective — dedup must stand down");
+    assert_eq!(
+        n, 2,
+        "an opaque child makes the key non-injective — dedup must stand down"
+    );
 }
 
 /// The two guards' domains INTERSECT, and the intersection is the case that
@@ -299,7 +318,10 @@ fn an_opaque_binding_outside_the_goal_disables_dedup() {
     let interp = crate::common::interp_for("namespace test.wi1023_ext\nend\n");
     let (c1, c2) = (opaque_value(&interp, 1), opaque_value(&interp, 2));
     let n = solutions_for_rows(move |_| vec![vec![c1, Value::Int(1)], vec![c2, Value::Int(1)]]);
-    assert_eq!(n, 2, "two external rows, one projection — the rows are the answers");
+    assert_eq!(
+        n, 2,
+        "two external rows, one projection — the rows are the answers"
+    );
 }
 
 // ── (B) `fn_value` — one logical fact, one stored fact, per leaf carrier ─────
@@ -349,7 +371,8 @@ fn a_leaf_child_stores_one_fact_whichever_carrier_it_rides() {
         .into_iter()
         .filter(|(name, carrier)| {
             let twin = Value::term(
-                kb.alloc_from_value(carrier).unwrap_or_else(|e| panic!("{name}: {e:?}")),
+                kb.alloc_from_value(carrier)
+                    .unwrap_or_else(|e| panic!("{name}: {e:?}")),
             );
             let via_carrier = kb.assert_fact_carrier(
                 f,

@@ -1,20 +1,19 @@
 /// Integration tests for the persistence module.
 ///
 /// Tests: term printer round-trips, FileStore pull/persist/flush, full KB round-trip.
-
 use std::path::PathBuf;
 
+use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::{KnowledgeBase, RuleId};
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::persistence::print::{self, TermPrinter};
-use anthill_core::persistence::file_store::{FileConvention, FileStore};
-use anthill_core::persistence::{BulkStore, Store};
 use anthill_core::parse;
+use anthill_core::persistence::file_store::{FileConvention, FileStore};
+use anthill_core::persistence::print::{self, TermPrinter};
+use anthill_core::persistence::{BulkStore, Store};
 
+use anthill_core::kb::ClauseKind;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
-use anthill_core::kb::ClauseKind;
 
 // ── Term printer tests ─────────────────────────────────────────
 
@@ -71,7 +70,7 @@ fn round_trip_escapes_preserve_content() {
         r#"quotes "inside" string"#,
         r#"backslash \ alone"#,
         r#"both \ and " together"#,
-        r#"em-dash — and "quotes" in same string"#,  // WI-082 trigger
+        r#"em-dash — and "quotes" in same string"#, // WI-082 trigger
         "newline\nand\ttab",
     ];
     for original in cases {
@@ -97,7 +96,11 @@ fn round_trip_escapes_preserve_content() {
         // interned it for the fact's functor, otherwise creates a fresh one.
         let s_sym = kb2.intern("s");
         let rules = kb2.rules_by_functor(s_sym);
-        assert_eq!(rules.len(), 1, "should find exactly one fact for {original:?}");
+        assert_eq!(
+            rules.len(),
+            1,
+            "should find exactly one fact for {original:?}"
+        );
         let head = kb2.rule_head(rules[0]);
         let printer = TermPrinter::new(&kb2);
         let printed2 = format!("fact {}\n", printer.print_term(head));
@@ -117,8 +120,8 @@ fn round_trip_entity_with_string_fields_preserves_escapes() {
     // Strategy: write an `entity` declaration plus a `fact` literal directly as
     // text, parse it, then verify the parsed fact has the original (decoded)
     // string values.
-    let id_value      = r#"WI-001"#;
-    let desc_value    = r#"Use Quoted("cpp", "...") with em-dash — and a \backslash"#;
+    let id_value = r#"WI-001"#;
+    let desc_value = r#"Use Quoted("cpp", "...") with em-dash — and a \backslash"#;
     let payload_value = "newline\nand\ttab and \"quotes\"";
 
     // Build the source text via the printer's escape rules so the parser
@@ -146,8 +149,7 @@ fn round_trip_entity_with_string_fields_preserves_escapes() {
     let parsed = parse::parse(&printed1)
         .expect("entity-with-strings fact should parse after printer escapes");
     let mut kb2 = KnowledgeBase::new();
-    load::load(&mut kb2, &parsed, &NullResolver)
-        .expect("entity-with-strings fact should load");
+    load::load(&mut kb2, &parsed, &NullResolver).expect("entity-with-strings fact should load");
 
     let acc_sym = kb2.intern("Account");
     let rules = kb2.rules_by_functor(acc_sym);
@@ -158,8 +160,10 @@ fn round_trip_entity_with_string_fields_preserves_escapes() {
     let head = kb2.rule_head(rules[0]);
     let printer = TermPrinter::new(&kb2);
     let printed2 = format!("fact {}\n", printer.print_term(head));
-    assert_eq!(printed1, printed2,
-        "entity round-trip mismatch:\nfirst print:  {printed1}second print: {printed2}");
+    assert_eq!(
+        printed1, printed2,
+        "entity round-trip mismatch:\nfirst print:  {printed1}second print: {printed2}"
+    );
 }
 
 #[test]
@@ -464,8 +468,12 @@ fn retract_drops_fact_block_from_disk() {
     let bar_id = kb.assert_fact(bar, sort, domain, None);
     let _baz_id = kb.assert_fact(baz, sort, domain, None);
 
-    store.persist(&kb, kb.fact_term(foo_id), sort, domain, None).unwrap();
-    store.persist(&kb, kb.fact_term(bar_id), sort, domain, None).unwrap();
+    store
+        .persist(&kb, kb.fact_term(foo_id), sort, domain, None)
+        .unwrap();
+    store
+        .persist(&kb, kb.fact_term(bar_id), sort, domain, None)
+        .unwrap();
     store.persist(&kb, baz, sort, domain, None).unwrap();
     store.flush(&kb).unwrap();
 
@@ -516,7 +524,9 @@ fn retract_then_persist_replaces_in_place() {
     });
     let open_id = kb.assert_fact(wi_open, sort, domain, None);
 
-    store.persist(&kb, kb.fact_term(open_id), sort, domain, None).unwrap();
+    store
+        .persist(&kb, kb.fact_term(open_id), sort, domain, None)
+        .unwrap();
     store.flush(&kb).unwrap();
 
     let path = dir.path().join("facts.anthill");
@@ -538,7 +548,9 @@ fn retract_then_persist_replaces_in_place() {
         named_args: named_claimed,
     });
     let claimed_id = kb.assert_fact(wi_claimed, sort, domain, None);
-    store.persist(&kb, kb.fact_term(claimed_id), sort, domain, None).unwrap();
+    store
+        .persist(&kb, kb.fact_term(claimed_id), sort, domain, None)
+        .unwrap();
     store.flush(&kb).unwrap();
 
     let after_claim = std::fs::read_to_string(&path).unwrap();

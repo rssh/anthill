@@ -21,8 +21,8 @@
 //! Design: `docs/design/path-dependent-types.md` §4.1 / §5.3 (the carrier-precise
 //! convergence); ticket WI-430.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -31,8 +31,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -82,7 +82,8 @@ end
     );
     let errs = load_errors(&[&bad]);
     assert!(
-        errs.iter().any(|e| e.contains("cannot project 'M'") && e.contains("carrier")),
+        errs.iter()
+            .any(|e| e.contains("cannot project 'M'") && e.contains("carrier")),
         "s.provider.M projects OtherProvider's member off the DataProvider-carrying P — no \
          `requires` bound whose carrier is P declares M, so it must be a loud carrier-precise \
          error; got: {errs:?}",
@@ -128,7 +129,8 @@ end
     );
     let errs = load_errors(&[&bad]);
     assert!(
-        errs.iter().any(|e| e.contains("cannot project 'K'") && e.contains("carrier")),
+        errs.iter()
+            .any(|e| e.contains("cannot project 'K'") && e.contains("carrier")),
         "s.other.K projects DataProvider's member off the OtherProvider-carrying Q — must \
          be a loud carrier-precise error; got: {errs:?}",
     );

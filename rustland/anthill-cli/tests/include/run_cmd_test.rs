@@ -2,7 +2,6 @@
 //! Invokes the built binary against fixture programs and asserts on
 //! stdout, stderr, and exit code.
 
-
 use crate::common::{anthill, Output};
 
 fn fixtures_dir() -> std::path::PathBuf {
@@ -41,7 +40,11 @@ fn failed_sort_requires_info_guard_does_not_discover_provider() {
     let path = fixtures_dir().join("resolved-main-provider-guard-fails.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2, "stderr:\n{}", out.stderr);
-    assert!(out.stderr.contains("no program entry found"), "stderr:\n{}", out.stderr);
+    assert!(
+        out.stderr.contains("no program entry found"),
+        "stderr:\n{}",
+        out.stderr
+    );
 }
 
 /// Resolution may derive the same row more than once. Entry discovery remains
@@ -51,12 +54,26 @@ fn resolved_main_providers_are_deduplicated_and_sorted() {
     let path = fixtures_dir().join("resolved-main-providers-dedup.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2, "stderr:\n{}", out.stderr);
-    assert!(out.stderr.contains("ambiguous program entry"), "stderr:\n{}", out.stderr);
-    let alpha = out.stderr.find("my.resolved.dedup.Alpha").expect("Alpha candidate");
-    let zeta = out.stderr.find("my.resolved.dedup.Zeta").expect("Zeta candidate");
+    assert!(
+        out.stderr.contains("ambiguous program entry"),
+        "stderr:\n{}",
+        out.stderr
+    );
+    let alpha = out
+        .stderr
+        .find("my.resolved.dedup.Alpha")
+        .expect("Alpha candidate");
+    let zeta = out
+        .stderr
+        .find("my.resolved.dedup.Zeta")
+        .expect("Zeta candidate");
     assert!(alpha < zeta, "candidates must be ordered:\n{}", out.stderr);
-    assert_eq!(out.stderr.matches("my.resolved.dedup.Zeta").count(), 1,
-               "duplicate derivations must yield one candidate:\n{}", out.stderr);
+    assert_eq!(
+        out.stderr.matches("my.resolved.dedup.Zeta").count(),
+        1,
+        "duplicate derivations must yield one candidate:\n{}",
+        out.stderr
+    );
 }
 
 #[test]
@@ -64,8 +81,11 @@ fn no_main_fails_with_exit_2() {
     let path = fixtures_dir().join("no-main.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2);
-    assert!(out.stderr.contains("no program entry found"),
-            "stderr did not mention missing entry:\n{}", out.stderr);
+    assert!(
+        out.stderr.contains("no program entry found"),
+        "stderr did not mention missing entry:\n{}",
+        out.stderr
+    );
 }
 
 #[test]
@@ -73,12 +93,21 @@ fn ambiguous_entries_list_candidates_and_exit_2() {
     let path = fixtures_dir().join("two-mains.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 2);
-    assert!(out.stderr.contains("ambiguous program entry"),
-            "stderr missing ambiguity banner:\n{}", out.stderr);
-    assert!(out.stderr.contains("my.two.One"),
-            "stderr missing `my.two.One` candidate:\n{}", out.stderr);
-    assert!(out.stderr.contains("my.two.Two"),
-            "stderr missing `my.two.Two` candidate:\n{}", out.stderr);
+    assert!(
+        out.stderr.contains("ambiguous program entry"),
+        "stderr missing ambiguity banner:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("my.two.One"),
+        "stderr missing `my.two.One` candidate:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("my.two.Two"),
+        "stderr missing `my.two.Two` candidate:\n{}",
+        out.stderr
+    );
 }
 
 #[test]
@@ -111,10 +140,16 @@ fn eprintln_writes_to_stderr_not_stdout() {
     let out = run_with(&[path.to_str().unwrap()]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
     assert_eq!(out.stdout, "stdout-line\n");
-    assert!(out.stderr.contains("stderr-line\n"),
-            "expected `stderr-line` on stderr; got:\n{}", out.stderr);
-    assert!(!out.stdout.contains("stderr-line"),
-            "stderr-line leaked to stdout:\n{}", out.stdout);
+    assert!(
+        out.stderr.contains("stderr-line\n"),
+        "expected `stderr-line` on stderr; got:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains("stderr-line"),
+        "stderr-line leaked to stdout:\n{}",
+        out.stdout
+    );
 }
 
 // ── WI-744: every LoadError blocks the run ──────────────────────────────
@@ -126,18 +161,37 @@ fn eprintln_writes_to_stderr_not_stdout() {
 fn unresolved_name_blocks_the_run() {
     let path = fixtures_dir().join("unresolved-name.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
-    assert_eq!(out.code, 2, "an unresolved name must block the run; stderr:\n{}", out.stderr);
-    assert_eq!(out.stdout, "", "the program must NOT run; it printed to stdout");
-    assert!(out.stderr.contains("error:") && out.stderr.contains("unresolved name 'NoSuchSortXyz'"),
-            "expected a loud `error:` for the unresolved name; got:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 2,
+        "an unresolved name must block the run; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.stdout, "",
+        "the program must NOT run; it printed to stdout"
+    );
+    assert!(
+        out.stderr.contains("error:") && out.stderr.contains("unresolved name 'NoSuchSortXyz'"),
+        "expected a loud `error:` for the unresolved name; got:\n{}",
+        out.stderr
+    );
     // WI-745: the diagnostic names the FILE and a line:col (`path:line:col: …`),
     // not a raw byte offset that identifies nothing once files merge into one KB.
-    assert!(out.stderr.contains("unresolved-name.anthill:"),
-            "the error must name the source file with a line:col; got:\n{}", out.stderr);
-    assert!(!out.stderr.contains(" at "),
-            "the raw byte-offset Display (`… at N..M`) must be retired; got:\n{}", out.stderr);
-    assert!(!out.stderr.contains("warning: unresolved name"),
-            "the error must not be demoted to a warning:\n{}", out.stderr);
+    assert!(
+        out.stderr.contains("unresolved-name.anthill:"),
+        "the error must name the source file with a line:col; got:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains(" at "),
+        "the raw byte-offset Display (`… at N..M`) must be retired; got:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("warning: unresolved name"),
+        "the error must not be demoted to a warning:\n{}",
+        out.stderr
+    );
 }
 
 /// The same for the catch-all `LoadError::Other` — the variant most
@@ -147,18 +201,38 @@ fn unresolved_name_blocks_the_run() {
 fn catch_all_load_error_blocks_the_run() {
     let path = fixtures_dir().join("load-error-other.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
-    assert_eq!(out.code, 2, "a LoadError::Other must block the run; stderr:\n{}", out.stderr);
-    assert_eq!(out.stdout, "", "the program must NOT run; it printed to stdout");
-    assert!(out.stderr.lines().any(|l| l.starts_with("error:") && l.contains("operation 'my.app.Lib.f'")),
-            "expected a loud `error:` naming the guard; got:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 2,
+        "a LoadError::Other must block the run; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.stdout, "",
+        "the program must NOT run; it printed to stdout"
+    );
+    assert!(
+        out.stderr
+            .lines()
+            .any(|l| l.starts_with("error:") && l.contains("operation 'my.app.Lib.f'")),
+        "expected a loud `error:` naming the guard; got:\n{}",
+        out.stderr
+    );
     // WI-745: even a span-less `Other` names its FILE now (`path: message`), so
     // the user knows which of the merged sources raised the guard.
-    assert!(out.stderr.contains("load-error-other.anthill:"),
-            "the error must name the source file; got:\n{}", out.stderr);
+    assert!(
+        out.stderr.contains("load-error-other.anthill:"),
+        "the error must name the source file; got:\n{}",
+        out.stderr
+    );
     // The negative is line-wise and names the guard, so it cannot be satisfied
     // by the incidental absence of unrelated advisories on this stderr.
-    assert!(!out.stderr.lines().any(|l| l.starts_with("warning:") && l.contains("my.app.Lib.f")),
-            "the guard must not be demoted to a warning:\n{}", out.stderr);
+    assert!(
+        !out.stderr
+            .lines()
+            .any(|l| l.starts_with("warning:") && l.contains("my.app.Lib.f")),
+        "the guard must not be demoted to a warning:\n{}",
+        out.stderr
+    );
 }
 
 /// The third promoted variant. An ambiguous name used to demote to `warning:`
@@ -172,21 +246,43 @@ fn catch_all_load_error_blocks_the_run() {
 fn ambiguous_symbol_blocks_the_run() {
     let path = fixtures_dir().join("ambiguous-symbol.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
-    assert_eq!(out.code, 2, "an ambiguous symbol must block the run; stderr:\n{}", out.stderr);
-    assert_eq!(out.stdout, "", "the program must NOT run; it printed to stdout");
-    assert!(out.stderr.contains("error:") && out.stderr.contains("ambiguous symbol 'widget'"),
-            "expected a loud `error:` for the ambiguous symbol; got:\n{}", out.stderr);
-    assert!(out.stderr.contains("lib.one.Thing.widget")
-            && out.stderr.contains("lib.two.Gadget.widget"),
-            "the diagnostic must name both candidates; got:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 2,
+        "an ambiguous symbol must block the run; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.stdout, "",
+        "the program must NOT run; it printed to stdout"
+    );
+    assert!(
+        out.stderr.contains("error:") && out.stderr.contains("ambiguous symbol 'widget'"),
+        "expected a loud `error:` for the ambiguous symbol; got:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("lib.one.Thing.widget") && out.stderr.contains("lib.two.Gadget.widget"),
+        "the diagnostic must name both candidates; got:\n{}",
+        out.stderr
+    );
     // WI-745 defect 2: a real span, not `0..0` (`remap_symbol_strict` now takes one).
-    assert!(out.stderr.contains("ambiguous-symbol.anthill:") && !out.stderr.contains("0..0"),
-            "the error must name the file at a real line:col, not `0..0`; got:\n{}", out.stderr);
+    assert!(
+        out.stderr.contains("ambiguous-symbol.anthill:") && !out.stderr.contains("0..0"),
+        "the error must name the file at a real line:col, not `0..0`; got:\n{}",
+        out.stderr
+    );
     // WI-745 defect 3: printed exactly once (the double-resolution is deduped).
-    assert_eq!(out.stderr.matches("ambiguous symbol 'widget'").count(), 1,
-            "the ambiguous symbol must be reported once, not per resolution; got:\n{}", out.stderr);
-    assert!(!out.stderr.contains("warning: ambiguous"),
-            "the error must not be demoted to a warning:\n{}", out.stderr);
+    assert_eq!(
+        out.stderr.matches("ambiguous symbol 'widget'").count(),
+        1,
+        "the ambiguous symbol must be reported once, not per resolution; got:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("warning: ambiguous"),
+        "the error must not be demoted to a warning:\n{}",
+        out.stderr
+    );
 }
 
 /// The OTHER half: making every `LoadError` block must not collapse the advisory
@@ -204,12 +300,26 @@ fn ambiguous_symbol_blocks_the_run() {
 fn advisory_warnings_print_but_do_not_block() {
     let path = fixtures_dir().join("advisory-warning.anthill");
     let out = run_with(&[path.to_str().unwrap()]);
-    assert_eq!(out.code, 0, "an advisory must not block; stderr:\n{}", out.stderr);
-    assert_eq!(out.stdout, "advisory-fixture-ran\n", "the program must still run");
-    assert!(out.stderr.contains("warning: operation `ping` in `my.advisory.Shadower`"),
-            "expected the fixture's own advisory on stderr; got:\n{}", out.stderr);
-    assert!(!out.stderr.contains("error:"),
-            "an advisory must not be reported as an error:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "an advisory must not block; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.stdout, "advisory-fixture-ran\n",
+        "the program must still run"
+    );
+    assert!(
+        out.stderr
+            .contains("warning: operation `ping` in `my.advisory.Shadower`"),
+        "expected the fixture's own advisory on stderr; got:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("error:"),
+        "an advisory must not be reported as an error:\n{}",
+        out.stderr
+    );
 }
 
 // ── WI-746: `anthill run` sees the project's conventional data files ──
@@ -232,12 +342,21 @@ fn advisory_warnings_print_but_do_not_block() {
 fn broken_data_blocks_the_run() {
     let path = fixtures_dir().join("with-broken-data");
     let out = run_with(&[path.to_str().unwrap()]);
-    assert_eq!(out.code, 2, "broken declared data must block the run; stderr:\n{}", out.stderr);
-    assert!(out.stdout.is_empty(),
-            "the program must not run; got stdout:\n{}", out.stdout);
-    assert!(out.has_diagnostic("error:", "anthill.toml")
-            && out.stderr.contains("unknown entity"),
-            "expected a loud `error:` naming the data file and the fault; got:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 2,
+        "broken declared data must block the run; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "the program must not run; got stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.has_diagnostic("error:", "anthill.toml") && out.stderr.contains("unknown entity"),
+        "expected a loud `error:` naming the data file and the fault; got:\n{}",
+        out.stderr
+    );
 }
 
 /// The control, and the guard against the opposite regression: wiring data into
@@ -248,8 +367,15 @@ fn broken_data_blocks_the_run() {
 fn valid_data_does_not_disturb_the_run() {
     let path = fixtures_dir().join("with-data");
     let out = run_with(&[path.to_str().unwrap()]);
-    assert_eq!(out.code, 0, "valid data must not block the run; stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "valid data must not block the run; stderr:\n{}",
+        out.stderr
+    );
     assert_eq!(out.stdout, "ran\n");
-    assert!(!out.has_diagnostic("error:", "anthill.toml"),
-            "valid data must not produce an error:\n{}", out.stderr);
+    assert!(
+        !out.has_diagnostic("error:", "anthill.toml"),
+        "valid data must not produce an error:\n{}",
+        out.stderr
+    );
 }

@@ -11,13 +11,16 @@
 //! for a `List` (since WI-495) the COMPOSED transitive view `List provides
 //! Stream[T, {}]` ∘ `Stream provides Iterable` ⇒ `{Element = List.T, E = {}}`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Call a nullary op and expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -29,8 +32,8 @@ pub(crate) fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -135,8 +138,14 @@ end
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "test.wi424.isempty_list.on_empty"), 1);
     assert_eq!(run_int(&mut interp, "test.wi424.isempty_list.on_full"), 0);
-    assert_eq!(run_int(&mut interp, "test.wi424.isempty_list.size_empty"), 0);
-    assert_eq!(run_int(&mut interp, "test.wi424.isempty_list.size_three"), 3);
+    assert_eq!(
+        run_int(&mut interp, "test.wi424.isempty_list.size_empty"),
+        0
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi424.isempty_list.size_three"),
+        3
+    );
 }
 
 /// `Iterable.foldLeft` / `foldRight` on a List: typecheck pure + EVAL.
@@ -202,7 +211,8 @@ end
 "#;
     let errs = load_errors(&[undeclared]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Beep")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Beep")),
         "the callback's Beep must surface at the caller's boundary when \
          undeclared; got: {errs:?}",
     );
@@ -247,7 +257,8 @@ end
          (the folds deliberately carry no -Modify[x]); got: {errs:?}",
     );
     assert!(
-        errs.iter().any(|e| e.contains("unconstrained") && e.contains("EffP")),
+        errs.iter()
+            .any(|e| e.contains("unconstrained") && e.contains("EffP")),
         "the known row-inference gap for a denoted-bearing callback arrow \
          must stay LOUD (unconstrained EffP) until it binds; got: {errs:?}",
     );

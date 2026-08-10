@@ -18,7 +18,9 @@
 //! `wi644_use_site_requires_test`; this file adds the positions that escaped.
 
 fn errors_for(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// The refusal must name all four parts of the acceptance diagnostic — the SORT,
@@ -242,7 +244,10 @@ end
     assert_non_eq_key_error(&errors_for(src), "Map", "K", "Float");
     // Control: the same literal with a LAWFUL key still loads, so the refusal above
     // is about `K = Float` and not about the value-in-type itself.
-    assert_loads_clean(&src.replace("K = Float", "K = Int64").replace("wi835.denoted", "wi835.denotedok"));
+    assert_loads_clean(
+        &src.replace("K = Float", "K = Int64")
+            .replace("wi835.denoted", "wi835.denotedok"),
+    );
 }
 
 /// A body `let` ANNOTATION and a typed LAMBDA BINDER. Both are written inside an
@@ -326,7 +331,8 @@ end
         .filter(|e| e.contains("NonEq") && e.contains("Map"))
         .count();
     assert_eq!(
-        refusals, 2,
+        refusals,
+        2,
         "expected one refusal per file (2), got {refusals}; errors:\n{}",
         errs.join("\n"),
     );

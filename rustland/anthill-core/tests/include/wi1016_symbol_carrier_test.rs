@@ -37,7 +37,9 @@ fn resolve(interp: &Interpreter, qn: &str) -> Symbol {
 fn minted_symbol(interp: &mut Interpreter, qn: &str) -> Value {
     let s = resolve(interp, qn);
     let dict = crate::common::dict(&interp, s, []).into_value();
-    let got = interp.call(&format!("{DICT}.impl"), &[dict]).expect("Dictionary.impl");
+    let got = interp
+        .call(&format!("{DICT}.impl"), &[dict])
+        .expect("Dictionary.impl");
     assert!(
         matches!(got, Value::SymbolRef(m) if m == s),
         "this file's premise: the reflect Symbol ops mint the value carrier",
@@ -72,9 +74,14 @@ fn a_map_keyed_by_a_symbol_finds_it_through_either_carrier() {
     let minted = minted_symbol(&mut interp, "anthill.prelude.Int64");
     let interned = interned_symbol(&mut interp, "anthill.prelude.Int64");
 
-    let empty = interp.call(&format!("{MAP}.empty"), &[]).expect("Map.empty");
+    let empty = interp
+        .call(&format!("{MAP}.empty"), &[])
+        .expect("Map.empty");
     let m = interp
-        .call(&format!("{MAP}.put"), &[empty, minted.clone(), Value::Int(7)])
+        .call(
+            &format!("{MAP}.put"),
+            &[empty, minted.clone(), Value::Int(7)],
+        )
         .expect("a minted Symbol is a usable Map key");
 
     // Stored through `SymbolRef`, read through `Term::Ref`.
@@ -107,18 +114,27 @@ fn a_map_keyed_by_a_symbol_finds_it_through_either_carrier() {
 fn a_symbol_key_read_back_out_of_a_map_addresses_its_own_slot() {
     let mut interp = interp();
     let minted = minted_symbol(&mut interp, "anthill.prelude.Int64");
-    let empty = interp.call(&format!("{MAP}.empty"), &[]).expect("Map.empty");
+    let empty = interp
+        .call(&format!("{MAP}.empty"), &[])
+        .expect("Map.empty");
     let m = interp
         .call(&format!("{MAP}.put"), &[empty, minted, Value::Int(7)])
         .expect("Map.put");
 
-    let keys = interp.call(&format!("{MAP}.keys"), &[m.clone()]).expect("Map.keys");
-    let first = crate::common::list_heads(&keys).into_iter().next().expect("one key");
+    let keys = interp
+        .call(&format!("{MAP}.keys"), &[m.clone()])
+        .expect("Map.keys");
+    let first = crate::common::list_heads(&keys)
+        .into_iter()
+        .next()
+        .expect("one key");
     assert!(
         matches!(first, Value::SymbolRef(_)),
         "a symbol key spells itself carrier-free on the way out, got {first:?}",
     );
-    let got = interp.call(&format!("{MAP}.get"), &[m, first]).expect("Map.get");
+    let got = interp
+        .call(&format!("{MAP}.get"), &[m, first])
+        .expect("Map.get");
     assert_eq!(option_int(&interp, &got), Some(7));
 }
 
@@ -280,8 +296,12 @@ fn add_term_route(kb: &mut KnowledgeBase, answer: Symbol) {
 /// The rule shape is `crate::common::one_goal_carrier_fixture` (WI-1023 lifted it there
 /// on its second use — it needs the same gadget for every carrier, and this file
 /// is the special case with one `Value::SymbolRef` slot).
-fn dedup_fixture(
-) -> (KnowledgeBase, anthill_core::kb::term::TermId, anthill_core::kb::term::TermId, Symbol) {
+fn dedup_fixture() -> (
+    KnowledgeBase,
+    anthill_core::kb::term::TermId,
+    anthill_core::kb::term::TermId,
+    Symbol,
+) {
     let answer_name = "wi1016_answer";
     let (mut kb, q_term, goal) = crate::common::one_goal_carrier_fixture("wi1016_dup", |kb| {
         let answer = kb.intern(answer_name);
@@ -296,16 +316,14 @@ fn dedup_fixture(
 /// The payload of an `Option[Int64]` answer, or `None` for `none()`.
 fn option_int(interp: &Interpreter, v: &Value) -> Option<i64> {
     match v {
-        Value::Entity { functor, named, .. } => {
-            match interp.kb().local_name_of(*functor) {
-                "none" => None,
-                "some" => match named.first().map(|(_, x)| x) {
-                    Some(Value::Int(n)) => Some(*n),
-                    other => panic!("some(value:) should carry an Int, got {other:?}"),
-                },
-                other => panic!("expected an Option, got {other}"),
-            }
-        }
+        Value::Entity { functor, named, .. } => match interp.kb().local_name_of(*functor) {
+            "none" => None,
+            "some" => match named.first().map(|(_, x)| x) {
+                Some(Value::Int(n)) => Some(*n),
+                other => panic!("some(value:) should carry an Int, got {other:?}"),
+            },
+            other => panic!("expected an Option, got {other}"),
+        },
         other => panic!("expected an Option entity, got {other:?}"),
     }
 }

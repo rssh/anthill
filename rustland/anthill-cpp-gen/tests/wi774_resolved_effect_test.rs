@@ -57,7 +57,10 @@ fn bodied_effect_mapping_does_not_abort_the_gate_diagnostic() {
     let msg = err.to_string();
     // The diagnostic RENDERED (no panic) and still names the offending effect and
     // the resolved supported set (Error, Modify from the plain cpp base facts).
-    assert!(msg.contains("ConsoleOutput"), "names the offending effect: {msg}");
+    assert!(
+        msg.contains("ConsoleOutput"),
+        "names the offending effect: {msg}"
+    );
     assert!(
         msg.contains("Error") && msg.contains("Modify"),
         "lists the resolved supported set: {msg}"
@@ -71,7 +74,10 @@ fn bodied_effect_mapping_does_not_abort_the_gate_diagnostic() {
 #[test]
 fn a_guarded_effect_mapping_joins_the_supported_set_only_when_its_guard_holds() {
     let with_guard = supported_effects_diagnostic(true);
-    assert!(with_guard.contains("Widen"), "guard holds → Widen is supported: {with_guard}");
+    assert!(
+        with_guard.contains("Widen"),
+        "guard holds → Widen is supported: {with_guard}"
+    );
 
     let without_guard = supported_effects_diagnostic(false);
     assert!(
@@ -80,7 +86,10 @@ fn a_guarded_effect_mapping_joins_the_supported_set_only_when_its_guard_holds() 
     );
     // Either way the plain base facts read, so a missing Widen is the guard, not a
     // broken read.
-    assert!(without_guard.contains("Modify"), "plain base facts still resolve: {without_guard}");
+    assert!(
+        without_guard.contains("Modify"),
+        "plain base facts still resolve: {without_guard}"
+    );
 }
 
 /// Render the capability-gate rejection diagnostic (which lists the resolved

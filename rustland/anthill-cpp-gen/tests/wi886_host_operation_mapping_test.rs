@@ -31,7 +31,9 @@ use super::common;
 
 use std::process::Command;
 
-use anthill_cpp_gen::{emit_namespace_header, emit_runtime_header, emit_traits_struct, CodegenContext};
+use anthill_cpp_gen::{
+    emit_namespace_header, emit_runtime_header, emit_traits_struct, CodegenContext,
+};
 use common::{
     collect_anthill_files, cpp_bindings_dir, find_cxx, load_kb_with, load_kb_with_extras,
     rustland_root, scratch_dir,
@@ -84,11 +86,14 @@ fn cpp_templates(op_qns: &[&str]) -> std::collections::BTreeMap<String, String> 
 /// `isNaN(a)`. `<cmath>`'s `std::isnan` family is the realization.
 #[test]
 fn float_ieee_predicates_lower_from_the_binding() {
-    let cpp = emit_ops("test.wi886_pred", &[
-        ("nan1", "a: Float", "Bool", "Float.isNaN(a)"),
-        ("inf1", "a: Float", "Bool", "Float.isInfinite(a)"),
-        ("fin1", "a: Float", "Bool", "Float.isFinite(a)"),
-    ])
+    let cpp = emit_ops(
+        "test.wi886_pred",
+        &[
+            ("nan1", "a: Float", "Bool", "Float.isNaN(a)"),
+            ("inf1", "a: Float", "Bool", "Float.isInfinite(a)"),
+            ("fin1", "a: Float", "Bool", "Float.isFinite(a)"),
+        ],
+    )
     .expect("emit");
     assert!(cpp.contains("return std::isnan(a);"), "isNaN:\n{cpp}");
     assert!(cpp.contains("return std::isinf(a);"), "isInfinite:\n{cpp}");
@@ -103,13 +108,16 @@ fn float_ieee_predicates_lower_from_the_binding() {
 /// it twice — the arguments arrive as already-lowered expressions, which may be calls.
 #[test]
 fn int64_carrier_operations_lower_from_the_binding() {
-    let cpp = emit_ops("test.wi886_int", &[
-        ("mx", "a: Int64, b: Int64", "Int64", "Int64.max(a, b)"),
-        ("mn", "a: Int64, b: Int64", "Int64", "Int64.min(a, b)"),
-        ("lo", "n: Int64", "Bool", "Int64.gt(n, Int64.minValue())"),
-        ("hi", "n: Int64", "Bool", "Int64.lt(n, Int64.maxValue())"),
-        ("cmp", "a: Int64, b: Int64", "Int64", "Int64.compare(a, b)"),
-    ])
+    let cpp = emit_ops(
+        "test.wi886_int",
+        &[
+            ("mx", "a: Int64, b: Int64", "Int64", "Int64.max(a, b)"),
+            ("mn", "a: Int64, b: Int64", "Int64", "Int64.min(a, b)"),
+            ("lo", "n: Int64", "Bool", "Int64.gt(n, Int64.minValue())"),
+            ("hi", "n: Int64", "Bool", "Int64.lt(n, Int64.maxValue())"),
+            ("cmp", "a: Int64, b: Int64", "Int64", "Int64.compare(a, b)"),
+        ],
+    )
     .expect("emit");
     assert!(cpp.contains("return std::max(a, b);"), "max:\n{cpp}");
     assert!(cpp.contains("return std::min(a, b);"), "min:\n{cpp}");
@@ -151,7 +159,10 @@ fn a_nullary_mapping_lowers_bare_and_applied() {
     let mut kb = load_kb_with(source);
     let cpp = emit_traits_struct(&mut kb, "test.wi886_const.Calc").expect("emit");
     assert!(cpp.contains("return 3.141592653589793;"), "bare pi:\n{cpp}");
-    assert!(cpp.contains("return 6.283185307179586;"), "applied tau:\n{cpp}");
+    assert!(
+        cpp.contains("return 6.283185307179586;"),
+        "applied tau:\n{cpp}"
+    );
 }
 
 /// `Float.floor` returns `Int64` in anthill and `double` in `<cmath>`, so the template
@@ -160,9 +171,10 @@ fn a_nullary_mapping_lowers_bare_and_applied() {
 /// `int64_t`.
 #[test]
 fn a_template_may_state_the_conversion_its_signature_needs() {
-    let cpp = emit_ops("test.wi886_floor", &[
-        ("fl", "a: Float", "Int64", "Float.floor(a)"),
-    ])
+    let cpp = emit_ops(
+        "test.wi886_floor",
+        &[("fl", "a: Float", "Int64", "Float.floor(a)")],
+    )
     .expect("emit");
     assert!(
         cpp.contains("return static_cast<int64_t>(std::floor(a));"),
@@ -186,9 +198,10 @@ fn a_template_may_state_the_conversion_its_signature_needs() {
 /// build, while the old `return {};` compiled and answered zero.
 #[test]
 fn an_operation_with_no_body_and_no_cpp_realization_is_a_codegen_error() {
-    let err = emit_ops("test.wi886_gap", &[
-        ("up", "s: String", "String", "String.toUpper(s)"),
-    ])
+    let err = emit_ops(
+        "test.wi886_gap",
+        &[("up", "s: String", "String", "String.toUpper(s)")],
+    )
     .expect_err("an unrealized operation must refuse the whole emit");
     assert!(
         err.contains("anthill.prelude.String.toUpper"),
@@ -209,12 +222,18 @@ fn an_operation_with_no_body_and_no_cpp_realization_is_a_codegen_error() {
 /// and must not be caught by the check.
 #[test]
 fn a_bodied_operation_still_lowers_to_a_plain_call() {
-    let cpp = emit_ops("test.wi886_own", &[
-        ("twice", "n: Int64", "Int64", "add(n, n)"),
-        ("quad", "n: Int64", "Int64", "twice(twice(n))"),
-    ])
+    let cpp = emit_ops(
+        "test.wi886_own",
+        &[
+            ("twice", "n: Int64", "Int64", "add(n, n)"),
+            ("quad", "n: Int64", "Int64", "twice(twice(n))"),
+        ],
+    )
     .expect("a bodied sibling is emitted in the same struct and callable by name");
-    assert!(cpp.contains("return twice(twice(n));"), "sibling call:\n{cpp}");
+    assert!(
+        cpp.contains("return twice(twice(n));"),
+        "sibling call:\n{cpp}"
+    );
 }
 
 /// `Int64.mod` was MAPPED TO `%` in the deleted operator table, and that was a silent
@@ -270,7 +289,11 @@ fn refuse_binding(ns: &str, params: &str, template: &str) -> String {
 /// argument is caught even when nothing calls it.
 #[test]
 fn a_template_whose_slots_disagree_with_the_arity_is_refused() {
-    let err = refuse_binding("test.wi886_arity", "a: Widget, b: Widget", "host_squish($1)");
+    let err = refuse_binding(
+        "test.wi886_arity",
+        "a: Widget, b: Widget",
+        "host_squish($1)",
+    );
     assert!(
         err.contains("test.wi886_arity.Widget.squish"),
         "must name the operation: {err}"
@@ -359,7 +382,8 @@ fn every_rust_realized_primitive_operation_is_realized_in_cpp() {
     // The rust-side bindings are NOT part of the cpp-gen harness's KB (it loads
     // `anthill-cpp-gen/anthill/` instead), so this test loads both — the only place in
     // the tree that sees the two enumerations at once, which is the point.
-    let rust_bindings = collect_anthill_files(&rustland_root().join("rustland/anthill-stl/anthill"));
+    let rust_bindings =
+        collect_anthill_files(&rustland_root().join("rustland/anthill-stl/anthill"));
     assert!(!rust_bindings.is_empty(), "rust bindings must be readable");
     let mut kb = load_kb_with_extras(
         r#"
@@ -389,7 +413,10 @@ fn every_rust_realized_primitive_operation_is_realized_in_cpp() {
     };
     let rust = of_lang("rust");
     let cpp = of_lang("cpp");
-    assert!(!rust.is_empty() && !cpp.is_empty(), "both binding sets must be loaded");
+    assert!(
+        !rust.is_empty() && !cpp.is_empty(),
+        "both binding sets must be loaded"
+    );
 
     // Carriers with a cpp binding block at all — a carrier with none (String, BigInt)
     // is a known gap, not a drift, and its operations refuse loudly at codegen.
@@ -436,7 +463,10 @@ fn every_host_spelling_a_cpp_mapping_emits_has_an_include_probe() {
     let mut kb = load_kb_with("\nnamespace test.wi886_probes\n  sort S\n  end\nend\n");
 
     let probes = include_mapping_host_types(&mut kb);
-    assert!(!probes.is_empty(), "the cpp IncludeMapping table must be loaded");
+    assert!(
+        !probes.is_empty(),
+        "the cpp IncludeMapping table must be loaded"
+    );
 
     let mut unprobed: Vec<String> = Vec::new();
     for m in kb.host_op_mappings().iter().filter(|m| m.lang == "cpp") {
@@ -466,12 +496,15 @@ fn include_mapping_host_types(kb: &mut anthill_core::kb::KnowledgeBase) -> Vec<S
     let host_type = kb.intern("host_type");
     let string_arg = |rid, key| {
         kb.fact_head_named_args(rid).and_then(|named| {
-            named.iter().find(|(k, _)| *k == key).and_then(|(_, v)| match kb.get_term(*v) {
-                anthill_core::kb::term::Term::Const(
-                    anthill_core::kb::term::Literal::String(s),
-                ) => Some(s.clone()),
-                _ => None,
-            })
+            named
+                .iter()
+                .find(|(k, _)| *k == key)
+                .and_then(|(_, v)| match kb.get_term(*v) {
+                    anthill_core::kb::term::Term::Const(
+                        anthill_core::kb::term::Literal::String(s),
+                    ) => Some(s.clone()),
+                    _ => None,
+                })
         })
     };
     kb.rules_by_functor_iter(sym)

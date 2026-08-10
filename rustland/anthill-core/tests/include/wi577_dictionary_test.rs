@@ -97,20 +97,32 @@ fn dictionary_impl_arity_sub() {
     let dict = crate::common::dict(&interp, int64, subs).into_value();
 
     // impl(d) — the resolved impl identity.
-    let got = interp.call(&format!("{DICT}.impl"), &[dict.clone()]).unwrap();
+    let got = interp
+        .call(&format!("{DICT}.impl"), &[dict.clone()])
+        .unwrap();
     assert_eq!(sym_qn(&interp, &got), "anthill.prelude.Int64");
 
     // arity(d) — one sub-requirement.
-    let got = interp.call(&format!("{DICT}.arity"), &[dict.clone()]).unwrap();
+    let got = interp
+        .call(&format!("{DICT}.arity"), &[dict.clone()])
+        .unwrap();
     assert_eq!(expect_int(&got), 1);
 
     // sub(d, 0) — the child dict; impl(child) == Bool, arity 0.
-    let child_dict = interp.call(&format!("{DICT}.sub"), &[dict.clone(), Value::Int(0)]).unwrap();
-    assert!(Dictionary::from_value(interp.kb(), &child_dict).is_some(),
-        "sub must return a dictionary, got {child_dict:?}");
-    let child_impl = interp.call(&format!("{DICT}.impl"), &[child_dict.clone()]).unwrap();
+    let child_dict = interp
+        .call(&format!("{DICT}.sub"), &[dict.clone(), Value::Int(0)])
+        .unwrap();
+    assert!(
+        Dictionary::from_value(interp.kb(), &child_dict).is_some(),
+        "sub must return a dictionary, got {child_dict:?}"
+    );
+    let child_impl = interp
+        .call(&format!("{DICT}.impl"), &[child_dict.clone()])
+        .unwrap();
     assert_eq!(sym_qn(&interp, &child_impl), "anthill.prelude.Bool");
-    let child_arity = interp.call(&format!("{DICT}.arity"), &[child_dict]).unwrap();
+    let child_arity = interp
+        .call(&format!("{DICT}.arity"), &[child_dict])
+        .unwrap();
     assert_eq!(expect_int(&child_arity), 0);
 
     // Out-of-range projection is a loud error, not a panic.
@@ -128,28 +140,43 @@ fn resolve_op_real_impl_yields_callable_opref() {
     // Int64 provides Eq — resolve `Eq.eq` against a Dictionary{Int64}.
     let eq_eq = sym_val(&mut interp, "anthill.prelude.PartialEq.eq");
     let dict = crate::common::dict(&interp, int64, []).into_value();
-    let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, eq_eq]).unwrap();
+    let opref = interp
+        .call(&format!("{DICT}.resolveOp"), &[dict, eq_eq])
+        .unwrap();
 
     // The result carries the dispatch dict — so it stays callable.
     match &opref {
         Value::OpRef { dict, .. } => {
-            assert!(dict.is_some(), "resolveOp must capture this dict as the dispatch env")
+            assert!(
+                dict.is_some(),
+                "resolveOp must capture this dict as the dispatch env"
+            )
         }
         other => panic!("resolveOp must return an OpRef, got {}", other.type_name()),
     }
 
     // op(r) — a fully-qualified resolved-op identity.
-    let op_id = interp.call(&format!("{OPREF}.op"), &[opref.clone()]).unwrap();
-    assert!(sym_qn(&interp, &op_id).contains('.'), "op identity must be fully qualified");
+    let op_id = interp
+        .call(&format!("{OPREF}.op"), &[opref.clone()])
+        .unwrap();
+    assert!(
+        sym_qn(&interp, &op_id).contains('.'),
+        "op identity must be fully qualified"
+    );
 
     // dict(r) — some(Dictionary).
     let d = interp.call(&format!("{OPREF}.dict"), &[opref]).unwrap();
     match &d {
         Value::Entity { functor, named, .. } => {
-            assert!(interp.kb().qualified_name_of(*functor).ends_with(".some"), "dict(r) must be some(...)");
+            assert!(
+                interp.kb().qualified_name_of(*functor).ends_with(".some"),
+                "dict(r) must be some(...)"
+            );
             let inner = named_field(&interp, named, "value");
-            assert!(Dictionary::from_value(interp.kb(), &inner).is_some(),
-                "the payload must be a dictionary, got {inner:?}");
+            assert!(
+                Dictionary::from_value(interp.kb(), &inner).is_some(),
+                "the payload must be a dictionary, got {inner:?}"
+            );
         }
         other => panic!("dict(r) must be an Option, got {}", other.type_name()),
     }
@@ -165,7 +192,9 @@ fn resolve_op_no_table_row_falls_back_to_spec_op() {
     let add = sym_val(&mut interp, "anthill.prelude.Numeric.add");
     let dict = crate::common::dict(&interp, bool_sym, []).into_value();
 
-    let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, add]).unwrap();
+    let opref = interp
+        .call(&format!("{DICT}.resolveOp"), &[dict, add])
+        .unwrap();
     let op_id = interp.call(&format!("{OPREF}.op"), &[opref]).unwrap();
     assert_eq!(sym_qn(&interp, &op_id), "anthill.prelude.Numeric.add");
 }
@@ -189,7 +218,10 @@ fn ops_enumerates_dict_operations_as_oprefs() {
     match &list {
         Value::Entity { functor, named, .. } => {
             let qn = interp.kb().qualified_name_of(*functor).to_string();
-            assert!(qn.ends_with(".cons"), "ops over an impl with rows must be a non-empty List, got {qn}");
+            assert!(
+                qn.ends_with(".cons"),
+                "ops over an impl with rows must be a non-empty List, got {qn}"
+            );
             let head = named_field(&interp, named, "head");
             assert!(
                 matches!(head, Value::OpRef { dict: Some(_), .. }),
@@ -217,12 +249,19 @@ fn opref_backed_by_builtin_is_callable() {
     let mut interp = crate::common::interp_for(src);
     let abs = resolve(&interp, "anthill.prelude.Int64.abs");
     // `named: None` — a bare ref names its own op (WI-857).
-    let opref = Value::OpRef { op: abs, dict: None, named: None };
+    let opref = Value::OpRef {
+        op: abs,
+        dict: None,
+        named: None,
+    };
     let got = interp
         .call("test.wi577.apply.applyUnary", &[opref, Value::Int(-5)])
         .unwrap();
     match got {
-        Value::Int(n) => assert_eq!(n, 5, "applying the builtin-backed OpRef must run Int64.abs(-5)"),
+        Value::Int(n) => assert_eq!(
+            n, 5,
+            "applying the builtin-backed OpRef must run Int64.abs(-5)"
+        ),
         other => panic!("expected Int, got {}", other.type_name()),
     }
 }
@@ -260,7 +299,9 @@ fn resolve_op_remembers_the_named_spec_op() {
     subs.push(crate::common::dict(&interp, desc, []));
     let dict = crate::common::dict(&interp, desc, subs).into_value();
     let cmp = sym_val(&mut interp, "anthill.prelude.Ord.compare");
-    let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
+    let opref = interp
+        .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
+        .unwrap();
     match &opref {
         Value::OpRef { op, named, .. } => {
             assert_eq!(
@@ -290,11 +331,18 @@ fn opref_dict_none_for_dictless_ref() {
     let mut interp = interp();
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     // A bare op-ref with no captured dict (a requires-free / namespace-level op).
-    let opref = Value::OpRef { op: eq_eq, dict: None, named: None };
+    let opref = Value::OpRef {
+        op: eq_eq,
+        dict: None,
+        named: None,
+    };
     let d = interp.call(&format!("{OPREF}.dict"), &[opref]).unwrap();
     match &d {
         Value::Entity { functor, named, .. } => {
-            assert!(interp.kb().qualified_name_of(*functor).ends_with(".none"), "must be none()");
+            assert!(
+                interp.kb().qualified_name_of(*functor).ends_with(".none"),
+                "must be none()"
+            );
             assert!(named.is_empty());
         }
         other => panic!("dict(r) must be an Option, got {}", other.type_name()),
@@ -334,7 +382,9 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     subs.push(crate::common::dict(&interp, desc, []));
     let dict = crate::common::dict(&interp, desc, subs).into_value();
     let cmp = sym_val(&mut interp, "anthill.prelude.Ord.compare");
-    let opref = interp.call(&format!("{DICT}.resolveOp"), &[dict, cmp]).unwrap();
+    let opref = interp
+        .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
+        .unwrap();
 
     let got = interp.call(&format!("{OPREF}.named"), &[opref]).unwrap();
     match &got {
@@ -355,11 +405,18 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     // none() for an eta'd ref, where spec and provider coincide — the other half
     // of the contract, so the `some(...)` above is not merely "always some".
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
-    let bare = Value::OpRef { op: eq_eq, dict: None, named: None };
+    let bare = Value::OpRef {
+        op: eq_eq,
+        dict: None,
+        named: None,
+    };
     let got = interp.call(&format!("{OPREF}.named"), &[bare]).unwrap();
     match &got {
         Value::Entity { functor, named, .. } => {
-            assert!(interp.kb().qualified_name_of(*functor).ends_with(".none"), "must be none()");
+            assert!(
+                interp.kb().qualified_name_of(*functor).ends_with(".none"),
+                "must be none()"
+            );
             assert!(named.is_empty());
         }
         other => panic!("named(r) must be an Option, got {}", other.type_name()),

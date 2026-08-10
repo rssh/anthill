@@ -55,7 +55,9 @@ namespace test.wi599
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "a bare carrier value wrapped into a carrier-param-spec field should thread \

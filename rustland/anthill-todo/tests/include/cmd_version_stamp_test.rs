@@ -9,7 +9,6 @@
 //! defined in the binary bundle, so a stamp resolves regardless of how old the
 //! project's own domain.anthill is.
 
-
 use std::path::Path;
 use std::process::Command;
 
@@ -18,13 +17,20 @@ use crate::common::setup_project;
 const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 
 fn run_in(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(BIN).current_dir(dir).args(args).output().expect("run anthill-todo")
+    Command::new(BIN)
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("run anthill-todo")
 }
 
 fn run(proj: &Path, args: &[&str]) -> std::process::Output {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    Command::new(BIN).args(&full).output().expect("run anthill-todo")
+    Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo")
 }
 
 fn stderr(out: &std::process::Output) -> String {
@@ -80,8 +86,14 @@ fn fresh_init_project_loads_clean() {
 
     let out = run(tmp.path(), &["status"]);
     let e = stderr(&out);
-    assert!(!e.contains("pre-versioning"), "fresh init is pre-versioning: {e}");
-    assert!(!e.contains("store format has version"), "fresh init reads stale: {e}");
+    assert!(
+        !e.contains("pre-versioning"),
+        "fresh init is pre-versioning: {e}"
+    );
+    assert!(
+        !e.contains("store format has version"),
+        "fresh init reads stale: {e}"
+    );
 }
 
 /// A project with no stamp at all — the entity is defined (in the bundle) but
@@ -91,7 +103,10 @@ fn pre_versioning_project_warns() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, NO_STAMP);
     let e = stderr(&run(&proj, &["status"]));
-    assert!(e.contains("pre-versioning"), "expected pre-versioning warning, got: {e}");
+    assert!(
+        e.contains("pre-versioning"),
+        "expected pre-versioning warning, got: {e}"
+    );
 }
 
 /// A stamp whose version differs from the binary warns loudly, naming both the
@@ -124,14 +139,24 @@ fn migrate_stamps_pre_versioning_project() {
 
     let out = run(&proj, &["migrate"]);
     assert!(out.status.success(), "migrate failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("migrated"), "migrate did not report: {}", stdout(&out));
+    assert!(
+        stdout(&out).contains("migrated"),
+        "migrate did not report: {}",
+        stdout(&out)
+    );
 
     let wi = std::fs::read_to_string(proj.join("anthill-todo/workitems.anthill"))
         .expect("read workitems");
-    assert!(wi.contains("StoreFormat"), "StoreFormat not persisted through store: {wi}");
+    assert!(
+        wi.contains("StoreFormat"),
+        "StoreFormat not persisted through store: {wi}"
+    );
 
     let e = stderr(&run(&proj, &["status"]));
-    assert!(!e.contains("pre-versioning"), "still pre-versioning after migrate: {e}");
+    assert!(
+        !e.contains("pre-versioning"),
+        "still pre-versioning after migrate: {e}"
+    );
 }
 
 /// `migrate` on an already-current project is a no-op that says so.
@@ -140,8 +165,11 @@ fn migrate_is_idempotent() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, STAMPED_CURRENT);
     let out = run(&proj, &["migrate"]);
-    assert!(stdout(&out).contains("already up to date"),
-        "expected up-to-date, got: {}", stdout(&out));
+    assert!(
+        stdout(&out).contains("already up to date"),
+        "expected up-to-date, got: {}",
+        stdout(&out)
+    );
 }
 
 /// `migrate` does NOT silently re-stamp a version it has no data migrator for —
@@ -151,6 +179,13 @@ fn migrate_refuses_unmigratable_version() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, STAMPED_STALE);
     let out = run(&proj, &["migrate"]);
-    assert!(!out.status.success(), "migrate should fail on an un-migratable version");
-    assert!(stderr(&out).contains("cannot be migrated"), "expected refusal, got: {}", stderr(&out));
+    assert!(
+        !out.status.success(),
+        "migrate should fail on an un-migratable version"
+    );
+    assert!(
+        stderr(&out).contains("cannot be migrated"),
+        "expected refusal, got: {}",
+        stderr(&out)
+    );
 }

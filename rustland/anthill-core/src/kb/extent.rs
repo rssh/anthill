@@ -35,9 +35,9 @@ use std::collections::HashMap;
 
 use crate::eval::value::Value;
 use crate::intern::{ResolveResult, Symbol};
-use crate::kb::ClauseKind;
 use crate::kb::term::{Var, VarId};
 use crate::kb::term_view::{views_structurally_equal, TermView};
+use crate::kb::ClauseKind;
 use crate::persistence::{Monotonicity, Store};
 
 use super::{KnowledgeBase, RuleId};
@@ -50,12 +50,18 @@ use super::{KnowledgeBase, RuleId};
 pub struct RowKey(RowKeyInner);
 
 #[derive(Clone, Debug)]
-enum RowKeyInner { InMemory(usize) }
+enum RowKeyInner {
+    InMemory(usize),
+}
 
 impl RowKey {
-    pub(crate) fn in_memory(id: usize) -> Self { Self(RowKeyInner::InMemory(id)) }
+    pub(crate) fn in_memory(id: usize) -> Self {
+        Self(RowKeyInner::InMemory(id))
+    }
     pub(crate) fn in_memory_id(&self) -> Option<usize> {
-        match self.0 { RowKeyInner::InMemory(id) => Some(id) }
+        match self.0 {
+            RowKeyInner::InMemory(id) => Some(id),
+        }
     }
 }
 
@@ -74,8 +80,14 @@ pub struct FactRef(FactRefInner);
 
 #[derive(Clone, Debug)]
 enum FactRefInner {
-    Resident { rule: RuleId, mirror: Option<String> },
-    External { owner: Symbol, key: RowKey },
+    Resident {
+        rule: RuleId,
+        mirror: Option<String>,
+    },
+    External {
+        owner: Symbol,
+        key: RowKey,
+    },
 }
 
 impl FactRef {
@@ -83,7 +95,10 @@ impl FactRef {
         Self(FactRefInner::Resident { rule, mirror: None })
     }
     pub(crate) fn resident_mirrored(rule: RuleId, mirror: String) -> Self {
-        Self(FactRefInner::Resident { rule, mirror: Some(mirror) })
+        Self(FactRefInner::Resident {
+            rule,
+            mirror: Some(mirror),
+        })
     }
     /// Private, and reached only through [`SourceRow::attach`]: minting an external
     /// reference is the KB's act, taking the owner it ROUTED the row through. A source
@@ -134,8 +149,14 @@ impl FactRef {
     pub(crate) fn locates_same_row(&self, other: &FactRef) -> bool {
         match (&self.0, &other.0) {
             (
-                FactRefInner::Resident { rule: ra, mirror: ma },
-                FactRefInner::Resident { rule: rb, mirror: mb },
+                FactRefInner::Resident {
+                    rule: ra,
+                    mirror: ma,
+                },
+                FactRefInner::Resident {
+                    rule: rb,
+                    mirror: mb,
+                },
             ) => ra == rb && ma == mb,
             (
                 FactRefInner::External { owner: oa, key: ka },
@@ -180,7 +201,10 @@ pub struct SourceRow {
 impl SourceRow {
     /// The ONE place an external [`FactRef`] is minted.
     fn attach(self, owner: Symbol) -> StoredRow {
-        StoredRow { row: self.row, reference: FactRef::external(owner, self.key) }
+        StoredRow {
+            row: self.row,
+            reference: FactRef::external(owner, self.key),
+        }
     }
 }
 
@@ -215,9 +239,12 @@ pub trait ExtentSource {
     fn retract(&mut self, _key: &RowKey) -> Result<bool, ExtentError> {
         Err(ExtentError::NotWritable)
     }
-    fn update(&mut self, _key: &RowKey, _new: &Value, _meta: Option<&Value>)
-        -> Result<Option<SourceRow>, ExtentError>
-    {
+    fn update(
+        &mut self,
+        _key: &RowKey,
+        _new: &Value,
+        _meta: Option<&Value>,
+    ) -> Result<Option<SourceRow>, ExtentError> {
         Err(ExtentError::NotWritable)
     }
 }
@@ -324,7 +351,10 @@ pub enum ExtentError {
     /// symbol table is the wrong book to look a foreign symbol up in — an in-range index
     /// names a DIFFERENT functor, and an out-of-range one makes `local_name_of` panic
     /// outright (it indexes `defs`). A caller holding the producing KB can name it.
-    UnmountedOwner { op: String, owner: Symbol },
+    UnmountedOwner {
+        op: String,
+        owner: Symbol,
+    },
     /// A backend-specific failure (I/O, a remote error), carrying its message.
     Backend(String),
 }
@@ -333,7 +363,10 @@ impl std::fmt::Display for ExtentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExtentError::NoSupportedMode => {
-                write!(f, "extent source: no declared query mode applies to this pattern")
+                write!(
+                    f,
+                    "extent source: no declared query mode applies to this pattern"
+                )
             }
             ExtentError::NotWritable => write!(f, "extent source is not writable"),
             ExtentError::UnmountedOwner { op, owner } => write!(
@@ -365,7 +398,10 @@ pub enum ExtentRegError {
     /// An `owned()` name resolved to SEVERAL symbols — the opposite fault of
     /// `UnresolvableName`, and one that declaring the name cannot fix: the repair is to
     /// qualify the mount, or to stop importing both candidates (WI-907).
-    AmbiguousName { functor: String, candidates: Vec<String> },
+    AmbiguousName {
+        functor: String,
+        candidates: Vec<String>,
+    },
     /// The functor already has a registered extent owner (single-owner rule).
     AlreadyOwned { functor: String },
     /// The functor already has resident facts/rules in `kb.rules` — mounting an
@@ -391,9 +427,15 @@ impl std::fmt::Display for ExtentRegError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExtentRegError::UnresolvableName(name) => {
-                write!(f, "register_extent_owner: unresolvable functor name '{name}'")
+                write!(
+                    f,
+                    "register_extent_owner: unresolvable functor name '{name}'"
+                )
             }
-            ExtentRegError::AmbiguousName { functor, candidates } => write!(
+            ExtentRegError::AmbiguousName {
+                functor,
+                candidates,
+            } => write!(
                 f,
                 "register_extent_owner: ambiguous functor name '{functor}': candidates \
                  {candidates:?}; mount it by qualified name"
@@ -538,17 +580,22 @@ impl KnowledgeBase {
     ) -> Result<Option<StoredRow>, ExtentError> {
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
-        let term = self.alloc_from_value(&row)
+        let term = self
+            .alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
         let sort = self.fact_trigger_sort(&row).or(sort_hint).ok_or_else(|| {
-            ExtentError::Backend("persistent assert: row has no trigger sort and no sort hint".into())
+            ExtentError::Backend(
+                "persistent assert: row has no trigger sort and no sort hint".into(),
+            )
         })?;
         // WI-922: a resident row is a FACT; `sort` is its guard trigger sort and
         // its domain, and is no longer also its clause kind.
-        Ok(self.assert_checked(term, ClauseKind::Fact, sort, sort, None).map(|rule| StoredRow {
-            row,
-            reference: FactRef::resident(rule),
-        }))
+        Ok(self
+            .assert_checked(term, ClauseKind::Fact, sort, sort, None)
+            .map(|rule| StoredRow {
+                row,
+                reference: FactRef::resident(rule),
+            }))
     }
 
     /// Register a durability mirror for resident facts. A mirror receives
@@ -618,7 +665,11 @@ impl KnowledgeBase {
 
     /// Assert through the mounted owner when one exists, otherwise into the
     /// resident extent. The returned reference is the sole mutation locator.
-    pub fn assert_persistent(&mut self, row: Value, meta: Option<Value>) -> Result<StoredRow, ExtentError> {
+    pub fn assert_persistent(
+        &mut self,
+        row: Value,
+        meta: Option<Value>,
+    ) -> Result<StoredRow, ExtentError> {
         let functor = row.head(self).functor_sym().ok_or_else(|| {
             ExtentError::Backend("persistent assert requires a functor-headed row".into())
         })?;
@@ -631,11 +682,15 @@ impl KnowledgeBase {
         }
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
-        let term = self.alloc_from_value(&row)
+        let term = self
+            .alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
         let (clause_kind, domain) = self.resident_fact_keys(functor);
         let rule = self.assert_fact(term, clause_kind, domain, None);
-        Ok(StoredRow { row, reference: FactRef::resident(rule) })
+        Ok(StoredRow {
+            row,
+            reference: FactRef::resident(rule),
+        })
     }
 
     /// The `(sort, domain)` a RESIDENT persisted fact is stored under — the one place
@@ -682,13 +737,16 @@ impl KnowledgeBase {
         })?;
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
-        let term = self.alloc_from_value(&row)
+        let term = self
+            .alloc_from_value(&row)
             .map_err(|e| ExtentError::Backend(format!("persistent persist: lower row: {e:?}")))?;
         // The SAME pair the mirror is handed and the resident shadow is asserted under,
         // so the durable write and the in-memory one agree by construction.
         let (clause_kind, domain) = self.resident_fact_keys(functor);
         let mut mirror = self.take_mirror(mirror_key).ok_or_else(|| {
-            ExtentError::Backend(format!("persistent persist: no mirror registered for key `{mirror_key}`"))
+            ExtentError::Backend(format!(
+                "persistent persist: no mirror registered for key `{mirror_key}`"
+            ))
         })?;
         let outcome = mirror.persist(self, term, clause_kind, domain, None);
         self.put_mirror(mirror_key.to_owned(), mirror);
@@ -702,14 +760,18 @@ impl KnowledgeBase {
 
     pub fn retract_persistent(&mut self, reference: &FactRef) -> Result<bool, ExtentError> {
         if let Some(rule) = reference.resident_rule() {
-            if !self.is_rule_alive(rule) { return Ok(false) }
+            if !self.is_rule_alive(rule) {
+                return Ok(false);
+            }
             let row = self.rule_head_value(rule).clone();
             self.check_fact_mutation_target(&row)
                 .map_err(|e| ExtentError::Backend(e.to_string()))?;
             if let Some(mirror_key) = reference.resident_mirror() {
                 let mirror_key = mirror_key.to_owned();
                 let mut mirror = self.take_mirror(&mirror_key).ok_or_else(|| {
-                    ExtentError::Backend(format!("persistent retract: no mirror registered for key `{mirror_key}`"))
+                    ExtentError::Backend(format!(
+                        "persistent retract: no mirror registered for key `{mirror_key}`"
+                    ))
                 })?;
                 let outcome = mirror.retract(self, rule);
                 self.put_mirror(mirror_key, mirror);
@@ -719,25 +781,36 @@ impl KnowledgeBase {
             return Ok(true);
         }
         let (owner, key) = reference.external_parts().expect("known FactRef form");
-        self.external_owner_mut("persistent retract", owner)?.retract(key)
+        self.external_owner_mut("persistent retract", owner)?
+            .retract(key)
     }
 
-    pub fn update_persistent(&mut self, reference: &FactRef, new: Value, meta: Option<Value>)
-        -> Result<Option<StoredRow>, ExtentError>
-    {
+    pub fn update_persistent(
+        &mut self,
+        reference: &FactRef,
+        new: Value,
+        meta: Option<Value>,
+    ) -> Result<Option<StoredRow>, ExtentError> {
         if let Some(rule) = reference.resident_rule() {
-            if !self.is_rule_alive(rule) { return Ok(None) }
+            if !self.is_rule_alive(rule) {
+                return Ok(None);
+            }
             let old = self.rule_head_value(rule).clone();
-            self.check_fact_mutation_target(&old).map_err(|e| ExtentError::Backend(e.to_string()))?;
-            self.check_fact_mutation_target(&new).map_err(|e| ExtentError::Backend(e.to_string()))?;
-            let term = self.alloc_from_value(&new)
-                .map_err(|e| ExtentError::Backend(format!("persistent update: lower row: {e:?}")))?;
+            self.check_fact_mutation_target(&old)
+                .map_err(|e| ExtentError::Backend(e.to_string()))?;
+            self.check_fact_mutation_target(&new)
+                .map_err(|e| ExtentError::Backend(e.to_string()))?;
+            let term = self.alloc_from_value(&new).map_err(|e| {
+                ExtentError::Backend(format!("persistent update: lower row: {e:?}"))
+            })?;
             let clause_kind = self.rule_clause_kind(rule);
             let domain = self.rule_domain(rule);
             let mirror_key = reference.resident_mirror().map(str::to_owned);
             if let Some(key) = &mirror_key {
                 let mut mirror = self.take_mirror(key).ok_or_else(|| {
-                    ExtentError::Backend(format!("persistent update: no mirror registered for key `{key}`"))
+                    ExtentError::Backend(format!(
+                        "persistent update: no mirror registered for key `{key}`"
+                    ))
                 })?;
                 let outcome = mirror.update(self, rule, term, clause_kind, domain, None);
                 self.put_mirror(key.clone(), mirror);
@@ -749,7 +822,10 @@ impl KnowledgeBase {
                 Some(key) => FactRef::resident_mirrored(replacement, key),
                 None => FactRef::resident(replacement),
             };
-            return Ok(Some(StoredRow { row: new, reference }));
+            return Ok(Some(StoredRow {
+                row: new,
+                reference,
+            }));
         }
         let (owner, key) = reference.external_parts().expect("known FactRef form");
         let updated = self
@@ -777,7 +853,10 @@ impl KnowledgeBase {
         // The error path touches no `self`, which is what lets the lookup happen ONCE:
         // it names the owner as the `Symbol` it already has.
         let Some(source) = self.extents.owner_mut(owner) else {
-            return Err(ExtentError::UnmountedOwner { op: op.to_owned(), owner });
+            return Err(ExtentError::UnmountedOwner {
+                op: op.to_owned(),
+                owner,
+            });
         };
         Ok(source)
     }
@@ -809,9 +888,7 @@ impl KnowledgeBase {
         for (name, profile) in owned {
             let sym = self.registration_symbol(&name)?;
 
-            if self.extents.mounts.contains_key(&sym)
-                || resolved.iter().any(|(s, _)| *s == sym)
-            {
+            if self.extents.mounts.contains_key(&sym) || resolved.iter().any(|(s, _)| *s == sym) {
                 return Err(ExtentRegError::AlreadyOwned { functor: name });
             }
             // Single-owner, the other ordering (load-then-mount): a functor with
@@ -879,19 +956,35 @@ pub enum BodiedRulePolicy {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct FactWriteShapeError { functor: String, rule: String }
+pub(crate) struct FactWriteShapeError {
+    functor: String,
+    rule: String,
+}
 
 impl std::fmt::Display for FactWriteShapeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fact mutation refused: `{}` has bodied rule `{}`", self.functor, self.rule)
+        write!(
+            f,
+            "fact mutation refused: `{}` has bodied rule `{}`",
+            self.functor, self.rule
+        )
     }
 }
 
 impl KnowledgeBase {
-    pub(crate) fn check_fact_mutation_target(&self, target: &Value) -> Result<(), FactWriteShapeError> {
-        let Some(functor) = target.head(self).functor_sym() else { return Ok(()) };
-        if !self.has_bodied_rule(functor) { return Ok(()) }
-        let rid = self.rules_by_functor_iter(functor).find(|&rid| !self.is_fact(rid))
+    pub(crate) fn check_fact_mutation_target(
+        &self,
+        target: &Value,
+    ) -> Result<(), FactWriteShapeError> {
+        let Some(functor) = target.head(self).functor_sym() else {
+            return Ok(());
+        };
+        if !self.has_bodied_rule(functor) {
+            return Ok(());
+        }
+        let rid = self
+            .rules_by_functor_iter(functor)
+            .find(|&rid| !self.is_fact(rid))
             .expect("has_bodied_rule implies a bodied rule");
         Err(FactWriteShapeError {
             functor: self.local_name_of(functor).to_string(),
@@ -911,7 +1004,10 @@ pub enum ExtentReadError {
     BodiedRule { functor: String, rule: String },
     /// A mounted source refused or failed the query (an unsupported mode, a
     /// backend/row error). Carries the underlying [`ExtentError`].
-    Extent { functor: String, source: ExtentError },
+    Extent {
+        functor: String,
+        source: ExtentError,
+    },
     /// No declared query mode applies to `selection` on a mounted source — an
     /// all-free selection against a non-enumerable (oracle) source. Unreachable
     /// for a v1 source (registration admits only enumerable owners, whose
@@ -982,21 +1078,31 @@ impl KnowledgeBase {
         policy: BodiedRulePolicy,
     ) -> Result<Vec<StoredRow>, ExtentReadError> {
         if self.extents.profile(functor).is_some() {
-            let profile = self.extents.profile(functor).expect("profile checked above");
-            let mode = profile.select_mode(&[]).ok_or_else(|| ExtentReadError::NoSupportedMode {
-                functor: self.local_name_of(functor).to_string(),
-            })?;
-            let pattern = QueryPattern { mode, bound: Vec::new() };
+            let profile = self
+                .extents
+                .profile(functor)
+                .expect("profile checked above");
+            let mode =
+                profile
+                    .select_mode(&[])
+                    .ok_or_else(|| ExtentReadError::NoSupportedMode {
+                        functor: self.local_name_of(functor).to_string(),
+                    })?;
+            let pattern = QueryPattern {
+                mode,
+                bound: Vec::new(),
+            };
             return self
                 .drain_extent_query(functor, &pattern)
                 .map_err(|source| ExtentReadError::Extent {
                     functor: self.local_name_of(functor).to_string(),
                     source,
                 })
-                .map(|rows| rows
-                    .into_iter()
-                    .filter(|row| row_has_functor(self, &row.row, functor))
-                    .collect());
+                .map(|rows| {
+                    rows.into_iter()
+                        .filter(|row| row_has_functor(self, &row.row, functor))
+                        .collect()
+                });
         }
 
         match policy {
@@ -1176,7 +1282,9 @@ impl KnowledgeBase {
     #[cfg(debug_assertions)]
     fn scan_matching_fact_count(&self, functor: Symbol, bound: &[(ArgKey, Value)]) -> usize {
         self.rules_by_functor_iter(functor)
-            .filter(|&rid| self.is_fact(rid) && bound_matches(self, self.rule_head_value(rid), bound))
+            .filter(|&rid| {
+                self.is_fact(rid) && bound_matches(self, self.rule_head_value(rid), bound)
+            })
             .count()
     }
 
@@ -1215,9 +1323,12 @@ impl KnowledgeBase {
         if selection.iter().any(|(k, _)| !fields.contains(k)) {
             return None;
         }
-        Some(full_arity_entity_pattern(functor, fields, selection, |i, _| {
-            Value::Var(Var::Global(VarId::new(u32::MAX - i as u32, functor)))
-        }))
+        Some(full_arity_entity_pattern(
+            functor,
+            fields,
+            selection,
+            |i, _| Value::Var(Var::Global(VarId::new(u32::MAX - i as u32, functor))),
+        ))
     }
 
     /// The `Resolve` counterpart of [`Self::read_facts`] (057 §"The accessor"; the
@@ -1307,9 +1418,12 @@ impl KnowledgeBase {
         // unselected fields are FRESH vars (a resolution goal reifies its answer via
         // the substitution, so each free column must be its own var — unlike the
         // `&self` discrim pattern, whose substitution is discarded).
-        Ok(full_arity_entity_pattern(functor, &fields, selection, |_, f| {
-            Value::Var(Var::Global(self.fresh_var(f)))
-        }))
+        Ok(full_arity_entity_pattern(
+            functor,
+            &fields,
+            selection,
+            |_, f| Value::Var(Var::Global(self.fresh_var(f))),
+        ))
     }
 
     /// The mounted arm of [`Self::read_facts`]: push `selection` down as the query
@@ -1329,17 +1443,23 @@ impl KnowledgeBase {
             .expect("read_mounted_facts on an unmounted functor");
         let bound = named_selection_as_bound(selection);
         let ground: Vec<ArgKey> = bound.iter().map(|(k, _)| *k).collect();
-        let mode = profile.select_mode(&ground).ok_or_else(|| {
-            ExtentReadError::NoSupportedMode { functor: self.local_name_of(functor).to_string() }
-        })?;
+        let mode =
+            profile
+                .select_mode(&ground)
+                .ok_or_else(|| ExtentReadError::NoSupportedMode {
+                    functor: self.local_name_of(functor).to_string(),
+                })?;
         // `bound` moves into the pattern; the drain borrows `&pattern` and hands
         // back owned rows (the cursor does not borrow it), so the re-filter below
         // reads `&pattern.bound` — no second clone of the selection values
         // (`named_selection_as_bound` already cloned once).
         let pattern = QueryPattern { mode, bound };
-        let rows = self.drain_extent_query(functor, &pattern).map_err(|source| {
-            ExtentReadError::Extent { functor: self.local_name_of(functor).to_string(), source }
-        })?;
+        let rows = self
+            .drain_extent_query(functor, &pattern)
+            .map_err(|source| ExtentReadError::Extent {
+                functor: self.local_name_of(functor).to_string(),
+                source,
+            })?;
         // The source may over-return, and read_facts hands rows straight to the
         // consumer with no further matching — so narrow here. Keep a row only if it
         // is OF `functor` AND satisfies the selection. The functor check mirrors the
@@ -1443,7 +1563,10 @@ fn full_arity_entity_pattern(
 /// ground), keyed as [`ArgKey::Named`] — the only vocabulary a fact head's named
 /// args and a source's `query_modes` share.
 fn named_selection_as_bound(selection: &[(Symbol, Value)]) -> Vec<(ArgKey, Value)> {
-    selection.iter().map(|(s, v)| (ArgKey::Named(*s), v.clone())).collect()
+    selection
+        .iter()
+        .map(|(s, v)| (ArgKey::Named(*s), v.clone()))
+        .collect()
 }
 
 /// Whether `row`'s head functor is `functor`. A mounted source owns `functor`'s
@@ -1504,8 +1627,12 @@ impl InMemoryExtentSource {
         }
         let profile = ExtentProfile {
             query_modes: vec![
-                QueryMode { required_ground: vec![] },        // ENUMERATE_MODE
-                QueryMode { required_ground: vec![id_key] },  // BY_ID_MODE
+                QueryMode {
+                    required_ground: vec![],
+                }, // ENUMERATE_MODE
+                QueryMode {
+                    required_ground: vec![id_key],
+                }, // BY_ID_MODE
             ],
             enumerable: true,
             complete: true,
@@ -1513,7 +1640,12 @@ impl InMemoryExtentSource {
         };
         let next_row_id = rows.len();
         let rows = rows.into_iter().enumerate().collect();
-        Ok(Self { functor_name: functor_name.into(), profile, rows, next_row_id })
+        Ok(Self {
+            functor_name: functor_name.into(),
+            profile,
+            rows,
+            next_row_id,
+        })
     }
 }
 
@@ -1540,18 +1672,27 @@ impl ExtentSource for InMemoryExtentSource {
             .rows
             .iter()
             .filter(|(_, row)| bound_matches(kb, row, &pattern.bound))
-            .map(|(id, row)| SourceRow { row: row.clone(), key: RowKey::in_memory(*id) })
+            .map(|(id, row)| SourceRow {
+                row: row.clone(),
+                key: RowKey::in_memory(*id),
+            })
             .collect();
-        Ok(Box::new(VecCursor { iter: matched.into_iter() }))
+        Ok(Box::new(VecCursor {
+            iter: matched.into_iter(),
+        }))
     }
 
     fn persist(&mut self, row: &Value, _meta: Option<&Value>) -> Result<SourceRow, ExtentError> {
         let id = self.next_row_id;
-        self.next_row_id = self.next_row_id.checked_add(1).ok_or_else(|| {
-            ExtentError::Backend("InMemoryExtentSource row id exhausted".into())
-        })?;
+        self.next_row_id = self
+            .next_row_id
+            .checked_add(1)
+            .ok_or_else(|| ExtentError::Backend("InMemoryExtentSource row id exhausted".into()))?;
         self.rows.push((id, row.clone()));
-        Ok(SourceRow { row: row.clone(), key: RowKey::in_memory(id) })
+        Ok(SourceRow {
+            row: row.clone(),
+            key: RowKey::in_memory(id),
+        })
     }
 
     fn retract(&mut self, key: &RowKey) -> Result<bool, ExtentError> {
@@ -1565,9 +1706,12 @@ impl ExtentSource for InMemoryExtentSource {
         Ok(true)
     }
 
-    fn update(&mut self, key: &RowKey, new: &Value, _meta: Option<&Value>)
-        -> Result<Option<SourceRow>, ExtentError>
-    {
+    fn update(
+        &mut self,
+        key: &RowKey,
+        new: &Value,
+        _meta: Option<&Value>,
+    ) -> Result<Option<SourceRow>, ExtentError> {
         let id = key.in_memory_id().ok_or_else(|| {
             ExtentError::Backend("InMemoryExtentSource received a foreign row key".into())
         })?;
@@ -1575,7 +1719,10 @@ impl ExtentSource for InMemoryExtentSource {
             return Ok(None);
         };
         *slot = new.clone();
-        Ok(Some(SourceRow { row: new.clone(), key: RowKey::in_memory(id) }))
+        Ok(Some(SourceRow {
+            row: new.clone(),
+            key: RowKey::in_memory(id),
+        }))
     }
 }
 
@@ -1586,10 +1733,14 @@ struct VecCursor {
 
 #[cfg(test)]
 fn test_cursor_rows(rows: Vec<Value>) -> std::vec::IntoIter<SourceRow> {
-    rows.into_iter().enumerate().map(|(index, row)| SourceRow {
-        row,
-        key: RowKey::in_memory(index),
-    }).collect::<Vec<_>>().into_iter()
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, row)| SourceRow {
+            row,
+            key: RowKey::in_memory(index),
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 impl ExtentCursor for VecCursor {
@@ -1666,7 +1817,11 @@ mod tests {
     }
 
     fn table_f(functor: Symbol) -> Vec<Value> {
-        vec![row_f(functor, 1, "alpha"), row_f(functor, 2, "beta"), row_f(functor, 3, "gamma")]
+        vec![
+            row_f(functor, 1, "alpha"),
+            row_f(functor, 2, "beta"),
+            row_f(functor, 3, "gamma"),
+        ]
     }
 
     fn source(kb: &KnowledgeBase) -> InMemoryExtentSource {
@@ -1683,7 +1838,9 @@ mod tests {
         bound: Vec<(ArgKey, Value)>,
     ) -> Result<Vec<Value>, ExtentError> {
         let ground: Vec<ArgKey> = bound.iter().map(|(k, _)| *k).collect();
-        let mode = profile.select_mode(&ground).ok_or(ExtentError::NoSupportedMode)?;
+        let mode = profile
+            .select_mode(&ground)
+            .ok_or(ExtentError::NoSupportedMode)?;
         let pattern = QueryPattern { mode, bound };
         drain(kb, src.query(kb, &pattern)?)
     }
@@ -1702,10 +1859,12 @@ mod tests {
     fn ids(kb: &KnowledgeBase, rows: &[Value]) -> Vec<i64> {
         let mut v: Vec<i64> = rows
             .iter()
-            .map(|r| match arg_at(kb, r, ArgKey::Named(ID)).map(|a| a.to_value()) {
-                Some(Value::Int(n)) => n,
-                other => panic!("row without Int id: {other:?}"),
-            })
+            .map(
+                |r| match arg_at(kb, r, ArgKey::Named(ID)).map(|a| a.to_value()) {
+                    Some(Value::Int(n)) => n,
+                    other => panic!("row without Int id: {other:?}"),
+                },
+            )
             .collect();
         v.sort();
         v
@@ -1752,7 +1911,9 @@ mod tests {
         // enumeration mode would answer any all-free goal). Use an oracle-shaped
         // profile: keyed-only, non-enumerable.
         let oracle = ExtentProfile {
-            query_modes: vec![QueryMode { required_ground: vec![ArgKey::Named(ID)] }],
+            query_modes: vec![QueryMode {
+                required_ground: vec![ArgKey::Named(ID)],
+            }],
             enumerable: false,
             complete: true,
             stability: Stability::Stable,
@@ -1768,8 +1929,14 @@ mod tests {
     fn out_of_range_mode_is_refused_by_query() {
         let kb = KnowledgeBase::new();
         let src = source(&kb);
-        let bad = QueryPattern { mode: 99, bound: vec![] };
-        assert!(matches!(src.query(&kb, &bad), Err(ExtentError::NoSupportedMode)));
+        let bad = QueryPattern {
+            mode: 99,
+            bound: vec![],
+        };
+        assert!(matches!(
+            src.query(&kb, &bad),
+            Err(ExtentError::NoSupportedMode)
+        ));
     }
 
     // ── Query contract: ground-equality pushdown ───────────────
@@ -1805,7 +1972,9 @@ mod tests {
             .map_err(|e| e.to_string())?;
         for want in expected_matches {
             if !got.iter().any(|g| views_structurally_equal(kb, g, want)) {
-                return Err(format!("under-return: missing row satisfying bound: {want:?}"));
+                return Err(format!(
+                    "under-return: missing row satisfying bound: {want:?}"
+                ));
             }
         }
         Ok(got)
@@ -1832,7 +2001,9 @@ mod tests {
                 .filter(|row| !bound_matches(kb, row, &pattern.bound))
                 .cloned()
                 .collect();
-            Ok(Box::new(VecCursor { iter: test_cursor_rows(kept) }))
+            Ok(Box::new(VecCursor {
+                iter: test_cursor_rows(kept),
+            }))
         }
     }
 
@@ -1849,7 +2020,9 @@ mod tests {
             _kb: &KnowledgeBase,
             _pattern: &QueryPattern,
         ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
-            Ok(Box::new(VecCursor { iter: test_cursor_rows(self.rows.clone()) }))
+            Ok(Box::new(VecCursor {
+                iter: test_cursor_rows(self.rows.clone()),
+            }))
         }
     }
 
@@ -1863,7 +2036,10 @@ mod tests {
         };
         let bad = UnderReturnSource { rows: table() };
         let verdict = assert_query_superset(&kb, &bad, &pattern, &[row(1, "alpha")]);
-        assert!(verdict.is_err(), "under-return must FAIL soundness: {verdict:?}");
+        assert!(
+            verdict.is_err(),
+            "under-return must FAIL soundness: {verdict:?}"
+        );
     }
 
     #[test]
@@ -1879,8 +2055,10 @@ mod tests {
             .expect("over-return satisfies the superset contract");
         // The caller re-filters against `bound` (as the engine's re-unification
         // does), leaving exactly the true match.
-        let refiltered: Vec<Value> =
-            got.into_iter().filter(|r| bound_matches(&kb, r, &pattern.bound)).collect();
+        let refiltered: Vec<Value> = got
+            .into_iter()
+            .filter(|r| bound_matches(&kb, r, &pattern.bound))
+            .collect();
         assert_eq!(ids(&kb, &refiltered), vec![2]);
     }
 
@@ -1930,12 +2108,19 @@ mod tests {
             _kb: &KnowledgeBase,
             _pattern: &QueryPattern,
         ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
-            Ok(Box::new(VecCursor { iter: test_cursor_rows(Vec::new()) }))
+            Ok(Box::new(VecCursor {
+                iter: test_cursor_rows(Vec::new()),
+            }))
         }
     }
 
     fn stable_profile(modes: Vec<QueryMode>, enumerable: bool) -> ExtentProfile {
-        ExtentProfile { query_modes: modes, enumerable, complete: true, stability: Stability::Stable }
+        ExtentProfile {
+            query_modes: modes,
+            enumerable,
+            complete: true,
+            stability: Stability::Stable,
+        }
     }
 
     /// Define `qname` so `resolve_name_in_global` finds it (registration resolves
@@ -1945,7 +2130,8 @@ mod tests {
     fn define(kb: &mut KnowledgeBase, qname: &str) -> Symbol {
         let short = qname.rsplit('.').next().unwrap();
         let root_scope = kb.global_scope();
-        kb.symbols.define_qualified_only(short, qname, SymbolKind::Sort, root_scope)
+        kb.symbols
+            .define_qualified_only(short, qname, SymbolKind::Sort, root_scope)
     }
 
     #[test]
@@ -1954,9 +2140,16 @@ mod tests {
         let sym = define(&mut kb, "test.Widget");
         let src = ProfiledSource {
             name: "test.Widget".into(),
-            profile: stable_profile(vec![QueryMode { required_ground: vec![] }], true),
+            profile: stable_profile(
+                vec![QueryMode {
+                    required_ground: vec![],
+                }],
+                true,
+            ),
         };
-        let id = kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        let id = kb
+            .register_extent_owner(Box::new(src))
+            .expect("stable+enumerable registers");
         assert!(kb.extent_owner(sym).is_some());
         assert!(kb.extent_profile(sym).is_some());
         // The SourceId indexes the slab.
@@ -1968,7 +2161,12 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let src = ProfiledSource {
             name: "test.NeverDefined".into(),
-            profile: stable_profile(vec![QueryMode { required_ground: vec![] }], true),
+            profile: stable_profile(
+                vec![QueryMode {
+                    required_ground: vec![],
+                }],
+                true,
+            ),
         };
         let err = kb.register_extent_owner(Box::new(src)).unwrap_err();
         assert!(matches!(err, ExtentRegError::UnresolvableName(_)));
@@ -1980,9 +2178,15 @@ mod tests {
         define(&mut kb, "test.Widget");
         let mk = || ProfiledSource {
             name: "test.Widget".into(),
-            profile: stable_profile(vec![QueryMode { required_ground: vec![] }], true),
+            profile: stable_profile(
+                vec![QueryMode {
+                    required_ground: vec![],
+                }],
+                true,
+            ),
         };
-        kb.register_extent_owner(Box::new(mk())).expect("first owner");
+        kb.register_extent_owner(Box::new(mk()))
+            .expect("first owner");
         let err = kb.register_extent_owner(Box::new(mk())).unwrap_err();
         assert!(matches!(err, ExtentRegError::AlreadyOwned { .. }));
     }
@@ -1992,8 +2196,12 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         define(&mut kb, "test.Feed");
         let two_modes = vec![
-            QueryMode { required_ground: vec![] },
-            QueryMode { required_ground: vec![ArgKey::Named(ID)] },
+            QueryMode {
+                required_ground: vec![],
+            },
+            QueryMode {
+                required_ground: vec![ArgKey::Named(ID)],
+            },
         ];
         let src = ProfiledSource {
             name: "test.Feed".into(),
@@ -2006,7 +2214,10 @@ mod tests {
         };
         let err = kb.register_extent_owner(Box::new(src)).unwrap_err();
         // The multi-mode violation surfaces as itself, ahead of the v1 volatile gate.
-        assert!(matches!(err, ExtentRegError::VolatileMultiMode { modes: 2, .. }));
+        assert!(matches!(
+            err,
+            ExtentRegError::VolatileMultiMode { modes: 2, .. }
+        ));
     }
 
     #[test]
@@ -2016,7 +2227,9 @@ mod tests {
         let src = ProfiledSource {
             name: "test.Feed".into(),
             profile: ExtentProfile {
-                query_modes: vec![QueryMode { required_ground: vec![ArgKey::Named(ID)] }],
+                query_modes: vec![QueryMode {
+                    required_ground: vec![ArgKey::Named(ID)],
+                }],
                 enumerable: true,
                 complete: true,
                 stability: Stability::Volatile,
@@ -2033,7 +2246,9 @@ mod tests {
         let src = ProfiledSource {
             name: "test.Oracle".into(),
             profile: stable_profile(
-                vec![QueryMode { required_ground: vec![ArgKey::Named(ID)] }],
+                vec![QueryMode {
+                    required_ground: vec![ArgKey::Named(ID)],
+                }],
                 false,
             ),
         };
@@ -2047,8 +2262,12 @@ mod tests {
     fn select_mode_prefers_the_most_specific() {
         let profile = stable_profile(
             vec![
-                QueryMode { required_ground: vec![] },
-                QueryMode { required_ground: vec![ArgKey::Named(ID)] },
+                QueryMode {
+                    required_ground: vec![],
+                },
+                QueryMode {
+                    required_ground: vec![ArgKey::Named(ID)],
+                },
             ],
             true,
         );
@@ -2063,7 +2282,14 @@ mod tests {
     /// A ground resident fact `wi(id: <n>, tag: <t>)` interned into `kb`, so
     /// `rules_by_functor` finds it — the resident counterpart of the `row`
     /// fixture (which builds a raw `Value` for the mounted path).
-    fn assert_wi_fact(kb: &mut KnowledgeBase, f: Symbol, id_field: Symbol, tag_field: Symbol, id: i64, tag: &str) {
+    fn assert_wi_fact(
+        kb: &mut KnowledgeBase,
+        f: Symbol,
+        id_field: Symbol,
+        tag_field: Symbol,
+        id: i64,
+        tag: &str,
+    ) {
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
         let id_t = kb.alloc(Term::Const(Literal::Int(id)));
@@ -2086,16 +2312,26 @@ mod tests {
             assert_wi_fact(&mut kb, f, id_field, tag_field, id, tag);
         }
         // Empty selection = enumeration: every fact.
-        let all = kb.read_facts(f, &[], BodiedRulePolicy::Refuse).expect("facts only");
+        let all = kb
+            .read_facts(f, &[], BodiedRulePolicy::Refuse)
+            .expect("facts only");
         assert_eq!(all.len(), 3);
         // Named-field selection = superset filter: `tag = "a"` keeps two.
         let tagged_a = kb
-            .read_facts(f, &[(tag_field, Value::Str("a".into()))], BodiedRulePolicy::Refuse)
+            .read_facts(
+                f,
+                &[(tag_field, Value::Str("a".into()))],
+                BodiedRulePolicy::Refuse,
+            )
             .expect("facts only");
         assert_eq!(tagged_a.len(), 2);
         // A selection that matches nothing returns empty (not an error).
         let none = kb
-            .read_facts(f, &[(tag_field, Value::Str("z".into()))], BodiedRulePolicy::Refuse)
+            .read_facts(
+                f,
+                &[(tag_field, Value::Str("z".into()))],
+                BodiedRulePolicy::Refuse,
+            )
             .expect("facts only");
         assert!(none.is_empty());
     }
@@ -2178,7 +2414,11 @@ mod tests {
         }
         // Selection on the less-selective field: `tag = "a"` keeps two rows.
         let tagged_a = kb
-            .read_facts(f, &[(tag_field, Value::Str("a".into()))], BodiedRulePolicy::Refuse)
+            .read_facts(
+                f,
+                &[(tag_field, Value::Str("a".into()))],
+                BodiedRulePolicy::Refuse,
+            )
             .expect("facts only");
         assert_eq!(tagged_a.len(), 2);
         // Selection on the key field: `id = 2` keeps exactly one, and it is the
@@ -2198,7 +2438,12 @@ mod tests {
             .read_facts(f, &[(id_field, Value::Int(9))], BodiedRulePolicy::Refuse)
             .unwrap()
             .is_empty());
-        assert_eq!(kb.read_facts(f, &[], BodiedRulePolicy::Refuse).unwrap().len(), 3);
+        assert_eq!(
+            kb.read_facts(f, &[], BodiedRulePolicy::Refuse)
+                .unwrap()
+                .len(),
+            3
+        );
         // A selection on a field the schema does NOT declare falls back to
         // enumeration + `bound_matches` (no fact carries it → empty), never a panic.
         let ghost = kb.intern("ghost");
@@ -2242,7 +2487,11 @@ mod tests {
         let a1 = kb
             .read_facts(f, &[(a, Value::Int(1))], BodiedRulePolicy::Refuse)
             .expect("facts only");
-        assert_eq!(a1.len(), 2, "two a=1 rows, each collected once (no duplication)");
+        assert_eq!(
+            a1.len(),
+            2,
+            "two a=1 rows, each collected once (no duplication)"
+        );
         // Every returned row genuinely carries a=1 (the wildcards didn't smear).
         for row in &a1 {
             match row.named_arg(&kb, a).map(|x| x.to_value()) {
@@ -2356,9 +2605,12 @@ mod tests {
         let item = define(&mut kb, "test.Item");
         let src = InMemoryExtentSource::new(&kb, "test.Item", ArgKey::Named(ID), table_f(item))
             .expect("well-formed seed");
-        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        kb.register_extent_owner(Box::new(src))
+            .expect("stable+enumerable registers");
         // Enumeration (empty selection) streams the whole table.
-        let all = kb.read_facts(item, &[], BodiedRulePolicy::Refuse).expect("enumerable");
+        let all = kb
+            .read_facts(item, &[], BodiedRulePolicy::Refuse)
+            .expect("enumerable");
         assert_eq!(ids(&kb, &all), vec![1, 2, 3]);
         // Selection pushdown: `id = 2` takes the keyed mode and returns one row.
         let one = kb
@@ -2376,7 +2628,8 @@ mod tests {
         let item = define(&mut kb, "test.Item");
         let src = InMemoryExtentSource::new(&kb, "test.Item", ArgKey::Named(ID), Vec::new())
             .expect("an empty table is well-formed");
-        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        kb.register_extent_owner(Box::new(src))
+            .expect("stable+enumerable registers");
 
         let first = kb
             .assert_persistent(row_f(item, 1, "alpha"), None)
@@ -2385,17 +2638,26 @@ mod tests {
             .assert_persistent(row_f(item, 2, "beta"), None)
             .expect("source accepts an insert");
 
-        assert!(kb.retract_persistent(&first.reference).expect("source accepts retract"));
+        assert!(kb
+            .retract_persistent(&first.reference)
+            .expect("source accepts retract"));
         let replacement = kb
             .update_persistent(&second.reference, row_f(item, 2, "gamma"), None)
             .expect("source accepts update")
             .expect("second row remains live");
 
-        let rows = kb.read_facts(item, &[], BodiedRulePolicy::Refuse).expect("enumerable");
+        let rows = kb
+            .read_facts(item, &[], BodiedRulePolicy::Refuse)
+            .expect("enumerable");
         assert_eq!(ids(&kb, &rows), vec![2]);
         assert!(views_structurally_equal(&kb, &rows[0], &replacement.row));
-        assert!(kb.retract_persistent(&replacement.reference).expect("replacement retracts"));
-        assert!(kb.read_facts(item, &[], BodiedRulePolicy::Refuse).unwrap().is_empty());
+        assert!(kb
+            .retract_persistent(&replacement.reference)
+            .expect("replacement retracts"));
+        assert!(kb
+            .read_facts(item, &[], BodiedRulePolicy::Refuse)
+            .unwrap()
+            .is_empty());
     }
 
     /// A mounted owner that OVER-returns — it ignores `bound` and streams its
@@ -2412,8 +2674,12 @@ mod tests {
                 self.name.clone(),
                 stable_profile(
                     vec![
-                        QueryMode { required_ground: vec![] },
-                        QueryMode { required_ground: vec![ArgKey::Named(ID)] },
+                        QueryMode {
+                            required_ground: vec![],
+                        },
+                        QueryMode {
+                            required_ground: vec![ArgKey::Named(ID)],
+                        },
                     ],
                     true,
                 ),
@@ -2424,7 +2690,9 @@ mod tests {
             _kb: &KnowledgeBase,
             _pattern: &QueryPattern,
         ) -> Result<Box<dyn ExtentCursor>, ExtentError> {
-            Ok(Box::new(VecCursor { iter: test_cursor_rows(self.rows.clone()) }))
+            Ok(Box::new(VecCursor {
+                iter: test_cursor_rows(self.rows.clone()),
+            }))
         }
     }
 
@@ -2436,8 +2704,12 @@ mod tests {
         // returns exact matches, so it cannot exercise this path.)
         let mut kb = KnowledgeBase::new();
         let item = define(&mut kb, "test.Item");
-        let src = OverReturningOwner { name: "test.Item".into(), rows: table_f(item) };
-        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        let src = OverReturningOwner {
+            name: "test.Item".into(),
+            rows: table_f(item),
+        };
+        kb.register_extent_owner(Box::new(src))
+            .expect("stable+enumerable registers");
         let got = kb
             .read_facts(item, &[(ID, Value::Int(2))], BodiedRulePolicy::Refuse)
             .expect("enumerable");
@@ -2457,8 +2729,12 @@ mod tests {
             row_f(item, 2, "beta"),     // correct functor, selected id
             row_f(other, 2, "foreign"), // FOREIGN functor, same id
         ];
-        let src = OverReturningOwner { name: "test.Item".into(), rows };
-        kb.register_extent_owner(Box::new(src)).expect("stable+enumerable registers");
+        let src = OverReturningOwner {
+            name: "test.Item".into(),
+            rows,
+        };
+        kb.register_extent_owner(Box::new(src))
+            .expect("stable+enumerable registers");
         let got = kb
             .read_facts(item, &[(ID, Value::Int(2))], BodiedRulePolicy::Refuse)
             .expect("enumerable");
@@ -2555,7 +2831,9 @@ mod tests {
         assert_wi_fact(&mut kb, f, id_field, tag_field, 2, "b");
         assert_guarded_wi_rule(&mut kb, f, id_field, tag_field, 3, "c", enabled);
         assert_nullary_fact(&mut kb, enabled);
-        let all = kb.read_facts_resolved(f, &[]).expect("resolves, guard honored");
+        let all = kb
+            .read_facts_resolved(f, &[])
+            .expect("resolves, guard honored");
         assert_eq!(resolved_ids(&kb, &all, id_field), vec![1, 2, 3]);
         // The SAME bodied rule is REFUSED by `Refuse` (the WI-770 shape) — proving
         // the two policies genuinely differ on a bodied candidate, not by accident.
@@ -2643,7 +2921,11 @@ mod tests {
         kb.assert_fact(head, sort, domain, None);
 
         let rows = kb.read_facts_resolved(f, &[]).expect("resolves");
-        assert_eq!(rows.len(), 1, "the var-filled fact still enumerates one row");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the var-filled fact still enumerates one row"
+        );
         match rows[0].named_arg(&kb, tag_field).map(|a| a.to_value()) {
             Some(Value::Term { id, .. }) => assert!(
                 matches!(kb.get_term(id), Term::Var(_)),

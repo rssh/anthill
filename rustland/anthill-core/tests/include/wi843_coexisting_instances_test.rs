@@ -93,7 +93,9 @@ fn program_with(ns: &str, monoids: &str, body: &str) -> String {
 
 /// `TWO_MONOIDS` with the multiplicative one dropped.
 fn one_monoid() -> String {
-    let cut = TWO_MONOIDS.find("  sort MulM").expect("TWO_MONOIDS declares MulM");
+    let cut = TWO_MONOIDS
+        .find("  sort MulM")
+        .expect("TWO_MONOIDS declares MulM");
     TWO_MONOIDS[..cut].to_string()
 }
 
@@ -166,12 +168,20 @@ fn each_coexisting_monoid_is_selectable_to_its_own_value() {
         ),
     );
     assert_eq!(
-        eval_int(&src, "wi843.fold.Driver.added", "the additive monoid, selected"),
+        eval_int(
+            &src,
+            "wi843.fold.Driver.added",
+            "the additive monoid, selected"
+        ),
         9,
         "0 + 2 + 3 + 4",
     );
     assert_eq!(
-        eval_int(&src, "wi843.fold.Driver.mulled", "the multiplicative monoid, selected"),
+        eval_int(
+            &src,
+            "wi843.fold.Driver.mulled",
+            "the multiplicative monoid, selected"
+        ),
         24,
         "1 × 2 × 3 × 4 — the same fold over the same list, differing only in the \
          bracket, so 9 twice would mean the selection decided nothing",
@@ -235,7 +245,10 @@ fn selecting_at_the_unselected_call_makes_it_load_and_run() {
         "wi843.selected",
         "  sort Use\n    operation go(n: Int64) -> Int64 = Monoid.combine[Monoid = AddM](2, 3)\n  end",
     );
-    assert_eq!(eval_int(&src, "wi843.selected.Use.go", "the pinned §1 call"), 5);
+    assert_eq!(
+        eval_int(&src, "wi843.selected.Use.go", "the pinned §1 call"),
+        5
+    );
 }
 
 /// THE MESSAGE MUST NOT SUGGEST A BRACKET IT WOULD ITSELF REFUSE. §4.4 check 3
@@ -360,8 +373,14 @@ fn definite_answers(ns: &str, src: &str) -> (usize, usize) {
             pos_args: SmallVec::from_slice(&[a]),
             named_args: SmallVec::new(),
         });
-        let cfg = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
-        kb.resolve(&[goal], &cfg).iter().filter(|s| s.is_definite()).count()
+        let cfg = ResolveConfig {
+            max_solutions: 10,
+            ..ResolveConfig::default()
+        };
+        kb.resolve(&[goal], &cfg)
+            .iter()
+            .filter(|s| s.is_definite())
+            .count()
     };
     (definite_for(&mut kb, 5), definite_for(&mut kb, 6))
 }
@@ -392,7 +411,8 @@ end
 "#;
     let errs = load_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("ambiguous instance: 2 distinct instance facts")),
+        errs.iter()
+            .any(|e| e.contains("ambiguous instance: 2 distinct instance facts")),
         "an instance fact has no NAME, so its group keeps the load refusal: {errs:?}"
     );
 }
@@ -458,13 +478,13 @@ end
 "#;
     let errs = load_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("ambiguous semantic equality")),
+        errs.iter()
+            .any(|e| e.contains("ambiguous semantic equality")),
         "two `eq` suppliers for one carrier must be refused by the sem-eq INDEX \
          BUILD (WI-837), the check phase 3b does NOT delete — `eq` dispatches from \
          unification, with no site to select at: {errs:?}"
     );
 }
-
 
 // ── What tier 3 does NOT reach (found by review, each driven) ────────
 
@@ -580,7 +600,11 @@ namespace wi843.specpair
 end
 "#;
     assert_eq!(
-        eval_int(&src, "wi843.specpair.Driver.go", "specificity decides, silently"),
+        eval_int(
+            &src,
+            "wi843.specpair.Driver.go",
+            "specificity decides, silently"
+        ),
         111,
         "the GROUND provider wins by `pick_most_specific`; 222 would mean the \
          parametric one did, and a load error would mean tier 3 grew to cover \

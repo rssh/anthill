@@ -25,8 +25,7 @@ fn error_effect_wraps_return_in_tl_expected() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_f_err.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_err.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("static tl::expected<int64_t, std::string> safe_div(int64_t a, int64_t b)"),
@@ -56,8 +55,7 @@ fn raise_lowers_to_make_unexpected() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_f_raise.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_raise.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("tl::expected<int64_t, std::string>"),
@@ -83,8 +81,7 @@ fn error_effect_in_effects_set_still_wraps() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_f_multi.CalcOps")
-        .expect("emit CalcOps");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_multi.CalcOps").expect("emit CalcOps");
 
     assert!(
         cpp.contains("tl::expected<int64_t, std::string>"),
@@ -105,8 +102,7 @@ fn no_error_effect_keeps_plain_return_type() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_f_modify_only.CalcOps")
-        .expect("emit CalcOps");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_modify_only.CalcOps").expect("emit CalcOps");
 
     assert!(
         !cpp.contains("tl::expected"),
@@ -135,8 +131,7 @@ fn wildcard_let_emits_discard_statement() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_f_void.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_void.Calc").expect("emit Calc");
 
     // Discard slot prints `expr; ` (no `auto _ = `).
     assert!(
@@ -161,8 +156,7 @@ fn wildcard_let_followed_by_named_let_composes() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_f_mix.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_f_mix.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("[&]() { sink(x); auto y = (x + 1); return (y + 1); }()"),

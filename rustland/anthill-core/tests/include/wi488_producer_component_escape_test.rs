@@ -23,8 +23,8 @@
 //! even earlier, as an INVARIANT-param type MISMATCH, so it never reaches this
 //! gate — tuple components are covariant, nominal type-args are not.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -33,8 +33,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -68,7 +68,8 @@ const PRELUDE: &str = r#"
 "#;
 
 fn is_escape(errs: &[String]) -> bool {
-    errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape"))
+    errs.iter()
+        .any(|e| e.contains("abstracting return") || e.contains("escape"))
 }
 
 /// THE GAP: a producer whose tuple COMPONENT abstracts a concrete provider up to

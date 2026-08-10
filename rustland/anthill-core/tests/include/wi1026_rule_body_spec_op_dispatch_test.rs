@@ -182,7 +182,8 @@ const ONE_SUPPLY: &str = "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  
 
 /// TWO suppliers — the carrier's own member (7) beside a fact binding a different
 /// operation (9). WI-1012's tie, reachable without an operation body.
-pub(crate) const TWO_LEAF: &str = "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
+pub(crate) const TWO_LEAF: &str =
+    "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
 pub(crate) const TWO_SUPPLY: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
                           fact Desc[T = Leaf, describe = otherDescribe]\n";
 
@@ -253,8 +254,14 @@ fn a_qualified_rule_body_tie_is_refused_at_load() {
         .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
         .join("\n");
     assert!(msg.contains("ambiguous dispatch"), "{msg}");
-    assert!(msg.contains("Desc.describe"), "the spec op must be named: {msg}");
-    assert!(msg.contains("carrier `test.wi1026.tie.Leaf`"), "the carrier must be named: {msg}");
+    assert!(
+        msg.contains("Desc.describe"),
+        "the spec op must be named: {msg}"
+    );
+    assert!(
+        msg.contains("carrier `test.wi1026.tie.Leaf`"),
+        "the carrier must be named: {msg}"
+    );
     assert!(
         msg.contains("the carrier's own member 'test.wi1026.tie.Leaf.describe'"),
         "route 1 named by its route: {msg}",
@@ -299,11 +306,18 @@ fn the_rule_body_refusal_is_located_and_shares_one_body() {
     // Same namespace name in both, so the qualified names inside the message match
     // and any difference left is a difference of WORDING.
     let ns = "test.wi1026.faces";
-    let (rule_loc, rule_body) =
-        split(&two_suppliers(ns, "  rule answer(?r) :- Desc.describe(leaf(), ?r)\n"));
-    let (op_loc, op_body) =
-        split(&two_suppliers(ns, "  operation probe() -> Int64 = Desc.describe(leaf())\n"));
-    assert_eq!(rule_body, op_body, "one refusal, one message body — two faces must not drift");
+    let (rule_loc, rule_body) = split(&two_suppliers(
+        ns,
+        "  rule answer(?r) :- Desc.describe(leaf(), ?r)\n",
+    ));
+    let (op_loc, op_body) = split(&two_suppliers(
+        ns,
+        "  operation probe() -> Int64 = Desc.describe(leaf())\n",
+    ));
+    assert_eq!(
+        rule_body, op_body,
+        "one refusal, one message body — two faces must not drift"
+    );
     assert_ne!(
         rule_loc, op_loc,
         "the two fixtures put the call on different lines; equal locations would mean \
@@ -324,7 +338,11 @@ fn a_carrier_with_no_supplier_still_runs_the_default_in_a_rule_body() {
         "",
         "  rule answer(?r) :- Desc.describe(leaf(), ?r)\n",
     );
-    assert_eq!(answer(ns, &src), 1, "no supplier — the spec's default must still run");
+    assert_eq!(
+        answer(ns, &src),
+        1,
+        "no supplier — the spec's default must still run"
+    );
 }
 
 /// THE ROW THIS TICKET DELIBERATELY LEFT, NOW CLOSED BY **WI-1035** — kept here,
@@ -359,8 +377,14 @@ fn a_dot_spelled_operation_body_ties_exactly_as_the_rule_body_does() {
         );
         msg
     };
-    let op = expect_tie("test.wi1026.dottie", "  operation probe() -> Int64 = leaf().describe()\n");
-    let rule = expect_tie("test.wi1026.dottie", "  rule answer(?r) :- leaf().describe(?r)\n");
+    let op = expect_tie(
+        "test.wi1026.dottie",
+        "  operation probe() -> Int64 = leaf().describe()\n",
+    );
+    let rule = expect_tie(
+        "test.wi1026.dottie",
+        "  rule answer(?r) :- leaf().describe(?r)\n",
+    );
     // Same namespace in both, so the qualified names inside match: the two SITES agree
     // on the verdict, which is the claim this test exists to make. Compared after the
     // `line:col` prefix, since the two fixtures put the call in different places.

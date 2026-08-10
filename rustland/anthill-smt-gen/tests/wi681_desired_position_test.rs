@@ -94,7 +94,9 @@ fn build_kb() -> KnowledgeBase {
 }
 
 fn desired_position_sym(kb: &KnowledgeBase) -> anthill_core::intern::Symbol {
-    all_operation_params(kb).into_iter().map(|(s, _)| s)
+    all_operation_params(kb)
+        .into_iter()
+        .map(|(s, _)| s)
         .find(|s| kb.local_name_of(*s).rsplit('.').next() == Some("desired_position"))
         .expect("desired_position op")
 }
@@ -105,47 +107,77 @@ fn body_derived_geometry_emits_uninterpreted_trig_and_identity() {
     // The seam step: synthesize desired_position's defining rule.
     kb.synthesize_op_defining_rule(desired_position_sym(&kb))
         .expect("desired_position synthesizes a defining rule");
-    let cfg = ProofConfig { logic: Some("QF_UFNRA".to_string()), ..Default::default() };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.wi681.violation_direct", &cfg).expect("emit");
+    let cfg = ProofConfig {
+        logic: Some("QF_UFNRA".to_string()),
+        ..Default::default()
+    };
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.wi681.violation_direct", &cfg)
+        .expect("emit");
 
     // cos/sin ride as uninterpreted functions...
-    assert!(smt.contains("(declare-fun anthill_cos (Real) Real)"),
-        "cos must be an uninterpreted function:\n{smt}");
-    assert!(smt.contains("(declare-fun anthill_sin (Real) Real)"), "sin uninterpreted:\n{smt}");
+    assert!(
+        smt.contains("(declare-fun anthill_cos (Real) Real)"),
+        "cos must be an uninterpreted function:\n{smt}"
+    );
+    assert!(
+        smt.contains("(declare-fun anthill_sin (Real) Real)"),
+        "sin uninterpreted:\n{smt}"
+    );
     // ...constrained ONLY by the Pythagorean identity on the leader's yaw (0.0).
-    assert!(smt.contains(
-        "(assert (= (+ (* (anthill_cos 0.0) (anthill_cos 0.0)) \
-         (* (anthill_sin 0.0) (anthill_sin 0.0))) 1.0))"),
-        "the Pythagorean identity for the yaw arg must be asserted:\n{smt}");
+    assert!(
+        smt.contains(
+            "(assert (= (+ (* (anthill_cos 0.0) (anthill_cos 0.0)) \
+         (* (anthill_sin 0.0) (anthill_sin 0.0))) 1.0))"
+        ),
+        "the Pythagorean identity for the yaw arg must be asserted:\n{smt}"
+    );
     // The offset (−4) reaches the document from the body-derived Vec3, and there
     // is NO hand-written separation constant.
-    assert!(smt.contains("(- 4.0)"), "the offset −4 flows through the body:\n{smt}");
+    assert!(
+        smt.contains("(- 4.0)"),
+        "the offset −4 flows through the body:\n{smt}"
+    );
 }
 
 #[test]
 fn body_derived_geometry_z3_says_unsat() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let mut kb = build_kb();
-    kb.synthesize_op_defining_rule(desired_position_sym(&kb)).expect("synth");
-    let cfg = ProofConfig { logic: Some("QF_UFNRA".to_string()), ..Default::default() };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.wi681.violation_direct", &cfg).expect("emit");
-    assert_eq!(run_z3("wi681_direct", &smt), "unsat",
-        "|target − leader| = |offset| = 4 ≥ 1 = d_min for every yaw. SMT:\n{smt}");
+    kb.synthesize_op_defining_rule(desired_position_sym(&kb))
+        .expect("synth");
+    let cfg = ProofConfig {
+        logic: Some("QF_UFNRA".to_string()),
+        ..Default::default()
+    };
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.wi681.violation_direct", &cfg)
+        .expect("emit");
+    assert_eq!(
+        run_z3("wi681_direct", &smt),
+        "unsat",
+        "|target − leader| = |offset| = 4 ≥ 1 = d_min for every yaw. SMT:\n{smt}"
+    );
 }
 
 #[test]
 fn transitive_seam_reaches_op_one_level_down() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let mut kb = build_kb();
     // No manual synth: the transitive seam must reach `desired_position`
     // through the `formation` helper the obligation calls.
     kb.synthesize_body_derived_defrules("test.smt_gen.wi681.violation_via_helper");
-    let cfg = ProofConfig { logic: Some("QF_UFNRA".to_string()), ..Default::default() };
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.wi681.violation_via_helper", &cfg)
+    let cfg = ProofConfig {
+        logic: Some("QF_UFNRA".to_string()),
+        ..Default::default()
+    };
+    let smt = emit_satisfiability_check_with(&kb, "test.smt_gen.wi681.violation_via_helper", &cfg)
         .expect("emit: the transitive seam must have synthesized desired_position");
-    assert_eq!(run_z3("wi681_helper", &smt), "unsat",
-        "the body-derived geometry discharges through the helper rule. SMT:\n{smt}");
+    assert_eq!(
+        run_z3("wi681_helper", &smt),
+        "unsat",
+        "the body-derived geometry discharges through the helper rule. SMT:\n{smt}"
+    );
 }

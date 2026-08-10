@@ -104,7 +104,10 @@ end
         }
     };
     let inline = call(&mut interp, "inlineLocal");
-    assert_eq!(inline, 3, "`p.inner.abs()` must be the absolute value of -3");
+    assert_eq!(
+        inline, 3,
+        "`p.inner.abs()` must be the absolute value of -3"
+    );
     assert_eq!(
         inline,
         call(&mut interp, "letBoundLocal"),
@@ -313,7 +316,8 @@ end
     ] {
         let errs = try_load_kb_with(src).err().unwrap_or_default();
         assert!(
-            errs.iter().any(|e| e.contains(flattened) && e.contains("unknown functor")),
+            errs.iter()
+                .any(|e| e.contains(flattened) && e.contains("unknown functor")),
             "`{flattened}` must stay the loud unknown-functor error, got: {errs:?}"
         );
     }
@@ -447,15 +451,20 @@ namespace test.wi750badcol3
     person_row.where(lambda c -> eq(c.nosuchcol, "alice")).isEmpty
 end
 "#;
-    for (src, label) in
-        [(CHAINED, "chained"), (LET_BOUND, "let-bound"), (DEPTH1, "depth-1")]
-    {
-        let errs = try_load_kb_with(src)
-            .err()
-            .unwrap_or_else(|| panic!("`nosuchcol` is not a column — the {label} \
-                 spelling must NOT load; an absorbing binder type would swallow it"));
+    for (src, label) in [
+        (CHAINED, "chained"),
+        (LET_BOUND, "let-bound"),
+        (DEPTH1, "depth-1"),
+    ] {
+        let errs = try_load_kb_with(src).err().unwrap_or_else(|| {
+            panic!(
+                "`nosuchcol` is not a column — the {label} \
+                 spelling must NOT load; an absorbing binder type would swallow it"
+            )
+        });
         assert!(
-            errs.iter().any(|e| e.contains("nosuchcol") && e.contains("dot dispatch")),
+            errs.iter()
+                .any(|e| e.contains("nosuchcol") && e.contains("dot dispatch")),
             "the {label} spelling must miss in dot dispatch, got: {errs:?}"
         );
     }
@@ -557,7 +566,10 @@ end
         }
     };
     let inline = call(&mut interp, "deep");
-    assert_eq!(inline, 5, "`p.mid.leaf.abs()` must be the absolute value of -5");
+    assert_eq!(
+        inline, 5,
+        "`p.mid.leaf.abs()` must be the absolute value of -5"
+    );
     assert_eq!(
         inline,
         call(&mut interp, "letBoundDeep"),
@@ -565,7 +577,6 @@ end
          fully let-bound spelling"
     );
 }
-
 
 /// PRECEDENCE 0 — the QUALIFIED NAME gets first refusal over the whole re-route ladder.
 ///

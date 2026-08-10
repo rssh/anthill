@@ -21,9 +21,9 @@ use std::rc::Rc;
 use anthill_core::eval::builtins::{expect_args, register_if_present, require_symbol};
 use anthill_core::eval::{EvalError, Interpreter, Value};
 use anthill_core::intern::Symbol;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 
 use crate::reflect::reader;
 
@@ -89,8 +89,9 @@ impl ReflectSyms {
     /// sees a clear single-point error rather than deferred per-builtin failures.
     fn resolve(kb: &mut KnowledgeBase) -> Result<Self, EvalError> {
         fn req(kb: &KnowledgeBase, qname: &'static str) -> Result<Symbol, EvalError> {
-            kb.try_resolve_symbol(qname).ok_or_else(||
-                EvalError::Internal(format!("{qname} not in scope — stdlib not loaded")))
+            kb.try_resolve_symbol(qname).ok_or_else(|| {
+                EvalError::Internal(format!("{qname} not in scope — stdlib not loaded"))
+            })
         }
         Ok(Self {
             cons: req(kb, "anthill.prelude.List.cons")?,
@@ -146,38 +147,51 @@ impl ReflectSyms {
 pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
     // If reflect symbols aren't present at all, skip registration silently —
     // matches `register_if_present` policy for partial-stdlib harnesses.
-    if interp.kb().try_resolve_symbol("anthill.reflect.SortInfo").is_none() {
+    if interp
+        .kb()
+        .try_resolve_symbol("anthill.reflect.SortInfo")
+        .is_none()
+    {
         return Ok(());
     }
     let syms = Rc::new(ReflectSyms::resolve(interp.kb_mut())?);
 
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.sort_template",
-        move |i, a| kb_sort_template(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.sort_template", move |i, a| {
+        kb_sort_template(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.sorts",
-        move |i, a| kb_sorts(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.sorts", move |i, a| {
+        kb_sorts(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.operations",
-        move |i, a| kb_operations(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.operations", move |i, a| {
+        kb_operations(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.constructors",
-        move |i, a| kb_constructors(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.constructors", move |i, a| {
+        kb_constructors(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.fields",
-        move |i, a| kb_fields(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.fields", move |i, a| {
+        kb_fields(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.rules",
-        move |i, a| kb_rules(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.rules", move |i, a| {
+        kb_rules(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.descriptions",
-        move |i, a| kb_descriptions(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.descriptions", move |i, a| {
+        kb_descriptions(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.reify",
-        move |i, a| kb_reify(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.reify", move |i, a| {
+        kb_reify(i, a, &s)
+    })?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.reflect",
-        move |i, a| kb_reflect(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.KB.reflect", move |i, a| {
+        kb_reflect(i, a, &s)
+    })?;
 
     // Namespace-level symbol ops (no cached syms needed beyond `_kb` sentinel).
     register_if_present(interp, "anthill.reflect.qualified_name", qualified_name)?;
@@ -195,8 +209,9 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
     register_if_present(interp, "anthill.reflect.sort_as_term", sort_as_term)?;
     register_if_present(interp, "anthill.reflect.can_be_sort", can_be_sort)?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.term_as_sort",
-        move |i, a| term_as_sort(i, a, &s))?;
+    register_if_present(interp, "anthill.reflect.term_as_sort", move |i, a| {
+        term_as_sort(i, a, &s)
+    })?;
 
     // NO `anthill.reflect.field_access` here — deliberately (WI-759). `anthill-core`'s
     // `register_standard_builtins` already binds that QN to the production implementation
@@ -208,14 +223,24 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
     // the standard set, so wiring these reflect builtins into any real driver would have
     // silently shadowed the working implementation with a broken one. It was harmless only
     // because nothing but this file's own tests ever called `register_reflect_builtins`.
-    register_if_present(interp, "anthill.reflect.resolve_sort_instantiation_param",
-        resolve_sort_instantiation_param)?;
+    register_if_present(
+        interp,
+        "anthill.reflect.resolve_sort_instantiation_param",
+        resolve_sort_instantiation_param,
+    )?;
 
     register_if_present(interp, "anthill.reflect.Substitution.apply", subst_apply)?;
-    register_if_present(interp, "anthill.reflect.Substitution.compose", subst_compose)?;
+    register_if_present(
+        interp,
+        "anthill.reflect.Substitution.compose",
+        subst_compose,
+    )?;
     let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.Substitution.bindings",
-        move |i, a| subst_bindings(i, a, &s))?;
+    register_if_present(
+        interp,
+        "anthill.reflect.Substitution.bindings",
+        move |i, a| subst_bindings(i, a, &s),
+    )?;
 
     register_if_present(interp, "anthill.reflect.not", reflect_not)?;
 
@@ -235,7 +260,10 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
 fn str_arg(v: Value) -> Result<String, EvalError> {
     match v {
         Value::Str(s) => Ok(s),
-        other => Err(EvalError::TypeMismatch { expected: "String", got: other.type_name().to_string() }),
+        other => Err(EvalError::TypeMismatch {
+            expected: "String",
+            got: other.type_name().to_string(),
+        }),
     }
 }
 
@@ -262,13 +290,20 @@ fn option_string_arg(v: Value) -> Result<Option<String>, EvalError> {
                 Ok(None)
             }
         }
-        other => Err(EvalError::TypeMismatch { expected: "Option[String]", got: other.type_name().to_string() }),
+        other => Err(EvalError::TypeMismatch {
+            expected: "Option[String]",
+            got: other.type_name().to_string(),
+        }),
     }
 }
 
 /// Build a `cons(head:_, tail:_)` chain terminated by `nil()` as a `Value`.
 fn build_list_value(syms: &ReflectSyms, elements: Vec<Value>) -> Value {
-    let mut acc = Value::Entity { functor: syms.nil, pos: Vec::new().into(), named: Vec::new().into() };
+    let mut acc = Value::Entity {
+        functor: syms.nil,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
     for elem in elements.into_iter().rev() {
         acc = Value::Entity {
             functor: syms.cons,
@@ -284,12 +319,17 @@ fn build_list_value(syms: &ReflectSyms, elements: Vec<Value>) -> Value {
 fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Value)>) -> Value {
     if named.len() >= 2 {
         match kb.entity_field_names(functor) {
-            Some(order) => named.sort_by_key(|(s, _)|
-                order.iter().position(|f| f == s).unwrap_or(usize::MAX)),
+            Some(order) => {
+                named.sort_by_key(|(s, _)| order.iter().position(|f| f == s).unwrap_or(usize::MAX))
+            }
             None => named.sort_by_key(|(s, _)| s.index()),
         }
     }
-    Value::Entity { functor, pos: Vec::new().into(), named: named.into() }
+    Value::Entity {
+        functor,
+        pos: Vec::new().into(),
+        named: named.into(),
+    }
 }
 
 // ── Builtin handlers ───────────────────────────────────────────
@@ -324,7 +364,8 @@ fn kb_sorts(
 
     let mut entries: Vec<Value> = Vec::new();
     for rec in reader::read_sort_infos(kb, namespace.as_deref()) {
-        let list = |ts: Vec<TermId>| build_list_value(syms, ts.into_iter().map(Value::term).collect());
+        let list =
+            |ts: Vec<TermId>| build_list_value(syms, ts.into_iter().map(Value::term).collect());
         let mut fields = vec![
             (syms.f_name, Value::term(rec.name)),
             (syms.f_definition, Value::term(rec.definition)),
@@ -412,16 +453,12 @@ fn kb_fields(
     // carrier-agnostically (WI-342): a value-in-type field (`Vector[Int64, 3]`)
     // rides as its own `Value::Node` into the FieldInfo, surfaced verbatim.
     // Cloned to release the registry borrow before building the entities.
-    let declared: Option<Vec<(Symbol, Value)>> =
-        kb.entity_field_types(functor).map(|f| f.to_vec());
+    let declared: Option<Vec<(Symbol, Value)>> = kb.entity_field_types(functor).map(|f| f.to_vec());
     let mut items: Vec<Value> = Vec::new();
     if let Some(fields) = declared {
         for (field_sym, field_type) in fields {
             let name_val = Value::Str(kb.local_name_of(field_sym).to_string());
-            let entry = vec![
-                (syms.f_name, name_val),
-                (syms.f_type_name, field_type),
-            ];
+            let entry = vec![(syms.f_name, name_val), (syms.f_type_name, field_type)];
             items.push(make_entity(kb, syms.field_info, entry));
         }
     }
@@ -479,9 +516,12 @@ fn kb_reify(
     let [_kb, t] = expect_args::<2>("KB.reify", args)?;
     let tid = match t {
         Value::Term { id: tid, .. } => tid,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "Term", got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "Term",
+                got: other.type_name().to_string(),
+            })
+        }
     };
     Ok(reify_term_to_value(interp.kb_mut(), syms, tid))
 }
@@ -517,11 +557,15 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
         Value::Entity {
             functor: syms.const_repr,
             pos: Vec::new().into(),
-            named: vec![(syms.f_value, Value::Entity {
-                functor: ctor,
-                pos: Vec::new().into(),
-                named: vec![(syms.f_value, inner)].into(),
-            })].into(),
+            named: vec![(
+                syms.f_value,
+                Value::Entity {
+                    functor: ctor,
+                    pos: Vec::new().into(),
+                    named: vec![(syms.f_value, inner)].into(),
+                },
+            )]
+            .into(),
         }
     }
 
@@ -551,7 +595,8 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
             named: vec![
                 (self.syms.f_name, Value::term(name_term)),
                 (self.syms.f_args, args_list),
-            ].into(),
+            ]
+            .into(),
         }
     }
 }
@@ -584,18 +629,26 @@ impl reader::ReflectReader for ValueRepr<'_> {
         let syms = self.syms;
         let (functor, named) = match self.value {
             Value::Entity { functor, named, .. } => (functor, named),
-            other => return Err(EvalError::TypeMismatch {
-                expected: "TermRepr", got: other.type_name().to_string(),
-            }),
+            other => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "TermRepr",
+                    got: other.type_name().to_string(),
+                })
+            }
         };
         let lookup = |key: Symbol| -> Option<Value> {
-            named.iter().find(|(s, _)| *s == key).map(|(_, v)| v.clone())
+            named
+                .iter()
+                .find(|(s, _)| *s == key)
+                .map(|(_, v)| v.clone())
         };
 
         if functor == syms.const_repr {
             let inner = lookup(syms.f_value)
                 .ok_or_else(|| EvalError::Internal("ConstRepr: missing `value`".into()))?;
-            Ok(reader::ReflectShape::Const(decode_literal_repr(kb, syms, inner)?))
+            Ok(reader::ReflectShape::Const(decode_literal_repr(
+                kb, syms, inner,
+            )?))
         } else if functor == syms.var_repr {
             let name = lookup(syms.f_name)
                 .ok_or_else(|| EvalError::Internal("VarRepr: missing `name`".into()))?;
@@ -617,7 +670,9 @@ impl reader::ReflectReader for ValueRepr<'_> {
             Ok(reader::ReflectShape::Fn(functor_sym, children))
         } else {
             Err(EvalError::Internal(format!(
-                "unknown TermRepr ctor: {}", kb.local_name_of(functor))))
+                "unknown TermRepr ctor: {}",
+                kb.local_name_of(functor)
+            )))
         }
     }
 }
@@ -632,49 +687,66 @@ fn decode_literal_repr(
 ) -> Result<Literal, EvalError> {
     let (lit_ctor, lit_val) = match inner {
         Value::Entity { functor, named, .. } => {
-            let v = named.iter().find(|(s, _)| *s == syms.f_value)
+            let v = named
+                .iter()
+                .find(|(s, _)| *s == syms.f_value)
                 .map(|(_, v)| v.clone())
                 .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
             (functor, v)
         }
-        other => return Err(EvalError::TypeMismatch {
-            expected: "LiteralRepr", got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "LiteralRepr",
+                got: other.type_name().to_string(),
+            })
+        }
     };
     if lit_ctor == syms.int_lit {
         match lit_val {
             Value::Int(n) => Ok(Literal::Int(n)),
             other => Err(EvalError::TypeMismatch {
-                expected: "Int64", got: other.type_name().to_string() }),
+                expected: "Int64",
+                got: other.type_name().to_string(),
+            }),
         }
     } else if lit_ctor == syms.bigint_lit {
         match lit_val {
             Value::BigInt(n) => Ok(Literal::BigInt(n)),
             Value::Int(n) => Ok(Literal::BigInt(n.into())),
             other => Err(EvalError::TypeMismatch {
-                expected: "BigInt", got: other.type_name().to_string() }),
+                expected: "BigInt",
+                got: other.type_name().to_string(),
+            }),
         }
     } else if lit_ctor == syms.float_lit {
         match lit_val {
             Value::Float(f) => Ok(Literal::Float(f.into())),
             other => Err(EvalError::TypeMismatch {
-                expected: "Float", got: other.type_name().to_string() }),
+                expected: "Float",
+                got: other.type_name().to_string(),
+            }),
         }
     } else if lit_ctor == syms.str_lit {
         match lit_val {
             Value::Str(s) => Ok(Literal::String(s)),
             other => Err(EvalError::TypeMismatch {
-                expected: "String", got: other.type_name().to_string() }),
+                expected: "String",
+                got: other.type_name().to_string(),
+            }),
         }
     } else if lit_ctor == syms.bool_lit {
         match lit_val {
             Value::Bool(b) => Ok(Literal::Bool(b)),
             other => Err(EvalError::TypeMismatch {
-                expected: "Bool", got: other.type_name().to_string() }),
+                expected: "Bool",
+                got: other.type_name().to_string(),
+            }),
         }
     } else {
         Err(EvalError::Internal(format!(
-            "unknown LiteralRepr ctor: {}", kb.local_name_of(lit_ctor))))
+            "unknown LiteralRepr ctor: {}",
+            kb.local_name_of(lit_ctor)
+        )))
     }
 }
 
@@ -705,24 +777,37 @@ fn collect_repr_list(
     let mut cur = args_list;
     loop {
         match cur {
-            Value::Entity { functor: f, named, .. } => {
-                if f == syms.nil { break; }
+            Value::Entity {
+                functor: f, named, ..
+            } => {
+                if f == syms.nil {
+                    break;
+                }
                 if f != syms.cons {
                     return Err(EvalError::Internal(format!(
-                        "FnRepr.args: expected cons-list, got {}", kb.local_name_of(f))));
+                        "FnRepr.args: expected cons-list, got {}",
+                        kb.local_name_of(f)
+                    )));
                 }
-                let head = named.iter().find(|(s, _)| *s == syms.head)
+                let head = named
+                    .iter()
+                    .find(|(s, _)| *s == syms.head)
                     .map(|(_, v)| v.clone())
                     .ok_or_else(|| EvalError::Internal("cons: missing head".into()))?;
-                let tail = named.iter().find(|(s, _)| *s == syms.tail)
+                let tail = named
+                    .iter()
+                    .find(|(s, _)| *s == syms.tail)
                     .map(|(_, v)| v.clone())
                     .ok_or_else(|| EvalError::Internal("cons: missing tail".into()))?;
                 out.push(head);
                 cur = tail;
             }
-            other => return Err(EvalError::TypeMismatch {
-                expected: "cons-list", got: other.type_name().to_string(),
-            }),
+            other => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "cons-list",
+                    got: other.type_name().to_string(),
+                })
+            }
         }
     }
     Ok(out)
@@ -768,8 +853,9 @@ fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 fn lookup_symbol_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [name] = expect_args::<1>("lookup_symbol", args)?;
     let name_str = str_arg(name)?;
-    let sym = interp.kb().try_resolve_symbol(&name_str)
-        .ok_or_else(|| EvalError::Internal(format!("lookup_symbol: '{}' not in scope", name_str)))?;
+    let sym = interp.kb().try_resolve_symbol(&name_str).ok_or_else(|| {
+        EvalError::Internal(format!("lookup_symbol: '{}' not in scope", name_str))
+    })?;
     Ok(Value::term(interp.kb_mut().alloc(CoreTerm::Ref(sym))))
 }
 
@@ -796,9 +882,13 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
     // Lookup Option.some / Option.none every call — not hot path; keeping
     // these out of ReflectSyms because this op is reachable even with a
     // stripped reflect stdlib (it's a namespace-level op, not a KB method).
-    let some_sym = interp.kb().try_resolve_symbol("anthill.prelude.Option.some")
+    let some_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.some")
         .ok_or_else(|| EvalError::Internal("anthill.prelude.Option.some not in scope".into()))?;
-    let none_sym = interp.kb().try_resolve_symbol("anthill.prelude.Option.none")
+    let none_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.none")
         .ok_or_else(|| EvalError::Internal("anthill.prelude.Option.none not in scope".into()))?;
     let value_field = interp.kb_mut().intern("value");
     Ok(match scope_sym {
@@ -810,7 +900,11 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
                 named: vec![(value_field, Value::term(ref_tid))].into(),
             }
         }
-        None => Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() },
+        None => Value::Entity {
+            functor: none_sym,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        },
     })
 }
 
@@ -820,7 +914,10 @@ fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
     let sym = expect_symbol(interp.kb(), s, "kind")?;
     // WI-898: the kind→string table lives on `SymbolKind` itself, shared with the
     // resolver's `kind` builtin, so the two cannot answer differently.
-    let kind_str = interp.kb().kind_of(sym).map_or("Unresolved", SymbolKind::reflect_name);
+    let kind_str = interp
+        .kb()
+        .kind_of(sym)
+        .map_or("Unresolved", SymbolKind::reflect_name);
     Ok(Value::Str(kind_str.into()))
 }
 
@@ -830,7 +927,8 @@ fn expect_term(v: Value, op: &'static str) -> Result<TermId, EvalError> {
     match v {
         Value::Term { id: tid, .. } => Ok(tid),
         other => Err(EvalError::TypeMismatch {
-            expected: "Term", got: format!("{} for {op}", other.type_name()),
+            expected: "Term",
+            got: format!("{} for {op}", other.type_name()),
         }),
     }
 }
@@ -872,7 +970,8 @@ fn sort_as_term(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     match s {
         Value::Term { .. } => Ok(s),
         other => Err(EvalError::TypeMismatch {
-            expected: "Type (Term handle)", got: other.type_name().to_string(),
+            expected: "Type (Term handle)",
+            got: other.type_name().to_string(),
         }),
     }
 }
@@ -882,8 +981,10 @@ fn sort_as_term(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 fn can_be_sort(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [t] = expect_args::<1>("can_be_sort", args)?;
     let tid = expect_term(t, "can_be_sort")?;
-    let ok = !matches!(interp.kb().get_term(tid),
-        CoreTerm::Const(_) | CoreTerm::Bottom);
+    let ok = !matches!(
+        interp.kb().get_term(tid),
+        CoreTerm::Const(_) | CoreTerm::Bottom
+    );
     Ok(Value::Bool(ok))
 }
 
@@ -896,11 +997,17 @@ fn term_as_sort(
 ) -> Result<Value, EvalError> {
     let [t] = expect_args::<1>("term_as_sort", args)?;
     let tid = expect_term(t, "term_as_sort")?;
-    let ok = !matches!(interp.kb().get_term(tid),
-        CoreTerm::Const(_) | CoreTerm::Bottom);
-    let some_sym = interp.kb().try_resolve_symbol("anthill.prelude.Option.some")
+    let ok = !matches!(
+        interp.kb().get_term(tid),
+        CoreTerm::Const(_) | CoreTerm::Bottom
+    );
+    let some_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.some")
         .ok_or_else(|| EvalError::Internal("Option.some not in scope".into()))?;
-    let none_sym = interp.kb().try_resolve_symbol("anthill.prelude.Option.none")
+    let none_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.none")
         .ok_or_else(|| EvalError::Internal("Option.none not in scope".into()))?;
     if ok {
         Ok(Value::Entity {
@@ -909,7 +1016,11 @@ fn term_as_sort(
             named: vec![(syms.f_value, Value::term(tid))].into(),
         })
     } else {
-        Ok(Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() })
+        Ok(Value::Entity {
+            functor: none_sym,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        })
     }
 }
 
@@ -928,16 +1039,19 @@ fn resolve_sort_instantiation_param(
     let param_sym = expect_symbol(interp.kb(), param, "resolve_sort_instantiation_param")?;
     let kb = interp.kb();
     match kb.get_term(inst_tid) {
-        CoreTerm::Fn { named_args, .. } => {
-            named_args.iter()
-                .find(|(s, _)| *s == param_sym)
-                .map(|(_, tid)| Value::term(*tid))
-                .ok_or_else(|| EvalError::Internal(format!(
+        CoreTerm::Fn { named_args, .. } => named_args
+            .iter()
+            .find(|(s, _)| *s == param_sym)
+            .map(|(_, tid)| Value::term(*tid))
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
                     "resolve_sort_instantiation_param: '{}' not bound",
-                    kb.local_name_of(param_sym))))
-        }
+                    kb.local_name_of(param_sym)
+                ))
+            }),
         _ => Err(EvalError::TypeMismatch {
-            expected: "SortView Term", got: "other Term".into(),
+            expected: "SortView Term",
+            got: "other Term".into(),
         }),
     }
 }
@@ -951,9 +1065,12 @@ fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     let [s, t, _kb] = expect_args::<3>("Substitution.apply", args)?;
     let handle = match s {
         Value::Substitution(h) => h,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "Substitution", got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "Substitution",
+                got: other.type_name().to_string(),
+            })
+        }
     };
     let tid = expect_term(t, "Substitution.apply")?;
     // The arena is on `interp.substs`; the KB on `interp.kb`. These are
@@ -973,15 +1090,21 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     let [s1, s2, _kb] = expect_args::<3>("Substitution.compose", args)?;
     let h1 = match s1 {
         Value::Substitution(h) => h,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "Substitution", got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "Substitution",
+                got: other.type_name().to_string(),
+            })
+        }
     };
     let h2 = match s2 {
         Value::Substitution(h) => h,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "Substitution", got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "Substitution",
+                got: other.type_name().to_string(),
+            })
+        }
     };
 
     let arena = interp.subst_arena();
@@ -1023,26 +1146,39 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// full-walk dual of `lookup`'s single by-name read). Lets the host bridge's
 /// `compose` merge by variable across the `&dyn Substitution` boundary, but is
 /// a first-class reflect op.
-fn subst_bindings(interp: &mut Interpreter, args: &[Value], syms: &ReflectSyms) -> Result<Value, EvalError> {
+fn subst_bindings(
+    interp: &mut Interpreter,
+    args: &[Value],
+    syms: &ReflectSyms,
+) -> Result<Value, EvalError> {
     let [subst_val] = expect_args::<1>("Substitution.bindings", args)?;
     let handle = match subst_val {
         Value::Substitution(h) => h,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "Substitution", got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "Substitution",
+                got: other.type_name().to_string(),
+            })
+        }
     };
     let arena = interp.subst_arena();
     let entries: Vec<_> = arena.with_subst(&handle, |s| {
-        s.iter().map(|(vid, val)| (*vid, val.clone())).collect::<Vec<_>>()
+        s.iter()
+            .map(|(vid, val)| (*vid, val.clone()))
+            .collect::<Vec<_>>()
     });
     let kb = interp.kb_mut();
-    let pairs: Vec<Value> = entries.into_iter().map(|(vid, val)| {
-        let var_tid = kb.alloc(CoreTerm::Var(Var::Global(vid)));
-        make_entity(kb, syms.pair, vec![
-            (syms.f_fst, Value::term(var_tid)),
-            (syms.f_snd, val),
-        ])
-    }).collect();
+    let pairs: Vec<Value> = entries
+        .into_iter()
+        .map(|(vid, val)| {
+            let var_tid = kb.alloc(CoreTerm::Var(Var::Global(vid)));
+            make_entity(
+                kb,
+                syms.pair,
+                vec![(syms.f_fst, Value::term(var_tid)), (syms.f_snd, val)],
+            )
+        })
+        .collect();
     Ok(build_list_value(syms, pairs))
 }
 
@@ -1068,7 +1204,9 @@ fn reflect_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         None => Ok(Value::Bool(false)),
         Some((sol, _rest)) if sol.residual.is_empty() => Ok(Value::Bool(true)),
         Some(_) => Err(EvalError::Internal(
-            "reflect.not: floundering — query has unbound variables; bind them before calling".into())),
+            "reflect.not: floundering — query has unbound variables; bind them before calling"
+                .into(),
+        )),
     }
 }
 
@@ -1080,8 +1218,8 @@ mod tests {
     use std::path::PathBuf;
 
     use anthill_core::eval::{self, Interpreter, Value};
-    use anthill_core::kb::KnowledgeBase;
     use anthill_core::kb::load::{self, NullResolver};
+    use anthill_core::kb::KnowledgeBase;
     use anthill_core::parse;
 
     // WI-747: the walk is the shared `anthill_core::fs_util`.
@@ -1097,16 +1235,14 @@ mod tests {
     /// `anthill-core/tests/common/mod.rs`'s `STDLIB_PARSED` already uses.
     static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
         std::sync::LazyLock::new(|| {
-            let stdlib_dir =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+            let stdlib_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
             let files = collect_anthill_files(&stdlib_dir);
             assert!(!files.is_empty(), "stdlib empty");
             files
                 .iter()
                 .map(|f| {
                     let src = std::fs::read_to_string(f).expect("read stdlib");
-                    parse::parse(&src)
-                        .unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
+                    parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
                 })
                 .collect()
         });
@@ -1116,38 +1252,42 @@ mod tests {
         let refs: Vec<_> = STDLIB_PARSED.iter().chain(std::iter::once(&user)).collect();
 
         let mut kb = KnowledgeBase::new();
-        load::load_all(&mut kb, &refs, &NullResolver)
-            .unwrap_or_else(|errs| {
-                for e in load::LoadError::render_all(&errs) { eprintln!("{e}"); }
-                panic!("load failed");
-            });
+        load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+            for e in load::LoadError::render_all(&errs) {
+                eprintln!("{e}");
+            }
+            panic!("load failed");
+        });
 
         let mut interp = Interpreter::new(kb);
-        eval::builtins::register_standard_builtins(&mut interp)
-            .expect("register core builtins");
-        register_reflect_builtins(&mut interp)
-            .expect("register reflect builtins");
+        eval::builtins::register_standard_builtins(&mut interp).expect("register core builtins");
+        register_reflect_builtins(&mut interp).expect("register reflect builtins");
         interp
     }
 
     #[test]
     fn kb_sort_template_returns_sort_query_value() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_sort_tmpl
   sort Color
     entity red
     entity green
   end
 end
-"#);
+"#,
+        );
         // WI-632: the sort is passed BY REFERENCE (a `Ref` term), the way the
         // loader lowers a written `sort_template(kb(), Color)` call.
         let color_ref = {
             let kb = interp.kb_mut();
             Value::term(kb.resolve_qualified_name_term("test.reflect_sort_tmpl.Color"))
         };
-        let result = interp.call("anthill.reflect.KB.sort_template",
-            &[Value::Unit, color_ref])
+        let result = interp
+            .call(
+                "anthill.reflect.KB.sort_template",
+                &[Value::Unit, color_ref],
+            )
             .expect("sort_template call");
         match result {
             Value::Entity { functor, named, .. } => {
@@ -1160,10 +1300,14 @@ end
                 assert_eq!(field_name, "sort");
                 let sort_sym = anthill_core::eval::value_functor(interp.kb(), &named[0].1)
                     .expect("sort payload names a functor");
-                let expected = interp.kb()
+                let expected = interp
+                    .kb()
                     .try_resolve_symbol("test.reflect_sort_tmpl.Color")
                     .expect("Color resolvable by qualified name");
-                assert_eq!(sort_sym, expected, "sort payload references the real Color sort");
+                assert_eq!(
+                    sort_sym, expected,
+                    "sort payload references the real Color sort"
+                );
             }
             other => panic!("expected Entity, got {other:?}"),
         }
@@ -1171,7 +1315,8 @@ end
 
     #[test]
     fn kb_sorts_lists_defined_sorts() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_sorts
   sort Color
     entity red
@@ -1180,29 +1325,48 @@ namespace test.reflect_sorts
     entity circle
   end
 end
-"#);
-        let none_sym = interp.kb_mut().try_resolve_symbol("anthill.prelude.Option.none")
+"#,
+        );
+        let none_sym = interp
+            .kb_mut()
+            .try_resolve_symbol("anthill.prelude.Option.none")
             .expect("Option.none");
-        let none_val = Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() };
-        let result = interp.call("anthill.reflect.KB.sorts", &[Value::Unit, none_val])
+        let none_val = Value::Entity {
+            functor: none_sym,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        };
+        let result = interp
+            .call("anthill.reflect.KB.sorts", &[Value::Unit, none_val])
             .expect("sorts call");
         let mut count = 0;
         let mut cur = result;
         loop {
             match cur {
-                Value::Entity { functor, ref named, .. } => {
+                Value::Entity {
+                    functor, ref named, ..
+                } => {
                     let fname = interp.kb().local_name_of(functor).to_string();
-                    if fname == "nil" { break; }
-                    if fname != "cons" { panic!("expected cons, got {fname}"); }
+                    if fname == "nil" {
+                        break;
+                    }
+                    if fname != "cons" {
+                        panic!("expected cons, got {fname}");
+                    }
                     count += 1;
-                    cur = named.iter().find(|(s, _)|
-                        interp.kb().local_name_of(*s) == "tail"
-                    ).map(|(_, v)| v.clone()).expect("cons tail");
+                    cur = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
+                        .map(|(_, v)| v.clone())
+                        .expect("cons tail");
                 }
                 other => panic!("non-entity in list: {other:?}"),
             }
         }
-        assert!(count >= 2, "expected at least 2 sorts (Color + Shape), got {count}");
+        assert!(
+            count >= 2,
+            "expected at least 2 sorts (Color + Shape), got {count}"
+        );
     }
 
     #[test]
@@ -1292,22 +1456,29 @@ end
 
     #[test]
     fn kb_reflect_roundtrips_a_ref_repr() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_roundtrip
   sort Color
     entity red
   end
 end
-"#);
-        let sym = interp.kb().try_resolve_symbol("test.reflect_roundtrip.Color.red")
+"#,
+        );
+        let sym = interp
+            .kb()
+            .try_resolve_symbol("test.reflect_roundtrip.Color.red")
             .expect("red symbol");
         let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
         // reify → TermRepr (Value::Entity); reflect → back to Term (Value::Term).
-        let reified = interp.call("anthill.reflect.KB.reify",
-            &[Value::Unit, Value::term(ref_tid)])
+        let reified = interp
+            .call(
+                "anthill.reflect.KB.reify",
+                &[Value::Unit, Value::term(ref_tid)],
+            )
             .expect("reify call");
-        let reflected = interp.call("anthill.reflect.KB.reflect",
-            &[Value::Unit, reified])
+        let reflected = interp
+            .call("anthill.reflect.KB.reflect", &[Value::Unit, reified])
             .expect("reflect call");
         match reflected {
             Value::Term { id: tid, .. } => {
@@ -1356,15 +1527,19 @@ end
         use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
         use anthill_core::span::{SourceId, SourceSpan};
 
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.wi982_carrier
   sort Color
     entity red
   end
 end
-"#);
+"#,
+        );
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
-        let red = interp.kb().try_resolve_symbol("test.wi982_carrier.Color.red")
+        let red = interp
+            .kb()
+            .try_resolve_symbol("test.wi982_carrier.Color.red")
             .expect("red symbol");
         let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(red));
         let vsym = interp.kb_mut().intern("x");
@@ -1387,9 +1562,10 @@ end
             sols.len() == 1 && sols[0].residual.is_empty()
         }
         fn host_says(interp: &mut Interpreter, qn: &str, arg: &Value) -> bool {
-            match interp.call(qn, &[arg.clone()]).unwrap_or_else(|e| {
-                panic!("{qn} must ANSWER for this carrier, got {e:?}")
-            }) {
+            match interp
+                .call(qn, &[arg.clone()])
+                .unwrap_or_else(|e| panic!("{qn} must ANSWER for this carrier, got {e:?}"))
+            {
                 Value::Bool(b) => b,
                 other => panic!("{qn} must return Bool, got {other:?}"),
             }
@@ -1398,21 +1574,38 @@ end
         // (label, value, is_nonvar, is_ground)
         let rows: Vec<(&str, Value, bool, bool)> = vec![
             ("CONTROL Value::Term(Ref)", Value::term(ref_tid), true, true),
-            ("CONTROL Value::Term(Var)", Value::term(var_tid), false, false),
+            (
+                "CONTROL Value::Term(Var)",
+                Value::term(var_tid),
+                false,
+                false,
+            ),
             ("Value::Int scalar", Value::Int(5), true, true),
             ("Value::Str scalar", Value::Str("hi".into()), true, true),
             ("Value::Bool scalar", Value::Bool(true), true, true),
-            ("Value::Var (value-level logic var)", Value::Var(Var::Global(vid)), false, false),
+            (
+                "Value::Var (value-level logic var)",
+                Value::Var(Var::Global(vid)),
+                false,
+                false,
+            ),
             (
                 "Value::Node var occurrence",
-                Value::Node(NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, None)),
+                Value::Node(NodeOccurrence::new_expr(
+                    Expr::Var(Var::Global(vid)),
+                    span,
+                    None,
+                )),
                 false,
                 false,
             ),
             (
                 "Value::Node literal occurrence",
                 Value::Node(NodeOccurrence::new_expr(
-                    Expr::Const(anthill_core::kb::term::Literal::Int(7)), span, None)),
+                    Expr::Const(anthill_core::kb::term::Literal::Int(7)),
+                    span,
+                    None,
+                )),
                 true,
                 true,
             ),
@@ -1429,14 +1622,26 @@ end
         ];
 
         for (label, v, want_nonvar, want_ground) in rows {
-            assert_eq!(host_says(&mut interp, "anthill.reflect.nonvar", &v), want_nonvar,
-                "host nonvar disagrees for {label}");
-            assert_eq!(host_says(&mut interp, "anthill.reflect.ground", &v), want_ground,
-                "host ground disagrees for {label}");
-            assert_eq!(resolver_says(&mut interp, "anthill.reflect.nonvar", &v), want_nonvar,
-                "resolver nonvar disagrees for {label}");
-            assert_eq!(resolver_says(&mut interp, "anthill.reflect.ground", &v), want_ground,
-                "resolver ground disagrees for {label}");
+            assert_eq!(
+                host_says(&mut interp, "anthill.reflect.nonvar", &v),
+                want_nonvar,
+                "host nonvar disagrees for {label}"
+            );
+            assert_eq!(
+                host_says(&mut interp, "anthill.reflect.ground", &v),
+                want_ground,
+                "host ground disagrees for {label}"
+            );
+            assert_eq!(
+                resolver_says(&mut interp, "anthill.reflect.nonvar", &v),
+                want_nonvar,
+                "resolver nonvar disagrees for {label}"
+            );
+            assert_eq!(
+                resolver_says(&mut interp, "anthill.reflect.ground", &v),
+                want_ground,
+                "resolver ground disagrees for {label}"
+            );
         }
     }
 
@@ -1454,7 +1659,8 @@ end
     /// fail here rather than pass quietly.
     #[test]
     fn nonvar_and_ground_are_callable_from_an_operation_body() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.wi982_body
   import anthill.reflect.nonvar
   import anthill.reflect.ground
@@ -1464,13 +1670,20 @@ namespace test.wi982_body
   -- fully qualified
   operation lit_is_ground() -> Bool = anthill.reflect.ground(42)
 end
-"#);
+"#,
+        );
         assert!(
-            matches!(interp.call("test.wi982_body.lit_is_nonvar", &[]), Ok(Value::Bool(true))),
+            matches!(
+                interp.call("test.wi982_body.lit_is_nonvar", &[]),
+                Ok(Value::Bool(true))
+            ),
             "a bare imported `nonvar(42)` in an operation body must answer true",
         );
         assert!(
-            matches!(interp.call("test.wi982_body.lit_is_ground", &[]), Ok(Value::Bool(true))),
+            matches!(
+                interp.call("test.wi982_body.lit_is_ground", &[]),
+                Ok(Value::Bool(true))
+            ),
             "a fully-qualified `anthill.reflect.ground(42)` in an operation body must answer true",
         );
     }
@@ -1485,14 +1698,18 @@ end
     /// both counts.
     #[test]
     fn field_access_is_not_shadowed_by_this_module() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_field
   sort Point
     entity pt(x: Int64, y: Int64)
   end
 end
-"#);
-        let pt_sym = interp.kb().try_resolve_symbol("test.reflect_field.Point.pt")
+"#,
+        );
+        let pt_sym = interp
+            .kb()
+            .try_resolve_symbol("test.reflect_field.Point.pt")
             .expect("pt symbol");
         let x_sym = interp.kb_mut().intern("x");
         let y_sym = interp.kb_mut().intern("y");
@@ -1502,7 +1719,10 @@ end
             named: vec![(x_sym, Value::Int(1)), (y_sym, Value::Int(2))].into(),
         };
         let result = interp
-            .call("anthill.reflect.field_access", &[pt, Value::Str("x".to_string())])
+            .call(
+                "anthill.reflect.field_access",
+                &[pt, Value::Str("x".to_string())],
+            )
             .expect("field_access must still route to the production implementation");
         assert!(
             matches!(result, Value::Int(1)),
@@ -1512,32 +1732,40 @@ end
 
     #[test]
     fn sort_passthrough_ops_work() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_sort_pt
   sort Color
     entity red
   end
 end
-"#);
-        let sym = interp.kb().try_resolve_symbol("test.reflect_sort_pt.Color")
+"#,
+        );
+        let sym = interp
+            .kb()
+            .try_resolve_symbol("test.reflect_sort_pt.Color")
             .expect("Color symbol");
         let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
 
-        let same = interp.call("anthill.reflect.sort_as_term", &[Value::term(ref_tid)])
+        let same = interp
+            .call("anthill.reflect.sort_as_term", &[Value::term(ref_tid)])
             .expect("sort_as_term");
         assert!(matches!(same, Value::Term { id: t, .. } if t == ref_tid));
 
-        let ok = interp.call("anthill.reflect.can_be_sort", &[Value::term(ref_tid)])
+        let ok = interp
+            .call("anthill.reflect.can_be_sort", &[Value::term(ref_tid)])
             .expect("can_be_sort");
         assert!(matches!(ok, Value::Bool(true)));
 
         // Int64 literal is NOT a sort.
         let lit = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(42)));
-        let not_sort = interp.call("anthill.reflect.can_be_sort", &[Value::term(lit)])
+        let not_sort = interp
+            .call("anthill.reflect.can_be_sort", &[Value::term(lit)])
             .expect("can_be_sort (lit)");
         assert!(matches!(not_sort, Value::Bool(false)));
 
-        let as_opt = interp.call("anthill.reflect.term_as_sort", &[Value::term(lit)])
+        let as_opt = interp
+            .call("anthill.reflect.term_as_sort", &[Value::term(lit)])
             .expect("term_as_sort");
         match as_opt {
             Value::Entity { functor, named, .. } => {
@@ -1572,10 +1800,9 @@ end
             ("anthill.reflect.kind", kind),
         ] {
             match interp.call(op, &[sym.clone()]) {
-                Ok(Value::Str(got)) => assert_eq!(
-                    got, expected,
-                    "{op} on a {} carrier", sym.type_name(),
-                ),
+                Ok(Value::Str(got)) => {
+                    assert_eq!(got, expected, "{op} on a {} carrier", sym.type_name(),)
+                }
                 other => panic!(
                     "{op} must answer a String on a {} carrier, got {other:?}",
                     sym.type_name(),
@@ -1637,7 +1864,13 @@ end
         // `symbol_ops_qualified_short_lookup_kind` drives on the interned carrier
         // — the point of this test is that both carriers answer alike, so the two
         // must not be able to drift into checking different op sets.
-        assert_symbol_ops(&mut interp, sym_val.clone(), "test.wi1016_seam.Color", "Color", "Sort");
+        assert_symbol_ops(
+            &mut interp,
+            sym_val.clone(),
+            "test.wi1016_seam.Color",
+            "Color",
+            "Sort",
+        );
 
         // `scope` on the minted carrier — and since WI-984 it is worth pinning WHICH
         // symbol. This used to answer whatever `KnowledgeBase::scope_of` did, a scan
@@ -1695,7 +1928,8 @@ end
     #[test]
     fn reflect_not_on_satisfiable_goal_returns_false() {
         // A ground goal that has a fact → not(goal) should be Bool(false).
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.not_sat
   sort Color
     entity red
@@ -1703,11 +1937,16 @@ namespace test.not_sat
   end
   fact Color(entity: red)
 end
-"#);
+"#,
+        );
         // Build the goal: Color(entity: red).
-        let color_sym = interp.kb().try_resolve_symbol("test.not_sat.Color")
+        let color_sym = interp
+            .kb()
+            .try_resolve_symbol("test.not_sat.Color")
             .expect("Color sort symbol");
-        let red_sym = interp.kb().try_resolve_symbol("test.not_sat.Color.red")
+        let red_sym = interp
+            .kb()
+            .try_resolve_symbol("test.not_sat.Color.red")
             .expect("red symbol");
         let entity_field = interp.kb_mut().intern("entity");
         let red_ref = interp.kb_mut().alloc(CoreTerm::Ref(red_sym));
@@ -1716,16 +1955,20 @@ end
             pos_args: Default::default(),
             named_args: vec![(entity_field, red_ref)].into(),
         });
-        let result = interp.call("anthill.reflect.not", &[Value::term(goal)])
+        let result = interp
+            .call("anthill.reflect.not", &[Value::term(goal)])
             .expect("reflect.not");
-        assert!(matches!(result, Value::Bool(false)),
-            "satisfiable goal → not should be false, got {result:?}");
+        assert!(
+            matches!(result, Value::Bool(false)),
+            "satisfiable goal → not should be false, got {result:?}"
+        );
     }
 
     #[test]
     fn reflect_not_on_unsatisfiable_goal_returns_true() {
         // A ground goal with no matching fact → not(goal) should be Bool(true).
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.not_unsat
   sort Color
     entity red
@@ -1733,10 +1976,15 @@ namespace test.not_unsat
   end
   fact Color(entity: red)
 end
-"#);
-        let color_sym = interp.kb().try_resolve_symbol("test.not_unsat.Color")
+"#,
+        );
+        let color_sym = interp
+            .kb()
+            .try_resolve_symbol("test.not_unsat.Color")
             .expect("Color sort symbol");
-        let green_sym = interp.kb().try_resolve_symbol("test.not_unsat.Color.green")
+        let green_sym = interp
+            .kb()
+            .try_resolve_symbol("test.not_unsat.Color.green")
             .expect("green symbol");
         let entity_field = interp.kb_mut().intern("entity");
         let green_ref = interp.kb_mut().alloc(CoreTerm::Ref(green_sym));
@@ -1745,10 +1993,13 @@ end
             pos_args: Default::default(),
             named_args: vec![(entity_field, green_ref)].into(),
         });
-        let result = interp.call("anthill.reflect.not", &[Value::term(goal)])
+        let result = interp
+            .call("anthill.reflect.not", &[Value::term(goal)])
             .expect("reflect.not");
-        assert!(matches!(result, Value::Bool(true)),
-            "unsatisfiable goal → not should be true, got {result:?}");
+        assert!(
+            matches!(result, Value::Bool(true)),
+            "unsatisfiable goal → not should be true, got {result:?}"
+        );
     }
 
     #[test]
@@ -1756,12 +2007,14 @@ end
         // WI-632: `KB.fields` takes the entity BY REFERENCE, so a short name two
         // sorts share (WI-631's ambiguity hazard) is a non-issue — `Beta.dup` and
         // `Alpha.dup` are distinct references, each answering its own schema.
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.wi632_interp
   sort Alpha { entity dup(x: Int64) }
   sort Beta { entity dup(y: String) }
 end
-"#);
+"#,
+        );
         // The one FieldInfo's `name` for the entity named `qname`. The result is
         // `cons(head: FieldInfo(name: <field>, ...), tail: nil)`.
         let field_name = |interp: &mut Interpreter, qname: &str| -> String {
@@ -1799,15 +2052,19 @@ end
     #[test]
     fn reflect_not_on_ungrounded_goal_flounders() {
         // Free variable in the query → NAF is unsound → error.
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.not_flounder
   sort Color
     entity red
   end
   fact Color(entity: red)
 end
-"#);
-        let color_sym = interp.kb().try_resolve_symbol("test.not_flounder.Color")
+"#,
+        );
+        let color_sym = interp
+            .kb()
+            .try_resolve_symbol("test.not_flounder.Color")
             .expect("Color sort");
         let entity_field = interp.kb_mut().intern("entity");
         let v_sym = interp.kb_mut().intern("v");
@@ -1821,8 +2078,10 @@ end
         let result = interp.call("anthill.reflect.not", &[Value::term(goal)]);
         match result {
             Err(EvalError::Internal(msg)) => {
-                assert!(msg.contains("floundering"),
-                    "expected floundering message, got: {msg}");
+                assert!(
+                    msg.contains("floundering"),
+                    "expected floundering message, got: {msg}"
+                );
             }
             other => panic!("expected Err(Internal(floundering...)), got {other:?}"),
         }
@@ -1835,17 +2094,23 @@ end
         // `definite(subst)` here (the query is decidable), carrying the
         // Value::Substitution in its `subst` field — no longer a bare
         // Value::Substitution element (and never the pre-WI-047 Value::Unit).
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.subst_stream
   sort Color
     entity red
   end
 end
-"#);
+"#,
+        );
         // Build pattern_query(EntityInfo(name: ?n, fields: ?f)) as a Value.
-        let ei_sym = interp.kb().try_resolve_symbol("anthill.reflect.EntityInfo")
+        let ei_sym = interp
+            .kb()
+            .try_resolve_symbol("anthill.reflect.EntityInfo")
             .expect("EntityInfo");
-        let pq_sym = interp.kb().try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
+        let pq_sym = interp
+            .kb()
+            .try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
             .expect("pattern_query");
         let name_field = interp.kb_mut().intern("name");
         let fields_field = interp.kb_mut().intern("fields");
@@ -1859,7 +2124,11 @@ end
         let inner = Value::Entity {
             functor: ei_sym,
             pos: Vec::new().into(),
-            named: vec![(name_field, Value::term(var_n)), (fields_field, Value::term(var_f))].into(),
+            named: vec![
+                (name_field, Value::term(var_n)),
+                (fields_field, Value::term(var_f)),
+            ]
+            .into(),
         };
         let query = Value::Entity {
             functor: pq_sym,
@@ -1867,21 +2136,27 @@ end
             named: vec![(term_field, inner)].into(),
         };
 
-        let stream = interp.call("anthill.reflect.KB.execute", &[Value::Unit, query])
+        let stream = interp
+            .call("anthill.reflect.KB.execute", &[Value::Unit, query])
             .expect("execute");
-        let pumped = interp.call("anthill.prelude.LogicalStream.splitFirst", &[stream])
+        let pumped = interp
+            .call("anthill.prelude.LogicalStream.splitFirst", &[stream])
             .expect("splitFirst");
 
         // Unwrap Option.some → Pair.pair → fst = the Solution element.
         let fst = match pumped {
-            Value::Entity { named: some_named, .. } => {
+            Value::Entity {
+                named: some_named, ..
+            } => {
                 let pair = &some_named[0].1;
                 match pair {
-                    Value::Entity { named: pair_named, .. } => {
-                        pair_named.iter().find(|(s, _)|
-                            interp.kb().local_name_of(*s) == "fst"
-                        ).map(|(_, v)| v.clone()).expect("fst")
-                    }
+                    Value::Entity {
+                        named: pair_named, ..
+                    } => pair_named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "fst")
+                        .map(|(_, v)| v.clone())
+                        .expect("fst"),
                     other => panic!("expected pair, got {other:?}"),
                 }
             }
@@ -1898,9 +2173,11 @@ end
                     ctor.ends_with("definite") || ctor.ends_with("undecided"),
                     "expected a Solution (definite/undecided), got functor {ctor}",
                 );
-                let subst = named.iter().find(|(s, _)|
-                    interp.kb().local_name_of(*s) == "subst"
-                ).map(|(_, v)| v.clone()).expect("subst field on Solution");
+                let subst = named
+                    .iter()
+                    .find(|(s, _)| interp.kb().local_name_of(*s) == "subst")
+                    .map(|(_, v)| v.clone())
+                    .expect("subst field on Solution");
                 match subst {
                     Value::Substitution(_) => { /* expected */ }
                     other => panic!("expected Solution.subst = Value::Substitution, got {other:?}"),
@@ -1913,13 +2190,15 @@ end
     #[test]
     fn substitution_apply_rewrites_term() {
         use anthill_core::kb::subst::Substitution;
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.subst_apply
   sort X
     entity x
   end
 end
-"#);
+"#,
+        );
         // Build subst {?v → Int64(42)}, apply to ?v.
         let v_sym = interp.kb_mut().intern("v");
         let vid = interp.kb_mut().fresh_var(v_sym);
@@ -1930,8 +2209,15 @@ end
         s.bindings.insert(vid, Value::term(val_term));
         let s_handle = interp.alloc_subst(s);
 
-        let result = interp.call("anthill.reflect.Substitution.apply",
-            &[Value::Substitution(s_handle), Value::term(var_term), Value::Unit])
+        let result = interp
+            .call(
+                "anthill.reflect.Substitution.apply",
+                &[
+                    Value::Substitution(s_handle),
+                    Value::term(var_term),
+                    Value::Unit,
+                ],
+            )
             .expect("apply");
         match result {
             Value::Term { id: tid, .. } => {
@@ -1944,13 +2230,15 @@ end
     #[test]
     fn substitution_bindings_enumerates_pairs() {
         use anthill_core::kb::subst::Substitution;
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.subst_bindings
   sort X
     entity x
   end
 end
-"#);
+"#,
+        );
         // Build subst {?v → Int64(42)}, enumerate it.
         let v_sym = interp.kb_mut().intern("v");
         let vid = interp.kb_mut().fresh_var(v_sym);
@@ -1959,11 +2247,16 @@ end
         s.bindings.insert(vid, Value::term(val_term));
         let s_handle = interp.alloc_subst(s);
 
-        let result = interp.call("anthill.reflect.Substitution.bindings",
-            &[Value::Substitution(s_handle)]).expect("bindings");
+        let result = interp
+            .call(
+                "anthill.reflect.Substitution.bindings",
+                &[Value::Substitution(s_handle)],
+            )
+            .expect("bindings");
         // A cons-list with one Pair(fst: <var term>, snd: Int64(42)).
         let head = match result {
-            Value::Entity { ref named, .. } => named.iter()
+            Value::Entity { ref named, .. } => named
+                .iter()
                 .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
                 .map(|(_, v)| v.clone())
                 .expect("cons.head"),
@@ -1971,17 +2264,23 @@ end
         };
         match head {
             Value::Entity { named, .. } => {
-                let field = |k: &str| named.iter()
-                    .find(|(s, _)| interp.kb().local_name_of(*s) == k)
-                    .map(|(_, v)| v.clone());
+                let field = |k: &str| {
+                    named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == k)
+                        .map(|(_, v)| v.clone())
+                };
                 match field("snd").expect("pair.snd") {
-                    Value::Term { id: tid, .. } => assert_eq!(tid, val_term, "snd should be the bound value term"),
+                    Value::Term { id: tid, .. } => {
+                        assert_eq!(tid, val_term, "snd should be the bound value term")
+                    }
                     other => panic!("snd should be Value::Term, got {other:?}"),
                 }
                 match field("fst").expect("pair.fst") {
                     Value::Term { id: tid, .. } => assert!(
                         matches!(interp.kb().get_term(tid), CoreTerm::Var(_)),
-                        "fst should be a var term carrying the variable's identity"),
+                        "fst should be a var term carrying the variable's identity"
+                    ),
                     other => panic!("fst should be Value::Term(Var), got {other:?}"),
                 }
             }
@@ -1992,13 +2291,15 @@ end
     #[test]
     fn subst_compose_chases_bare_value_var() {
         use anthill_core::kb::subst::Substitution;
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.compose_var
   sort X
     entity x
   end
 end
-"#);
+"#,
+        );
         // σ1 = {z ↦ Value::Var(w)} (BARE var), σ2 = {w ↦ Int64(7)}. compose must
         // chase z → w → 7, not leave z ↦ w dangling (WI-547).
         let sz = interp.kb_mut().intern("z");
@@ -2013,8 +2314,15 @@ end
         let h1 = interp.alloc_subst(s1);
         let h2 = interp.alloc_subst(s2);
 
-        let composed = interp.call("anthill.reflect.Substitution.compose",
-            &[Value::Substitution(h1), Value::Substitution(h2), Value::Unit])
+        let composed = interp
+            .call(
+                "anthill.reflect.Substitution.compose",
+                &[
+                    Value::Substitution(h1),
+                    Value::Substitution(h2),
+                    Value::Unit,
+                ],
+            )
             .expect("compose");
         let handle = match composed {
             Value::Substitution(h) => h,
@@ -2025,9 +2333,12 @@ end
         match z_binding.expect("z should be bound") {
             Value::Term { id: t, .. } => assert!(
                 matches!(interp.kb().get_term(t), CoreTerm::Const(Literal::Int(7))),
-                "z should chase to Int64(7)"),
+                "z should chase to Int64(7)"
+            ),
             Value::Int(n) => assert_eq!(n, 7, "z should chase to 7"),
-            other => panic!("z should chase through w to 7, got {other:?} (bare Var = unfixed bug)"),
+            other => {
+                panic!("z should chase through w to 7, got {other:?} (bare Var = unfixed bug)")
+            }
         }
     }
 
@@ -2035,13 +2346,15 @@ end
     fn subst_arena_reclaims_on_drop() {
         // After running a stream-pumping program, all substitution slots
         // should be reclaimed — no leaks from the per-solution alloc.
-        let interp = load_stdlib_and_source(r#"
+        let interp = load_stdlib_and_source(
+            r#"
 namespace test.subst_reclaim
   sort Pt
     entity pt
   end
 end
-"#);
+"#,
+        );
         assert_eq!(interp.subst_arena_live_count(), 0);
 
         use anthill_core::kb::subst::Substitution;
@@ -2053,38 +2366,49 @@ end
 
     #[test]
     fn symbol_ops_qualified_short_lookup_kind() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_syms
   sort Color
     entity red
   end
 end
-"#);
-        let sym = interp.kb().try_resolve_symbol("test.reflect_syms.Color.red")
+"#,
+        );
+        let sym = interp
+            .kb()
+            .try_resolve_symbol("test.reflect_syms.Color.red")
             .expect("red symbol");
         let ref_tid = interp.kb_mut().alloc(CoreTerm::Ref(sym));
 
-        let qn = interp.call("anthill.reflect.qualified_name", &[Value::term(ref_tid)])
+        let qn = interp
+            .call("anthill.reflect.qualified_name", &[Value::term(ref_tid)])
             .expect("qualified_name");
         assert!(matches!(qn, Value::Str(ref s) if s == "test.reflect_syms.Color.red"));
 
-        let sn = interp.call("anthill.reflect.short_name", &[Value::term(ref_tid)])
+        let sn = interp
+            .call("anthill.reflect.short_name", &[Value::term(ref_tid)])
             .expect("short_name");
         assert!(matches!(sn, Value::Str(ref s) if s == "red"));
 
-        let kn = interp.call("anthill.reflect.kind", &[Value::term(ref_tid)])
+        let kn = interp
+            .call("anthill.reflect.kind", &[Value::term(ref_tid)])
             .expect("kind");
         assert!(matches!(kn, Value::Str(ref s) if s == "Entity"));
 
-        let ls = interp.call("anthill.reflect.lookup_symbol",
-            &[Value::Str("test.reflect_syms.Color.red".into())])
+        let ls = interp
+            .call(
+                "anthill.reflect.lookup_symbol",
+                &[Value::Str("test.reflect_syms.Color.red".into())],
+            )
             .expect("lookup_symbol");
         assert!(matches!(ls, Value::Term { .. }));
     }
 
     #[test]
     fn kb_constructors_lists_sort_entities() {
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.reflect_ctors
   sort Fruit
     entity apple
@@ -2092,13 +2416,14 @@ namespace test.reflect_ctors
     entity cherry
   end
 end
-"#);
+"#,
+        );
         let fruit = {
             let kb = interp.kb_mut();
             Value::term(kb.resolve_qualified_name_term("test.reflect_ctors.Fruit"))
         };
-        let result = interp.call("anthill.reflect.KB.constructors",
-            &[Value::Unit, fruit])
+        let result = interp
+            .call("anthill.reflect.KB.constructors", &[Value::Unit, fruit])
             .expect("constructors call");
         let mut names: Vec<String> = Vec::new();
         let mut cur = result;
@@ -2106,20 +2431,30 @@ end
             match cur {
                 Value::Entity { functor, named, .. } => {
                     let fname = interp.kb().local_name_of(functor).to_string();
-                    if fname == "nil" { break; }
-                    let head = named.iter().find(|(s, _)|
-                        interp.kb().local_name_of(*s) == "head").map(|(_, v)| v.clone());
-                    let tail = named.iter().find(|(s, _)|
-                        interp.kb().local_name_of(*s) == "tail").map(|(_, v)| v.clone());
-                    if let Some(Value::Str(s)) = head { names.push(s); }
+                    if fname == "nil" {
+                        break;
+                    }
+                    let head = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
+                        .map(|(_, v)| v.clone());
+                    let tail = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
+                        .map(|(_, v)| v.clone());
+                    if let Some(Value::Str(s)) = head {
+                        names.push(s);
+                    }
                     cur = tail.expect("cons tail");
                 }
                 other => panic!("non-entity in list: {other:?}"),
             }
         }
         for expected in ["apple", "banana", "cherry"] {
-            assert!(names.iter().any(|n| n == expected),
-                "missing '{expected}' in {names:?}");
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing '{expected}' in {names:?}"
+            );
         }
     }
 
@@ -2130,13 +2465,22 @@ end
             match cur {
                 Value::Entity { functor, named, .. } => {
                     let fname = interp.kb().local_name_of(functor).to_string();
-                    if fname.rsplit('.').next() == Some("nil") { break; }
-                    let head = named.iter().find(|(s, _)|
-                        interp.kb().local_name_of(*s) == "head").map(|(_, v)| v.clone());
-                    let tail = named.iter().find(|(s, _)|
-                        interp.kb().local_name_of(*s) == "tail").map(|(_, v)| v.clone());
+                    if fname.rsplit('.').next() == Some("nil") {
+                        break;
+                    }
+                    let head = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
+                        .map(|(_, v)| v.clone());
+                    let tail = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
+                        .map(|(_, v)| v.clone());
                     match (head, tail) {
-                        (Some(h), Some(t)) => { out.push(h); cur = t; }
+                        (Some(h), Some(t)) => {
+                            out.push(h);
+                            cur = t;
+                        }
                         _ => break,
                     }
                 }
@@ -2149,7 +2493,8 @@ end
     /// A named field of a `Value::Entity` by short name (test helper).
     fn entity_field(interp: &Interpreter, e: &Value, key: &str) -> Option<Value> {
         match e {
-            Value::Entity { named, .. } => named.iter()
+            Value::Entity { named, .. } => named
+                .iter()
                 .find(|(s, _)| interp.kb().local_name_of(*s) == key)
                 .map(|(_, v)| v.clone()),
             _ => None,
@@ -2164,7 +2509,8 @@ end
         // `ensures` carries only user clauses (no synthetic EffectsRuntime), so an
         // empty `ensures` would be an unambiguous regression; `requires` also
         // carries the loader's `EffectsRuntime[Effects=E]` clause (WI-320).
-        let mut interp = load_stdlib_and_source(r#"
+        let mut interp = load_stdlib_and_source(
+            r#"
 namespace test.wi548_op_contract
   import anthill.prelude.Int64
 
@@ -2175,13 +2521,14 @@ namespace test.wi548_op_contract
       meta [Refuel, Profile: "cpp20-stl"]
   end
 end
-"#);
+"#,
+        );
         let tank = {
             let kb = interp.kb_mut();
             Value::term(kb.resolve_qualified_name_term("test.wi548_op_contract.Tank"))
         };
-        let result = interp.call("anthill.reflect.KB.operations",
-            &[Value::Unit, tank])
+        let result = interp
+            .call("anthill.reflect.KB.operations", &[Value::Unit, tank])
             .expect("operations call");
 
         // The op's `name` field is `Value::Term(Ref(sym))`; match by short name.
@@ -2199,16 +2546,27 @@ end
         };
 
         let ops = list_values(&interp, result);
-        let fill = ops.iter().find(|op| op_short(&interp, op).as_deref() == Some("fill"))
+        let fill = ops
+            .iter()
+            .find(|op| op_short(&interp, op).as_deref() == Some("fill"))
             .expect("fill OperationInfo entity");
 
-        let requires = list_values(&interp,
-            entity_field(&interp, fill, "requires").expect("requires field present"));
-        let ensures = list_values(&interp,
-            entity_field(&interp, fill, "ensures").expect("ensures field present"));
-        assert!(!ensures.is_empty(), "fill should surface its user `ensures` clause");
-        assert!(!requires.is_empty(),
-            "fill should surface `requires` (incl. synthetic EffectsRuntime)");
+        let requires = list_values(
+            &interp,
+            entity_field(&interp, fill, "requires").expect("requires field present"),
+        );
+        let ensures = list_values(
+            &interp,
+            entity_field(&interp, fill, "ensures").expect("ensures field present"),
+        );
+        assert!(
+            !ensures.is_empty(),
+            "fill should surface its user `ensures` clause"
+        );
+        assert!(
+            !requires.is_empty(),
+            "fill should surface `requires` (incl. synthetic EffectsRuntime)"
+        );
         // Each ground contract clause rides as a goal-term Value (matching bridge).
         match &ensures[0] {
             Value::Term { .. } => {}

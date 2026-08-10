@@ -1,15 +1,11 @@
-/// Integration tests: parse .anthill source → generate_rust → verify output.
-
-use anthill_core::parse;
 use anthill_core::codegen::generate_rust;
+/// Integration tests: parse .anthill source → generate_rust → verify output.
+use anthill_core::parse;
 
 fn gen(source: &str) -> String {
-    let parsed = parse::parse(source).unwrap_or_else(|e| {
-        panic!("parse failed: {e:?}\nsource:\n{source}")
-    });
-    generate_rust(&parsed).unwrap_or_else(|e| {
-        panic!("codegen failed: {e:?}\nsource:\n{source}")
-    })
+    let parsed =
+        parse::parse(source).unwrap_or_else(|e| panic!("parse failed: {e:?}\nsource:\n{source}"));
+    generate_rust(&parsed).unwrap_or_else(|e| panic!("codegen failed: {e:?}\nsource:\n{source}"))
 }
 
 // ── Test 1: Entity with fields → struct ──────────────────────────
@@ -76,7 +72,10 @@ fn self_collapse_heuristic() {
     assert!(out.contains("&self"), "should have &self: {out}");
     assert!(out.contains("&Self"), "should have &Self param: {out}");
     // Should NOT have <T> on the trait
-    assert!(!out.contains("trait Eq<T>"), "should not have generic: {out}");
+    assert!(
+        !out.contains("trait Eq<T>"),
+        "should not have generic: {out}"
+    );
 }
 
 // ── Test 6: requires → supertrait ────────────────────────────────
@@ -101,7 +100,10 @@ fn fact_inside_sort_to_supertrait() {
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 }
 "#);
-    assert!(out.contains("trait QueryableStore: Store {"), "output:\n{out}");
+    assert!(
+        out.contains("trait QueryableStore: Store {"),
+        "output:\n{out}"
+    );
 }
 
 // ── Test 8: Effects: Modify → &mut self (no Result without Error) ─
@@ -115,7 +117,10 @@ fn effects_modifies_to_mut_self_result() {
 }
 "#);
     assert!(out.contains("fn persist(&mut self"), "output:\n{out}");
-    assert!(!out.contains("Result<"), "Modify without Error should not wrap in Result:\n{out}");
+    assert!(
+        !out.contains("Result<"),
+        "Modify without Error should not wrap in Result:\n{out}"
+    );
 
     // Modify + Error → &mut self + Result
     let out2 = gen(r#"sort Store {
@@ -137,7 +142,10 @@ fn effects_reads_to_self_result() {
 }
 "#);
     assert!(out.contains("fn retrieve(&self"), "output:\n{out}");
-    assert!(!out.contains("Result<"), "No effects should not wrap in Result:\n{out}");
+    assert!(
+        !out.contains("Result<"),
+        "No effects should not wrap in Result:\n{out}"
+    );
 
     // Error alone → &self + Result
     let out2 = gen(r#"sort QueryableStore {
@@ -165,7 +173,10 @@ fn prelude_type_mappings() {
     assert!(out.contains("f64"), "should have f64: {out}");
     assert!(out.contains("bool"), "should have bool: {out}");
     assert!(out.contains("Vec<i64>"), "should have Vec<i64>: {out}");
-    assert!(out.contains("Option<String>"), "should have Option<String>: {out}");
+    assert!(
+        out.contains("Option<String>"),
+        "should have Option<String>: {out}"
+    );
 }
 
 // ── Test 12: Recursive field → Box ───────────────────────────────
@@ -180,7 +191,10 @@ fn recursive_field_to_box() {
 "#);
     assert!(out.contains("enum List<T>"), "output:\n{out}");
     assert!(out.contains("Nil,"), "output:\n{out}");
-    assert!(out.contains("Box<List<T>>"), "should box recursive field: {out}");
+    assert!(
+        out.contains("Box<List<T>>"),
+        "should box recursive field: {out}"
+    );
 }
 
 // ── Test 13: Namespace → mod + use ───────────────────────────────
@@ -208,7 +222,10 @@ fn namespace_fact_to_impl_marker() {
   fact BulkStore
 end
 "#);
-    assert!(out.contains("// impl BulkStore for FileStore"), "output:\n{out}");
+    assert!(
+        out.contains("// impl BulkStore for FileStore"),
+        "output:\n{out}"
+    );
 }
 
 // ── Test 15: Rules → test stubs ──────────────────────────────────
@@ -241,31 +258,62 @@ fn constraint_to_check_fn() {
 fn full_persistence_store_hierarchy() {
     let source = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../stdlib/anthill/persistence/store.anthill")
-    ).expect("read store.anthill");
+            .join("../../stdlib/anthill/persistence/store.anthill"),
+    )
+    .expect("read store.anthill");
 
     let out = gen(&source);
 
-    assert!(out.contains("mod persistence"), "should have mod persistence: {out}");
+    assert!(
+        out.contains("mod persistence"),
+        "should have mod persistence: {out}"
+    );
 
     // Capability-trait hierarchy (proposal 007 §2 / 053): retract is a
     // NonMonotonicStore-trait op, not on base Store.
-    assert!(out.contains("trait Store"), "should have trait Store: {out}");
-    assert!(out.contains("trait NonMonotonicStore: Store"), "should have NonMonotonicStore: Store: {out}");
-    assert!(out.contains("trait QueryableStore: Store"), "should have QueryableStore: Store: {out}");
-    assert!(out.contains("trait BulkStore: Store"), "should have BulkStore: Store: {out}");
+    assert!(
+        out.contains("trait Store"),
+        "should have trait Store: {out}"
+    );
+    assert!(
+        out.contains("trait NonMonotonicStore: Store"),
+        "should have NonMonotonicStore: Store: {out}"
+    );
+    assert!(
+        out.contains("trait QueryableStore: Store"),
+        "should have QueryableStore: Store: {out}"
+    );
+    assert!(
+        out.contains("trait BulkStore: Store"),
+        "should have BulkStore: Store: {out}"
+    );
 
     // Base Store has persist, flush, and the monotonicity policy query — but
     // NOT retract (moved to NonMonotonicStore). Slice off the NonMonotonicStore
     // trait so we can assert retract is absent from Store itself.
     let store_trait = out.split("trait NonMonotonicStore").next().unwrap();
-    assert!(store_trait.contains("fn persist("), "Store should have persist: {out}");
-    assert!(store_trait.contains("fn flush("), "Store should have flush: {out}");
-    assert!(store_trait.contains("fn monotonicity("), "Store should have monotonicity: {out}");
-    assert!(!store_trait.contains("fn retract("), "retract must NOT be on base Store: {out}");
+    assert!(
+        store_trait.contains("fn persist("),
+        "Store should have persist: {out}"
+    );
+    assert!(
+        store_trait.contains("fn flush("),
+        "Store should have flush: {out}"
+    );
+    assert!(
+        store_trait.contains("fn monotonicity("),
+        "Store should have monotonicity: {out}"
+    );
+    assert!(
+        !store_trait.contains("fn retract("),
+        "retract must NOT be on base Store: {out}"
+    );
 
     // NonMonotonicStore carries retract.
-    assert!(out.contains("fn retract("), "NonMonotonicStore should have retract: {out}");
+    assert!(
+        out.contains("fn retract("),
+        "NonMonotonicStore should have retract: {out}"
+    );
 
     // QueryableStore should have retrieve
     assert!(out.contains("fn retrieve("), "should have retrieve: {out}");
@@ -287,11 +335,23 @@ fn abstract_sort_in_namespace_to_unit_struct() {
   operation reify(t: Term) -> Term
 end
 "#);
-    assert!(out.contains("struct Term;"), "should emit unit struct for Term: {out}");
-    assert!(out.contains("struct FactId;"), "should emit unit struct for FactId: {out}");
+    assert!(
+        out.contains("struct Term;"),
+        "should emit unit struct for Term: {out}"
+    );
+    assert!(
+        out.contains("struct FactId;"),
+        "should emit unit struct for FactId: {out}"
+    );
     // reify should be a free function, not a trait method
-    assert!(out.contains("fn reify("), "should have reify as free fn: {out}");
-    assert!(!out.contains("trait Term"), "Term should not be a trait: {out}");
+    assert!(
+        out.contains("fn reify("),
+        "should have reify as free fn: {out}"
+    );
+    assert!(
+        !out.contains("trait Term"),
+        "Term should not be a trait: {out}"
+    );
 }
 
 // ── Test 19: Enum variant names → PascalCase ─────────────────────
@@ -305,7 +365,10 @@ fn enum_variant_pascal_case() {
 }
 "#);
     assert!(out.contains("Stage0,"), "should have Stage0 variant: {out}");
-    assert!(out.contains("ByNamespace,"), "should have ByNamespace variant: {out}");
+    assert!(
+        out.contains("ByNamespace,"),
+        "should have ByNamespace variant: {out}"
+    );
     assert!(out.contains("Flat,"), "should have Flat variant: {out}");
 }
 
@@ -321,9 +384,18 @@ fn fact_associates_only_preceding_entity() {
 end
 "#);
     // Should only associate with ColumnDef (immediately preceding entity)
-    assert!(out.contains("// impl QueryableStore for ColumnDef"), "output:\n{out}");
-    assert!(!out.contains("// impl QueryableStore for SqlStore"), "should not associate with SqlStore: {out}");
-    assert!(!out.contains("// impl QueryableStore for QueryBinding"), "should not associate with QueryBinding: {out}");
+    assert!(
+        out.contains("// impl QueryableStore for ColumnDef"),
+        "output:\n{out}"
+    );
+    assert!(
+        !out.contains("// impl QueryableStore for SqlStore"),
+        "should not associate with SqlStore: {out}"
+    );
+    assert!(
+        !out.contains("// impl QueryableStore for QueryBinding"),
+        "should not associate with QueryBinding: {out}"
+    );
 }
 
 // ── Test 21: Fact with bindings → supertrait ─────────────────────
@@ -337,7 +409,10 @@ fn fact_with_bindings_to_supertrait() {
   operation head(s: S) -> Option[T = S]
 }
 "#);
-    assert!(out.contains("Streamable"), "should have supertrait Streamable: {out}");
+    assert!(
+        out.contains("Streamable"),
+        "should have supertrait Streamable: {out}"
+    );
 }
 
 // ── Test 22: Enum type param NOT collapsed to self ───────────────
@@ -351,8 +426,14 @@ fn enum_type_param_not_self() {
 }
 "#);
     // pure should NOT get &self — T is a type param, not the sort itself
-    assert!(out.contains("fn pure(x: T) -> Self"), "pure should have (x: T) -> Self, not &self: {out}");
-    assert!(!out.contains("fn pure(&self"), "pure should NOT have &self: {out}");
+    assert!(
+        out.contains("fn pure(x: T) -> Self"),
+        "pure should have (x: T) -> Self, not &self: {out}"
+    );
+    assert!(
+        !out.contains("fn pure(&self"),
+        "pure should NOT have &self: {out}"
+    );
 }
 
 // ── Test 23: Trait self in return with multi type params ─────────
@@ -366,7 +447,10 @@ fn trait_self_in_return_multi_param() {
 }
 "#);
     // With 2 type params, collapse_self is false, but sort-name → Self still works
-    assert!(out.contains("fn tail(&self) -> Self"), "should have tail(&self) -> Self: {out}");
+    assert!(
+        out.contains("fn tail(&self) -> Self"),
+        "should have tail(&self) -> Self: {out}"
+    );
 }
 
 // ── Test 24: Enum self in return type ────────────────────────────
@@ -396,10 +480,19 @@ fn abstract_effect_parameter_to_result() {
 }
 "#);
     // head has effects E → Result wrapping with abstract E
-    assert!(out.contains("fn head(&self) -> Result<Option<T>, E>"), "should wrap in Result<..., E>: {out}");
+    assert!(
+        out.contains("fn head(&self) -> Result<Option<T>, E>"),
+        "should wrap in Result<..., E>: {out}"
+    );
     // isEmpty has no effects → no Result
-    assert!(out.contains("fn is_empty(&self) -> bool"), "no effects should not wrap: {out}");
-    assert!(!out.contains("is_empty(&self) -> Result"), "no effects should not wrap: {out}");
+    assert!(
+        out.contains("fn is_empty(&self) -> bool"),
+        "no effects should not wrap: {out}"
+    );
+    assert!(
+        !out.contains("is_empty(&self) -> Result"),
+        "no effects should not wrap: {out}"
+    );
 }
 
 // ── WI-533: term-level constants → Rust constants ────────────────
@@ -434,7 +527,10 @@ fn float_const_keeps_f64_suffix() {
 end
 "#);
     assert!(out.contains("pub const GAIN: f64 = 2.0;"), "output:\n{out}");
-    assert!(out.contains("pub const WHOLE: f64 = 3.0;"), "f64 literal needs .0:\n{out}");
+    assert!(
+        out.contains("pub const WHOLE: f64 = 3.0;"),
+        "f64 literal needs .0:\n{out}"
+    );
 }
 
 #[test]
@@ -475,9 +571,18 @@ fn const_only_sort_to_struct_and_impl() {
   const BROADCAST: Int64 = -1
 }
 "#);
-    assert!(out.contains("struct Channels;"), "const-only sort → unit struct:\n{out}");
-    assert!(out.contains("impl Channels {"), "...with an inherent impl:\n{out}");
-    assert!(out.contains("const BROADCAST: i64 = -1;"), "...carrying the const:\n{out}");
+    assert!(
+        out.contains("struct Channels;"),
+        "const-only sort → unit struct:\n{out}"
+    );
+    assert!(
+        out.contains("impl Channels {"),
+        "...with an inherent impl:\n{out}"
+    );
+    assert!(
+        out.contains("const BROADCAST: i64 = -1;"),
+        "...carrying the const:\n{out}"
+    );
 }
 
 #[test]
@@ -490,15 +595,21 @@ fn bodyless_host_float_const_maps_to_f64_expr() {
   public const nan: Float
 end
 "#);
-    assert!(out.contains("pub const infinity: f64 = f64::INFINITY;"), "output:\n{out}");
-    assert!(out.contains("pub const nan: f64 = f64::NAN;"), "output:\n{out}");
+    assert!(
+        out.contains("pub const infinity: f64 = f64::INFINITY;"),
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("pub const nan: f64 = f64::NAN;"),
+        "output:\n{out}"
+    );
 }
 
 // ── Test 26: WI-540 boxed_trait_objects mode (position-aware) ─────
 
 #[test]
 fn boxed_trait_objects_mode_position_aware() {
-    use anthill_core::codegen::{generate_rust_with_config, collect_trait_sorts, CodegenConfig};
+    use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_config, CodegenConfig};
 
     // `S` is a trait sort (ops, no entities); `E` is an enum with a field of
     // trait type `S`. Exercises every position: receiver, non-receiver param,
@@ -515,13 +626,26 @@ end
     let traits = collect_trait_sorts(&refs);
 
     // Flag ON → trait objects, object-safe.
-    let cfg = CodegenConfig { boxed_trait_objects: true, default_pub: true, ..Default::default() };
+    let cfg = CodegenConfig {
+        boxed_trait_objects: true,
+        default_pub: true,
+        ..Default::default()
+    };
     let on = generate_rust_with_config(&parsed, &traits, &cfg).expect("gen on");
-    assert!(on.contains("x: &dyn S"), "non-receiver Self param → &dyn S:\n{on}");
-    assert!(on.contains("-> Box<dyn S>"), "Self return → Box<dyn S>:\n{on}");
+    assert!(
+        on.contains("x: &dyn S"),
+        "non-receiver Self param → &dyn S:\n{on}"
+    );
+    assert!(
+        on.contains("-> Box<dyn S>"),
+        "Self return → Box<dyn S>:\n{on}"
+    );
     // `s: Box<dyn S>` (not the bare `Box<dyn S>` substring, which the return
     // type already supplies) so this independently catches a field-wrap regression.
-    assert!(on.contains("s: Box<dyn S>"), "enum field of trait type → Box<dyn S>:\n{on}");
+    assert!(
+        on.contains("s: Box<dyn S>"),
+        "enum field of trait type → Box<dyn S>:\n{on}"
+    );
     // Receiver stays &self (not &dyn S).
     assert!(on.contains("fn f(&self,"), "receiver stays &self:\n{on}");
 
@@ -529,14 +653,17 @@ end
     let off = gen(src);
     assert!(!off.contains("&dyn S"), "off must not emit &dyn:\n{off}");
     assert!(!off.contains("Box<dyn S>"), "off must not box:\n{off}");
-    assert!(off.contains("-> impl S") || off.contains("-> Self"), "off keeps impl/Self return:\n{off}");
+    assert!(
+        off.contains("-> impl S") || off.contains("-> Self"),
+        "off keeps impl/Self return:\n{off}"
+    );
 }
 
 #[test]
 fn emit_only_filters_to_named_items() {
     // WI-540: `emit_only` generates just the named items (here `Keep`) and omits
     // the rest (`Drop`) plus the free-op module trait. `None` emits everything.
-    use anthill_core::codegen::{generate_rust_with_config, collect_trait_sorts, CodegenConfig};
+    use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_config, CodegenConfig};
 
     let src = r#"namespace demo
   enum Keep
@@ -559,13 +686,21 @@ end
     };
     let out = generate_rust_with_config(&parsed, &traits, &cfg).expect("gen");
     assert!(out.contains("enum Keep"), "Keep must be emitted:\n{out}");
-    assert!(!out.contains("enum Drop"), "Drop must be filtered out:\n{out}");
-    assert!(!out.contains("free_op"), "free op (module trait) must be omitted:\n{out}");
+    assert!(
+        !out.contains("enum Drop"),
+        "Drop must be filtered out:\n{out}"
+    );
+    assert!(
+        !out.contains("free_op"),
+        "free op (module trait) must be omitted:\n{out}"
+    );
 
     // None → everything emitted.
     let all = gen(src);
-    assert!(all.contains("enum Keep") && all.contains("enum Drop"),
-        "default (None) emits all:\n{all}");
+    assert!(
+        all.contains("enum Keep") && all.contains("enum Drop"),
+        "default (None) emits all:\n{all}"
+    );
 }
 
 // ── One-component tuple type keeps its arity (WI-766) ────────────
@@ -592,7 +727,10 @@ fn wi766_one_component_tuple_type_keeps_its_arity() {
   operation nil_op() -> ()
 }
 "#);
-    assert!(unit.contains("()"), "control: unit stays `()`. output:\n{unit}");
+    assert!(
+        unit.contains("()"),
+        "control: unit stays `()`. output:\n{unit}"
+    );
 
     let pair = gen(r#"sort S {
   operation two() -> (a: Int64, b: String)

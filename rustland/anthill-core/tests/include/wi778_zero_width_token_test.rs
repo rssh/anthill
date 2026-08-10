@@ -54,7 +54,10 @@ use anthill_core::parse;
 fn errs_at(src: &str) -> Vec<(String, u32)> {
     match parse::parse(src) {
         Ok(_) => panic!("expected a parse error, but the source parsed clean:\n{src}"),
-        Err(errs) => errs.iter().map(|e| (e.message.clone(), e.span.start)).collect(),
+        Err(errs) => errs
+            .iter()
+            .map(|e| (e.message.clone(), e.span.start))
+            .collect(),
     }
 }
 
@@ -64,7 +67,9 @@ fn errs_at(src: &str) -> Vec<(String, u32)> {
 /// likewise pass on a diagnostic pointing at the wrong construct entirely.
 fn assert_missing(src: &str, msg: &str, before: &str) {
     let errs = errs_at(src);
-    let at = src.find(before).unwrap_or_else(|| panic!("`{before}` not in source"));
+    let at = src
+        .find(before)
+        .unwrap_or_else(|| panic!("`{before}` not in source"));
     let want = (at + before.len()) as u32;
     assert_eq!(
         errs,
@@ -202,7 +207,10 @@ fn the_grammar_level_fixes_of_this_class_stay_loud() {
             "namespace t\n  operation f(x: (a: Int64, b: String)) -> Int64\nend\n",
         ),
     ] {
-        assert!(parse::parse(bad).is_err(), "expected a parse error for:\n{bad}");
+        assert!(
+            parse::parse(bad).is_err(),
+            "expected a parse error for:\n{bad}"
+        );
         parses_clean(good);
     }
 }

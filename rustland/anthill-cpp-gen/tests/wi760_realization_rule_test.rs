@@ -28,7 +28,9 @@ end
 fn opt(kb: &mut KnowledgeBase, v: Option<&str>) -> Value {
     match v {
         Some(s) => {
-            let f = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("some");
+            let f = kb
+                .try_resolve_symbol("anthill.prelude.Option.some")
+                .expect("some");
             let value = kb.intern("value");
             Value::Entity {
                 functor: f,
@@ -37,7 +39,9 @@ fn opt(kb: &mut KnowledgeBase, v: Option<&str>) -> Value {
             }
         }
         None => {
-            let f = kb.try_resolve_symbol("anthill.prelude.Option.none").expect("none");
+            let f = kb
+                .try_resolve_symbol("anthill.prelude.Option.none")
+                .expect("none");
             Value::Entity {
                 functor: f,
                 pos: std::rc::Rc::from(Vec::new()),
@@ -50,7 +54,12 @@ fn opt(kb: &mut KnowledgeBase, v: Option<&str>) -> Value {
 /// Resolve `realizes_effect(lang, profile, effect, ?r)`. Returns every DEFINITE
 /// answer's receiver short name — plural on purpose, so a rule set that yields
 /// two answers is visible rather than silently taking the first.
-fn realizes(kb: &mut KnowledgeBase, lang: &str, profile: Option<&str>, effect: &str) -> Vec<String> {
+fn realizes(
+    kb: &mut KnowledgeBase,
+    lang: &str,
+    profile: Option<&str>,
+    effect: &str,
+) -> Vec<String> {
     let functor = kb
         .try_resolve_symbol("anthill.realization.realizes_effect")
         .expect("anthill.realization.realizes_effect must be loaded from stdlib");
@@ -94,15 +103,27 @@ fn flat_form_matches_wi576_contract() {
     // Outside the supported set — the answer the capability gate turns into an error.
     assert!(realizes(&mut kb, "cpp", None, "ConsoleOutput").is_empty());
     // An unknown profile still sees the language base (`key: none`).
-    assert_eq!(realizes(&mut kb, "cpp", Some("cpp20-stl"), "Error"), vec!["ResultWrap"]);
+    assert_eq!(
+        realizes(&mut kb, "cpp", Some("cpp20-stl"), "Error"),
+        vec!["ResultWrap"]
+    );
 }
 
 #[test]
 fn nested_form_matches_wi576_contract() {
     let mut kb = load_kb_with(SRC);
-    assert_eq!(realizes(&mut kb, "scala", Some("std"), "Modify"), vec!["ByValue"]);
-    assert_eq!(realizes(&mut kb, "scala", Some("std"), "Error"), vec!["ResultWrap"]);
-    assert_eq!(realizes(&mut kb, "rust", Some("std"), "Modify"), vec!["MutRef"]);
+    assert_eq!(
+        realizes(&mut kb, "scala", Some("std"), "Modify"),
+        vec!["ByValue"]
+    );
+    assert_eq!(
+        realizes(&mut kb, "scala", Some("std"), "Error"),
+        vec!["ResultWrap"]
+    );
+    assert_eq!(
+        realizes(&mut kb, "rust", Some("std"), "Modify"),
+        vec!["MutRef"]
+    );
     // scala_caps declares Console; scala_std does not. The profile selects.
     assert!(realizes(&mut kb, "scala", Some("std"), "Console").is_empty());
     assert!(realizes(&mut kb, "scala", Some("std"), "Async").is_empty());
@@ -152,11 +173,17 @@ fn nested_profile_entry_suppresses_the_flat_base() {
     );
 
     // Under p1 the nested profile entry wins, and the base must NOT also fire.
-    assert_eq!(realizes(&mut kb, "dual", Some("p1"), "Modify"), vec!["MutRef"]);
+    assert_eq!(
+        realizes(&mut kb, "dual", Some("p1"), "Modify"),
+        vec!["MutRef"]
+    );
     // With no profile there is no overlay to prefer, so the flat base answers.
     assert_eq!(realizes(&mut kb, "dual", None, "Modify"), vec!["SharedRef"]);
     // An unrelated profile falls through to the base.
-    assert_eq!(realizes(&mut kb, "dual", Some("p2"), "Modify"), vec!["SharedRef"]);
+    assert_eq!(
+        realizes(&mut kb, "dual", Some("p2"), "Modify"),
+        vec!["SharedRef"]
+    );
 }
 
 #[test]

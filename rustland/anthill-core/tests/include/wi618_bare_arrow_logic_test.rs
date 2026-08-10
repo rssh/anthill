@@ -18,7 +18,9 @@
 use crate::common::LAMBDA_HINT as HINT;
 
 fn load_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// The WI-618 rule-body repro: a keyword-less `(x, acc) -> …` on the RHS of a
@@ -62,7 +64,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("rule body")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("rule body")),
         "expected the lambda-keyword hint for the arrow_effect form; got: {errs:?}",
     );
 }
@@ -82,7 +85,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("rule body")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("rule body")),
         "expected the lambda-keyword hint for a nested arrow; got: {errs:?}",
     );
 }
@@ -101,7 +105,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("ensures")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("ensures")),
         "expected the lambda-keyword hint in ensures position; got: {errs:?}",
     );
 }
@@ -120,7 +125,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("requires")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("requires")),
         "expected the lambda-keyword hint in requires position; got: {errs:?}",
     );
 }
@@ -142,7 +148,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("constraint")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("constraint")),
         "expected the lambda-keyword hint in constraint position; got: {errs:?}",
     );
 }
@@ -223,7 +230,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("rule body")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("rule body")),
         "`_`-led binders must witness the typo; got: {errs:?}",
     );
 }
@@ -284,7 +292,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("a fact")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("a fact")),
         "expected the lambda-keyword hint in fact position; got: {errs:?}",
     );
 }
@@ -305,7 +314,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains(HINT) && e.contains("rule head")),
+        errs.iter()
+            .any(|e| e.contains(HINT) && e.contains("rule head")),
         "expected the lambda-keyword hint in rule-head position; got: {errs:?}",
     );
 }
@@ -374,7 +384,10 @@ end
         1,
         "a minted `->` in an op body errs even with an `arrow` op in scope; got: {errs:?}",
     );
-    assert!(errs[0].contains(HINT), "expected the lambda-keyword hint; got: {errs:?}");
+    assert!(
+        errs[0].contains(HINT),
+        "expected the lambda-keyword hint; got: {errs:?}"
+    );
 }
 
 /// Provenance payoff on the WI-605 side: a WRITTEN 2-arg call `arrow(1, 2)`
@@ -425,5 +438,8 @@ end
         "the bare arrow must get exactly the one targeted error despite the \
          `arrow`-named param; got: {errs:?}",
     );
-    assert!(errs[0].contains(HINT), "expected the lambda-keyword hint; got: {errs:?}");
+    assert!(
+        errs[0].contains(HINT),
+        "expected the lambda-keyword hint; got: {errs:?}"
+    );
 }

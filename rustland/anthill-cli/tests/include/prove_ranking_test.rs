@@ -9,13 +9,19 @@ use std::process::Command;
 const ANTHILL_BIN: &str = env!("CARGO_BIN_EXE_anthill");
 
 fn z3_available() -> bool {
-    Command::new("z3").arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("anthill-ranking-test-{}-{}", std::process::id(), name));
+    let dir = std::env::temp_dir().join(format!(
+        "anthill-ranking-test-{}-{}",
+        std::process::id(),
+        name
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
@@ -60,21 +66,30 @@ const SRC_BOTH_UNSAT: &str = r#"
 
 #[test]
 fn ranking_with_both_subqueries_unsat_proves() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let path = write_temp("ok.anthill", SRC_BOTH_UNSAT);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("ranking sub-queries:"),
-        "verbose must surface the meta-tactic dispatch: {stdout}");
-    assert!(stdout.contains("rank_proof: proved"),
-        "both unsat ⇒ proved: {stdout}");
+    assert!(
+        stdout.contains("ranking sub-queries:"),
+        "verbose must surface the meta-tactic dispatch: {stdout}"
+    );
+    assert!(
+        stdout.contains("rank_proof: proved"),
+        "both unsat ⇒ proved: {stdout}"
+    );
 }
 
 #[test]
 fn ranking_with_failing_decrease_disproves() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // The decrease query is satisfiable here (there exists an x>0
     // making the body hold). The meta-tactic must surface the failing
     // sub-query name.
@@ -103,8 +118,11 @@ fn ranking_with_failing_decrease_disproves() {
     let path = write_temp("fail.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("ranking sub-query `test.ranking.fail.decrease_bad` failed"),
-        "failing sub-query must surface in the diagnostic: {stdout}");
+    assert!(
+        stdout.contains("ranking sub-query `test.ranking.fail.decrease_bad` failed"),
+        "failing sub-query must surface in the diagnostic: {stdout}"
+    );
 }

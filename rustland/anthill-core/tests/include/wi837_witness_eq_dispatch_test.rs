@@ -62,7 +62,9 @@ end
 /// `ctor_qn(f1: v1, …)` as a term. Every carrier in this file is a one- or
 /// two-field entity, so the tests differ only in the qualified name and the values.
 pub(crate) fn entity_term(kb: &mut KnowledgeBase, ctor_qn: &str, fields: &[(&str, i64)]) -> TermId {
-    let functor = kb.try_resolve_symbol(ctor_qn).unwrap_or_else(|| panic!("{ctor_qn}"));
+    let functor = kb
+        .try_resolve_symbol(ctor_qn)
+        .unwrap_or_else(|| panic!("{ctor_qn}"));
     let named = fields
         .iter()
         .map(|&(name, v)| {
@@ -81,7 +83,9 @@ pub(crate) fn entity_term(kb: &mut KnowledgeBase, ctor_qn: &str, fields: &[(&str
 /// Solutions of `pred_qn(x, y)` — each carrier's `eq` answers true for ANY pair, so
 /// ONE solution means the index dispatched and NONE means it answered structurally.
 pub(crate) fn solutions(kb: &mut KnowledgeBase, pred_qn: &str, x: TermId, y: TermId) -> usize {
-    let functor = kb.try_resolve_symbol(pred_qn).unwrap_or_else(|| panic!("{pred_qn}"));
+    let functor = kb
+        .try_resolve_symbol(pred_qn)
+        .unwrap_or_else(|| panic!("{pred_qn}"));
     let goal = kb.alloc(Term::Fn {
         functor,
         pos_args: SmallVec::from_slice(&[x, y]),
@@ -94,8 +98,11 @@ pub(crate) fn solutions(kb: &mut KnowledgeBase, pred_qn: &str, x: TermId, y: Ter
 fn eq_solutions(src: &str, pred_qn: &str, ctor_qn: &str, fields: &[&str]) -> usize {
     let mut kb = crate::common::load_kb_with(src);
     let mk = |kb: &mut KnowledgeBase, base: i64| {
-        let vals: Vec<(&str, i64)> =
-            fields.iter().enumerate().map(|(i, &f)| (f, base + i as i64)).collect();
+        let vals: Vec<(&str, i64)> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, &f)| (f, base + i as i64))
+            .collect();
         entity_term(kb, ctor_qn, &vals)
     };
     let (x, y) = (mk(&mut kb, 1), mk(&mut kb, 100));
@@ -107,7 +114,9 @@ fn eq_solutions(src: &str, pred_qn: &str, ctor_qn: &str, fields: &[&str]) -> usi
 /// the spec-generic `AmbiguousWitness` / `MixedProviderKinds` refuse some of these
 /// programs already, so a failure-only assertion would pass with nothing implemented.
 fn assert_refused(src: &str, needles: &[&str], why: &str) {
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.iter().any(|e| needles.iter().all(|n| e.contains(n))),
         "{why}; expected one diagnostic containing all of {needles:?}, got:\n{}",
@@ -210,7 +219,12 @@ fn an_unprovided_carrier_keeps_structural_equality() {
 end
 "#;
     assert_eq!(
-        eq_solutions(src, "test.wi837.control.seq", "test.wi837.control.Stone.stone", &["n"]),
+        eq_solutions(
+            src,
+            "test.wi837.control.seq",
+            "test.wi837.control.Stone.stone",
+            &["n"]
+        ),
         0,
         "Stone has no eq provider — it must keep structural equality, not inherit PebbleEq's"
     );
@@ -245,7 +259,12 @@ end
 "#;
     assert_refused(
         src,
-        &["ambiguous semantic equality", "carrier 'test.wi837.twowitness.Pebble'", "PebbleEqA", "PebbleEqB"],
+        &[
+            "ambiguous semantic equality",
+            "carrier 'test.wi837.twowitness.Pebble'",
+            "PebbleEqA",
+            "PebbleEqB",
+        ],
         "two PartialEq witnesses for Pebble must be refused BY THE INDEX BUILD, naming both \
          providers (not only by the spec-generic AmbiguousWitness, which phase 3b deletes)",
     );
@@ -335,7 +354,12 @@ fn a_type_only_provision_does_not_hide_a_later_eq_binding() {
 end
 "#;
     assert_eq!(
-        eq_solutions(src, "test.wi837.hidden.peq", "test.wi837.hidden.Pebble.pebble", &["n"]),
+        eq_solutions(
+            src,
+            "test.wi837.hidden.peq",
+            "test.wi837.hidden.Pebble.pebble",
+            &["n"]
+        ),
         1,
         "the type-only `provides PartialEq[T = Pebble]` must not hide the later \
          `fact PartialEq[T = Pebble, eq = pebbleEq]` — 0 solutions is the structural answer"
@@ -349,7 +373,10 @@ end
 /// witness route now over-refuses.
 #[test]
 fn a_single_witness_eq_loads_clean() {
-    assert_loads_clean(WITNESS_SRC, "a lone PartialEq witness for Pebble must load clean");
+    assert_loads_clean(
+        WITNESS_SRC,
+        "a lone PartialEq witness for Pebble must load clean",
+    );
 }
 
 /// CONTROL — the carrier's OWN `eq` still keys the index and still wins as the sole
@@ -370,7 +397,12 @@ fn a_carrier_own_eq_still_dispatches() {
 end
 "#;
     assert_eq!(
-        eq_solutions(src, "test.wi837.own.peq", "test.wi837.own.Pebble.pebble", &["n"]),
+        eq_solutions(
+            src,
+            "test.wi837.own.peq",
+            "test.wi837.own.Pebble.pebble",
+            &["n"]
+        ),
         1,
         "the carrier's own `eq` member must still key the index (WI-616 route unchanged)"
     );
@@ -403,7 +435,12 @@ fn a_witness_that_binds_eq_supplies_it_too() {
 end
 "#;
     assert_eq!(
-        eq_solutions(src, "test.wi837.wbind.peq", "test.wi837.wbind.Pebble.pebble", &["n"]),
+        eq_solutions(
+            src,
+            "test.wi837.wbind.peq",
+            "test.wi837.wbind.Pebble.pebble",
+            &["n"]
+        ),
         1,
         "a witness provision that BINDS `eq` must key the index just as one declaring an \
          `eq` member does — 0 solutions means the binding was silently dropped"
@@ -456,7 +493,12 @@ end
 #[test]
 fn a_sort_wrapped_entity_carrier_keys_the_index() {
     assert_eq!(
-        eq_solutions(SORT_ENTITY_SRC, "test.wi837.sortent.beq", "test.wi837.sortent.Binding.binding", &["n", "note"]),
+        eq_solutions(
+            SORT_ENTITY_SRC,
+            "test.wi837.sortent.beq",
+            "test.wi837.sortent.Binding.binding",
+            &["n", "note"]
+        ),
         1,
         "the control arm: a `sort`-wrapped carrier's instance-fact `eq` dispatches"
     );
@@ -465,7 +507,12 @@ fn a_sort_wrapped_entity_carrier_keys_the_index() {
 #[test]
 fn a_namespace_level_entity_carrier_keys_the_index() {
     assert_eq!(
-        eq_solutions(NS_ENTITY_SRC, "test.wi837.nsent.beq", "test.wi837.nsent.binding", &["n", "note"]),
+        eq_solutions(
+            NS_ENTITY_SRC,
+            "test.wi837.nsent.beq",
+            "test.wi837.nsent.binding",
+            &["n", "note"]
+        ),
         1,
         "a namespace-level entity emits no `SortInfo`, so the index build must reach it through \
          the composite-carrier walk it now shares with WI-664's classifier; 0 solutions means \
@@ -499,7 +546,12 @@ fn a_witness_supplies_eq_for_a_namespace_level_entity_carrier() {
 end
 "#;
     assert_eq!(
-        eq_solutions(src, "test.wi856.nswitness.beq", "test.wi856.nswitness.binding", &["n", "note"]),
+        eq_solutions(
+            src,
+            "test.wi856.nswitness.beq",
+            "test.wi856.nswitness.binding",
+            &["n", "note"]
+        ),
         1,
         "a WITNESS sort supplying `eq` for a namespace-level entity carrier must dispatch; \
          0 solutions means the provision's carrier is being read as the witness sort again \
@@ -531,7 +583,12 @@ fn a_variant_named_as_a_carrier_is_not_a_witness_carrier() {
 end
 "#;
     assert_eq!(
-        eq_solutions(src, "test.wi856.variant.peq", "test.wi856.variant.Pebble.pebble", &["n"]),
+        eq_solutions(
+            src,
+            "test.wi856.variant.peq",
+            "test.wi856.variant.Pebble.pebble",
+            &["n"]
+        ),
         0,
         "a sort-nested variant is not a carrier — `T = pebble` must not key `pebble`'s \
          constructor for dispatch behind the `Pebble` carrier's back"
@@ -563,7 +620,12 @@ end
 "#;
     assert_refused(
         src,
-        &["ambiguous semantic equality", "carrier 'test.wi856.nsambig.binding'", "bindEqA", "bindEqB"],
+        &[
+            "ambiguous semantic equality",
+            "carrier 'test.wi856.nsambig.binding'",
+            "bindEqA",
+            "bindEqB",
+        ],
         "a namespace-level entity carrier with two `eq` suppliers must be refused by the index \
          build just as a `sort`-wrapped one is — it loaded clean while the domain excluded it",
     );
@@ -632,9 +694,12 @@ fn a_float_composite_with_no_eq_supplier_still_derives_noneq() {
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("provides both") && e.contains("NonEq")),
+        errs.iter()
+            .any(|e| e.contains("provides both") && e.contains("NonEq")),
         "with no `eq` supplier the Float-containing W must be derived `NonEq` and conflict \
          with its own `provides Eq` — otherwise the boundary test above proves nothing; got:\n{}",
         errs.join("\n")

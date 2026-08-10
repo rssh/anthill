@@ -18,8 +18,8 @@
 //! sort (`Inner[T = String].T`); projecting a member off a PROVIDED spec is a separate
 //! follow-on, and an ABSTRACT receiver stays the existing loud error.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -28,8 +28,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -118,7 +118,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("nope") || e.contains("field")),
+        errs.iter()
+            .any(|e| e.contains("nope") || e.contains("field")),
         "projecting off a non-existent field must be a loud error; got: {errs:?}",
     );
 }
@@ -174,7 +175,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("differing") || e.contains("ambiguous") || e.contains("cell")),
+        errs.iter()
+            .any(|e| e.contains("differing") || e.contains("ambiguous") || e.contains("cell")),
         "a field declared with differing types across variants must be a loud error; got: {errs:?}",
     );
 }

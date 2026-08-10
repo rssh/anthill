@@ -168,9 +168,11 @@ namespace wi898.dotted
   end
 end
 "#;
-    for (spelling, src) in
-        [("imported", IMPORTED), ("qualified", QUALIFIED), ("bare dotted", BARE_DOTTED)]
-    {
+    for (spelling, src) in [
+        ("imported", IMPORTED),
+        ("qualified", QUALIFIED),
+        ("bare dotted", BARE_DOTTED),
+    ] {
         let Err(errs) = crate::common::try_load_kb_with(src) else {
             panic!("{spelling}: a computed condition has no `[simp]` redex — this must not load");
         };

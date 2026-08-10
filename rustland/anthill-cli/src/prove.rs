@@ -8,24 +8,24 @@ use smallvec::SmallVec;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::kb::extent::BodiedRulePolicy;
 use anthill_core::kb::proof_verify::{set_proof_result, VerdictWrite};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
-use anthill_smt_gen::{emit_satisfiability_check_with_deps, ProofConfig};
-use anthill_smt_gen::policy::{render_cited_lemma_under_policy, SMT_Z3_BACKEND};
+use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_smt_gen::cache::{
-    self, blob_subdir, build_key, hash_content, lookup, proof_subdir,
-    resolve_cache_root, state_hash, store_blob, store_entry, store_witness,
-    witness_subdir, CacheEntry, KeyInputs, Solver, WitnessSidecar,
+    self, blob_subdir, build_key, hash_content, lookup, proof_subdir, resolve_cache_root,
+    state_hash, store_blob, store_entry, store_witness, witness_subdir, CacheEntry, KeyInputs,
+    Solver, WitnessSidecar,
 };
-use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
 use anthill_smt_gen::outcome::parse_z3_output;
+use anthill_smt_gen::policy::{render_cited_lemma_under_policy, SMT_Z3_BACKEND};
+use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
+use anthill_smt_gen::{emit_satisfiability_check_with_deps, ProofConfig};
 
-use crate::{ProveArgs, load_kb_with_stdlib};
 use crate::check::rand_suffix;
 use crate::witness::{ProofWitness, SmtVerdict};
+use crate::{load_kb_with_stdlib, ProveArgs};
 use anthill_core::kb::ClauseKind;
 
 pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
@@ -52,7 +52,10 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
 
     println!(
         "\nsummary: {} proved, {} failed, {} skipped, {} total",
-        report.discharged, report.failed, report.skipped(), report.total
+        report.discharged,
+        report.failed,
+        report.skipped(),
+        report.total
     );
     if args.stats {
         println!(
@@ -60,7 +63,11 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
             report.stats.hits, report.stats.misses, report.stats.writes, report.stats.bypassed,
         );
     }
-    if report.failed > 0 { Err(1) } else { Ok(()) }
+    if report.failed > 0 {
+        Err(1)
+    } else {
+        Ok(())
+    }
 }
 
 /// Verdict tally of a discharge pass over a loaded KB (WI-564). `collected` is
@@ -148,9 +155,10 @@ pub(crate) fn discharge_loaded_kb(
         // WI-558: stash the in-KB result flip for this verdict, keyed on the
         // source record's RuleId (applied below). Encode the witness term now,
         // while `kb` is free between dispatches.
-        if let (Some(rid), Some(vw)) =
-            (rec.rid, verdict_write_for(kb, &outcome.verdict, &witness, rec))
-        {
+        if let (Some(rid), Some(vw)) = (
+            rec.rid,
+            verdict_write_for(kb, &outcome.verdict, &witness, rec),
+        ) {
             write_backs.push((rid, vw));
         }
         // Per-ProofRecord state hash (phase α.4): canonical hash of the kb-state
@@ -168,15 +176,16 @@ pub(crate) fn discharge_loaded_kb(
         if let (Verdict::Proved, Some(w)) = (&outcome.verdict, &witness) {
             persist_witness(args, &rec.rule, w, record_state_hash.as_deref());
             let kind = match w {
-                ProofWitness::TrustedAxiom { reason } =>
-                    DischargeKind::Trusted(reason.clone()),
+                ProofWitness::TrustedAxiom { reason } => DischargeKind::Trusted(reason.clone()),
                 _ => DischargeKind::Sound,
             };
             discharged_this_run.insert(rec.rule.clone(), kind);
         }
         match &outcome.verdict {
             Verdict::Proved => {
-                if !quiet { println!("✓ {}: proved (z3: unsat)", rec.rule); }
+                if !quiet {
+                    println!("✓ {}: proved (z3: unsat)", rec.rule);
+                }
                 discharged += 1;
             }
             Verdict::Disproved(model) => {
@@ -189,11 +198,15 @@ pub(crate) fn discharge_loaded_kb(
                 failed += 1;
             }
             Verdict::Unknown(reason) => {
-                if !quiet { println!("? {}: unknown ({reason})", rec.rule); }
+                if !quiet {
+                    println!("? {}: unknown ({reason})", rec.rule);
+                }
                 failed += 1;
             }
             Verdict::Skipped(why) => {
-                if !quiet { println!("- {}: skipped ({why})", rec.rule); }
+                if !quiet {
+                    println!("- {}: skipped ({why})", rec.rule);
+                }
                 // A bare obligation (`Strategy::Open`) is a TODO that contributes
                 // nothing (025); any other skip is a strategied proof we could
                 // not confirm (solver missing, `by test`, unknown tool) — which
@@ -317,10 +330,10 @@ impl ProofSyms {
             open: kb.try_resolve_symbol("anthill.realization.ProofStrategyOpen"),
             cons: kb.try_resolve_symbol("anthill.prelude.List.cons"),
             named_arg: kb.try_resolve_symbol("named_arg"),
-            scope_axiom: kb.try_resolve_symbol(
-                "anthill.realization.witness.ProofWitness.ScopeAxiom"),
-            specialization: kb.try_resolve_symbol(
-                "anthill.realization.witness.ProofWitness.Specialization"),
+            scope_axiom: kb
+                .try_resolve_symbol("anthill.realization.witness.ProofWitness.ScopeAxiom"),
+            specialization: kb
+                .try_resolve_symbol("anthill.realization.witness.ProofWitness.Specialization"),
         }
     }
 }
@@ -366,15 +379,18 @@ fn topo_sort_by_using(records: Vec<ProofRec>) -> Vec<ProofRec> {
             // need ordering.
             if known.contains(cited) && cited != &rec.rule {
                 *indeg.entry(rec.rule.clone()).or_insert(0) += 1;
-                deps.entry(cited.clone()).or_default().push(rec.rule.clone());
+                deps.entry(cited.clone())
+                    .or_default()
+                    .push(rec.rule.clone());
             }
         }
     }
-    let mut by_name: HashMap<String, ProofRec> = records
-        .into_iter().map(|r| (r.rule.clone(), r)).collect();
+    let mut by_name: HashMap<String, ProofRec> =
+        records.into_iter().map(|r| (r.rule.clone(), r)).collect();
     // Use a sorted ready-set so ties break alphabetically (stable
     // output order across runs).
-    let mut ready: BTreeSet<String> = indeg.iter()
+    let mut ready: BTreeSet<String> = indeg
+        .iter()
         .filter_map(|(k, v)| if *v == 0 { Some(k.clone()) } else { None })
         .collect();
     let mut out: Vec<ProofRec> = Vec::with_capacity(by_name.len());
@@ -387,7 +403,9 @@ fn topo_sort_by_using(records: Vec<ProofRec>) -> Vec<ProofRec> {
             for c in consumers {
                 if let Some(d) = indeg.get_mut(&c) {
                     *d = d.saturating_sub(1);
-                    if *d == 0 { ready.insert(c); }
+                    if *d == 0 {
+                        ready.insert(c);
+                    }
                 }
             }
         }
@@ -432,7 +450,14 @@ fn read_proof_record(
     let structured = get_named_arg(kb, named, "body")
         .map(|t| is_structured_body(kb, t))
         .unwrap_or(false);
-    Some(ProofRec { rid: Some(rid), rule, strategy, using, structured, abstract_body: false })
+    Some(ProofRec {
+        rid: Some(rid),
+        rule,
+        strategy,
+        using,
+        structured,
+        abstract_body: false,
+    })
 }
 
 /// True if `body_tid` is the `ProofBodyStructured` constructor (proposal 031).
@@ -457,8 +482,7 @@ fn has_auto_registered_witness(
         Term::Fn { functor, .. } => *functor,
         _ => return false,
     };
-    Some(witness_functor) == syms.scope_axiom
-        || Some(witness_functor) == syms.specialization
+    Some(witness_functor) == syms.scope_axiom || Some(witness_functor) == syms.specialization
 }
 
 /// Walk a `cons(head: <String const>, tail: ...)` list and collect
@@ -468,10 +492,16 @@ fn read_string_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) -> Ve
     let mut out = Vec::new();
     for _ in 0..MAX_LIST_LEN {
         let (functor, named) = match kb.get_term(tid) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args),
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (*functor, named_args),
             _ => break,
         };
-        if syms.cons != Some(functor) { break; }
+        if syms.cons != Some(functor) {
+            break;
+        }
         if let Some(h) = get_named_arg(kb, named, "head") {
             if let Term::Const(Literal::String(s)) = kb.get_term(h) {
                 out.push(s.clone());
@@ -487,7 +517,11 @@ fn read_string_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) -> Ve
 
 fn read_strategy(kb: &KnowledgeBase, syms: &ProofSyms, tid: TermId) -> Strategy {
     let (functor, named) = match kb.get_term(tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args),
         _ => return Strategy::Open,
     };
     if syms.open == Some(functor) {
@@ -506,10 +540,16 @@ fn read_named_arg_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) ->
     let mut out = Vec::new();
     for _ in 0..MAX_LIST_LEN {
         let (functor, named) = match kb.get_term(tid) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args),
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (*functor, named_args),
             _ => break,
         };
-        if syms.cons != Some(functor) { break; }
+        if syms.cons != Some(functor) {
+            break;
+        }
         if let Some(h) = get_named_arg(kb, named, "head") {
             if let Some(arg) = read_named_arg(kb, syms, h) {
                 out.push(arg);
@@ -525,7 +565,11 @@ fn read_named_arg_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) ->
 
 fn read_named_arg(kb: &KnowledgeBase, syms: &ProofSyms, tid: TermId) -> Option<NamedArg> {
     let (functor, named) = match kb.get_term(tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args),
         _ => return None,
     };
     // Symbol comparison falls through if the cached symbol isn't
@@ -533,14 +577,16 @@ fn read_named_arg(kb: &KnowledgeBase, syms: &ProofSyms, tid: TermId) -> Option<N
     // bare-interned symbols), so also accept by short-name match.
     let matches = syms.named_arg == Some(functor)
         || kb.qualified_name_of(functor).rsplit('.').next() == Some("named_arg");
-    if !matches { return None; }
+    if !matches {
+        return None;
+    }
     let key = lookup_string(kb, named, "name")?;
     let val_tid = get_named_arg(kb, named, "value")?;
     let value = match kb.get_term(val_tid) {
         Term::Const(Literal::String(s)) => ArgValue::String(s.clone()),
-        Term::Const(Literal::Int(n))    => ArgValue::Int(*n),
-        Term::Const(Literal::Float(f))  => ArgValue::Float(f.into_inner()),
-        Term::Const(Literal::Bool(b))   => ArgValue::Bool(*b),
+        Term::Const(Literal::Int(n)) => ArgValue::Int(*n),
+        Term::Const(Literal::Float(f)) => ArgValue::Float(f.into_inner()),
+        Term::Const(Literal::Bool(b)) => ArgValue::Bool(*b),
         Term::Fn { .. } | Term::Ident(_) | Term::Ref(_) => ArgValue::Term(val_tid),
         _ => ArgValue::Other,
     };
@@ -605,18 +651,30 @@ fn dispatch(
         return dispatch_structured(kb, rec, args, stats, discharged_this_run);
     }
     let (tool, tool_args) = match &rec.strategy {
-        Strategy::Open => return DispatchOutcome::no_witness(
-            Verdict::Skipped("open obligation (no `by` clause)".into())),
+        Strategy::Open => {
+            return DispatchOutcome::no_witness(Verdict::Skipped(
+                "open obligation (no `by` clause)".into(),
+            ))
+        }
         Strategy::Tool { name, args } => (name.as_str(), args.as_slice()),
     };
     match tool {
-        "z3" => dispatch_z3(kb, &rec.rule, tool_args, &rec.using, rec.abstract_body, args, stats, discharged_this_run),
-        "test" => DispatchOutcome::no_witness(
-            Verdict::Skipped("`by test` not yet wired".into())),
+        "z3" => dispatch_z3(
+            kb,
+            &rec.rule,
+            tool_args,
+            &rec.using,
+            rec.abstract_body,
+            args,
+            stats,
+            discharged_this_run,
+        ),
+        "test" => DispatchOutcome::no_witness(Verdict::Skipped("`by test` not yet wired".into())),
         "derivation" => dispatch_derivation(kb, &rec.rule, tool_args),
         "trust" => dispatch_trust(tool_args),
-        other => DispatchOutcome::no_witness(
-            Verdict::Skipped(format!("unknown strategy `{other}`"))),
+        other => {
+            DispatchOutcome::no_witness(Verdict::Skipped(format!("unknown strategy `{other}`")))
+        }
     }
 }
 
@@ -654,7 +712,9 @@ fn verdict_write_for(
             counterexample: model.clone(),
             solver: solver_name(rec),
         }),
-        Verdict::Unknown(reason) => Some(VerdictWrite::FailedUnknown { reason: reason.clone() }),
+        Verdict::Unknown(reason) => Some(VerdictWrite::FailedUnknown {
+            reason: reason.clone(),
+        }),
         Verdict::Skipped(_) | Verdict::EmitError(_) => None,
     }
 }
@@ -683,7 +743,13 @@ fn witness_to_term(kb: &mut KnowledgeBase, w: &ProofWitness) -> TermId {
             anthill_core::kb::proof_verify::make_sld_witness(kb, tree_hash)
         }
         ProofWitness::TrustedAxiom { reason } => trusted_axiom_term(kb, reason),
-        ProofWitness::SmtDischarge { backend, logic, document_hash, verdict, core } => {
+        ProofWitness::SmtDischarge {
+            backend,
+            logic,
+            document_hash,
+            verdict,
+            core,
+        } => {
             let sym = kb.resolve_symbol("anthill.realization.witness.ProofWitness.SmtDischarge");
             let b = str_const(kb, backend);
             let l = str_const(kb, logic);
@@ -717,12 +783,22 @@ fn witness_to_term(kb: &mut KnowledgeBase, w: &ProofWitness) -> TermId {
                 SmallVec::from_slice(&[(k_t, tn), (k_s, sub_list)]),
             )
         }
-        ProofWitness::ScopeAxiom { scope_kind, scope_qn, aspect } => {
-            debug_assert!(false, "witness_to_term: kernel ScopeAxiom reached the prove write-back");
+        ProofWitness::ScopeAxiom {
+            scope_kind,
+            scope_qn,
+            aspect,
+        } => {
+            debug_assert!(
+                false,
+                "witness_to_term: kernel ScopeAxiom reached the prove write-back"
+            );
             trusted_axiom_term(kb, &format!("scope-axiom {scope_kind} {scope_qn} {aspect}"))
         }
         ProofWitness::Specialization { parametric, .. } => {
-            debug_assert!(false, "witness_to_term: kernel Specialization reached the prove write-back");
+            debug_assert!(
+                false,
+                "witness_to_term: kernel Specialization reached the prove write-back"
+            );
             trusted_axiom_term(kb, &format!("specialization of {parametric}"))
         }
     }
@@ -789,7 +865,8 @@ fn option_string_to_term(kb: &mut KnowledgeBase, s: Option<&str>) -> TermId {
 /// `anthill check --report-trust` lists every rule whose witness
 /// tree contains a TrustedAxiom, so the trust surface is auditable.
 fn dispatch_trust(tool_args: &[NamedArg]) -> DispatchOutcome {
-    let reason = tool_args.iter()
+    let reason = tool_args
+        .iter()
         .find(|a| a.key == "reason")
         .and_then(|a| match &a.value {
             ArgValue::String(s) => Some(s.clone()),
@@ -830,10 +907,16 @@ fn read_term_list(kb: &KnowledgeBase, syms: &ProofSyms, mut tid: TermId) -> Vec<
     let mut out = Vec::new();
     for _ in 0..MAX_LIST_LEN {
         let (functor, named) = match kb.get_term(tid) {
-            Term::Fn { functor, named_args, .. } => (*functor, named_args),
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (*functor, named_args),
             _ => break,
         };
-        if syms.cons != Some(functor) { break; }
+        if syms.cons != Some(functor) {
+            break;
+        }
         if let Some(h) = get_named_arg(kb, named, "head") {
             out.push(h);
         }
@@ -873,7 +956,13 @@ fn read_proof_step(
     } else {
         format!("{parent_qn}.{label}")
     };
-    Some(DecodedStep { qn, head_term, body_terms, using, strategy })
+    Some(DecodedStep {
+        qn,
+        head_term,
+        body_terms,
+        using,
+        strategy,
+    })
 }
 
 fn read_proof_conclude(
@@ -910,15 +999,18 @@ fn read_structured_body(
     };
     let steps_list = get_named_arg(kb, named, "steps")?;
     let step_tids = read_term_list(kb, syms, steps_list);
-    let steps: Vec<DecodedStep> = step_tids.iter()
+    let steps: Vec<DecodedStep> = step_tids
+        .iter()
         .filter_map(|&t| read_proof_step(kb, syms, parent_qn, t))
         .collect();
-    let conclude = get_named_arg(kb, named, "conclude")
-        .and_then(|t| {
-            // `Bottom` marks an absent conclude clause.
-            if matches!(kb.get_term(t), Term::Bottom) { None }
-            else { read_proof_conclude(kb, syms, t) }
-        });
+    let conclude = get_named_arg(kb, named, "conclude").and_then(|t| {
+        // `Bottom` marks an absent conclude clause.
+        if matches!(kb.get_term(t), Term::Bottom) {
+            None
+        } else {
+            read_proof_conclude(kb, syms, t)
+        }
+    });
     Some((steps, conclude))
 }
 
@@ -955,7 +1047,8 @@ fn synthesize_step_rule(
     }
     let rule_sort = ClauseKind::Rule;
 
-    let parent_globals: Vec<_> = kb.rule_id_by_qn(parent_qn)
+    let parent_globals: Vec<_> = kb
+        .rule_id_by_qn(parent_qn)
         .map(|rid| kb.rule_globals(rid).to_vec())
         .unwrap_or_default();
 
@@ -1002,19 +1095,26 @@ fn dispatch_structured(
     // record for this rule QN.
     let body_tid = match find_proof_body_term(kb, &syms, &rec.rule) {
         Some(t) => t,
-        None => return DispatchOutcome::no_witness(Verdict::EmitError(format!(
-            "structured proof for `{}`: could not locate body term in KB", rec.rule
-        ))),
+        None => {
+            return DispatchOutcome::no_witness(Verdict::EmitError(format!(
+                "structured proof for `{}`: could not locate body term in KB",
+                rec.rule
+            )))
+        }
     };
     let (steps, conclude) = match read_structured_body(kb, &syms, &rec.rule, body_tid) {
         Some(x) => x,
-        None => return DispatchOutcome::no_witness(Verdict::EmitError(format!(
-            "structured proof for `{}`: malformed ProofBodyStructured term", rec.rule
-        ))),
+        None => {
+            return DispatchOutcome::no_witness(Verdict::EmitError(format!(
+                "structured proof for `{}`: malformed ProofBodyStructured term",
+                rec.rule
+            )))
+        }
     };
     if steps.is_empty() {
         return DispatchOutcome::no_witness(Verdict::EmitError(format!(
-            "structured proof for `{}`: no steps", rec.rule
+            "structured proof for `{}`: no steps",
+            rec.rule
         )));
     }
 
@@ -1023,7 +1123,13 @@ fn dispatch_structured(
     let mut visited_rules: BTreeSet<String> = BTreeSet::new();
 
     for step in &steps {
-        synthesize_step_rule(kb, &step.qn, &rec.rule, step.body_terms.clone(), step.head_term);
+        synthesize_step_rule(
+            kb,
+            &step.qn,
+            &rec.rule,
+            step.body_terms.clone(),
+            step.head_term,
+        );
         let step_rec = ProofRec {
             // Synthetic: a structured step has no source ProofRecord fact, so it
             // is dispatched but never result-written-back.
@@ -1039,8 +1145,9 @@ fn dispatch_structured(
         match outcome.verdict {
             Verdict::Proved => {
                 let kind = match &outcome.witness {
-                    Some(ProofWitness::TrustedAxiom { reason }) =>
-                        DischargeKind::Trusted(reason.clone()),
+                    Some(ProofWitness::TrustedAxiom { reason }) => {
+                        DischargeKind::Trusted(reason.clone())
+                    }
                     _ => DischargeKind::Sound,
                 };
                 discharged_this_run.insert(step.qn.clone(), kind);
@@ -1049,11 +1156,13 @@ fn dispatch_structured(
                 }
                 step_qns.push(step.qn.clone());
             }
-            other => return DispatchOutcome {
-                verdict: other,
-                witness: None,
-                visited_rules,
-            },
+            other => {
+                return DispatchOutcome {
+                    verdict: other,
+                    witness: None,
+                    visited_rules,
+                }
+            }
         }
     }
 
@@ -1114,11 +1223,7 @@ fn dispatch_structured(
 /// the by-functor index for ProofRecord and matching the `rule`
 /// field. None when no record exists for the given QN (which
 /// shouldn't happen for a record that reached `dispatch`).
-fn find_proof_body_term(
-    kb: &KnowledgeBase,
-    syms: &ProofSyms,
-    rule_qn: &str,
-) -> Option<TermId> {
+fn find_proof_body_term(kb: &KnowledgeBase, syms: &ProofSyms, rule_qn: &str) -> Option<TermId> {
     let functor = kb.try_resolve_symbol("anthill.realization.ProofRecord")?;
     for rid in kb.rules_by_functor(functor) {
         let head = kb.rule_head(rid);
@@ -1148,10 +1253,13 @@ fn clone_strategy(s: &Strategy) -> Strategy {
         Strategy::Open => Strategy::Open,
         Strategy::Tool { name, args } => Strategy::Tool {
             name: name.clone(),
-            args: args.iter().map(|a| NamedArg {
-                key: a.key.clone(),
-                value: clone_arg_value(&a.value),
-            }).collect(),
+            args: args
+                .iter()
+                .map(|a| NamedArg {
+                    key: a.key.clone(),
+                    value: clone_arg_value(&a.value),
+                })
+                .collect(),
         },
     }
 }
@@ -1200,15 +1308,15 @@ fn dispatch_derivation(
             witness: Some(ProofWitness::SldDerivation { tree_hash }),
             visited_rules: visited,
         },
-        DerivationOutcome::NoDerivation => DispatchOutcome::no_witness(Verdict::Unknown(
-            format!("no derivation found within depth {max_depth} for `{rule_qn}`"),
-        )),
-        DerivationOutcome::RuleNotFound => DispatchOutcome::no_witness(Verdict::EmitError(
-            format!("rule `{rule_qn}` not in KB"),
-        )),
-        DerivationOutcome::NoRules => DispatchOutcome::no_witness(Verdict::EmitError(
-            format!("no rules found for `{rule_qn}`"),
-        )),
+        DerivationOutcome::NoDerivation => DispatchOutcome::no_witness(Verdict::Unknown(format!(
+            "no derivation found within depth {max_depth} for `{rule_qn}`"
+        ))),
+        DerivationOutcome::RuleNotFound => {
+            DispatchOutcome::no_witness(Verdict::EmitError(format!("rule `{rule_qn}` not in KB")))
+        }
+        DerivationOutcome::NoRules => DispatchOutcome::no_witness(Verdict::EmitError(format!(
+            "no rules found for `{rule_qn}`"
+        ))),
     }
 }
 
@@ -1250,7 +1358,14 @@ fn dispatch_z3(
             effective.push(qn);
         }
     }
-    match render_cited_lemmas(kb, &effective, rule_qn, abstract_body, cli, discharged_this_run) {
+    match render_cited_lemmas(
+        kb,
+        &effective,
+        rule_qn,
+        abstract_body,
+        cli,
+        discharged_this_run,
+    ) {
         Ok(Some(clauses)) => {
             config.assumptions = clauses;
             canon_parts.push(format!("using={}", effective.join(",")));
@@ -1352,10 +1467,14 @@ fn render_cited_lemmas(
     cli: &ProveArgs,
     discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
 ) -> Result<Option<Vec<String>>, String> {
-    if using.is_empty() { return Ok(None); }
+    if using.is_empty() {
+        return Ok(None);
+    }
     let mut clauses = Vec::with_capacity(using.len());
     for cited in using {
-        if cited == target_rule_qn { continue; }
+        if cited == target_rule_qn {
+            continue;
+        }
         match cite_status(kb, cited, cli, discharged_this_run) {
             CiteStatus::Discharged => {}
             CiteStatus::Trusted(reason) => {
@@ -1394,7 +1513,11 @@ fn render_cited_lemmas(
             }
         }
     }
-    if clauses.is_empty() { Ok(None) } else { Ok(Some(clauses)) }
+    if clauses.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(clauses))
+    }
 }
 
 /// How a within-invocation discharge resolved — used to route
@@ -1475,25 +1598,35 @@ fn cite_status(
             .and_then(|tid| match kb.get_term(tid) {
                 Term::Const(Literal::String(s)) => Some(s.as_str() == cited_qn),
                 _ => None,
-            }).unwrap_or(false);
-        if !qn_match { continue; }
+            })
+            .unwrap_or(false);
+        if !qn_match {
+            continue;
+        }
         found_record = true;
         if let Some(witness_tid) = get_named_arg(kb, named, "witness") {
             let witness_short = match kb.get_term(witness_tid) {
-                Term::Fn { functor, .. } => kb.qualified_name_of(*functor)
-                    .rsplit('.').next().unwrap_or("").to_string(),
+                Term::Fn { functor, .. } => kb
+                    .qualified_name_of(*functor)
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
                 _ => String::new(),
             };
             match witness_short.as_str() {
                 "ScopeAxiom" | "Specialization" => return CiteStatus::Discharged,
                 "TrustedAxiom" => {
-                    let reason = get_named_arg(kb, witness_tid_named(kb, witness_tid).as_ref()
-                        .unwrap_or(named), "reason")
-                        .and_then(|t| match kb.get_term(t) {
-                            Term::Const(Literal::String(s)) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| "(no reason)".into());
+                    let reason = get_named_arg(
+                        kb,
+                        witness_tid_named(kb, witness_tid).as_ref().unwrap_or(named),
+                        "reason",
+                    )
+                    .and_then(|t| match kb.get_term(t) {
+                        Term::Const(Literal::String(s)) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "(no reason)".into());
                     // The pending-placeholder TrustedAxiom (loader
                     // default for un-discharged user proofs) is NOT
                     // a real trust statement — fall through to the
@@ -1509,7 +1642,9 @@ fn cite_status(
         // SmtDischarge / SldDerivation / MetaCompose: defer to sidecar.
         break;
     }
-    if !found_record { return CiteStatus::NotFound; }
+    if !found_record {
+        return CiteStatus::NotFound;
+    }
     if sidecar_exists_for(cited_qn, cli) {
         CiteStatus::Discharged
     } else {
@@ -1554,7 +1689,9 @@ fn witness_tid_named<'a>(
 /// when a per-RuleId lift helper lands.
 fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
     let parts: Vec<&str> = rule_qn.split('.').collect();
-    if parts.len() < 2 { return Vec::new(); }
+    if parts.len() < 2 {
+        return Vec::new();
+    }
 
     // Walk all rules in the KB. For each with `hint` meta, determine
     // its head-functor QN and check whether the QN is prefixed by
@@ -1602,7 +1739,9 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
         None => return Vec::new(),
     };
     let parts: Vec<&str> = rule_qn.split('.').collect();
-    if parts.len() < 2 { return Vec::new(); }
+    if parts.len() < 2 {
+        return Vec::new();
+    }
 
     // Snapshot all ProofRecord QNs once so the inner loop is cheap.
     // WI-806: read through the accessor — a bodied ProofRecord rule is surfaced
@@ -1659,7 +1798,9 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
 /// MetaCompose witnesses whose ProofRecord still says Pending in
 /// source (because in-source persistence is deferred).
 fn sidecar_exists_for(rule_qn: &str, cli: &ProveArgs) -> bool {
-    if cli.no_cache { return false; }
+    if cli.no_cache {
+        return false;
+    }
     let cache_root = resolve_cache_root(cli.cache_dir.as_deref());
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let dir = anthill_smt_gen::cache::witness_subdir(&cache_root, &repo_root);
@@ -1684,31 +1825,41 @@ fn build_cache_context(
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let subdir = proof_subdir(&cache_root, &repo_root, Solver::Z3);
     let blob_dir = blob_subdir(&cache_root, &repo_root);
-    let key = build_key(kb, &KeyInputs {
-        emitted_smt_lib: smt,
-        tactic_canon,
-        hint_qns: &[],
-        visited_rules: visited,
-        stdlib_version: env!("CARGO_PKG_VERSION"),
-        z3_version,
-    });
-    CacheCtx { subdir, blob_dir, key }
+    let key = build_key(
+        kb,
+        &KeyInputs {
+            emitted_smt_lib: smt,
+            tactic_canon,
+            hint_qns: &[],
+            visited_rules: visited,
+            stdlib_version: env!("CARGO_PKG_VERSION"),
+            z3_version,
+        },
+    );
+    CacheCtx {
+        subdir,
+        blob_dir,
+        key,
+    }
 }
 
 /// Recognise `ranking(boundedness: <rule_qn>, decrease: <rule_qn>)`
 /// as the tactic value of a `by z3(tactic: ...)` block. Returns the
 /// two rule QNs the meta-tactic should dispatch as sub-queries.
 /// WI-100.
-fn recognise_ranking_tactic(
-    kb: &KnowledgeBase,
-    tactic_term: TermId,
-) -> Option<(String, String)> {
+fn recognise_ranking_tactic(kb: &KnowledgeBase, tactic_term: TermId) -> Option<(String, String)> {
     let (functor, named) = match kb.get_term(tactic_term) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         _ => return None,
     };
     let fn_name = kb.qualified_name_of(functor);
-    if fn_name.rsplit('.').next() != Some("ranking") { return None; }
+    if fn_name.rsplit('.').next() != Some("ranking") {
+        return None;
+    }
 
     let mut bnd: Option<String> = None;
     let mut dec: Option<String> = None;
@@ -1736,19 +1887,26 @@ struct InductionSpec {
     cases: Vec<String>,
 }
 
-fn recognise_induction_tactic(
-    kb: &KnowledgeBase,
-    tactic_term: TermId,
-) -> Option<InductionSpec> {
+fn recognise_induction_tactic(kb: &KnowledgeBase, tactic_term: TermId) -> Option<InductionSpec> {
     let (functor, named, pos) = match kb.get_term(tactic_term) {
-        Term::Fn { functor, named_args, pos_args } =>
-            (*functor, named_args.clone(), pos_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            pos_args,
+        } => (*functor, named_args.clone(), pos_args.clone()),
         _ => return None,
     };
     let fn_name = kb.qualified_name_of(functor);
-    if fn_name.rsplit('.').next() != Some("induction") { return None; }
+    if fn_name.rsplit('.').next() != Some("induction") {
+        return None;
+    }
 
-    let mut spec = InductionSpec { over: None, base: None, step: None, cases: Vec::new() };
+    let mut spec = InductionSpec {
+        over: None,
+        base: None,
+        step: None,
+        cases: Vec::new(),
+    };
     for &p in &pos {
         if let Some(qn) = qn_of(kb, p) {
             spec.cases.push(qn);
@@ -1783,8 +1941,12 @@ fn dispatch_induction(
     // single-recursive enums) use base + step. Otherwise consume the
     // positional `cases` list.
     let mut sub_qns: Vec<String> = Vec::new();
-    if let Some(b) = &spec.base { sub_qns.push(b.clone()); }
-    if let Some(s) = &spec.step { sub_qns.push(s.clone()); }
+    if let Some(b) = &spec.base {
+        sub_qns.push(b.clone());
+    }
+    if let Some(s) = &spec.step {
+        sub_qns.push(s.clone());
+    }
     sub_qns.extend(spec.cases.iter().cloned());
     if sub_qns.is_empty() {
         return DispatchOutcome::no_witness(Verdict::EmitError(format!(
@@ -1795,10 +1957,20 @@ fn dispatch_induction(
 
     if cli.verbose {
         let over = spec.over.as_deref().unwrap_or("(unspecified)");
-        println!("  induction(over: {over}) sub-queries: {}", sub_qns.join(", "));
+        println!(
+            "  induction(over: {over}) sub-queries: {}",
+            sub_qns.join(", ")
+        );
     }
     let outcome = dispatch_subqueries(
-        kb, parent_qn, "induction case", &sub_qns, base_config, cli, stats);
+        kb,
+        parent_qn,
+        "induction case",
+        &sub_qns,
+        base_config,
+        cli,
+        stats,
+    );
     rewrap_meta_compose(outcome, "induction")
 }
 
@@ -1812,11 +1984,18 @@ fn rewrap_meta_compose(outcome: DispatchOutcome, tactic_name: &str) -> DispatchO
     if !matches!(outcome.verdict, Verdict::Proved) {
         return outcome;
     }
-    let DispatchOutcome { verdict, witness, visited_rules } = outcome;
-    let sub_witnesses = witness.into_iter().flat_map(|w| match w {
-        ProofWitness::MetaCompose { sub, .. } => sub,
-        other => vec![other],
-    }).collect();
+    let DispatchOutcome {
+        verdict,
+        witness,
+        visited_rules,
+    } = outcome;
+    let sub_witnesses = witness
+        .into_iter()
+        .flat_map(|w| match w {
+            ProofWitness::MetaCompose { sub, .. } => sub,
+            other => vec![other],
+        })
+        .collect();
     DispatchOutcome {
         verdict,
         witness: Some(ProofWitness::MetaCompose {
@@ -1843,14 +2022,22 @@ fn dispatch_subqueries(
     cli: &ProveArgs,
     stats: &mut CacheStats,
 ) -> DispatchOutcome {
-    let sub_config = ProofConfig { tactic_expr: None, ..base_config.clone() };
+    let sub_config = ProofConfig {
+        tactic_expr: None,
+        ..base_config.clone()
+    };
     let mut sub_witnesses: Vec<ProofWitness> = Vec::new();
     let mut combined_visited: BTreeSet<String> = BTreeSet::new();
     for sub in sub_qns {
-        let sub_canon = format!("z3-subquery({})",
-            sub_config.logic.as_deref().unwrap_or("LRA"));
-        let DispatchOutcome { verdict, witness, visited_rules } =
-            run_smt_subquery(kb, sub, &sub_config, &sub_canon, cli, stats);
+        let sub_canon = format!(
+            "z3-subquery({})",
+            sub_config.logic.as_deref().unwrap_or("LRA")
+        );
+        let DispatchOutcome {
+            verdict,
+            witness,
+            visited_rules,
+        } = run_smt_subquery(kb, sub, &sub_config, &sub_canon, cli, stats);
         combined_visited.extend(visited_rules);
         match verdict {
             Verdict::Proved => {
@@ -1859,12 +2046,16 @@ fn dispatch_subqueries(
                 }
                 continue;
             }
-            Verdict::Disproved(model) => return DispatchOutcome::no_witness(
-                Verdict::Disproved(format!(
-                    "{label} `{sub}` failed for `{parent_qn}`:\n{model}"))),
-            Verdict::Unknown(why) => return DispatchOutcome::no_witness(
-                Verdict::Unknown(format!(
-                    "{label} `{sub}` for `{parent_qn}`: {why}"))),
+            Verdict::Disproved(model) => {
+                return DispatchOutcome::no_witness(Verdict::Disproved(format!(
+                    "{label} `{sub}` failed for `{parent_qn}`:\n{model}"
+                )))
+            }
+            Verdict::Unknown(why) => {
+                return DispatchOutcome::no_witness(Verdict::Unknown(format!(
+                    "{label} `{sub}` for `{parent_qn}`: {why}"
+                )))
+            }
             other => return DispatchOutcome::no_witness(other),
         }
     }
@@ -1881,9 +2072,13 @@ fn dispatch_subqueries(
 fn qn_of(kb: &KnowledgeBase, term: TermId) -> Option<String> {
     match kb.get_term(term) {
         Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_string()),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-            Some(kb.qualified_name_of(*functor).to_string()),
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
+            Some(kb.qualified_name_of(*functor).to_string())
+        }
         _ => None,
     }
 }
@@ -1907,7 +2102,14 @@ fn dispatch_ranking(
         println!("  ranking sub-queries: {}", sub_qns.join(", "));
     }
     let outcome = dispatch_subqueries(
-        kb, parent_qn, "ranking sub-query", &sub_qns, base_config, cli, stats);
+        kb,
+        parent_qn,
+        "ranking sub-query",
+        &sub_qns,
+        base_config,
+        cli,
+        stats,
+    );
     rewrap_meta_compose(outcome, "ranking")
 }
 
@@ -1958,16 +2160,26 @@ fn run_smt_subquery(
         };
     }
     let z3_version = match Command::new(&cli.solver).arg("--version").output() {
-        Ok(o) if o.status.success() =>
-            String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => return DispatchOutcome::no_witness(
-            Verdict::Skipped(format!("solver `{}` not on $PATH", cli.solver))),
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            return DispatchOutcome::no_witness(Verdict::Skipped(format!(
+                "solver `{}` not on $PATH",
+                cli.solver
+            )))
+        }
     };
     let cache_ctx = if cli.no_cache {
         stats.bypassed += 1;
         None
     } else {
-        Some(build_cache_context(&cli.cache_dir, kb, &smt, tactic_canon, &visited, &z3_version))
+        Some(build_cache_context(
+            &cli.cache_dir,
+            kb,
+            &smt,
+            tactic_canon,
+            &visited,
+            &z3_version,
+        ))
     };
     if let Some(ctx) = &cache_ctx {
         if !cli.refresh_cache {
@@ -1977,8 +2189,7 @@ fn run_smt_subquery(
                     println!("  cache hit: {} ({})", &ctx.key[..12], entry.verdict);
                 }
                 let cached_verdict = verdict_from_cache(&entry);
-                let witness = build_smt_witness(
-                    &cli.solver, config, &cached_verdict, &entry);
+                let witness = build_smt_witness(&cli.solver, config, &cached_verdict, &entry);
                 return DispatchOutcome {
                     verdict: cached_verdict,
                     witness,
@@ -1997,16 +2208,17 @@ fn run_smt_subquery(
         rand_suffix(),
     ));
     if let Err(e) = std::fs::write(&path, &smt) {
-        return DispatchOutcome::no_witness(
-            Verdict::EmitError(format!("write smt2: {e}")));
+        return DispatchOutcome::no_witness(Verdict::EmitError(format!("write smt2: {e}")));
     }
     let started = std::time::Instant::now();
     let out = match Command::new(&cli.solver).arg(&path).output() {
         Ok(o) => o,
         Err(e) => {
             let _ = std::fs::remove_file(&path);
-            return DispatchOutcome::no_witness(
-                Verdict::EmitError(format!("invoke {}: {e}", cli.solver)));
+            return DispatchOutcome::no_witness(Verdict::EmitError(format!(
+                "invoke {}: {e}",
+                cli.solver
+            )));
         }
     };
     let elapsed = started.elapsed().as_secs_f64();
@@ -2039,20 +2251,22 @@ fn run_smt_subquery(
     // document is also persisted as a blob so phase-β check can
     // replay the discharge. Same for the sat model.
     let document_hash = hash_content(&smt);
-    let model_hash = if matches!(verdict, Verdict::Disproved(_))
-        && !outcome.model_text.is_empty()
-    {
+    let model_hash = if matches!(verdict, Verdict::Disproved(_)) && !outcome.model_text.is_empty() {
         Some(hash_content(&outcome.model_text))
     } else {
         None
     };
     if let Some(ctx) = &cache_ctx {
         if let Err(e) = store_blob(&ctx.blob_dir, &smt) {
-            if cli.verbose { eprintln!("  blob write failed (smt doc): {e}"); }
+            if cli.verbose {
+                eprintln!("  blob write failed (smt doc): {e}");
+            }
         }
         if model_hash.is_some() {
             if let Err(e) = store_blob(&ctx.blob_dir, &outcome.model_text) {
-                if cli.verbose { eprintln!("  blob write failed (model): {e}"); }
+                if cli.verbose {
+                    eprintln!("  blob write failed (model): {e}");
+                }
             }
         }
     }
@@ -2061,8 +2275,11 @@ fn run_smt_subquery(
         logic: config.logic.clone().unwrap_or_default(),
         document_hash: document_hash.clone(),
         verdict: smt_verdict_from_outcome(&outcome, model_hash.clone()),
-        core: if outcome.unsat_core.is_empty() { None }
-              else { Some(outcome.unsat_core.join("\n")) },
+        core: if outcome.unsat_core.is_empty() {
+            None
+        } else {
+            Some(outcome.unsat_core.join("\n"))
+        },
     });
     if let Some(ctx) = cache_ctx {
         let mut entry = CacheEntry::new(
@@ -2080,12 +2297,18 @@ fn run_smt_subquery(
         entry.model_hash = model_hash.unwrap_or_default();
         match store_entry(&ctx.subdir, &entry) {
             Ok(_) => stats.writes += 1,
-            Err(e) => if cli.verbose {
-                eprintln!("  cache write failed: {e}");
-            },
+            Err(e) => {
+                if cli.verbose {
+                    eprintln!("  cache write failed: {e}");
+                }
+            }
         }
     }
-    DispatchOutcome { verdict, witness, visited_rules: visited }
+    DispatchOutcome {
+        verdict,
+        witness,
+        visited_rules: visited,
+    }
 }
 
 /// Translate a parsed Z3 outcome into a `SmtVerdict` enum suitable
@@ -2100,7 +2323,9 @@ fn smt_verdict_from_outcome(
         "sat" => SmtVerdict::Sat {
             model_hash: model_hash.unwrap_or_default(),
         },
-        other => SmtVerdict::Unknown { reason: format!("z3: {other}") },
+        other => SmtVerdict::Unknown {
+            reason: format!("z3: {other}"),
+        },
     }
 }
 
@@ -2122,7 +2347,9 @@ fn build_smt_witness(
         Verdict::Disproved(_) => SmtVerdict::Sat {
             model_hash: entry.model_hash.clone(),
         },
-        Verdict::Unknown(reason) => SmtVerdict::Unknown { reason: reason.clone() },
+        Verdict::Unknown(reason) => SmtVerdict::Unknown {
+            reason: reason.clone(),
+        },
         _ => return None,
     };
     Some(ProofWitness::SmtDischarge {
@@ -2130,8 +2357,11 @@ fn build_smt_witness(
         logic: config.logic.clone().unwrap_or_default(),
         document_hash: entry.document_hash.clone(),
         verdict: smt_verdict,
-        core: if entry.unsat_core.is_empty() { None }
-              else { Some(entry.unsat_core.join("\n")) },
+        core: if entry.unsat_core.is_empty() {
+            None
+        } else {
+            Some(entry.unsat_core.join("\n"))
+        },
     })
 }
 
@@ -2214,8 +2444,10 @@ fn persist_witness(
 
 fn now_iso8601() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("@{secs}")
 }
 
@@ -2230,11 +2462,20 @@ fn run_show_cache(args: &ProveArgs) -> Result<(), i32> {
     let mut entries: Vec<CacheEntry> = walk_cache_entries(&subdir);
     entries.sort_by(|a, b| a.written_at.cmp(&b.written_at));
     println!("cache root: {}", subdir.display());
-    println!("{:<14} {:<10} {:>9} {}", "key", "verdict", "secs", "written_at");
+    println!(
+        "{:<14} {:<10} {:>9} {}",
+        "key", "verdict", "secs", "written_at"
+    );
     for e in &entries {
-        let key_short = if e.key.len() >= 12 { &e.key[..12] } else { &e.key };
-        println!("{:<14} {:<10} {:>9.3} {}",
-            key_short, e.verdict, e.solver_secs, e.written_at);
+        let key_short = if e.key.len() >= 12 {
+            &e.key[..12]
+        } else {
+            &e.key
+        };
+        println!(
+            "{:<14} {:<10} {:>9.3} {}",
+            key_short, e.verdict, e.solver_secs, e.written_at
+        );
     }
     println!("\n{} entries", entries.len());
     Ok(())
@@ -2250,11 +2491,15 @@ fn run_gc_cache(args: &ProveArgs, days: u32) -> Result<(), i32> {
         return Ok(());
     }
     let cutoff_secs = days as u64 * 86_400;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut deleted = 0usize;
     for entry in walk_cache_entries(&subdir) {
-        let written = entry.written_at.strip_prefix('@')
+        let written = entry
+            .written_at
+            .strip_prefix('@')
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
         if written == 0 || now.saturating_sub(written) >= cutoff_secs {
@@ -2262,7 +2507,10 @@ fn run_gc_cache(args: &ProveArgs, days: u32) -> Result<(), i32> {
             deleted += 1;
         }
     }
-    println!("removed {deleted} entries older than {days} days from {}", subdir.display());
+    println!(
+        "removed {deleted} entries older than {days} days from {}",
+        subdir.display()
+    );
     Ok(())
 }
 
@@ -2289,11 +2537,22 @@ fn walk_cache_entries(subdir: &std::path::Path) -> Vec<CacheEntry> {
 }
 
 fn sanitize_filename(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn indent(s: &str, prefix: &str) -> String {
-    s.lines().map(|l| format!("{prefix}{l}")).collect::<Vec<_>>().join("\n")
+    s.lines()
+        .map(|l| format!("{prefix}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── WI-558: prove write-back unit tests ──────────────────────────────
@@ -2312,8 +2571,7 @@ mod wi558_tests {
     /// Load the embedded stdlib plus a single user source written to a temp
     /// file (`load_kb_with_stdlib` requires ≥1 user path).
     fn load_with_source(tag: &str, src: &str) -> KnowledgeBase {
-        let dir = std::env::temp_dir()
-            .join(format!("anthill-wi558-{}-{tag}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("anthill-wi558-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("src.anthill");
         std::fs::write(&path, src).unwrap();
@@ -2372,7 +2630,13 @@ mod wi558_tests {
             Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
             _ => return None,
         };
-        Some(kb.qualified_name_of(f).rsplit('.').next().unwrap_or("").to_string())
+        Some(
+            kb.qualified_name_of(f)
+                .rsplit('.')
+                .next()
+                .unwrap_or("")
+                .to_string(),
+        )
     }
 
     #[test]
@@ -2410,7 +2674,14 @@ mod wi558_tests {
             core: None,
         };
         let witness = witness_to_term(&mut kb, &w);
-        set_proof_result(&mut kb, rid, VerdictWrite::Discharged { witness, solver: "z3".into() });
+        set_proof_result(
+            &mut kb,
+            rid,
+            VerdictWrite::Discharged {
+                witness,
+                solver: "z3".into(),
+            },
+        );
         assert_eq!(
             record_field_short(&kb, "shines", "result").as_deref(),
             Some("Discharged"),
@@ -2427,7 +2698,13 @@ mod wi558_tests {
     fn failed_unknown_write_back_flips_record_to_failed() {
         let mut kb = load_with_source("fail", SRC);
         let rid = record_rid(&kb, "shines").expect("record rid");
-        set_proof_result(&mut kb, rid, VerdictWrite::FailedUnknown { reason: "z3 timeout".into() });
+        set_proof_result(
+            &mut kb,
+            rid,
+            VerdictWrite::FailedUnknown {
+                reason: "z3 timeout".into(),
+            },
+        );
         assert_eq!(
             record_field_short(&kb, "shines", "result").as_deref(),
             Some("Failed"),

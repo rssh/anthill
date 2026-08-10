@@ -4,9 +4,7 @@
 //! hash); store + load round-trips losslessly; idempotent store does
 //! not duplicate writes.
 
-use anthill_smt_gen::cache::{
-    blob_path, blob_subdir, hash_content, load_blob, store_blob,
-};
+use anthill_smt_gen::cache::{blob_path, blob_subdir, hash_content, load_blob, store_blob};
 use tempfile::TempDir;
 
 #[test]
@@ -15,7 +13,9 @@ fn document_hash_is_sha256_of_content() {
     let h = hash_content(smt);
     // sha256 hex digest is exactly 64 lowercase hex chars.
     assert_eq!(h.len(), 64);
-    assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(h
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     // Identical content always hashes to the same value.
     assert_eq!(h, hash_content(smt));
 }

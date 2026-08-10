@@ -13,11 +13,11 @@
 //! collapses to `Expr::DotApply`) is left untouched, not errored: only a genuine
 //! member-not-found on a KNOWN sort is a loud error.
 
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
-use anthill_core::kb::node_occurrence::{NodeOccurrence, Expr, for_each_child};
+use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 use std::rc::Rc;
@@ -25,11 +25,14 @@ use std::rc::Rc;
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -41,14 +44,19 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Does any body atom of any non-fact rule under `functor_qn` still carry an
 /// `Expr::DotApply`? (After dispatch, a value dot is gone.)
 fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
     fn occ_has_dot(occ: &Rc<NodeOccurrence>) -> bool {
-        let Some(expr) = occ.as_expr() else { return false };
+        let Some(expr) = occ.as_expr() else {
+            return false;
+        };
         if matches!(expr, Expr::DotApply { .. }) {
             return true;
         }
@@ -56,12 +64,18 @@ fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
         for_each_child(expr, |c| found = found || occ_has_dot(c));
         found
     }
-    let Some(sym) = kb.try_resolve_symbol(functor_qn) else { return false };
+    let Some(sym) = kb.try_resolve_symbol(functor_qn) else {
+        return false;
+    };
     let mut any = false;
     for rid in kb.rules_by_functor(sym) {
-        if kb.is_fact(rid) { continue; }
+        if kb.is_fact(rid) {
+            continue;
+        }
         for n in kb.rule_body_nodes(rid).iter() {
-            if occ_has_dot(n) { any = true; }
+            if occ_has_dot(n) {
+                any = true;
+            }
         }
     }
     any
@@ -71,7 +85,9 @@ fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
 /// operation `op_qn`? (After method dispatch, `?b.peek()` becomes `peek(?b)`.)
 fn rule_bodies_apply(kb: &KnowledgeBase, functor_qn: &str, op_short: &str) -> bool {
     fn occ_applies(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, op_short: &str) -> bool {
-        let Some(expr) = occ.as_expr() else { return false };
+        let Some(expr) = occ.as_expr() else {
+            return false;
+        };
         if let Expr::Apply { functor, .. } = expr {
             if kb.local_name_of(*functor).rsplit('.').next() == Some(op_short) {
                 return true;
@@ -81,11 +97,17 @@ fn rule_bodies_apply(kb: &KnowledgeBase, functor_qn: &str, op_short: &str) -> bo
         for_each_child(expr, |c| found = found || occ_applies(kb, c, op_short));
         found
     }
-    let Some(sym) = kb.try_resolve_symbol(functor_qn) else { return false };
+    let Some(sym) = kb.try_resolve_symbol(functor_qn) else {
+        return false;
+    };
     for rid in kb.rules_by_functor(sym) {
-        if kb.is_fact(rid) { continue; }
+        if kb.is_fact(rid) {
+            continue;
+        }
         for n in kb.rule_body_nodes(rid).iter() {
-            if occ_applies(kb, n, op_short) { return true; }
+            if occ_applies(kb, n, op_short) {
+                return true;
+            }
         }
     }
     false
@@ -110,7 +132,11 @@ fn rule_body_field_access_dispatches() {
         end
     "#;
     let (kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "expected clean load; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected clean load; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.field.holds"),
         "expected ?p.x to be dispatched (no Expr::DotApply left in the rule body)"
@@ -137,7 +163,11 @@ fn rule_body_method_call_dispatches() {
         end
     "#;
     let (kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "expected clean load; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected clean load; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.method.peeks"),
         "expected ?b.peek() to be dispatched (no Expr::DotApply left in the rule body)"
@@ -225,8 +255,15 @@ pub(crate) fn resolve_query(kb: &mut KnowledgeBase, functor_qn: &str, arity: usi
             kb.alloc(Term::Var(Var::Global(v)))
         })
         .collect();
-    let goal = kb.alloc(Term::Fn { functor, pos_args: args, named_args: SmallVec::new() });
-    let cfg = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+    let goal = kb.alloc(Term::Fn {
+        functor,
+        pos_args: args,
+        named_args: SmallVec::new(),
+    });
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
     kb.resolve(&[goal], &cfg).len()
 }
 
@@ -234,29 +271,46 @@ pub(crate) fn resolve_query(kb: &mut KnowledgeBase, functor_qn: &str, arity: usi
 /// the solution count. A ground query has no caller logic vars, so the
 /// caller-var delay pre-check is skipped and the rule body actually runs — the
 /// shape that exercises rule-body field_access EVALUATION (WI-482).
-fn resolve_query_ground(kb: &mut KnowledgeBase, functor_qn: &str, args: &[anthill_core::kb::term::TermId]) -> usize {
+fn resolve_query_ground(
+    kb: &mut KnowledgeBase,
+    functor_qn: &str,
+    args: &[anthill_core::kb::term::TermId],
+) -> usize {
     let functor = kb.resolve_symbol(functor_qn);
     let goal = kb.alloc(Term::Fn {
         functor,
         pos_args: SmallVec::from_slice(args),
         named_args: SmallVec::new(),
     });
-    let cfg = ResolveConfig { max_solutions: 10, ..ResolveConfig::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    };
     kb.resolve(&[goal], &cfg).len()
 }
 
 /// Build a ground `point(x: <x>, y: <y>)` entity term in `kb`.
-fn make_point(kb: &mut KnowledgeBase, point_qn: &str, x: i64, y: i64) -> anthill_core::kb::term::TermId {
+fn make_point(
+    kb: &mut KnowledgeBase,
+    point_qn: &str,
+    x: i64,
+    y: i64,
+) -> anthill_core::kb::term::TermId {
     use anthill_core::kb::term::Literal;
     let point = kb.resolve_symbol(point_qn);
     let xk = kb.intern("x");
     let yk = kb.intern("y");
     let xv = kb.alloc(Term::Const(Literal::Int(x)));
     let yv = kb.alloc(Term::Const(Literal::Int(y)));
-    let mut named: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> = SmallVec::new();
+    let mut named: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
+        SmallVec::new();
     named.push((xk, xv));
     named.push((yk, yv));
-    kb.alloc(Term::Fn { functor: point, pos_args: SmallVec::new(), named_args: named })
+    kb.alloc(Term::Fn {
+        functor: point,
+        pos_args: SmallVec::new(),
+        named_args: named,
+    })
 }
 
 #[test]
@@ -275,7 +329,11 @@ fn dispatched_nested_field_access_resolves_without_panic() {
         end
     "#;
     let (mut kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "clean load expected; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "clean load expected; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.res.holds"),
         "the rule-body dot must be dispatched before SLD"
@@ -305,7 +363,11 @@ fn dispatched_top_level_field_goal_resolves_without_panic() {
         end
     "#;
     let (mut kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "clean load expected; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "clean load expected; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.toplevel.active"),
         "the top-level rule-body dot must be dispatched"
@@ -341,7 +403,11 @@ fn rule_body_nested_field_access_evaluates_in_eq() {
         end
     "#;
     let (mut kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "clean load expected; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "clean load expected; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.eval.xcoord"),
         "the rule-body dot must be dispatched before SLD"
@@ -349,12 +415,18 @@ fn rule_body_nested_field_access_evaluates_in_eq() {
     let pt = make_point(&mut kb, "wi282.eval.Point.point", 7, 8);
     let seven = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(7)));
     let n_match = resolve_query_ground(&mut kb, "wi282.eval.xcoord", &[pt, seven]);
-    assert_eq!(n_match, 1, "field_access(point(7,8), x) must evaluate to 7 ⇒ eq(7,7) succeeds");
+    assert_eq!(
+        n_match, 1,
+        "field_access(point(7,8), x) must evaluate to 7 ⇒ eq(7,7) succeeds"
+    );
 
     let pt2 = make_point(&mut kb, "wi282.eval.Point.point", 7, 8);
     let ninetynine = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(99)));
     let n_miss = resolve_query_ground(&mut kb, "wi282.eval.xcoord", &[pt2, ninetynine]);
-    assert_eq!(n_miss, 0, "field_access yields 7, not 99 ⇒ eq(99,7) fails (no silent success)");
+    assert_eq!(
+        n_miss, 0,
+        "field_access yields 7, not 99 ⇒ eq(99,7) fails (no silent success)"
+    );
 }
 
 #[test]
@@ -376,7 +448,11 @@ fn rule_body_nested_field_access_evaluates_in_arith() {
         end
     "#;
     let (mut kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "clean load expected; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "clean load expected; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.arith.scaled"),
         "the rule-body dot must be dispatched before SLD"
@@ -384,7 +460,10 @@ fn rule_body_nested_field_access_evaluates_in_arith() {
     let pt = make_point(&mut kb, "wi282.arith.Point.point", 3, 4);
     let thirty = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(30)));
     let n_match = resolve_query_ground(&mut kb, "wi282.arith.scaled", &[pt, thirty]);
-    assert_eq!(n_match, 1, "mul(field_access(point(3,4),x)=3, 10) must be 30");
+    assert_eq!(
+        n_match, 1,
+        "mul(field_access(point(3,4),x)=3, 10) must be 30"
+    );
 
     let pt2 = make_point(&mut kb, "wi282.arith.Point.point", 3, 4);
     let thirtyone = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(31)));
@@ -414,7 +493,11 @@ fn rule_body_nested_field_access_chain_evaluates() {
         end
     "#;
     let (mut kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "clean load expected; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "clean load expected; got:\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !rule_bodies_have_dot(&kb, "wi282.chain.inner"),
         "the chained rule-body dot must be dispatched before SLD"
@@ -423,9 +506,15 @@ fn rule_body_nested_field_access_chain_evaluates() {
         let wrap_sym = kb.resolve_symbol("wi282.chain.Wrapper.wrap");
         let pk = kb.intern("p");
         let pt = make_point(kb, "wi282.chain.Point.point", 5, 6);
-        let mut named: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> = SmallVec::new();
+        let mut named: SmallVec<
+            [(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2],
+        > = SmallVec::new();
         named.push((pk, pt));
-        kb.alloc(Term::Fn { functor: wrap_sym, pos_args: SmallVec::new(), named_args: named })
+        kb.alloc(Term::Fn {
+            functor: wrap_sym,
+            pos_args: SmallVec::new(),
+            named_args: named,
+        })
     };
     let wrap = make_wrap(&mut kb);
     let five = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(5)));

@@ -5,16 +5,16 @@
 //! `effects Modify[b]` should be accepted — `b` is reachable from `s`,
 //! so Modify[s] subsumes (or local-resource elides) Modify[b].
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, LoadResult, NullResolver};
 use anthill_core::kb::typing::type_check_sorts;
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
-
 
 fn load_stdlib_kb() -> KnowledgeBase {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
@@ -32,7 +32,8 @@ fn load_stdlib_and_project_kb() -> KnowledgeBase {
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"),
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
     ];
-    let parsed: Vec<_> = project_files.iter()
+    let parsed: Vec<_> = project_files
+        .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
@@ -52,12 +53,14 @@ fn store_anthill_typechecks() {
     // Load rustland/anthill-todo/anthill/store.anthill alongside the project domain.
     // This is the actual code WI-219's description claims fails.
     let mut kb = load_stdlib_and_project_kb();
-    let store_path = crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
+    let store_path =
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
     let store_src = std::fs::read_to_string(&store_path).expect("read store.anthill");
     let parsed = parse::parse(&store_src).expect("parse store.anthill");
     let result = load::load(&mut kb, &parsed, &NullResolver).expect("load store.anthill");
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let effect_errors: Vec<_> = errors.iter()
+    let effect_errors: Vec<_> = errors
+        .iter()
         .filter(|e| {
             let m = format!("{}", e);
             m.contains("undeclared effect") || m.contains("Modify")
@@ -109,7 +112,8 @@ end
 "#;
     let (mut kb, result) = load_with_stdlib(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let effect_errors: Vec<_> = errors.iter()
+    let effect_errors: Vec<_> = errors
+        .iter()
         .filter(|e| {
             let m = format!("{}", e);
             m.contains("undeclared effect") || m.contains("Modify")
@@ -160,7 +164,8 @@ end
 "#;
     let (mut kb, result) = load_with_stdlib(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let effect_errors: Vec<_> = errors.iter()
+    let effect_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("undeclared effect"))
         .collect();
     assert!(

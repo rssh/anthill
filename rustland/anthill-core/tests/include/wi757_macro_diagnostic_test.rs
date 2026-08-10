@@ -35,7 +35,9 @@ fn load_errors(src: &str) -> Vec<String> {
 pub(crate) const REJECTION_MARKER: &str = "cannot expand this expression";
 
 pub(crate) fn rejections(errs: &[String]) -> Vec<&String> {
-    errs.iter().filter(|e| e.contains(REJECTION_MARKER)).collect()
+    errs.iter()
+        .filter(|e| e.contains(REJECTION_MARKER))
+        .collect()
 }
 
 /// The WI-702/054 effectful-rewrite gate's marker — the refusal the macro
@@ -83,7 +85,10 @@ fn rejection_carries_the_macros_own_words() {
         "it has no meaning as a query goal",
         "compute it with `.map` on the stream instead",
     ] {
-        assert!(rejection.contains(fragment), "missing {fragment:?} in: {rejection}");
+        assert!(
+            rejection.contains(fragment),
+            "missing {fragment:?} in: {rejection}"
+        );
     }
     assert!(
         !errs.iter().any(|e| e.contains("op-arg")),
@@ -272,14 +277,16 @@ end
     };
     assert!(
         rejection.contains("compile-time macro `test.wi757raise.wrap`")
-            && rejection.contains(
-                r#"not_allowed(why: "trigger takes a column, not a literal")"#
-            ),
+            && rejection.contains(r#"not_allowed(why: "trigger takes a column, not a literal")"#),
         "expected the raised payload rendered as the rejection text, got: {rejection}",
     );
     // `raise` carries a payload and NO occurrence, so the location is the redex —
     // `trigger(5)`, the call the rule fired on, not `wrap`'s own body.
-    let body_line = SRC.lines().position(|l| l.contains("add(trigger(5)")).unwrap() + 1;
+    let body_line = SRC
+        .lines()
+        .position(|l| l.contains("add(trigger(5)"))
+        .unwrap()
+        + 1;
     let line_text = SRC.lines().nth(body_line - 1).unwrap();
     let redex_col = line_text.find("trigger(5)").unwrap() + 1;
     assert!(
@@ -342,8 +349,8 @@ end
 "#;
     let errs = load_errors(SRC);
     assert!(
-        errs.iter().any(|e| e.contains("test.wi757unfold.m")
-            && e.contains(EFFECTFUL_REWRITE_MARKER)),
+        errs.iter()
+            .any(|e| e.contains("test.wi757unfold.m") && e.contains(EFFECTFUL_REWRITE_MARKER)),
         "an effectful macro under `[unfold]` is never expanded, so it must stay \
          refused, got: {errs:?}",
     );
@@ -374,8 +381,8 @@ end
 "#;
     let errs = load_errors(SRC);
     assert!(
-        errs.iter().any(|e| e.contains("test.wi757bodygoal.m")
-            && e.contains("rule-body goal position")),
+        errs.iter()
+            .any(|e| e.contains("test.wi757bodygoal.m") && e.contains("rule-body goal position")),
         "a macro cited as a body goal must be refused for having no relational \
          reading, got: {errs:?}",
     );
@@ -406,8 +413,8 @@ end
 "#;
     let errs = load_errors(SRC);
     assert!(
-        errs.iter().any(|e| e.contains("test.wi757nested.risky")
-            && e.contains(EFFECTFUL_REWRITE_MARKER)),
+        errs.iter()
+            .any(|e| e.contains("test.wi757nested.risky") && e.contains(EFFECTFUL_REWRITE_MARKER)),
         "an effectful macro ARGUMENT must stay refused, got: {errs:?}",
     );
 }
@@ -455,8 +462,9 @@ end
         "a macro that is merely not applicable must DECLINE, not reject: {errs:?}",
     );
     assert!(
-        errs.iter().any(|e| e.contains("wrap.x (op-arg)")
-            && e.contains("expected NodeOccurrence, got Int64")),
+        errs.iter()
+            .any(|e| e.contains("wrap.x (op-arg)")
+                && e.contains("expected NodeOccurrence, got Int64")),
         "the kept template's own type-check is what must surface, got: {errs:?}",
     );
 }

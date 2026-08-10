@@ -14,11 +14,11 @@
 //! true for a genuine `=` law; (3) WI-139 leaves a genuine `=` law cite-required
 //! while keeping the carrier's `eq` rules indexed.
 
+use anthill_core::eval::Value;
 use anthill_core::kb::load::is_equational_head;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::eval::Value;
 use smallvec::SmallVec;
 
 /// `Bag` declares its OWN `eq` (head resolves to `test.wi627.Bag.eq`, distinct
@@ -83,11 +83,15 @@ fn carrier_bodyless_eq_base_case_fires_as_sld_rule() {
 
 /// Find every live rule whose head functor has the given qualified name.
 fn rules_with_head_qn(kb: &KnowledgeBase, qn: &str) -> Vec<anthill_core::kb::RuleId> {
-    let Some(sym) = kb.try_resolve_symbol(qn) else { return Vec::new() };
+    let Some(sym) = kb.try_resolve_symbol(qn) else {
+        return Vec::new();
+    };
     kb.live_rule_ids()
         .into_iter()
         .filter(|&rid| {
-            let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else { return false };
+            let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else {
+                return false;
+            };
             matches!(kb.get_term(head), Term::Fn { functor, .. } if *functor == sym)
         })
         .collect()
@@ -112,7 +116,9 @@ fn classification_keys_on_resolved_symbol_not_short_name() {
             !kb.is_equation(*rid),
             "Bag.eq rule {rid:?} must NOT classify as an equation (different symbol than Eq.eq)"
         );
-        let Value::Term { id: head, .. } = *kb.rule_head_value(*rid) else { continue };
+        let Value::Term { id: head, .. } = *kb.rule_head_value(*rid) else {
+            continue;
+        };
         assert!(
             !is_equational_head(&kb, head),
             "Bag.eq rule {rid:?} must NOT classify as an equational head"
@@ -125,7 +131,11 @@ fn classification_keys_on_resolved_symbol_not_short_name() {
     let my_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
         .iter()
         .copied()
-        .find(|&rid| kb.rule_label(rid).map(|l| kb.local_name_of(l) == "my_law").unwrap_or(false))
+        .find(|&rid| {
+            kb.rule_label(rid)
+                .map(|l| kb.local_name_of(l) == "my_law")
+                .unwrap_or(false)
+        })
         .expect("my_law must load with head functor anthill.prelude.PartialEq.eq");
     assert!(kb.is_equation(my_law), "a genuine `=` law is an equation");
     let Value::Term { id: law_head, .. } = *kb.rule_head_value(my_law) else {
@@ -149,7 +159,11 @@ fn wi139_unchanged_for_law_carrier_eq_stays_indexed() {
     let my_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
         .iter()
         .copied()
-        .find(|&rid| kb.rule_label(rid).map(|l| kb.local_name_of(l) == "my_law").unwrap_or(false))
+        .find(|&rid| {
+            kb.rule_label(rid)
+                .map(|l| kb.local_name_of(l) == "my_law")
+                .unwrap_or(false)
+        })
         .expect("my_law loads");
     assert!(
         !kb.rules_by_functor(eq_sym).contains(&my_law),

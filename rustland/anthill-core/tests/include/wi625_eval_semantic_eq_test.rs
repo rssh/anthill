@@ -87,30 +87,45 @@ const SET_EQ: &str = "anthill.prelude.Set.eq";
 fn eval_eq_set_ignores_insertion_order() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[2, 1]));
-    assert!(call2(&mut i, EQ, a, b), "eq({{1,2}},{{2,1}}) must hold at eval");
+    assert!(
+        call2(&mut i, EQ, a, b),
+        "eq({{1,2}},{{2,1}}) must hold at eval"
+    );
 }
 
 #[test]
 fn eval_eq_set_ignores_duplicates() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1]), set_val(&mut i, &[1, 1]));
-    assert!(call2(&mut i, EQ, a, b), "eq({{1}},{{1,1}}) must hold at eval");
+    assert!(
+        call2(&mut i, EQ, a, b),
+        "eq({{1}},{{1,1}}) must hold at eval"
+    );
 }
 
 #[test]
 fn eval_eq_set_distinguishes_members() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[1, 3]));
-    assert!(!call2(&mut i, EQ, a, b), "eq({{1,2}},{{1,3}}) must not hold");
+    assert!(
+        !call2(&mut i, EQ, a, b),
+        "eq({{1,2}},{{1,3}}) must not hold"
+    );
 }
 
 #[test]
 fn eval_neq_set() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[2, 1]));
-    assert!(!call2(&mut i, NEQ, a, b), "neq({{1,2}},{{2,1}}) must be false (equal by membership)");
+    assert!(
+        !call2(&mut i, NEQ, a, b),
+        "neq({{1,2}},{{2,1}}) must be false (equal by membership)"
+    );
     let (c, d) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[1, 3]));
-    assert!(call2(&mut i, NEQ, c, d), "neq({{1,2}},{{1,3}}) must be true");
+    assert!(
+        call2(&mut i, NEQ, c, d),
+        "neq({{1,2}},{{1,3}}) must be true"
+    );
 }
 
 #[test]
@@ -123,7 +138,10 @@ fn eval_eq_nested_set_dispatches_elementwise() {
     let i3 = set_term(&mut i, &[3]);
     let a = Value::term(nest(&mut i, &[i12, i3]));
     let b = Value::term(nest(&mut i, &[i3, i21]));
-    assert!(call2(&mut i, EQ, a, b), "eq({{{{1,2}},{{3}}}},{{{{3}},{{2,1}}}}) must hold elementwise");
+    assert!(
+        call2(&mut i, EQ, a, b),
+        "eq({{{{1,2}},{{3}}}},{{{{3}},{{2,1}}}}) must hold elementwise"
+    );
 }
 
 // WI-650 reconciliation: `eval_eq_map_honors_membership_and_shadowing` (map eq via
@@ -154,9 +172,15 @@ fn eval_eq_ints_unchanged() {
 fn eval_rule_backed_set_eq_runs_via_bridge() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[2, 1]));
-    assert!(call2(&mut i, SET_EQ, a, b), "Set.eq({{1,2}},{{2,1}}) must run via the eval→SLD bridge");
+    assert!(
+        call2(&mut i, SET_EQ, a, b),
+        "Set.eq({{1,2}},{{2,1}}) must run via the eval→SLD bridge"
+    );
     let (c, d) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[1, 3]));
-    assert!(!call2(&mut i, SET_EQ, c, d), "Set.eq({{1,2}},{{1,3}}) must be false");
+    assert!(
+        !call2(&mut i, SET_EQ, c, d),
+        "Set.eq({{1,2}},{{1,3}}) must be false"
+    );
 }
 
 // ── buried override under non-carrier structure: eval answers STRUCTURALLY
@@ -178,13 +202,20 @@ fn eval_eq_buried_override_stays_structural_not_error() {
     let r = i
         .call(EQ, &[some1.clone(), some2.clone()])
         .unwrap_or_else(|e| panic!("buried-override eq must return a Bool, not error: {e:?}"));
-    assert_eq!(r.as_bool(), Some(false), "buried override falls back to structural (false)");
+    assert_eq!(
+        r.as_bool(),
+        Some(false),
+        "buried override falls back to structural (false)"
+    );
     // Identical spellings still hold by reflexivity.
     let s12b = set_term(&mut i, &[1, 2]);
     let s12c = set_term(&mut i, &[1, 2]);
     let same1 = Value::term(fn_term(&mut i, "anthill.prelude.Option.some", &[s12b]));
     let same2 = Value::term(fn_term(&mut i, "anthill.prelude.Option.some", &[s12c]));
-    assert!(call2(&mut i, EQ, same1, same2), "some({{1,2}}) == some({{1,2}}) by reflexivity");
+    assert!(
+        call2(&mut i, EQ, same1, same2),
+        "some({{1,2}}) == some({{1,2}}) by reflexivity"
+    );
 }
 
 // helpers for nested sets
@@ -251,19 +282,31 @@ fn eval_instance_fact_eq_dispatches() {
     let mut i = crate::common::interp_for(TAGGED_SRC);
     // keys equal, notes differ ⇒ taggedEq true (dispatch, NOT structural).
     let (a, b) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 1, 8));
-    assert!(call2(&mut i, EQ, a, b), "eq(tagged(1,9), tagged(1,8)) must dispatch to taggedEq ⇒ equal by key");
+    assert!(
+        call2(&mut i, EQ, a, b),
+        "eq(tagged(1,9), tagged(1,8)) must dispatch to taggedEq ⇒ equal by key"
+    );
     // keys differ ⇒ taggedEq false (the op genuinely ran).
     let (c, d) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 2, 9));
-    assert!(!call2(&mut i, EQ, c, d), "eq(tagged(1,9), tagged(2,9)): keys differ ⇒ not equal");
+    assert!(
+        !call2(&mut i, EQ, c, d),
+        "eq(tagged(1,9), tagged(2,9)): keys differ ⇒ not equal"
+    );
 }
 
 #[test]
 fn eval_instance_fact_neq_dispatches() {
     let mut i = crate::common::interp_for(TAGGED_SRC);
     let (a, b) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 1, 8));
-    assert!(!call2(&mut i, NEQ, a, b), "neq(tagged(1,9), tagged(1,8)): keys equal ⇒ neq false");
+    assert!(
+        !call2(&mut i, NEQ, a, b),
+        "neq(tagged(1,9), tagged(1,8)): keys equal ⇒ neq false"
+    );
     let (c, d) = (tagged_val(&mut i, 1, 9), tagged_val(&mut i, 2, 9));
-    assert!(call2(&mut i, NEQ, c, d), "neq(tagged(1,9), tagged(2,9)): keys differ ⇒ neq true");
+    assert!(
+        call2(&mut i, NEQ, c, d),
+        "neq(tagged(1,9), tagged(2,9)): keys differ ⇒ neq true"
+    );
 }
 
 /// Finding 1 (correctness review): an APPLICABLE instance-fact override that
@@ -286,7 +329,10 @@ end
     let mut i = crate::common::interp_for(src);
     // lp(1) vs lp(2): structurally UNEQUAL ⇒ dispatch (not the reflexivity shortcut).
     let mk = |i: &mut Interpreter, n: i64| -> Value {
-        let sym = i.kb().try_resolve_symbol("gap2.loopeq.Loop.lp").expect("Loop.lp");
+        let sym = i
+            .kb()
+            .try_resolve_symbol("gap2.loopeq.Loop.lp")
+            .expect("Loop.lp");
         let v = i.kb_mut().intern("v");
         let nt = int_term(i, n);
         Value::term(i.kb_mut().alloc(Term::Fn {

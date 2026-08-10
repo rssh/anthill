@@ -37,7 +37,10 @@ fn carrier_table_picks_up_implementation_facts() {
     let kb = load_kb_with(source);
     let table = CarrierTable::from_kb(&kb).expect("Implementation facts are plain facts");
 
-    assert!(!table.is_empty(), "expected at least one carrier from the Money fact");
+    assert!(
+        !table.is_empty(),
+        "expected at least one carrier from the Money fact"
+    );
     assert_eq!(
         table.lookup("test.carriers.Money"),
         Some("::cents::Cents"),
@@ -84,7 +87,10 @@ struct Account {
     ::cents::Cents balance;
 };
 ";
-    assert_eq!(cpp, expected, "Account emission with carrier-bound Money:\n{cpp}");
+    assert_eq!(
+        cpp, expected,
+        "Account emission with carrier-bound Money:\n{cpp}"
+    );
 }
 
 #[test]
@@ -117,10 +123,13 @@ fn carrier_bound_sort_skipped_in_namespace_emission() {
     "#;
 
     let mut kb = load_kb_with(source);
-    let header = emit_namespace_header(&mut kb, "test.carriers")
-        .expect("emit test.carriers namespace");
+    let header =
+        emit_namespace_header(&mut kb, "test.carriers").expect("emit test.carriers namespace");
 
-    assert!(header.contains("struct Account"), "expected Account struct:\n{header}");
+    assert!(
+        header.contains("struct Account"),
+        "expected Account struct:\n{header}"
+    );
     assert!(
         !header.contains("struct Money"),
         "Money is carrier-bound and must not be emitted as a struct:\n{header}"
@@ -163,8 +172,14 @@ fn carrier_overrides_primitive_default() {
     let mut kb = load_kb_with(source);
     let cpp = emit_entity_struct(&mut kb, "test.carriers.Counter").expect("emit Counter");
     // `value: SmallInt` → carrier int32_t; `total: Int64` → primitive int64_t.
-    assert!(cpp.contains("int32_t value"), "expected int32_t for SmallInt:\n{cpp}");
-    assert!(cpp.contains("int64_t total"), "expected int64_t for Int64:\n{cpp}");
+    assert!(
+        cpp.contains("int32_t value"),
+        "expected int32_t for SmallInt:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("int64_t total"),
+        "expected int64_t for Int64:\n{cpp}"
+    );
 }
 
 #[test]
@@ -173,20 +188,29 @@ fn lf1_carriers_loaded_from_realization_facts() {
     // with all 7 webots binding sorts. This is the integration check
     // against actual project files.
     let lf1 = rustland_root().join("examples/webots-modelling/lf1/webots");
-    let kb = load_kb_with_extras("namespace test.lf1_carriers end", &collect_anthill_files(&lf1));
+    let kb = load_kb_with_extras(
+        "namespace test.lf1_carriers end",
+        &collect_anthill_files(&lf1),
+    );
 
     let table = CarrierTable::from_kb(&kb).expect("Implementation facts are plain facts");
 
     // The lf1 realization.anthill declares these (as of the carrier slice).
     let expected = [
-        ("anthill.examples.lf1.webots.Robot",        "webots::Robot"),
-        ("anthill.examples.lf1.webots.GPS",          "webots::GPS *"),
-        ("anthill.examples.lf1.webots.Gyro",         "webots::Gyro *"),
-        ("anthill.examples.lf1.webots.InertialUnit", "webots::InertialUnit *"),
-        ("anthill.examples.lf1.webots.Motor",        "webots::Motor *"),
-        ("anthill.examples.lf1.webots.Emitter",      "webots::Emitter *"),
-        ("anthill.examples.lf1.webots.Receiver",     "webots::Receiver *"),
-        ("anthill.examples.lf1.webots.SimulationRuntime", "webots::Robot"),
+        ("anthill.examples.lf1.webots.Robot", "webots::Robot"),
+        ("anthill.examples.lf1.webots.GPS", "webots::GPS *"),
+        ("anthill.examples.lf1.webots.Gyro", "webots::Gyro *"),
+        (
+            "anthill.examples.lf1.webots.InertialUnit",
+            "webots::InertialUnit *",
+        ),
+        ("anthill.examples.lf1.webots.Motor", "webots::Motor *"),
+        ("anthill.examples.lf1.webots.Emitter", "webots::Emitter *"),
+        ("anthill.examples.lf1.webots.Receiver", "webots::Receiver *"),
+        (
+            "anthill.examples.lf1.webots.SimulationRuntime",
+            "webots::Robot",
+        ),
     ];
     for (sort_name, host_type) in expected {
         assert_eq!(

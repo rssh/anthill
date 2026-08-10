@@ -29,16 +29,25 @@ pub(crate) struct CellArena {
 
 impl CellArena {
     fn new() -> Self {
-        Self { slots: Vec::new(), free_list: Vec::new() }
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     fn alloc_raw(&mut self, value: Value) -> u32 {
         if let Some(reused) = self.free_list.pop() {
-            self.slots[reused as usize] = Slot { value: Some(value), refcount: 1 };
+            self.slots[reused as usize] = Slot {
+                value: Some(value),
+                refcount: 1,
+            };
             reused
         } else {
             let raw = self.slots.len() as u32;
-            self.slots.push(Slot { value: Some(value), refcount: 1 });
+            self.slots.push(Slot {
+                value: Some(value),
+                refcount: 1,
+            });
             raw
         }
     }
@@ -80,7 +89,10 @@ impl CellArenaRef {
     /// (initial refcount = 1).
     pub fn alloc(&self, value: Value) -> CellHandle {
         let raw = self.0.borrow_mut().alloc_raw(value);
-        CellHandle { raw, arena: self.clone() }
+        CellHandle {
+            raw,
+            arena: self.clone(),
+        }
     }
 
     /// Read the held value via a scoped borrow. The callback runs while
@@ -130,11 +142,15 @@ impl CellArenaRef {
     }
 
     /// Live-slot count — diagnostic for refcount tests.
-    pub fn live(&self) -> usize { self.0.borrow().live() }
+    pub fn live(&self) -> usize {
+        self.0.borrow().live()
+    }
 }
 
 impl Default for CellArenaRef {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Refcounted cell handle. Clone bumps the slot refcount; Drop decrements
@@ -146,13 +162,18 @@ pub struct CellHandle {
 }
 
 impl CellHandle {
-    pub fn raw(&self) -> u32 { self.raw }
+    pub fn raw(&self) -> u32 {
+        self.raw
+    }
 }
 
 impl Clone for CellHandle {
     fn clone(&self) -> Self {
         self.arena.0.borrow_mut().retain_raw(self.raw);
-        Self { raw: self.raw, arena: self.arena.clone() }
+        Self {
+            raw: self.raw,
+            arena: self.arena.clone(),
+        }
     }
 }
 
@@ -233,7 +254,11 @@ mod tests {
         let arena = CellArenaRef::new();
         let a = arena.alloc(Value::Int(0));
         let b = arena.alloc(Value::Int(0));
-        assert_ne!(a.raw(), b.raw(), "fresh cells must have distinct slot indices");
+        assert_ne!(
+            a.raw(),
+            b.raw(),
+            "fresh cells must have distinct slot indices"
+        );
     }
 
     #[test]

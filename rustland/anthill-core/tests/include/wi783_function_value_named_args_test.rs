@@ -32,7 +32,10 @@
 use crate::common::{interp_for, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -47,8 +50,9 @@ fn assert_named_arg_rejected(src: &str, label: &str, expected_reason: &str) {
         Err(errs) => errs,
     };
     assert!(
-        errs.iter().any(|e| e.contains(&format!("named argument '{label}'"))
-            && e.contains(expected_reason)),
+        errs.iter().any(
+            |e| e.contains(&format!("named argument '{label}'")) && e.contains(expected_reason)
+        ),
         "rejection must name label '{label}' and say {expected_reason:?}; got: {errs:?}",
     );
 }
@@ -94,7 +98,10 @@ end
     // Pin WHICH binding, not merely that the two agree: `acc: 3` is slot 0 and
     // `x: 10` slot 1, so the callee computes 3 - 10. Agreement alone would also
     // hold if both spellings bound wrongly but identically.
-    assert_eq!(written, -7, "labels must bind by NAME (acc=3, x=10 ⇒ 3-10), not by written order");
+    assert_eq!(
+        written, -7,
+        "labels must bind by NAME (acc=3, x=10 ⇒ 3-10), not by written order"
+    );
 }
 
 /// The label must reach the DECLARED slot even when the callee's own parameter
@@ -137,7 +144,11 @@ namespace test.wi783unknown
 end
 "#
     );
-    assert_named_arg_rejected(&src, "bogus", "names no parameter of this function value's type");
+    assert_named_arg_rejected(
+        &src,
+        "bogus",
+        "names no parameter of this function value's type",
+    );
 }
 
 /// A label that re-binds a parameter already filled POSITIONALLY. Without the
@@ -212,8 +223,16 @@ end
 "#
     );
     let mut interp = interp_for(&src);
-    assert_eq!(run_int(&mut interp, "test.wi783pos.drive_positional"), -7, "f(3, 10)");
-    assert_eq!(run_int(&mut interp, "test.wi783pos.drive_mixed"), -7, "f(3, x: 10)");
+    assert_eq!(
+        run_int(&mut interp, "test.wi783pos.drive_positional"),
+        -7,
+        "f(3, 10)"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi783pos.drive_mixed"),
+        -7,
+        "f(3, x: 10)"
+    );
 }
 
 /// The boundary the fix must not cross, part 2: the stdlib's higher-order

@@ -72,7 +72,10 @@ fn stdlib_float_const_map_lands_as_facts() {
             .clone()
     };
     assert_eq!(host_fn("anthill.prelude.Float.infinity"), "float_infinity");
-    assert_eq!(host_fn("anthill.prelude.Float.negativeInfinity"), "float_negative_infinity");
+    assert_eq!(
+        host_fn("anthill.prelude.Float.negativeInfinity"),
+        "float_negative_infinity"
+    );
     assert_eq!(host_fn("anthill.prelude.Float.nan"), "float_nan");
 }
 
@@ -82,10 +85,19 @@ fn stdlib_float_const_map_lands_as_facts() {
 /// cannot be attached to an operation (whose channel is `operation_map`).
 #[test]
 fn a_const_map_over_an_operation_is_refused_at_load() {
-    let errs = load_errs(&const_mapping_program("wi889.op", "squish: \"float_infinity\""));
+    let errs = load_errs(&const_mapping_program(
+        "wi889.op",
+        "squish: \"float_infinity\"",
+    ));
     let joined = errs.join("\n");
-    assert!(joined.contains("wi889.op.Widget.squish"), "names the target: {joined}");
-    assert!(joined.contains("not a `const`"), "says what is wrong: {joined}");
+    assert!(
+        joined.contains("wi889.op.Widget.squish"),
+        "names the target: {joined}"
+    );
+    assert!(
+        joined.contains("not a `const`"),
+        "says what is wrong: {joined}"
+    );
 }
 
 /// The same guard against an ENTITY CONSTRUCTOR — also a resolving qualified name, and
@@ -93,9 +105,15 @@ fn a_const_map_over_an_operation_is_refused_at_load() {
 /// the constructor). Aimed at a const's clause it is the same defect one vocabulary over.
 #[test]
 fn a_const_map_over_an_entity_constructor_is_refused_at_load() {
-    let errs = load_errs(&const_mapping_program("wi889.ctor", "widget: \"float_infinity\""));
+    let errs = load_errs(&const_mapping_program(
+        "wi889.ctor",
+        "widget: \"float_infinity\"",
+    ));
     let joined = errs.join("\n");
-    assert!(joined.contains("not a `const`"), "says what is wrong: {joined}");
+    assert!(
+        joined.contains("not a `const`"),
+        "says what is wrong: {joined}"
+    );
 }
 
 /// A `const_map` for a const the carrier never DECLARED is refused at LOAD — by the
@@ -103,10 +121,19 @@ fn a_const_map_over_an_entity_constructor_is_refused_at_load() {
 /// BACKS a const; it does not bring one into existence.
 #[test]
 fn a_const_map_for_an_undeclared_const_is_refused_at_load() {
-    let errs = load_errs(&const_mapping_program("wi889.badc", "missing: \"float_infinity\""));
+    let errs = load_errs(&const_mapping_program(
+        "wi889.badc",
+        "missing: \"float_infinity\"",
+    ));
     let joined = errs.join("\n");
-    assert!(joined.contains("wi889.badc.Widget.missing"), "names the const: {joined}");
-    assert!(joined.contains("declares no const"), "says what is wrong: {joined}");
+    assert!(
+        joined.contains("wi889.badc.Widget.missing"),
+        "names the const: {joined}"
+    );
+    assert!(
+        joined.contains("declares no const"),
+        "says what is wrong: {joined}"
+    );
 }
 
 /// `const_map` under `language anthill` is refused rather than IGNORED — the grammar
@@ -133,7 +160,10 @@ fn a_const_map_under_language_anthill_is_refused() {
 /// `host_fn` the reader dropped, and the mapping VANISHED silently).
 #[test]
 fn an_unquoted_const_map_value_is_refused_at_load() {
-    let errs = load_errs(&const_mapping_program("wi889.unquoted", "answer: not_a_string"));
+    let errs = load_errs(&const_mapping_program(
+        "wi889.unquoted",
+        "answer: not_a_string",
+    ));
     let joined = errs.join("\n");
     assert!(joined.contains("answer"), "names the entry: {joined}");
     assert!(joined.contains("STRING"), "says what is wrong: {joined}");
@@ -171,9 +201,15 @@ fn the_float_ieee_specials_evaluate_through_the_const_map_channel() {
 /// `an_unknown_host_function_is_loud_at_registration`.
 #[test]
 fn an_unknown_const_host_value_is_loud_at_registration() {
-    let err = registration_err(&const_mapping_program("wi889.badfn", "answer: \"no_such_host_value\""));
+    let err = registration_err(&const_mapping_program(
+        "wi889.badfn",
+        "answer: \"no_such_host_value\"",
+    ));
     assert!(err.contains("no_such_host_value"), "names the key: {err}");
-    assert!(err.contains("wi889.badfn.Widget.answer"), "names the const: {err}");
+    assert!(
+        err.contains("wi889.badfn.Widget.answer"),
+        "names the const: {err}"
+    );
 }
 
 /// A const's value source must be NULLARY — `force_const` invokes it with no args. A
@@ -182,7 +218,13 @@ fn an_unknown_const_host_value_is_loud_at_registration() {
 /// arity 2.)
 #[test]
 fn a_non_nullary_host_value_for_a_const_is_loud_at_registration() {
-    let err = registration_err(&const_mapping_program("wi889.arity", "answer: \"ordered_compare\""));
-    assert!(err.contains("wi889.arity.Widget.answer"), "names the const: {err}");
+    let err = registration_err(&const_mapping_program(
+        "wi889.arity",
+        "answer: \"ordered_compare\"",
+    ));
+    assert!(
+        err.contains("wi889.arity.Widget.answer"),
+        "names the const: {err}"
+    );
     assert!(err.contains("NULLARY"), "says what is wrong: {err}");
 }

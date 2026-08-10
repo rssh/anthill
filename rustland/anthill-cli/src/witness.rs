@@ -39,9 +39,7 @@ pub enum ProofWitness {
     /// SLD derivation — the resolution tree, referenced by content
     /// hash. Replayable; cheap to verify by replaying step-by-step
     /// against the current KB.
-    SldDerivation {
-        tree_hash: String,
-    },
+    SldDerivation { tree_hash: String },
 
     /// Meta-tactic composition — the tactic dispatched N sub-queries
     /// and AND-combined their verdicts. Recursive: sub-witnesses are
@@ -56,9 +54,9 @@ pub enum ProofWitness {
     /// `aspect` discriminates which structural feature the witness
     /// rests on — see proposal 030 §Certificate checking semantics.
     ScopeAxiom {
-        scope_kind: String,   // "sort" | "operation"
+        scope_kind: String, // "sort" | "operation"
         scope_qn: String,
-        aspect: String,       // "requires.<SE-flat>" | "induction" | …
+        aspect: String, // "requires.<SE-flat>" | "induction" | …
     },
 
     /// Use-site specialization — combine a parametric ProofRecord
@@ -72,9 +70,7 @@ pub enum ProofWitness {
     /// User-asserted axiom — explicit trust, no kernel check.
     /// Trust flag propagates through any witness tree that contains
     /// a TrustedAxiom; CLI surfaces the dependency in verdict output.
-    TrustedAxiom {
-        reason: String,
-    },
+    TrustedAxiom { reason: String },
 }
 
 /// The recorded SMT verdict. Re-checked by replay during `anthill check`.
@@ -103,51 +99,58 @@ impl ProofWitness {
     pub fn to_shape(&self) -> anthill_smt_gen::cache::WitnessShape {
         use anthill_smt_gen::cache::{SmtVerdictDto, WitnessShape};
         match self {
-            ProofWitness::SmtDischarge { backend, logic, document_hash, verdict, core } => {
-                WitnessShape::SmtDischarge {
-                    backend: backend.clone(),
-                    logic: logic.clone(),
-                    document_hash: document_hash.clone(),
-                    verdict: match verdict {
-                        SmtVerdict::Unsat => SmtVerdictDto::Unsat,
-                        SmtVerdict::Sat { model_hash } => SmtVerdictDto::Sat {
-                            model_hash: model_hash.clone(),
-                        },
-                        SmtVerdict::Unknown { reason } => SmtVerdictDto::Unknown {
-                            reason: reason.clone(),
-                        },
+            ProofWitness::SmtDischarge {
+                backend,
+                logic,
+                document_hash,
+                verdict,
+                core,
+            } => WitnessShape::SmtDischarge {
+                backend: backend.clone(),
+                logic: logic.clone(),
+                document_hash: document_hash.clone(),
+                verdict: match verdict {
+                    SmtVerdict::Unsat => SmtVerdictDto::Unsat,
+                    SmtVerdict::Sat { model_hash } => SmtVerdictDto::Sat {
+                        model_hash: model_hash.clone(),
                     },
-                    core: core.clone(),
-                }
-            }
-            ProofWitness::SldDerivation { tree_hash } => {
-                WitnessShape::SldDerivation { tree_hash: tree_hash.clone() }
-            }
-            ProofWitness::MetaCompose { tactic_name, sub } => {
-                WitnessShape::MetaCompose {
-                    tactic_name: tactic_name.clone(),
-                    sub: sub.iter().map(|w| w.to_shape()).collect(),
-                }
-            }
-            ProofWitness::ScopeAxiom { scope_kind, scope_qn, aspect } => {
-                WitnessShape::ScopeAxiom {
-                    scope_kind: scope_kind.clone(),
-                    scope_qn: scope_qn.clone(),
-                    aspect: aspect.clone(),
-                }
-            }
-            ProofWitness::Specialization { parametric, substitution, instances } => {
-                WitnessShape::Specialization {
-                    parametric: parametric.clone(),
-                    substitution: substitution.iter()
-                        .map(|sb| (sb.abstract_param.clone(), sb.concrete_sort.clone()))
-                        .collect(),
-                    instances: instances.clone(),
-                }
-            }
-            ProofWitness::TrustedAxiom { reason } => {
-                WitnessShape::TrustedAxiom { reason: reason.clone() }
-            }
+                    SmtVerdict::Unknown { reason } => SmtVerdictDto::Unknown {
+                        reason: reason.clone(),
+                    },
+                },
+                core: core.clone(),
+            },
+            ProofWitness::SldDerivation { tree_hash } => WitnessShape::SldDerivation {
+                tree_hash: tree_hash.clone(),
+            },
+            ProofWitness::MetaCompose { tactic_name, sub } => WitnessShape::MetaCompose {
+                tactic_name: tactic_name.clone(),
+                sub: sub.iter().map(|w| w.to_shape()).collect(),
+            },
+            ProofWitness::ScopeAxiom {
+                scope_kind,
+                scope_qn,
+                aspect,
+            } => WitnessShape::ScopeAxiom {
+                scope_kind: scope_kind.clone(),
+                scope_qn: scope_qn.clone(),
+                aspect: aspect.clone(),
+            },
+            ProofWitness::Specialization {
+                parametric,
+                substitution,
+                instances,
+            } => WitnessShape::Specialization {
+                parametric: parametric.clone(),
+                substitution: substitution
+                    .iter()
+                    .map(|sb| (sb.abstract_param.clone(), sb.concrete_sort.clone()))
+                    .collect(),
+                instances: instances.clone(),
+            },
+            ProofWitness::TrustedAxiom { reason } => WitnessShape::TrustedAxiom {
+                reason: reason.clone(),
+            },
         }
     }
 }

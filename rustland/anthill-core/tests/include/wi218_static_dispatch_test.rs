@@ -9,9 +9,8 @@
 //! by bare name actually executes the impl body, not erroring with
 //! 'unknown operation'.
 
-
-use anthill_core::eval::Value;
 use crate::common::interp_for;
+use anthill_core::eval::Value;
 
 #[test]
 fn spec_op_call_dispatches_to_impl_body_at_runtime() {
@@ -42,10 +41,14 @@ namespace test.wi218
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.wi218.Driver.main_test", &[Value::Int(42)])
+    let result = interp
+        .call("test.wi218.Driver.main_test", &[Value::Int(42)])
         .expect("main_test should run");
-    assert_eq!(result.as_str(), Some("an int"),
-        "expected impl body to run; got {result:?}");
+    assert_eq!(
+        result.as_str(),
+        Some("an int"),
+        "expected impl body to run; got {result:?}"
+    );
 }
 
 #[test]
@@ -79,9 +82,11 @@ end
     // After load, dispatch_rewrites should have at least one entry
     // (for main_test's body's `describe(n)` call). And every rewritten
     // apply's dispatch_origin should be the spec op (Bar.describe).
-    let bar_describe = kb.try_resolve_symbol("test.wi218_origin.Bar.describe")
+    let bar_describe = kb
+        .try_resolve_symbol("test.wi218_origin.Bar.describe")
         .expect("Bar.describe should be registered");
-    let int_bar_describe = kb.try_resolve_symbol("test.wi218_origin.IntBar.describe")
+    let int_bar_describe = kb
+        .try_resolve_symbol("test.wi218_origin.IntBar.describe")
         .expect("IntBar.describe should be registered");
 
     let mut found_origin_record = false;
@@ -91,18 +96,23 @@ end
             // The rewritten term should be an apply with fn = IntBar.describe.
             use anthill_core::kb::term::Term;
             if let Term::Fn { named_args, .. } = kb.get_term(rewritten_tid) {
-                let fn_arg = named_args.iter()
+                let fn_arg = named_args
+                    .iter()
                     .find(|(s, _)| kb.local_name_of(*s) == "fn")
                     .map(|(_, v)| *v);
                 if let Some(fn_tid) = fn_arg {
                     if let Term::Ref(s) = kb.get_term(fn_tid) {
-                        assert_eq!(*s, int_bar_describe,
-                            "rewritten apply.fn should point at IntBar.describe");
+                        assert_eq!(
+                            *s, int_bar_describe,
+                            "rewritten apply.fn should point at IntBar.describe"
+                        );
                     }
                 }
             }
         }
     }
-    assert!(found_origin_record,
-        "expected dispatch_origin to record a Bar.describe → impl rewrite");
+    assert!(
+        found_origin_record,
+        "expected dispatch_origin to record a Bar.describe → impl rewrite"
+    );
 }

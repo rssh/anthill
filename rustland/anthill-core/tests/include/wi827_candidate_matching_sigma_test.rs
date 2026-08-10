@@ -275,8 +275,7 @@ fn diagonal_distinct_rigids_refused() {
     let errs = load_errs(&src);
     let text = errs.join("\n");
     assert!(
-        text.contains("wi827.diag_diff.PHolder.ph")
-            && text.contains("cannot be supplied"),
+        text.contains("wi827.diag_diff.PHolder.ph") && text.contains("cannot be supplied"),
         "expected a load refusal of PHolder.ph's diagonal requirement at two \
          distinct rigids (sound: the diagonal cannot describe a mismatched \
          pair); got:\n{text}"
@@ -312,8 +311,7 @@ fn diagonal_mixed_rigid_concrete_refused() {
     let errs = load_errs(&src);
     let text = errs.join("\n");
     assert!(
-        text.contains("wi827.diag_mixed.PHolder.ph")
-            && text.contains("cannot be supplied"),
+        text.contains("wi827.diag_mixed.PHolder.ph") && text.contains("cannot be supplied"),
         "expected a load refusal of PHolder.ph's diagonal requirement at a \
          mixed rigid/concrete slot (sound: a rigid skolem is never a specific \
          concrete, so the yield to Pebble that measured 55 was unsound); got:\n{text}"

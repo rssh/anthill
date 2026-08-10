@@ -34,7 +34,11 @@ fn quantified_no_constraint_satisfied_loads() {
     let kb = try_load_kb_with(&source).unwrap_or_else(|errs| {
         panic!("expected load to succeed, got: {errs:?}");
     });
-    assert_eq!(kb.guard_count(), 1, "the quantified constraint should register one guard");
+    assert_eq!(
+        kb.guard_count(),
+        1,
+        "the quantified constraint should register one guard"
+    );
 }
 
 /// With edges a→b, b→a there IS a 2-cycle through `a` (x = b), so the constraint
@@ -49,7 +53,8 @@ fn quantified_no_constraint_violated_fails() {
         Err(errs) => errs,
     };
     assert!(
-        errs.iter().any(|e| e.contains("violated") && e.contains("no_two_cycle")),
+        errs.iter()
+            .any(|e| e.contains("violated") && e.contains("no_two_cycle")),
         "expected a ConstraintViolated error mentioning the label, got: {errs:?}"
     );
 }
@@ -101,7 +106,8 @@ fn forall_single_atom_body_violated_fails() {
         Err(errs) => errs,
     };
     assert!(
-        errs.iter().any(|e| e.contains("violated") && e.contains("all_link_back")),
+        errs.iter()
+            .any(|e| e.contains("violated") && e.contains("all_link_back")),
         "expected a ConstraintViolated error mentioning the label, got: {errs:?}"
     );
 }
@@ -118,7 +124,8 @@ fn forall_multi_atom_body_rejected() {
         Err(errs) => errs,
     };
     assert!(
-        errs.iter().any(|e| e.contains("unsupported form") && e.contains("forall") && e.contains("bad")),
+        errs.iter()
+            .any(|e| e.contains("unsupported form") && e.contains("forall") && e.contains("bad")),
         "expected an UnsupportedConstraintForm error, got: {errs:?}"
     );
 }
@@ -156,7 +163,8 @@ fn aggregation_constraint_reports_unsupported() {
         Err(errs) => errs,
     };
     assert!(
-        errs.iter().any(|e| e.contains("aggregation") && e.contains("few_edges")),
+        errs.iter()
+            .any(|e| e.contains("aggregation") && e.contains("few_edges")),
         "expected an AggregationConstraintUnsupported error, got: {errs:?}"
     );
 }

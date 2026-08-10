@@ -44,7 +44,9 @@ use super::value::Value;
 /// it cheap — it's `&str` so there's no per-call allocation.
 pub trait ExternalStream {
     fn next(&mut self) -> Option<Value>;
-    fn description(&self) -> &str { "external-stream" }
+    fn description(&self) -> &str {
+        "external-stream"
+    }
 }
 
 /// Body of a stream. Kept distinct from [`StreamHandle`] so arena slots
@@ -73,7 +75,10 @@ pub enum StreamSource {
     /// Exactly one solution — the contained `Value`.
     Pure(Option<Value>),
     /// Concatenation: drain `left` first, then `right`.
-    MPlus { left: StreamHandle, right: StreamHandle },
+    MPlus {
+        left: StreamHandle,
+        right: StreamHandle,
+    },
     /// Host-supplied closure iterator. Test/demo shortcut — no schema, no
     /// row-source identity. Production backends should use `External`.
     Native(Box<dyn FnMut() -> Option<Value>>),
@@ -96,16 +101,25 @@ pub(crate) struct StreamArena {
 
 impl StreamArena {
     fn new() -> Self {
-        Self { slots: Vec::new(), free_list: Vec::new() }
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     fn alloc_raw(&mut self, src: StreamSource) -> u32 {
         if let Some(reused) = self.free_list.pop() {
-            self.slots[reused as usize] = Slot { source: Some(src), refcount: 1 };
+            self.slots[reused as usize] = Slot {
+                source: Some(src),
+                refcount: 1,
+            };
             reused
         } else {
             let raw = self.slots.len() as u32;
-            self.slots.push(Slot { source: Some(src), refcount: 1 });
+            self.slots.push(Slot {
+                source: Some(src),
+                refcount: 1,
+            });
             raw
         }
     }
@@ -141,7 +155,10 @@ impl StreamArenaRef {
 
     pub fn alloc(&self, src: StreamSource) -> StreamHandle {
         let raw = self.0.borrow_mut().alloc_raw(src);
-        StreamHandle { raw, arena: self.clone() }
+        StreamHandle {
+            raw,
+            arena: self.clone(),
+        }
     }
 
     /// Take the source out of the slot, run `f` on it, and put the
@@ -155,7 +172,9 @@ impl StreamArenaRef {
     ) -> R {
         let src = {
             let mut arena = self.0.borrow_mut();
-            arena.slots[h.raw as usize].source.take()
+            arena.slots[h.raw as usize]
+                .source
+                .take()
                 .expect("stream arena slot missing source")
         };
         let (new_src, result) = f(src);
@@ -167,11 +186,15 @@ impl StreamArenaRef {
     }
 
     /// Number of live stream slots (diagnostic for refcount tests).
-    pub fn live(&self) -> usize { self.0.borrow().live() }
+    pub fn live(&self) -> usize {
+        self.0.borrow().live()
+    }
 }
 
 impl Default for StreamArenaRef {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Refcounted stream handle. Clone bumps the slot's refcount; Drop
@@ -183,15 +206,22 @@ pub struct StreamHandle {
 }
 
 impl StreamHandle {
-    pub fn raw(&self) -> u32 { self.raw }
-    #[allow(dead_code)]  // arena handle accessor; kept for future stream ops
-    pub(crate) fn arena(&self) -> &StreamArenaRef { &self.arena }
+    pub fn raw(&self) -> u32 {
+        self.raw
+    }
+    #[allow(dead_code)] // arena handle accessor; kept for future stream ops
+    pub(crate) fn arena(&self) -> &StreamArenaRef {
+        &self.arena
+    }
 }
 
 impl Clone for StreamHandle {
     fn clone(&self) -> Self {
         self.arena.0.borrow_mut().retain_raw(self.raw);
-        Self { raw: self.raw, arena: self.arena.clone() }
+        Self {
+            raw: self.raw,
+            arena: self.arena.clone(),
+        }
     }
 }
 

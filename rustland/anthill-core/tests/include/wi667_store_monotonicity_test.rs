@@ -60,7 +60,9 @@ impl Store for PolicyStore {
 
     fn retract(&mut self, _kb: &KnowledgeBase, _id: RuleId) -> Result<bool, PersistenceError> {
         if self.fail_retract {
-            Err(PersistenceError::Io("backend cannot delete this row".into()))
+            Err(PersistenceError::Io(
+                "backend cannot delete this row".into(),
+            ))
         } else {
             Ok(true)
         }
@@ -83,8 +85,11 @@ fn register_policy_store(interp: &mut Interpreter, mock: PolicyStore) -> Value {
         pos: vec![].into(),
         named: vec![].into(),
     };
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(mock))
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    interp
+        .register_mirror(key, Box::new(mock))
         .expect("the mock declares its functor by the qualified name the KB has");
     store_val
 }
@@ -101,13 +106,25 @@ fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Valu
         pos: vec![].into(),
         named: vec![
             (root_sym, Value::Str(root.to_str().unwrap().to_string())),
-            (convention_sym, Value::Entity {
-                functor: flat, pos: vec![].into(), named: vec![].into(),
-            }),
-        ].into(),
+            (
+                convention_sym,
+                Value::Entity {
+                    functor: flat,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
+        ]
+        .into(),
     };
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)))
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    interp
+        .register_mirror(
+            key,
+            Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)),
+        )
         .expect("a file store declares no intrinsic policy, so nothing is resolved");
     store_val
 }
@@ -115,34 +132,57 @@ fn register_file_store(interp: &mut Interpreter, root: &std::path::Path) -> Valu
 /// A nullary carrier whose head functor is the declared entity `qname` — the
 /// `Symbol` argument to `monotonicity` / the fact to persist.
 fn functor_value(interp: &mut Interpreter, qname: &str) -> Value {
-    let sym = interp.kb_mut().try_resolve_symbol(qname)
+    let sym = interp
+        .kb_mut()
+        .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}` — is it declared?"));
-    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into() }
+    Value::Entity {
+        functor: sym,
+        pos: vec![].into(),
+        named: vec![].into(),
+    }
 }
 
-fn monotonicity(interp: &mut Interpreter, store: &Value, functor: Value) -> Result<Value, EvalError> {
-    interp.call("anthill.persistence.Store.monotonicity", &[store.clone(), functor])
+fn monotonicity(
+    interp: &mut Interpreter,
+    store: &Value,
+    functor: Value,
+) -> Result<Value, EvalError> {
+    interp.call(
+        "anthill.persistence.Store.monotonicity",
+        &[store.clone(), functor],
+    )
 }
 
 fn persist(interp: &mut Interpreter, store: &Value, fact: Value) -> Result<Value, EvalError> {
-    interp.call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
+    interp.call(
+        "anthill.persistence.Store.persist",
+        &[store.clone(), fact, Value::Unit],
+    )
 }
 
 fn retract(interp: &mut Interpreter, store: &Value, stored: Value) -> Result<Value, EvalError> {
     let reference = interp.kb_mut().intern("reference");
     let reference = match &stored {
-        Value::Entity { named, .. } => named.iter().find(|(name, _)| *name == reference)
+        Value::Entity { named, .. } => named
+            .iter()
+            .find(|(name, _)| *name == reference)
             .map(|(_, value)| value.clone())
             .expect("StoredRef carries reference"),
         other => panic!("persist must return StoredRef, got {other:?}"),
     };
-    interp.call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+    interp.call(
+        "anthill.persistence.NonMonotonicStore.retract",
+        &[store.clone(), reference],
+    )
 }
 
 /// Assert the reflect `Monotonicity` entity `v` is the `<variant>` variant.
 fn assert_variant(interp: &mut Interpreter, v: &Value, variant: &str) {
     let qname = format!("anthill.reflect.Monotonicity.{variant}");
-    let expected = interp.kb_mut().try_resolve_symbol(&qname)
+    let expected = interp
+        .kb_mut()
+        .try_resolve_symbol(&qname)
         .unwrap_or_else(|| panic!("resolve `{qname}`"));
     match v {
         Value::Entity { functor, .. } => assert_eq!(
@@ -190,11 +230,14 @@ fn external_functor_resolves_to_store_policy_not_default() {
     // resolves to the store's policy, not the in-memory `monotone` default.
     let src = "namespace test.syn\n  entity Ghost\nend\n";
     let mut interp = interp_for(src);
-    let store = register_policy_store(&mut interp, PolicyStore {
-        functor: "test.syn.Ghost".into(),
-        policy: Monotonicity::NonMonotone,
-        fail_retract: false,
-    });
+    let store = register_policy_store(
+        &mut interp,
+        PolicyStore {
+            functor: "test.syn.Ghost".into(),
+            policy: Monotonicity::NonMonotone,
+            fail_retract: false,
+        },
+    );
 
     let ghost = functor_value(&mut interp, "test.syn.Ghost");
     let ans = monotonicity(&mut interp, &store, ghost).expect("query ok");
@@ -209,11 +252,14 @@ fn store_policy_permits_retract_through_the_guard() {
     // default and the guard would refuse.)
     let src = "namespace test.syn\n  entity Ghost\nend\n";
     let mut interp = interp_for(src);
-    let store = register_policy_store(&mut interp, PolicyStore {
-        functor: "test.syn.Ghost".into(),
-        policy: Monotonicity::NonMonotone,
-        fail_retract: false,
-    });
+    let store = register_policy_store(
+        &mut interp,
+        PolicyStore {
+            functor: "test.syn.Ghost".into(),
+            policy: Monotonicity::NonMonotone,
+            fail_retract: false,
+        },
+    );
 
     let fact = functor_value(&mut interp, "test.syn.Ghost");
     let id = persist(&mut interp, &store, fact).expect("persist ok");
@@ -228,11 +274,14 @@ fn declared_non_monotone_but_backend_cannot_retract_is_loud_error() {
     // Error effect at the write, not a silent no-op or a static load check.
     let src = "namespace test.syn\n  entity Ghost\nend\n";
     let mut interp = interp_for(src);
-    let store = register_policy_store(&mut interp, PolicyStore {
-        functor: "test.syn.Ghost".into(),
-        policy: Monotonicity::NonMonotone,
-        fail_retract: true,
-    });
+    let store = register_policy_store(
+        &mut interp,
+        PolicyStore {
+            functor: "test.syn.Ghost".into(),
+            policy: Monotonicity::NonMonotone,
+            fail_retract: true,
+        },
+    );
 
     let fact = functor_value(&mut interp, "test.syn.Ghost");
     let id = persist(&mut interp, &store, fact).expect("persist ok");
@@ -253,9 +302,19 @@ fn append_only_default_store_cannot_retract() {
     // non_monotone so the *guard* passes, isolating the trait-default gate.
     struct AppendOnly;
     impl Store for AppendOnly {
-        fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: ClauseKind, _d: Symbol, _m: Option<TermId>)
-            -> Result<(), PersistenceError> { Ok(()) }
-        fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> { Ok(()) }
+        fn persist(
+            &mut self,
+            _kb: &KnowledgeBase,
+            _f: TermId,
+            _s: ClauseKind,
+            _d: Symbol,
+            _m: Option<TermId>,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+        fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> {
+            Ok(())
+        }
         fn owned_monotonicity(&self) -> Vec<(String, Monotonicity)> {
             vec![("test.syn.Ghost".into(), Monotonicity::NonMonotone)]
         }
@@ -264,15 +323,22 @@ fn append_only_default_store_cannot_retract() {
     let src = "namespace test.syn\n  entity Ghost\nend\n";
     let mut interp = interp_for(src);
     let functor = interp.kb_mut().intern("AppendOnly");
-    let store = Value::Entity { functor, pos: vec![].into(), named: vec![].into() };
+    let store = Value::Entity {
+        functor,
+        pos: vec![].into(),
+        named: vec![].into(),
+    };
     let key = interp.store_canonical_key(&store).expect("key");
-    interp.register_mirror(key, Box::new(AppendOnly))
+    interp
+        .register_mirror(key, Box::new(AppendOnly))
         .expect("declares `test.syn.Ghost`, which this program has");
 
     let fact = functor_value(&mut interp, "test.syn.Ghost");
     let id = persist(&mut interp, &store, fact).expect("persist ok");
-    let err = retract(&mut interp, &store, id)
-        .expect_err("an append-only backend cannot retract");
+    let err = retract(&mut interp, &store, id).expect_err("an append-only backend cannot retract");
     let shown = format!("{err:?}");
-    assert!(shown.contains("append-only"), "expected the NotMutable gate, got: {shown}");
+    assert!(
+        shown.contains("append-only"),
+        "expected the NotMutable gate, got: {shown}"
+    );
 }

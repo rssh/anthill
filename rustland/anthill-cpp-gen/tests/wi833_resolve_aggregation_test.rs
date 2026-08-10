@@ -17,7 +17,9 @@
 
 use super::common;
 
-use anthill_cpp_gen::{cpp_base_host_type, cpp_host_type, emit_namespace_header, emit_traits_struct};
+use anthill_cpp_gen::{
+    cpp_base_host_type, cpp_host_type, emit_namespace_header, emit_traits_struct,
+};
 use common::load_kb_with;
 
 // ── TypeMapping ──────────────────────────────────────────────────────
@@ -54,7 +56,11 @@ fn type_mapping_passing_guard_applies() {
         "Money",
     )
     .expect("a guarded TypeMapping resolves, never refuses");
-    assert_eq!(host.as_deref(), Some("float"), "passing guard → the mapping applies");
+    assert_eq!(
+        host.as_deref(),
+        Some("float"),
+        "passing guard → the mapping applies"
+    );
 }
 
 #[test]
@@ -92,7 +98,11 @@ fn type_mapping_duplicate_answers_are_deduped_not_ambiguous() {
         "Money",
     )
     .expect("identical resolved rows dedup, never ambiguous");
-    assert_eq!(host.as_deref(), Some("float"), "duplicate answers collapse to one mapping");
+    assert_eq!(
+        host.as_deref(),
+        Some("float"),
+        "duplicate answers collapse to one mapping"
+    );
 }
 
 #[test]
@@ -123,7 +133,11 @@ fn type_mapping_guarded_overlay_shadows_base_only_when_its_guard_holds() {
     // shadows the base under the active profile; when the guard fails the query
     // falls through to the base. Combines WI-089(a) priority with WI-833 guards.
     let ladder = |fast_math: bool| {
-        let toggle = if fast_math { "fact FastMath(on: true)" } else { "fact FastMath(on: false)" };
+        let toggle = if fast_math {
+            "fact FastMath(on: true)"
+        } else {
+            "fact FastMath(on: false)"
+        };
         let source = format!(
             r#"
             namespace test.wi833.overlay
@@ -149,8 +163,16 @@ fn type_mapping_guarded_overlay_shadows_base_only_when_its_guard_holds() {
             .expect("Money has at least a base")
     };
 
-    assert_eq!(ladder(true), "Overlay", "guard holds → the profile overlay shadows the base");
-    assert_eq!(ladder(false), "Base", "guard fails → selection falls through to the base");
+    assert_eq!(
+        ladder(true),
+        "Overlay",
+        "guard holds → the profile overlay shadows the base"
+    );
+    assert_eq!(
+        ladder(false),
+        "Base",
+        "guard fails → selection falls through to the base"
+    );
 }
 
 // ── IncludeMapping ───────────────────────────────────────────────────
@@ -188,8 +210,14 @@ fn include_mapping_guard_gates_a_probe() {
         "##,
     )
     .expect("guarded IncludeMapping resolves, never refuses");
-    assert!(with_guard.contains("#include <cstdint>"), "plain base fact still reads:\n{with_guard}");
-    assert!(with_guard.contains("#include <extra_int>"), "guard holds → extra include:\n{with_guard}");
+    assert!(
+        with_guard.contains("#include <cstdint>"),
+        "plain base fact still reads:\n{with_guard}"
+    );
+    assert!(
+        with_guard.contains("#include <extra_int>"),
+        "guard holds → extra include:\n{with_guard}"
+    );
 
     let without_guard = emit_inc_header(
         r##"
@@ -200,7 +228,10 @@ fn include_mapping_guard_gates_a_probe() {
         "##,
     )
     .expect("guarded IncludeMapping resolves, never refuses");
-    assert!(without_guard.contains("#include <cstdint>"), "plain base fact still reads:\n{without_guard}");
+    assert!(
+        without_guard.contains("#include <cstdint>"),
+        "plain base fact still reads:\n{without_guard}"
+    );
     assert!(
         !without_guard.contains("#include <extra_int>"),
         "guard fails → no extra include:\n{without_guard}"
@@ -280,7 +311,10 @@ fn naming_convention_duplicate_of_the_stdlib_is_deduped() {
         "#,
     )
     .expect("a duplicate NamingConvention dedups, emission succeeds");
-    assert!(traits.contains("self->ping()"), "convention read, dispatch emitted:\n{traits}");
+    assert!(
+        traits.contains("self->ping()"),
+        "convention read, dispatch emitted:\n{traits}"
+    );
 }
 
 #[test]
@@ -298,7 +332,10 @@ fn naming_convention_failing_guard_leaves_the_stdlib_convention() {
         "#,
     )
     .expect("a failing-guard convention is excluded, emission succeeds");
-    assert!(traits.contains("self->ping()"), "stdlib convention applies:\n{traits}");
+    assert!(
+        traits.contains("self->ping()"),
+        "stdlib convention applies:\n{traits}"
+    );
 }
 
 #[test]

@@ -21,8 +21,8 @@
 //! stdlib's own zero-warning pin lives with the channel it belongs to, in
 //! `wi345_warnings_channel_test::clean_stdlib_load_carries_no_warnings`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load the stdlib and `extra` TOGETHER, returning either the warning strings
@@ -37,11 +37,14 @@ use anthill_core::parse;
 fn load_stdlib_with(extra: &str) -> Result<Vec<String>, Vec<String>> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -55,9 +58,12 @@ fn load_stdlib_with(extra: &str) -> Result<Vec<String>, Vec<String>> {
 /// The warning strings of a load that must be clean — a shadow is advisory, so
 /// a load error here is a fixture bug, not the thing under test.
 fn load_warnings(extra: &str) -> Vec<String> {
-    load_stdlib_with(extra).unwrap_or_else(|errs| panic!(
-        "expected a clean load (a shadow is advisory, not fatal); got errors:\n{}",
-        errs.join("\n")))
+    load_stdlib_with(extra).unwrap_or_else(|errs| {
+        panic!(
+            "expected a clean load (a shadow is advisory, not fatal); got errors:\n{}",
+            errs.join("\n")
+        )
+    })
 }
 
 // ── a refined RETURN type is a distinct operation → silent ──────────────
@@ -96,7 +102,8 @@ fn refined_return_type_shadow_is_silent() {
     assert!(
         !warnings.iter().any(|w| w.contains("wi1048.refine")),
         "a shadow that REFINES the return type is a distinct operation by \
-         construction, not an accidental collision; got: {warnings:?}");
+         construction, not an accidental collision; got: {warnings:?}"
+    );
 }
 
 // ── a same-signature shadow STILL warns, even parametrically ────────────
@@ -133,12 +140,12 @@ fn parametric_same_signature_shadow_still_warns() {
     "#;
     let warnings = load_warnings(src);
     assert!(
-        warnings.iter().any(|w|
-            w.contains("wi1048.parametric.PReq")
-                && w.contains("p_op")
-                && w.contains("wi1048.parametric.PSpec")),
+        warnings.iter().any(|w| w.contains("wi1048.parametric.PReq")
+            && w.contains("p_op")
+            && w.contains("wi1048.parametric.PSpec")),
         "a same-signature shadow must still warn — the whole point of WI-346 — \
-         and a signature over an op type parameter is no exception; got: {warnings:?}");
+         and a signature over an op type parameter is no exception; got: {warnings:?}"
+    );
 }
 
 #[test]
@@ -174,12 +181,14 @@ fn unbound_spec_parameter_shadow_still_warns() {
     "#;
     let warnings = load_warnings(src);
     assert!(
-        warnings.iter().any(|w|
-            w.contains("wi1048.unbound.Shadower")
+        warnings
+            .iter()
+            .any(|w| w.contains("wi1048.unbound.Shadower")
                 && w.contains("ping")
                 && w.contains("wi1048.unbound.Pingable")),
         "an UNBOUND spec type parameter is a wildcard, not a proven difference; \
-         this shadow must still warn; got: {warnings:?}");
+         this shadow must still warn; got: {warnings:?}"
+    );
 }
 
 #[test]
@@ -215,10 +224,12 @@ fn elided_type_argument_shadow_still_warns() {
     "#;
     let warnings = load_warnings(src);
     assert!(
-        warnings.iter().any(|w|
-            w.contains("wi1048.elided.EReq") && w.contains("e_op")),
+        warnings
+            .iter()
+            .any(|w| w.contains("wi1048.elided.EReq") && w.contains("e_op")),
         "an ELIDED type argument is unstated, not different; this shadow must \
-         still warn; got: {warnings:?}");
+         still warn; got: {warnings:?}"
+    );
 }
 
 #[test]
@@ -253,10 +264,12 @@ fn bare_constructor_shadow_still_warns() {
     "#;
     let warnings = load_warnings(src);
     assert!(
-        warnings.iter().any(|w|
-            w.contains("wi1048.bare.GReq") && w.contains("g_op")),
+        warnings
+            .iter()
+            .any(|w| w.contains("wi1048.bare.GReq") && w.contains("g_op")),
         "a bare constructor is its own nullary application, not a different \
-         type; this shadow must still warn; got: {warnings:?}");
+         type; this shadow must still warn; got: {warnings:?}"
+    );
 }
 
 // ── a different ARITY is distinguishable → silent ───────────────────────
@@ -286,7 +299,8 @@ fn differing_arity_shadow_is_silent() {
     assert!(
         !warnings.iter().any(|w| w.contains("wi1048.arity")),
         "operations of different arity are not confusable at a call site; \
-         got: {warnings:?}");
+         got: {warnings:?}"
+    );
 }
 
 // ── a different PARAM type is distinguishable → silent ──────────────────
@@ -317,7 +331,8 @@ fn differing_param_type_shadow_is_silent() {
     assert!(
         !warnings.iter().any(|w| w.contains("wi1048.param")),
         "operations whose parameter types differ are not confusable at a call \
-         site; got: {warnings:?}");
+         site; got: {warnings:?}"
+    );
 }
 
 // ── the stdlib's behaviour is already right (the premise, re-measured) ──
@@ -341,20 +356,22 @@ fn finite_map_refuses_a_stream_return() {
     // deterministically — and annotating the return type makes that choice
     // observable as a LOUD type error naming BOTH types. There is no silent
     // wrong answer behind the warning WI-346 was printing.
-    let errs = stdlib_plus_source_errors(r#"
+    let errs = stdlib_plus_source_errors(
+        r#"
         namespace wi1048.row_a
           import anthill.prelude.{List, Int64, Stream}
           operation probe(xs: List[T = Int64]) -> Stream[T = Int64, E = {}] =
             xs.map(lambda x -> x)
         end
-    "#);
+    "#,
+    );
     assert!(
-        errs.iter().any(|e|
-            e.contains("type mismatch")
-                && e.contains("Stream[")
-                && e.contains("FiniteCollection[")),
+        errs.iter().any(|e| e.contains("type mismatch")
+            && e.contains("Stream[")
+            && e.contains("FiniteCollection[")),
         "expected a type mismatch naming both the expected Stream and the \
-         FiniteCollection dispatch actually produced; got: {errs:?}");
+         FiniteCollection dispatch actually produced; got: {errs:?}"
+    );
 }
 
 #[test]
@@ -363,15 +380,19 @@ fn finite_map_keeps_a_pipeline_consumable() {
     // returns a `FiniteCollection`, the eager consumer downstream still
     // type-checks. This is what a rename — the warning's own advice — would
     // have broken.
-    let errs = stdlib_plus_source_errors(r#"
+    let errs = stdlib_plus_source_errors(
+        r#"
         namespace wi1048.row_b
           import anthill.prelude.{List, Int64}
           operation probe(xs: List[T = Int64]) -> Int64 = xs.map(lambda x -> x).size()
         end
-    "#);
-    assert!(errs.is_empty(),
+    "#,
+    );
+    assert!(
+        errs.is_empty(),
         "`xs.map(f).size()` over a finite source must stay consumable; \
-         got: {errs:?}");
+         got: {errs:?}"
+    );
 }
 
 // ── WI-1052: a SORT ALIAS is not a different type ───────────────────────
@@ -392,12 +413,12 @@ fn finite_map_keeps_a_pipeline_consumable() {
 fn wi1052_alias_spelled_return_type_still_warns() {
     let warnings = load_warnings(ALIAS_SPELLING);
     assert!(
-        warnings.iter().any(|w|
-            w.contains("wi1052.alias.AReq")
-                && w.contains("a_op")
-                && w.contains("wi1052.alias.ASpec")),
+        warnings.iter().any(|w| w.contains("wi1052.alias.AReq")
+            && w.contains("a_op")
+            && w.contains("wi1052.alias.ASpec")),
         "`IntList` IS `List[T = Int64]`; naming it through its alias is not a \
-         proven difference and must not silence the shadow; got: {warnings:?}");
+         proven difference and must not silence the shadow; got: {warnings:?}"
+    );
 }
 
 /// CONTROL — passes either way BY DESIGN: the expanded spelling always warned.
@@ -407,11 +428,15 @@ fn wi1052_alias_spelled_return_type_still_warns() {
 fn wi1052_expanded_return_type_warns_identically() {
     let alias = shadow_warnings_for(ALIAS_SPELLING, "wi1052.alias");
     let expanded = shadow_warnings_for(EXPANDED_SPELLING, "wi1052.alias");
-    assert!(!expanded.is_empty(), "the expanded spelling must warn: control failed");
+    assert!(
+        !expanded.is_empty(),
+        "the expanded spelling must warn: control failed"
+    );
     assert_eq!(
         alias, expanded,
         "the two fixtures differ only in the SPELLING of one return type, so the \
-         diagnostic must be identical");
+         diagnostic must be identical"
+    );
 }
 
 /// `sort IntList = List[T = Int64]` used as `a_op`'s return type.

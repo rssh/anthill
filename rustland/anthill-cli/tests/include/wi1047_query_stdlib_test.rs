@@ -124,7 +124,13 @@ fn a_query_resolves_through_a_stdlib_clause() {
 fn the_no_stdlib_flag_answers_from_the_paths_alone() {
     let path = write_temp("wi1047-nostdlib.anthill", SRC);
     let p = path.to_str().unwrap();
-    let out = anthill(&["query", "--path", p, "--no-stdlib", "wi1047.q.either1047(?x)"]);
+    let out = anthill(&[
+        "query",
+        "--path",
+        p,
+        "--no-stdlib",
+        "wi1047.q.either1047(?x)",
+    ]);
     assert!(
         out.stdout.contains("no solutions"),
         "without the stdlib there is no `or` clause to resolve through; stdout:\n{}",

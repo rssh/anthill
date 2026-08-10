@@ -166,6 +166,8 @@ end
     );
     match i.call("test.wi084p3.unavail.go", &[]) {
         Err(EvalError::ConstValueUnavailable { .. }) => {}
-        other => panic!("expected ConstValueUnavailable for a bodyless const with no builtin, got {other:?}"),
+        other => panic!(
+            "expected ConstValueUnavailable for a bodyless const with no builtin, got {other:?}"
+        ),
     }
 }

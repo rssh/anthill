@@ -22,9 +22,9 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{Symbol, SymbolKind};
-use crate::kb::ClauseKind;
 use crate::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence, Pattern};
 use crate::kb::term::{Term, TermId};
+use crate::kb::ClauseKind;
 use crate::kb::KnowledgeBase;
 
 /// Feed kind — the `FlowKind` precision knob (046). v1 derives `Direct` /
@@ -83,7 +83,11 @@ pub fn run(kb: &mut KnowledgeBase) {
     let domain = kb.intern("_global");
 
     for e in edges {
-        let kind_ctor = if e.kind == Fk::Direct { direct_ctor } else { element_ctor };
+        let kind_ctor = if e.kind == Fk::Direct {
+            direct_ctor
+        } else {
+            element_ctor
+        };
         let kind_term = kb.make_name_term_from_sym(kind_ctor);
         let from_term = kb.alloc(Term::Ref(e.from));
         let to_term = kb.alloc(Term::Ref(e.to));
@@ -118,7 +122,14 @@ fn derive_op(kb: &KnowledgeBase, op_sym: Symbol, body: &Rc<NodeOccurrence>, edge
     let mut acc: Vec<usize> = Vec::new();
     find_accumulators(&op_places, body, &mut acc);
 
-    let mut d = Deriver { kb, op_sym, op_places: &op_places, result, acc: &acc, edges };
+    let mut d = Deriver {
+        kb,
+        op_sym,
+        op_places: &op_places,
+        result,
+        acc: &acc,
+        edges,
+    };
     let env: HashMap<Symbol, Origin> = HashMap::new();
     d.analyze(body, &env, true);
 }
@@ -160,7 +171,12 @@ impl<'a> Deriver<'a> {
                 }
                 o
             }
-            Expr::Apply { functor, pos_args, named_args, .. } => {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => {
                 if *functor == self.op_sym {
                     // Self-recursion: each arg feeds the op's own i-th param
                     // (loop-carried), and — in tail position — the accumulator
@@ -215,7 +231,10 @@ impl<'a> Deriver<'a> {
                     let val = self
                         .kb
                         .try_resolve_symbol(&format!("{}.result", f_qn))
-                        .map(|r| Origin { kind: Fk::Direct, src: r });
+                        .map(|r| Origin {
+                            kind: Fk::Direct,
+                            src: r,
+                        });
                     if is_tail {
                         if let Some(o) = val {
                             self.emit(o.kind, o.src, self.result);
@@ -234,7 +253,10 @@ impl<'a> Deriver<'a> {
                     None
                 }
             }
-            Expr::Match { scrutinee, branches } => {
+            Expr::Match {
+                scrutinee,
+                branches,
+            } => {
                 let so = self.analyze(scrutinee, env, false);
                 for br in branches {
                     let benv = self.bind(&br.pattern, so, env);
@@ -246,7 +268,12 @@ impl<'a> Deriver<'a> {
                 }
                 None
             }
-            Expr::Let { pattern, value, body, .. } => {
+            Expr::Let {
+                pattern,
+                value,
+                body,
+                ..
+            } => {
                 let vo = self.analyze(value, env, false);
                 let benv = self.bind(pattern, vo, env);
                 self.analyze(body, &benv, is_tail)
@@ -278,7 +305,10 @@ impl<'a> Deriver<'a> {
         }
         // An op parameter is its own `input` place (kind `Param`).
         if self.kb.kind_of(name) == Some(SymbolKind::Param) {
-            return Some(Origin { kind: Fk::Direct, src: name });
+            return Some(Origin {
+                kind: Fk::Direct,
+                src: name,
+            });
         }
         None
     }
@@ -320,8 +350,15 @@ fn bind_into(pat: &Rc<NodeOccurrence>, scrutinee: Option<Origin>, e: &mut HashMa
                 e.insert(*name, o);
             }
         }
-        Some(Pattern::Constructor { pos_args, named_args, .. }) => {
-            let sub = scrutinee.map(|o| Origin { kind: Fk::ElementOf, src: o.src });
+        Some(Pattern::Constructor {
+            pos_args,
+            named_args,
+            ..
+        }) => {
+            let sub = scrutinee.map(|o| Origin {
+                kind: Fk::ElementOf,
+                src: o.src,
+            });
             for a in pos_args {
                 bind_into(a, sub, e);
             }
@@ -360,7 +397,11 @@ fn find_accumulators(op_places: &[Symbol], occ: &Rc<NodeOccurrence>, acc: &mut V
         // WI-538: a proof is type-transparent — recurse into the tail
         // continuation (its `body`).
         Some(Expr::Proof { body, .. }) => find_accumulators(op_places, body, acc),
-        Some(Expr::If { then_branch, else_branch, .. }) => {
+        Some(Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        }) => {
             find_accumulators(op_places, then_branch, acc);
             find_accumulators(op_places, else_branch, acc);
         }

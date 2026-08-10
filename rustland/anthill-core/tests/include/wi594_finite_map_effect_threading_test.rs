@@ -44,9 +44,13 @@ namespace test.wi594
     mapped(s, f)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
-    assert!(errs.is_empty(),
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
+    assert!(
+        errs.is_empty(),
         "a bare spec receiver wrapped into a carrier field should thread the source \
          effect row (not just the element) and load clean:\n{}",
-        errs.join("\n"));
+        errs.join("\n")
+    );
 }

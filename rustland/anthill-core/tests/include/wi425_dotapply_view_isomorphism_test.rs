@@ -16,16 +16,16 @@
 use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
+use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::term_view::{views_structurally_equal, TermView, ViewHead};
+use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::span::SourceSpan;
-use anthill_core::intern::Symbol;
 use smallvec::SmallVec;
-use anthill_core::kb::ClauseKind;
 
 /// A KB with the full stdlib loaded — every reflect / prelude symbol the
 /// dot_apply encoding uses is resolved, exactly as in any loader-built KB.
@@ -35,8 +35,8 @@ fn stdlib_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -60,17 +60,22 @@ fn fn_term(kb: &mut KnowledgeBase, functor: Symbol, named: &[(Symbol, TermId)]) 
 ///            args: [ApplyArg(name: none(), value: 1),
 ///                   ApplyArg(name: some(value: Ref(k)), value: 2)])`.
 fn dot_term(kb: &mut KnowledgeBase, pos_value: TermId) -> TermId {
-    let dot_apply = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply").unwrap();
+    let dot_apply = kb
+        .try_resolve_symbol("anthill.reflect.Expr.dot_apply")
+        .unwrap();
     let apply_arg = kb.try_resolve_symbol("anthill.reflect.ApplyArg").unwrap();
     let cons = kb.try_resolve_symbol("anthill.prelude.List.cons").unwrap();
     let nil = kb.try_resolve_symbol("anthill.prelude.List.nil").unwrap();
-    let some = kb.try_resolve_symbol("anthill.prelude.Option.some").unwrap();
-    let none = kb.try_resolve_symbol("anthill.prelude.Option.none").unwrap();
+    let some = kb
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .unwrap();
+    let none = kb
+        .try_resolve_symbol("anthill.prelude.Option.none")
+        .unwrap();
     let (p, shift, k) = (kb.intern("p"), kb.intern("shift"), kb.intern("k"));
     let (k_receiver, k_name, k_args) =
         (kb.intern("receiver"), kb.intern("name"), kb.intern("args"));
-    let (k_head, k_tail, k_value) =
-        (kb.intern("head"), kb.intern("tail"), kb.intern("value"));
+    let (k_head, k_tail, k_value) = (kb.intern("head"), kb.intern("tail"), kb.intern("value"));
 
     let receiver = kb.alloc(Term::Ref(p));
     let name_ref = kb.alloc(Term::Ref(shift));
@@ -83,7 +88,11 @@ fn dot_term(kb: &mut KnowledgeBase, pos_value: TermId) -> TermId {
     let nil_t = fn_term(kb, nil, &[]);
     let cell1 = fn_term(kb, cons, &[(k_head, arg1), (k_tail, nil_t)]);
     let cell0 = fn_term(kb, cons, &[(k_head, arg0), (k_tail, cell1)]);
-    fn_term(kb, dot_apply, &[(k_receiver, receiver), (k_name, name_ref), (k_args, cell0)])
+    fn_term(
+        kb,
+        dot_apply,
+        &[(k_receiver, receiver), (k_name, name_ref), (k_args, cell0)],
+    )
 }
 
 fn occ(expr: Expr) -> Rc<NodeOccurrence> {
@@ -114,8 +123,16 @@ fn dotapply_view_is_isomorphic_to_term_twin() {
     // Identical heads: same functor, pos_arity 0, named_arity 3.
     match (node.head(&kb), term.head(&kb)) {
         (
-            ViewHead::Functor { functor: fa, pos_arity: pa, named_arity: na },
-            ViewHead::Functor { functor: fb, pos_arity: pb, named_arity: nb },
+            ViewHead::Functor {
+                functor: fa,
+                pos_arity: pa,
+                named_arity: na,
+            },
+            ViewHead::Functor {
+                functor: fb,
+                pos_arity: pb,
+                named_arity: nb,
+            },
         ) => {
             assert_eq!(fa, fb, "same dot_apply functor");
             assert_eq!((pa, na), (0, 3), "occurrence head is arity-3 named");
@@ -162,7 +179,11 @@ fn dotapply_cross_carrier_discrim_match() {
 
     // Precision: a different call arg must NOT match.
     let other = Value::Node(dot_occ(&mut kb, occ(Expr::Const(Literal::Int(9)))));
-    assert_eq!(kb.browse_program_clauses_matching(&other).len(), 0, "different arg does not match");
+    assert_eq!(
+        kb.browse_program_clauses_matching(&other).len(),
+        0,
+        "different arg does not match"
+    );
 
     // Term-side pattern unified against the occurrence target (the temp-tree
     // direction `match_view` exercises): must also match.
@@ -190,7 +211,10 @@ fn dotapply_occurrence_goal_var_binds_through_args_list() {
     let hits = kb.browse_program_clauses_matching(&goal);
     assert_eq!(hits.len(), 1, "var-arg occurrence goal matches the fact");
     assert_eq!(
-        hits[0].bindings.resolve_as_value(vid).map(|v| v.expect_term()),
+        hits[0]
+            .bindings
+            .resolve_as_value(vid)
+            .map(|v| v.expect_term()),
         Some(one),
         "?x bound to the fact's positional arg value through the args list",
     );

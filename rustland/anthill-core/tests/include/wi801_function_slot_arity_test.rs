@@ -50,7 +50,10 @@ fn run_int(src: &str, op: &str) -> i64 {
     // A FRESH interpreter per call — reusing one after a trapped call returns a
     // bogus Internal on every later call.
     let mut interp = interp_for(src);
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -208,7 +211,10 @@ namespace test.wi801.rigid
     = ap(lambda t -> t, 5)
 end
 "#;
-    assert!(try_load_kb_with(src).is_ok(), "a rigid `A` must not be arity-gated");
+    assert!(
+        try_load_kb_with(src).is_ok(),
+        "a rigid `A` must not be arity-gated"
+    );
     assert_eq!(run_int(src, "test.wi801.rigid.drive"), 5);
 }
 
@@ -290,10 +296,12 @@ end
 /// the normalization must not disturb it.
 #[test]
 fn a_unit_slot_reaches_both_admitted_arities() {
-    for (i, (lam, what)) in
-        [("lambda () -> 5", "the nullary thunk"), ("lambda t -> 5", "a whole-unit callback")]
-            .into_iter()
-            .enumerate()
+    for (i, (lam, what)) in [
+        ("lambda () -> 5", "the nullary thunk"),
+        ("lambda t -> 5", "a whole-unit callback"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let ns = format!("test.wi801.unit{i}");
         let src = format!(
@@ -306,7 +314,11 @@ namespace {ns}
 end
 "#
         );
-        assert_eq!(run_int(&src, &format!("{ns}.drive")), 5, "{what} at a unit slot");
+        assert_eq!(
+            run_int(&src, &format!("{ns}.drive")),
+            5,
+            "{what} at a unit slot"
+        );
     }
 }
 

@@ -1,19 +1,17 @@
+use anthill_core::intern::Symbol;
+use anthill_core::kb::load::{self, LoadResult, NullResolver};
+use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 /// Integration tests for the typing module (anthill.reflect.typing).
 ///
 /// Tests load source files into a KB, register builtins, and run SLD resolution
 /// to verify typing rules: is_entity_of, refines, type_compatible, list_contains,
 /// extract_sort_ref, sort_requires, sort_has_param.
-
-
 use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId, Literal, Var};
-use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver, LoadResult};
-use anthill_core::kb::resolve::ResolveConfig;
 
-use smallvec::SmallVec;
 use anthill_core::kb::ClauseKind;
+use smallvec::SmallVec;
 
 /// Load stdlib + typing rules into a fresh KB with builtins registered.
 fn load_stdlib_kb() -> KnowledgeBase {
@@ -21,12 +19,12 @@ fn load_stdlib_kb() -> KnowledgeBase {
     let files = crate::common::collect_anthill_files(&dir);
     assert!(!files.is_empty(), "no stdlib files found");
 
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
 
@@ -61,7 +59,8 @@ fn functor_of(kb: &KnowledgeBase, term: TermId) -> anthill_core::intern::Symbol 
 /// ("anthill.reflect.typing.is_entity_of"), and qualified rule functor names
 /// ("anthill.reflect.typing.refines", "anthill.reflect.typing.list_contains").
 fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId {
-    let sym = kb.try_resolve_symbol(name)
+    let sym = kb
+        .try_resolve_symbol(name)
         .unwrap_or_else(|| kb.intern(name));
     kb.alloc(Term::Fn {
         functor: sym,
@@ -72,11 +71,11 @@ fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId 
 
 /// Build a query goal using named args (for EntityInfo, SortRequiresInfo, etc.).
 fn make_named_goal(kb: &mut KnowledgeBase, name: &str, named_args: &[(&str, TermId)]) -> TermId {
-    let sym = kb.try_resolve_symbol(name)
+    let sym = kb
+        .try_resolve_symbol(name)
         .unwrap_or_else(|| kb.intern(name));
-    let named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = named_args.iter()
-        .map(|(n, t)| (kb.intern(n), *t))
-        .collect();
+    let named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> =
+        named_args.iter().map(|(n, t)| (kb.intern(n), *t)).collect();
     kb.alloc(Term::Fn {
         functor: sym,
         pos_args: SmallVec::new(),
@@ -85,7 +84,10 @@ fn make_named_goal(kb: &mut KnowledgeBase, name: &str, named_args: &[(&str, Term
 }
 
 fn default_config() -> ResolveConfig {
-    ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
+    ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    }
 }
 
 /// Create a fresh logic variable term with the given debug name.
@@ -113,8 +115,14 @@ sort Color {
     let red_term = kb.resolve_qualified_name_term("Color.red");
     let color_term = kb.resolve_qualified_name_term("Color");
 
-    assert!(kb.is_entity_of(red_term, color_term), "red should be entity of Color");
-    assert!(!kb.is_entity_of(color_term, red_term), "Color should NOT be entity of red");
+    assert!(
+        kb.is_entity_of(red_term, color_term),
+        "red should be entity of Color"
+    );
+    assert!(
+        !kb.is_entity_of(color_term, red_term),
+        "Color should NOT be entity of red"
+    );
 }
 
 #[test]
@@ -134,14 +142,30 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
 
     // Query via the builtin (uses intern'd qualified name directly)
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.is_entity_of", &[red_term, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.is_entity_of",
+        &[red_term, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "is_entity_of builtin(red, Color) should succeed");
+    assert_eq!(
+        results.len(),
+        1,
+        "is_entity_of builtin(red, Color) should succeed"
+    );
 
     // Negative
-    let goal_neg = make_goal(&mut kb, "anthill.reflect.typing.is_entity_of", &[color_term, red_term]);
+    let goal_neg = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.is_entity_of",
+        &[color_term, red_term],
+    );
     let results_neg = kb.resolve(&[goal_neg], &default_config());
-    assert_eq!(results_neg.len(), 0, "is_entity_of builtin(Color, red) should fail");
+    assert_eq!(
+        results_neg.len(),
+        0,
+        "is_entity_of builtin(Color, red) should fail"
+    );
 }
 
 #[test]
@@ -161,9 +185,17 @@ sort Color {
     let var_x = make_var(&mut kb, "x");
     let var_f = make_var(&mut kb, "f");
 
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", var_x), ("fields", var_f)]);
+    let goal = make_named_goal(
+        &mut kb,
+        "anthill.reflect.EntityInfo",
+        &[("name", var_x), ("fields", var_f)],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 3, "Color should have 3 EntityInfo facts for red, green, blue");
+    assert_eq!(
+        results.len(),
+        3,
+        "Color should have 3 EntityInfo facts for red, green, blue"
+    );
 }
 
 // ── is_entity_of via typing rule ──────────────────────────────────
@@ -184,9 +216,16 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
 
     // Query via the typing rule (uses qualified name for is_entity_of builtin symbol)
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.is_entity_of", &[red_term, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.is_entity_of",
+        &[red_term, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "is_entity_of(red, Color) via typing rule should succeed");
+    assert!(
+        !results.is_empty(),
+        "is_entity_of(red, Color) via typing rule should succeed"
+    );
 }
 
 // ── list_contains tests ──────────────────────────────────────────
@@ -229,20 +268,41 @@ sort Color {
     });
 
     // list_contains(red, list) should succeed — using resolved symbol
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.list_contains", &[red, list]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.list_contains",
+        &[red, list],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "list_contains(red, [red, green]) should succeed");
+    assert!(
+        !results.is_empty(),
+        "list_contains(red, [red, green]) should succeed"
+    );
 
     // list_contains(green, list) should also succeed
-    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.list_contains", &[green, list]);
+    let goal2 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.list_contains",
+        &[green, list],
+    );
     let results2 = kb.resolve(&[goal2], &default_config());
-    assert!(!results2.is_empty(), "list_contains(green, [red, green]) should succeed");
+    assert!(
+        !results2.is_empty(),
+        "list_contains(green, [red, green]) should succeed"
+    );
 
     // list_contains(blue, list) should fail (blue not in list)
     let blue = kb.resolve_qualified_name_term("Color.blue");
-    let goal3 = make_goal(&mut kb, "anthill.reflect.typing.list_contains", &[blue, list]);
+    let goal3 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.list_contains",
+        &[blue, list],
+    );
     let results3 = kb.resolve(&[goal3], &default_config());
-    assert!(results3.is_empty(), "list_contains(blue, [red, green]) should fail");
+    assert!(
+        results3.is_empty(),
+        "list_contains(blue, [red, green]) should fail"
+    );
 }
 
 // ── extract_sort_ref builtin tests ──────────────────────────────
@@ -276,7 +336,11 @@ fn extract_sort_ref_from_parameterized_type() {
     // Query: extract_sort_ref(inst, ?result)
     let var_result = make_var(&mut kb, "result");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.extract_sort_ref", &[inst, var_result]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.extract_sort_ref",
+        &[inst, var_result],
+    );
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "extract_sort_ref should succeed");
 
@@ -285,8 +349,16 @@ fn extract_sort_ref_from_parameterized_type() {
     // load.rs for sort references (so the result can flow into rule
     // heads / fact field positions that expect Fn(name, [], [])).
     match kb.get_term(bound) {
-        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
-            assert_eq!(kb.local_name_of(*functor), "Eq", "should extract Eq from SortView(Eq(), ...)");
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
+            assert_eq!(
+                kb.local_name_of(*functor),
+                "Eq",
+                "should extract Eq from SortView(Eq(), ...)"
+            );
         }
         other => panic!("expected Fn(Eq, [], []), got {:?}", other),
     }
@@ -302,13 +374,21 @@ fn extract_sort_ref_from_simple_ref() {
 
     let var_result = make_var(&mut kb, "result");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.extract_sort_ref", &[eq_ref, var_result]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.extract_sort_ref",
+        &[eq_ref, var_result],
+    );
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 1, "extract_sort_ref from Ref should succeed");
 
     let bound = kb.reify(var_result, &results[0].subst).expect_term();
     match kb.get_term(bound) {
-        Term::Fn { functor, pos_args, named_args } if pos_args.is_empty() && named_args.is_empty() => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
             assert_eq!(kb.local_name_of(*functor), "Eq");
         }
         other => panic!("expected Fn(Eq, [], []), got {:?}", other),
@@ -338,9 +418,16 @@ sort Ord {
     // Query: SortRequiresInfo(sort_ref: Ord, spec: ?spec) — direct fact query (named args)
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_named_goal(&mut kb, "anthill.reflect.SortRequiresInfo", &[("sort_ref", ordered_term), ("spec", var_spec)]);
+    let goal = make_named_goal(
+        &mut kb,
+        "anthill.reflect.SortRequiresInfo",
+        &[("sort_ref", ordered_term), ("spec", var_spec)],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "Ord should have at least 1 SortRequiresInfo fact");
+    assert!(
+        !results.is_empty(),
+        "Ord should have at least 1 SortRequiresInfo fact"
+    );
 }
 
 #[test]
@@ -364,9 +451,16 @@ sort Ord {
     // Query: refines(Ord, ?spec) via the typing rule
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[ordered_term, var_spec]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.refines",
+        &[ordered_term, var_spec],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "refines(Ord, ?spec) should find at least Eq[T=T]");
+    assert!(
+        !results.is_empty(),
+        "refines(Ord, ?spec) should find at least Eq[T=T]"
+    );
 }
 
 #[test]
@@ -394,9 +488,17 @@ sort C {
     // Query: refines(C, ?spec) — should find both B[T=T] and A[T=T]
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.refines", &[c_term, var_spec]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.refines",
+        &[c_term, var_spec],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(results.len() >= 2, "C refines both B[T=T] (direct) and A[T=T] (transitive), got {} results", results.len());
+    assert!(
+        results.len() >= 2,
+        "C refines both B[T=T] (direct) and A[T=T] (transitive), got {} results",
+        results.len()
+    );
 }
 
 // WI-344: the reflect-queryable `provides` rule mirrors `refines` over
@@ -426,11 +528,17 @@ end
     let var_carrier = make_var(&mut kb, "carrier");
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.provides", &[var_carrier, var_spec]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.provides",
+        &[var_carrier, var_spec],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(),
+    assert!(
+        !results.is_empty(),
         "the `provides` rule must resolve at least the SortProvidesInfo \
-         emitted by `fact Comparable[T = Widget]`");
+         emitted by `fact Comparable[T = Widget]`"
+    );
 }
 
 // ── type_compatible tests ────────────────────────────────────────
@@ -448,9 +556,16 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
 
     // type_compatible(Color, Color) — same type via unification
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[color_term, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[color_term, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "type_compatible(Color, Color) should succeed");
+    assert!(
+        !results.is_empty(),
+        "type_compatible(Color, Color) should succeed"
+    );
 }
 
 #[test]
@@ -469,9 +584,16 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
 
     // type_compatible(red, Color) — via is_entity_of rule
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[red_term, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "type_compatible(red, Color) should succeed via entity_of");
+    assert!(
+        !results.is_empty(),
+        "type_compatible(red, Color) should succeed via entity_of"
+    );
 }
 
 // ── sort_requires tests (uses partial named-arg expansion) ──────
@@ -499,11 +621,20 @@ sort Ord {
     // Query: sort_requires(Ord_ref, ?spec)
     let var_spec = make_var(&mut kb, "spec");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.sort_requires", &[ordered_ref, var_spec]);
-    let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.sort_requires",
+        &[ordered_ref, var_spec],
+    );
+    let config = ResolveConfig {
+        max_solutions: 5,
+        ..ResolveConfig::default()
+    };
     let results = kb.resolve(&[goal], &config);
-    assert!(!results.is_empty(),
-        "sort_requires(Ord, ?spec) should find at least one spec via SortInfo partial expansion");
+    assert!(
+        !results.is_empty(),
+        "sort_requires(Ord, ?spec) should find at least one spec via SortInfo partial expansion"
+    );
 }
 
 // ── sort_has_param tests ─────────────────────────────────────────
@@ -526,11 +657,20 @@ sort Eq {
     // Query: sort_has_param(Eq_ref, ?param)
     let var_param = make_var(&mut kb, "param");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.sort_has_param", &[eq_ref, var_param]);
-    let config = ResolveConfig { max_solutions: 5, ..ResolveConfig::default() };
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.sort_has_param",
+        &[eq_ref, var_param],
+    );
+    let config = ResolveConfig {
+        max_solutions: 5,
+        ..ResolveConfig::default()
+    };
     let results = kb.resolve(&[goal], &config);
-    assert!(!results.is_empty(),
-        "sort_has_param(Eq, ?param) should find T via SortInfo partial expansion");
+    assert!(
+        !results.is_empty(),
+        "sort_has_param(Eq, ?param) should find T via SortInfo partial expansion"
+    );
 }
 
 // ── EntityInfo fact verification ───────────────────────────────────
@@ -551,7 +691,11 @@ sort Color {
     // Query EntityInfo facts by functor
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
     let facts = kb.rules_by_functor(entity_info_sym);
-    assert_eq!(facts.len(), 3, "should have 3 EntityInfo facts for red, green, blue");
+    assert_eq!(
+        facts.len(),
+        3,
+        "should have 3 EntityInfo facts for red, green, blue"
+    );
 }
 
 // ── EntityInfo is 1-level (non-transitive) ────────────────────────
@@ -575,13 +719,24 @@ sort Outer {
     let inner_term = kb.resolve_qualified_name_term("Outer.Inner");
 
     // leaf is entity of Inner (direct — via internal index)
-    assert!(kb.is_entity_of(leaf_term, inner_term), "leaf should be entity of Inner");
+    assert!(
+        kb.is_entity_of(leaf_term, inner_term),
+        "leaf should be entity of Inner"
+    );
 
     // EntityInfo fact should exist for leaf (need both named args for arity match)
     let var_f = make_var(&mut kb, "f");
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", leaf_term), ("fields", var_f)]);
+    let goal = make_named_goal(
+        &mut kb,
+        "anthill.reflect.EntityInfo",
+        &[("name", leaf_term), ("fields", var_f)],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "leaf should have exactly 1 EntityInfo fact");
+    assert_eq!(
+        results.len(),
+        1,
+        "leaf should have exactly 1 EntityInfo fact"
+    );
 }
 
 #[test]
@@ -601,8 +756,14 @@ sort Color {
     let green_term = kb.resolve_qualified_name_term("Color.green");
 
     // Siblings are not entity_of each other
-    assert!(!kb.is_entity_of(red_term, green_term), "red should NOT be entity of green");
-    assert!(!kb.is_entity_of(green_term, red_term), "green should NOT be entity of red");
+    assert!(
+        !kb.is_entity_of(red_term, green_term),
+        "red should NOT be entity of green"
+    );
+    assert!(
+        !kb.is_entity_of(green_term, red_term),
+        "green should NOT be entity of red"
+    );
 }
 
 #[test]
@@ -621,7 +782,11 @@ sort Color {
     // No EntityInfo(name: Color) — Color is a sort, not an entity
     let color_functor = functor_of(&kb, color_term);
     let color_ref = kb.alloc(Term::Ref(color_functor));
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", color_ref)]);
+    let goal = make_named_goal(
+        &mut kb,
+        "anthill.reflect.EntityInfo",
+        &[("name", color_ref)],
+    );
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(results.len(), 0, "Color should NOT have an EntityInfo fact");
 }
@@ -643,7 +808,11 @@ entity Account(id: Int64, balance: Int64)
     // Exactly one EntityInfo fact — for the standalone Account.
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
     let facts = kb.rules_by_functor(entity_info_sym);
-    assert_eq!(facts.len(), 1, "standalone entity should now produce one EntityInfo fact");
+    assert_eq!(
+        facts.len(),
+        1,
+        "standalone entity should now produce one EntityInfo fact"
+    );
 }
 
 #[test]
@@ -670,12 +839,24 @@ sort Shape {
     let shape_term = kb.resolve_qualified_name_term("Shape");
 
     // red is entity of Color, NOT Shape (via internal index)
-    assert!(kb.is_entity_of(red_term, color_term), "red should be entity of Color");
-    assert!(!kb.is_entity_of(red_term, shape_term), "red should NOT be entity of Shape");
+    assert!(
+        kb.is_entity_of(red_term, color_term),
+        "red should be entity of Color"
+    );
+    assert!(
+        !kb.is_entity_of(red_term, shape_term),
+        "red should NOT be entity of Shape"
+    );
 
     // circle is entity of Shape, NOT Color
-    assert!(kb.is_entity_of(circle_term, shape_term), "circle should be entity of Shape");
-    assert!(!kb.is_entity_of(circle_term, color_term), "circle should NOT be entity of Color");
+    assert!(
+        kb.is_entity_of(circle_term, shape_term),
+        "circle should be entity of Shape"
+    );
+    assert!(
+        !kb.is_entity_of(circle_term, color_term),
+        "circle should NOT be entity of Color"
+    );
 
     // EntityInfo facts: 2 for Color + 2 for Shape = 4
     let entity_info_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
@@ -703,9 +884,17 @@ sort Color {
     let var_f = make_var(&mut kb, "f");
 
     // Use EntityInfo directly for enumeration (both fields needed for arity match)
-    let goal = make_named_goal(&mut kb, "anthill.reflect.EntityInfo", &[("name", var_x), ("fields", var_f)]);
+    let goal = make_named_goal(
+        &mut kb,
+        "anthill.reflect.EntityInfo",
+        &[("name", var_x), ("fields", var_f)],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 3, "EntityInfo(?x, ?f) should find 3 entities");
+    assert_eq!(
+        results.len(),
+        3,
+        "EntityInfo(?x, ?f) should find 3 entities"
+    );
 }
 
 #[test]
@@ -733,7 +922,11 @@ sort Color {
         named_args: SmallVec::new(),
     });
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "scope(red, ?parent) should find exactly 1 parent");
+    assert_eq!(
+        results.len(),
+        1,
+        "scope(red, ?parent) should find exactly 1 parent"
+    );
 
     // Verify the parent is Color (scope returns the sort term Fn, not a Ref)
     let bound = kb.reify(var_p, &results[0].subst).expect_term();
@@ -760,9 +953,16 @@ sort Shape {
     let shape_term = kb.resolve_qualified_name_term("Shape");
 
     // type_compatible(red, Shape) should fail — red is entity of Color, not Shape
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, shape_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[red_term, shape_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(results.is_empty(), "type_compatible(red, Shape) should fail");
+    assert!(
+        results.is_empty(),
+        "type_compatible(red, Shape) should fail"
+    );
 }
 
 #[test]
@@ -781,14 +981,28 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
 
     // type_compatible(red, Color) — should succeed
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[red_term, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(), "type_compatible(red, Color) should succeed");
+    assert!(
+        !results.is_empty(),
+        "type_compatible(red, Color) should succeed"
+    );
 
     // type_compatible(red, green) — should fail (siblings, not entity_of)
-    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[red_term, green_term]);
+    let goal2 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[red_term, green_term],
+    );
     let results2 = kb.resolve(&[goal2], &default_config());
-    assert!(results2.is_empty(), "type_compatible(red, green) should fail — different entities");
+    assert!(
+        results2.is_empty(),
+        "type_compatible(red, green) should fail — different entities"
+    );
 }
 
 #[test]
@@ -807,18 +1021,39 @@ sort Account {
     let account_term = kb.resolve_qualified_name_term("Account");
 
     // Both entities are compatible with Account
-    let goal1 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[checking_term, account_term]);
+    let goal1 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[checking_term, account_term],
+    );
     let results1 = kb.resolve(&[goal1], &default_config());
-    assert!(!results1.is_empty(), "type_compatible(checking, Account) should succeed");
+    assert!(
+        !results1.is_empty(),
+        "type_compatible(checking, Account) should succeed"
+    );
 
-    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[savings_term, account_term]);
+    let goal2 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[savings_term, account_term],
+    );
     let results2 = kb.resolve(&[goal2], &default_config());
-    assert!(!results2.is_empty(), "type_compatible(savings, Account) should succeed");
+    assert!(
+        !results2.is_empty(),
+        "type_compatible(savings, Account) should succeed"
+    );
 
     // Entities are NOT compatible with each other
-    let goal3 = make_goal(&mut kb, "anthill.reflect.typing.type_compatible", &[checking_term, savings_term]);
+    let goal3 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.type_compatible",
+        &[checking_term, savings_term],
+    );
     let results3 = kb.resolve(&[goal3], &default_config());
-    assert!(results3.is_empty(), "type_compatible(checking, savings) should fail");
+    assert!(
+        results3.is_empty(),
+        "type_compatible(checking, savings) should fail"
+    );
 }
 
 // ── entity_of tests (nonvar-guarded rule) ────────────────────────
@@ -839,14 +1074,25 @@ sort Color {
     let red_term = kb.resolve_qualified_name_term("Color.red");
     let var_sort = make_var(&mut kb, "sort");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, var_sort]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[red_term, var_sort],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "entity_of(red, ?sort) should find exactly 1 parent");
+    assert_eq!(
+        results.len(),
+        1,
+        "entity_of(red, ?sort) should find exactly 1 parent"
+    );
 
     // Verify the parent is Color
     let bound = kb.reify(var_sort, &results[0].subst).expect_term();
     let color_term = kb.resolve_qualified_name_term("Color");
-    assert_eq!(bound, color_term, "entity_of(red, ?sort) should bind ?sort to Color");
+    assert_eq!(
+        bound, color_term,
+        "entity_of(red, ?sort) should bind ?sort to Color"
+    );
 }
 
 #[test]
@@ -867,10 +1113,16 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
     let var_x = make_var(&mut kb, "x");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[var_x, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[var_x, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert!(!results.is_empty(),
-        "entity_of(?x, Color) should find entities via delay/reorder");
+    assert!(
+        !results.is_empty(),
+        "entity_of(?x, Color) should find entities via delay/reorder"
+    );
 }
 
 #[test]
@@ -887,9 +1139,17 @@ sort Color {
     let color_term = kb.resolve_qualified_name_term("Color");
     let var_sort = make_var(&mut kb, "sort");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[color_term, var_sort]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[color_term, var_sort],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 0, "entity_of(Color, ?sort) should fail — Color has no parent sort");
+    assert_eq!(
+        results.len(),
+        0,
+        "entity_of(Color, ?sort) should fail — Color has no parent sort"
+    );
 }
 
 #[test]
@@ -916,7 +1176,11 @@ sort Shape {
 
     // entity_of(red, ?sort) → Color
     let var_sort1 = make_var(&mut kb, "sort");
-    let goal1 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, var_sort1]);
+    let goal1 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[red_term, var_sort1],
+    );
     let results1 = kb.resolve(&[goal1], &default_config());
     assert_eq!(results1.len(), 1);
     let bound1 = kb.reify(var_sort1, &results1[0].subst).expect_term();
@@ -924,14 +1188,22 @@ sort Shape {
 
     // entity_of(circle, ?sort) → Shape
     let var_sort2 = make_var(&mut kb, "sort");
-    let goal2 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[circle_term, var_sort2]);
+    let goal2 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[circle_term, var_sort2],
+    );
     let results2 = kb.resolve(&[goal2], &default_config());
     assert_eq!(results2.len(), 1);
     let bound2 = kb.reify(var_sort2, &results2[0].subst).expect_term();
     assert_eq!(bound2, shape_term, "circle's parent should be Shape");
 
     // entity_of(red, Shape) should fail — wrong parent
-    let goal3 = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, shape_term]);
+    let goal3 = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[red_term, shape_term],
+    );
     let results3 = kb.resolve(&[goal3], &default_config());
     assert_eq!(results3.len(), 0, "entity_of(red, Shape) should fail");
 }
@@ -951,9 +1223,17 @@ sort Color {
     let red_term = kb.resolve_qualified_name_term("Color.red");
     let color_term = kb.resolve_qualified_name_term("Color");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[red_term, color_term]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[red_term, color_term],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "entity_of(red, Color) should succeed when both args are ground");
+    assert_eq!(
+        results.len(),
+        1,
+        "entity_of(red, Color) should succeed when both args are ground"
+    );
 }
 
 #[test]
@@ -971,9 +1251,17 @@ entity Account(id: Int64, balance: Int64)
     let account_term = kb.resolve_qualified_name_term("Account");
     let var_sort = make_var(&mut kb, "sort");
 
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[account_term, var_sort]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[account_term, var_sort],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 0, "entity_of(Account, ?sort) should fail — standalone entity has no parent");
+    assert_eq!(
+        results.len(),
+        0,
+        "entity_of(Account, ?sort) should fail — standalone entity has no parent"
+    );
 }
 
 #[test]
@@ -1004,20 +1292,37 @@ end
         _ => panic!("bank.Account should resolve to a functor term"),
     };
     let has_account_info = kb.rules_by_functor(ei_sym).iter().any(|&rid| {
-        if !kb.is_fact(rid) { return false; }
+        if !kb.is_fact(rid) {
+            return false;
+        }
         let head = kb.rule_head(rid);
-        let Term::Fn { named_args, .. } = kb.get_term(head) else { return false; };
-        named_args.iter().any(|(k, v)| *k == name_sym && matches!(
-            kb.get_term(*v), Term::Ref(s) | Term::Fn { functor: s, .. } if *s == account_functor))
+        let Term::Fn { named_args, .. } = kb.get_term(head) else {
+            return false;
+        };
+        named_args.iter().any(|(k, v)| {
+            *k == name_sym
+                && matches!(
+            kb.get_term(*v), Term::Ref(s) | Term::Fn { functor: s, .. } if *s == account_functor)
+        })
     });
-    assert!(has_account_info, "namespace-level entity should have an EntityInfo fact (reflect visibility)");
+    assert!(
+        has_account_info,
+        "namespace-level entity should have an EntityInfo fact (reflect visibility)"
+    );
 
     // But it has no parent SORT — the namespace must not be bound as parent.
     let var_p = make_var(&mut kb, "p");
-    let goal = make_goal(&mut kb, "anthill.reflect.typing.entity_of", &[account, var_p]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.typing.entity_of",
+        &[account, var_p],
+    );
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 0,
-        "entity_of(bank.Account, ?p) should fail — namespace is not a parent sort");
+    assert_eq!(
+        results.len(),
+        0,
+        "entity_of(bank.Account, ?p) should fail — namespace is not a parent sort"
+    );
 }
 
 #[test]
@@ -1063,13 +1368,17 @@ entity Foo(x: ?)
     // (the same-functor schema fact this test used to decode is gone).
     let foo_sym = kb.resolve_symbol("Foo");
     let x_sym = kb.intern("x");
-    let field_types = kb.entity_field_types(foo_sym)
+    let field_types = kb
+        .entity_field_types(foo_sym)
         .expect("Foo entity should be registered in KB");
     let x_arg = field_types.iter().find(|(s, _)| *s == x_sym);
     assert!(x_arg.is_some(), "entity should have field 'x'");
     let x_tid = x_arg.unwrap().1.expect_term();
-    assert!(matches!(kb.get_term(x_tid), Term::Var(_)),
-        "field typed ? should load as Term::Var, got {:?}", kb.get_term(x_tid));
+    assert!(
+        matches!(kb.get_term(x_tid), Term::Var(_)),
+        "field typed ? should load as Term::Var, got {:?}",
+        kb.get_term(x_tid)
+    );
 }
 
 #[test]
@@ -1086,7 +1395,8 @@ entity Box(contents: ?)
     // Get Box's declared field types (WI-515: the registry, not a schema fact)
     let box_sym = kb.resolve_symbol("Box");
     let contents_sym = kb.intern("contents");
-    let contents_tid = kb.entity_field_types(box_sym)
+    let contents_tid = kb
+        .entity_field_types(box_sym)
         .expect("Box should be registered in KB")
         .iter()
         .find(|(s, _)| *s == contents_sym)
@@ -1095,8 +1405,10 @@ entity Box(contents: ?)
         .expect_term();
 
     // The contents field should be a Var — meaning it can hold any type
-    assert!(matches!(kb.get_term(contents_tid), Term::Var(_)),
-        "field typed ? should be a logic variable in KB");
+    assert!(
+        matches!(kb.get_term(contents_tid), Term::Var(_)),
+        "field typed ? should be a logic variable in KB"
+    );
 
     // A Var unifies with any concrete term via match_term
     let int_sym = kb.intern("Int64");
@@ -1106,7 +1418,10 @@ entity Box(contents: ?)
         named_args: SmallVec::new(),
     });
     let result = kb.match_term(contents_tid, int_term);
-    assert!(result.is_some(), "Var should unify with any concrete term (Int64)");
+    assert!(
+        result.is_some(),
+        "Var should unify with any concrete term (Int64)"
+    );
 }
 
 // ── Field access builtin tests ───────────────────────────────
@@ -1116,16 +1431,21 @@ fn field_access_entity_extracts_field() {
     let mut kb = load_stdlib_kb();
 
     // Define a sort with an entity that has fields
-    load_source(&mut kb, r#"
+    load_source(
+        &mut kb,
+        r#"
         namespace test_fa
           sort Env
             entity env(platform: Int64, fs: Int64)
           end
         end
-    "#);
+    "#,
+    );
 
     // Construct an entity instance: env(platform: 1, fs: 42)
-    let env_sym = kb.try_resolve_symbol("test_fa.Env.env").expect("env entity");
+    let env_sym = kb
+        .try_resolve_symbol("test_fa.Env.env")
+        .expect("env entity");
     let platform_sym = kb.intern("platform");
     let fs_sym = kb.intern("fs");
     let val1 = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
@@ -1142,12 +1462,23 @@ fn field_access_entity_extracts_field() {
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
-    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[env_term, field_ident, result_tid]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.field_access",
+        &[env_term, field_ident, result_tid],
+    );
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-    assert!(!solutions.is_empty(), "field_access should produce a solution");
+    assert!(
+        !solutions.is_empty(),
+        "field_access should produce a solution"
+    );
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve_as_value(result_var).map(|v| v.expect_term()).expect("result should be bound");
+    let resolved = sol
+        .subst
+        .resolve_as_value(result_var)
+        .map(|v| v.expect_term())
+        .expect("result should be bound");
     // The resolved value should be 42 (the fs field)
     match kb.get_term(resolved) {
         Term::Const(anthill_core::kb::term::Literal::Int(n)) => {
@@ -1170,12 +1501,19 @@ fn field_access_delays_on_unbound_object() {
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
-    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[obj_tid, field_ident, result_tid]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.field_access",
+        &[obj_tid, field_ident, result_tid],
+    );
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     // Should produce a residual (delayed) goal, not a solution with bound result
     if !solutions.is_empty() {
-        assert!(!solutions[0].residual.is_empty(), "should have residual goals from delay");
+        assert!(
+            !solutions[0].residual.is_empty(),
+            "should have residual goals from delay"
+        );
     }
 }
 
@@ -1183,15 +1521,20 @@ fn field_access_delays_on_unbound_object() {
 fn field_access_fails_on_bad_field() {
     let mut kb = load_stdlib_kb();
 
-    load_source(&mut kb, r#"
+    load_source(
+        &mut kb,
+        r#"
         namespace test_fa2
           sort Env
             entity env(platform: Int64, fs: Int64)
           end
         end
-    "#);
+    "#,
+    );
 
-    let env_sym = kb.try_resolve_symbol("test_fa2.Env.env").expect("env entity");
+    let env_sym = kb
+        .try_resolve_symbol("test_fa2.Env.env")
+        .expect("env entity");
     let platform_sym = kb.intern("platform");
     let fs_sym = kb.intern("fs");
     let val1 = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
@@ -1208,17 +1551,26 @@ fn field_access_fails_on_bad_field() {
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
-    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[env_term, field_ident, result_tid]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.field_access",
+        &[env_term, field_ident, result_tid],
+    );
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-    assert!(solutions.is_empty(), "field_access with bad field should fail");
+    assert!(
+        solutions.is_empty(),
+        "field_access with bad field should fail"
+    );
 }
 
 #[test]
 fn field_access_sort_component() {
     let mut kb = load_stdlib_kb();
 
-    load_source(&mut kb, r#"
+    load_source(
+        &mut kb,
+        r#"
         namespace test_sc
           import anthill.prelude.*
           sort Monoid
@@ -1226,10 +1578,13 @@ fn field_access_sort_component() {
             operation combine(a: Carrier, b: Carrier) -> Carrier
           end
         end
-    "#);
+    "#,
+    );
 
     // Build a sort term for Monoid (nullary Fn)
-    let monoid_sym = kb.try_resolve_symbol("test_sc.Monoid").expect("Monoid sort");
+    let monoid_sym = kb
+        .try_resolve_symbol("test_sc.Monoid")
+        .expect("Monoid sort");
     let monoid_term = kb.alloc(Term::Fn {
         functor: monoid_sym,
         pos_args: SmallVec::new(),
@@ -1242,21 +1597,40 @@ fn field_access_sort_component() {
     let result_name = kb.intern("result");
     let result_var = kb.fresh_var(result_name);
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
-    let goal = make_goal(&mut kb, "anthill.reflect.field_access", &[monoid_term, field_ident, result_tid]);
+    let goal = make_goal(
+        &mut kb,
+        "anthill.reflect.field_access",
+        &[monoid_term, field_ident, result_tid],
+    );
 
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
-    assert!(!solutions.is_empty(), "field_access for sort component should succeed");
+    assert!(
+        !solutions.is_empty(),
+        "field_access for sort component should succeed"
+    );
     let sol = &solutions[0];
-    let resolved = sol.subst.resolve_as_value(result_var).map(|v| v.expect_term()).expect("result should be bound");
+    let resolved = sol
+        .subst
+        .resolve_as_value(result_var)
+        .map(|v| v.expect_term())
+        .expect("result should be bound");
     // Should resolve to Carrier sort term (nullary Fn)
     match kb.get_term(resolved) {
         Term::Fn { functor, .. } => {
             let name = kb.local_name_of(*functor);
-            assert!(name.contains("Carrier"), "expected Carrier sort, got {}", name);
+            assert!(
+                name.contains("Carrier"),
+                "expected Carrier sort, got {}",
+                name
+            );
         }
         Term::Ref(sym) => {
             let name = kb.local_name_of(*sym);
-            assert!(name.contains("Carrier"), "expected Carrier ref, got {}", name);
+            assert!(
+                name.contains("Carrier"),
+                "expected Carrier ref, got {}",
+                name
+            );
         }
         other => panic!("expected Fn or Ref for Carrier, got {:?}", other),
     }
@@ -1283,9 +1657,15 @@ fn wi295_cross_namespace_rule_predicate_import_resolves() {
         "end\n",
     );
     let parsed = parse::parse(source).expect("parse wi295 source");
-    let errs = load::load(&mut kb, &parsed, &NullResolver).err().unwrap_or_default();
-    let has_unresolved = errs.iter().any(|e|
-        matches!(e.peel(), anthill_core::kb::load::LoadError::UnresolvedImport { .. }));
+    let errs = load::load(&mut kb, &parsed, &NullResolver)
+        .err()
+        .unwrap_or_default();
+    let has_unresolved = errs.iter().any(|e| {
+        matches!(
+            e.peel(),
+            anthill_core::kb::load::LoadError::UnresolvedImport { .. }
+        )
+    });
     assert!(
         !has_unresolved,
         "cross-namespace rule-predicate import should resolve via the post-pass-3 \
@@ -1311,7 +1691,10 @@ fn typing_pass_spec_parses_and_loads() {
         .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
     let parsed = parse::parse(&source).unwrap_or_else(|errs| {
         for e in &errs {
-            eprintln!("parse error: {}", e.format_at(&anthill_core::span::LineIndex::new(&source)));
+            eprintln!(
+                "parse error: {}",
+                e.format_at(&anthill_core::span::LineIndex::new(&source))
+            );
         }
         panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
     });
@@ -1325,15 +1708,18 @@ fn typing_pass_spec_parses_and_loads() {
     }
 
     assert!(
-        kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv").is_some(),
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.TypingEnv")
+            .is_some(),
         "TypingEnv sort should be defined"
     );
     assert!(
-        kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check").is_some(),
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.type_check")
+            .is_some(),
         "type_check operation should be defined"
     );
     assert!(
-        kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible").is_some(),
+        kb.try_resolve_symbol("anthill.reflect.typing_pass.assert_compatible")
+            .is_some(),
         "assert_compatible operation should be defined"
     );
 }
@@ -1362,15 +1748,26 @@ fn wi297_occurrence_term_literal_synth_resolves() {
     let goal = make_goal(&mut kb, "wi297.t.probe", &[var_t]);
     let results = kb.resolve(&[goal], &default_config());
     assert_eq!(
-        results.len(), 1,
+        results.len(),
+        1,
         "probe should resolve once via synth/occurrence_term on a literal occurrence"
     );
 
     let bound = kb.reify(var_t, &results[0].subst).expect_term();
     match kb.get_term(bound) {
-        Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.local_name_of(*functor), "SortRef", "synth should yield SortRef(...)");
-            let name = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "name")
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
+            assert_eq!(
+                kb.local_name_of(*functor),
+                "SortRef",
+                "synth should yield SortRef(...)"
+            );
+            let name = named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "name")
                 .map(|(_, t)| *t)
                 .expect("sort_ref should carry a name arg");
             let name_sym = match kb.get_term(name) {
@@ -1378,7 +1775,11 @@ fn wi297_occurrence_term_literal_synth_resolves() {
                 Term::Fn { functor, .. } => *functor,
                 other => panic!("unexpected sort_ref name term: {other:?}"),
             };
-            assert_eq!(kb.local_name_of(name_sym), "Int64", "literal 42 should synth to Int64");
+            assert_eq!(
+                kb.local_name_of(name_sym),
+                "Int64",
+                "literal 42 should synth to Int64"
+            );
         }
         other => panic!("expected SortRef(name: Int64), got {other:?}"),
     }
@@ -1405,10 +1806,17 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
 
     let sort_ref_name = |kb: &KnowledgeBase, t: TermId| -> String {
         match kb.get_term(t) {
-            Term::Fn { functor, named_args, .. } => {
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => {
                 assert_eq!(kb.local_name_of(*functor), "SortRef");
-                let n = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "name")
-                    .map(|(_, t)| *t).expect("SortRef name");
+                let n = named_args
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == "name")
+                    .map(|(_, t)| *t)
+                    .expect("SortRef name");
                 match kb.get_term(n) {
                     Term::Ref(s) | Term::Ident(s) => kb.local_name_of(*s).to_string(),
                     Term::Fn { functor, .. } => kb.local_name_of(*functor).to_string(),
@@ -1422,14 +1830,22 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     let var_i = make_var(&mut kb, "Ti");
     let g_int = make_goal(&mut kb, "wi297.b.probe_int", &[var_i]);
     let r_int = kb.resolve(&[g_int], &default_config());
-    assert_eq!(r_int.len(), 1, "an int literal should select exactly the int_lit synth rule");
+    assert_eq!(
+        r_int.len(),
+        1,
+        "an int literal should select exactly the int_lit synth rule"
+    );
     let t_int = kb.reify(var_i, &r_int[0].subst).expect_term();
     assert_eq!(sort_ref_name(&kb, t_int), "Int64");
 
     let var_s = make_var(&mut kb, "Ts");
     let g_str = make_goal(&mut kb, "wi297.b.probe_str", &[var_s]);
     let r_str = kb.resolve(&[g_str], &default_config());
-    assert_eq!(r_str.len(), 1, "a string literal should select exactly the string_lit synth rule");
+    assert_eq!(
+        r_str.len(),
+        1,
+        "a string literal should select exactly the string_lit synth rule"
+    );
     let t_str = kb.reify(var_s, &r_str[0].subst).expect_term();
     assert_eq!(sort_ref_name(&kb, t_str), "String");
 }
@@ -1448,12 +1864,23 @@ fn wi297_occurrence_span_builds_source_span() {
     let var_s = make_var(&mut kb, "s");
     let goal = make_goal(&mut kb, "wi297.sp.probe", &[var_s]);
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "occurrence_span should produce a span term");
+    assert_eq!(
+        results.len(),
+        1,
+        "occurrence_span should produce a span term"
+    );
     let bound = kb.reify(var_s, &results[0].subst).expect_term();
     match kb.get_term(bound) {
-        Term::Fn { functor, named_args, .. } => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
             assert_eq!(kb.local_name_of(*functor), "source_span");
-            let keys: Vec<String> = named_args.iter().map(|(s, _)| kb.local_name_of(*s).to_string()).collect();
+            let keys: Vec<String> = named_args
+                .iter()
+                .map(|(s, _)| kb.local_name_of(*s).to_string())
+                .collect();
             assert!(keys.contains(&"file".to_string()), "fields: {keys:?}");
             assert!(keys.contains(&"start_byte".to_string()), "fields: {keys:?}");
             assert!(keys.contains(&"end_byte".to_string()), "fields: {keys:?}");
@@ -1481,14 +1908,22 @@ fn wi297_sub_occurrences_empty_vs_nonempty() {
     let var_k = make_var(&mut kb, "k");
     let g_lit = make_goal(&mut kb, "wi297.su.probe_lit", &[var_k]);
     let r_lit = kb.resolve(&[g_lit], &default_config());
-    assert_eq!(r_lit.len(), 1, "a literal occurrence has no sub-occurrences (nil)");
+    assert_eq!(
+        r_lit.len(),
+        1,
+        "a literal occurrence has no sub-occurrences (nil)"
+    );
     let t_lit = kb.reify(var_k, &r_lit[0].subst).expect_term();
     assert_eq!(kb.get_term(t_lit), &Term::Const(Literal::Int(0)));
 
     let var_k2 = make_var(&mut kb, "k2");
     let g_cmp = make_goal(&mut kb, "wi297.su.probe_compound", &[var_k2]);
     let r_cmp = kb.resolve(&[g_cmp], &default_config());
-    assert_eq!(r_cmp.len(), 1, "a constructor occurrence has sub-occurrences (cons)");
+    assert_eq!(
+        r_cmp.len(),
+        1,
+        "a constructor occurrence has sub-occurrences (cons)"
+    );
     let t_cmp = kb.reify(var_k2, &r_cmp[0].subst).expect_term();
     assert_eq!(kb.get_term(t_cmp), &Term::Const(Literal::Int(1)));
 }
@@ -1518,14 +1953,19 @@ fn wi682_node_pattern_binds_reflectable_child() {
     let var_k = make_var(&mut kb, "k");
     let g_int = make_goal(&mut kb, "wi682.chain.probe_int", &[var_k]);
     let r_int = kb.resolve(&[g_int], &default_config());
-    assert_eq!(r_int.len(), 1, "the bound head child re-reflects as int_lit");
+    assert_eq!(
+        r_int.len(),
+        1,
+        "the bound head child re-reflects as int_lit"
+    );
     let t_int = kb.reify(var_k, &r_int[0].subst).expect_term();
     assert_eq!(kb.get_term(t_int), &Term::Const(Literal::Int(1)));
 
     let var_k2 = make_var(&mut kb, "k2");
     let g_str = make_goal(&mut kb, "wi682.chain.probe_str", &[var_k2]);
     assert_eq!(
-        kb.resolve(&[g_str], &default_config()).len(), 0,
+        kb.resolve(&[g_str], &default_config()).len(),
+        0,
         "a string head child does not re-reflect as int_lit",
     );
 }
@@ -1545,7 +1985,8 @@ fn wi297_occurrence_owner_none_for_body_atom_child() {
     let var_o = make_var(&mut kb, "o");
     let goal = make_goal(&mut kb, "wi297.ow.probe", &[var_o]);
     assert_eq!(
-        kb.resolve(&[goal], &default_config()).len(), 0,
+        kb.resolve(&[goal], &default_config()).len(),
+        0,
         "occurrence_owner has no owner for a body-atom child"
     );
 }
@@ -1567,11 +2008,16 @@ fn wi297_occurrence_span_structured_pattern_matches() {
     let var_s = make_var(&mut kb, "s");
     let goal = make_goal(&mut kb, "wi297.sps.probe", &[var_s]);
     let results = kb.resolve(&[goal], &default_config());
-    assert_eq!(results.len(), 1, "structured source_span pattern should match (field order aligned)");
+    assert_eq!(
+        results.len(),
+        1,
+        "structured source_span pattern should match (field order aligned)"
+    );
     let bound = kb.reify(var_s, &results[0].subst).expect_term();
     assert!(
         matches!(kb.get_term(bound), Term::Const(Literal::Int(_))),
-        "start_byte should bind to an Int64, got {:?}", kb.get_term(bound)
+        "start_byte should bind to an Int64, got {:?}",
+        kb.get_term(bound)
     );
 }
 
@@ -1592,11 +2038,11 @@ fn wi297_occurrence_term_compound_pattern_fails_not_panics() {
     let var_k = make_var(&mut kb, "k");
     let goal = make_goal(&mut kb, "wi297.if.probe", &[var_k]);
     assert_eq!(
-        kb.resolve(&[goal], &default_config()).len(), 0,
+        kb.resolve(&[goal], &default_config()).len(),
+        0,
         "a literal does not match an if_expr pattern (and must not panic)"
     );
 }
-
 
 // ══════════════════════════════════════════════════════════════════
 // type_check_sorts tests (facts)
@@ -1625,8 +2071,8 @@ fn wi305_operation_body_discriminates_some_vs_none() {
     let mut kb = load_with_source(concat!(
         "namespace wi305.t\n",
         "  import anthill.prelude.{Int64}\n",
-        "  operation f(x: Int64) -> Int64 = x\n",   // has a body
-        "  operation g(x: Int64) -> Int64\n",        // declaration only
+        "  operation f(x: Int64) -> Int64 = x\n", // has a body
+        "  operation g(x: Int64) -> Int64\n",     // declaration only
         "end\n",
     ));
     let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
@@ -1648,9 +2094,14 @@ fn wi305_operation_body_discriminates_some_vs_none() {
         kb.alloc(Term::Ref(f))
     };
     let some_pat = some_pattern(&mut kb);
-    let goal_f = make_goal(&mut kb, "anthill.reflect.operation_body", &[f_ref, some_pat]);
+    let goal_f = make_goal(
+        &mut kb,
+        "anthill.reflect.operation_body",
+        &[f_ref, some_pat],
+    );
     assert_eq!(
-        kb.resolve(&[goal_f], &default_config()).len(), 1,
+        kb.resolve(&[goal_f], &default_config()).len(),
+        1,
         "operation with a body should yield some(value: <node>)",
     );
 
@@ -1661,9 +2112,14 @@ fn wi305_operation_body_discriminates_some_vs_none() {
         kb.alloc(Term::Ref(g))
     };
     let some_pat_g = some_pattern(&mut kb);
-    let goal_g = make_goal(&mut kb, "anthill.reflect.operation_body", &[g_ref, some_pat_g]);
+    let goal_g = make_goal(
+        &mut kb,
+        "anthill.reflect.operation_body",
+        &[g_ref, some_pat_g],
+    );
     assert_eq!(
-        kb.resolve(&[goal_g], &default_config()).len(), 0,
+        kb.resolve(&[goal_g], &default_config()).len(),
+        0,
         "declaration-only operation should yield none(), not some(...)",
     );
 }
@@ -1674,12 +2130,12 @@ fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
     let files = crate::common::collect_anthill_files(&dir);
     assert!(!files.is_empty(), "no stdlib files found");
 
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
 
@@ -1728,9 +2184,11 @@ namespace test.wi420.eta
     use_pair(member, 2, [1, 2, 3])
 end
 "#;
-    assert!(try_load_with_source(src).is_ok(),
+    assert!(
+        try_load_with_source(src).is_ok(),
         "eta of a concrete requires-carrying op (List.member at T=Int64) must load: \
-         WI-420 resolves + captures its Eq[Int64] dispatch dict on the OpRef");
+         WI-420 resolves + captures its Eq[Int64] dispatch dict on the OpRef"
+    );
 }
 
 /// WI-420 positive control: the gate is targeted, not a blanket ban on eta. A
@@ -1750,9 +2208,11 @@ namespace test.wi420.ok
   operation main() -> Bool = use_one(is_big, 5)
 end
 "#;
-    assert!(try_load_with_source(src).is_ok(),
+    assert!(
+        try_load_with_source(src).is_ok(),
         "eta of a requires-free op must still load (the WI-420 gate must not \
-         over-reach to namespace-level ops)");
+         over-reach to namespace-level ops)"
+    );
 }
 
 /// WI-537 (proposal 050 item 3): a `match`-arm guard `case p | g -> body` is now
@@ -1771,8 +2231,10 @@ namespace test.wi537.guard_ok
       case other -> false
 end
 "#;
-    assert!(try_load_with_source(src).is_ok(),
-        "a match arm with a valid guard `case x | gt(x, 0) -> …` must type-check (WI-537)");
+    assert!(
+        try_load_with_source(src).is_ok(),
+        "a match arm with a valid guard `case x | gt(x, 0) -> …` must type-check (WI-537)"
+    );
 }
 
 /// WI-537 negative control: the guard is now genuinely visited, so a guard with a
@@ -1790,9 +2252,11 @@ namespace test.wi537.guard_bad
       case other -> false
 end
 "#;
-    assert!(try_load_with_source(src).is_err(),
+    assert!(
+        try_load_with_source(src).is_err(),
         "a match-arm guard referencing an undefined op must now fail to load (WI-537): \
-         the guard is type-checked, not dropped");
+         the guard is type-checked, not dropped"
+    );
 }
 
 /// WI-420: binding a CURRIED op on a requires-sort (its return type is itself a
@@ -1820,9 +2284,11 @@ namespace test.wi420.curried
     f(7)
 end
 "#;
-    assert!(try_load_with_source(src).is_err(),
+    assert!(
+        try_load_with_source(src).is_err(),
         "binding a curried op to its Function return type must be a loud type \
-         error (arrow mismatch), not a load-clean-then-eval-crash (WI-420)");
+         error (arrow mismatch), not a load-clean-then-eval-crash (WI-420)"
+    );
 }
 
 #[test]
@@ -1841,7 +2307,11 @@ fact Circle(color: Red, radius: 42)
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct fact should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct fact should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1855,12 +2325,23 @@ fact Thing(name: 42)
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int64 where String expected");
+    assert!(
+        !errors.is_empty(),
+        "should detect Int64 where String expected"
+    );
     let err = &errors[0];
     match err.peel() {
-        load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
+        load::LoadError::TypeMismatch {
+            field_name,
+            expected_type,
+            actual_type,
+            ..
+        } => {
             assert_eq!(field_name, "name");
-            assert!(expected_type.contains("String"), "expected String, got: {expected_type}");
+            assert!(
+                expected_type.contains("String"),
+                "expected String, got: {expected_type}"
+            );
             assert_eq!(actual_type, "Int64");
         }
         _ => panic!("expected TypeMismatch, got: {err:?}"),
@@ -1878,9 +2359,16 @@ fact Thing(count: "hello")
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect String where Int64 expected");
+    assert!(
+        !errors.is_empty(),
+        "should detect String where Int64 expected"
+    );
     match errors[0].peel() {
-        load::LoadError::TypeMismatch { field_name, actual_type, .. } => {
+        load::LoadError::TypeMismatch {
+            field_name,
+            actual_type,
+            ..
+        } => {
             assert_eq!(field_name, "count");
             assert_eq!(actual_type, "String");
         }
@@ -1909,12 +2397,27 @@ fact Box(color: Square)
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Shape entity where Color expected, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "should detect Shape entity where Color expected, got: {:?}",
+        errors
+    );
     match errors[0].peel() {
-        load::LoadError::TypeMismatch { field_name, expected_type, actual_type, .. } => {
+        load::LoadError::TypeMismatch {
+            field_name,
+            expected_type,
+            actual_type,
+            ..
+        } => {
             assert_eq!(field_name, "color");
-            assert!(expected_type.contains("Color"), "expected Color, got: {expected_type}");
-            assert!(actual_type.contains("Shape"), "actual should be Shape, got: {actual_type}");
+            assert!(
+                expected_type.contains("Color"),
+                "expected Color, got: {expected_type}"
+            );
+            assert!(
+                actual_type.contains("Shape"),
+                "actual should be Shape, got: {actual_type}"
+            );
         }
         _ => panic!("expected TypeMismatch"),
     }
@@ -1930,7 +2433,11 @@ end
     // Entity definition itself has type terms, not instances — no facts to check
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "entity definitions should not produce errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "entity definitions should not produce errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1939,11 +2446,23 @@ fn type_check_error_reports_line_number() {
     //            line 1        line 2                    line 3  line 4  line 5
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect String where Int64 expected");
+    assert!(
+        !errors.is_empty(),
+        "should detect String where Int64 expected"
+    );
     let formatted = errors[0].format_at(&anthill_core::span::LineIndex::new(source));
-    assert!(formatted.contains("type mismatch"), "should say type mismatch: {formatted}");
-    assert!(formatted.contains("Thing"), "should mention entity name: {formatted}");
-    assert!(formatted.starts_with("5:"), "error should point to line 5, got: {formatted}");
+    assert!(
+        formatted.contains("type mismatch"),
+        "should say type mismatch: {formatted}"
+    );
+    assert!(
+        formatted.contains("Thing"),
+        "should mention entity name: {formatted}"
+    );
+    assert!(
+        formatted.starts_with("5:"),
+        "error should point to line 5, got: {formatted}"
+    );
 }
 
 /// WI-745: a whole-KB typer error (entity-field / op-body `TypeMismatch`) is
@@ -1961,21 +2480,31 @@ fn typer_error_is_file_located() {
         .iter()
         .find(|e| matches!(e.peel(), load::LoadError::TypeMismatch { .. }))
         .expect("expected a TypeMismatch");
-    assert!(matches!(tm, load::LoadError::Located { .. }),
-        "the typer error must be file-stamped (Located), got: {tm:?}");
+    assert!(
+        matches!(tm, load::LoadError::Located { .. }),
+        "the typer error must be file-stamped (Located), got: {tm:?}"
+    );
     // Display renders line:col (line 5), not a raw byte-offset range.
     let rendered = tm.to_string();
-    assert!(rendered.contains("5:") && rendered.contains("type mismatch"),
-        "should render line:col for the fact on line 5: {rendered}");
-    assert!(!rendered.contains(" at "),
-        "the raw byte-offset Display must be retired for an attributed error: {rendered}");
+    assert!(
+        rendered.contains("5:") && rendered.contains("type mismatch"),
+        "should render line:col for the fact on line 5: {rendered}"
+    );
+    assert!(
+        !rendered.contains(" at "),
+        "the raw byte-offset Display must be retired for an attributed error: {rendered}"
+    );
 }
 
 #[test]
 fn type_check_stdlib_no_spurious_errors() {
     let (mut kb, result) = load_stdlib_kb_with_result();
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "stdlib should produce no type errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "stdlib should produce no type errors, got: {:?}",
+        errors
+    );
 }
 
 // WI-509: a FIELD-PROJECTION op body (`Cell.set(b.cell, x)`) must round-trip a
@@ -1998,11 +2527,19 @@ end
     let (mut kb, result) = load_with_result(source);
     // First pass: type + rewrite `Box.put`'s `b.cell` to `field_access`.
     let errors1 = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors1.is_empty(), "first type-check should be clean, got: {:?}", errors1);
+    assert!(
+        errors1.is_empty(),
+        "first type-check should be clean, got: {:?}",
+        errors1
+    );
     // Re-type-check with no sort owning `Box.put`: the free-op sweep re-visits
     // the rewritten body — the WI-509 path. Must stay clean.
     let errors2 = type_check_sorts(&mut kb, &[]);
-    assert!(errors2.is_empty(), "re-type-check of a field-projection body must be clean, got: {:?}", errors2);
+    assert!(
+        errors2.is_empty(),
+        "re-type-check of a field-projection body must be clean, got: {:?}",
+        errors2
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2018,7 +2555,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct literal body should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct literal body should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2030,10 +2571,20 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int64 body vs String return type");
+    assert!(
+        !errors.is_empty(),
+        "should detect Int64 body vs String return type"
+    );
     match errors[0].peel() {
-        load::LoadError::TypeMismatch { entity_name, field_name, .. } => {
-            assert!(entity_name.contains("one"), "should mention operation name: {entity_name}");
+        load::LoadError::TypeMismatch {
+            entity_name,
+            field_name,
+            ..
+        } => {
+            assert!(
+                entity_name.contains("one"),
+                "should mention operation name: {entity_name}"
+            );
             assert_eq!(field_name, "return");
         }
         _ => panic!("expected TypeMismatch, got: {:?}", errors[0]),
@@ -2049,7 +2600,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct var ref should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct var ref should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2061,7 +2616,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int64 var vs String return type, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "should detect Int64 var vs String return type, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2078,7 +2637,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct constructor return should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct constructor return should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2091,7 +2654,8 @@ sort Math
 end
 "#;
     let kb = load_with_source(source);
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")
+    let op_info_sym = kb
+        .try_resolve_symbol("anthill.reflect.OperationInfo")
         .expect("OperationInfo should be defined");
 
     // Find the "id" operation's FieldInfo param symbol and body var_ref symbol
@@ -2099,7 +2663,9 @@ end
     let mut body_var_sym: Option<Symbol> = None;
 
     for rid in kb.rules_by_functor(op_info_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         // WI-348: skip value-fact heads (an op with a `denoted` effect, e.g.
         // stdlib's Cell.set) — `id` has none, so its head is a hash-consed term.
         let head = match kb.rule_head_value(rid) {
@@ -2108,25 +2674,47 @@ end
         };
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             // Check if this is the "id" operation
-            let is_id = named_args.iter()
+            let is_id = named_args
+                .iter()
                 .find(|(s, _)| kb.local_name_of(*s) == "name")
-                .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None })
+                .and_then(|(_, v)| match kb.get_term(*v) {
+                    Term::Ref(s) => Some(*s),
+                    _ => None,
+                })
                 .map(|s| kb.local_name_of(s) == "id")
                 .unwrap_or(false);
-            if !is_id { continue; }
+            if !is_id {
+                continue;
+            }
 
             // Extract param name symbol from FieldInfo
-            if let Some(params_tid) = named_args.iter()
+            if let Some(params_tid) = named_args
+                .iter()
                 .find(|(s, _)| kb.local_name_of(*s) == "params")
                 .map(|(_, v)| *v)
             {
                 // Walk cons-list to first FieldInfo
-                if let Term::Fn { named_args: cons_args, .. } = kb.get_term(params_tid) {
-                    if let Some((_, head_tid)) = cons_args.iter().find(|(s, _)| kb.local_name_of(*s) == "head") {
-                        if let Term::Fn { named_args: fi_args, .. } = kb.get_term(*head_tid) {
-                            param_sym = fi_args.iter()
+                if let Term::Fn {
+                    named_args: cons_args,
+                    ..
+                } = kb.get_term(params_tid)
+                {
+                    if let Some((_, head_tid)) = cons_args
+                        .iter()
+                        .find(|(s, _)| kb.local_name_of(*s) == "head")
+                    {
+                        if let Term::Fn {
+                            named_args: fi_args,
+                            ..
+                        } = kb.get_term(*head_tid)
+                        {
+                            param_sym = fi_args
+                                .iter()
                                 .find(|(s, _)| kb.local_name_of(*s) == "name")
-                                .and_then(|(_, v)| match kb.get_term(*v) { Term::Ref(s) => Some(*s), _ => None });
+                                .and_then(|(_, v)| match kb.get_term(*v) {
+                                    Term::Ref(s) => Some(*s),
+                                    _ => None,
+                                });
                         }
                     }
                 }
@@ -2135,12 +2723,17 @@ end
             // Extract body var_ref name symbol via `kb.op_body_node`
             // — post-WI-251 the body lives on the NodeOccurrence tree,
             // not in the OperationInfo fact's Handle slot.
-            let id_sym = kb.try_resolve_symbol("Math.id")
+            let id_sym = kb
+                .try_resolve_symbol("Math.id")
                 .or_else(|| kb.try_resolve_symbol("id"));
             if let Some(op_sym) = id_sym {
                 use anthill_core::kb::node_occurrence::{Expr, NodeKind};
                 if let Some(body) = kb.op_body_node(op_sym) {
-                    if let NodeKind::Expr { expr: Expr::VarRef { name }, .. } = &body.kind {
+                    if let NodeKind::Expr {
+                        expr: Expr::VarRef { name },
+                        ..
+                    } = &body.kind
+                    {
                         body_var_sym = Some(*name);
                     }
                 }
@@ -2150,7 +2743,11 @@ end
 
     let ps = param_sym.expect("should find param symbol for x");
     let bs = body_var_sym.expect("should find body var_ref symbol for x");
-    assert_eq!(kb.local_name_of(ps), "x", "param symbol should resolve to x");
+    assert_eq!(
+        kb.local_name_of(ps),
+        "x",
+        "param symbol should resolve to x"
+    );
     assert_eq!(kb.local_name_of(bs), "x", "body symbol should resolve to x");
     assert_eq!(ps, bs,
         "param symbol ({}: {}) and body var_ref symbol ({}: {}) for 'x' should be the same KB Symbol",
@@ -2161,7 +2758,11 @@ end
 fn type_check_op_stdlib_no_spurious_errors() {
     let (mut kb, result) = load_stdlib_kb_with_result();
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "stdlib operations should produce no type errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "stdlib operations should produce no type errors, got: {:?}",
+        errors
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2177,7 +2778,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct if_expr should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct if_expr should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2189,7 +2794,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int64 branches vs String return, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "should detect Int64 branches vs String return, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2208,7 +2817,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct let_expr should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct let_expr should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2227,7 +2840,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct match should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct match should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2246,7 +2863,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int64 match body vs String return, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "should detect Int64 match body vs String return, got: {:?}",
+        errors
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2275,7 +2896,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "applying a Function-typed param should typecheck, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "applying a Function-typed param should typecheck, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2294,7 +2919,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "inline lambda arg should typecheck, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "inline lambda arg should typecheck, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2313,18 +2942,22 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "let-bound lambda should typecheck, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "let-bound lambda should typecheck, got: {:?}",
+        errors
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
 // types_compatible tests
 // ══════════════════════════════════════════════════════════════════
 
-use anthill_core::kb::typing::{
-    types_compatible as raw_types_compatible,
-    is_subtype, requires_chain_flat, check_obligations, type_check_sorts,
-};
 use anthill_core::kb::subst::Substitution;
+use anthill_core::kb::typing::{
+    check_obligations, is_subtype, requires_chain_flat, type_check_sorts,
+    types_compatible as raw_types_compatible,
+};
 
 /// Test-private wrapper around [`raw_types_compatible`] that allocates a
 /// fresh substitution per call. WI-335 added an explicit `&mut Substitution`
@@ -2348,7 +2981,10 @@ fn subtype_different_sort_ref_incompatible() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let string_ty = kb.make_sort_ref_by_name("String");
-    assert!(!types_compatible(&mut kb, int_ty, string_ty), "Int64 not <: String");
+    assert!(
+        !types_compatible(&mut kb, int_ty, string_ty),
+        "Int64 not <: String"
+    );
 }
 
 #[test]
@@ -2366,7 +3002,10 @@ end
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
     assert!(types_compatible(&mut kb, red_ty, color_ty), "red <: Color");
-    assert!(!types_compatible(&mut kb, color_ty, red_ty), "Color not <: red");
+    assert!(
+        !types_compatible(&mut kb, color_ty, red_ty),
+        "Color not <: red"
+    );
 }
 
 #[test]
@@ -2383,7 +3022,10 @@ end
     let blue_sym = kb.resolve_symbol("Color.blue");
     let red_ty = kb.make_sort_ref(red_sym);
     let blue_ty = kb.make_sort_ref(blue_sym);
-    assert!(!types_compatible(&mut kb, red_ty, blue_ty), "red not <: blue");
+    assert!(
+        !types_compatible(&mut kb, red_ty, blue_ty),
+        "red not <: blue"
+    );
 }
 
 #[test]
@@ -2396,8 +3038,14 @@ fn subtype_named_tuple_width() {
     let b_sym = kb.intern("b");
     let wider = kb.make_named_tuple_type(&[(a_sym, int_ty), (b_sym, string_ty)]);
     let narrower = kb.make_named_tuple_type(&[(a_sym, int_ty)]);
-    assert!(types_compatible(&mut kb, wider, narrower), "(a: Int64, b: String) <: (a: Int64)");
-    assert!(!types_compatible(&mut kb, narrower, wider), "(a: Int64) not <: (a: Int64, b: String)");
+    assert!(
+        types_compatible(&mut kb, wider, narrower),
+        "(a: Int64, b: String) <: (a: Int64)"
+    );
+    assert!(
+        !types_compatible(&mut kb, narrower, wider),
+        "(a: Int64) not <: (a: Int64, b: String)"
+    );
 }
 
 #[test]
@@ -2416,7 +3064,10 @@ end
     let field_sym = kb.intern("color");
     let specific = kb.make_named_tuple_type(&[(field_sym, red_ty)]);
     let general = kb.make_named_tuple_type(&[(field_sym, color_ty)]);
-    assert!(types_compatible(&mut kb, specific, general), "(color: red) <: (color: Color)");
+    assert!(
+        types_compatible(&mut kb, specific, general),
+        "(color: red) <: (color: Color)"
+    );
 }
 
 #[test]
@@ -2435,7 +3086,10 @@ end
     let color_ty = kb.make_sort_ref(color_sym);
     let specific = kb.make_arrow_type(int_ty, red_ty, &[], 1);
     let general = kb.make_arrow_type(int_ty, color_ty, &[], 1);
-    assert!(types_compatible(&mut kb, specific, general), "(Int64 -> red) <: (Int64 -> Color)");
+    assert!(
+        types_compatible(&mut kb, specific, general),
+        "(Int64 -> red) <: (Int64 -> Color)"
+    );
 }
 
 #[test]
@@ -2454,8 +3108,14 @@ end
     let color_ty = kb.make_sort_ref(color_sym);
     let general_param = kb.make_arrow_type(color_ty, int_ty, &[], 1);
     let specific_param = kb.make_arrow_type(red_ty, int_ty, &[], 1);
-    assert!(types_compatible(&mut kb, general_param, specific_param), "(Color -> Int64) <: (red -> Int64)");
-    assert!(!types_compatible(&mut kb, specific_param, general_param), "(red -> Int64) not <: (Color -> Int64)");
+    assert!(
+        types_compatible(&mut kb, general_param, specific_param),
+        "(Color -> Int64) <: (red -> Int64)"
+    );
+    assert!(
+        !types_compatible(&mut kb, specific_param, general_param),
+        "(red -> Int64) not <: (Color -> Int64)"
+    );
 }
 
 // ── WI-293: declared per-(sort, param) variance in parameterized_compatible ──
@@ -2485,10 +3145,14 @@ fn variance_function_param_A_contravariant() {
     let fn_color_arg = kb.make_parameterized_type(fn_base, &[(a_sym, color_ty), (b_sym, int_ty)]);
     let fn_red_arg = kb.make_parameterized_type(fn_base, &[(a_sym, red_ty), (b_sym, int_ty)]);
 
-    assert!(types_compatible(&mut kb, fn_color_arg, fn_red_arg),
-        "Function[A=Color] <: Function[A=red] — contravariant param");
-    assert!(!types_compatible(&mut kb, fn_red_arg, fn_color_arg),
-        "Function[A=red] NOT<: Function[A=Color] — covariant direction rejected");
+    assert!(
+        types_compatible(&mut kb, fn_color_arg, fn_red_arg),
+        "Function[A=Color] <: Function[A=red] — contravariant param"
+    );
+    assert!(
+        !types_compatible(&mut kb, fn_red_arg, fn_color_arg),
+        "Function[A=red] NOT<: Function[A=Color] — covariant direction rejected"
+    );
 }
 
 #[test]
@@ -2507,11 +3171,15 @@ fn variance_invariant_default_rejects_widening() {
     let cell_red = kb.make_parameterized_type(cell_base, &[(v_sym, red_ty)]);
     let cell_color = kb.make_parameterized_type(cell_base, &[(v_sym, color_ty)]);
 
-    assert!(!types_compatible(&mut kb, cell_red, cell_color),
-        "Cell[V=red] NOT<: Cell[V=Color] — invariant param rejects covariant widening");
+    assert!(
+        !types_compatible(&mut kb, cell_red, cell_color),
+        "Cell[V=red] NOT<: Cell[V=Color] — invariant param rejects covariant widening"
+    );
     // Exact binding is accepted (identical term short-circuits, but states intent).
-    assert!(types_compatible(&mut kb, cell_red, cell_red),
-        "Cell[V=red] <: Cell[V=red] — invariant accepts the exact binding");
+    assert!(
+        types_compatible(&mut kb, cell_red, cell_red),
+        "Cell[V=red] <: Cell[V=red] — invariant accepts the exact binding"
+    );
 }
 
 #[test]
@@ -2529,10 +3197,14 @@ fn variance_covariant_param_preserved() {
     let opt_red = kb.make_parameterized_type(opt_base, &[(t_sym, red_ty)]);
     let opt_color = kb.make_parameterized_type(opt_base, &[(t_sym, color_ty)]);
 
-    assert!(types_compatible(&mut kb, opt_red, opt_color),
-        "Option[red] <: Option[Color] — covariant param");
-    assert!(!types_compatible(&mut kb, opt_color, opt_red),
-        "Option[Color] NOT<: Option[red] — covariant rejects reverse");
+    assert!(
+        types_compatible(&mut kb, opt_red, opt_color),
+        "Option[red] <: Option[Color] — covariant param"
+    );
+    assert!(
+        !types_compatible(&mut kb, opt_color, opt_red),
+        "Option[Color] NOT<: Option[red] — covariant rejects reverse"
+    );
 }
 
 #[test]
@@ -2551,14 +3223,18 @@ fn variance_read_only_iterable_covariant_mutable_invariant() {
     let iter_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.Iterable"));
     let iter_red = kb.make_parameterized_type(iter_base, &[(elem_sym, red_ty)]);
     let iter_color = kb.make_parameterized_type(iter_base, &[(elem_sym, color_ty)]);
-    assert!(types_compatible(&mut kb, iter_red, iter_color),
-        "Iterable[Element=red] <: Iterable[Element=Color] — read-only => covariant");
+    assert!(
+        types_compatible(&mut kb, iter_red, iter_color),
+        "Iterable[Element=red] <: Iterable[Element=Color] — read-only => covariant"
+    );
 
     let coll_base = kb.make_sort_ref(kb.resolve_symbol("anthill.prelude.PersistentCollection"));
     let coll_red = kb.make_parameterized_type(coll_base, &[(elem_sym, red_ty)]);
     let coll_color = kb.make_parameterized_type(coll_base, &[(elem_sym, color_ty)]);
-    assert!(!types_compatible(&mut kb, coll_red, coll_color),
-        "PersistentCollection[Element=red] NOT<: [Element=Color] — insert(elem) => invariant");
+    assert!(
+        !types_compatible(&mut kb, coll_red, coll_color),
+        "PersistentCollection[Element=red] NOT<: [Element=Color] — insert(elem) => invariant"
+    );
 }
 
 #[test]
@@ -2568,7 +3244,10 @@ fn subtype_parameterized_same() {
     let t_sym = kb.intern("T");
     let list_base = kb.make_sort_ref_by_name("List");
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
-    assert!(types_compatible(&mut kb, list_int, list_int), "List[T=Int64] <: List[T=Int64]");
+    assert!(
+        types_compatible(&mut kb, list_int, list_int),
+        "List[T=Int64] <: List[T=Int64]"
+    );
 }
 
 #[test]
@@ -2580,7 +3259,10 @@ fn subtype_parameterized_different_binding_incompatible() {
     let list_base = kb.make_sort_ref_by_name("List");
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
     let list_str = kb.make_parameterized_type(list_base, &[(t_sym, string_ty)]);
-    assert!(!types_compatible(&mut kb, list_int, list_str), "List[T=Int64] not <: List[T=String]");
+    assert!(
+        !types_compatible(&mut kb, list_int, list_str),
+        "List[T=Int64] not <: List[T=String]"
+    );
 }
 
 #[test]
@@ -2589,8 +3271,14 @@ fn subtype_type_var_compatible_with_anything() {
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let fresh = kb.intern("?X");
     let var_ty = kb.make_type_var(fresh);
-    assert!(types_compatible(&mut kb, var_ty, int_ty), "type_var <: Int64");
-    assert!(types_compatible(&mut kb, int_ty, var_ty), "Int64 <: type_var");
+    assert!(
+        types_compatible(&mut kb, var_ty, int_ty),
+        "type_var <: Int64"
+    );
+    assert!(
+        types_compatible(&mut kb, int_ty, var_ty),
+        "Int64 <: type_var"
+    );
 }
 
 #[test]
@@ -2598,7 +3286,10 @@ fn subtype_nothing_compatible_with_anything() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let nothing = kb.make_nothing_type();
-    assert!(types_compatible(&mut kb, nothing, int_ty), "nothing <: Int64");
+    assert!(
+        types_compatible(&mut kb, nothing, int_ty),
+        "nothing <: Int64"
+    );
 }
 
 #[test]
@@ -2610,7 +3301,10 @@ fn subtype_arrow_pure_subtype_of_effectful() {
     let effect = kb.make_sort_ref(e_sym);
     let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[], 1);
     let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect], 1);
-    assert!(types_compatible(&mut kb, pure_fn, effectful_fn), "pure <: effectful");
+    assert!(
+        types_compatible(&mut kb, pure_fn, effectful_fn),
+        "pure <: effectful"
+    );
 }
 
 #[test]
@@ -2624,8 +3318,14 @@ fn subtype_arrow_fewer_effects() {
     let e2 = kb.make_sort_ref(e2_sym);
     let fewer = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
     let more = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
-    assert!(types_compatible(&mut kb, fewer, more), "fewer effects <: more effects");
-    assert!(!types_compatible(&mut kb, more, fewer), "more effects not <: fewer effects");
+    assert!(
+        types_compatible(&mut kb, fewer, more),
+        "fewer effects <: more effects"
+    );
+    assert!(
+        !types_compatible(&mut kb, more, fewer),
+        "more effects not <: fewer effects"
+    );
 }
 
 #[test]
@@ -2639,7 +3339,10 @@ fn subtype_arrow_different_effects_incompatible() {
     let e2 = kb.make_sort_ref(e2_sym);
     let fn1 = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
     let fn2 = kb.make_arrow_type(int_ty, int_ty, &[e2], 1);
-    assert!(!types_compatible(&mut kb, fn1, fn2), "different effects not compatible");
+    assert!(
+        !types_compatible(&mut kb, fn1, fn2),
+        "different effects not compatible"
+    );
 }
 
 /// WI-307 v1a canonical-form invariant: two arrow types built from the
@@ -2659,8 +3362,8 @@ fn arrow_effects_canonical_form_hash_cons_stable() {
     let z = kb.make_sort_ref(z_sym);
     let a = kb.make_sort_ref(a_sym);
 
-    let arrow_forward  = kb.make_arrow_type(int_ty, int_ty, &[z, a], 1); // source: Z, A
-    let arrow_reverse  = kb.make_arrow_type(int_ty, int_ty, &[a, z], 1); // source: A, Z
+    let arrow_forward = kb.make_arrow_type(int_ty, int_ty, &[z, a], 1); // source: Z, A
+    let arrow_reverse = kb.make_arrow_type(int_ty, int_ty, &[a, z], 1); // source: A, Z
 
     assert_eq!(
         arrow_forward, arrow_reverse,
@@ -2697,8 +3400,15 @@ fn row_unify_closed_closed_same() {
     let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, e1], 1); // reversed input order
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
-        "two closed rows with same label set must unify");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_a),
+            &TermIdView(arrow_b)
+        ),
+        "two closed rows with same label set must unify"
+    );
 }
 
 /// Closed/closed: different label sets fail.
@@ -2713,8 +3423,15 @@ fn row_unify_closed_closed_different() {
     let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2], 1);
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
-        "two closed rows with different label sets must NOT unify");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_a),
+            &TermIdView(arrow_b)
+        ),
+        "two closed rows with different label sets must NOT unify"
+    );
 }
 
 /// Open/closed: the open side's tail absorbs the labels the closed side
@@ -2732,14 +3449,26 @@ fn row_unify_open_closed_tail_absorbs() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let open_row    = kb.make_arrow_type(int_ty, int_ty, &[e1, rho], 1);   // {EffectA | ?rho}
-    let closed_row  = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);    // {EffectA, EffectB}
+    let open_row = kb.make_arrow_type(int_ty, int_ty, &[e1, rho], 1); // {EffectA | ?rho}
+    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1); // {EffectA, EffectB}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
-        "open row should unify with closed row of same labels + extras");
-    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term { .. })),
-        "?rho should be bound after row unification");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(open_row),
+            &TermIdView(closed_row)
+        ),
+        "open row should unify with closed row of same labels + extras"
+    );
+    assert!(
+        matches!(
+            subst.resolve_as_value(rho_vid),
+            Some(anthill_core::eval::Value::Term { .. })
+        ),
+        "?rho should be bound after row unification"
+    );
 }
 
 /// Open/closed: open row's labels exceed closed row's — closed can't
@@ -2759,12 +3488,19 @@ fn row_unify_open_closed_missing_label_fails() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let open_row   = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho], 1); // {EffectA, EffectC | ?rho}
-    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);      // {EffectA, EffectB}
+    let open_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho], 1); // {EffectA, EffectC | ?rho}
+    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1); // {EffectA, EffectB}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(open_row), &TermIdView(closed_row)),
-        "open row with extra labels not in closed row must NOT unify");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(open_row),
+            &TermIdView(closed_row)
+        ),
+        "open row with extra labels not in closed row must NOT unify"
+    );
 }
 
 /// Open/open with shared identical tail var and same labels — hash-cons
@@ -2785,8 +3521,15 @@ fn row_unify_open_open_same_tail() {
     assert_eq!(arrow_a, arrow_b, "identical open rows share TermId");
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
-        "identical open rows unify trivially");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_a),
+            &TermIdView(arrow_b)
+        ),
+        "identical open rows unify trivially"
+    );
 }
 
 /// Open/open with DIFFERENT tail vars and disjoint extras — both tails
@@ -2812,12 +3555,29 @@ fn row_unify_open_open_disjoint_extras() {
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_b], 1); // {EffectB | ?rho_b}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
-        "open/open with disjoint extras must unify (Rémy fresh-tail case)");
-    assert!(matches!(subst.resolve_as_value(rho_a_vid), Some(anthill_core::eval::Value::Term { .. })),
-        "?rho_a should be bound");
-    assert!(matches!(subst.resolve_as_value(rho_b_vid), Some(anthill_core::eval::Value::Term { .. })),
-        "?rho_b should be bound");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_a),
+            &TermIdView(arrow_b)
+        ),
+        "open/open with disjoint extras must unify (Rémy fresh-tail case)"
+    );
+    assert!(
+        matches!(
+            subst.resolve_as_value(rho_a_vid),
+            Some(anthill_core::eval::Value::Term { .. })
+        ),
+        "?rho_a should be bound"
+    );
+    assert!(
+        matches!(
+            subst.resolve_as_value(rho_b_vid),
+            Some(anthill_core::eval::Value::Term { .. })
+        ),
+        "?rho_b should be bound"
+    );
 }
 
 /// Open/open where each side carries the same common label plus its own
@@ -2840,8 +3600,15 @@ fn row_unify_open_open_same_labels() {
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_b], 1);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
-        "open/open with same labels must unify; tails link through a fresh shared var");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_a),
+            &TermIdView(arrow_b)
+        ),
+        "open/open with same labels must unify; tails link through a fresh shared var"
+    );
 }
 
 // ── WI-328 v1b lacks-constraint tests ────────────────────────────────────
@@ -2867,14 +3634,26 @@ fn row_lacks_unify_non_conflicting_label_ok() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let closed_other = kb.make_arrow_type(int_ty, int_ty, &[other], 1);     // {Other}
-    let lacks_row    = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho], 1); // {-Error | ρ}
+    let closed_other = kb.make_arrow_type(int_ty, int_ty, &[other], 1); // {Other}
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho], 1); // {-Error | ρ}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(closed_other), &TermIdView(lacks_row)),
-        "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error");
-    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term { .. })),
-        "ρ should be bound (absorbs Other, closing the row)");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(closed_other),
+            &TermIdView(lacks_row)
+        ),
+        "{{Other}} unifies with {{-Error | ρ}} — Other is not the lacked Error"
+    );
+    assert!(
+        matches!(
+            subst.resolve_as_value(rho_vid),
+            Some(anthill_core::eval::Value::Term { .. })
+        ),
+        "ρ should be bound (absorbs Other, closing the row)"
+    );
 }
 
 /// A closed row presenting the LACKED effect must NOT unify with
@@ -2891,12 +3670,19 @@ fn row_lacks_unify_present_lacked_label_fails() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1);          // {Error}
-    let lacks_row  = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho], 1); // {-Error | ρ}
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1); // {Error}
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho], 1); // {-Error | ρ}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(closed_err), &TermIdView(lacks_row)),
-        "{{Error}} must NOT unify with {{-Error | ρ}} — ρ lacks Error");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(closed_err),
+            &TermIdView(lacks_row)
+        ),
+        "{{Error}} must NOT unify with {{-Error | ρ}} — ρ lacks Error"
+    );
 }
 
 /// Open/open: `{-Error | ρa}` unified with `{Error | ρb}` fails — the
@@ -2917,11 +3703,18 @@ fn row_lacks_open_open_present_into_lacking_tail_fails() {
 
     let absent_err = kb.make_effect_expression_absent(err);
     let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a], 1); // {-Error | ρa}
-    let err_row   = kb.make_arrow_type(int_ty, int_ty, &[err, rho_b], 1);        // {Error | ρb}
+    let err_row = kb.make_arrow_type(int_ty, int_ty, &[err, rho_b], 1); // {Error | ρb}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(lacks_row), &TermIdView(err_row)),
-        "{{-Error | ρa}} must NOT unify with {{Error | ρb}} — Error flows into ρa which lacks it");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(lacks_row),
+            &TermIdView(err_row)
+        ),
+        "{{-Error | ρa}} must NOT unify with {{Error | ρb}} — Error flows into ρa which lacks it"
+    );
 }
 
 /// Propagation onto the fresh shared tail. Step 1 unifies `{-Error | ρa}`
@@ -2946,17 +3739,31 @@ fn row_lacks_propagates_to_fresh_shared_tail() {
 
     let absent_err = kb.make_effect_expression_absent(err);
     let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a], 1); // {-Error | ρa}
-    let open_b    = kb.make_arrow_type(int_ty, int_ty, &[rho_b], 1);             // {ρb}
+    let open_b = kb.make_arrow_type(int_ty, int_ty, &[rho_b], 1); // {ρb}
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(lacks_row), &TermIdView(open_b)),
-        "step 1: {{-Error | ρa}} unifies with {{ρb}} (both open)");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(lacks_row),
+            &TermIdView(open_b)
+        ),
+        "step 1: {{-Error | ρa}} unifies with {{ρb}} (both open)"
+    );
 
     // Step 2: present Error against ρb's now-shared tail — must fail.
-    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1);             // {Error}
-    let open_b2    = kb.make_arrow_type(int_ty, int_ty, &[rho_b], 1);           // {ρb} (resolves to fresh tail)
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(closed_err), &TermIdView(open_b2)),
-        "step 2: {{Error}} must NOT unify with the shared tail that inherited lacks-Error");
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1); // {Error}
+    let open_b2 = kb.make_arrow_type(int_ty, int_ty, &[rho_b], 1); // {ρb} (resolves to fresh tail)
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(closed_err),
+            &TermIdView(open_b2)
+        ),
+        "step 2: {{Error}} must NOT unify with the shared tail that inherited lacks-Error"
+    );
 }
 
 /// A row that both presents and absents the SAME label (`{Error, -Error}`)
@@ -2969,12 +3776,19 @@ fn row_present_absent_same_label_rejected() {
     let err = kb.make_sort_ref_by_name("Error");
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let clash_row  = kb.make_arrow_type(int_ty, int_ty, &[err, absent_err], 1); // {Error, -Error}
-    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1);             // {Error}
+    let clash_row = kb.make_arrow_type(int_ty, int_ty, &[err, absent_err], 1); // {Error, -Error}
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1); // {Error}
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(clash_row), &TermIdView(closed_err)),
-        "{{Error, -Error}} is malformed (present/absent clash) — unification rejects");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(clash_row),
+            &TermIdView(closed_err)
+        ),
+        "{{Error, -Error}} is malformed (present/absent clash) — unification rejects"
+    );
 }
 
 // ── WI-326 v1a row subtyping tests ───────────────────────────────────────
@@ -2997,10 +3811,14 @@ fn subtype_arrow_pure_subtype_of_effectful_via_rows() {
     let effect = kb.make_sort_ref(e_sym);
     let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[], 1);
     let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect], 1);
-    assert!(types_compatible(&mut kb, pure_fn, effectful_fn),
-        "pure (closed empty row) <: effectful (closed {{e}}) — covariant subset");
-    assert!(!types_compatible(&mut kb, effectful_fn, pure_fn),
-        "effectful NOT <: pure — pure has fewer effects, can't accept more");
+    assert!(
+        types_compatible(&mut kb, pure_fn, effectful_fn),
+        "pure (closed empty row) <: effectful (closed {{e}}) — covariant subset"
+    );
+    assert!(
+        !types_compatible(&mut kb, effectful_fn, pure_fn),
+        "effectful NOT <: pure — pure has fewer effects, can't accept more"
+    );
 }
 
 /// Open ≤ closed with absorbable extras — actual has open tail with no
@@ -3026,8 +3844,10 @@ fn subtype_arrow_open_le_closed_tail_closes() {
     // Expected: {E1, E2} — closed.
     let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
 
-    assert!(types_compatible(&mut kb, open_actual, closed_expected),
-        "open-tail actual (no labels) <: closed expected — actual's tail closes to empty");
+    assert!(
+        types_compatible(&mut kb, open_actual, closed_expected),
+        "open-tail actual (no labels) <: closed expected — actual's tail closes to empty"
+    );
 }
 
 /// Open ≤ closed where actual has labels not in expected → must reject.
@@ -3053,8 +3873,10 @@ fn subtype_arrow_open_le_closed_extras_reject() {
     // Expected: {E1, E2} — closed, no E3.
     let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
 
-    assert!(!types_compatible(&mut kb, open_actual, closed_expected),
-        "open actual with extra concrete label NOT in closed expected must reject");
+    assert!(
+        !types_compatible(&mut kb, open_actual, closed_expected),
+        "open actual with extra concrete label NOT in closed expected must reject"
+    );
 }
 
 /// Closed ≤ open — actual's labels go into expected's tail (or are
@@ -3073,8 +3895,10 @@ fn subtype_arrow_closed_le_open() {
     let closed_actual = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
     let open_expected = kb.make_arrow_type(int_ty, int_ty, &[rho], 1); // {| ?rho}
 
-    assert!(types_compatible(&mut kb, closed_actual, open_expected),
-        "closed actual <: open expected — expected's tail absorbs actual's labels");
+    assert!(
+        types_compatible(&mut kb, closed_actual, open_expected),
+        "closed actual <: open expected — expected's tail absorbs actual's labels"
+    );
 }
 
 // ── WI-332 arrow-vs-Function path effects consistency ──────────────────
@@ -3108,12 +3932,18 @@ fn subtype_arrow_with_effect_not_le_function_no_effect() {
     let empty_effects_rows = kb.build_canonical_effects_rows(&[]);
     let expected = kb.make_parameterized_type(
         fn_base,
-        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, empty_effects_rows)],
+        &[
+            (a_sym, int_ty),
+            (b_sym, int_ty),
+            (e_sym, empty_effects_rows),
+        ],
     );
 
-    assert!(!types_compatible(&mut kb, actual, expected),
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
         "arrow(Int64, Int64, {{Reads}}) NOT <: Function[A=Int64, B=Int64, E={{}}] — \
-         actual has Reads, expected closed-empty can't accept");
+         actual has Reads, expected closed-empty can't accept"
+    );
 }
 
 /// WI-332: an arrow with empty effects IS a subtype of a Function with
@@ -3139,9 +3969,11 @@ fn subtype_arrow_pure_le_function_with_effects() {
         &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, effects_rows)],
     );
 
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "arrow(Int64, Int64, {{}}) <: Function[A=Int64, B=Int64, E={{Reads}}] — \
-         pure (empty) is a subset of any closed effect set");
+         pure (empty) is a subset of any closed effect set"
+    );
 }
 
 /// WI-332: Function with NO E binding is polymorphic in effects — accepts
@@ -3165,14 +3997,13 @@ fn subtype_arrow_with_effect_le_function_no_E_binding_polymorphic() {
     let a_sym = kb.intern("A");
     let b_sym = kb.intern("B");
     // Function[A=Int64, B=Int64] — NO E binding, polymorphic in effects.
-    let expected = kb.make_parameterized_type(
-        fn_base,
-        &[(a_sym, int_ty), (b_sym, int_ty)],
-    );
+    let expected = kb.make_parameterized_type(fn_base, &[(a_sym, int_ty), (b_sym, int_ty)]);
 
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "arrow(Int64, Int64, {{Reads}}) <: Function[A=Int64, B=Int64] — missing \
-         E binding is polymorphic in effects, accepts any actual");
+         E binding is polymorphic in effects, accepts any actual"
+    );
 }
 
 /// WI-332: Function-vs-arrow direction (mirrors the arrow-vs-Function
@@ -3199,9 +4030,11 @@ fn subtype_function_with_effect_not_le_arrow_no_effect() {
     // arrow(Int64, Int64, {}) — closed empty
     let expected = kb.make_arrow_type(int_ty, int_ty, &[], 1);
 
-    assert!(!types_compatible(&mut kb, actual, expected),
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
         "Function[A=Int64, B=Int64, E={{Reads}}] NOT <: arrow(Int64, Int64, {{}}) — \
-         same denotational shape as arrow-vs-arrow rejection");
+         same denotational shape as arrow-vs-arrow rejection"
+    );
 }
 
 // ── WI-333 Function-vs-Function effects path uses row subtyping ─────────
@@ -3243,10 +4076,14 @@ fn subtype_function_E_fewer_effects_le_more() {
         &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, more_rows)],
     );
 
-    assert!(types_compatible(&mut kb, fewer, more),
-        "Function[E={{Reads}}] <: Function[E={{Reads, Writes}}] — fewer effects");
-    assert!(!types_compatible(&mut kb, more, fewer),
-        "Function[E={{Reads, Writes}}] NOT <: Function[E={{Reads}}]");
+    assert!(
+        types_compatible(&mut kb, fewer, more),
+        "Function[E={{Reads}}] <: Function[E={{Reads, Writes}}] — fewer effects"
+    );
+    assert!(
+        !types_compatible(&mut kb, more, fewer),
+        "Function[E={{Reads, Writes}}] NOT <: Function[E={{Reads}}]"
+    );
 }
 
 /// WI-333: disjoint effect sets are incompatible — Function[E={Reads}] vs
@@ -3278,8 +4115,10 @@ fn subtype_function_E_disjoint_effects_incompatible() {
         &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, writes_rows)],
     );
 
-    assert!(!types_compatible(&mut kb, fn_reads, fn_writes),
-        "Function[E={{Reads}}] NOT <: Function[E={{Writes}}] — disjoint");
+    assert!(
+        !types_compatible(&mut kb, fn_reads, fn_writes),
+        "Function[E={{Reads}}] NOT <: Function[E={{Writes}}] — disjoint"
+    );
 }
 
 /// WI-333: open-row subsumption works through the Function[E] path now,
@@ -3315,8 +4154,10 @@ fn subtype_function_E_open_le_closed() {
         &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, closed_rows)],
     );
 
-    assert!(types_compatible(&mut kb, actual, expected),
-        "Function[E={{|?rho}}] <: Function[E={{Reads}}] — open tail closes");
+    assert!(
+        types_compatible(&mut kb, actual, expected),
+        "Function[E={{|?rho}}] <: Function[E={{Reads}}] — open tail closes"
+    );
 }
 
 /// WI-333: open actual with EXTRA concrete labels NOT in closed expected
@@ -3355,12 +4196,18 @@ fn subtype_function_E_open_le_closed_extras_reject() {
     );
     let expected = kb.make_parameterized_type(
         fn_base,
-        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, closed_expected_rows)],
+        &[
+            (a_sym, int_ty),
+            (b_sym, int_ty),
+            (e_sym, closed_expected_rows),
+        ],
     );
 
-    assert!(!types_compatible(&mut kb, actual, expected),
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
         "Function[E={{E1, E3 | ?rho}}] NOT <: Function[E={{E1, E2}}] — \
-         open actual carries E3 that closed expected can't accept");
+         open actual carries E3 that closed expected can't accept"
+    );
 }
 
 /// WI-333: closed actual ≤ open expected — actual's labels absorbed by
@@ -3387,15 +4234,25 @@ fn subtype_function_E_closed_le_open() {
 
     let actual = kb.make_parameterized_type(
         fn_base,
-        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, closed_actual_rows)],
+        &[
+            (a_sym, int_ty),
+            (b_sym, int_ty),
+            (e_sym, closed_actual_rows),
+        ],
     );
     let expected = kb.make_parameterized_type(
         fn_base,
-        &[(a_sym, int_ty), (b_sym, int_ty), (e_sym, open_expected_rows)],
+        &[
+            (a_sym, int_ty),
+            (b_sym, int_ty),
+            (e_sym, open_expected_rows),
+        ],
     );
 
-    assert!(types_compatible(&mut kb, actual, expected),
-        "Function[E={{E1}}] <: Function[E={{|?rho}}] — expected's tail absorbs E1");
+    assert!(
+        types_compatible(&mut kb, actual, expected),
+        "Function[E={{E1}}] <: Function[E={{|?rho}}] — expected's tail absorbs E1"
+    );
 }
 
 /// F1 regression (code-review): multi-actual-to-single-expected entity
@@ -3426,9 +4283,11 @@ end
     let actual = kb.make_arrow_type(int_ty, int_ty, &[red, blue], 1);
     let expected = kb.make_arrow_type(int_ty, int_ty, &[color], 1);
 
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "{{red, blue}} <: {{Color}} — multi-entity to single sort; \
-         set-with-subtyping semantics lets Color cover both red and blue");
+         set-with-subtyping semantics lets Color cover both red and blue"
+    );
 }
 
 /// WI-335 probe: nested arrow sharing a row var across positions with
@@ -3465,9 +4324,11 @@ fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
     //   result (covariant):    actual_result  <: expected_result needs rho ⊆ {E2}
     // These conflict. Post-WI-335: types_compatible threads a shared subst,
     // the conflict surfaces as contradiction, and the outer rejects.
-    assert!(!types_compatible(&mut kb, actual, expected),
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
         "nested arrows sharing rho across positions with inconsistent \
-         expected bindings must REJECT (no consistent global rho)");
+         expected bindings must REJECT (no consistent global rho)"
+    );
 }
 
 // ── WI-337 bootstrap-safe arrow comparison ───────────────────────────────
@@ -3511,8 +4372,8 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     let arity_one = kb.make_arity_term(1);
 
     // arrow_no_effects: arrow(param: Int64, result: Int64) — no effects field.
-    let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
-        = SmallVec::new();
+    let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
+        SmallVec::new();
     na.push((param_key, int_ty));
     na.push((result_key, int_ty));
     na.push((arity_key, arity_one));
@@ -3528,11 +4389,9 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     // (Some, None) arm via the *opposite* side's None.
     let v_sym = kb.intern("?eff");
     let vid = kb.fresh_var(v_sym);
-    let v_term = kb.alloc(Term::Var(
-        anthill_core::kb::term::Var::Global(vid),
-    ));
-    let mut na2: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
-        = SmallVec::new();
+    let v_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
+    let mut na2: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
+        SmallVec::new();
     na2.push((param_key, int_ty));
     na2.push((result_key, int_ty));
     na2.push((effects_key, v_term));
@@ -3552,20 +4411,38 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     // Cover all four return-false sites: (Some, None) and (None, Some)
     // in both arrow_compatible (types_compatible path) and unify_arrow
     // (unify_types path).
-    assert!(!types_compatible(&mut kb, arrow_with_effects, arrow_no_effects),
+    assert!(
+        !types_compatible(&mut kb, arrow_with_effects, arrow_no_effects),
         "arrow_compatible (Some, None): bootstrap-uninitialized KB rejects \
-         without panicking");
-    assert!(!types_compatible(&mut kb, arrow_no_effects, arrow_with_effects),
-        "arrow_compatible (None, Some): symmetric arm also bootstrap-safe");
+         without panicking"
+    );
+    assert!(
+        !types_compatible(&mut kb, arrow_no_effects, arrow_with_effects),
+        "arrow_compatible (None, Some): symmetric arm also bootstrap-safe"
+    );
 
     // unify_types reaches unify_arrow's (Some, None) / (None, Some) arms.
     let mut subst1 = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst1, &TermIdView(arrow_with_effects), &TermIdView(arrow_no_effects)),
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst1,
+            &TermIdView(arrow_with_effects),
+            &TermIdView(arrow_no_effects)
+        ),
         "unify_arrow (Some, None): bootstrap-uninitialized KB rejects \
-         without panicking");
+         without panicking"
+    );
     let mut subst2 = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst2, &TermIdView(arrow_no_effects), &TermIdView(arrow_with_effects)),
-        "unify_arrow (None, Some): symmetric arm also bootstrap-safe");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst2,
+            &TermIdView(arrow_no_effects),
+            &TermIdView(arrow_with_effects)
+        ),
+        "unify_arrow (None, Some): symmetric arm also bootstrap-safe"
+    );
 
     // bind_row_tail is reachable via the bare-Var path in
     // decompose_effect_row when both arrows carry an effects field of
@@ -3573,11 +4450,9 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     // case and confirm no panic.
     let v_sym2 = kb.intern("?eff2");
     let vid2 = kb.fresh_var(v_sym2);
-    let v_term2 = kb.alloc(Term::Var(
-        anthill_core::kb::term::Var::Global(vid2),
-    ));
-    let mut na3: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
-        = SmallVec::new();
+    let v_term2 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid2)));
+    let mut na3: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
+        SmallVec::new();
     na3.push((param_key, int_ty));
     na3.push((result_key, int_ty));
     na3.push((effects_key, v_term2));
@@ -3591,8 +4466,10 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     // Both sides have bare-Var effects; subtype_effect_rows /
     // unify_effect_rows reach bind_row_tail with a Var::Global tail
     // and would panic at make_effect_expression_empty_row pre-WI-337.
-    assert!(!types_compatible(&mut kb, arrow_with_effects, arrow_with_other_var),
-        "bind_row_tail via bare-Var effects: bootstrap-safe reject without panic");
+    assert!(
+        !types_compatible(&mut kb, arrow_with_effects, arrow_with_other_var),
+        "bind_row_tail via bare-Var effects: bootstrap-safe reject without panic"
+    );
 }
 
 // ── WI-336 Rigid row tail hardening ──────────────────────────────────────
@@ -3622,9 +4499,7 @@ fn subtype_rejects_rigid_tail_close_to_empty() {
 
     let rigid_name = kb.intern("rho_rigid");
     let rigid_vid = kb.fresh_var(rigid_name);
-    let rigid_tail = kb.alloc(Term::Var(
-        anthill_core::kb::term::Var::Rigid(rigid_vid),
-    ));
+    let rigid_tail = kb.alloc(Term::Var(anthill_core::kb::term::Var::Rigid(rigid_vid)));
 
     // actual = arrow(Int64, Int64, {| ?rho_rigid}) — open with Rigid tail.
     let actual = kb.make_arrow_type(int_ty, int_ty, &[rigid_tail], 1);
@@ -3637,9 +4512,11 @@ fn subtype_rejects_rigid_tail_close_to_empty() {
     // true → arm returns true → SUB ACCEPTED (unsound).
     // Post-WI-336: bind_row_tail rejects Rigid → arm returns false →
     // SUB REJECTED (sound).
-    assert!(!types_compatible(&mut kb, actual, expected),
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
         "arrow({{|?rho_rigid}}) NOT <: arrow({{E1}}) — Rigid tail's \
-         universally-quantified contents could violate the closed bound");
+         universally-quantified contents could violate the closed bound"
+    );
 }
 
 /// WI-336: same idea for unify — unify_effect_rows' (Some(a_t), None) arm
@@ -3653,21 +4530,33 @@ fn unify_rejects_rigid_tail_against_closed() {
 
     let rigid_name = kb.intern("rho_rigid");
     let rigid_vid = kb.fresh_var(rigid_name);
-    let rigid_tail = kb.alloc(Term::Var(
-        anthill_core::kb::term::Var::Rigid(rigid_vid),
-    ));
+    let rigid_tail = kb.alloc(Term::Var(anthill_core::kb::term::Var::Rigid(rigid_vid)));
 
     let arrow_open_rigid = kb.make_arrow_type(int_ty, int_ty, &[e1, rigid_tail], 1);
     let arrow_closed = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
 
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(arrow_open_rigid), &TermIdView(arrow_closed)),
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_open_rigid),
+            &TermIdView(arrow_closed)
+        ),
         "unify of {{E1 | ?rho_rigid}} with closed {{E1}} must REJECT — \
-         Rigid can't be bound to empty by the unifier");
+         Rigid can't be bound to empty by the unifier"
+    );
     // Symmetric direction.
     let mut subst2 = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst2, &TermIdView(arrow_closed), &TermIdView(arrow_open_rigid)),
-        "symmetric direction: unify of closed {{E1}} with {{E1 | ?rho_rigid}} must REJECT");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst2,
+            &TermIdView(arrow_closed),
+            &TermIdView(arrow_open_rigid)
+        ),
+        "symmetric direction: unify of closed {{E1}} with {{E1 | ?rho_rigid}} must REJECT"
+    );
 }
 
 /// WI-336 positive control: Global (regular) row tail with the same
@@ -3681,16 +4570,16 @@ fn subtype_accepts_global_tail_close_to_empty() {
 
     let global_name = kb.intern("?rho");
     let global_vid = kb.fresh_var(global_name);
-    let global_tail = kb.alloc(Term::Var(
-        anthill_core::kb::term::Var::Global(global_vid),
-    ));
+    let global_tail = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(global_vid)));
 
     let actual = kb.make_arrow_type(int_ty, int_ty, &[global_tail], 1);
     let expected = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
 
     // Same shape as the Rigid case but with Global — must accept.
-    assert!(types_compatible(&mut kb, actual, expected),
-        "arrow({{|?rho_global}}) <: arrow({{E1}}) — Global tail can close to empty");
+    assert!(
+        types_compatible(&mut kb, actual, expected),
+        "arrow({{|?rho_global}}) <: arrow({{E1}}) — Global tail can close to empty"
+    );
 }
 
 /// WI-335 positive control: shared rho across positions with CONSISTENT
@@ -3719,9 +4608,11 @@ fn subtype_nested_arrow_shared_rho_consistent_binding_accepts() {
     let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
     let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[], 1);
 
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "nested arrows sharing rho across positions with CONSISTENT \
-         expected bindings must ACCEPT (rho := {{E1}} works for both)");
+         expected bindings must ACCEPT (rho := {{E1}} works for both)"
+    );
 }
 
 // ── WI-334 shared row var with non-empty extras ──────────────────────────
@@ -3752,9 +4643,11 @@ fn subtype_arrow_shared_rho_only_e_extras() {
     let actual = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
     let expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho], 1);
 
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "arrow({{|?rho}}) <: arrow({{E2 | ?rho}}) — same rho var means \
-         A's set = ?rho-content ⊆ {{E2}} ∪ ?rho-content = B's set");
+         A's set = ?rho-content ⊆ {{E2}} ∪ ?rho-content = B's set"
+    );
 }
 
 /// WI-334 subtype: symmetric case — only_a extras non-empty.
@@ -3774,9 +4667,11 @@ fn subtype_arrow_shared_rho_only_a_extras() {
 
     // Under the shared-rho binding K = {E1 | fresh}, both rows become
     // {E1 | fresh}. Equal sets → A <: B.
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "arrow({{E1 | ?rho}}) <: arrow({{| ?rho}}) — shared-rho binding \
-         absorbs E1 into the common tail");
+         absorbs E1 into the common tail"
+    );
 }
 
 /// WI-334 unify: shared rho with non-empty extras. Pre-WI-334
@@ -3797,10 +4692,22 @@ fn unify_arrow_shared_rho_with_extras() {
     let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho], 1);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_a), &TermIdView(arrow_b)),
-        "unify of arrows sharing rho with one side carrying extras must succeed");
-    assert!(matches!(subst.resolve_as_value(rho_vid), Some(anthill_core::eval::Value::Term { .. })),
-        "?rho should be bound after unification");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_a),
+            &TermIdView(arrow_b)
+        ),
+        "unify of arrows sharing rho with one side carrying extras must succeed"
+    );
+    assert!(
+        matches!(
+            subst.resolve_as_value(rho_vid),
+            Some(anthill_core::eval::Value::Term { .. })
+        ),
+        "?rho should be bound after unification"
+    );
 }
 
 // ── WI-339 decompose_effect_row malformed-input hard reject ──────────────
@@ -3840,7 +4747,8 @@ fn subtype_rejects_malformed_multi_tail_row() {
 
     // Hand-construct an arrow with the malformed effects field directly
     // (bypassing make_arrow_type's canonicalization).
-    let arrow_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.Arrow")
+    let arrow_sym = kb
+        .try_resolve_symbol("anthill.prelude.TypeExtractor.Arrow")
         .expect("arrow symbol pre-registered");
     let param_key = kb.intern("param");
     let result_key = kb.intern("result");
@@ -3850,8 +4758,8 @@ fn subtype_rejects_malformed_multi_tail_row() {
     // exercising the multi-tail guard at all.
     let arity_key = kb.intern("arity");
     let arity_one = kb.make_arity_term(1);
-    let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>
-        = SmallVec::new();
+    let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
+        SmallVec::new();
     na.push((param_key, int_ty));
     na.push((result_key, int_ty));
     na.push((effects_key, malformed_rows));
@@ -3866,15 +4774,26 @@ fn subtype_rejects_malformed_multi_tail_row() {
     // A well-formed arrow against the malformed one — must reject.
     let arrow_clean = kb.make_arrow_type(int_ty, int_ty, &[], 1);
 
-    assert!(!types_compatible(&mut kb, arrow_malformed, arrow_clean),
-        "malformed multi-tail row must reject the subtype check");
-    assert!(!types_compatible(&mut kb, arrow_clean, arrow_malformed),
-        "malformed multi-tail row must reject the symmetric subtype check");
+    assert!(
+        !types_compatible(&mut kb, arrow_malformed, arrow_clean),
+        "malformed multi-tail row must reject the subtype check"
+    );
+    assert!(
+        !types_compatible(&mut kb, arrow_clean, arrow_malformed),
+        "malformed multi-tail row must reject the symmetric subtype check"
+    );
 
     // unify_types also rejects (propagates the decompose None as false).
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(arrow_malformed), &TermIdView(arrow_clean)),
-        "unify rejects against malformed multi-tail row");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_malformed),
+            &TermIdView(arrow_clean)
+        ),
+        "unify rejects against malformed multi-tail row"
+    );
 }
 
 // ── WI-338 pair/cover_present_labels hardening ───────────────────────────
@@ -3919,11 +4838,15 @@ fn cover_pairs_sort_ref_with_parameterized_same_base() {
     // parameterized term reports Some("parameterized"). Now the pre-filter
     // is gone and unify_types' fallback to types_compatible's bridge arm
     // handles it.
-    assert!(types_compatible(&mut kb, actual, expected),
+    assert!(
+        types_compatible(&mut kb, actual, expected),
         "effects with mixed sort_ref / parameterized(same base) must \
-         pair via the types_compatible bridge arm");
-    assert!(types_compatible(&mut kb, expected, actual),
-        "symmetric — sort_ref vs parameterized is two-way compatible");
+         pair via the types_compatible bridge arm"
+    );
+    assert!(
+        types_compatible(&mut kb, expected, actual),
+        "symmetric — sort_ref vs parameterized is two-way compatible"
+    );
 }
 
 /// WI-338 F11: a label-pair attempt that partially binds variables and
@@ -3959,12 +4882,16 @@ fn cover_snapshot_restore_on_failed_pairing_no_leak() {
     let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
     let expected = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
 
-    assert!(!types_compatible(&mut kb, actual, expected),
-        "arrow({{E1, E2}}) NOT <: arrow({{E1}}) — actual has E2 expected lacks");
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
+        "arrow({{E1, E2}}) NOT <: arrow({{E1}}) — actual has E2 expected lacks"
+    );
     // A second comparison on the same fresh KB also rejects cleanly
     // (no stale bindings from the first call leaked into anywhere).
-    assert!(!types_compatible(&mut kb, actual, expected),
-        "idempotent: repeated subtype query returns the same answer");
+    assert!(
+        !types_compatible(&mut kb, actual, expected),
+        "idempotent: repeated subtype query returns the same answer"
+    );
 }
 
 /// Open ≤ open with shared tail — both sides have open tails. The
@@ -3992,8 +4919,10 @@ fn subtype_arrow_open_le_open_shared_tail() {
     // Expected: {E2 | ?rho_e}
     let open_expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_e], 1);
 
-    assert!(types_compatible(&mut kb, open_actual, open_expected),
-        "open <: open — fresh shared tail accommodates each side's extras");
+    assert!(
+        types_compatible(&mut kb, open_actual, open_expected),
+        "open <: open — fresh shared tail accommodates each side's extras"
+    );
 }
 
 // ── is_subtype tests (strict, irreflexive) ─────────────────────
@@ -4002,7 +4931,10 @@ fn subtype_arrow_open_le_open_shared_tail() {
 fn is_subtype_not_reflexive() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int64");
-    assert!(!is_subtype(&mut kb, int_ty, int_ty), "Int64 is not a strict subtype of Int64");
+    assert!(
+        !is_subtype(&mut kb, int_ty, int_ty),
+        "Int64 is not a strict subtype of Int64"
+    );
 }
 
 #[test]
@@ -4017,8 +4949,14 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    assert!(is_subtype(&mut kb, red_ty, color_ty), "red is a strict subtype of Color");
-    assert!(!is_subtype(&mut kb, color_ty, red_ty), "Color is not a subtype of red");
+    assert!(
+        is_subtype(&mut kb, red_ty, color_ty),
+        "red is a strict subtype of Color"
+    );
+    assert!(
+        !is_subtype(&mut kb, color_ty, red_ty),
+        "Color is not a subtype of red"
+    );
 }
 
 #[test]
@@ -4029,7 +4967,10 @@ fn is_subtype_requires_direct() {
     let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
     let ordered_ty = kb.make_sort_ref(ordered_sym);
     let eq_ty = kb.make_sort_ref(eq_sym);
-    assert!(is_subtype(&mut kb, ordered_ty, eq_ty), "Ord <: Eq via requires");
+    assert!(
+        is_subtype(&mut kb, ordered_ty, eq_ty),
+        "Ord <: Eq via requires"
+    );
     assert!(!is_subtype(&mut kb, eq_ty, ordered_ty), "Eq is not <: Ord");
 }
 
@@ -4041,7 +4982,10 @@ fn requires_compatible() {
     let eq_sym = kb.resolve_symbol("anthill.prelude.Eq");
     let ordered_ty = kb.make_sort_ref(ordered_sym);
     let eq_ty = kb.make_sort_ref(eq_sym);
-    assert!(types_compatible(&mut kb, ordered_ty, eq_ty), "Ord compatible with Eq");
+    assert!(
+        types_compatible(&mut kb, ordered_ty, eq_ty),
+        "Ord compatible with Eq"
+    );
 }
 
 // ── requires_chain and obligation checking tests ───────────────
@@ -4052,8 +4996,12 @@ fn requires_chain_ordered_includes_eq() {
     let ordered_sym = kb.resolve_symbol("anthill.prelude.Ord");
     let chain = requires_chain_flat(&kb, ordered_sym);
     let eq_name = "Eq";
-    assert!(chain.iter().any(|e| kb.local_name_of(e.required_sort) == eq_name),
-        "Ord's requires chain should include Eq");
+    assert!(
+        chain
+            .iter()
+            .any(|e| kb.local_name_of(e.required_sort) == eq_name),
+        "Ord's requires chain should include Eq"
+    );
 }
 
 #[test]
@@ -4084,9 +5032,15 @@ end
     let mut kb = load_with_source(source);
     let my_sort_sym = kb.resolve_symbol("MySort");
     let missing = check_obligations(&kb, my_sort_sym);
-    assert!(!missing.is_empty(), "MySort should be missing 'show' obligation");
-    assert!(missing.iter().any(|m| m.operation == "show"),
-        "should report 'show' as missing, got: {:?}", missing);
+    assert!(
+        !missing.is_empty(),
+        "MySort should be missing 'show' obligation"
+    );
+    assert!(
+        missing.iter().any(|m| m.operation == "show"),
+        "should report 'show' as missing, got: {:?}",
+        missing
+    );
 }
 
 #[test]
@@ -4105,8 +5059,11 @@ end
     let mut kb = load_with_source(source);
     let my_sort_sym = kb.resolve_symbol("MySort");
     let missing = check_obligations(&kb, my_sort_sym);
-    assert!(missing.is_empty(),
-        "MySort provides show, should have no missing obligations, got: {:?}", missing);
+    assert!(
+        missing.is_empty(),
+        "MySort provides show, should have no missing obligations, got: {:?}",
+        missing
+    );
 }
 
 #[test]
@@ -4121,7 +5078,11 @@ operation get_color() -> Color = red
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "red <: Color, should be no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "red <: Color, should be no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4144,13 +5105,20 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "Canvas.paint returns red <: Color, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Canvas.paint returns red <: Color, got: {:?}",
+        errors
+    );
     // Canvas requires Paintable — compatible
     let canvas_sym = kb.resolve_symbol("Canvas");
     let paintable_sym = kb.resolve_symbol("Paintable");
     let canvas_ty = kb.make_sort_ref(canvas_sym);
     let paintable_ty = kb.make_sort_ref(paintable_sym);
-    assert!(types_compatible(&mut kb, canvas_ty, paintable_ty), "Canvas <: Paintable via requires");
+    assert!(
+        types_compatible(&mut kb, canvas_ty, paintable_ty),
+        "Canvas <: Paintable via requires"
+    );
 }
 
 #[test]
@@ -4184,15 +5152,30 @@ end
     // circle <: Shape (entity_of)
     assert!(is_subtype(&mut kb, circle_ty, shape_ty), "circle <: Shape");
     // Shape <: Drawable (requires)
-    assert!(is_subtype(&mut kb, shape_ty, drawable_ty), "Shape <: Drawable");
+    assert!(
+        is_subtype(&mut kb, shape_ty, drawable_ty),
+        "Shape <: Drawable"
+    );
     // circle <: Drawable (transitively: entity_of + requires)
-    assert!(types_compatible(&mut kb, circle_ty, drawable_ty), "circle compatible with Drawable");
+    assert!(
+        types_compatible(&mut kb, circle_ty, drawable_ty),
+        "circle compatible with Drawable"
+    );
     // NOT compatible with unrelated sort
     let printable_sym = kb.resolve_symbol("Printable");
     let printable_ty = kb.make_sort_ref(printable_sym);
-    assert!(!types_compatible(&mut kb, circle_ty, printable_ty), "circle not compatible with Printable");
-    assert!(!types_compatible(&mut kb, shape_ty, printable_ty), "Shape not compatible with Printable");
-    assert!(!types_compatible(&mut kb, drawable_ty, printable_ty), "Drawable not compatible with Printable");
+    assert!(
+        !types_compatible(&mut kb, circle_ty, printable_ty),
+        "circle not compatible with Printable"
+    );
+    assert!(
+        !types_compatible(&mut kb, shape_ty, printable_ty),
+        "Shape not compatible with Printable"
+    );
+    assert!(
+        !types_compatible(&mut kb, drawable_ty, printable_ty),
+        "Drawable not compatible with Printable"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4211,12 +5194,21 @@ end
     let color_sym = kb.resolve_symbol("Color");
     // Enum entities should be registered
     let red_sym = kb.resolve_symbol("Color.red");
-    assert!(kb.is_constructor_symbol(red_sym), "red should be a constructor");
+    assert!(
+        kb.is_constructor_symbol(red_sym),
+        "red should be a constructor"
+    );
     let blue_sym = kb.resolve_symbol("Color.blue");
-    assert!(kb.is_constructor_symbol(blue_sym), "blue should be a constructor");
+    assert!(
+        kb.is_constructor_symbol(blue_sym),
+        "blue should be a constructor"
+    );
     // Enum should have SortKind::Enum
     let color_term = kb.resolve_qualified_name_term("Color");
-    assert_eq!(kb.sort_kind(kb.name_term_sym(color_term)), Some(anthill_core::kb::SortKind::Enum));
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(color_term)),
+        Some(anthill_core::kb::SortKind::Enum)
+    );
 }
 
 #[test]
@@ -4230,9 +5222,15 @@ end
 "#;
     let mut kb = load_with_source(source);
     let some_sym = kb.resolve_symbol("Option.some");
-    assert!(kb.is_constructor_symbol(some_sym), "some should be a constructor");
+    assert!(
+        kb.is_constructor_symbol(some_sym),
+        "some should be a constructor"
+    );
     let none_sym = kb.resolve_symbol("Option.none");
-    assert!(kb.is_constructor_symbol(none_sym), "none should be a constructor");
+    assert!(
+        kb.is_constructor_symbol(none_sym),
+        "none should be a constructor"
+    );
 }
 
 #[test]
@@ -4248,7 +5246,10 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    assert!(types_compatible(&mut kb, red_ty, color_ty), "enum: red <: Color");
+    assert!(
+        types_compatible(&mut kb, red_ty, color_ty),
+        "enum: red <: Color"
+    );
 }
 
 #[test]
@@ -4262,23 +5263,31 @@ end
     // Check that SortInfo for Color has kind = "enum"
     let si_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
     for rid in kb.rules_by_functor(si_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         let head = kb.rule_head(rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
-            let name = named_args.iter()
+            let name = named_args
+                .iter()
                 .find(|(s, _)| kb.local_name_of(*s) == "name")
                 .and_then(|(_, v)| match kb.get_term(*v) {
                     Term::Ref(s) => Some(kb.local_name_of(*s).to_string()),
                     _ => None,
                 });
             if name.as_deref() == Some("Color") {
-                let kind = named_args.iter()
+                let kind = named_args
+                    .iter()
                     .find(|(s, _)| kb.local_name_of(*s) == "kind")
                     .and_then(|(_, v)| match kb.get_term(*v) {
                         Term::Ident(s) => Some(kb.local_name_of(*s).to_string()),
                         _ => None,
                     });
-                assert_eq!(kind.as_deref(), Some("enum"), "SortInfo kind should be 'enum'");
+                assert_eq!(
+                    kind.as_deref(),
+                    Some("enum"),
+                    "SortInfo kind should be 'enum'"
+                );
                 return;
             }
         }
@@ -4290,8 +5299,8 @@ end
 // unify_types tests
 // ══════════════════════════════════════════════════════════════════
 
-use anthill_core::kb::typing::unify_types;
 use anthill_core::kb::term_view::TermIdView;
+use anthill_core::kb::typing::unify_types;
 // Substitution already imported above for the types_compatible test wrapper.
 
 #[test]
@@ -4299,7 +5308,15 @@ fn unify_identical_types() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(int_ty)), "Int64 unifies with Int64");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(int_ty),
+            &TermIdView(int_ty)
+        ),
+        "Int64 unifies with Int64"
+    );
 }
 
 #[test]
@@ -4310,8 +5327,20 @@ fn unify_var_binds_to_type() {
     let vid = kb.fresh_var(sym);
     let var_term = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_term), &TermIdView(int_ty)), "Var unifies with Int64");
-    assert_eq!(subst.resolve_as_value(vid).map(|v| v.expect_term()), Some(int_ty), "Var should be bound to Int64");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(var_term),
+            &TermIdView(int_ty)
+        ),
+        "Var unifies with Int64"
+    );
+    assert_eq!(
+        subst.resolve_as_value(vid).map(|v| v.expect_term()),
+        Some(int_ty),
+        "Var should be bound to Int64"
+    );
 }
 
 #[test]
@@ -4324,10 +5353,21 @@ fn unify_both_vars_bind() {
     let var1 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid1)));
     let var2 = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(vid2)));
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(var1), &TermIdView(var2)), "two vars unify");
+    assert!(
+        unify_types(&mut kb, &mut subst, &TermIdView(var1), &TermIdView(var2)),
+        "two vars unify"
+    );
     // One should be bound to the other
-    assert!(matches!(subst.resolve_as_value(vid1), Some(anthill_core::eval::Value::Term { .. })) || matches!(subst.resolve_as_value(vid2), Some(anthill_core::eval::Value::Term { .. })),
-        "at least one var should be bound");
+    assert!(
+        matches!(
+            subst.resolve_as_value(vid1),
+            Some(anthill_core::eval::Value::Term { .. })
+        ) || matches!(
+            subst.resolve_as_value(vid2),
+            Some(anthill_core::eval::Value::Term { .. })
+        ),
+        "at least one var should be bound"
+    );
 }
 
 #[test]
@@ -4336,7 +5376,15 @@ fn unify_incompatible_ground_types() {
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let str_ty = kb.make_sort_ref_by_name("String");
     let mut subst = Substitution::new();
-    assert!(!unify_types(&mut kb, &mut subst, &TermIdView(int_ty), &TermIdView(str_ty)), "Int64 does not unify with String");
+    assert!(
+        !unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(int_ty),
+            &TermIdView(str_ty)
+        ),
+        "Int64 does not unify with String"
+    );
 }
 
 #[test]
@@ -4355,8 +5403,20 @@ fn unify_parameterized_with_var_binding() {
     let list_int = kb.make_parameterized_type(list_base, &[(t_sym, int_ty)]);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(list_var), &TermIdView(list_int)), "List[T=?X] unifies with List[T=Int64]");
-    assert_eq!(subst.resolve_as_value(x_vid).map(|v| v.expect_term()), Some(int_ty), "?X should be bound to Int64");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(list_var),
+            &TermIdView(list_int)
+        ),
+        "List[T=?X] unifies with List[T=Int64]"
+    );
+    assert_eq!(
+        subst.resolve_as_value(x_vid).map(|v| v.expect_term()),
+        Some(int_ty),
+        "?X should be bound to Int64"
+    );
 }
 
 #[test]
@@ -4377,9 +5437,25 @@ fn unify_arrow_with_var_binding() {
     let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[], 1);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(arrow_var), &TermIdView(arrow_concrete)), "(?A -> ?B) unifies with (Int64 -> String)");
-    assert_eq!(subst.resolve_as_value(a_vid).map(|v| v.expect_term()), Some(int_ty), "?A = Int64");
-    assert_eq!(subst.resolve_as_value(b_vid).map(|v| v.expect_term()), Some(str_ty), "?B = String");
+    assert!(
+        unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(arrow_var),
+            &TermIdView(arrow_concrete)
+        ),
+        "(?A -> ?B) unifies with (Int64 -> String)"
+    );
+    assert_eq!(
+        subst.resolve_as_value(a_vid).map(|v| v.expect_term()),
+        Some(int_ty),
+        "?A = Int64"
+    );
+    assert_eq!(
+        subst.resolve_as_value(b_vid).map(|v| v.expect_term()),
+        Some(str_ty),
+        "?B = String"
+    );
 }
 
 #[test]
@@ -4398,8 +5474,10 @@ end
     let t_ref = kb.make_sort_ref(t_sym);
 
     let mut subst = Substitution::new();
-    assert!(unify_types(&mut kb, &mut subst, &TermIdView(t_ref), &TermIdView(int_ty)),
-        "sort_ref(T) should unify with Int64 via SortAlias");
+    assert!(
+        unify_types(&mut kb, &mut subst, &TermIdView(t_ref), &TermIdView(int_ty)),
+        "sort_ref(T) should unify with Int64 via SortAlias"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4409,8 +5487,7 @@ end
 fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    let result = load::load(&mut kb, &parsed, &NullResolver)
-        .expect("load failed");
+    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
     (kb, result)
 }
 
@@ -4428,7 +5505,11 @@ fact Thing(name: "hello", color: red)
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct fact should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct fact should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4441,7 +5522,10 @@ fact Thing(count: "hello")
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect String where Int64 expected");
+    assert!(
+        !errors.is_empty(),
+        "should detect String where Int64 expected"
+    );
 }
 
 #[test]
@@ -4453,7 +5537,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct literal body should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct literal body should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4469,7 +5557,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "let with Int64 annotation should typecheck, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "let with Int64 annotation should typecheck, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4490,7 +5582,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "annotated let should typecheck, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "annotated let should typecheck, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4503,7 +5599,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "add(x,x) with x:Int should return Int64 via type param instantiation, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "add(x,x) with x:Int should return Int64 via type param instantiation, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4515,7 +5615,10 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "should detect Int64 body vs String return");
+    assert!(
+        !errors.is_empty(),
+        "should detect Int64 body vs String return"
+    );
 }
 
 #[test]
@@ -4530,7 +5633,11 @@ fact Box(items: cons(head: 42, tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "correct List[T=Int64] value should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "correct List[T=Int64] value should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4545,7 +5652,11 @@ fact Box(items: cons(head: "hello", tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "String in List[T=Int64] should be detected, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "String in List[T=Int64] should be detected, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4559,7 +5670,10 @@ fact Foo(x: "wrong")
 "#;
     let (mut kb, result) = load_with_result(source);
     // Only check user sorts, not stdlib
-    assert!(!result.defined_sorts.is_empty(), "should have defined sorts");
+    assert!(
+        !result.defined_sorts.is_empty(),
+        "should have defined sorts"
+    );
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(!errors.is_empty(), "should detect type error in user sort");
 }
@@ -4585,11 +5699,20 @@ rule test_induction(?P) :- ?P(nil)
     assert!(!body.is_empty(), "rule should have a body");
     // Body goal should be ho_apply(?P, nil)
     match body[0].as_expr() {
-        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply {
+            functor, pos_args, ..
+        }) => {
             let fname = kb.local_name_of(*functor);
-            assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
-                "body should be ho_apply, got: {}", fname);
-            assert_eq!(pos_args.len(), 2, "ho_apply should have 2 pos args: ?P and nil");
+            assert!(
+                fname == "ho_apply" || fname.ends_with(".ho_apply"),
+                "body should be ho_apply, got: {}",
+                fname
+            );
+            assert_eq!(
+                pos_args.len(),
+                2,
+                "ho_apply should have 2 pos args: ?P and nil"
+            );
         }
         other => panic!("expected ho_apply Apply, got {:?}", other),
     }
@@ -4607,10 +5730,15 @@ rule test(?P) :- ?P(foo, bar)
     let facts = kb.rules_by_functor(test_sym.unwrap());
     let body = kb.rule_body_nodes(facts[0]);
     match body[0].as_expr() {
-        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply {
+            functor, pos_args, ..
+        }) => {
             let fname = kb.local_name_of(*functor);
-            assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
-                "body should be ho_apply, got: {}", fname);
+            assert!(
+                fname == "ho_apply" || fname.ends_with(".ho_apply"),
+                "body should be ho_apply, got: {}",
+                fname
+            );
             assert_eq!(pos_args.len(), 3, "ho_apply(?P, foo, bar) = 3 pos args");
         }
         other => panic!("expected ho_apply Apply, got {:?}", other),
@@ -4633,7 +5761,11 @@ rule bigint_induction(?P)
      (forall(?n), gt(?n, 0), ?P(sub(?n, 1)) -: ?P(?n))
 "#;
     let parsed = parse::parse(source);
-    assert!(parsed.is_ok(), "BigInt induction rule should parse: {:?}", parsed.err());
+    assert!(
+        parsed.is_ok(),
+        "BigInt induction rule should parse: {:?}",
+        parsed.err()
+    );
 
     let mut kb = load_stdlib_kb();
     load_source(&mut kb, source);
@@ -4649,22 +5781,33 @@ rule bigint_induction(?P)
     match kb.get_term(head) {
         Term::Fn { pos_args, .. } => {
             assert_eq!(pos_args.len(), 1, "head should have 1 arg (?P)");
-            assert!(matches!(kb.get_term(pos_args[0]), Term::Var(_)),
-                "head arg should be a Var");
+            assert!(
+                matches!(kb.get_term(pos_args[0]), Term::Var(_)),
+                "head arg should be a Var"
+            );
         }
         other => panic!("expected Fn head, got {:?}", other),
     }
 
     // Rule body should have 2 goals: ?P(0) and forall(...)
     let body = kb.rule_body_nodes(rules[0]);
-    assert_eq!(body.len(), 2, "body should have 2 goals: ?P(0) and forall(...)");
+    assert_eq!(
+        body.len(),
+        2,
+        "body should have 2 goals: ?P(0) and forall(...)"
+    );
 
     // First goal: ho_apply(?P, 0)
     match body[0].as_expr() {
-        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply {
+            functor, pos_args, ..
+        }) => {
             let fname = kb.local_name_of(*functor);
-            assert!(fname == "ho_apply" || fname.ends_with(".ho_apply"),
-                "first goal should be ho_apply, got: {}", fname);
+            assert!(
+                fname == "ho_apply" || fname.ends_with(".ho_apply"),
+                "first goal should be ho_apply, got: {}",
+                fname
+            );
             assert_eq!(pos_args.len(), 2, "ho_apply(?P, 0)");
         }
         other => panic!("expected ho_apply for first goal, got {:?}", other),
@@ -4677,16 +5820,26 @@ rule bigint_induction(?P)
     // plain `forall` functor (for the unparenthesized form) or
     // `forall_impl` (for the nested-implication form).
     match body[1].as_expr() {
-        Some(anthill_core::kb::node_occurrence::Expr::Apply { functor, pos_args, .. }) => {
+        Some(anthill_core::kb::node_occurrence::Expr::Apply {
+            functor, pos_args, ..
+        }) => {
             let fname = kb.local_name_of(*functor);
-            let ok = fname == "forall" || fname.ends_with(".forall")
-                  || fname == "forall_impl" || fname.ends_with(".forall_impl");
-            assert!(ok,
+            let ok = fname == "forall"
+                || fname.ends_with(".forall")
+                || fname == "forall_impl"
+                || fname.ends_with(".forall_impl");
+            assert!(
+                ok,
                 "second goal should be forall or forall_impl, got: {} (pos_args: {})",
-                fname, pos_args.len());
+                fname,
+                pos_args.len()
+            );
         }
         other => {
-            eprintln!("second goal occurrence: {:?}", other.map(std::mem::discriminant));
+            eprintln!(
+                "second goal occurrence: {:?}",
+                other.map(std::mem::discriminant)
+            );
         }
     }
 }
@@ -4707,8 +5860,10 @@ end
     let query = make_goal(&mut kb, "TestSort.test", &[my_pred_term]);
     let config = default_config();
     let solutions = kb.resolve(&[query], &config);
-    assert!(!solutions.is_empty(),
-        "test(my_pred) should succeed — ho_apply(my_pred, 42) resolves my_pred(42)");
+    assert!(
+        !solutions.is_empty(),
+        "test(my_pred) should succeed — ho_apply(my_pred, 42) resolves my_pred(42)"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4726,7 +5881,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "consistent variable types should produce no errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "consistent variable types should produce no errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4741,7 +5900,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "?x used as String and Int64 should be detected, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "?x used as String and Int64 should be detected, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4760,7 +5923,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "?c consistently Color should be fine, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "?c consistently Color should be fine, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4768,7 +5935,8 @@ fn rule_typing_stdlib_no_spurious_errors() {
     let (mut kb, result) = {
         let dir = crate::common::stdlib_dir();
         let files = crate::common::collect_anthill_files(&dir);
-        let parsed: Vec<_> = files.iter()
+        let parsed: Vec<_> = files
+            .iter()
             .map(|path| {
                 let source = std::fs::read_to_string(path).unwrap();
                 anthill_core::parse::parse(&source).unwrap()
@@ -4780,7 +5948,11 @@ fn rule_typing_stdlib_no_spurious_errors() {
         (kb, result)
     };
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "stdlib rules should produce no type errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "stdlib rules should produce no type errors, got: {:?}",
+        errors
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4797,7 +5969,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "valid ho_apply in body should be fine, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "valid ho_apply in body should be fine, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4810,7 +5986,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(), "duplicate var in ho_apply should be rejected, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "duplicate var in ho_apply should be rejected, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4819,7 +5999,8 @@ fn pattern_fragment_stdlib_valid() {
     let (mut kb, result) = {
         let dir = crate::common::stdlib_dir();
         let files = crate::common::collect_anthill_files(&dir);
-        let parsed: Vec<_> = files.iter()
+        let parsed: Vec<_> = files
+            .iter()
             .map(|path| {
                 let source = std::fs::read_to_string(path).unwrap();
                 anthill_core::parse::parse(&source).unwrap()
@@ -4832,13 +6013,18 @@ fn pattern_fragment_stdlib_valid() {
     };
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     // Filter to only pattern-fragment errors (not type errors)
-    let ho_errors: Vec<_> = errors.iter()
+    let ho_errors: Vec<_> = errors
+        .iter()
         .filter(|e| {
             let msg = format!("{}", e);
             msg.contains("ho_apply") || msg.contains("predicate")
         })
         .collect();
-    assert!(ho_errors.is_empty(), "stdlib should have no pattern fragment errors, got: {:?}", ho_errors);
+    assert!(
+        ho_errors.is_empty(),
+        "stdlib should have no pattern fragment errors, got: {:?}",
+        ho_errors
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4851,7 +6037,8 @@ fn effect_scoping_stdlib_no_spurious_errors() {
     let (mut kb, result) = {
         let dir = crate::common::stdlib_dir();
         let files = crate::common::collect_anthill_files(&dir);
-        let parsed: Vec<_> = files.iter()
+        let parsed: Vec<_> = files
+            .iter()
             .map(|path| {
                 let source = std::fs::read_to_string(path).unwrap();
                 anthill_core::parse::parse(&source).unwrap()
@@ -4863,13 +6050,18 @@ fn effect_scoping_stdlib_no_spurious_errors() {
         (kb, result)
     };
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let effect_errors: Vec<_> = errors.iter()
+    let effect_errors: Vec<_> = errors
+        .iter()
         .filter(|e| {
             let msg = format!("{}", e);
             msg.contains("effect")
         })
         .collect();
-    assert!(effect_errors.is_empty(), "stdlib should have no effect errors, got: {:?}", effect_errors);
+    assert!(
+        effect_errors.is_empty(),
+        "stdlib should have no effect errors, got: {:?}",
+        effect_errors
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4892,8 +6084,11 @@ fact Holder(items: cons(head: 42, tail: nil))
     let (mut kb, result) = load_with_result(source);
     // Use parameterized field checking (already works for facts)
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "cons(head: 42, tail: nil) in List[T=Int64] field should pass, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "cons(head: 42, tail: nil) in List[T=Int64] field should pass, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4907,8 +6102,11 @@ fact Holder(items: cons(head: "hello", tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "cons(head: \"hello\", tail: nil) in List[T=String] field should pass, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "cons(head: \"hello\", tail: nil) in List[T=String] field should pass, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4924,8 +6122,11 @@ fact Holder(ints: cons(head: 42, tail: nil), strings: cons(head: "hello", tail: 
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "two different List instantiations in same entity should work, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "two different List instantiations in same entity should work, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4941,8 +6142,11 @@ fact Holder(ints: cons(head: "wrong", tail: nil), strings: cons(head: 42, tail: 
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(),
-        "swapped types should be detected, got: {:?}", errors);
+    assert!(
+        !errors.is_empty(),
+        "swapped types should be detected, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4958,8 +6162,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "rule with two different List instantiations should be fine, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "rule with two different List instantiations should be fine, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -4974,8 +6181,10 @@ fact Holder(items: cons(head: 42, tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(),
-        "cons(head: 42) in List[T=String] field should detect Int64 vs String mismatch");
+    assert!(
+        !errors.is_empty(),
+        "cons(head: 42) in List[T=String] field should detect Int64 vs String mismatch"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4999,7 +6208,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "exhaustive match should be fine, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "exhaustive match should be fine, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -5020,10 +6233,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let match_errors: Vec<_> = errors.iter()
+    let match_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("missing"))
         .collect();
-    assert!(!match_errors.is_empty(), "should detect missing 'green' case, got: {:?}", errors);
+    assert!(
+        !match_errors.is_empty(),
+        "should detect missing 'green' case, got: {:?}",
+        errors
+    );
 }
 
 // WI-036: a fact field whose declared type is a spec sort accepts a value
@@ -5048,11 +6266,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
-    assert!(field_errors.is_empty(),
-        "Widget provides Comparable, so the field should type-check, got: {:?}", errors);
+    assert!(
+        field_errors.is_empty(),
+        "Widget provides Comparable, so the field should type-check, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -5074,11 +6296,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
-    assert!(!field_errors.is_empty(),
-        "Gadget does not provide Comparable, so the field should be rejected, got: {:?}", errors);
+    assert!(
+        !field_errors.is_empty(),
+        "Gadget does not provide Comparable, so the field should be rejected, got: {:?}",
+        errors
+    );
 }
 
 // WI-344 introduced provider admissibility in `types_compatible` — a value whose sort
@@ -5109,13 +6335,16 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let op_errors: Vec<_> = errors.iter()
+    let op_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("as_comparable"))
         .collect();
-    assert!(!op_errors.is_empty(),
+    assert!(
+        !op_errors.is_empty(),
         "returning a Widget as the bare spec Comparable it provides is an abstracting return \
          (WI-401 escape-free gate) — must be rejected; got: {:?}",
-        errors);
+        errors
+    );
 }
 
 // WI-344 negative: a value whose sort does NOT provide the spec is still
@@ -5137,12 +6366,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let op_errors: Vec<_> = errors.iter()
+    let op_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("as_comparable"))
         .collect();
-    assert!(!op_errors.is_empty(),
+    assert!(
+        !op_errors.is_empty(),
         "Gadget does not provide Comparable, so the return must be rejected, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 // WI-344 soundness: provider admissibility must NOT drop the expected
@@ -5172,13 +6404,16 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let op_errors: Vec<_> = errors.iter()
+    let op_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("as_cmp_gadget"))
         .collect();
-    assert!(!op_errors.is_empty(),
+    assert!(
+        !op_errors.is_empty(),
         "Widget provides Comparable only at T = Widget, so returning it where \
          Comparable[T = Gadget] is expected must be rejected (no binding-drop), got: {:?}",
-        errors);
+        errors
+    );
 }
 
 // WI-036: spec satisfaction also applies through parameterized field types —
@@ -5204,11 +6439,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
-    assert!(field_errors.is_empty(),
-        "list elements provide Comparable, so the field should type-check, got: {:?}", errors);
+    assert!(
+        field_errors.is_empty(),
+        "list elements provide Comparable, so the field should type-check, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -5235,11 +6474,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
-    assert!(!field_errors.is_empty(),
-        "a list element (Gadget) does not provide Comparable, so it should be rejected, got: {:?}", errors);
+    assert!(
+        !field_errors.is_empty(),
+        "a list element (Gadget) does not provide Comparable, so it should be rejected, got: {:?}",
+        errors
+    );
 }
 
 // WI-036: a field whose declared type is a *parameterized spec* (`Comparable[T
@@ -5265,11 +6508,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
-    assert!(field_errors.is_empty(),
-        "Widget provides Comparable, so the parameterized-spec field should type-check, got: {:?}", errors);
+    assert!(
+        field_errors.is_empty(),
+        "Widget provides Comparable, so the parameterized-spec field should type-check, got: {:?}",
+        errors
+    );
 }
 
 // WI-274: binding-precise spec-field validation. The base-only WI-036
@@ -5303,7 +6550,8 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
     assert!(!field_errors.is_empty(),
@@ -5333,7 +6581,8 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
     assert!(field_errors.is_empty(),
@@ -5367,11 +6616,15 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors.iter()
+    let field_errors: Vec<_> = errors
+        .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
-    assert!(!field_errors.is_empty(),
-        "NonEq provides no Eq, so Eq[T = List[T = NonEq]] must be rejected, got: {:?}", errors);
+    assert!(
+        !field_errors.is_empty(),
+        "NonEq provides no Eq, so Eq[T = List[T = NonEq]] must be rejected, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -5392,7 +6645,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "wildcard should cover remaining cases, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "wildcard should cover remaining cases, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -5411,7 +6668,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "var pattern should cover all cases, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "var pattern should cover all cases, got: {:?}",
+        errors
+    );
 }
 
 use anthill_core::kb::typing::{type_check_sorts_typed, TypeError, TypeErrorContext};
@@ -5428,10 +6689,18 @@ fact Thing(count: "oops")
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
     assert_eq!(errors.len(), 1, "expected one type error, got: {errors:?}");
     match &errors[0] {
-        TypeError::Other { context: TypeErrorContext::EntityField { entity, field }, expected, actual, .. } => {
+        TypeError::Other {
+            context: TypeErrorContext::EntityField { entity, field },
+            expected,
+            actual,
+            ..
+        } => {
             assert_eq!(kb.local_name_of(*entity), "Thing");
             assert_eq!(kb.local_name_of(*field), "count");
-            assert!(expected.contains("Int64"), "expected Int64, got: {expected}");
+            assert!(
+                expected.contains("Int64"),
+                "expected Int64, got: {expected}"
+            );
             assert_eq!(actual, "String");
         }
         other => panic!("expected Other(EntityField), got: {other:?}"),
@@ -5448,12 +6717,23 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
-    let return_err = errors.iter().find(|e| matches!(
-        e,
-        TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { .. }, .. }
-    )).unwrap_or_else(|| panic!("no OperationReturn TypeMismatch in {errors:?}"));
+    let return_err = errors
+        .iter()
+        .find(|e| {
+            matches!(
+                e,
+                TypeError::TypeMismatch {
+                    context: TypeErrorContext::OperationReturn { .. },
+                    ..
+                }
+            )
+        })
+        .unwrap_or_else(|| panic!("no OperationReturn TypeMismatch in {errors:?}"));
     match return_err {
-        TypeError::TypeMismatch { context: TypeErrorContext::OperationReturn { op_name }, .. } => {
+        TypeError::TypeMismatch {
+            context: TypeErrorContext::OperationReturn { op_name },
+            ..
+        } => {
             assert_eq!(kb.local_name_of(*op_name), "greet");
         }
         _ => unreachable!(),
@@ -5466,7 +6746,10 @@ fn typed_span_resolves_to_source_position() {
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
     let span = errors[0].span(&kb);
-    assert!(span.is_some(), "span should be populated for entity-field mismatch");
+    assert!(
+        span.is_some(),
+        "span should be populated for entity-field mismatch"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -5488,9 +6771,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
+    assert!(
+        errors.is_empty(),
         "free-standing op with ?a in param type should typecheck cleanly, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 #[test]
@@ -5506,9 +6791,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
+    assert!(
+        errors.is_empty(),
         "free-standing op with ?a in return type should typecheck cleanly, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 #[test]
@@ -5526,9 +6813,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
+    assert!(
+        errors.is_empty(),
         "free-standing op returning Pair[?a, ?b] should typecheck cleanly, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 #[test]
@@ -5549,9 +6838,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
+    assert!(
+        errors.is_empty(),
         "concrete call site for free-standing parametric op should typecheck, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 #[test]
@@ -5570,9 +6861,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
+    assert!(
+        errors.is_empty(),
         "Int64-Int64 instantiation should typecheck, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 #[test]
@@ -5592,9 +6885,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
+    assert!(
+        errors.is_empty(),
         "bare-Var ctor field should propagate scrutinee type-arg, got: {:?}",
-        errors);
+        errors
+    );
 }
 
 #[test]
@@ -5651,17 +6946,23 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
 
     // 2) Run the WI-031 typing pass on every loaded sort.
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(), "stdlib should type-check clean, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "stdlib should type-check clean, got: {:?}",
+        errors
+    );
 
     // 3a) SortInfo facts emitted for known stdlib sorts.
     let sort_info_sym = kb.resolve_symbol("anthill.reflect.SortInfo");
     let name_field = kb.intern("name");
-    for qn in ["anthill.prelude.Eq",
-               "anthill.prelude.Ord",
-               "anthill.prelude.Numeric",
-               "anthill.logic.Minimal.Minimal",
-               "anthill.logic.Constructive.Constructive",
-               "anthill.logic.Classical.Classical"] {
+    for qn in [
+        "anthill.prelude.Eq",
+        "anthill.prelude.Ord",
+        "anthill.prelude.Numeric",
+        "anthill.logic.Minimal.Minimal",
+        "anthill.logic.Constructive.Constructive",
+        "anthill.logic.Classical.Classical",
+    ] {
         let sort_term = kb.resolve_qualified_name_term(qn);
         let sort_functor = match kb.get_term(sort_term) {
             Term::Fn { functor, .. } => *functor,
@@ -5669,11 +6970,16 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
         };
         let found = kb.rules_by_functor(sort_info_sym).iter().any(|rid| {
             let head = kb.fact_term(*rid);
-            let Term::Fn { named_args, .. } = kb.get_term(head) else { return false };
-            named_args.iter().any(|(f, v)| *f == name_field && match kb.get_term(*v) {
-                Term::Fn { functor, .. } => *functor == sort_functor,
-                Term::Ref(s) => *s == sort_functor,
-                _ => false,
+            let Term::Fn { named_args, .. } = kb.get_term(head) else {
+                return false;
+            };
+            named_args.iter().any(|(f, v)| {
+                *f == name_field
+                    && match kb.get_term(*v) {
+                        Term::Fn { functor, .. } => *functor == sort_functor,
+                        Term::Ref(s) => *s == sort_functor,
+                        _ => false,
+                    }
             })
         });
         assert!(found, "no SortInfo fact found for {qn}");
@@ -5683,21 +6989,29 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     // (same module, kb/typing.rs). All asserted pairs are direct stdlib
     // requires — they appear at depth 0 of the chain.
     let pairs = [
-        ("anthill.prelude.Ord",                  "anthill.prelude.Eq"),
-        ("anthill.prelude.Ord",                  "anthill.prelude.PartialOrd"),
-        ("anthill.prelude.Eq",                       "anthill.prelude.PartialEq"),
+        ("anthill.prelude.Ord", "anthill.prelude.Eq"),
+        ("anthill.prelude.Ord", "anthill.prelude.PartialOrd"),
+        ("anthill.prelude.Eq", "anthill.prelude.PartialEq"),
         // WI-644: Numeric requires the PARTIAL order (IEEE Float is Numeric but not
         // totally Ord).
-        ("anthill.prelude.Numeric",                  "anthill.prelude.PartialOrd"),
-        ("anthill.logic.Constructive.Constructive",  "anthill.logic.Minimal.Minimal"),
-        ("anthill.logic.Classical.Classical",        "anthill.logic.Constructive.Constructive"),
+        ("anthill.prelude.Numeric", "anthill.prelude.PartialOrd"),
+        (
+            "anthill.logic.Constructive.Constructive",
+            "anthill.logic.Minimal.Minimal",
+        ),
+        (
+            "anthill.logic.Classical.Classical",
+            "anthill.logic.Constructive.Constructive",
+        ),
     ];
     for (requirer, spec) in pairs {
         let r_sym = kb.resolve_symbol(requirer);
         let s_sym = kb.resolve_symbol(spec);
         let chain = requires_chain_flat(&kb, r_sym);
-        assert!(chain.iter().any(|e| e.required_sort == s_sym),
-            "no SortRequiresInfo fact found for `{requirer} requires {spec}`");
+        assert!(
+            chain.iter().any(|e| e.required_sort == s_sym),
+            "no SortRequiresInfo fact found for `{requirer} requires {spec}`"
+        );
     }
 }
 
@@ -5721,8 +7035,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "explicit positional binding should pin return type, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "explicit positional binding should pin return type, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -5738,8 +7055,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "explicit named binding should pin return type, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "explicit named binding should pin return type, got: {:?}",
+        errors
+    );
 }
 
 /// Partial-explicit: one binding given, one inferred from argument.
@@ -5757,8 +7077,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "partial explicit + arg inference should typecheck, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "partial explicit + arg inference should typecheck, got: {:?}",
+        errors
+    );
 }
 
 /// Sanity: existing all-inferred behavior still works after Phase D.
@@ -5775,8 +7098,11 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(errors.is_empty(),
-        "arg-driven inference should pin A to Int64, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "arg-driven inference should pin A to Int64, got: {:?}",
+        errors
+    );
 }
 
 /// Explicit binding inconsistent with expected return type — the seed
@@ -5795,8 +7121,10 @@ end
 "#;
     let (mut kb, result) = load_with_result(source);
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    assert!(!errors.is_empty(),
-        "Box[T = Int64] from call should not unify with Box[T = String] expected return");
+    assert!(
+        !errors.is_empty(),
+        "Box[T = Int64] from call should not unify with Box[T = String] expected return"
+    );
 }
 
 // ── WI-795 identical-rendering backstop ──────────────────────────────────
@@ -5823,8 +7151,8 @@ end
 /// the shared pair renderer so the two rendering paths cannot drift.
 #[test]
 fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
-    use anthill_core::kb::typing::{TypeError, TypeErrorContext};
     use anthill_core::eval::value::Value;
+    use anthill_core::kb::typing::{TypeError, TypeErrorContext};
 
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
@@ -5846,7 +7174,10 @@ fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
     });
     let pure_arrow = kb.make_arrow_type(int_ty, int_ty, &[], 1);
     let noisy_arrow = kb.make_arrow_type(int_ty, int_ty, &[console_ty], 1);
-    assert_ne!(pure_arrow, noisy_arrow, "the two arrows must be distinct terms");
+    assert_ne!(
+        pure_arrow, noisy_arrow,
+        "the two arrows must be distinct terms"
+    );
 
     let err = TypeError::TypeMismatch {
         span: None,

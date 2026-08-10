@@ -9,9 +9,9 @@
 use std::collections::BTreeSet;
 
 use anthill_core::intern::Symbol;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
 use anthill_core::kb::term::Var;
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::print::TermPrinter;
 use sha2::{Digest, Sha256};
 
@@ -23,7 +23,7 @@ pub const CACHE_FORMAT_VERSION: u32 = 2;
 // ASCII control codes used as framing separators in the hash input
 // stream. Naming makes the structure of `build_key` explicit.
 const FIELD_SEP: u8 = 0x1e; // record separator (between top-level fields)
-const ITEM_SEP: u8 = 0x1f;  // unit separator (between items within a list)
+const ITEM_SEP: u8 = 0x1f; // unit separator (between items within a list)
 const GROUP_SEP: u8 = 0x1d; // group separator (between dep-set entries)
 
 /// Inputs to the cache key. Order of fields matches order of
@@ -106,10 +106,7 @@ fn field(h: &mut Sha256, label: &[u8], value: &[u8]) {
 /// the fact_dep_hash functor collection. Functor set is keyed by
 /// `Symbol::index()` (Symbol itself isn't Ord) — canonical sorted order
 /// for hash stability.
-fn walk_visited(
-    kb: &KnowledgeBase,
-    visited: &BTreeSet<String>,
-) -> (String, BTreeSet<u32>) {
+fn walk_visited(kb: &KnowledgeBase, visited: &BTreeSet<String>) -> (String, BTreeSet<u32>) {
     let mut h = Sha256::new();
     let mut referenced: BTreeSet<u32> = BTreeSet::new();
     let printer = TermPrinter::new(kb);
@@ -147,7 +144,9 @@ fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String 
         h.update(kb.qualified_name_of(functor).as_bytes());
         h.update([ITEM_SEP]);
         for rid in kb.rules_by_functor(functor) {
-            if !kb.is_fact(rid) { continue; }
+            if !kb.is_fact(rid) {
+                continue;
+            }
             let head = kb.rule_head(rid);
             h.update(printer.print_term(head).as_bytes());
             h.update([ITEM_SEP]);
@@ -189,12 +188,27 @@ fn hash_occurrence(
         Expr::VarRef { name } => leaf_sym(kb, b"VR", *name, h),
         Expr::Ref(s) => leaf_sym(kb, b"r", *s, h),
         Expr::Ident(s) => leaf_sym(kb, b"i", *s, h),
-        Expr::Var(Var::DeBruijn(idx)) => { h.update(b"v"); h.update(idx.to_le_bytes()); }
-        Expr::Var(other) => { h.update(b"v?"); h.update(format!("{other:?}").as_bytes()); }
-        Expr::Const(lit) => { h.update(b"k"); h.update(format!("{lit:?}").as_bytes()); }
+        Expr::Var(Var::DeBruijn(idx)) => {
+            h.update(b"v");
+            h.update(idx.to_le_bytes());
+        }
+        Expr::Var(other) => {
+            h.update(b"v?");
+            h.update(format!("{other:?}").as_bytes());
+        }
+        Expr::Const(lit) => {
+            h.update(b"k");
+            h.update(format!("{lit:?}").as_bytes());
+        }
         // WI-714: a macro-spliced pre-built value — hash its debug form (leaf).
-        Expr::Spliced(v) => { h.update(b"sp"); h.update(format!("{v:?}").as_bytes()); }
-        Expr::RequirementAtSort { slot, .. } => { h.update(b"R"); h.update(slot.to_le_bytes()); }
+        Expr::Spliced(v) => {
+            h.update(b"sp");
+            h.update(format!("{v:?}").as_bytes());
+        }
+        Expr::RequirementAtSort { slot, .. } => {
+            h.update(b"R");
+            h.update(slot.to_le_bytes());
+        }
         // Child-bearing control-flow / collection forms: a discriminant tag is
         // enough — the children are hashed by the recursion below.
         Expr::HoApply { .. } => h.update(b"H"),
@@ -215,7 +229,13 @@ fn hash_occurrence(
     for_each_child(expr, |child| hash_occurrence(kb, child, h, out));
 }
 
-fn fn_node(kb: &KnowledgeBase, tag: &[u8], functor: Symbol, h: &mut Sha256, out: &mut BTreeSet<u32>) {
+fn fn_node(
+    kb: &KnowledgeBase,
+    tag: &[u8],
+    functor: Symbol,
+    h: &mut Sha256,
+    out: &mut BTreeSet<u32>,
+) {
     h.update(tag);
     h.update(kb.qualified_name_of(functor).as_bytes());
     out.insert(functor.index());

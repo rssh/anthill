@@ -96,7 +96,9 @@ fn nested_constructor_in_operation_body() {
 #[test]
 fn rule_head() {
     assert_refused(
-        &with_box("  sort Flag\n    entity on(v: Int64)\n  end\n  rule mk(a: ?x, bogus: 2) :- on(v: 1)"),
+        &with_box(
+            "  sort Flag\n    entity on(v: Int64)\n  end\n  rule mk(a: ?x, bogus: 2) :- on(v: 1)",
+        ),
         "mk",
         "bogus",
         "a rule head's unknown field label",
@@ -225,12 +227,20 @@ end
 /// message (/code-review). Two sites must produce two errors, each carrying a position.
 #[test]
 fn each_violation_is_reported_with_its_own_location() {
-    let errs = try_load_kb_with(&with_box("  fact mk(a: 1, bogus: 2)\n  fact mk(a: 3, bogus: 4)"))
-        .err()
-        .expect("both violations must be refused");
-    let hits: Vec<&String> =
-        errs.iter().filter(|e| e.contains("'mk' has no field 'bogus'")).collect();
-    assert_eq!(hits.len(), 2, "one error per violation, not one deduped message: {errs:?}");
+    let errs = try_load_kb_with(&with_box(
+        "  fact mk(a: 1, bogus: 2)\n  fact mk(a: 3, bogus: 4)",
+    ))
+    .err()
+    .expect("both violations must be refused");
+    let hits: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("'mk' has no field 'bogus'"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        2,
+        "one error per violation, not one deduped message: {errs:?}"
+    );
     for e in hits {
         assert!(
             e.split(':').next().is_some_and(|s| !s.trim().is_empty()) && e.contains(':'),

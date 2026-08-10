@@ -28,8 +28,7 @@ fn generic_sum_emits_templated_alias() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_sum(&mut kb, "test.gen_opt.Option")
-        .expect("emit Option sum");
+    let cpp = emit_sum(&mut kb, "test.gen_opt.Option").expect("emit Option sum");
 
     // Constructor structs:
     assert!(
@@ -62,8 +61,7 @@ fn generic_sum_with_two_params_emits_two_arg_template() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_sum(&mut kb, "test.gen_either.Either")
-        .expect("emit Either sum");
+    let cpp = emit_sum(&mut kb, "test.gen_either.Either").expect("emit Either sum");
 
     // Each constructor templated independently — Left only mentions L,
     // Right only mentions R, but the alias's full param list is on
@@ -91,8 +89,7 @@ fn nullary_sum_unchanged_by_generic_machinery() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_sum(&mut kb, "test.gen_nullary.StepResult")
-        .expect("emit StepResult");
+    let cpp = emit_sum(&mut kb, "test.gen_nullary.StepResult").expect("emit StepResult");
 
     assert!(
         !cpp.contains("template<"),

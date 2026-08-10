@@ -162,7 +162,9 @@ fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
             continue;
         }
         let head = kb.rule_head_value(rid);
-        let Some(op_sym) = head_name_ref(kb, head) else { continue };
+        let Some(op_sym) = head_name_ref(kb, head) else {
+            continue;
+        };
         out.push((op_sym, head));
     }
     out
@@ -185,9 +187,7 @@ fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
 /// Un-deduped by symbol is exactly the point, so this is NOT
 /// [`all_operation_effects`]' "one row per fact" in another spelling — that one
 /// wants every row, this one wants the COUNT of rows per name.
-pub fn operation_info_fact_counts(
-    kb: &KnowledgeBase,
-) -> std::collections::HashMap<Symbol, usize> {
+pub fn operation_info_fact_counts(kb: &KnowledgeBase) -> std::collections::HashMap<Symbol, usize> {
     let mut counts = std::collections::HashMap::new();
     for (op_sym, _) in operation_info_fact_heads(kb) {
         *counts.entry(op_sym).or_insert(0) += 1;
@@ -231,7 +231,11 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             continue;
         }
         let sig = extract_signature_from_head(kb, head)?;
-        return Some(op_info_from_signature(op_sym, &sig, kb.op_body_node(op_sym).cloned()));
+        return Some(op_info_from_signature(
+            op_sym,
+            &sig,
+            kb.op_body_node(op_sym).cloned(),
+        ));
     }
     None
 }
@@ -289,7 +293,9 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// the path that already has the answer cached.
 pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) -> Option<Var> {
     let pick = |tps: &[(Symbol, Var)]| -> Option<Var> {
-        tps.iter().find(|(n, _)| kb.local_name_of(*n) == short).map(|(_, v)| *v)
+        tps.iter()
+            .find(|(n, _)| kb.local_name_of(*n) == short)
+            .map(|(_, v)| *v)
     };
     if let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.as_ref()) {
         return pick(&sig.type_params);
@@ -348,7 +354,15 @@ fn signature_from_head_with_type_params(
     let ensures = clause_list_field(kb, head, "ensures");
     // WI-087: an empty `meta()` (the no-attributes case) reports as `None`.
     let meta = head_field_term(kb, head, "meta").filter(|t| meta_term_nonempty(kb, *t));
-    Some(OpSignature { params, return_type, effects, type_params, requires, ensures, meta })
+    Some(OpSignature {
+        params,
+        return_type,
+        effects,
+        type_params,
+        requires,
+        ensures,
+        meta,
+    })
 }
 
 /// WI-656 — assemble the public [`OpInfoRecord`] from a cached [`OpSignature`]
@@ -549,8 +563,14 @@ pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value>
     loop {
         match v {
             Value::Entity { functor, named, .. } if Some(*functor) == cons_sym => {
-                let head_el = named.iter().find(|(s, _)| kb.local_name_of(*s) == "head").map(|(_, x)| x);
-                let tail = named.iter().find(|(s, _)| kb.local_name_of(*s) == "tail").map(|(_, x)| x);
+                let head_el = named
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == "head")
+                    .map(|(_, x)| x);
+                let tail = named
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == "tail")
+                    .map(|(_, x)| x);
                 match (head_el, tail) {
                     (Some(h), Some(t)) => {
                         out.push(h.clone());
@@ -603,7 +623,10 @@ pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value>
 /// `OperationInfo` fact directly (as the loader itself does) still bypasses that
 /// refusal, and a panic would then take down a load over metadata the user never wrote.
 fn extract_type_params(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, Var)> {
-    type_param_entries(kb, head).into_iter().filter_map(|e| e.ok()).collect()
+    type_param_entries(kb, head)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .collect()
 }
 
 /// One `type_params` entry: the decoded parameter, or the thing that could not be one.

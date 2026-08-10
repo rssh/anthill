@@ -16,7 +16,11 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 fn init_honors_dir_flag_from_a_different_cwd() {
     let cwd_dir = tempfile::tempdir().expect("cwd tempdir");
     let target = tempfile::tempdir().expect("target tempdir");
-    assert_ne!(cwd_dir.path(), target.path(), "cwd and -d must differ for this test");
+    assert_ne!(
+        cwd_dir.path(),
+        target.path(),
+        "cwd and -d must differ for this test"
+    );
 
     let out = Command::new(BIN)
         .current_dir(cwd_dir.path())
@@ -31,7 +35,10 @@ fn init_honors_dir_flag_from_a_different_cwd() {
 
     // The scaffold lands under -d …
     assert!(
-        target.path().join("anthill-todo/workitems.anthill").exists(),
+        target
+            .path()
+            .join("anthill-todo/workitems.anthill")
+            .exists(),
         "workitems.anthill missing under -d target"
     );
     assert!(
@@ -48,7 +55,9 @@ fn init_honors_dir_flag_from_a_different_cwd() {
     // builds (canonicalize(base).join("anthill-todo")) so a wrong-place write is
     // visible even to someone reading the output.
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let expected = std::fs::canonicalize(target.path()).unwrap().join("anthill-todo");
+    let expected = std::fs::canonicalize(target.path())
+        .unwrap()
+        .join("anthill-todo");
     assert!(
         stdout.contains(&*expected.to_string_lossy()),
         "success message must name the absolute created path {}; got: {stdout}",
@@ -81,7 +90,11 @@ fn init_refuses_to_scaffold_over_an_existing_project() {
         .args(["-d", target.path().to_str().unwrap(), "init"])
         .output()
         .expect("run init");
-    assert!(first.status.success(), "first init: {}", String::from_utf8_lossy(&first.stderr));
+    assert!(
+        first.status.success(),
+        "first init: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
 
     // A second init at the same -d must fail LOUDLY, not silently re-scaffold.
     let second = Command::new(BIN)
@@ -117,7 +130,10 @@ fn init_with_nonexistent_dir_flag_errors() {
         stderr.contains("does not exist"),
         "error must name the missing directory: {stderr}"
     );
-    assert!(!missing.exists(), "init must not have created the missing -d directory");
+    assert!(
+        !missing.exists(),
+        "init must not have created the missing -d directory"
+    );
 }
 
 #[test]
@@ -201,8 +217,8 @@ fn init_with_relative_dir_flag_scaffolds_absolute() {
 
     // The default project name derives from the -d dir's basename (not the cwd) —
     // the `cwd.file_name()` → `abs_base.file_name()` change this fix introduced.
-    let project =
-        std::fs::read_to_string(sub.join("anthill-todo/project.anthill")).expect("read project.anthill");
+    let project = std::fs::read_to_string(sub.join("anthill-todo/project.anthill"))
+        .expect("read project.anthill");
     assert!(
         project.contains(&format!("name: \"{subname}\"")),
         "default project name must derive from the -d dir basename; got: {project}"

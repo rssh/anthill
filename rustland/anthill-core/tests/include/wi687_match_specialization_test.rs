@@ -63,12 +63,18 @@ fn op_sym(kb: &KnowledgeBase, short: &str) -> Symbol {
 }
 
 fn short(kb: &KnowledgeBase, s: Symbol) -> String {
-    kb.local_name_of(s).rsplit('.').next().unwrap_or("").to_string()
+    kb.local_name_of(s)
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// The one synthesized (non-fact) defining rule for `op`, or `None`.
 fn synth_rule(kb: &KnowledgeBase, op: Symbol) -> Option<RuleId> {
-    kb.rules_by_functor(op).into_iter().find(|r| !kb.is_fact(*r))
+    kb.rules_by_functor(op)
+        .into_iter()
+        .find(|r| !kb.is_fact(*r))
 }
 
 /// Render a head/body term's shape compactly for structural assertions:
@@ -79,7 +85,11 @@ fn render(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) -> String {
         Term::Var(v) => format!("{v:?}"),
         Term::Const(l) => format!("{l:?}"),
         Term::Ref(s) | Term::Ident(s) => short(kb, *s),
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let mut parts: Vec<String> = pos_args.iter().map(|a| render(kb, *a)).collect();
             for (fs, a) in named_args {
                 parts.push(format!("{}: {}", short(kb, *fs), render(kb, *a)));
@@ -92,7 +102,11 @@ fn render(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) -> String {
 
 fn body_rhs(kb: &KnowledgeBase, rid: RuleId) -> Rc<NodeOccurrence> {
     let body = kb.rule_body_nodes(rid);
-    assert_eq!(body.len(), 1, "defining rule has one `?result = <rhs>` goal");
+    assert_eq!(
+        body.len(),
+        1,
+        "defining rule has one `?result = <rhs>` goal"
+    );
     match body[0].as_expr() {
         Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 2 => Rc::clone(&pos_args[1]),
         other => panic!("body goal must be `eq(?result, rhs)`, got {other:?}"),
@@ -112,14 +126,26 @@ fn generic_match_synth_declines() {
     // Baseline: the abstract-parameter derivation cannot reduce a match body.
     let mut kb = crate::common::load_kb_with(SRC);
     let pick = op_sym(&kb, "pick");
-    assert!(kb.op_defining_equations(pick).is_none(), "generic match derivation declines");
-    assert!(kb.synthesize_op_defining_rule(pick).is_none(), "generic synth declines");
-    assert!(synth_rule(&kb, pick).is_none(), "no defining rule was registered");
+    assert!(
+        kb.op_defining_equations(pick).is_none(),
+        "generic match derivation declines"
+    );
+    assert!(
+        kb.synthesize_op_defining_rule(pick).is_none(),
+        "generic synth declines"
+    );
+    assert!(
+        synth_rule(&kb, pick).is_none(),
+        "no defining rule was registered"
+    );
 }
 
 /// The named-arg `TermId` value of a `Fn` term whose field short-name is `field`.
-fn named_child(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId, field: &str)
-    -> anthill_core::kb::term::TermId {
+fn named_child(
+    kb: &KnowledgeBase,
+    tid: anthill_core::kb::term::TermId,
+    field: &str,
+) -> anthill_core::kb::term::TermId {
     match kb.get_term(tid) {
         Term::Fn { named_args, .. } => named_args
             .iter()
@@ -131,10 +157,14 @@ fn named_child(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId, field: &
 }
 
 /// The positional-arg `TermId`s + functor short-name of a `Fn` head term.
-fn head_parts(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId)
-    -> (String, Vec<anthill_core::kb::term::TermId>) {
+fn head_parts(
+    kb: &KnowledgeBase,
+    tid: anthill_core::kb::term::TermId,
+) -> (String, Vec<anthill_core::kb::term::TermId>) {
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => (short(kb, *functor), pos_args.to_vec()),
+        Term::Fn {
+            functor, pos_args, ..
+        } => (short(kb, *functor), pos_args.to_vec()),
         other => panic!("head must be a Fn, got {other:?}"),
     }
 }
@@ -152,11 +182,14 @@ fn term_functor(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) -> Stri
 /// skeleton leaf) — positional or named, we don't pin which.
 fn some_wraps_debruijn(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) -> bool {
     match kb.get_term(tid) {
-        Term::Fn { pos_args, named_args, .. } => {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
             let mut children = pos_args.to_vec();
             children.extend(named_args.iter().map(|(_, t)| *t));
-            children.len() == 1
-                && matches!(kb.get_term(children[0]), Term::Var(Var::DeBruijn(_)))
+            children.len() == 1 && matches!(kb.get_term(children[0]), Term::Var(Var::DeBruijn(_)))
         }
         _ => false,
     }
@@ -173,14 +206,25 @@ fn per_call_site_specializes_match_on_param() {
     let (f, pos) = head_parts(&kb, kb.rule_head(rid));
     assert_eq!(f, "pick");
     assert_eq!(pos.len(), 3, "two params (o, base) + result slot");
-    assert_eq!(term_functor(&kb, pos[0]), "some", "the Option param head carries the `some` spine");
-    assert!(some_wraps_debruijn(&kb, pos[0]), "`some`'s value is a fresh skeleton leaf var: {}",
-        render(&kb, pos[0]));
+    assert_eq!(
+        term_functor(&kb, pos[0]),
+        "some",
+        "the Option param head carries the `some` spine"
+    );
+    assert!(
+        some_wraps_debruijn(&kb, pos[0]),
+        "`some`'s value is a fresh skeleton leaf var: {}",
+        render(&kb, pos[0])
+    );
 
     // some-arm: the body reduces to `if x>=0 then base+x else base-x` over the
     // skeleton leaves — an `Expr::If` (WI-680 refold), NOT a residual match.
     let rhs = body_rhs(&kb, rid);
-    assert_eq!(head_short(&kb, &rhs), "if", "the match reduced to the some-arm's conditional");
+    assert_eq!(
+        head_short(&kb, &rhs),
+        "if",
+        "the match reduced to the some-arm's conditional"
+    );
 }
 
 #[test]
@@ -192,11 +236,18 @@ fn per_call_site_specializes_none_arm() {
     let rid = synth_rule(&kb, pick).expect("none-arg synth registers a defining rule");
     let (f, pos) = head_parts(&kb, kb.rule_head(rid));
     assert_eq!(f, "pick");
-    assert_eq!(short(&kb, match kb.get_term(pos[0]) {
-        Term::Fn { functor, .. } => *functor,
-        Term::Ref(s) | Term::Ident(s) => *s,
-        other => panic!("none head arg unexpected: {other:?}"),
-    }), "none", "the nullary `none` spine is preserved in the head");
+    assert_eq!(
+        short(
+            &kb,
+            match kb.get_term(pos[0]) {
+                Term::Fn { functor, .. } => *functor,
+                Term::Ref(s) | Term::Ident(s) => *s,
+                other => panic!("none head arg unexpected: {other:?}"),
+            }
+        ),
+        "none",
+        "the nullary `none` spine is preserved in the head"
+    );
     // none-arm is the unconditional `base` — one arm, no `if`, just the base var.
     let rhs = body_rhs(&kb, rid);
     assert!(
@@ -218,14 +269,29 @@ fn per_call_site_specializes_match_on_field() {
     assert_eq!(f, "pickf");
     assert_eq!(pos.len(), 2, "one Box param + result slot");
     // pos[0] is Box(...); its `inner` field carries the `some` spine.
-    assert_eq!(term_functor(&kb, pos[0]), "Box", "the head arg keeps the Box spine");
+    assert_eq!(
+        term_functor(&kb, pos[0]),
+        "Box",
+        "the head arg keeps the Box spine"
+    );
     let inner = named_child(&kb, pos[0], "inner");
-    assert_eq!(term_functor(&kb, inner), "some", "the Box's inner Option field keeps `some`");
-    assert!(some_wraps_debruijn(&kb, inner), "inner `some` wraps a fresh skeleton leaf: {}",
-        render(&kb, inner));
+    assert_eq!(
+        term_functor(&kb, inner),
+        "some",
+        "the Box's inner Option field keeps `some`"
+    );
+    assert!(
+        some_wraps_debruijn(&kb, inner),
+        "inner `some` wraps a fresh skeleton leaf: {}",
+        render(&kb, inner)
+    );
 
     let rhs = body_rhs(&kb, rid);
-    assert_eq!(head_short(&kb, &rhs), "if", "the field match reduced to the some-arm conditional");
+    assert_eq!(
+        head_short(&kb, &rhs),
+        "if",
+        "the field match reduced to the some-arm conditional"
+    );
 }
 
 #[test]

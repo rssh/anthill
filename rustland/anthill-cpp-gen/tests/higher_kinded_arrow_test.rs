@@ -150,7 +150,9 @@ fn stdlib_monad_lowers_to_member_templates() {
     // param `EffP` appears ONLY in the (erased) effect row, so it lowers to
     // nothing and is dropped from the template list — `A` and `B` survive.
     assert!(
-        cpp.contains("template<typename A, typename B>\n    static M<B> map(M<A> m, std::function<B(A)> f);"),
+        cpp.contains(
+            "template<typename A, typename B>\n    static M<B> map(M<A> m, std::function<B(A)> f);"
+        ),
         "map should lower to a member template with EffP erased:\n{cpp}"
     );
     // flatMap's Kleisli callback `(A) -> M[B] @ {EffP}` → std::function<M<B>(A)>.
@@ -186,7 +188,10 @@ fn stdlib_monad_compiles() {
     let dir = scratch_dir("stdlib_monad_compile");
     let header_path = dir.join("monad.hpp");
     std::fs::write(&header_path, &header).expect("write header");
-    let driver = format!("#include \"{}\"\nint main() {{ return 0; }}\n", header_path.display());
+    let driver = format!(
+        "#include \"{}\"\nint main() {{ return 0; }}\n",
+        header_path.display()
+    );
     let driver_path = dir.join("driver.cpp");
     std::fs::write(&driver_path, &driver).expect("write driver");
 
@@ -274,7 +279,10 @@ fn hk_monad_traits_compiles() {
     let header_path = dir.join("monad.hpp");
     std::fs::write(&header_path, &header).expect("write header");
 
-    let driver = format!("#include \"{}\"\nint main() {{ return 0; }}\n", header_path.display());
+    let driver = format!(
+        "#include \"{}\"\nint main() {{ return 0; }}\n",
+        header_path.display()
+    );
     let driver_path = dir.join("driver.cpp");
     std::fs::write(&driver_path, &driver).expect("write driver");
 

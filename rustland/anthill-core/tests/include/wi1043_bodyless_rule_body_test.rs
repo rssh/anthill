@@ -145,12 +145,12 @@
 //! WI-1057; WI-431; WI-625; WI-842; WI-938; `docs/design/058-implementation.md` §3.7,
 //! §14, §21, §23.
 
+use anthill_core::intern::Symbol;
 use anthill_core::kb::op_info::all_operation_params;
 use anthill_core::kb::typing::{
     defaulted_spec_op_parent, lookup_spec_op_dispatch, spec_op_call_parent,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::intern::Symbol;
 
 /// SIBLING-MODULE REUSE, the house pattern in this cluster: the BODY-LESS builder is
 /// `wi1035`'s (whose subject is the same program's DOT spelling), the two-supplier
@@ -263,7 +263,11 @@ fn one_supplier_answers_the_supplied_impl_in_a_rule_body() {
          residualize — `[]` is what this ticket exists to stop",
     );
     // The face it must agree with, on the same program text.
-    assert_eq!(probe(ns, &body_less(ns, OWN, "", QUAL_OP)), 7, "the operation-body face");
+    assert_eq!(
+        probe(ns, &body_less(ns, OWN, "", QUAL_OP)),
+        7,
+        "the operation-body face"
+    );
 }
 
 /// THE WITNESS ROUTE, BOTH SPELLINGS — and the PRE-EXISTING refusal this ticket had to
@@ -472,7 +476,10 @@ fn an_unground_body_less_goal_binds_no_residual() {
 fn a_tie_nested_in_an_eq_goal_is_reported_once() {
     let ns = "test.wi1043.nested";
     for (tail, spelling) in [
-        ("  rule answer(?r) :- eq(?r, Desc.describe(leaf()))\n", "qualified"),
+        (
+            "  rule answer(?r) :- eq(?r, Desc.describe(leaf()))\n",
+            "qualified",
+        ),
         ("  rule answer(?r) :- eq(?r, leaf().describe())\n", "dot"),
     ] {
         let msg = refusal(&body_less(ns, OWN, RIVAL_FACT, tail));

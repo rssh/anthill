@@ -61,7 +61,9 @@ end
 #[test]
 fn wi714_join_keeps_matching_rows() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714join.aliceJoin", &[]).expect("aliceJoin runs the join");
+    let r = interp
+        .call("test.wi714join.aliceJoin", &[])
+        .expect("aliceJoin runs the join");
     match r {
         Value::Bool(b) => assert!(!b, "alice is in both rows → non-empty (isEmpty=false)"),
         other => panic!("expected Bool, got {other:?}"),
@@ -74,7 +76,9 @@ fn wi714_join_keeps_matching_rows() {
 #[test]
 fn wi714_join_drops_nonmatching_rows() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714join.noMatch", &[]).expect("noMatch runs the join");
+    let r = interp
+        .call("test.wi714join.noMatch", &[])
+        .expect("noMatch runs the join");
     match r {
         Value::Bool(b) => assert!(b, "no name equals a dept → empty (isEmpty=true)"),
         other => panic!("expected Bool, got {other:?}"),
@@ -91,7 +95,9 @@ fn wi714_join_drops_nonmatching_rows() {
 #[test]
 fn wi714_join_merged_schema_rows() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714join.joinedRows", &[]).expect("joinedRows drains the join");
+    let r = interp
+        .call("test.wi714join.joinedRows", &[])
+        .expect("joinedRows drains the join");
     // Walk the cons list; each element is the merged 4-field `Value::Tuple`. There is one
     // joined row (alice); collect its String and Int64 column values by kind — the three
     // `String` columns are name/who/dept, the one `Int64` column is age.
@@ -129,8 +135,11 @@ fn wi714_join_merged_schema_rows() {
     }
     strs.sort();
     assert_eq!(row_count, 1, "exactly one joined row (alice is in both)");
-    assert_eq!(strs, vec!["alice".to_string(), "alice".to_string(), "eng".to_string()],
-        "the merged row's String columns are name=alice, who=alice, dept=eng");
+    assert_eq!(
+        strs,
+        vec!["alice".to_string(), "alice".to_string(), "eng".to_string()],
+        "the merged row's String columns are name=alice, who=alice, dept=eng"
+    );
     assert_eq!(ints, vec![30], "the merged row's Int64 column is age=30");
 }
 
@@ -158,7 +167,8 @@ end
 "#;
     match try_load_kb_with(SRC) {
         Err(errs) => assert!(
-            errs.iter().any(|e| e.contains("disjoint") || e.contains("field name")),
+            errs.iter()
+                .any(|e| e.contains("disjoint") || e.contains("field name")),
             "expected a disjoint-column-name Concat error, got: {errs:?}",
         ),
         Ok(_) => panic!("expected a load error for a join whose merged schema collides on `name`"),
@@ -188,9 +198,12 @@ end
 "#;
     match try_load_kb_with(SRC) {
         Err(errs) => assert!(
-            errs.iter().any(|e| e.contains("named-tuple") || e.contains("named tuple")),
+            errs.iter()
+                .any(|e| e.contains("named-tuple") || e.contains("named tuple")),
             "expected a non-named-tuple Concat operand error, got: {errs:?}",
         ),
-        Ok(_) => panic!("expected a load error for a join with a 1-collapse (non-named-tuple) operand"),
+        Ok(_) => {
+            panic!("expected a load error for a join with a 1-collapse (non-named-tuple) operand")
+        }
     }
 }

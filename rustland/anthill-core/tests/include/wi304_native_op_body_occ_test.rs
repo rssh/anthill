@@ -20,7 +20,8 @@ fn stdlib_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -37,8 +38,12 @@ fn load_src(kb: &mut KnowledgeBase, source: &str) {
 
 /// Resolve an op's body occurrence root by qualified name.
 fn op_body_root_is<F: FnOnce(&Expr) -> bool>(kb: &KnowledgeBase, qn: &str, pred: F) -> bool {
-    let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("op {qn} not resolved"));
-    let node = kb.op_body_node(sym).unwrap_or_else(|| panic!("op {qn} has no body node"));
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("op {qn} not resolved"));
+    let node = kb
+        .op_body_node(sym)
+        .unwrap_or_else(|| panic!("op {qn} has no body node"));
     let expr = node.as_expr().expect("op body root is an Expr");
     pred(expr)
 }
@@ -78,7 +83,11 @@ end
 "#,
     );
     assert!(
-        op_body_root_is(&kb, "wi304.mt.g", |e| matches!(e, Expr::Match { branches, .. } if branches.len() == 2)),
+        op_body_root_is(
+            &kb,
+            "wi304.mt.g",
+            |e| matches!(e, Expr::Match { branches, .. } if branches.len() == 2)
+        ),
         "op body root should be a natively-built Expr::Match with two branches",
     );
 }

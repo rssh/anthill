@@ -46,7 +46,9 @@ fn span() -> SourceSpan {
 }
 
 fn box_sym(interp: &mut Interpreter) -> Symbol {
-    interp.kb_mut().resolve_qualified_name_sym("test.wi1025.Item.Box")
+    interp
+        .kb_mut()
+        .resolve_qualified_name_sym("test.wi1025.Item.Box")
 }
 
 // ── the reachable case: a parameterized type that had to ride as an occurrence ──
@@ -74,7 +76,9 @@ fn a_parameterized_type_occurrence_names_its_base_sort() {
     // The occurrence carrier: `Box[V = denoted(<a ref occurrence>)]`. The denoted
     // child is exactly what forces the Node carrier (WI-348).
     let denoted = NodeOccurrence::new_type(
-        TypeNode::Denoted { value: NodeOccurrence::new_expr(Expr::Ref(sym), span(), None) },
+        TypeNode::Denoted {
+            value: NodeOccurrence::new_expr(Expr::Ref(sym), span(), None),
+        },
         span(),
         None,
     );
@@ -108,16 +112,25 @@ fn a_parameterized_type_occurrence_names_its_base_sort() {
     // And the consumer agrees with the term twin, fact for fact.
     let via_occ = facts_of(&mut interp, occ_type).expect("a type occurrence is a sort reference");
     let term_twin = Value::term(
-        interp.kb_mut().resolve_qualified_name_term("test.wi1025.Item.Box"),
+        interp
+            .kb_mut()
+            .resolve_qualified_name_term("test.wi1025.Item.Box"),
     );
     let via_term = facts_of(&mut interp, term_twin).expect("its term twin already worked");
     // By CONTENT, not length: two DIFFERENT sorts with one fact each would agree on
     // a count. Each head is identified by the sort it names.
     let names = |interp: &Interpreter, list: &Value| -> Vec<Option<Symbol>> {
-        crate::common::list_heads(list).iter().map(|h| value_functor(interp.kb(), h)).collect()
+        crate::common::list_heads(list)
+            .iter()
+            .map(|h| value_functor(interp.kb(), h))
+            .collect()
     };
     let occ_names = names(&interp, &via_occ);
-    assert_eq!(occ_names.len(), 1, "premise: the fixture asserts exactly one Box fact");
+    assert_eq!(
+        occ_names.len(),
+        1,
+        "premise: the fixture asserts exactly one Box fact"
+    );
     assert_eq!(
         occ_names,
         names(&interp, &via_term),
@@ -160,22 +173,30 @@ fn facts_of(interp: &mut Interpreter, sort: Value) -> Result<Value, String> {
 #[test]
 fn a_nullary_constructor_matches_on_every_carrier_of_its_name() {
     let mut interp = crate::common::interp_for(SRC);
-    let empty = interp.kb_mut().resolve_qualified_name_sym("test.wi1025.Item.Empty");
+    let empty = interp
+        .kb_mut()
+        .resolve_qualified_name_sym("test.wi1025.Item.Empty");
     let ref_tid = interp.kb_mut().alloc(Term::Ref(empty));
     let carriers: Vec<(&str, Value)> = vec![
         ("term", Value::term(ref_tid)),
         ("symbolref", Value::SymbolRef(empty)),
-        ("node", Value::Node(NodeOccurrence::new_expr(Expr::Ref(empty), span(), None))),
+        (
+            "node",
+            Value::Node(NodeOccurrence::new_expr(Expr::Ref(empty), span(), None)),
+        ),
         // The wrapper case, and the one that makes `Value::carried` load-bearing
         // HERE: `occ_head` reads through a top-level `Spliced`, so `value_functor`
         // accepts this and the pre-filter promises the arm — but every by-`Expr`
         // reader sees `Expr::Spliced` and would fall through, declining what was
         // just accepted.
-        ("node-wrapping-a-symbolref", Value::Node(NodeOccurrence::new_expr(
-            Expr::Spliced(Value::SymbolRef(empty)),
-            span(),
-            None,
-        ))),
+        (
+            "node-wrapping-a-symbolref",
+            Value::Node(NodeOccurrence::new_expr(
+                Expr::Spliced(Value::SymbolRef(empty)),
+                span(),
+                None,
+            )),
+        ),
     ];
     let pattern = constructor_pattern(&mut interp, empty);
     let missed: Vec<&str> = carriers
@@ -234,11 +255,7 @@ fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
     let set = interp.kb_mut().intern("set");
 
     let set_to = |interp: &mut Interpreter, v: Value| {
-        interp.invoke_effect_handler(
-            "anthill.prelude.Modify",
-            set,
-            &[resource.clone(), v],
-        )
+        interp.invoke_effect_handler("anthill.prelude.Modify", set, &[resource.clone(), v])
     };
 
     // Direct: the new value IS the resource, spelled as an occurrence.
@@ -266,15 +283,11 @@ fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
 
     // Not merely `is_err()`: the verdict must be the CYCLE, or a row could pass on
     // an unrelated failure.
-    let wrong: Vec<(&str, String)> = [
-        ("direct", direct),
-        ("nested", nested),
-        ("wrapped", wrapped),
-    ]
-    .into_iter()
-    .map(|(name, v)| (name, format!("{:?}", set_to(&mut interp, v))))
-    .filter(|(_, got)| !got.contains("CyclicReference"))
-    .collect();
+    let wrong: Vec<(&str, String)> = [("direct", direct), ("nested", nested), ("wrapped", wrapped)]
+        .into_iter()
+        .map(|(name, v)| (name, format!("{:?}", set_to(&mut interp, v))))
+        .filter(|(_, got)| !got.contains("CyclicReference"))
+        .collect();
     assert!(
         wrong.is_empty(),
         "a self-reference through an occurrence is a cycle; got {wrong:?}",
@@ -290,7 +303,10 @@ fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
         None,
     ));
     let got = set_to(&mut interp, unrelated);
-    assert!(got.is_ok(), "an unrelated occurrence value is not a cycle: {got:?}");
+    assert!(
+        got.is_ok(),
+        "an unrelated occurrence value is not a cycle: {got:?}"
+    );
 }
 
 /// The child walk must not be gated on the HEAD — the sibling `Entity` / `Tuple`
@@ -318,7 +334,9 @@ fn the_cycle_walk_descends_a_head_that_presents_no_shape() {
     // the head is `Opaque` — while the BINDINGS are still named children, and one
     // of them references the resource.
     let base = NodeOccurrence::new_type(
-        TypeNode::Denoted { value: NodeOccurrence::new_expr(Expr::Ref(sym), span(), None) },
+        TypeNode::Denoted {
+            value: NodeOccurrence::new_expr(Expr::Ref(sym), span(), None),
+        },
         span(),
         None,
     );

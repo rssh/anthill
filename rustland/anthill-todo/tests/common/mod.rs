@@ -24,7 +24,9 @@ pub fn read_combined(inner: &Path) -> String {
 /// the term. Crude but adequate for tests with a handful of facts.
 pub fn workitem_block_contains(haystack: &str, id: &str, dep: &str) -> bool {
     let id_marker = format!("id: \"{id}\"");
-    let Some(start) = haystack.find(&id_marker) else { return false };
+    let Some(start) = haystack.find(&id_marker) else {
+        return false;
+    };
     let after = &haystack[start..];
     let block_end = after[1..]
         .find("fact WorkItem")
@@ -35,8 +37,10 @@ pub fn workitem_block_contains(haystack: &str, id: &str, dep: &str) -> bool {
 
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .to_path_buf()
 }
 

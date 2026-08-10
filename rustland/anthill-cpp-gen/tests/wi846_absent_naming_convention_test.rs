@@ -84,7 +84,10 @@ fn absent_naming_convention_is_a_loud_error_not_silent_identity() {
     let err = emit_sensor_without_naming_profile()
         .expect_err("zero cpp NamingConvention at a carrier boundary must fail loudly");
     // Names WHAT resolved to nothing and WHERE it bit...
-    assert!(err.contains("NamingConvention"), "names the absent convention: {err}");
+    assert!(
+        err.contains("NamingConvention"),
+        "names the absent convention: {err}"
+    );
     assert!(
         err.contains("get_reading"),
         "names the carrier-dispatch method it bit on: {err}"

@@ -14,8 +14,8 @@
 //! that a var-quantified query used to spuriously match — a concrete
 //! discriminator is no longer load-bearing against phantom rows.
 
-use anthill_core::eval::Value;
 use crate::common::interp_for;
+use anthill_core::eval::Value;
 
 #[test]
 fn anthill_program_queries_kb_for_matching_fact() {

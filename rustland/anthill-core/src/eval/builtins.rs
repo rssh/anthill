@@ -106,7 +106,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // is worded for SPEC ops and so does not currently claim them.
     register_if_present(interp, "anthill.prelude.String.concat", string_concat)?;
     register_if_present(interp, "anthill.prelude.String.length", string_length)?;
-    register_if_present(interp, "anthill.prelude.String.startsWith", string_starts_with)?;
+    register_if_present(
+        interp,
+        "anthill.prelude.String.startsWith",
+        string_starts_with,
+    )?;
     register_if_present(interp, "anthill.prelude.String.endsWith", string_ends_with)?;
     register_if_present(interp, "anthill.prelude.String.substring", string_substring)?;
     register_if_present(interp, "anthill.prelude.String.toUpper", string_to_upper)?;
@@ -119,7 +123,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Int64.to_float", int_to_float)?;
 
     register_if_present(interp, "anthill.prelude.Float.isNaN", float_is_nan)?;
-    register_if_present(interp, "anthill.prelude.Float.isInfinite", float_is_infinite)?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Float.isInfinite",
+        float_is_infinite,
+    )?;
     register_if_present(interp, "anthill.prelude.Float.isFinite", float_is_finite)?;
 
     // WI-532 / proposal 039: special IEEE values exposed as host-supplied term-level
@@ -141,29 +149,73 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Map.entries", map_entries)?;
     register_if_present(interp, "anthill.prelude.Map.size", map_size)?;
 
-    register_if_present(interp, "anthill.prelude.LogicalStream.splitFirst", logical_stream_split_first)?;
-    register_if_present(interp, "anthill.prelude.Relation.splitFirst", relation_split_first)?;
+    register_if_present(
+        interp,
+        "anthill.prelude.LogicalStream.splitFirst",
+        logical_stream_split_first,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Relation.splitFirst",
+        relation_split_first,
+    )?;
     register_if_present(interp, "anthill.prelude.Relation.negate", relation_negate)?;
     register_if_present(interp, "anthill.prelude.Relation.union", relation_union)?;
-    register_if_present(interp, "anthill.prelude.Relation.where_run", relation_where_run)?;
-    register_if_present(interp, "anthill.prelude.Relation.guarded_of", relation_guarded_of)?;
-    register_if_present(interp, "anthill.prelude.Relation.join_run", relation_join_run)?;
-    register_if_present(interp, "anthill.prelude.Relation.conjoin_of", relation_conjoin_of)?;
-    register_if_present(interp, "anthill.prelude.Relation.project_run", relation_project_run)?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Relation.where_run",
+        relation_where_run,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Relation.guarded_of",
+        relation_guarded_of,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Relation.join_run",
+        relation_join_run,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Relation.conjoin_of",
+        relation_conjoin_of,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Relation.project_run",
+        relation_project_run,
+    )?;
     register_if_present(interp, "anthill.prelude.Relation.fix", relation_fix)?;
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
-    register_if_present(interp, "anthill.reflect.KB.stored_facts_of", kb_stored_facts_of)?;
+    register_if_present(
+        interp,
+        "anthill.reflect.KB.stored_facts_of",
+        kb_stored_facts_of,
+    )?;
     register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
     register_if_present(interp, "anthill.reflect.unify", reflect_unify)?;
-    register_if_present(interp, "anthill.reflect.term_functor_name", term_functor_name)?;
+    register_if_present(
+        interp,
+        "anthill.reflect.term_functor_name",
+        term_functor_name,
+    )?;
     register_if_present(interp, "anthill.reflect.extract", extract_type_builtin)?;
     register_if_present(interp, "anthill.reflect.term_field", term_field)?;
     register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
     register_if_present(interp, "anthill.reflect.term_as_int", term_as_int)?;
-    register_if_present(interp, "anthill.reflect.term_to_string", reflect_term_to_string)?;
-    register_if_present(interp, "anthill.reflect.term_list_items", reflect_term_list_items)?;
+    register_if_present(
+        interp,
+        "anthill.reflect.term_to_string",
+        reflect_term_to_string,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.reflect.term_list_items",
+        reflect_term_list_items,
+    )?;
     register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
     register_if_present(interp, "anthill.reflect.field_access", reflect_field_access)?;
     register_if_present(interp, "anthill.reflect.as_term", as_term)?;
@@ -182,11 +234,31 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // and rebuilds through `make_apply`. Registered on the eval side (surface A) so
     // the macro-eval path (`call_op_bridged`) dispatches them with `Value::Node`
     // args untouched.
-    register_if_present(interp, "anthill.reflect.occurrence_term", reflect_occurrence_term)?;
-    register_if_present(interp, "anthill.reflect.sub_occurrences", reflect_sub_occurrences)?;
-    register_if_present(interp, "anthill.reflect.occurrence_type", reflect_occurrence_type)?;
-    register_if_present(interp, "anthill.reflect.is_modifiable", reflect_is_modifiable)?;
-    register_if_present(interp, "anthill.reflect.replace_named_arg", reflect_replace_named_arg)?;
+    register_if_present(
+        interp,
+        "anthill.reflect.occurrence_term",
+        reflect_occurrence_term,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.reflect.sub_occurrences",
+        reflect_sub_occurrences,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.reflect.occurrence_type",
+        reflect_occurrence_type,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.reflect.is_modifiable",
+        reflect_is_modifiable,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.reflect.replace_named_arg",
+        reflect_replace_named_arg,
+    )?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
     register_if_present(interp, "anthill.prelude.Int64.to_string", int_to_string)?;
 
@@ -200,7 +272,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Console.println", console_println)?;
     register_if_present(interp, "anthill.prelude.Console.eprint", console_eprint)?;
     register_if_present(interp, "anthill.prelude.Console.eprintln", console_eprintln)?;
-    register_if_present(interp, "anthill.prelude.Console.read_line", console_read_line)?;
+    register_if_present(
+        interp,
+        "anthill.prelude.Console.read_line",
+        console_read_line,
+    )?;
 
     register_if_present(interp, "anthill.prelude.ModifyRuntime.get", modify_get)?;
     register_if_present(interp, "anthill.prelude.ModifyRuntime.set", modify_set)?;
@@ -212,14 +288,38 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // WI-577 — first-class runtime dispatch values: the anthill face of a
     // requirement dictionary (a resolved spec impl) and `Value::OpRef` (a resolved
     // operation reference). Native readers over the values themselves (WI-1045).
-    register_if_present(interp, "anthill.realization.runtime.Dictionary.impl", dict_impl)?;
-    register_if_present(interp, "anthill.realization.runtime.Dictionary.arity", dict_arity)?;
-    register_if_present(interp, "anthill.realization.runtime.Dictionary.sub", dict_sub)?;
-    register_if_present(interp, "anthill.realization.runtime.Dictionary.resolveOp", dict_resolve_op)?;
-    register_if_present(interp, "anthill.realization.runtime.Dictionary.ops", dict_ops)?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.Dictionary.impl",
+        dict_impl,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.Dictionary.arity",
+        dict_arity,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.Dictionary.sub",
+        dict_sub,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.Dictionary.resolveOp",
+        dict_resolve_op,
+    )?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.Dictionary.ops",
+        dict_ops,
+    )?;
     register_if_present(interp, "anthill.realization.runtime.OpRef.op", opref_op)?;
     register_if_present(interp, "anthill.realization.runtime.OpRef.dict", opref_dict)?;
-    register_if_present(interp, "anthill.realization.runtime.OpRef.named", opref_named)?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.OpRef.named",
+        opref_named,
+    )?;
 
     // WI-876 — last, because it is the KB-DRIVEN half: everything above is a
     // hardcoded qualified name, this reads what the loaded binding blocks asked
@@ -253,7 +353,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
 /// the defect the test exists to catch. Iterating makes it exhaustive by
 /// construction. The lookup is a linear scan over a few dozen `&'static str`s, run
 /// once per mapping per fresh interpreter, against a stdlib parse.
-const HOST_FNS: &[(&str, usize, fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>)] = &[
+const HOST_FNS: &[(
+    &str,
+    usize,
+    fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>,
+)] = &[
     // The TOTAL scalar order (`Ord`): `Int64`, `BigInt`, `String`.
     ("ordered_compare", 2, ordered_compare),
     ("ordered_gt", 2, ordered_gt),
@@ -385,7 +489,10 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         .filter(|m| m.lang == crate::kb::load::INTERPRETER_LANG)
         .cloned()
         .collect();
-    for crate::kb::load::HostOperationMapping { op, op_qn, host_fn, .. } in mappings {
+    for crate::kb::load::HostOperationMapping {
+        op, op_qn, host_fn, ..
+    } in mappings
+    {
         let Some(host) = host_fn_by_key(&host_fn) else {
             // Loud, and it stops the whole interpreter — including the short-lived one
             // the resolver builds per bridged evaluation, so an unrelated `[simp]` fire
@@ -468,7 +575,13 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
         .filter(|m| m.lang == crate::kb::load::INTERPRETER_LANG)
         .cloned()
         .collect();
-    for crate::kb::load::HostConstMapping { const_sym, const_qn, host_fn, .. } in mappings {
+    for crate::kb::load::HostConstMapping {
+        const_sym,
+        const_qn,
+        host_fn,
+        ..
+    } in mappings
+    {
         let Some(host) = host_fn_by_key(&host_fn) else {
             return Err(EvalError::Internal(format!(
                 "broken binding block: const_map names host value {host_fn:?} for \
@@ -530,11 +643,20 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let [receiver, field] = expect_args::<2>("anthill.reflect.field_access", args)?;
     let field_name = match &field {
         Value::Str(s) => s.clone(),
-        other => return Err(EvalError::Internal(format!(
-            "field_access: field name must be a string, got {}", other.type_name()))),
+        other => {
+            return Err(EvalError::Internal(format!(
+                "field_access: field name must be a string, got {}",
+                other.type_name()
+            )))
+        }
     };
     match &receiver {
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             // A field supplied by NAME — match by short name.
             for (sym, val) in named.iter() {
                 let full = interp.kb().local_name_of(*sym);
@@ -577,7 +699,9 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 }
             }
             Err(EvalError::Internal(format!(
-                "field_access: entity has no field '{}'", field_name)))
+                "field_access: entity has no field '{}'",
+                field_name
+            )))
         }
         // WI-638: a NAMED-TUPLE component projection (`(x: A, y: B).x`, or the
         // positional `t._1`). The typer resolved the component against the tuple
@@ -594,19 +718,32 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             .tuple_components()
             .and_then(|c| c.by_label(interp.kb(), field_name.as_str()))
             .cloned()
-            .ok_or_else(|| EvalError::Internal(format!(
-                "field_access: tuple has no component '{}'", field_name))),
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "field_access: tuple has no component '{}'",
+                    field_name
+                ))
+            }),
         other => Err(EvalError::Internal(format!(
-            "field_access: receiver is not an entity (got {})", other.type_name()))),
+            "field_access: receiver is not an entity (got {})",
+            other.type_name()
+        ))),
     }
 }
 
 // ── argument helpers ────────────────────────────────────────────
 
 /// Unpack an arg slice into a fixed-size array, enforcing arity.
-pub fn expect_args<const N: usize>(op: &'static str, args: &[Value]) -> Result<[Value; N], EvalError> {
+pub fn expect_args<const N: usize>(
+    op: &'static str,
+    args: &[Value],
+) -> Result<[Value; N], EvalError> {
     if args.len() != N {
-        return Err(EvalError::ArityMismatch { op, expected: N, got: args.len() });
+        return Err(EvalError::ArityMismatch {
+            op,
+            expected: N,
+            got: args.len(),
+        });
     }
     // `from_fn` + one clone per slot — no intermediate `Vec`s, no try_into.
     Ok(std::array::from_fn(|i| args[i].clone()))
@@ -632,36 +769,51 @@ fn type_mismatch(expected: &'static str, a: &Value, b: Option<&Value>) -> EvalEr
 fn numeric_add(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Numeric.add", args)?;
     match (&a, &b) {
-        (Value::Int(x), Value::Int(y)) => x.checked_add(*y)
+        (Value::Int(x), Value::Int(y)) => x
+            .checked_add(*y)
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Numeric.add" }),
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x + y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
-        _ => Err(type_mismatch("matching Int, BigInt, or Float", &a, Some(&b))),
+        _ => Err(type_mismatch(
+            "matching Int, BigInt, or Float",
+            &a,
+            Some(&b),
+        )),
     }
 }
 
 fn numeric_sub(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Numeric.sub", args)?;
     match (&a, &b) {
-        (Value::Int(x), Value::Int(y)) => x.checked_sub(*y)
+        (Value::Int(x), Value::Int(y)) => x
+            .checked_sub(*y)
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Numeric.sub" }),
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x - y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
-        _ => Err(type_mismatch("matching Int, BigInt, or Float", &a, Some(&b))),
+        _ => Err(type_mismatch(
+            "matching Int, BigInt, or Float",
+            &a,
+            Some(&b),
+        )),
     }
 }
 
 fn numeric_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Numeric.mul", args)?;
     match (&a, &b) {
-        (Value::Int(x), Value::Int(y)) => x.checked_mul(*y)
+        (Value::Int(x), Value::Int(y)) => x
+            .checked_mul(*y)
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Numeric.mul" }),
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x * y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
-        _ => Err(type_mismatch("matching Int, BigInt, or Float", &a, Some(&b))),
+        _ => Err(type_mismatch(
+            "matching Int, BigInt, or Float",
+            &a,
+            Some(&b),
+        )),
     }
 }
 
@@ -671,7 +823,8 @@ fn numeric_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
 fn numeric_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Numeric.neg", args)?;
     match a {
-        Value::Int(x) => x.checked_neg()
+        Value::Int(x) => x
+            .checked_neg()
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Numeric.neg" }),
         Value::BigInt(x) => Ok(Value::BigInt(-x)),
@@ -685,7 +838,8 @@ fn numeric_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
 fn int_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Int64.neg", args)?;
     match a {
-        Value::Int(x) => x.checked_neg()
+        Value::Int(x) => x
+            .checked_neg()
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Int64.neg" }),
         other => Err(type_mismatch("Int64", &other, None)),
@@ -695,7 +849,8 @@ fn int_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 fn int_abs(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Int64.abs", args)?;
     match a {
-        Value::Int(x) => x.checked_abs()
+        Value::Int(x) => x
+            .checked_abs()
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Int64.abs" }),
         other => Err(type_mismatch("Int64", &other, None)),
@@ -728,7 +883,8 @@ fn int_div(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("Int64.div", args)?;
     match (&a, &b) {
         (Value::Int(_), Value::Int(0)) => Err(i.raise_division_by_zero("Int64.div")),
-        (Value::Int(x), Value::Int(y)) => x.checked_div(*y)
+        (Value::Int(x), Value::Int(y)) => x
+            .checked_div(*y)
             .map(Value::Int)
             .ok_or(EvalError::Overflow { op: "Int64.div" }),
         _ => Err(type_mismatch("Int64", &a, Some(&b))),
@@ -806,7 +962,9 @@ fn float_val(i: &Interpreter, v: &Value) -> Option<f64> {
     match v {
         Value::Float(f) => Some(*f),
         Value::Term { id, .. } => match i.kb().get_term(*id) {
-            crate::kb::term::Term::Const(crate::kb::term::Literal::Float(f)) => Some(f.into_inner()),
+            crate::kb::term::Term::Const(crate::kb::term::Literal::Float(f)) => {
+                Some(f.into_inner())
+            }
             _ => None,
         },
         _ => None,
@@ -820,7 +978,11 @@ fn float_val(i: &Interpreter, v: &Value) -> Option<f64> {
 /// `Value::Node`/`Entity` twin compare equal.
 fn builtin_struct_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("struct_eq", args)?;
-    Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b)))
+    Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(
+        i.kb(),
+        &a,
+        &b,
+    )))
 }
 
 fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -889,7 +1051,8 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
     // 4. Head-carrier override over GROUND operands ⇒ prove `<carrier>.eq(a, b)`.
     let target = {
         let kb = i.kb();
-        kb.sem_eq_dispatch_target(a).or_else(|| kb.sem_eq_dispatch_target(b))
+        kb.sem_eq_dispatch_target(a)
+            .or_else(|| kb.sem_eq_dispatch_target(b))
     };
     if let Some(target) = target {
         let ground = {
@@ -908,7 +1071,10 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             // nested `run()` would corrupt the live activation stack. A body-less
             // rule-backed carrier op (`Set.eq`) still proves via the sub-resolution.
             if crate::kb::typing::op_has_runnable_body(i.kb(), target) {
-                return match i.kb_mut().bridge_eq_op_to_eval(target, a.clone(), b.clone()) {
+                return match i
+                    .kb_mut()
+                    .bridge_eq_op_to_eval(target, a.clone(), b.clone())
+                {
                     Ok(crate::kb::resolve::BridgeEqOutcome::Decided(v)) => Ok(v),
                     // UNDECIDED (re-entry cap / a bridge-mode suspend inside the
                     // op): in bridge mode SUSPEND so the resolver residualizes; at
@@ -935,7 +1101,10 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                     Err(e) => Err(e),
                 };
             }
-            return match i.kb_mut().prove_rule_predicate(target, vec![a.clone(), b.clone()]) {
+            return match i
+                .kb_mut()
+                .prove_rule_predicate(target, vec![a.clone(), b.clone()])
+            {
                 crate::kb::resolve::PredicateProof::Proved => Ok(true),
                 crate::kb::resolve::PredicateProof::Refuted => Ok(false),
                 // Only reachable when a huge ground compare truncates the sub-proof
@@ -997,7 +1166,7 @@ fn composite_field_wise_eq(
     use crate::kb::eq_derive::FieldPairs;
     // Shared shape-decomposition (releases the kb borrow before the recursion).
     let pairs = match i.kb().same_shape_child_pairs(a, b) {
-        FieldPairs::NotComposite => return Ok(None),   // caller keeps the structural verdict
+        FieldPairs::NotComposite => return Ok(None), // caller keeps the structural verdict
         FieldPairs::Mismatch => return Ok(Some(false)), // shape mismatch ⇒ not equal
         FieldPairs::Pairs(pairs) => pairs,
     };
@@ -1030,10 +1199,12 @@ fn value_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, EvalError> 
         (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
-        _ => return Err(EvalError::TypeMismatch {
-            expected: "Ord scalars of matching type",
-            got: format!("{} and {}", a.type_name(), b.type_name()),
-        }),
+        _ => {
+            return Err(EvalError::TypeMismatch {
+                expected: "Ord scalars of matching type",
+                got: format!("{} and {}", a.type_name(), b.type_name()),
+            })
+        }
     })
 }
 
@@ -1095,22 +1266,34 @@ fn float_lte(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 
 fn ordered_gt(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("gt", args)?;
-    Ok(Value::Bool(matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
+    Ok(Value::Bool(matches!(
+        value_compare(&a, &b)?,
+        std::cmp::Ordering::Greater
+    )))
 }
 
 fn ordered_gte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("gte", args)?;
-    Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Less)))
+    Ok(Value::Bool(!matches!(
+        value_compare(&a, &b)?,
+        std::cmp::Ordering::Less
+    )))
 }
 
 fn ordered_lt(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("lt", args)?;
-    Ok(Value::Bool(matches!(value_compare(&a, &b)?, std::cmp::Ordering::Less)))
+    Ok(Value::Bool(matches!(
+        value_compare(&a, &b)?,
+        std::cmp::Ordering::Less
+    )))
 }
 
 fn ordered_lte(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("lte", args)?;
-    Ok(Value::Bool(!matches!(value_compare(&a, &b)?, std::cmp::Ordering::Greater)))
+    Ok(Value::Bool(!matches!(
+        value_compare(&a, &b)?,
+        std::cmp::Ordering::Greater
+    )))
 }
 
 /// `Ord.max`/`min` on a total scalar carrier. `Ord` derives both from
@@ -1450,7 +1633,11 @@ fn string_length(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 /// borrowing arity check is [`error_raise`]'s.
 fn string_is_empty(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = args else {
-        return Err(EvalError::ArityMismatch { op: "String.isEmpty", expected: 1, got: args.len() });
+        return Err(EvalError::ArityMismatch {
+            op: "String.isEmpty",
+            expected: 1,
+            got: args.len(),
+        });
     };
     Ok(Value::Bool(str_operand(a)?.is_empty()))
 }
@@ -1487,8 +1674,12 @@ fn string_to_lower(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 fn string_substring(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, start, end] = expect_args::<3>("String.substring", args)?;
     let s = str_operand(&s)?.to_string();
-    let start = start.as_int().ok_or_else(|| type_mismatch("Int64", &start, None))?;
-    let end = end.as_int().ok_or_else(|| type_mismatch("Int64", &end, None))?;
+    let start = start
+        .as_int()
+        .ok_or_else(|| type_mismatch("Int64", &start, None))?;
+    let end = end
+        .as_int()
+        .ok_or_else(|| type_mismatch("Int64", &end, None))?;
     let n = s.chars().count() as i64;
     let lo = start.max(0).min(n) as usize;
     let hi = end.max(0).min(n) as usize;
@@ -1513,11 +1704,14 @@ fn string_repeat(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
     if n <= 0 {
         return Ok(Value::Str(String::new()));
     }
-    let fits = usize::try_from(n).ok()
+    let fits = usize::try_from(n)
+        .ok()
         .and_then(|n| s.len().checked_mul(n))
         .is_some_and(|total| total <= isize::MAX as usize);
     if !fits {
-        return Err(EvalError::Overflow { op: "String.repeat" });
+        return Err(EvalError::Overflow {
+            op: "String.repeat",
+        });
     }
     Ok(Value::Str(s.repeat(n as usize)))
 }
@@ -1657,10 +1851,7 @@ fn split_first_result(
 /// [`logical_stream_split_first`] once the query is run — a runtime op returning a
 /// Stream. Empty answer set → `none` (NotFound is the ordinary Stream contract, no
 /// bespoke nil arm).
-fn relation_split_first(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> Result<Value, EvalError> {
+fn relation_split_first(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("Relation.splitFirst", args)?;
     let (query, columns) = match arg {
         Value::Relation { query, columns } => (query, columns),
@@ -1715,14 +1906,19 @@ fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // Combine at the QUERY level (shared builder, same one `build_relation_value`
     // uses); `columns` is the operand's already-empty set — reuse it for the result.
     let neg = interp.build_logical_query_value("negation", vec![("query", (*query).clone())])?;
-    Ok(Value::Relation { query: std::rc::Rc::new(neg), columns })
+    Ok(Value::Relation {
+        query: std::rc::Rc::new(neg),
+        columns,
+    })
 }
 
 /// Destructure a `Value::Relation` into `(query, columns)`, or a loud type error.
 /// Shared by the relational-algebra builtins (`negate` / `union` / …), which all
 /// take `Relation` operands.
-type RelationParts =
-    (std::rc::Rc<Value>, std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]>);
+type RelationParts = (
+    std::rc::Rc<Value>,
+    std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]>,
+);
 fn expect_relation(v: Value) -> Result<RelationParts, EvalError> {
     match v {
         Value::Relation { query, columns } => Ok((query, columns)),
@@ -1748,7 +1944,11 @@ fn rename_query_vars(
     sigma: &crate::kb::subst::Substitution,
 ) -> Result<Value, EvalError> {
     match v {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => {
             let mut pos2 = Vec::with_capacity(pos.len());
             for c in pos.iter() {
                 pos2.push(rename_query_vars(kb, c, sigma)?);
@@ -1757,7 +1957,11 @@ fn rename_query_vars(
             for (k, c) in named.iter() {
                 named2.push((*k, rename_query_vars(kb, c, sigma)?));
             }
-            Ok(Value::Entity { functor: *functor, pos: pos2.into(), named: named2.into() })
+            Ok(Value::Entity {
+                functor: *functor,
+                pos: pos2.into(),
+                named: named2.into(),
+            })
         }
         Value::Term { id } => Ok(Value::term(kb.apply_subst(*id, sigma))),
         // A carrier-neutral logic-variable leaf (`Value::Var`, WI-714/WI-348):
@@ -1816,7 +2020,11 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     // columns (a's).
     let mut sigma = crate::kb::subst::Substitution::new();
     for ((_, vb), (_, va)) in cols_b.iter().zip(cols_a.iter()) {
-        let va_term = interp.kb.alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(*va)));
+        let va_term = interp
+            .kb
+            .alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(
+                *va,
+            )));
         sigma.bind(&interp.kb, *vb, va_term);
     }
     let qb_aligned = rename_query_vars(&mut interp.kb, &qb, &sigma)?;
@@ -1824,7 +2032,10 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
         "disjunction",
         vec![("left", (*qa).clone()), ("right", qb_aligned)],
     )?;
-    Ok(Value::Relation { query: std::rc::Rc::new(disj), columns: cols_a })
+    Ok(Value::Relation {
+        query: std::rc::Rc::new(disj),
+        columns: cols_a,
+    })
 }
 
 /// `Relation.where_run` (WI-714 / proposal 052) — the RUNTIME back-end of `where`.
@@ -1857,7 +2068,10 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
         "conjunction",
         vec![("left", (*query).clone()), ("right", condition)],
     )?;
-    Ok(Value::Relation { query: std::rc::Rc::new(filtered), columns })
+    Ok(Value::Relation {
+        query: std::rc::Rc::new(filtered),
+        columns,
+    })
 }
 
 /// Reserved hole name for a bare-binder (WHOLE-ROW) reference `c` in a `where`
@@ -1885,7 +2099,11 @@ fn fill_column_holes(
 ) -> Result<Value, EvalError> {
     use crate::kb::term::Var;
     match v {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => {
             let mut pos2 = Vec::with_capacity(pos.len());
             for c in pos.iter() {
                 pos2.push(fill_column_holes(kb, c, columns, whole_row)?);
@@ -1894,7 +2112,11 @@ fn fill_column_holes(
             for (k, c) in named.iter() {
                 named2.push((*k, fill_column_holes(kb, c, columns, whole_row)?));
             }
-            Ok(Value::Entity { functor: *functor, pos: pos2.into(), named: named2.into() })
+            Ok(Value::Entity {
+                functor: *functor,
+                pos: pos2.into(),
+                named: named2.into(),
+            })
         }
         Value::Var(Var::Global(hole)) => {
             let name = hole.name();
@@ -1910,7 +2132,10 @@ fn fill_column_holes(
                     _ => Err(EvalError::TypeMismatch {
                         expected: "a single-column relation for a whole-row `where` condition \
                                    (compare a specific column `c.field` over a multi-column row)",
-                        got: format!("a bare whole-row binder `c` over a {}-column relation", columns.len()),
+                        got: format!(
+                            "a bare whole-row binder `c` over a {}-column relation",
+                            columns.len()
+                        ),
                     }),
                 };
             }
@@ -2010,7 +2235,12 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     // Compile the lambda body, as syntax, into a query recipe (column refs → holes),
     // then splice `where_run(r, <recipe>)` — the runtime back-end.
     let recipe = compile_condition(interp, &body, &[binder])?;
-    splice_query_runner(interp, "anthill.prelude.Relation.where_run", &[r_occ], recipe)
+    splice_query_runner(
+        interp,
+        "anthill.prelude.Relation.where_run",
+        &[r_occ],
+        recipe,
+    )
 }
 
 /// Splice a `<runner>(<relation…>, <recipe>)` call for a row-lambda macro — the shared
@@ -2046,12 +2276,20 @@ fn splice_query_runner(
     // OVER `expected` — so a phantom sort would override the runner's real `cond:
     // LogicalQuery` hint. Resolve loudly instead. (reflect.anthill always loads before
     // user code types, so this never fires — a belt for a hostile load order.)
-    if interp.kb.try_resolve_symbol("anthill.reflect.LogicalQuery").is_none() {
+    if interp
+        .kb
+        .try_resolve_symbol("anthill.reflect.LogicalQuery")
+        .is_none()
+    {
         return Err(EvalError::Internal(format!(
             "WI-714 {runner_qn} lowering: anthill.reflect.LogicalQuery is not resolvable"
         )));
     }
-    let query_ty = Value::term(interp.kb.make_sort_ref_by_name("anthill.reflect.LogicalQuery"));
+    let query_ty = Value::term(
+        interp
+            .kb
+            .make_sort_ref_by_name("anthill.reflect.LogicalQuery"),
+    );
     spliced.set_inferred_type(query_ty);
     let runner = interp
         .kb
@@ -2060,7 +2298,12 @@ fn splice_query_runner(
     let mut pos_args: Vec<Rc<NodeOccurrence>> = relations.to_vec();
     pos_args.push(spliced);
     let call = NodeOccurrence::synthesized_expr(
-        Expr::Apply { functor: runner, pos_args, named_args: Vec::new(), type_args: Vec::new() },
+        Expr::Apply {
+            functor: runner,
+            pos_args,
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
         Rc::clone(anchor),
         pass,
         owner,
@@ -2103,14 +2346,12 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
                     for sub in positional {
                         match sub.as_pattern() {
                             Some(Pattern::Var { name, .. }) => bs.push(*name),
-                            _ => {
-                                return Err(macro_rejects(
-                                    "a two-row lambda `(c, q) -> …` binding two plain rows",
-                                    "a join lambda whose tuple binder nests a non-plain sub-pattern"
-                                        .to_string(),
-                                    sub,
-                                ))
-                            }
+                            _ => return Err(macro_rejects(
+                                "a two-row lambda `(c, q) -> …` binding two plain rows",
+                                "a join lambda whose tuple binder nests a non-plain sub-pattern"
+                                    .to_string(),
+                                sub,
+                            )),
                         }
                     }
                     bs
@@ -2142,7 +2383,12 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         ));
     }
     let recipe = compile_condition(interp, &body, &binders)?;
-    splice_query_runner(interp, "anthill.prelude.Relation.join_run", &[r1_occ, r2_occ], recipe)
+    splice_query_runner(
+        interp,
+        "anthill.prelude.Relation.join_run",
+        &[r1_occ, r2_occ],
+        recipe,
+    )
 }
 
 /// `Relation.join_run` (WI-714 / proposal 052) — the RUNTIME back-end of `join`, a
@@ -2171,7 +2417,11 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
         .map(|(name, vid)| {
             let fresh = interp.kb.fresh_var(*name);
             let fresh_term =
-                interp.kb.alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(fresh)));
+                interp
+                    .kb
+                    .alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(
+                        fresh,
+                    )));
             sigma.bind(&interp.kb, *vid, fresh_term);
             (*name, fresh)
         })
@@ -2212,11 +2462,12 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
         "conjunction",
         vec![("left", (*q1).clone()), ("right", q2_fresh)],
     )?;
-    let joined = interp.build_logical_query_value(
-        "conjunction",
-        vec![("left", product), ("right", condition)],
-    )?;
-    Ok(Value::Relation { query: std::rc::Rc::new(joined), columns: merged })
+    let joined = interp
+        .build_logical_query_value("conjunction", vec![("left", product), ("right", condition)])?;
+    Ok(Value::Relation {
+        query: std::rc::Rc::new(joined),
+        columns: merged,
+    })
 }
 
 /// WI-787: read a column-keyed SPEC record (`Relation.project_run`'s projection
@@ -2271,7 +2522,10 @@ fn spec_record_fields<'a>(
 fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r, spec] = expect_args::<2>("Relation.project_run", args)?;
     let (query, columns) = expect_relation(r)?;
-    let pairs = spec_record_fields(&spec, "a projection spec tuple (result-key ↦ source-column-name)")?;
+    let pairs = spec_record_fields(
+        &spec,
+        "a projection spec tuple (result-key ↦ source-column-name)",
+    )?;
     let mut projected: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
         Vec::with_capacity(pairs.len());
     for (result_key, source) in pairs.iter() {
@@ -2305,7 +2559,10 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             })?;
         projected.push((*result_key, vid));
     }
-    Ok(Value::Relation { query, columns: projected.into() })
+    Ok(Value::Relation {
+        query,
+        columns: projected.into(),
+    })
 }
 
 /// `Relation.fix` (WI-714 / proposal 052 §"`fix` is sugar"; WI-727 / proposal 056) — the
@@ -2325,7 +2582,10 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
 fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [p, spec] = expect_args::<2>("Relation.fix", args)?;
     let (query, columns) = expect_relation(p)?;
-    let fixes = spec_record_fields(&spec, "a fix record (column-name ↦ constant) captured named tuple")?;
+    let fixes = spec_record_fields(
+        &spec,
+        "a fix record (column-name ↦ constant) captured named tuple",
+    )?;
     let eq_sym = interp
         .kb
         .try_resolve_symbol("anthill.prelude.PartialEq.eq")
@@ -2365,7 +2625,10 @@ fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         .filter(|(cn, _)| !fixes.iter().any(|(fn_name, _)| fn_name == cn))
         .copied()
         .collect();
-    Ok(Value::Relation { query: std::rc::Rc::new(query), columns: kept.into() })
+    Ok(Value::Relation {
+        query: std::rc::Rc::new(query),
+        columns: kept.into(),
+    })
 }
 
 /// WI-714 — the relation column variable named `sym`, matched by canonical interned
@@ -2385,7 +2648,11 @@ fn find_column(
 /// operation name, never a short name (WI-672); a user operation that merely shares
 /// the short name `and` is a different symbol and falls through to the atom path.
 const BOOLEAN_CONNECTIVES: [(&str, &str, &[&str]); 3] = [
-    ("anthill.prelude.Bool.and", "conjunction", &["left", "right"]),
+    (
+        "anthill.prelude.Bool.and",
+        "conjunction",
+        &["left", "right"],
+    ),
     ("anthill.prelude.Bool.or", "disjunction", &["left", "right"]),
     ("anthill.prelude.Bool.not", "negation", &["query"]),
 ];
@@ -2417,7 +2684,13 @@ fn compile_condition(
     binders: &[crate::intern::Symbol],
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
-    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = body.as_expr() else {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        ..
+    }) = body.as_expr()
+    else {
         return Err(macro_rejects(
             "a goal-expressible row-lambda condition — a predicate \
              (`eq(c.x, …)`) or an `and`/`or`/`not` of them",
@@ -2507,7 +2780,11 @@ fn compile_condition(
     for (k, a) in named_args {
         named.push((*k, compile_operand(interp, a, binders)?));
     }
-    let atom = Value::Entity { functor: *functor, pos: pos.into(), named: named.into() };
+    let atom = Value::Entity {
+        functor: *functor,
+        pos: pos.into(),
+        named: named.into(),
+    };
     interp.build_logical_query_value("pattern_query", vec![("term", atom)])
 }
 
@@ -2576,15 +2853,23 @@ fn binder_field_access(
     use crate::kb::node_occurrence::Expr;
     match occ.as_expr()? {
         // Post-typing form (the real one): `c.x` → `field_access(c, "x")`.
-        Expr::Apply { functor, pos_args, named_args, .. } if named_args.is_empty() => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } if named_args.is_empty() => {
             let (receiver, field) =
                 crate::kb::body_specialize::field_access_parts(&interp.kb, *functor, pos_args)?;
             is_binder_ref(&receiver, binders).then(|| interp.kb.intern(&field))
         }
         // Pre-lowering fallback: `c.x` as a zero-arg `DotApply`.
-        Expr::DotApply { receiver, name, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binders) =>
-        {
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binders) => {
             Some(*name)
         }
         _ => None,
@@ -2634,7 +2919,11 @@ fn logical_stream_split_first(
 fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     expect_args::<0>("KB.kb", args)?;
     let functor = require_symbol(interp, "anthill.reflect.KB.kb", "kb")?;
-    Ok(Value::Entity { functor, pos: Vec::new().into(), named: Vec::new().into() })
+    Ok(Value::Entity {
+        functor,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    })
 }
 
 /// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Solution]` (WI-531; each
@@ -2646,7 +2935,9 @@ fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 /// 026.1 Q3) and wrapped in `StreamSource::Resolver`.
 fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, query] = expect_args::<2>("KB.execute", args)?;
-    let search = interp.kb.execute_logical_query(&query)
+    let search = interp
+        .kb
+        .execute_logical_query(&query)
         .map_err(|e| EvalError::Internal(format!("execute_logical_query: {}", e)))?;
     let handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
     Ok(Value::Stream(handle))
@@ -2742,11 +3033,19 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         // (`value`) and the member name as a `Ref(sym)` (`member`).
         TypeExtractor::ExprCarried { value, member } => {
             let member_val = sym_ref(interp, member);
-            ti_entity(interp, "ExprCarried", vec![(value_key, value), (member_key, member_val)])
+            ti_entity(
+                interp,
+                "ExprCarried",
+                vec![(value_key, value), (member_key, member_val)],
+            )
         }
         // WI-428: reify a rigid type-receiver projection — the declaring sort and the
         // member name as `Ref(sym)`s, the subject type term as-is.
-        TypeExtractor::RigidTypeProjection { sort, subject, member } => {
+        TypeExtractor::RigidTypeProjection {
+            sort,
+            subject,
+            member,
+        } => {
             let sort_key = interp.kb.intern("sort");
             let var_key = interp.kb.intern("var");
             let sort_val = sym_ref(interp, sort);
@@ -2754,7 +3053,11 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             ti_entity(
                 interp,
                 "RigidTypeProjection",
-                vec![(sort_key, sort_val), (var_key, subject), (member_key, member_val)],
+                vec![
+                    (sort_key, sort_val),
+                    (var_key, subject),
+                    (member_key, member_val),
+                ],
             )
         }
         // WI-791: `arity` reifies alongside the other three. A program that
@@ -2762,7 +3065,12 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         // from an n-parameter one — the same distinction the typer needs — and
         // dropping it here would make `extract` lossy against the stdlib
         // `entity Arrow(param, result, effects, arity)` it is defined to mirror.
-        TypeExtractor::Arrow { param, result, effects, arity } => {
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             // `arity` arrives decoded; re-mint the `Const(Int)` the stdlib entity's
             // `arity: Int64` field holds, through the same builder the typer uses so
             // a reified arrow is structurally identical to the one it came from.
@@ -2778,7 +3086,9 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 ],
             )
         }
-        TypeExtractor::EffectsRows(e) => ti_entity(interp, "EffectsRows", vec![(effects_expr_key, e)]),
+        TypeExtractor::EffectsRows(e) => {
+            ti_entity(interp, "EffectsRows", vec![(effects_expr_key, e)])
+        }
         TypeExtractor::Parameterized { base, bindings } => {
             let base_val = sym_ref(interp, base);
             let new_bindings =
@@ -2806,7 +3116,11 @@ fn ti_entity(
 ) -> Result<Value, EvalError> {
     let qname = format!("anthill.prelude.TypeExtractor.{}", short);
     let functor = require_symbol(interp, &qname, short)?;
-    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
+    Ok(Value::Entity {
+        functor,
+        pos: Vec::new().into(),
+        named: fields.into(),
+    })
 }
 
 /// Build a standalone `TypeExtractor` helper record (`anthill.prelude.<short>` —
@@ -2818,7 +3132,11 @@ fn ti_record(
 ) -> Result<Value, EvalError> {
     let qname = format!("anthill.prelude.{}", short);
     let functor = require_symbol(interp, &qname, short)?;
-    Ok(Value::Entity { functor, pos: Vec::new().into(), named: fields.into() })
+    Ok(Value::Entity {
+        functor,
+        pos: Vec::new().into(),
+        named: fields.into(),
+    })
 }
 
 /// Build a value list of standalone `key1`/`key2` records (`TypeBinding` /
@@ -2848,7 +3166,11 @@ fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value
     let nil_sym = require_symbol(interp, "anthill.prelude.List.nil", "nil")?;
     let head_key = interp.kb.intern("head");
     let tail_key = interp.kb.intern("tail");
-    let mut list = Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let mut list = Value::Entity {
+        functor: nil_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
     for elem in elems.into_iter().rev() {
         list = Value::Entity {
             functor: cons_sym,
@@ -2881,7 +3203,8 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     let found: Option<crate::kb::term::TermId> = match interp.kb.get_term(tid) {
         crate::kb::term::Term::Fn { named_args, .. } => {
             let named = named_args.clone();
-            named.iter()
+            named
+                .iter()
                 .find(|(s, _)| interp.kb.local_name_of(*s) == name)
                 .map(|(_, t)| *t)
         }
@@ -2959,9 +3282,7 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 
     let s: Option<String> = match &arg {
         Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
-            crate::kb::term::Term::Const(crate::kb::term::Literal::String(s)) => {
-                Some(s.clone())
-            }
+            crate::kb::term::Term::Const(crate::kb::term::Literal::String(s)) => Some(s.clone()),
             _ => None,
         },
         Value::Str(s) => Some(s.clone()),
@@ -3084,8 +3405,11 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
         SmallVec<[TermId; 4]>,
         SmallVec<[(Symbol, TermId); 2]>,
     ) = match interp.kb.get_term(tid) {
-        CoreTerm::Fn { functor, pos_args, named_args } =>
-            (*functor, pos_args.clone(), named_args.clone()),
+        CoreTerm::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => (*functor, pos_args.clone(), named_args.clone()),
         _ => return None,
     };
     // Resolve `functor` to the canonical Symbol that owns the
@@ -3100,7 +3424,11 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
         functor
     } else {
         let short_name = interp.kb.local_name_of(functor).to_string();
-        interp.kb.symbols.by_qualified_name.iter()
+        interp
+            .kb
+            .symbols
+            .by_qualified_name
+            .iter()
             .find(|(qname, &sym)| {
                 qname.rsplit('.').next() == Some(short_name.as_str())
                     && interp.kb.entity_field_types(sym).is_some()
@@ -3110,14 +3438,15 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
     // WI-342: field types are carrier-agnostic `Value`. Eval only inspects them
     // to default optional fields (see `is_option_type` below); a denoted-bearing
     // (Value::Node) field type is never an `Option`.
-    let field_types: Vec<(Symbol, Value)> =
-        interp.kb.entity_field_types(canonical)?.to_vec();
+    let field_types: Vec<(Symbol, Value)> = interp.kb.entity_field_types(canonical)?.to_vec();
     // Default missing `Option[T = …]` fields to `none()` — on-disk facts
     // omit optional named args (a `WorkItem` fact skips
     // `context`/`generates`/`requires_capability`) but the field index
     // still expects them. Required for callers to pattern-match a
     // complete entity.
-    let none_sym = interp.kb.try_resolve_symbol("anthill.prelude.Option.none")?;
+    let none_sym = interp
+        .kb
+        .try_resolve_symbol("anthill.prelude.Option.none")?;
 
     let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(field_types.len());
     for (idx, (fname, ftype)) in field_types.iter().enumerate() {
@@ -3137,29 +3466,36 @@ fn materialize_entity(interp: &mut Interpreter, tid: crate::kb::term::TermId) ->
             // Var-valued Option slots are semantically absent — promote
             // them to none() so reconstruction + re-persistence doesn't
             // bake the synthetic var name into the persisted fact.
-            Some(tid)
-                if is_opt
-                    && matches!(interp.kb.get_term(tid), CoreTerm::Var(_)) =>
-            {
-                named.push((*fname, Value::Entity {
-                    functor: none_sym,
-                    pos: Vec::new().into(),
-                    named: Vec::new().into(),
-                }));
+            Some(tid) if is_opt && matches!(interp.kb.get_term(tid), CoreTerm::Var(_)) => {
+                named.push((
+                    *fname,
+                    Value::Entity {
+                        functor: none_sym,
+                        pos: Vec::new().into(),
+                        named: Vec::new().into(),
+                    },
+                ));
             }
             Some(tid) => named.push((*fname, term_to_value(interp, tid))),
             None if is_opt => {
-                named.push((*fname, Value::Entity {
-                    functor: none_sym,
-                    pos: Vec::new().into(),
-                    named: Vec::new().into(),
-                }));
+                named.push((
+                    *fname,
+                    Value::Entity {
+                        functor: none_sym,
+                        pos: Vec::new().into(),
+                        named: Vec::new().into(),
+                    },
+                ));
             }
             None => return None,
         }
     }
 
-    Some(Value::Entity { functor: canonical, pos: Vec::new().into(), named: named.into() })
+    Some(Value::Entity {
+        functor: canonical,
+        pos: Vec::new().into(),
+        named: named.into(),
+    })
 }
 
 pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {
@@ -3208,7 +3544,11 @@ pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::Term
         }
         Decision::TryRef(sym) => {
             if interp.kb.sort_of_constructor(sym).is_some() {
-                Value::Entity { functor: sym, pos: Vec::new().into(), named: Vec::new().into() }
+                Value::Entity {
+                    functor: sym,
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
+                }
             } else {
                 Value::term(tid)
             }
@@ -3240,9 +3580,11 @@ fn reflect_fresh_var(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     };
     let sym = interp.kb.intern(&name);
     let vid = interp.kb.fresh_var(sym);
-    let tid = interp.kb.alloc(crate::kb::term::Term::Var(
-        crate::kb::term::Var::Global(vid),
-    ));
+    let tid = interp
+        .kb
+        .alloc(crate::kb::term::Term::Var(crate::kb::term::Var::Global(
+            vid,
+        )));
     Ok(Value::term(tid))
 }
 
@@ -3268,25 +3610,36 @@ fn reflect_cons_to_vec<T>(
     let mut cursor = list;
     loop {
         match cursor {
-            Value::Entity { functor, pos, named, .. } => {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+                ..
+            } => {
                 if Some(functor) == nil_sym {
                     break;
                 }
                 if Some(functor) != cons_sym {
                     let n = interp.kb.local_name_of(functor);
-                    return Err(EvalError::Internal(format!("{ctx}: expected cons/nil, got {n}")));
+                    return Err(EvalError::Internal(format!(
+                        "{ctx}: expected cons/nil, got {n}"
+                    )));
                 }
                 let (head, tail) = if !named.is_empty() {
                     let h = named
                         .iter()
                         .find(|(s, _)| interp.kb.local_name_of(*s) == "head")
                         .map(|(_, v)| v.clone())
-                        .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing head field")))?;
+                        .ok_or_else(|| {
+                            EvalError::Internal(format!("{ctx}: cons missing head field"))
+                        })?;
                     let t = named
                         .iter()
                         .find(|(s, _)| interp.kb.local_name_of(*s) == "tail")
                         .map(|(_, v)| v.clone())
-                        .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing tail field")))?;
+                        .ok_or_else(|| {
+                            EvalError::Internal(format!("{ctx}: cons missing tail field"))
+                        })?;
                     (h, t)
                 } else if pos.len() >= 2 {
                     (pos[0].clone(), pos[1].clone())
@@ -3324,7 +3677,9 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         Value::Str(s) => s.clone(),
         other => return Err(type_mismatch("String", other, None)),
     };
-    let functor = interp.kb.try_resolve_symbol(&name)
+    let functor = interp
+        .kb
+        .try_resolve_symbol(&name)
         .ok_or_else(|| EvalError::Internal(format!("make_fn: unknown symbol `{name}`")))?;
 
     let pos_vec: Vec<TermId> =
@@ -3374,11 +3729,16 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 
     // Reuse each argument occurrence in place (identity + span preserved). A
     // non-occurrence element is a LOUD error, never a silently-dropped node.
-    let pos_args: Vec<Rc<NodeOccurrence>> =
-        reflect_cons_to_vec(interp, args_arg, "make_apply", "List[NodeOccurrence]", |v| match v {
+    let pos_args: Vec<Rc<NodeOccurrence>> = reflect_cons_to_vec(
+        interp,
+        args_arg,
+        "make_apply",
+        "List[NodeOccurrence]",
+        |v| match v {
             Value::Node(occ) => Ok(occ),
             other => Err(type_mismatch("NodeOccurrence", &other, None)),
-        })?;
+        },
+    )?;
 
     let from = match &from_arg {
         Value::Node(occ) => Rc::clone(occ),
@@ -3386,8 +3746,15 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     };
     let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
     let owner = from.owner;
-    let expr = Expr::Apply { functor, pos_args, named_args: Vec::new(), type_args: Vec::new() };
-    Ok(Value::Node(NodeOccurrence::synthesized_expr(expr, from, pass, owner)))
+    let expr = Expr::Apply {
+        functor,
+        pos_args,
+        named_args: Vec::new(),
+        type_args: Vec::new(),
+    };
+    Ok(Value::Node(NodeOccurrence::synthesized_expr(
+        expr, from, pass, owner,
+    )))
 }
 
 /// WI-722 inc 2 (proposal 043.1) — `anthill.reflect.occurrence_term(occ:
@@ -3515,21 +3882,34 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
         Value::Str(s) => s.clone(),
         other => return Err(type_mismatch("String", other, None)),
     };
-    let new_val_tid = interp.kb.alloc_from_value(&value_arg)
+    let new_val_tid = interp
+        .kb
+        .alloc_from_value(&value_arg)
         .map_err(|e| EvalError::Internal(format!("replace_named_arg: lower value: {e:?}")))?;
 
     let (functor, pos_args, mut named_args) = match interp.kb.get_term(tid) {
-        Term::Fn { functor, pos_args, named_args } => (*functor, pos_args.clone(), named_args.clone()),
-        _ => return Err(EvalError::Internal(
-            format!("replace_named_arg: expected Fn term, got {:?}", interp.kb.get_term(tid))
-        )),
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => (*functor, pos_args.clone(), named_args.clone()),
+        _ => {
+            return Err(EvalError::Internal(format!(
+                "replace_named_arg: expected Fn term, got {:?}",
+                interp.kb.get_term(tid)
+            )))
+        }
     };
     for entry in named_args.iter_mut() {
         if interp.kb.local_name_of(entry.0) == name {
             entry.1 = new_val_tid;
         }
     }
-    let new_term = interp.kb.alloc(Term::Fn { functor, pos_args, named_args });
+    let new_term = interp.kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    });
     Ok(Value::term(new_term))
 }
 
@@ -3574,7 +3954,8 @@ fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     // head's `Value` directly (`Value::Term` for the universal hash-consed case),
     // so `facts_of(kb, OperationInfo)` no longer panics on a Node-carrying head.
     let rule_ids = interp.kb.rules_by_functor(functor_sym);
-    let elements: Vec<Value> = rule_ids.into_iter()
+    let elements: Vec<Value> = rule_ids
+        .into_iter()
         .map(|rid| interp.kb.rule_head_value(rid).clone())
         .collect();
 
@@ -3603,21 +3984,19 @@ fn kb_stored_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// Materialize the declared `StoredRef[T]` pair around an extent-seam row.
 /// `FactRef` itself stays a native opaque carrier — it is never lowered into a
 /// `Term` or a resident-only handle literal.
-fn stored_ref_value(interp: &mut Interpreter, row: crate::kb::extent::StoredRow)
-    -> Result<Value, EvalError>
-{
-    let stored_ref = require_symbol(
-        interp,
-        "anthill.reflect.StoredRef.stored_ref",
-        "stored_ref",
-    )?;
+fn stored_ref_value(
+    interp: &mut Interpreter,
+    row: crate::kb::extent::StoredRow,
+) -> Result<Value, EvalError> {
+    let stored_ref = require_symbol(interp, "anthill.reflect.StoredRef.stored_ref", "stored_ref")?;
     Ok(Value::Entity {
         functor: stored_ref,
         pos: Vec::new().into(),
         named: vec![
             (interp.fields.value, row.row),
             (interp.fields.reference, Value::FactRef(row.reference)),
-        ].into(),
+        ]
+        .into(),
     })
 }
 
@@ -3768,12 +4147,15 @@ fn dict_sub(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
         other => return Err(type_mismatch("Int64", other, None)),
     };
     let dict = expect_dictionary(interp, &d)?;
-    let sub = usize::try_from(i).ok().and_then(|k| dict.sub(k)).ok_or_else(|| {
-        EvalError::Internal(format!(
-            "Dictionary.sub: index {i} out of range (dict has {} sub-requirements)",
-            dict.arity(),
-        ))
-    })?;
+    let sub = usize::try_from(i)
+        .ok()
+        .and_then(|k| dict.sub(k))
+        .ok_or_else(|| {
+            EvalError::Internal(format!(
+                "Dictionary.sub: index {i} out of range (dict has {} sub-requirements)",
+                dict.arity(),
+            ))
+        })?;
     Ok(sub.into_value())
 }
 
@@ -3806,7 +4188,11 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // Carry the named op so applying this ref measures `h` against the right layout —
     // reading it off `target` alone measures a spec dictionary against the provider's
     // own chain, which for a chain-free witness is 0 and rejects a valid dict.
-    Ok(Value::OpRef { op: target, dict: Some(Rc::new(h)), named: Some(spec_op_sym) })
+    Ok(Value::OpRef {
+        op: target,
+        dict: Some(Rc::new(h)),
+        named: Some(spec_op_sym),
+    })
 }
 
 /// `Dictionary.ops(d) -> FiniteStream[OpRef]` — all this dict's operations as
@@ -3952,11 +4338,23 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 
 /// Build an `Option[Term=V]` value with the given functor symbols. Helper for
 /// `get` to avoid repeating the some/none branch.
-fn option_some(some_sym: crate::intern::Symbol, value_key: crate::intern::Symbol, v: Value) -> Value {
-    Value::Entity { functor: some_sym, pos: Vec::new().into(), named: vec![(value_key, v)].into() }
+fn option_some(
+    some_sym: crate::intern::Symbol,
+    value_key: crate::intern::Symbol,
+    v: Value,
+) -> Value {
+    Value::Entity {
+        functor: some_sym,
+        pos: Vec::new().into(),
+        named: vec![(value_key, v)].into(),
+    }
 }
 fn option_none(none_sym: crate::intern::Symbol) -> Value {
-    Value::Entity { functor: none_sym, pos: Vec::new().into(), named: Vec::new().into() }
+    Value::Entity {
+        functor: none_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    }
 }
 
 /// The `MapKey` a builtin's key argument addresses, or the loud type error.
@@ -4045,9 +4443,9 @@ fn map_keys(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
-        b.keys().map(|k| k.to_value()).collect()
-    });
+    let elements: Vec<Value> = interp
+        .maps
+        .with_body(&handle, |b| b.keys().map(|k| k.to_value()).collect());
     interp.build_list_value(elements, &[])
 }
 
@@ -4057,9 +4455,9 @@ fn map_values(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
-        b.values().cloned().collect()
-    });
+    let elements: Vec<Value> = interp
+        .maps
+        .with_body(&handle, |b| b.values().cloned().collect());
     interp.build_list_value(elements, &[])
 }
 
@@ -4073,11 +4471,13 @@ fn map_entries(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     let fst_key = interp.kb.intern("fst");
     let snd_key = interp.kb.intern("snd");
     let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
-        b.iter().map(|(k, v)| Value::Entity {
-            functor: pair_sym,
-            pos: Vec::new().into(),
-            named: vec![(fst_key, k.to_value()), (snd_key, v.clone())].into(),
-        }).collect()
+        b.iter()
+            .map(|(k, v)| Value::Entity {
+                functor: pair_sym,
+                pos: Vec::new().into(),
+                named: vec![(fst_key, k.to_value()), (snd_key, v.clone())].into(),
+            })
+            .collect()
     });
     interp.build_list_value(elements, &[])
 }
@@ -4095,10 +4495,14 @@ fn map_size(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 /// Resolve a builtin's target symbol. Tries the fully-qualified name first,
 /// then falls back to the short name. Exposed so downstream crates that
 /// register their own builtins (e.g. `anthill-stl`) error consistently.
-pub fn require_symbol(interp: &Interpreter, qualified: &str, short: &str)
-    -> Result<crate::intern::Symbol, EvalError>
-{
-    interp.kb.try_resolve_symbol(qualified)
+pub fn require_symbol(
+    interp: &Interpreter,
+    qualified: &str,
+    short: &str,
+) -> Result<crate::intern::Symbol, EvalError> {
+    interp
+        .kb
+        .try_resolve_symbol(qualified)
         .or_else(|| interp.kb.try_resolve_symbol(short))
         .ok_or_else(|| EvalError::Internal(format!("{} not in scope", qualified)))
 }
@@ -4116,13 +4520,48 @@ macro_rules! effect_dispatcher {
     };
 }
 
-effect_dispatcher!(console_print,     "anthill.prelude.Console.print",     "print",     "anthill.prelude.Console.ConsoleOutput");
-effect_dispatcher!(console_println,   "anthill.prelude.Console.println",   "println",   "anthill.prelude.Console.ConsoleOutput");
-effect_dispatcher!(console_eprint,    "anthill.prelude.Console.eprint",    "eprint",    "anthill.prelude.Console.ConsoleError");
-effect_dispatcher!(console_eprintln,  "anthill.prelude.Console.eprintln",  "eprintln",  "anthill.prelude.Console.ConsoleError");
-effect_dispatcher!(console_read_line, "anthill.prelude.Console.read_line", "read_line", "anthill.prelude.Console.ConsoleInput");
-effect_dispatcher!(modify_get, "anthill.prelude.ModifyRuntime.get", "get", "anthill.prelude.Modify");
-effect_dispatcher!(modify_set, "anthill.prelude.ModifyRuntime.set", "set", "anthill.prelude.Modify");
+effect_dispatcher!(
+    console_print,
+    "anthill.prelude.Console.print",
+    "print",
+    "anthill.prelude.Console.ConsoleOutput"
+);
+effect_dispatcher!(
+    console_println,
+    "anthill.prelude.Console.println",
+    "println",
+    "anthill.prelude.Console.ConsoleOutput"
+);
+effect_dispatcher!(
+    console_eprint,
+    "anthill.prelude.Console.eprint",
+    "eprint",
+    "anthill.prelude.Console.ConsoleError"
+);
+effect_dispatcher!(
+    console_eprintln,
+    "anthill.prelude.Console.eprintln",
+    "eprintln",
+    "anthill.prelude.Console.ConsoleError"
+);
+effect_dispatcher!(
+    console_read_line,
+    "anthill.prelude.Console.read_line",
+    "read_line",
+    "anthill.prelude.Console.ConsoleInput"
+);
+effect_dispatcher!(
+    modify_get,
+    "anthill.prelude.ModifyRuntime.get",
+    "get",
+    "anthill.prelude.Modify"
+);
+effect_dispatcher!(
+    modify_set,
+    "anthill.prelude.ModifyRuntime.set",
+    "set",
+    "anthill.prelude.Modify"
+);
 
 // `Error.raise` deliberately does NOT use the generic dispatcher. An unhandled
 // Console/Modify effect is a missing-capability `Internal` fault, but an
@@ -4133,7 +4572,11 @@ effect_dispatcher!(modify_set, "anthill.prelude.ModifyRuntime.set", "set", "anth
 // code the moment `Stream.head`'s default body raised (WI-818).
 fn error_raise(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [payload] = args else {
-        return Err(EvalError::ArityMismatch { op: "Error.raise", expected: 1, got: args.len() });
+        return Err(EvalError::ArityMismatch {
+            op: "Error.raise",
+            expected: 1,
+            got: args.len(),
+        });
     };
     Err(interp.raise_error(payload.clone()))
 }
@@ -4176,12 +4619,15 @@ fn reflect_fact_monotonicity(
     // The reflect substrate is loaded whenever the persistence builtins run
     // (persistence imports anthill.reflect), so a missing symbol is a broken /
     // stale setup, not a benign default — surface it.
-    let resolve = |kb: &crate::kb::KnowledgeBase, name: &str| -> Result<crate::intern::Symbol, EvalError> {
-        kb.try_resolve_symbol(name).ok_or_else(|| EvalError::Internal(format!(
-            "fact_monotonicity guard: `{name}` unresolved — the anthill.reflect \
+    let resolve =
+        |kb: &crate::kb::KnowledgeBase, name: &str| -> Result<crate::intern::Symbol, EvalError> {
+            kb.try_resolve_symbol(name).ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "fact_monotonicity guard: `{name}` unresolved — the anthill.reflect \
              substrate (proposal 053) must be loaded"
-        )))
-    };
+                ))
+            })
+        };
     let fm_sym = resolve(kb, "anthill.reflect.fact_monotonicity")?;
     let mono_sym = resolve(kb, Monotonicity::Monotone.reflect_variant_qname())?;
     let non_mono_sym = resolve(kb, Monotonicity::NonMonotone.reflect_variant_qname())?;
@@ -4193,8 +4639,11 @@ fn reflect_fact_monotonicity(
         pos_args: smallvec::SmallVec::from_slice(&[functor_ref]),
         named_args: smallvec::SmallVec::new(),
     });
-    let (result, _changes) =
-        kb.apply_eq_rules(&Value::term(call), 100, &crate::kb::subst::Substitution::new());
+    let (result, _changes) = kb.apply_eq_rules(
+        &Value::term(call),
+        100,
+        &crate::kb::subst::Substitution::new(),
+    );
 
     let head = crate::kb::term_view::TermView::head(&result, kb).functor_sym();
     match head {
@@ -4240,7 +4689,10 @@ impl Interpreter {
         // this resolved functor back to text — is what made rung 3 ambiguous: a store
         // whose spelling did not match read exactly like a store that declared nothing
         // (WI-919). A miss now means only what rung 3 says it means.
-        Ok(self.kb.mirror_monotonicity(functor).unwrap_or(Monotonicity::Monotone))
+        Ok(self
+            .kb
+            .mirror_monotonicity(functor)
+            .unwrap_or(Monotonicity::Monotone))
     }
 }
 
@@ -4252,7 +4704,9 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let [store_val, fact_val, _meta_val] = expect_args::<3>("persist", args)?;
     let key = interp.store_canonical_key(&store_val)?;
 
-    let fact_term = interp.kb.alloc_from_value(&fact_val)
+    let fact_term = interp
+        .kb
+        .alloc_from_value(&fact_val)
         .map_err(|e| EvalError::Internal(format!("persist: lower fact: {e:?}")))?;
 
     // Proposal 053: refuse asserting a `constant` functor (loud). A monotone
@@ -4264,7 +4718,8 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     else {
         return Err(EvalError::Internal(
             "persist: fact head has no functor — cannot apply the monotonicity guard \
-             (proposal 053)".into(),
+             (proposal 053)"
+                .into(),
         ));
     };
     if interp.resolve_fact_monotonicity(functor)? == Monotonicity::Constant {
@@ -4276,7 +4731,9 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 
     // The KB seam owns mirror-before-resident ordering and mints the
     // source-neutral reference that future writes must carry.
-    let row = interp.kb.persist_mirrored(&key, Value::term(fact_term), None)
+    let row = interp
+        .kb
+        .persist_mirrored(&key, Value::term(fact_term), None)
         .map_err(|e| interp.raise_error(Value::Str(format!("persist failed: {e}"))))?;
     stored_ref_value(interp, row)
 }
@@ -4299,8 +4756,8 @@ fn persistence_monotonicity(interp: &mut Interpreter, args: &[Value]) -> Result<
     // the functor to its store. Keeps the op honest to its signature.
     let _key = interp.store_canonical_key(&store_val)?;
 
-    let Some(functor) =
-        crate::kb::term_view::TermView::head(&functor_val, &interp.kb).functor_sym()
+    let Some(functor) = crate::kb::term_view::TermView::head(&functor_val, &interp.kb)
+        .functor_sym()
         .or_else(|| match &functor_val {
             // A functor passed as its raw name string.
             Value::Str(name) => interp.kb.try_resolve_symbol(name),
@@ -4335,10 +4792,12 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 
     let reference = match id_val {
         Value::FactRef(reference) => reference,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "FactRef",
-            got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "FactRef",
+                got: other.type_name().to_string(),
+            })
+        }
     };
 
     // An external owner receives its native key through the KB seam. For a
@@ -4346,7 +4805,9 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     // from; accepting a different `store` argument would silently route a
     // mutation to the wrong durable extent.
     let Some(rule_id) = reference.resident_rule() else {
-        let outcome = interp.kb.retract_persistent(&reference)
+        let outcome = interp
+            .kb
+            .retract_persistent(&reference)
             .map_err(|e| EvalError::Internal(format!("retract: {e}")))?;
         return Ok(Value::Bool(outcome));
     };
@@ -4376,7 +4837,8 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     else {
         return Err(EvalError::Internal(
             "retract: rule head has no functor — cannot apply the monotonicity guard \
-             (proposal 053)".into(),
+             (proposal 053)"
+                .into(),
         ));
     };
     if interp.resolve_fact_monotonicity(functor)? != Monotonicity::NonMonotone {
@@ -4386,7 +4848,9 @@ fn persistence_retract(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         ))));
     }
 
-    let outcome = interp.kb.retract_persistent(&reference)
+    let outcome = interp
+        .kb
+        .retract_persistent(&reference)
         .map_err(|e| interp.raise_error(Value::Str(format!("retract failed: {e}"))))?;
     Ok(Value::Bool(outcome))
 }
@@ -4401,10 +4865,12 @@ fn persistence_update(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let key = interp.store_canonical_key(&store_val)?;
     let reference = match reference_val {
         Value::FactRef(reference) => reference,
-        other => return Err(EvalError::TypeMismatch {
-            expected: "FactRef",
-            got: other.type_name().to_string(),
-        }),
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "FactRef",
+                got: other.type_name().to_string(),
+            })
+        }
     };
     if let Some(rule_id) = reference.resident_rule() {
         if reference.resident_mirror() != Some(key.as_str()) {
@@ -4420,7 +4886,8 @@ fn persistence_update(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
         if let Err(error) = interp.kb.check_fact_mutation_target(&old) {
             return Err(interp.raise_error(Value::Str(error.to_string())));
         }
-        let Some(functor) = crate::kb::term_view::TermView::head(&old, &interp.kb).functor_sym() else {
+        let Some(functor) = crate::kb::term_view::TermView::head(&old, &interp.kb).functor_sym()
+        else {
             return Err(EvalError::Internal(
                 "update: rule head has no functor — cannot apply the monotonicity guard (proposal 053)".into(),
             ));
@@ -4439,7 +4906,11 @@ fn persistence_update(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     Ok(match row {
-        Some(row) => option_some(some_sym, interp.fields.value, stored_ref_value(interp, row)?),
+        Some(row) => option_some(
+            some_sym,
+            interp.fields.value,
+            stored_ref_value(interp, row)?,
+        ),
         None => option_none(none_sym),
     })
 }
@@ -4506,7 +4977,9 @@ fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let [store_val, pattern_val] = expect_args::<2>("retrieve", args)?;
     let key = interp.store_canonical_key(&store_val)?;
 
-    let pattern_term = interp.kb.alloc_from_value(&pattern_val)
+    let pattern_term = interp
+        .kb
+        .alloc_from_value(&pattern_val)
         .map_err(|e| EvalError::Internal(format!("retrieve: lower pattern: {e:?}")))?;
 
     let outcome = {
@@ -4521,9 +4994,7 @@ fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     };
 
     let mut iter = hits.into_iter();
-    let source = StreamSource::Native(Box::new(move || {
-        iter.next().map(Value::term)
-    }));
+    let source = StreamSource::Native(Box::new(move || iter.next().map(Value::term)));
     let handle = interp.alloc_stream(source);
     Ok(Value::Stream(handle))
 }
@@ -4602,7 +5073,10 @@ mod tests {
         let err = numeric_add(&mut dummy(), &[Value::Int(1), Value::Float(2.0)]).unwrap_err();
         match err {
             EvalError::TypeMismatch { got, .. } => {
-                assert!(got.contains("Int64") && got.contains("Float"), "got = {got}");
+                assert!(
+                    got.contains("Int64") && got.contains("Float"),
+                    "got = {got}"
+                );
             }
             other => panic!("expected TypeMismatch, got {other:?}"),
         }
@@ -4637,16 +5111,28 @@ mod tests {
 
     #[test]
     fn eq_on_equal_tuples_is_true() {
-        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
-        let b = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
+        let a = Value::Tuple {
+            pos: vec![Value::Int(1)].into(),
+            named: Vec::new().into(),
+        };
+        let b = Value::Tuple {
+            pos: vec![Value::Int(1)].into(),
+            named: Vec::new().into(),
+        };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(true));
     }
 
     #[test]
     fn eq_on_different_tuples_is_false() {
-        let a = Value::Tuple { pos: vec![Value::Int(1)].into(), named: Vec::new().into() };
-        let b = Value::Tuple { pos: vec![Value::Int(2)].into(), named: Vec::new().into() };
+        let a = Value::Tuple {
+            pos: vec![Value::Int(1)].into(),
+            named: Vec::new().into(),
+        };
+        let b = Value::Tuple {
+            pos: vec![Value::Int(2)].into(),
+            named: Vec::new().into(),
+        };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
         assert_eq!(r.as_bool(), Some(false));
     }
@@ -4680,14 +5166,24 @@ mod tests {
 
     #[test]
     fn string_concat_basic() {
-        let r = string_concat(&mut dummy(),
-            &[Value::Str("hi ".into()), Value::Str("there".into())]).unwrap();
+        let r = string_concat(
+            &mut dummy(),
+            &[Value::Str("hi ".into()), Value::Str("there".into())],
+        )
+        .unwrap();
         assert_eq!(r.as_str(), Some("hi there"));
     }
 
     #[test]
     fn arity_mismatch_carries_counts() {
         let err = numeric_add(&mut dummy(), &[Value::Int(1)]).unwrap_err();
-        assert!(matches!(err, EvalError::ArityMismatch { expected: 2, got: 1, .. }));
+        assert!(matches!(
+            err,
+            EvalError::ArityMismatch {
+                expected: 2,
+                got: 1,
+                ..
+            }
+        ));
     }
 }

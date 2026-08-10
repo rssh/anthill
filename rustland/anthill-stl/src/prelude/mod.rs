@@ -1,6 +1,6 @@
+pub mod logical_stream;
 pub mod meta;
 pub mod stream;
-pub mod logical_stream;
 
 use anthill_core::eval::Value;
 
@@ -12,9 +12,9 @@ pub type Float = f64;
 pub type Unit = ();
 pub type Pair<A, B> = (A, B);
 
-pub use stream::Stream;
 pub use logical_stream::LogicalStream;
 pub use meta::Meta;
+pub use stream::Stream;
 
 /// Marker trait paralleling `fact Modifiable[T = X]` in
 /// `stdlib/anthill/prelude/effects.anthill` (and per proposal 037 Rule 8).

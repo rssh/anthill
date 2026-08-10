@@ -66,7 +66,9 @@ fn parameterized_instance_is_modifiable_via_its_base_sort() {
     let cell_int = {
         let kb = interp.kb_mut();
         let cell = kb.try_resolve_symbol("anthill.prelude.Cell").expect("Cell");
-        let int64 = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let int64 = kb
+            .try_resolve_symbol("anthill.prelude.Int64")
+            .expect("Int64");
         let v = kb.intern("V");
         let int_ref = kb.alloc(Term::Ref(int64));
         Value::term(kb.alloc(Term::Fn {

@@ -17,7 +17,6 @@
 //! rust` must produce the identical location. Per-command tests would each pass
 //! while the family drifted.
 
-
 use crate::common::{anthill, fixtures_dir, Output};
 use std::path::{Path, PathBuf};
 
@@ -32,7 +31,11 @@ fn located_error<'a>(out: &'a Output, path: &Path) -> &'a str {
     out.diagnostics("error:")
         .find(|l| l.starts_with(&prefix))
         .unwrap_or_else(|| {
-            panic!("no `error: {}:…` line; stderr:\n{}", path.display(), out.stderr)
+            panic!(
+                "no `error: {}:…` line; stderr:\n{}",
+                path.display(),
+                out.stderr
+            )
         })
 }
 
@@ -60,7 +63,10 @@ fn assert_every_mention_is_located(out: &Output, path: &Path) {
                     && col.chars().all(|c| c.is_ascii_digit())
             })
             .unwrap_or(false);
-        assert!(located, "diagnostic names the file but not a position:\n{line}");
+        assert!(
+            located,
+            "diagnostic names the file but not a position:\n{line}"
+        );
     }
 }
 
@@ -138,7 +144,11 @@ fn a_query_file_parse_error_names_the_file() {
     let kb = fixture("good.anthill");
     let q = fixture("bad-query.anthill");
     let out = anthill(&[
-        "query", "--path", kb.to_str().unwrap(), "--query-file", q.to_str().unwrap(),
+        "query",
+        "--path",
+        kb.to_str().unwrap(),
+        "--query-file",
+        q.to_str().unwrap(),
     ]);
 
     assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
@@ -166,9 +176,15 @@ fn prepended_import_lines_do_not_shift_the_file_location() {
     let kb = fixture("good.anthill");
     let q = fixture("bad-query.anthill");
     let out = anthill(&[
-        "query", "--path", kb.to_str().unwrap(),
-        "-i", "wi852.good", "-i", "wi852.good",
-        "--query-file", q.to_str().unwrap(),
+        "query",
+        "--path",
+        kb.to_str().unwrap(),
+        "-i",
+        "wi852.good",
+        "-i",
+        "wi852.good",
+        "--query-file",
+        q.to_str().unwrap(),
     ]);
 
     assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
@@ -196,9 +212,13 @@ fn a_span_merged_across_the_prefix_is_located_in_the_file() {
     let kb = fixture("good.anthill");
     let q = fixture("leading-junk-query.anthill");
     let out = anthill(&[
-        "query", "--path", kb.to_str().unwrap(),
-        "-i", "wi852.good",
-        "--query-file", q.to_str().unwrap(),
+        "query",
+        "--path",
+        kb.to_str().unwrap(),
+        "-i",
+        "wi852.good",
+        "--query-file",
+        q.to_str().unwrap(),
     ]);
 
     assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
@@ -222,7 +242,8 @@ fn an_inline_pattern_names_the_flag() {
 
     assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
     assert!(
-        out.diagnostics("error:").any(|l| l == "error: --pattern: syntax error near `(x:`"),
+        out.diagnostics("error:")
+            .any(|l| l == "error: --pattern: syntax error near `(x:`"),
         "expected the fault blamed on `--pattern`; stderr:\n{}",
         out.stderr
     );
@@ -241,11 +262,19 @@ fn an_inline_pattern_names_the_flag() {
 #[test]
 fn a_lone_malformed_import_flag_is_named_exactly() {
     let kb = fixture("good.anthill");
-    let out = anthill(&["query", "--path", kb.to_str().unwrap(), "-i", "not a name!!", "mk(x: 1)"]);
+    let out = anthill(&[
+        "query",
+        "--path",
+        kb.to_str().unwrap(),
+        "-i",
+        "not a name!!",
+        "mk(x: 1)",
+    ]);
 
     assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
     assert!(
-        out.diagnostics("error:").all(|l| l.starts_with("error: --import `not a name!!`: ")),
+        out.diagnostics("error:")
+            .all(|l| l.starts_with("error: --import `not a name!!`: ")),
         "expected the one flag named; stderr:\n{}",
         out.stderr
     );

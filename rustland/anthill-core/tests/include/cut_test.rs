@@ -12,10 +12,10 @@
 //! outer `or`), cut under NAF (scoped to the sub-proof), and cut alongside
 //! delay / residualization.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -215,13 +215,23 @@ fn inner_cut_is_opaque_to_outer_or() {
     //    "inner cut is opaque to the outer or" property (a leaked cut would drop
     //    `plain` and yield only the single `opt` solution);
     //  - the inner cut pruned `opt`'s second fact — EXACTLY one of {o1, o2}.
-    assert_eq!(solutions.len(), 2, "one pruned `opt` solution + the `plain` branch");
+    assert_eq!(
+        solutions.len(),
+        2,
+        "one pruned `opt` solution + the `plain` branch"
+    );
     assert!(
         got.contains(&d1.raw()),
         "outer or's `plain` branch survives — inner cut is opaque to it"
     );
-    let opt_hits = [o1.raw(), o2.raw()].iter().filter(|b| got.contains(b)).count();
-    assert_eq!(opt_hits, 1, "inner cut pruned opt's second fact — exactly one opt solution");
+    let opt_hits = [o1.raw(), o2.raw()]
+        .iter()
+        .filter(|b| got.contains(b))
+        .count();
+    assert_eq!(
+        opt_hits, 1,
+        "inner cut pruned opt's second fact — exactly one opt solution"
+    );
 }
 
 #[test]

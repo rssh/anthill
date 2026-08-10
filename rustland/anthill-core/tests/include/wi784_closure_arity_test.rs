@@ -26,7 +26,10 @@
 use crate::common::{interp_for, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -60,7 +63,10 @@ end
 "#;
     let via_op = eval_int(src, "test.wi784.headline.drive_op");
     let via_lambda = eval_int(src, "test.wi784.headline.drive_lambda");
-    assert_eq!(via_op, -7, "the operation spelling is the control and already worked");
+    assert_eq!(
+        via_op, -7,
+        "the operation spelling is the control and already worked"
+    );
     assert_eq!(
         via_lambda, via_op,
         "the lambda and operation spellings of the same call must agree",
@@ -89,7 +95,10 @@ end
 "#;
     let via_op = eval_int(src, "test.wi784.fold.drive_op");
     let via_lambda = eval_int(src, "test.wi784.fold.drive_lambda");
-    assert_eq!(via_op, 123, "the operation spelling is the control and already worked");
+    assert_eq!(
+        via_op, 123,
+        "the operation spelling is the control and already worked"
+    );
     assert_eq!(
         via_lambda, via_op,
         "`foldLeft(xs, 0, lambda (acc, x) -> …)` must agree with the operation spelling",
@@ -369,8 +378,6 @@ end
          not a hardcoded 1; got: {msg}",
     );
 }
-
-
 
 /// THE INTERCHANGEABILITY INVARIANT, as a 2x2 matrix: {named OPERATION, LAMBDA}
 /// x {applied with N ARGUMENTS, applied with ONE TUPLE}. All four must agree.

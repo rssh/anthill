@@ -17,11 +17,13 @@ use anthill_smt_gen::policy::{
 
 #[test]
 fn no_explicit_policy_no_cites_inlines() {
-    let kb = common::load_kb_with(r#"
+    let kb = common::load_kb_with(
+        r#"
         namespace test.policy.inline
           rule foo(?x) :- gte(?x, 0)
         end
-    "#);
+    "#,
+    );
     let cited: BTreeSet<String> = BTreeSet::new();
     assert_eq!(
         policy_for(&kb, "test.policy.inline.foo", SMT_Z3_BACKEND, &cited).expect("policy"),
@@ -32,14 +34,14 @@ fn no_explicit_policy_no_cites_inlines() {
 
 #[test]
 fn no_explicit_policy_with_cite_lifts_axiom() {
-    let kb = common::load_kb_with(r#"
+    let kb = common::load_kb_with(
+        r#"
         namespace test.policy.lifted
           rule foo(?x) :- gte(?x, 0)
         end
-    "#);
-    let cited: BTreeSet<String> = std::iter::once(
-        "test.policy.lifted.foo".to_string()
-    ).collect();
+    "#,
+    );
+    let cited: BTreeSet<String> = std::iter::once("test.policy.lifted.foo".to_string()).collect();
     assert_eq!(
         policy_for(&kb, "test.policy.lifted.foo", SMT_Z3_BACKEND, &cited).expect("policy"),
         PredicatePolicy::LiftedAxiom,
@@ -51,7 +53,8 @@ fn no_explicit_policy_with_cite_lifts_axiom() {
 fn explicit_policy_overrides_default() {
     // A `fact TranslationPolicy(...)` declaration in source
     // overrides the inferred default.
-    let kb = common::load_kb_with(r#"
+    let kb = common::load_kb_with(
+        r#"
         namespace test.policy.explicit
           import anthill.realization.policy.{TranslationPolicy, DeclareFun}
 
@@ -63,12 +66,14 @@ fn explicit_policy_overrides_default() {
             policy: DeclareFun
           )
         end
-    "#);
+    "#,
+    );
     // Sanity: the schema symbol must resolve, and the source-
     // declared fact must actually land as a TranslationPolicy
     // entry in the KB.
     assert!(
-        kb.try_resolve_symbol("anthill.realization.policy.TranslationPolicy").is_some(),
+        kb.try_resolve_symbol("anthill.realization.policy.TranslationPolicy")
+            .is_some(),
         "TranslationPolicy schema must be loaded from stdlib"
     );
     let cited: BTreeSet<String> = BTreeSet::new();
@@ -85,7 +90,8 @@ fn explicit_policy_overrides_default() {
 /// diagnostic — the author had no hint their rule shape is unsupported.
 #[test]
 fn bodied_translation_policy_rule_is_refused() {
-    let kb = common::load_kb_with(r#"
+    let kb = common::load_kb_with(
+        r#"
         namespace test.policy.bodied
           import anthill.realization.policy.{TranslationPolicy, DeclareFun}
 
@@ -97,12 +103,14 @@ fn bodied_translation_policy_rule_is_refused() {
             policy: DeclareFun
           ) :- gte(1, 0)
         end
-    "#);
+    "#,
+    );
     let cited: BTreeSet<String> = BTreeSet::new();
     let err = policy_for(&kb, "test.policy.bodied.bar", SMT_Z3_BACKEND, &cited)
         .expect_err("a bodied TranslationPolicy rule must be refused, not skipped");
     assert!(
-        err.message.contains("bodied TranslationPolicy rule refused"),
+        err.message
+            .contains("bodied TranslationPolicy rule refused"),
         "refusal must state the unsupported shape, got: {}",
         err.message
     );
@@ -122,7 +130,8 @@ fn bodied_translation_policy_rule_is_refused() {
 /// exact shape — and the guarded policy would be silently dropped.
 #[test]
 fn bodied_policy_rule_is_refused_despite_matching_fact() {
-    let kb = common::load_kb_with(r#"
+    let kb = common::load_kb_with(
+        r#"
         namespace test.policy.bodiedcoex
           import anthill.realization.policy.{TranslationPolicy, DeclareFun, Inline}
 
@@ -140,16 +149,17 @@ fn bodied_policy_rule_is_refused_despite_matching_fact() {
             policy: Inline
           ) :- gte(1, 0)
         end
-    "#);
+    "#,
+    );
     let cited: BTreeSet<String> = BTreeSet::new();
-    let err = policy_for(&kb, "test.policy.bodiedcoex.bar", SMT_Z3_BACKEND, &cited)
-        .expect_err(
-            "the bodied TranslationPolicy rule must be refused even though a \
+    let err = policy_for(&kb, "test.policy.bodiedcoex.bar", SMT_Z3_BACKEND, &cited).expect_err(
+        "the bodied TranslationPolicy rule must be refused even though a \
              matching fact exists — the fact winning by enumeration order \
              would silently drop the guarded policy",
-        );
+    );
     assert!(
-        err.message.contains("bodied TranslationPolicy rule refused"),
+        err.message
+            .contains("bodied TranslationPolicy rule refused"),
         "refusal must state the unsupported shape, got: {}",
         err.message
     );
@@ -189,8 +199,7 @@ fn citable_kb(ns: &str, decl: &str) -> anthill_core::kb::KnowledgeBase {
 fn lifted_axiom_renders_the_implication_clause() {
     let kb = citable_kb("test.render.lifted", "");
     let qn = "test.render.lifted.bound";
-    let clauses =
-        render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
+    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
     assert_eq!(clauses.len(), 1, "one head ⇒ one clause; got {clauses:?}");
     assert!(
         clauses[0].contains("(assert") && clauses[0].contains("=>"),
@@ -214,9 +223,11 @@ fn inline_renders_no_clause() {
           )"#,
     );
     let qn = "test.render.inline.bound";
-    let clauses =
-        render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
-    assert!(clauses.is_empty(), "Inline must splice nothing, got: {clauses:?}");
+    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
+    assert!(
+        clauses.is_empty(),
+        "Inline must splice nothing, got: {clauses:?}"
+    );
 }
 
 /// Neither unimplemented arm may fall back to the lift. Both are checked: a
@@ -321,9 +332,12 @@ fn a_policy_for_another_backend_is_not_applied() {
     );
     let qn = "test.render.otherbackend.bound";
     // Would be a loud refusal if the `lean` fact applied.
-    let clauses =
-        render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
-    assert_eq!(clauses.len(), 1, "a lean policy must not steer smt-z3; got {clauses:?}");
+    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
+    assert_eq!(
+        clauses.len(),
+        1,
+        "a lean policy must not steer smt-z3; got {clauses:?}"
+    );
 }
 
 /// The constant the prove driver passes. Pinned as a literal because it is a

@@ -17,10 +17,10 @@ use anthill_core::kb::load;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::typing::{sort_functor_of_view, type_check_node, TypingEnv};
+use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
-use anthill_core::kb::ClauseKind;
 
 /// A KB with the prelude registered — the typer needs the
 /// `anthill.prelude.Type.*` / `Int64` / `Bool` symbols to build leaf types.
@@ -173,10 +173,16 @@ fn typer_fires_simp_rule_at_apply() {
         Rc::ptr_eq(&r.node, &seven),
         "the RHS reuses the matched `7` child occurrence (identity preserved)",
     );
-    let ms = r.node.inferred_type().and_then(|t| sort_functor_of_view(&kb, &t))
+    let ms = r
+        .node
+        .inferred_type()
+        .and_then(|t| sort_functor_of_view(&kb, &t))
         .expect("rewritten node carries a declared sort");
     let ty_name = kb.local_name_of(ms);
-    assert!(ty_name == "Int64" || ty_name.ends_with(".Int64"), "result type Int64, got {ty_name}");
+    assert!(
+        ty_name == "Int64" || ty_name.ends_with(".Int64"),
+        "result type Int64, got {ty_name}"
+    );
 }
 
 #[test]
@@ -227,7 +233,11 @@ fn typer_rewrites_redex_under_an_if_branch() {
         type_args: vec![],
     });
     let else_b = occ(Expr::Const(Literal::Int(9)));
-    let body = occ(Expr::If { condition: cond, then_branch: then_b, else_branch: else_b });
+    let body = occ(Expr::If {
+        condition: cond,
+        then_branch: then_b,
+        else_branch: else_b,
+    });
 
     let env = TypingEnv::empty();
     let r = type_check_node(&mut kb, &env, &body, None).expect("if types");

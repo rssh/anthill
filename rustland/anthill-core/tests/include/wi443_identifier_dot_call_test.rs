@@ -15,13 +15,16 @@
 //! no longer pre-typed hintless at the DotApply frame, so a lambda argument
 //! gets the callee's param-type hint (`xs.find(lambda n -> n > 2)` works).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Call a nullary op and expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -33,8 +36,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -105,7 +108,10 @@ namespace wi443.noimport
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "literal-receiver dot call must load; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "literal-receiver dot call must load; got: {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi443.noimport.t"), 3);
 }

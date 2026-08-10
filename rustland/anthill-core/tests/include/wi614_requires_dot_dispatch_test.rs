@@ -18,7 +18,8 @@
 use anthill_core::eval::Value;
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const SRC: &str = r#"
@@ -128,7 +129,11 @@ fn is_empty_on_concrete_list_via_provides() {
     let got2 = interp
         .call("wi614.requires_dispatch.list_is_empty", &[full])
         .unwrap_or_else(|e| panic!("call list_is_empty(full): {e:?}"));
-    assert_eq!(got2.as_bool(), Some(false), "[1,2,3,4] is non-empty; got {got2:?}");
+    assert_eq!(
+        got2.as_bool(),
+        Some(false),
+        "[1,2,3,4] is non-empty; got {got2:?}"
+    );
 }
 
 /// GATE: the requires fallback must not OVER-accept. A member on NO spec the
@@ -143,7 +148,9 @@ namespace wi614.gate
   operation bad(xs: List[T = Int64]) -> Int64 = xs.map(inc).sizzle()
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.iter()
             .any(|e| e.contains("sizzle") || e.contains("dot dispatch")),
@@ -179,7 +186,9 @@ namespace wi614.carrier_guard
   operation try_eq(w: Widget[T = Int64], x: Widget[T = Int64]) -> Bool = w.eq(x)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.iter()
             .any(|e| e.contains("eq") && e.contains("dot dispatch")),

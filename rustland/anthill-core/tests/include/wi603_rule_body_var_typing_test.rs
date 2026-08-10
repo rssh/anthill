@@ -26,8 +26,8 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -42,12 +42,16 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The sort-head symbol of an occurrence's stamped `inferred_type`, if any.
 fn occ_sort(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    occ.inferred_type().and_then(|t| sort_functor_of_view(kb, &t))
+    occ.inferred_type()
+        .and_then(|t| sort_functor_of_view(kb, &t))
 }
 
 /// True iff `sym`'s resolved (qualified) name ends with `.short` or equals it.
@@ -70,11 +74,23 @@ fn find_atom_args(
     ) -> Option<(Vec<Rc<NodeOccurrence>>, Vec<(Symbol, Rc<NodeOccurrence>)>)> {
         let expr = occ.as_expr()?;
         match expr {
-            Expr::Apply { functor: f, pos_args, named_args, .. }
-            | Expr::Constructor { name: f, pos_args, named_args, .. }
-            | Expr::Instantiation { name: f, pos_args, named_args }
-                if kb.local_name_of(*f).rsplit('.').next() == Some(atom_short) =>
-            {
+            Expr::Apply {
+                functor: f,
+                pos_args,
+                named_args,
+                ..
+            }
+            | Expr::Constructor {
+                name: f,
+                pos_args,
+                named_args,
+                ..
+            }
+            | Expr::Instantiation {
+                name: f,
+                pos_args,
+                named_args,
+            } if kb.local_name_of(*f).rsplit('.').next() == Some(atom_short) => {
                 return Some((pos_args.clone(), named_args.clone()));
             }
             _ => {}
@@ -118,15 +134,18 @@ fn rule_body_op_call_args_typed_from_signature() {
         end
     "#;
     let (kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "expected clean load; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected clean load; got:\n{}",
+        errors_text(&errs)
+    );
 
     let (pos, _named) = find_atom_args(&kb, "test.wi603.opcall.r", "f")
         .expect("the `f(?x, ?y)` body atom must be present");
     assert_eq!(pos.len(), 2, "f has two positional args");
     for (i, arg) in pos.iter().enumerate() {
-        let sort = occ_sort(&kb, arg).unwrap_or_else(|| {
-            panic!("arg {i} of f(?x, ?y) must carry an inferred_type (WI-603)")
-        });
+        let sort = occ_sort(&kb, arg)
+            .unwrap_or_else(|| panic!("arg {i} of f(?x, ?y) must carry an inferred_type (WI-603)"));
         assert!(
             is_named(&kb, sort, "Int64"),
             "arg {i} of f(?x, ?y) must be typed Int64 from f's signature; got {}",
@@ -153,14 +172,21 @@ fn rule_body_entity_constructor_named_args_typed() {
         end
     "#;
     let (kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "expected clean load; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected clean load; got:\n{}",
+        errors_text(&errs)
+    );
 
     let (_pos, named) = find_atom_args(&kb, "test.wi603.ctor.holds", "point")
         .expect("the `point(x: ?x, y: ?y)` body atom must be present");
     assert_eq!(named.len(), 2, "point has two named args");
     for (field, arg) in &named {
         let sort = occ_sort(&kb, arg).unwrap_or_else(|| {
-            panic!("field `{}` occurrence must carry an inferred_type (WI-603)", kb.local_name_of(*field))
+            panic!(
+                "field `{}` occurrence must carry an inferred_type (WI-603)",
+                kb.local_name_of(*field)
+            )
         });
         assert!(
             is_named(&kb, sort, "Int64"),
@@ -193,19 +219,37 @@ fn rule_body_var_shared_across_atoms_is_typed_at_both() {
         end
     "#;
     let (kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(), "expected clean load; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected clean load; got:\n{}",
+        errors_text(&errs)
+    );
 
     // `?x` at the `box` atom's `v:` field.
     let (_bp, box_named) = find_atom_args(&kb, "test.wi603.shared.linked", "box")
         .expect("the `box(v: ?x)` atom must be present");
-    let box_x = &box_named.iter().find(|(f, _)| is_named(&kb, *f, "v")).expect("box.v arg").1;
+    let box_x = &box_named
+        .iter()
+        .find(|(f, _)| is_named(&kb, *f, "v"))
+        .expect("box.v arg")
+        .1;
     let box_x_sort = occ_sort(&kb, box_x).expect("box(v: ?x) arg must be typed (WI-603)");
-    assert!(is_named(&kb, box_x_sort, "Int64"), "box(v: ?x) arg should be Int64");
+    assert!(
+        is_named(&kb, box_x_sort, "Int64"),
+        "box(v: ?x) arg should be Int64"
+    );
 
     // The same `?x` at the `point` atom's `x:` field.
     let (_pp, point_named) = find_atom_args(&kb, "test.wi603.shared.linked", "point")
         .expect("the `point(x: ?x, y: ?y)` atom must be present");
-    let point_x = &point_named.iter().find(|(f, _)| is_named(&kb, *f, "x")).expect("point.x arg").1;
+    let point_x = &point_named
+        .iter()
+        .find(|(f, _)| is_named(&kb, *f, "x"))
+        .expect("point.x arg")
+        .1;
     let point_x_sort = occ_sort(&kb, point_x).expect("point(x: ?x) arg must be typed (WI-603)");
-    assert!(is_named(&kb, point_x_sort, "Int64"), "point(x: ?x) arg should be Int64");
+    assert!(
+        is_named(&kb, point_x_sort, "Int64"),
+        "point(x: ?x) arg should be Int64"
+    );
 }

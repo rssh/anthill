@@ -25,8 +25,7 @@ fn option_some_lowers_to_make_optional() {
     // because the bare-Option-vs-Option[T = Int64] check is overstrict.
     // The lowering itself is what we test here.
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.opt_some.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.opt_some.Calc").expect("emit Calc");
     assert!(
         cpp.contains("return std::make_optional(x);"),
         "Option.some should lower to std::make_optional:\n{cpp}"
@@ -45,8 +44,7 @@ fn option_none_lowers_to_nullopt() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.opt_none.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.opt_none.Calc").expect("emit Calc");
     assert!(
         cpp.contains("return std::nullopt;"),
         "Option.none should lower to std::nullopt:\n{cpp}"

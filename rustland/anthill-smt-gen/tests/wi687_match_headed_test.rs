@@ -69,7 +69,10 @@ fn emit(rule: &str) -> String {
     // The seam: per-call-site synthesize pick's match-headed defining rule at the
     // obligation's concrete-constructor argument, so the emitter inlines it.
     kb.synthesize_body_derived_defrules(rule);
-    let cfg = ProofConfig { logic: Some("QF_LRA".to_string()), ..Default::default() };
+    let cfg = ProofConfig {
+        logic: Some("QF_LRA".to_string()),
+        ..Default::default()
+    };
     emit_satisfiability_check_with(&kb, rule, &cfg)
         .unwrap_or_else(|e| panic!("emit {rule}: {}", e.message))
 }
@@ -94,8 +97,10 @@ fn some_arm_true_property_is_unsat() {
     }
     let smt = emit("test.smt_gen.wi687.pick_lt_base");
     let v = run_z3("wi687_pick_ge_base", &smt);
-    assert_eq!(v, "unsat",
-        "pick(some(x),base) >= base holds ⇒ its violation `< base` is unsat — got {v:?}\n{smt}");
+    assert_eq!(
+        v, "unsat",
+        "pick(some(x),base) >= base holds ⇒ its violation `< base` is unsat — got {v:?}\n{smt}"
+    );
 }
 
 #[test]
@@ -106,9 +111,11 @@ fn some_arm_selected_not_none() {
     }
     let smt = emit("test.smt_gen.wi687.pick_gt_base");
     let v = run_z3("wi687_pick_gt_base", &smt);
-    assert_eq!(v, "sat",
+    assert_eq!(
+        v, "sat",
         "pick(some(x),base) > base is satisfiable (x>0) ⇒ the some arm was selected \
-         and the ite is real — got {v:?}\n{smt}");
+         and the ite is real — got {v:?}\n{smt}"
+    );
 }
 
 #[test]
@@ -119,7 +126,9 @@ fn none_arm_selected() {
     }
     let smt = emit("test.smt_gen.wi687.pick_none_gt_base");
     let v = run_z3("wi687_pick_none_gt_base", &smt);
-    assert_eq!(v, "unsat",
+    assert_eq!(
+        v, "unsat",
         "pick(none, base) = base ⇒ `> base` is unsat (a wrong some-arm reduction would \
-         be sat) — got {v:?}\n{smt}");
+         be sat) — got {v:?}\n{smt}"
+    );
 }

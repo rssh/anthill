@@ -20,10 +20,9 @@
 //! Reference: docs/design/operation-call-model.md
 //! §"Names model", §"Channel cardinality (v0)".
 
-
+use crate::common::interp_for;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::get_named_arg;
-use crate::common::interp_for;
 
 #[test]
 fn deferred_call_rewrites_to_apply_within_with_spec_op_fn() {
@@ -48,7 +47,8 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .expect("Eq.eq registered");
 
     // Pick a defer rewrite for Eq.eq from this test's Wi222Box body.
@@ -57,18 +57,24 @@ end
     // `fn = Ref(Eq.eq)` like ours; iteration order matters, so we
     // grab the first match and verify the apply_within shape (which
     // is identical for any defer rewrite — names model).
-    let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
+    let aw_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .expect("apply_within in stdlib");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref in stdlib");
-    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")
+    let cons_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
         .expect("List.cons in stdlib");
-    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")
+    let nil_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil in stdlib");
 
     let mut rewritten_for_eq: Option<_> = None;
     for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
-        if spec_sym != eq_sym { continue; }
+        if spec_sym != eq_sym {
+            continue;
+        }
         // Every defer rewrite for Eq.eq carries `fn = Ref(Eq.eq)` —
         // the names-model shape under test. Pin-now rewrites would
         // carry `fn = Ref(<impl>.eq)` and are excluded here.
@@ -76,7 +82,8 @@ end
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,
         };
-        let fn_tid = match named_args.iter()
+        let fn_tid = match named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "fn")
             .map(|(_, v)| *v)
         {
@@ -92,25 +99,34 @@ end
             break;
         }
     }
-    let rewritten_tid = rewritten_for_eq
-        .expect("at least one Eq.eq defer rewrite (Wi222Box.use_eq) must exist");
+    let rewritten_tid =
+        rewritten_for_eq.expect("at least one Eq.eq defer rewrite (Wi222Box.use_eq) must exist");
 
     let (functor, named_args) = match kb.get_term(rewritten_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("rewritten term must be a Fn; got {other:?}"),
     };
-    assert_eq!(functor, aw_sym,
+    assert_eq!(
+        functor,
+        aw_sym,
         "deferred call must rewrite to apply_within; got functor {}",
-        kb.qualified_name_of(functor));
+        kb.qualified_name_of(functor)
+    );
 
     // fn = Ref(eq_sym) — names model: fn is the spec-op symbol directly,
     // dispatch happens at apply_within reduction via the dispatching dict.
-    let fn_tid = get_named_arg(kb, &named_args, "fn")
-        .expect("apply_within must carry `fn`");
+    let fn_tid = get_named_arg(kb, &named_args, "fn").expect("apply_within must carry `fn`");
     match kb.get_term(fn_tid) {
-        Term::Ref(s) => assert_eq!(*s, eq_sym,
+        Term::Ref(s) => assert_eq!(
+            *s,
+            eq_sym,
             "fn-position must be Ref(Eq.eq); got Ref({})",
-            kb.qualified_name_of(*s)),
+            kb.qualified_name_of(*s)
+        ),
         other => panic!("apply_within fn must be Term::Ref(spec_op); got {other:?}"),
     }
 
@@ -120,57 +136,74 @@ end
     let reqs_tid = get_named_arg(kb, &named_args, "requirements")
         .expect("apply_within must carry `requirements`");
     let (reqs_functor, reqs_named) = match kb.get_term(reqs_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("requirements must be a list term; got {other:?}"),
     };
-    assert_eq!(reqs_functor, cons_sym,
+    assert_eq!(
+        reqs_functor,
+        cons_sym,
         "single dispatching dict must be wrapped in cons(..., nil); got {}",
-        kb.qualified_name_of(reqs_functor));
+        kb.qualified_name_of(reqs_functor)
+    );
 
-    let head_tid = get_named_arg(kb, &reqs_named, "head")
-        .expect("cons must carry `head`");
+    let head_tid = get_named_arg(kb, &reqs_named, "head").expect("cons must carry `head`");
     let (head_functor, head_named) = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("dispatching dict must be a Fn; got {other:?}"),
     };
-    assert_eq!(head_functor, var_ref_sym,
+    assert_eq!(
+        head_functor,
+        var_ref_sym,
         "dispatching dict for Defer must be var_ref (names model); got {}",
-        kb.qualified_name_of(head_functor));
-    let name_tid = get_named_arg(kb, &head_named, "name")
-        .expect("var_ref must carry `name`");
+        kb.qualified_name_of(head_functor)
+    );
+    let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
         // WI-644: the fixture `requires PartialEq[T]` (the base holding `eq`), so the
         // synthesized name is `__req_partialeq`. WI-873: the entry read here may be
         // ANOTHER sort's rewrite for the same spec, so only the spec is asserted.
         Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb, *s, "__req_partialeq",
+            kb,
+            *s,
+            "__req_partialeq",
             "a `PartialEq`-deferred call's dispatching dict must read a requirement \
              param synthesized from `PartialEq`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 
-    let tail_tid = get_named_arg(kb, &reqs_named, "tail")
-        .expect("cons must carry `tail`");
+    let tail_tid = get_named_arg(kb, &reqs_named, "tail").expect("cons must carry `tail`");
     let tail_functor = match kb.get_term(tail_tid) {
         Term::Fn { functor, .. } => *functor,
         // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
         Term::Ref(s) => *s,
         other => panic!("tail must be a Fn (nil) or Ref (nil); got {other:?}"),
     };
-    assert_eq!(tail_functor, nil_sym,
+    assert_eq!(
+        tail_functor,
+        nil_sym,
         "single-entry list's tail must be nil; got {}",
-        kb.qualified_name_of(tail_functor));
+        kb.qualified_name_of(tail_functor)
+    );
 
     // args must be carried over (non-nil — use_eq passes two args).
-    let args_tid = get_named_arg(kb, &named_args, "args")
-        .expect("apply_within must carry `args`");
+    let args_tid = get_named_arg(kb, &named_args, "args").expect("apply_within must carry `args`");
     let args_functor = match kb.get_term(args_tid) {
         Term::Fn { functor, .. } => *functor,
         other => panic!("args must be a list term; got {other:?}"),
     };
-    assert_ne!(args_functor, nil_sym,
-        "use_eq's `eq(a, b)` has two args, so args list must be non-nil");
+    assert_ne!(
+        args_functor, nil_sym,
+        "use_eq's `eq(a, b)` has two args, so args list must be non-nil"
+    );
 }
 
 #[test]
@@ -197,9 +230,11 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ord.compare")
+    let compare_sym = kb
+        .try_resolve_symbol("anthill.prelude.Ord.compare")
         .expect("Ord.compare registered");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref in stdlib");
 
     let mut rewritten_for_compare = None;
@@ -223,22 +258,29 @@ end
         Term::Fn { named_args, .. } => named_args.clone(),
         other => panic!("requirements must be Fn (cons); got {other:?}"),
     };
-    let head_tid = get_named_arg(kb, &reqs_named, "head")
-        .expect("cons must carry `head`");
+    let head_tid = get_named_arg(kb, &reqs_named, "head").expect("cons must carry `head`");
     let (head_functor, head_named) = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("dispatching dict must be Fn (var_ref); got {other:?}"),
     };
-    assert_eq!(head_functor, var_ref_sym,
+    assert_eq!(
+        head_functor,
+        var_ref_sym,
         "dispatching dict must be var_ref (names model); got {}",
-        kb.qualified_name_of(head_functor));
-    let name_tid = get_named_arg(kb, &head_named, "name")
-        .expect("var_ref must carry `name`");
+        kb.qualified_name_of(head_functor)
+    );
+    let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
         // WI-873: KB-global map, so the surviving entry for this spec may be another
         // sort's — the SPEC of the name is what this can establish, not the fixture.
         Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb, *s, "__req_ord",
+            kb,
+            *s,
+            "__req_ord",
             "an `Ord` chain slot maps to a requirement param synthesized from \
              `Ord`",
         ),
@@ -274,13 +316,17 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let compare_sym = kb.try_resolve_symbol("anthill.prelude.Ord.compare")
+    let compare_sym = kb
+        .try_resolve_symbol("anthill.prelude.Ord.compare")
         .expect("Ord.compare registered");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
-    let cons_sym = kb.try_resolve_symbol("anthill.prelude.List.cons")
+    let cons_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
         .expect("List.cons registered");
-    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil")
+    let nil_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil registered");
 
     let mut rewritten_for_compare = None;
@@ -302,47 +348,63 @@ end
     let reqs_tid = get_named_arg(kb, &named_args, "requirements")
         .expect("apply_within must carry `requirements`");
     let (cons_functor, cons_named) = match kb.get_term(reqs_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("requirements must be a Fn (cons); got {other:?}"),
     };
-    assert_eq!(cons_functor, cons_sym,
+    assert_eq!(
+        cons_functor,
+        cons_sym,
         "names model: requirements list must be a single-entry cons; got {}",
-        kb.qualified_name_of(cons_functor));
+        kb.qualified_name_of(cons_functor)
+    );
 
-    let head_tid = get_named_arg(kb, &cons_named, "head")
-        .expect("cons must carry `head`");
+    let head_tid = get_named_arg(kb, &cons_named, "head").expect("cons must carry `head`");
     let (head_functor, head_named) = match kb.get_term(head_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("head must be Fn (var_ref); got {other:?}"),
     };
-    assert_eq!(head_functor, var_ref_sym,
+    assert_eq!(
+        head_functor,
+        var_ref_sym,
         "dispatching dict for Defer must be var_ref (names model); got {}",
-        kb.qualified_name_of(head_functor));
+        kb.qualified_name_of(head_functor)
+    );
 
-    let name_tid = get_named_arg(kb, &head_named, "name")
-        .expect("var_ref must carry `name`");
+    let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
         // WI-873: was "the CALLER's own Ord slot" — the KB-global map cannot
         // establish whose rewrite this is, so the claim is narrowed to the spec.
         Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb, *s, "__req_ord",
+            kb,
+            *s,
+            "__req_ord",
             "the var_ref must name a requirement param synthesized from `Ord`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
 
     // Tail must be nil — single-entry channel under v0.
-    let tail_tid = get_named_arg(kb, &cons_named, "tail")
-        .expect("cons must carry `tail`");
+    let tail_tid = get_named_arg(kb, &cons_named, "tail").expect("cons must carry `tail`");
     let tail_functor = match kb.get_term(tail_tid) {
         Term::Fn { functor, .. } => *functor,
         // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
         Term::Ref(s) => *s,
         other => panic!("tail must be Fn (nil) or Ref (nil); got {other:?}"),
     };
-    assert_eq!(tail_functor, nil_sym,
+    assert_eq!(
+        tail_functor,
+        nil_sym,
         "single-entry channel's tail must be nil; got {}",
-        kb.qualified_name_of(tail_functor));
+        kb.qualified_name_of(tail_functor)
+    );
 }
 
 #[test]
@@ -380,11 +442,14 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let spec_act = kb.try_resolve_symbol("test.wi222.phase_e_pin_now.Wi222ESpec.act")
+    let spec_act = kb
+        .try_resolve_symbol("test.wi222.phase_e_pin_now.Wi222ESpec.act")
         .expect("Wi222ESpec.act registered");
-    let aw_sym = kb.try_resolve_symbol("anthill.reflect.Expr.apply_within")
+    let aw_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .expect("apply_within in stdlib");
-    let impl_act = kb.try_resolve_symbol("test.wi222.phase_e_pin_now.Wi222EImpl.act")
+    let impl_act = kb
+        .try_resolve_symbol("test.wi222.phase_e_pin_now.Wi222EImpl.act")
         .expect("Wi222EImpl.act registered");
 
     // Find the rewrite recorded against the spec op symbol.
@@ -394,25 +459,36 @@ end
             rewritten_for_act = Some(rewritten_tid);
         }
     }
-    let rewritten_tid = rewritten_for_act
-        .expect("Pin-now of Wi222ESpec.act must rewrite (impl resolves uniquely to Wi222EImpl.act)");
+    let rewritten_tid = rewritten_for_act.expect(
+        "Pin-now of Wi222ESpec.act must rewrite (impl resolves uniquely to Wi222EImpl.act)",
+    );
 
     // Phase E (i): the rewritten term must be apply_within (not plain apply),
     // with fn = Ref(Wi222EImpl.act) (concrete fn, not requirement_at_current).
     let (functor, named_args) = match kb.get_term(rewritten_tid) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         other => panic!("rewritten must be Fn; got {other:?}"),
     };
-    assert_eq!(functor, aw_sym,
+    assert_eq!(
+        functor,
+        aw_sym,
         "Pin-now to impl with requires must emit apply_within (not plain apply); \
-         got functor {}", kb.qualified_name_of(functor));
+         got functor {}",
+        kb.qualified_name_of(functor)
+    );
 
-    let fn_tid = get_named_arg(kb, &named_args, "fn")
-        .expect("apply_within must carry `fn`");
+    let fn_tid = get_named_arg(kb, &named_args, "fn").expect("apply_within must carry `fn`");
     match kb.get_term(fn_tid) {
-        Term::Ref(s) => assert_eq!(*s, impl_act,
+        Term::Ref(s) => assert_eq!(
+            *s,
+            impl_act,
             "Pin-now's apply_within fn must be a plain Ref to the impl op; got Ref({})",
-            kb.qualified_name_of(*s)),
+            kb.qualified_name_of(*s)
+        ),
         other => panic!("Pin-now apply_within fn must be Term::Ref(impl); got {other:?}"),
     }
 }
@@ -438,10 +514,10 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let pin_call_sym = kb.try_resolve_symbol("test.wi222.no_defer.pin_call")
+    let pin_call_sym = kb
+        .try_resolve_symbol("test.wi222.no_defer.pin_call")
         .expect("pin_call registered");
-    let body = kb.op_body_node(pin_call_sym)
-        .expect("pin_call has a body");
+    let body = kb.op_body_node(pin_call_sym).expect("pin_call has a body");
 
     let mut classifications: Vec<anthill_core::kb::typing::CallClass> = Vec::new();
     anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
@@ -480,7 +556,8 @@ namespace test.wi239.multi
 end
 "#;
     let mut interp = interp_for(src);
-    let multi_sym = interp.kb()
+    let multi_sym = interp
+        .kb()
         .try_resolve_symbol("test.wi239.multi.Wi239Multi")
         .expect("Wi239Multi registered");
     let chain = anthill_core::kb::typing::provider_dict_entries(interp.kb_mut(), multi_sym);
@@ -550,15 +627,14 @@ end
             } if *spec_op_sym == eq_sym => Some((*slot, proj_path.clone())),
             _ => None,
         })
-        .unwrap_or_else(|| panic!(
-            "transitive eq() must classify as DeferToRequirement → Eq.eq; \
+        .unwrap_or_else(|| {
+            panic!(
+                "transitive eq() must classify as DeferToRequirement → Eq.eq; \
              got {classifications:?}"
-        ));
+            )
+        });
 
-    assert_eq!(
-        slot, 0,
-        "Ord is Wi239Nested's direct require slot 0",
-    );
+    assert_eq!(slot, 0, "Ord is Wi239Nested's direct require slot 0",);
     assert_eq!(
         proj_path.as_slice(),
         &[0usize, 0usize],

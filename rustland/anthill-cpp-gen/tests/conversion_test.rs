@@ -64,8 +64,7 @@ fn marshalled_lift_wraps_carrier_return() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.conv.Sensor")
-        .expect("emit Sensor traits");
+    let traits = emit_traits_struct(&mut kb, "test.conv.Sensor").expect("emit Sensor traits");
 
     // get_values: body lifts the carrier call via Vec3::from_array.
     assert!(
@@ -76,7 +75,9 @@ fn marshalled_lift_wraps_carrier_return() {
     // reset: no marshalled type involved; primitive (void) return →
     // existing direct-dispatch body, unchanged.
     assert!(
-        traits.contains("static void reset(::vendor::Sensor * self) {\n        self->reset();\n    }"),
+        traits.contains(
+            "static void reset(::vendor::Sensor * self) {\n        self->reset();\n    }"
+        ),
         "reset body unchanged:\n{traits}"
     );
 }
@@ -123,8 +124,7 @@ fn marshalled_lower_wraps_carrier_argument() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.lower.Actuator")
-        .expect("emit Actuator traits");
+    let traits = emit_traits_struct(&mut kb, "test.lower.Actuator").expect("emit Actuator traits");
 
     // set_target: the Vec3 argument is lowered via Vec3::to_array
     // before being handed to the carrier method.
@@ -176,8 +176,8 @@ fn marshalled_argument_without_lower_is_loud() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.nolower.Actuator")
-        .expect("emit Actuator traits");
+    let traits =
+        emit_traits_struct(&mut kb, "test.nolower.Actuator").expect("emit Actuator traits");
 
     // The body must be a build-breaking static_assert naming the offending
     // parameter, must NOT pass the bare `e` argument into the call, and must NOT
@@ -230,8 +230,7 @@ fn no_marshal_fact_keeps_decl_only_for_entity_returns() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.no_conv.Sensor")
-        .expect("emit Sensor traits");
+    let traits = emit_traits_struct(&mut kb, "test.no_conv.Sensor").expect("emit Sensor traits");
     assert!(
         traits.contains("static Vec3 get_values(::vendor::Sensor * self);"),
         "without a marshalled TypeMapping, get_values should be decl-only:\n{traits}"
@@ -277,8 +276,8 @@ fn marshalled_lift_body_compiles() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.conv_compile.Sensor")
-        .expect("emit Sensor traits");
+    let traits =
+        emit_traits_struct(&mut kb, "test.conv_compile.Sensor").expect("emit Sensor traits");
 
     let cxx = match find_cxx() {
         Some(c) => c,

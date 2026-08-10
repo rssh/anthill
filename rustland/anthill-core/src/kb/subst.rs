@@ -9,7 +9,6 @@
 /// (`Value::Int`, etc.), or an evaluator-bound value threaded through.
 ///
 /// See: docs/stage0/rust-term-store-design.md §3.4, docs/proposals/026.1
-
 use imbl::HashMap as ImHashMap;
 
 use super::term::{Term, TermId, TermStore, Var, VarId};
@@ -105,7 +104,10 @@ pub struct Substitution {
 /// lives in exactly one place.
 fn push_constraint_deduped(entry: &mut Vec<Constraint>, c: Constraint) {
     if let Constraint::Lacks(l) = &c {
-        if entry.iter().any(|e| matches!(e, Constraint::Lacks(x) if x.scalar_eq(l))) {
+        if entry
+            .iter()
+            .any(|e| matches!(e, Constraint::Lacks(x) if x.scalar_eq(l)))
+        {
             return;
         }
     }
@@ -324,8 +326,7 @@ impl Substitution {
 
     /// Whether the substitution holds no bindings, walking the parent chain.
     pub fn is_empty(&self) -> bool {
-        self.bindings.is_empty()
-            && self.parent.as_ref().is_none_or(|p| p.is_empty())
+        self.bindings.is_empty() && self.parent.as_ref().is_none_or(|p| p.is_empty())
     }
 
     /// Add bindings with path compression in one operation. Operates over
@@ -358,7 +359,9 @@ impl Substitution {
                 .bindings
                 .iter()
                 .filter_map(|(w, existing)| match existing {
-                    Value::Term { id: existing_tid, .. } => match terms.get(*existing_tid) {
+                    Value::Term {
+                        id: existing_tid, ..
+                    } => match terms.get(*existing_tid) {
                         Term::Var(Var::Global(ev)) if *ev == vid => Some(*w),
                         _ => None,
                     },
@@ -730,7 +733,10 @@ mod tests {
         let kb = KnowledgeBase::new();
         parent.bind_term(&kb, vid(1), TermId::from_raw(10));
         let child = Substitution::with_parent(parent);
-        assert_eq!(child.resolve_as_value(vid(1)).map(|v| v.expect_term()), Some(TermId::from_raw(10)));
+        assert_eq!(
+            child.resolve_as_value(vid(1)).map(|v| v.expect_term()),
+            Some(TermId::from_raw(10))
+        );
         matches!(child.resolve_as_value(vid(1)), Some(Value::Term { .. }));
     }
 
@@ -764,7 +770,12 @@ mod tests {
         s.bind_value(&kb, v, entity);
         assert!(!matches!(s.resolve_as_value(v), Some(Value::Term { .. })));
         match s.resolve_as_value(v) {
-            Some(Value::Entity { functor: f, pos, named, .. }) => {
+            Some(Value::Entity {
+                functor: f,
+                pos,
+                named,
+                ..
+            }) => {
                 assert_eq!(*f, functor);
                 assert!(matches!(&pos[..], [Value::Int(10), Value::Str(_)]));
                 assert_eq!(named.len(), 1);
@@ -815,7 +826,8 @@ mod tests {
         let mut s = Substitution::new();
         let kb = KnowledgeBase::new();
         let v = vid(1);
-        s.bind_value(&kb, 
+        s.bind_value(
+            &kb,
             v,
             Value::Entity {
                 functor: Symbol::from_raw(7),
@@ -823,7 +835,8 @@ mod tests {
                 named: vec![].into(),
             },
         );
-        s.bind_value(&kb,
+        s.bind_value(
+            &kb,
             v,
             Value::Entity {
                 functor: Symbol::from_raw(7),
@@ -868,10 +881,16 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let v = vid(1);
         let foo = kb.intern("foo");
-        let one =
-            Value::Entity { functor: foo, pos: vec![Value::Int(1)].into(), named: vec![].into() };
-        let two =
-            Value::Entity { functor: foo, pos: vec![Value::Int(2)].into(), named: vec![].into() };
+        let one = Value::Entity {
+            functor: foo,
+            pos: vec![Value::Int(1)].into(),
+            named: vec![].into(),
+        };
+        let two = Value::Entity {
+            functor: foo,
+            pos: vec![Value::Int(2)].into(),
+            named: vec![].into(),
+        };
         let t1 = crate::kb::node_occurrence::value_to_term(&mut kb, &one).unwrap();
         let mut s = Substitution::new();
         s.bind_term(&kb, v, t1);
@@ -889,7 +908,8 @@ mod tests {
             pos: vec![Value::Tuple {
                 pos: vec![Value::Int(1), Value::Str("x".into())].into(),
                 named: vec![].into(),
-            }].into(),
+            }]
+            .into(),
             named: vec![].into(),
         };
         s.bind_value(&kb, v, make());
@@ -916,8 +936,20 @@ mod tests {
         // residual_constraints surfaces both kinds.
         let residual = s.residual_constraints();
         assert_eq!(residual.len(), 2);
-        assert_eq!(residual.iter().filter(|(_, c)| matches!(c, Constraint::Lacks(_))).count(), 1);
-        assert_eq!(residual.iter().filter(|(_, c)| matches!(c, Constraint::Type(_))).count(), 1);
+        assert_eq!(
+            residual
+                .iter()
+                .filter(|(_, c)| matches!(c, Constraint::Lacks(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            residual
+                .iter()
+                .filter(|(_, c)| matches!(c, Constraint::Type(_)))
+                .count(),
+            1
+        );
     }
 
     /// `add_lacks` dedups within a level (behavior preserved through the store
@@ -976,7 +1008,10 @@ mod tests {
         let (x, y) = (vid(1), vid(2));
         s.add_type_constraint(x, Value::Int(7));
         s.bind_waking(&kb, x, Value::Var(Var::Global(y)));
-        assert!(s.constraints.get(&x).is_none(), "x's constraints must move to the alias");
+        assert!(
+            s.constraints.get(&x).is_none(),
+            "x's constraints must move to the alias"
+        );
         let resid = s.residual_constraints();
         assert_eq!(resid.len(), 1);
         assert_eq!(resid[0].0, y);
@@ -1011,7 +1046,11 @@ mod tests {
         s.add_type_constraint(x, Value::Int(7));
         s.bind_waking(&kb, x, Value::Int(99));
         let resid = s.residual_constraints();
-        assert_eq!(resid.len(), 1, "concrete bind must carry the constraint, not drop it");
+        assert_eq!(
+            resid.len(),
+            1,
+            "concrete bind must carry the constraint, not drop it"
+        );
         assert_eq!(resid[0].0, x);
     }
 
@@ -1026,7 +1065,7 @@ mod tests {
         let (x, y) = (vid(1), vid(2));
         s.add_type_constraint(x, Value::Int(7));
         s.bind_value(&kb, x, Value::Int(1)); // x := concrete Int(1)
-        // bind_waking(x := ?y) CONTRADICTS (Int(1) ≠ ?y) → the move must be skipped.
+                                             // bind_waking(x := ?y) CONTRADICTS (Int(1) ≠ ?y) → the move must be skipped.
         s.bind_waking(&kb, x, Value::Var(Var::Global(y)));
         assert!(s.is_contradiction());
         assert!(
@@ -1050,7 +1089,10 @@ mod tests {
         // Not moved onto the bound ?y; still recorded on ?x.
         let resid = s.residual_constraints();
         assert!(resid.iter().any(|(v, _)| *v == x), "constraint stays on x");
-        assert!(!resid.iter().any(|(v, _)| *v == y), "must not strand onto bound y");
+        assert!(
+            !resid.iter().any(|(v, _)| *v == y),
+            "must not strand onto bound y"
+        );
     }
 
     /// `absorb_constraints` unions another subst's top-level store (the
@@ -1104,12 +1146,15 @@ mod tests {
         let target = TermId::from_raw(999);
 
         let mut s = Substitution::new();
-        s.bindings.insert(v2, Value::term(var_v1));  // v2 → Var(v1)
-        s.bindings.insert(vid(3), Value::Int(77));   // non-Term: untouched
+        s.bindings.insert(v2, Value::term(var_v1)); // v2 → Var(v1)
+        s.bindings.insert(vid(3), Value::Int(77)); // non-Term: untouched
         s.bind_compressed(std::iter::once((v1, target)), &store);
 
         // v2's binding now points through to `target`.
-        assert_eq!(s.resolve_as_value(v2).map(|v| v.expect_term()), Some(target));
+        assert_eq!(
+            s.resolve_as_value(v2).map(|v| v.expect_term()),
+            Some(target)
+        );
         // v3's non-Term binding is preserved as-is.
         assert!(matches!(s.resolve_as_value(vid(3)), Some(Value::Int(77))));
     }

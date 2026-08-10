@@ -19,9 +19,8 @@
 //!   * splitFirst the resulting stream, lookup the bindings by name,
 //!     return the bound id string.
 
-
-use anthill_core::eval::Value;
 use crate::common::interp_for;
+use anthill_core::eval::Value;
 
 #[test]
 fn fresh_var_builtin_returns_distinct_term_per_call() {
@@ -35,12 +34,20 @@ namespace test.wi182_distinct
 end
 "#;
     let mut interp = interp_for(src);
-    let v1 = interp.call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
+    let v1 = interp
+        .call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
         .expect("fresh_var #1");
-    let v2 = interp.call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
+    let v2 = interp
+        .call("anthill.reflect.fresh_var", &[Value::Str("x".into())])
         .expect("fresh_var #2");
-    let t1 = match v1 { Value::Term { id: t, .. } => t, other => panic!("expected Term, got {other:?}") };
-    let t2 = match v2 { Value::Term { id: t, .. } => t, other => panic!("expected Term, got {other:?}") };
+    let t1 = match v1 {
+        Value::Term { id: t, .. } => t,
+        other => panic!("expected Term, got {other:?}"),
+    };
+    let t2 = match v2 {
+        Value::Term { id: t, .. } => t,
+        other => panic!("expected Term, got {other:?}"),
+    };
     assert_ne!(t1, t2, "two fresh_var calls should yield distinct Term ids");
 }
 
@@ -114,13 +121,11 @@ end
     // fact, binding "alice". (WI-515: the loader's synthetic entity
     // declaration used to ride along as a nondeterministically-ordered
     // second match, forcing this test to also accept "no-string".)
-    let r = interp.call("test.wi182_query.first_parent_name", &[])
+    let r = interp
+        .call("test.wi182_query.first_parent_name", &[])
         .expect("call first_parent_name");
     match r {
-        Value::Str(s) => assert_eq!(
-            s, "alice",
-            "the user-fact match must bind the parent name",
-        ),
+        Value::Str(s) => assert_eq!(s, "alice", "the user-fact match must bind the parent name",),
         other => panic!("expected Str, got {other:?}"),
     }
 }

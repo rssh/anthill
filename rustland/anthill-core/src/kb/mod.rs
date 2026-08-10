@@ -1,35 +1,34 @@
+pub(crate) mod body_specialize;
+pub mod call_form;
+pub mod defaults;
+pub(crate) mod discrim;
+pub(crate) mod eq_derive;
+pub mod execute;
+pub mod extent;
+pub(crate) mod flow_derive;
+pub mod load;
+pub mod node_occurrence;
+pub mod occurrence;
+pub mod op_info;
+pub mod op_requirements;
+pub(crate) mod persist_subst;
+pub mod proof_verify;
+pub(crate) mod region;
+pub mod req_insertion;
+pub mod resolve;
+pub mod simp_rewrite;
+pub mod subst;
 /// Unified KnowledgeBase — hash-consed terms, facts, indexes, sort lattice.
 ///
 /// One struct maintains everything. Sort relations are facts; entity-of
 /// indexes are materialized alongside other indexes.
 ///
 /// See: docs/stage0/rust-term-store-design.md §7, §9 (Layer 0)
-
 pub mod term;
-pub mod subst;
-pub mod load;
-pub mod proof_verify;
-pub mod resolve;
-pub mod occurrence;
-pub mod node_occurrence;
-pub mod call_form;
-pub mod typing;
-pub(crate) mod region;
-pub(crate) mod flow_derive;
-pub(crate) mod eq_derive;
-pub mod defaults;
-pub mod op_info;
-pub mod op_requirements;
-pub mod req_insertion;
-pub mod simp_rewrite;
-pub(crate) mod body_specialize;
 pub mod term_view;
-pub mod execute;
-pub mod extent;
-pub(crate) mod persist_subst;
-pub(crate) mod discrim;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod typing;
 
 /// WI-669: body-derived defining-equation types, produced by
 /// `KnowledgeBase::op_defining_equations` for the prover/SMT tier.
@@ -41,12 +40,12 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{ResolveResult, ScopeId, SymbolTable, SymbolDef, SymbolKind, Symbol};
+use crate::intern::{ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind, SymbolTable};
 use crate::span::{SourceRegistry, SourceSpan};
-use term::{Term, TermId, TermStore, TermSource, Var, VarId};
-use node_occurrence::NodeOccurrence;
 use discrim::SubstTree;
+use node_occurrence::NodeOccurrence;
 use resolve::BuiltinTag;
+use term::{Term, TermId, TermSource, TermStore, Var, VarId};
 
 // ── Rule handle ─────────────────────────────────────────────────
 
@@ -77,8 +76,12 @@ impl RuleId {
 pub struct ConstraintId(u32);
 
 impl ConstraintId {
-    pub fn index(self) -> usize { self.0 as usize }
-    pub fn raw(self) -> u32 { self.0 }
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+    pub fn raw(self) -> u32 {
+        self.0
+    }
 }
 
 // ── Guard types ─────────────────────────────────────────────────
@@ -508,7 +511,6 @@ pub enum SortKind {
     Enum,
 }
 
-
 // ── Sort operations table ───────────────────────────────────────
 
 /// WI-240 — per-impl-sort operations table. For each impl sort `S`
@@ -664,8 +666,8 @@ pub struct KnowledgeBase {
 
     // Entity-of indexes: entity → parent sort (1-level, non-transitive).
     // Materialized indexes for EntityOf(entity, parent) facts.
-    sort_entities: HashMap<Symbol, Vec<Symbol>>,   // sort → its entity constructors (WI-697 finished: by SYMBOL)
-    entity_parent: HashMap<Symbol, Symbol>,         // entity ctor SYMBOL → its parent sort NAME (WI-697, both halves)
+    sort_entities: HashMap<Symbol, Vec<Symbol>>, // sort → its entity constructors (WI-697 finished: by SYMBOL)
+    entity_parent: HashMap<Symbol, Symbol>, // entity ctor SYMBOL → its parent sort NAME (WI-697, both halves)
     sort_info: HashMap<Symbol, SortKind>,
 
     // Discrimination tree index for structural term matching
@@ -1139,13 +1141,15 @@ pub struct KnowledgeBase {
     // `SortRequiresInfo` changes; it can never outlive the tree it flattened. (Note:
     // the `requires_chain_cache_contains` accessor reads `requires_tree_cache`, not
     // this field.)
-    pub(crate) requires_chain_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+    pub(crate) requires_chain_cache:
+        RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
 
     // WI-230 — memoized substitution-composed `requires` tree per sort.
     // Each entry is the `Rc<Vec<RequiresNode>>` `requires_tree(kb, S)`
     // returns. Same lifetime as Cache A: fills lazily during typing;
     // invalidated by `invalidate_requires_chain_cache`.
-    pub(crate) requires_tree_cache: RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresNode>>>>,
+    pub(crate) requires_tree_cache:
+        RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresNode>>>>,
 
     // Memoized synthesized requirement-param names per parent sort —
     // `__req_<spec short name>` in chain order. Same lifetime as the
@@ -1213,7 +1217,10 @@ pub struct KnowledgeBase {
                 bool,
                 Vec<crate::kb::typing::InstanceSelection>,
             ),
-            (crate::kb::typing::DispatchOutcome, Option<crate::kb::typing::ResolvedRequiresNode>),
+            (
+                crate::kb::typing::DispatchOutcome,
+                Option<crate::kb::typing::ResolvedRequiresNode>,
+            ),
         >,
     >,
 
@@ -1461,7 +1468,8 @@ impl KnowledgeBase {
         rewritten_apply: TermId,
         spec_op_sym: Symbol,
     ) {
-        self.dispatch_rewrites.insert(original_apply, rewritten_apply);
+        self.dispatch_rewrites
+            .insert(original_apply, rewritten_apply);
         self.dispatch_origin.insert(rewritten_apply, spec_op_sym);
     }
 
@@ -1550,13 +1558,19 @@ impl KnowledgeBase {
         self.named_requirement_slots
             .entry(owner)
             .or_default()
-            .push(NamedRequirementSlot { binder, slot, spec_base });
+            .push(NamedRequirementSlot {
+                binder,
+                slot,
+                spec_base,
+            });
     }
 
     /// WI-840 — `owner`'s NAMED requirement slots in declaration order; empty for the
     /// overwhelmingly common all-anonymous owner.
     pub fn named_requirement_slots(&self, owner: Symbol) -> &[NamedRequirementSlot] {
-        self.named_requirement_slots.get(&owner).map_or(&[], Vec::as_slice)
+        self.named_requirement_slots
+            .get(&owner)
+            .map_or(&[], Vec::as_slice)
     }
 
     /// WI-954 — publish the canonical logical variable the loader minted for the type
@@ -1697,7 +1711,9 @@ impl KnowledgeBase {
     /// consumes this to discover the consts in a sort/namespace scope — consts
     /// emit no scope-member fact, so they are absent from the fact index and
     /// must be found by scanning. Iteration order is unspecified.
-    pub fn const_types_iter(&self) -> impl Iterator<Item = (Symbol, &crate::eval::value::Value)> + '_ {
+    pub fn const_types_iter(
+        &self,
+    ) -> impl Iterator<Item = (Symbol, &crate::eval::value::Value)> + '_ {
         self.const_types.iter().map(|(s, v)| (*s, v))
     }
 
@@ -1724,8 +1740,14 @@ impl KnowledgeBase {
         // ops-as-values are `Value::OpRef`, never `Term::Ref`, and sorts/params
         // aren't constructors, so the WI-391 `Ref`=wildcard / `Fn`=concrete
         // TYPE-dispatch distinction is untouched.
-        if let Term::Fn { functor, pos_args, named_args } = &term {
-            if pos_args.is_empty() && named_args.is_empty() && self.is_constructor_symbol(*functor) {
+        if let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = &term
+        {
+            if pos_args.is_empty() && named_args.is_empty() && self.is_constructor_symbol(*functor)
+            {
                 let f = *functor;
                 return self.terms.alloc(Term::Ref(f));
             }
@@ -1805,7 +1827,10 @@ impl KnowledgeBase {
     /// The qualified names behind a [`ResolveResult::Ambiguous`], for a diagnostic that
     /// names what it could not choose between.
     pub fn candidate_names(&self, candidates: &[Symbol]) -> Vec<String> {
-        candidates.iter().map(|&sym| self.qualified_name_of(sym).to_string()).collect()
+        candidates
+            .iter()
+            .map(|&sym| self.qualified_name_of(sym).to_string())
+            .collect()
     }
 
     /// The keyword `sym`'s declaration opened with — for DISPLAY (a diagnostic,
@@ -1888,7 +1913,8 @@ impl KnowledgeBase {
     /// declarations.
     pub fn type_param_sym_of(&self, owner: Symbol, short: &str) -> Option<Symbol> {
         let owner = self.canonical_sort_sym(owner);
-        self.symbols.type_param_sym(self.symbols.scope_id(owner), short)
+        self.symbols
+            .type_param_sym(self.symbols.scope_id(owner), short)
     }
 
     /// [`Self::type_param_syms_of`] as short NAMES — what the many callers that only
@@ -1944,13 +1970,17 @@ impl KnowledgeBase {
         for (i, n) in named.iter().enumerate() {
             let short = self.local_name_of(*n);
             if !declared.iter().any(|d| d == short) {
-                return Err(TypeArgProblem::UndeclaredParam { param: short.to_owned() });
+                return Err(TypeArgProblem::UndeclaredParam {
+                    param: short.to_owned(),
+                });
             }
             // WI-764: reject a param bound twice. Compared by the SHORT name the argument
             // was written with (the same key `declared` is matched on just above), so the
             // two spellings one slot can arrive under never read as two distinct params.
             if named[..i].iter().any(|p| self.local_name_of(*p) == short) {
-                return Err(TypeArgProblem::DuplicateParam { param: short.to_owned() });
+                return Err(TypeArgProblem::DuplicateParam {
+                    param: short.to_owned(),
+                });
             }
         }
         // Each positional binds the next declared param NOT already given by name, so
@@ -1961,7 +1991,10 @@ impl KnowledgeBase {
             .filter(|d| !named.iter().any(|n| self.local_name_of(*n) == d.as_str()))
             .count();
         if positional_count > free {
-            return Err(TypeArgProblem::ExcessPositional { given: positional_count, free });
+            return Err(TypeArgProblem::ExcessPositional {
+                given: positional_count,
+                free,
+            });
         }
         Ok(())
     }
@@ -2061,7 +2094,9 @@ impl KnowledgeBase {
         // it re-derives the value key from the head and finds no entry to remove.
         if is_fact {
             if let Some(t) = head_term {
-                self.fact_dedup.entry((t, clause_kind, domain)).or_insert(rule_id);
+                self.fact_dedup
+                    .entry((t, clause_kind, domain))
+                    .or_insert(rule_id);
             }
         }
         rule_id
@@ -2224,7 +2259,10 @@ impl KnowledgeBase {
             }
         }
         let detached = std::mem::replace(&mut self.discrim, SubstTree::new());
-        let mut guard = Restore { kb: self, discrim: detached };
+        let mut guard = Restore {
+            kb: self,
+            discrim: detached,
+        };
         f(&*guard.kb, &mut guard.discrim)
     }
 
@@ -2299,7 +2337,9 @@ impl KnowledgeBase {
     ) {
         use term_view::{TermView, ViewHead};
         let head = TermView::head(view, self);
-        let Some(functor) = head.functor_sym() else { return };
+        let Some(functor) = head.functor_sym() else {
+            return;
+        };
 
         if Some(functor) == syms.pattern_query {
             let inner = TermView::named_arg(view, self, syms.term).map(|c| c.to_value());
@@ -2368,7 +2408,8 @@ impl KnowledgeBase {
         }
         // Not a constructor at all — a plain sort name heading a fact answers as
         // itself. (A constructor never reaches here: the relation above is total.)
-        self.has_kind(functor, crate::intern::SymbolKind::Sort).then_some(functor)
+        self.has_kind(functor, crate::intern::SymbolKind::Sort)
+            .then_some(functor)
     }
 
     fn view_to_trigger_sort(&mut self, view: &crate::eval::value::Value) -> Option<Symbol> {
@@ -2402,7 +2443,8 @@ impl KnowledgeBase {
 
     /// Sorts whose facts re-fire guard `cid`.
     pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[Symbol] {
-        self.guards.get(cid.index())
+        self.guards
+            .get(cid.index())
             .map(|g| g.trigger_sorts.as_slice())
             .unwrap_or(&[])
     }
@@ -2426,7 +2468,8 @@ impl KnowledgeBase {
         domain: Symbol,
         meta: Option<TermId>,
     ) -> Option<RuleId> {
-        let guard_indices: Vec<usize> = self.guards_by_sort
+        let guard_indices: Vec<usize> = self
+            .guards_by_sort
             .get(&trigger_sort)
             .cloned()
             .unwrap_or_default();
@@ -2465,7 +2508,8 @@ impl KnowledgeBase {
                         "anthill: integrity constraint{} undecidable within the resolver \
                          depth budget ({}) — fact rejected (an integrity guard must not \
                          admit a fact it cannot verify)",
-                        load::label_suffix(&label), reason,
+                        load::label_suffix(&label),
+                        reason,
                     );
                     self.retract(rule_id);
                     return None;
@@ -2483,7 +2527,8 @@ impl KnowledgeBase {
                         "assert_checked: integrity constraint{} uses an unsupported \
                          LogicalQuery form ({}) — should have been rejected as \
                          load-blocking by check_all_guards (WI-513)",
-                        load::label_suffix(&label), e,
+                        load::label_suffix(&label),
+                        e,
                     );
                 }
             }
@@ -2521,7 +2566,11 @@ impl KnowledgeBase {
 
     /// Read a named child of a `LogicalQuery` view as an owned, carrier-agnostic
     /// `Value` (dropping any borrow of `self`).
-    fn guard_child(&mut self, view: &crate::eval::value::Value, field: Symbol) -> Option<crate::eval::value::Value> {
+    fn guard_child(
+        &mut self,
+        view: &crate::eval::value::Value,
+        field: Symbol,
+    ) -> Option<crate::eval::value::Value> {
         term_view::TermView::named_arg(view, self, field).map(|c| c.to_value())
     }
 
@@ -2531,7 +2580,10 @@ impl KnowledgeBase {
     /// instead of vacuously holding). Carrier-agnostic — occurrence (`Value::Node`)
     /// and term leaves both resolve through `resolve_goals` (WI-518). Quantifier
     /// dispatch compares interned [`LogicalQuerySymbols`] (no per-node `String`).
-    fn evaluate_guard(&mut self, guard: &crate::eval::value::Value) -> Result<GuardStatus, execute::LowerError> {
+    fn evaluate_guard(
+        &mut self,
+        guard: &crate::eval::value::Value,
+    ) -> Result<GuardStatus, execute::LowerError> {
         let syms = execute::LogicalQuerySymbols::resolve(self);
         let Some(functor) = term_view::TermView::head(guard, self).functor_sym() else {
             // A bare leaf as a whole guard is not a quantified constraint we
@@ -2558,7 +2610,8 @@ impl KnowledgeBase {
             // form surfaces as `Err(LowerError)` rather than silently passing
             // (WI-513). `.map(|_| Holds)` discards the goals: we validate the form,
             // we don't run the constraint.
-            self.lower_query_with(guard, &syms).map(|_| GuardStatus::Holds)
+            self.lower_query_with(guard, &syms)
+                .map(|_| GuardStatus::Holds)
         }
     }
 
@@ -2866,10 +2919,7 @@ impl KnowledgeBase {
     /// it to [`Self::assert_fact`] first — but no carrier is special-cased: the
     /// fingerprint is total, so any `Opaque`-bearing head degrades to no-dedup (a
     /// MISS: stored, just not collapsed — never unsound) and everything else keys.
-    fn value_fact_dedup_key(
-        &self,
-        head: &crate::eval::value::Value,
-    ) -> Option<term_view::GoalKey> {
+    fn value_fact_dedup_key(&self, head: &crate::eval::value::Value) -> Option<term_view::GoalKey> {
         let key = term_view::goal_fingerprint(self, head, &subst::Substitution::new());
         (key.is_opaque_free() && key.has_named_functors()).then_some(key)
     }
@@ -3024,9 +3074,11 @@ impl KnowledgeBase {
     /// caller runs over the same term one line later.
     fn goal_head_sym_arity<V: term_view::TermView>(&self, view: &V) -> Option<(Symbol, usize)> {
         match term_view::TermView::head(view, self) {
-            term_view::ViewHead::Functor { functor: Some(s), pos_arity, .. } => {
-                Some((s, pos_arity))
-            }
+            term_view::ViewHead::Functor {
+                functor: Some(s),
+                pos_arity,
+                ..
+            } => Some((s, pos_arity)),
             // `Ref(c) ≡ Fn{c}` at arity 0 (WI-436) — the canonical spelling of a
             // 0-ary application, and the shape a bare proposition arrives as.
             term_view::ViewHead::Ref(s) | term_view::ViewHead::Ident(s) => Some((s, 0)),
@@ -3252,9 +3304,14 @@ impl KnowledgeBase {
     /// terms are acyclic.
     fn collect_ambiguous_query_dispatch(&self, tid: TermId, out: &mut Vec<String>) {
         use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
-        if let Term::Fn { functor, pos_args, named_args, .. } = self.get_term(tid) {
-            let (functor, pos_args, named_args) =
-                (*functor, pos_args.clone(), named_args.clone());
+        if let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } = self.get_term(tid)
+        {
+            let (functor, pos_args, named_args) = (*functor, pos_args.clone(), named_args.clone());
             // The union gate first — a name split plus an `OperationInfo` probe, so an
             // ordinary predicate or constructor leaves before any argument is read.
             if typing::spec_op_call_parent(self, functor).is_some() {
@@ -3312,8 +3369,10 @@ impl KnowledgeBase {
                         typing::spec_op_suppliers_for_carrier
                     };
                 if let Some(args) = args {
-                    if let ValueDirectedDispatch::Tie { carrier, candidates } =
-                        spec_op_dispatch_by_value(self, functor, &args, readers)
+                    if let ValueDirectedDispatch::Tie {
+                        carrier,
+                        candidates,
+                    } = spec_op_dispatch_by_value(self, functor, &args, readers)
                     {
                         let op_qn = self.qualified_name_of(functor).to_string();
                         out.push(typing::ambiguous_spec_op_dispatch_message(
@@ -3355,12 +3414,17 @@ impl KnowledgeBase {
     /// Read for DESCENT only; whether these are followed is gated on negation scope
     /// by [`Self::collect_undefined_goal_functors`].
     fn goal_arg_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
-        let Term::Fn { functor, pos_args, .. } = self.get_term(tid) else {
+        let Term::Fn {
+            functor, pos_args, ..
+        } = self.get_term(tid)
+        else {
             return SmallVec::new();
         };
         let mut out = SmallVec::new();
         for slot in self.goal_arg_slots(*functor, pos_args.len()) {
-            let Some(&child) = pos_args.get(slot.index) else { continue };
+            let Some(&child) = pos_args.get(slot.index) else {
+                continue;
+            };
             if slot.tuple_wrapped {
                 out.extend(self.tuple_goal_termids(child));
             } else {
@@ -3436,7 +3500,11 @@ impl KnowledgeBase {
         functor: Symbol,
         pos_arity: usize,
     ) -> SmallVec<[GoalSlot; 3]> {
-        let slot = |index, tuple_wrapped, reading| GoalSlot { index, tuple_wrapped, reading };
+        let slot = |index, tuple_wrapped, reading| GoalSlot {
+            index,
+            tuple_wrapped,
+            reading,
+        };
         match (self.local_name_of(functor), pos_arity) {
             // A bounded quantifier binds ONE variable (arg 0, unwrapped) over a
             // COLLECTION (arg 1 — ordinary data, so no row) and evaluates a `tuple(…)`
@@ -3488,9 +3556,9 @@ impl KnowledgeBase {
     /// rather than dropped, so no goal escapes the walk (loud over silent).
     fn tuple_goal_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
         match self.get_term(tid) {
-            Term::Fn { functor, pos_args, .. } if self.local_name_of(*functor) == "tuple" => {
-                pos_args.iter().copied().collect()
-            }
+            Term::Fn {
+                functor, pos_args, ..
+            } if self.local_name_of(*functor) == "tuple" => pos_args.iter().copied().collect(),
             _ => SmallVec::from_elem(tid, 1),
         }
     }
@@ -3699,7 +3767,11 @@ impl KnowledgeBase {
     /// goal position is dead however this walk treats it. That is a real silent-dead-rule
     /// defect of the LOWERING, of exactly WI-1034's class and outside its reach —
     /// **WI-1046**.)
-    fn body_goal_children(&self, goal: &crate::eval::Value, span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
+    fn body_goal_children(
+        &self,
+        goal: &crate::eval::Value,
+        span: SourceSpan,
+    ) -> Vec<(crate::eval::Value, SourceSpan)> {
         self.goal_children_with_reading(goal, span, SlotReading::Proved)
     }
 
@@ -3714,11 +3786,19 @@ impl KnowledgeBase {
         span: SourceSpan,
         reading: SlotReading,
     ) -> Vec<(crate::eval::Value, SourceSpan)> {
-        let Some((functor, arity)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
+        let Some((functor, arity)) = self.goal_head_sym_arity(goal) else {
+            return Vec::new();
+        };
         let args = self.positional_children(goal, span);
         let mut out = Vec::new();
-        for slot in self.goal_slot_readings(functor, arity).into_iter().filter(|s| s.reading == reading) {
-            let Some(child) = args.get(slot.index) else { continue };
+        for slot in self
+            .goal_slot_readings(functor, arity)
+            .into_iter()
+            .filter(|s| s.reading == reading)
+        {
+            let Some(child) = args.get(slot.index) else {
+                continue;
+            };
             if slot.tuple_wrapped {
                 // Unwrapped HERE, so the wrapper never reaches the head test — its own
                 // functor names nothing and would be reported as a dangling goal. The
@@ -3772,8 +3852,14 @@ impl KnowledgeBase {
     /// silently lose a spliced discharge's hypotheses (which FALSELY REFUSES). A
     /// carrier with no span of its own is reported at its parent's: a degraded
     /// location, which is a diagnostic cost, not a missed defect.
-    fn positional_children(&self, goal: &crate::eval::Value, parent_span: SourceSpan) -> Vec<(crate::eval::Value, SourceSpan)> {
-        let Some((_, arity)) = self.goal_head_sym_arity(goal) else { return Vec::new() };
+    fn positional_children(
+        &self,
+        goal: &crate::eval::Value,
+        parent_span: SourceSpan,
+    ) -> Vec<(crate::eval::Value, SourceSpan)> {
+        let Some((_, arity)) = self.goal_head_sym_arity(goal) else {
+            return Vec::new();
+        };
         (0..arity)
             .filter_map(|i| {
                 let item = term_view::TermView::pos_arg(goal, self, i)?;
@@ -3826,7 +3912,9 @@ impl KnowledgeBase {
     /// module-level note above.
     #[cfg(debug_assertions)]
     fn check_metadata_head(&self, functor: Option<Symbol>) {
-        let ok = functor.map(|f| self.is_metadata_functor(f)).unwrap_or(false);
+        let ok = functor
+            .map(|f| self.is_metadata_functor(f))
+            .unwrap_or(false);
         if !ok {
             let shown = functor
                 .map(|f| self.qualified_name_of(f))
@@ -4181,18 +4269,26 @@ impl KnowledgeBase {
         }
         let sub_sym = match sub.head(self) {
             term_view::ViewHead::Ref(s) => s,
-            term_view::ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => s,
+            term_view::ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } => s,
             _ => return false,
         };
         // The stored parent is a NAME; `sup` may arrive in any carrier/spelling
         // (`Fn{S}` or `Ref(S)` — WI-511 makes that order-dependent), so compare
         // the two as SYMBOLS rather than structurally.
-        let Some(&parent_sym) = self.entity_parent.get(&sub_sym) else { return false };
+        let Some(&parent_sym) = self.entity_parent.get(&sub_sym) else {
+            return false;
+        };
         match term_view::TermView::head(sup, self) {
             term_view::ViewHead::Ref(s) => s == parent_sym,
-            term_view::ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } => {
-                s == parent_sym
-            }
+            term_view::ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } => s == parent_sym,
             _ => false,
         }
     }
@@ -4235,7 +4331,10 @@ impl KnowledgeBase {
     /// the question must genuinely be "which DIFFERENT sort is this filed
     /// under"; anything else wants [`Self::sort_of_constructor`].
     pub fn strict_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
-        self.entity_parent.get(&functor).copied().filter(|&p| p != functor)
+        self.entity_parent
+            .get(&functor)
+            .copied()
+            .filter(|&p| p != functor)
     }
 
     /// All entity-constructor functor symbols whose parent sort is `sort_sym`
@@ -4307,11 +4406,14 @@ impl KnowledgeBase {
         }
         let qn = self.qualified_name_of(sort_sym);
         let prefix = format!("{qn}.");
-        self.symbols.by_qualified_name.iter().any(|(child_qn, &child_sym)| {
-            child_qn.starts_with(&prefix)
+        self.symbols
+            .by_qualified_name
+            .iter()
+            .any(|(child_qn, &child_sym)| {
+                child_qn.starts_with(&prefix)
                 && !child_qn[prefix.len()..].contains('.')   // direct child only
                 && matches!(self.kind_of(child_sym), Some(SymbolKind::Entity))
-        })
+            })
     }
 
     // ── Query ───────────────────────────────────────────────────
@@ -4423,7 +4525,9 @@ impl KnowledgeBase {
     /// not a scan artifact. cf. the cached WI-635 `head_has_vars` / WI-646 simp
     /// gate.
     pub fn has_bodied_rule(&self, functor: Symbol) -> bool {
-        self.bodied_rule_counts.get(&functor).is_some_and(|&c| c > 0)
+        self.bodied_rule_counts
+            .get(&functor)
+            .is_some_and(|&c| c > 0)
     }
 
     /// WI-812: one more indexed bodied rule under `functor` — bump the
@@ -4472,7 +4576,6 @@ impl KnowledgeBase {
             })
             .unwrap_or_default()
     }
-
 
     // ── Rule accessors ───────────────────────────────────────────
 
@@ -4557,7 +4660,11 @@ impl KnowledgeBase {
     pub(crate) fn term_mentions_debruijn(&self, tid: TermId) -> bool {
         match self.get_term(tid) {
             Term::Var(Var::DeBruijn(_)) => true,
-            Term::Fn { pos_args, named_args, .. } => {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let children: SmallVec<[TermId; 8]> = pos_args
                     .iter()
                     .copied()
@@ -4675,11 +4782,11 @@ impl KnowledgeBase {
     /// (see `load_provides_block`).
     pub fn name_term_sym(&self, term: TermId) -> Symbol {
         match self.terms.get(term) {
-            Term::Fn { functor, pos_args, named_args }
-                if pos_args.is_empty() && named_args.is_empty() =>
-            {
-                *functor
-            }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if pos_args.is_empty() && named_args.is_empty() => *functor,
             Term::Ref(s) | Term::Ident(s) => *s,
             other => panic!(
                 "name_term_sym: {term:?} is not a name term ({other:?}) — a scope \
@@ -4750,7 +4857,11 @@ impl KnowledgeBase {
     /// only by `load::build_sort_ops_table`.
     pub(crate) fn insert_sort_op(&mut self, impl_sort: Symbol, op_short: Symbol, target: Symbol) {
         let key = self.canonical_sort_sym(impl_sort);
-        self.sort_ops.by_impl.entry(key).or_default().insert(op_short, target);
+        self.sort_ops
+            .by_impl
+            .entry(key)
+            .or_default()
+            .insert(op_short, target);
     }
 
     /// WI-616 — record a `value-head functor → carrier's eq` dispatch
@@ -4804,7 +4915,11 @@ impl KnowledgeBase {
     /// and the `push_value_head_entry` guardrail.
     pub(crate) fn canonical_sym(&self, sym: Symbol) -> Symbol {
         let qn = self.qualified_name_of(sym);
-        self.symbols.by_qualified_name.get(qn).copied().unwrap_or(sym)
+        self.symbols
+            .by_qualified_name
+            .get(qn)
+            .copied()
+            .unwrap_or(sym)
     }
 
     /// Sort-specific alias of [`Self::canonical_sym`]. Used as the `sort_ops`
@@ -4854,12 +4969,18 @@ impl KnowledgeBase {
         // the term `body` — both have equal arity (assert enforces it), so this
         // is unchanged, but it does not depend on the term body that is being
         // retired.
-        self.rules.iter().filter(|r| !r.retracted && r.body_nodes.is_empty()).count()
+        self.rules
+            .iter()
+            .filter(|r| !r.retracted && r.body_nodes.is_empty())
+            .count()
     }
 
     /// Number of active (non-retracted) entries with non-empty body (proper rules).
     pub fn rule_count(&self) -> usize {
-        self.rules.iter().filter(|r| !r.retracted && !r.body_nodes.is_empty()).count()
+        self.rules
+            .iter()
+            .filter(|r| !r.retracted && !r.body_nodes.is_empty())
+            .count()
     }
 
     /// All live (non-retracted) rule ids — *including* the WI-139 cite-required
@@ -4918,7 +5039,8 @@ impl KnowledgeBase {
         let mut tree = SubstTree::<()>::new();
         tree.insert_pattern(self, &term_view::TermIdView(pattern), ());
         let results = tree.query_resolved(self, target, |_| pattern);
-        results.into_iter()
+        results
+            .into_iter()
             .map(|(_, s)| s)
             .find(|s| !s.is_contradiction())
     }
@@ -4945,7 +5067,8 @@ impl KnowledgeBase {
         let mut tree = SubstTree::<()>::new();
         tree.insert_pattern(self, pattern, ());
         let results = tree.query_resolved_value(self, target, false, |_| pattern.clone());
-        results.into_iter()
+        results
+            .into_iter()
             .map(|(_, s)| s)
             .find(|s| !s.is_contradiction())
     }
@@ -4969,7 +5092,8 @@ impl KnowledgeBase {
         let mut tree = SubstTree::<()>::new();
         tree.insert_pattern(self, &term_view::TermIdView(pattern), ());
         let results = tree.query_resolved_mode(self, target, true, |_| pattern);
-        results.into_iter()
+        results
+            .into_iter()
             .map(|(_, s)| s)
             .find(|s| !s.is_contradiction())
     }
@@ -4986,12 +5110,11 @@ impl KnowledgeBase {
         pattern: &V,
     ) -> Vec<(RuleId, subst::Substitution)> {
         let rules = &self.rules;
-        let candidates = self.discrim.query_resolved_value(
-            self,
-            pattern,
-            true,
-            |rid: &RuleId| rules[rid.index()].head.clone(),
-        );
+        let candidates = self
+            .discrim
+            .query_resolved_value(self, pattern, true, |rid: &RuleId| {
+                rules[rid.index()].head.clone()
+            });
 
         let mut results = Vec::new();
         for (rid, tree_subst) in candidates {
@@ -5007,7 +5130,13 @@ impl KnowledgeBase {
         // The discrimination tree uses HashMap internally, so candidate order
         // is non-deterministic. DFS resolution depends on trying ground facts
         // before recursive rules to find base-case solutions first.
-        results.sort_by_key(|(rid, _)| if rules[rid.index()].body_nodes.is_empty() { 0 } else { 1 });
+        results.sort_by_key(|(rid, _)| {
+            if rules[rid.index()].body_nodes.is_empty() {
+                0
+            } else {
+                1
+            }
+        });
         results
     }
 
@@ -5079,7 +5208,12 @@ impl KnowledgeBase {
         vars
     }
 
-    fn collect_vars_rec(&self, term: TermId, vars: &mut Vec<VarId>, seen: &mut std::collections::HashSet<u32>) {
+    fn collect_vars_rec(
+        &self,
+        term: TermId,
+        vars: &mut Vec<VarId>,
+        seen: &mut std::collections::HashSet<u32>,
+    ) {
         match self.terms.get(term) {
             Term::Var(Var::Global(vid)) => {
                 if seen.insert(vid.raw()) {
@@ -5087,7 +5221,11 @@ impl KnowledgeBase {
                 }
             }
             Term::Var(Var::DeBruijn(_)) => {}
-            Term::Fn { pos_args, named_args, .. } => {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let pos_args = pos_args.clone();
                 let named_args = named_args.clone();
                 for &id in pos_args.iter() {
@@ -5103,20 +5241,44 @@ impl KnowledgeBase {
 
     /// Map a function over the children of an Fn term, returning the same TermId
     /// if nothing changed (avoids unnecessary allocation and hash-consing).
-    pub(crate) fn map_fn_children(&mut self, term: TermId, mut f: impl FnMut(&mut Self, TermId) -> TermId) -> TermId {
+    pub(crate) fn map_fn_children(
+        &mut self,
+        term: TermId,
+        mut f: impl FnMut(&mut Self, TermId) -> TermId,
+    ) -> TermId {
         match self.terms.get(term).clone() {
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 let mut changed = false;
                 let new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
-                    .map(|&id| { let r = f(self, id); if r != id { changed = true; } r })
+                    .map(|&id| {
+                        let r = f(self, id);
+                        if r != id {
+                            changed = true;
+                        }
+                        r
+                    })
                     .collect();
                 let new_named: SmallVec<[(crate::intern::Symbol, TermId); 2]> = named_args
                     .iter()
-                    .map(|&(sym, id)| { let r = f(self, id); if r != id { changed = true; } (sym, r) })
+                    .map(|&(sym, id)| {
+                        let r = f(self, id);
+                        if r != id {
+                            changed = true;
+                        }
+                        (sym, r)
+                    })
                     .collect();
                 if changed {
-                    self.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+                    self.alloc(Term::Fn {
+                        functor,
+                        pos_args: new_pos,
+                        named_args: new_named,
+                    })
                 } else {
                     term
                 }
@@ -5222,13 +5384,21 @@ impl KnowledgeBase {
     /// [`crate::kb::term_view::TermView`], while one that genuinely demands a
     /// hash-consed term uses [`crate::eval::value::Value::expect_term`] (which
     /// fails loud on a non-`Term` carrier — WI-477).
-    pub fn reify(&mut self, term: TermId, subst: &subst::Substitution) -> crate::eval::value::Value {
+    pub fn reify(
+        &mut self,
+        term: TermId,
+        subst: &subst::Substitution,
+    ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         // Chase the var chain carrier-faithfully — `walk_view` surfaces a
         // non-`Term` binding the `TermId`-only `walk` cannot see.
         match self.walk_view(term, subst) {
             Value::Term { id: t, .. } => match self.terms.get(t).clone() {
-                Term::Fn { functor, pos_args, named_args } => {
+                Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                } => {
                     let pos: Vec<Value> =
                         pos_args.iter().map(|&id| self.reify(id, subst)).collect();
                     let named: Vec<(Symbol, Value)> = named_args
@@ -5318,13 +5488,14 @@ impl KnowledgeBase {
                 kb.alloc_from_value(v)
                     .unwrap_or_else(|e| panic!("fn_value: a leaf child did not lower: {e:?}"))
             };
-            let pos_args: SmallVec<[TermId; 4]> =
-                pos.iter().map(|v| lower(self, v)).collect();
-            let named_args: SmallVec<[(Symbol, TermId); 2]> = named
-                .iter()
-                .map(|(s, v)| (*s, lower(self, v)))
-                .collect();
-            Value::term(self.alloc(Term::Fn { functor, pos_args, named_args }))
+            let pos_args: SmallVec<[TermId; 4]> = pos.iter().map(|v| lower(self, v)).collect();
+            let named_args: SmallVec<[(Symbol, TermId); 2]> =
+                named.iter().map(|(s, v)| (*s, lower(self, v))).collect();
+            Value::term(self.alloc(Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            }))
         } else {
             Value::Entity {
                 functor,
@@ -5395,9 +5566,17 @@ impl KnowledgeBase {
             // ~1709) then floundered even after a sibling goal had bound them,
             // making the deep-groundness gate (which reads σ) and the reification
             // disagree.
-            Value::Entity { functor, pos, named } => {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => {
                 let (pos, named) = self.reify_value_children(pos, named, subst);
-                Value::Entity { functor: *functor, pos, named }
+                Value::Entity {
+                    functor: *functor,
+                    pos,
+                    named,
+                }
             }
             Value::Tuple { pos, named } => {
                 let (pos, named) = self.reify_value_children(pos, named, subst);
@@ -5416,7 +5595,10 @@ impl KnowledgeBase {
         pos: &Rc<[crate::eval::value::Value]>,
         named: &Rc<[(Symbol, crate::eval::value::Value)]>,
         subst: &subst::Substitution,
-    ) -> (Rc<[crate::eval::value::Value]>, Rc<[(Symbol, crate::eval::value::Value)]>) {
+    ) -> (
+        Rc<[crate::eval::value::Value]>,
+        Rc<[(Symbol, crate::eval::value::Value)]>,
+    ) {
         use crate::eval::value::Value;
         let mut new_pos: Vec<Value> = Vec::with_capacity(pos.len());
         for c in pos.iter() {
@@ -5537,8 +5719,12 @@ impl KnowledgeBase {
                 }
             }
             // Scalar head children carry no Global vars.
-            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
-            | Value::Str(_) | Value::Unit => {}
+            Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Unit => {}
             // A bare value-level var (WI-109) or a runtime carrier
             // (Closure/Stream/…) is not a shape a stored rule head takes —
             // fail loudly rather than silently undercount the rule's arity.
@@ -5565,7 +5751,12 @@ impl KnowledgeBase {
         match head {
             Value::Term { id: t, .. } => Value::term(self.term_to_debruijn(t, vars)),
             Value::Node(occ) => Value::Node(node_occurrence::node_to_debruijn(self, &occ, vars)),
-            Value::Entity { functor, pos, named, .. } => {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+                ..
+            } => {
                 let pos: Vec<Value> = pos
                     .iter()
                     .map(|c| self.close_value_head_debruijn(c.clone(), vars))
@@ -5574,7 +5765,11 @@ impl KnowledgeBase {
                     .iter()
                     .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
                     .collect();
-                Value::Entity { functor, pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
+                Value::Entity {
+                    functor,
+                    pos: std::rc::Rc::from(pos),
+                    named: std::rc::Rc::from(named),
+                }
             }
             Value::Tuple { pos, named, .. } => {
                 let pos: Vec<Value> = pos
@@ -5585,11 +5780,18 @@ impl KnowledgeBase {
                     .iter()
                     .map(|(s, c)| (*s, self.close_value_head_debruijn(c.clone(), vars)))
                     .collect();
-                Value::Tuple { pos: std::rc::Rc::from(pos), named: std::rc::Rc::from(named) }
+                Value::Tuple {
+                    pos: std::rc::Rc::from(pos),
+                    named: std::rc::Rc::from(named),
+                }
             }
             // Scalars have no vars to close.
-            h @ (Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_)
-            | Value::Str(_) | Value::Unit) => h,
+            h @ (Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Unit) => h,
             // A bare value-level var or a runtime carrier is not a stored
             // rule-head shape — fail loudly rather than leave a var unclosed.
             h => {
@@ -5717,7 +5919,9 @@ impl KnowledgeBase {
     /// unlabeled `qn` the returned ids are the rules whose head's
     /// functor symbol resolves to `qn` (SLD lookup semantics).
     pub fn rule_ids_by_qn(&self, qn: &str) -> Vec<RuleId> {
-        self.try_resolve_symbol(qn).map(|sym| self.clause_ids_of(sym)).unwrap_or_default()
+        self.try_resolve_symbol(qn)
+            .map(|sym| self.clause_ids_of(sym))
+            .unwrap_or_default()
     }
 
     /// The SYMBOL-keyed body of [`Self::rule_ids_by_qn`] — label-first, then the
@@ -5737,7 +5941,9 @@ impl KnowledgeBase {
     /// WI-898 — does `sym` OWN CLAUSES? The allocation-free predicate form of
     /// [`Self::clause_ids_of`], asked where only existence matters.
     pub fn has_clauses_under(&self, sym: Symbol) -> bool {
-        self.rules_by_label.get(&sym).is_some_and(|ids| !ids.is_empty())
+        self.rules_by_label
+            .get(&sym)
+            .is_some_and(|ids| !ids.is_empty())
             || self.rules_by_functor_iter(sym).next().is_some()
     }
 
@@ -5800,8 +6006,9 @@ impl KnowledgeBase {
         let entry = &mut self.rules[id.index()];
         match entry.label {
             Some(existing) if existing == label => return,
-            Some(existing) => panic!(
-                "rule {id:?} already labeled {existing:?}, cannot re-tag as {label:?}"),
+            Some(existing) => {
+                panic!("rule {id:?} already labeled {existing:?}, cannot re-tag as {label:?}")
+            }
             None => entry.label = Some(label),
         }
         self.rules_by_label.entry(label).or_default().push(id);
@@ -5834,19 +6041,31 @@ impl KnowledgeBase {
         // from head + occurrences in the SAME first-occurrence order as
         // `assert_rule_debruijn_with_nodes` (so frame alignment is preserved).
         let head = head.into();
-        let seen: std::collections::HashSet<u32> =
-            seed_globals.iter().map(|v| v.raw()).collect();
+        let seen: std::collections::HashSet<u32> = seed_globals.iter().map(|v| v.raw()).collect();
         let mut vars = Vec::new();
         let mut collected = std::collections::HashSet::new();
         self.collect_value_head_vars(&head, &mut vars, &mut collected);
         for n in &body_nodes {
-            node_occurrence::collect_occurrence_global_vars_ordered(self, n, &mut vars, &mut collected);
+            node_occurrence::collect_occurrence_global_vars_ordered(
+                self,
+                n,
+                &mut vars,
+                &mut collected,
+            );
         }
         vars.retain(|v| !seen.contains(&v.raw()));
         vars.extend(seed_globals.iter().copied());
 
         let shared_arity = seed_globals.len() as u32;
-        self.finalize_rule_debruijn_nodes(head, body_nodes, vars, shared_arity, clause_kind, domain, meta)
+        self.finalize_rule_debruijn_nodes(
+            head,
+            body_nodes,
+            vars,
+            shared_arity,
+            clause_kind,
+            domain,
+            meta,
+        )
     }
 
     /// Number of leading DeBruijn slots that are shared with a parent
@@ -5869,7 +6088,9 @@ impl KnowledgeBase {
                 }
             }
             Term::Var(Var::DeBruijn(_)) => term,
-            Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.term_to_debruijn(id, var_order)),
+            Term::Fn { .. } => {
+                self.map_fn_children(term, |kb, id| kb.term_to_debruijn(id, var_order))
+            }
             _ => term,
         }
     }
@@ -5886,7 +6107,9 @@ impl KnowledgeBase {
                 }
             }
             Term::Var(Var::Global(_)) => term,
-            Term::Fn { .. } => self.map_fn_children(term, |kb, id| kb.term_from_debruijn(id, fresh_vars)),
+            Term::Fn { .. } => {
+                self.map_fn_children(term, |kb, id| kb.term_from_debruijn(id, fresh_vars))
+            }
             _ => term,
         }
     }
@@ -5920,11 +6143,12 @@ impl KnowledgeBase {
         // WI-644 / proposal 004: the `eq`/`neq` ops moved from `Eq` to its base
         // `PartialEq` (Eq is now the lawful marker requiring PartialEq). Equation
         // heads and `[simp]` lookups key on this symbol.
-        self.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect(
-            "eq_functor: `anthill.prelude.PartialEq.eq` is unregistered — this KB was \
+        self.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+            .expect(
+                "eq_functor: `anthill.prelude.PartialEq.eq` is unregistered — this KB was \
              never bootstrapped. Load into it (every load entry point bootstraps) or, \
              for a hand-built KB that never loads, call `load::register_prelude` first.",
-        )
+            )
     }
 
     /// The canonical unification functor — `anthill.kernel.unify`, the head an
@@ -6055,9 +6279,11 @@ impl KnowledgeBase {
         // (same functor symbol, `pos_arity == pos_args.len()`), and a value fact —
         // never `eq`-headed — falls through to `false` as it always should.
         match term_view::TermView::head(&entry.head, self) {
-            term_view::ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
-                self.is_equality_connective_functor(functor) && pos_arity == 2
-            }
+            term_view::ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                ..
+            } => self.is_equality_connective_functor(functor) && pos_arity == 2,
             _ => false,
         }
     }
@@ -6144,8 +6370,10 @@ impl KnowledgeBase {
             .iter()
             .any(|(_, v)| !matches!(v, crate::eval::value::Value::Term { .. }))
         {
-            let entries: Vec<(VarId, crate::eval::value::Value)> =
-                tree_subst.iter().map(|(v, val)| (*v, val.clone())).collect();
+            let entries: Vec<(VarId, crate::eval::value::Value)> = tree_subst
+                .iter()
+                .map(|(v, val)| (*v, val.clone()))
+                .collect();
             let mut norm = subst::Substitution::new();
             for (vid, val) in entries {
                 match val {
@@ -6172,9 +6400,7 @@ impl KnowledgeBase {
         if arity > 0 {
             // De Bruijn path: allocate N fresh vars, open DeBruijn to Global
             let name_sym = self.intern("_");
-            let fresh_vars: Vec<VarId> = (0..arity)
-                .map(|_| self.fresh_var(name_sym))
-                .collect();
+            let fresh_vars: Vec<VarId> = (0..arity).map(|_| self.fresh_var(name_sym)).collect();
 
             // Build answer_links (query var → fresh var) and body_rename
             // (fresh var → concrete value from head match).
@@ -6265,7 +6491,11 @@ impl KnowledgeBase {
             } else {
                 let mut out = Vec::with_capacity(opened_nodes.len());
                 for n in &opened_nodes {
-                    out.push(node_occurrence::substitute_occurrence(self, n, &body_rename));
+                    out.push(node_occurrence::substitute_occurrence(
+                        self,
+                        n,
+                        &body_rename,
+                    ));
                 }
                 out
             };
@@ -6438,7 +6668,10 @@ impl KnowledgeBase {
 
     /// Resolve a qualified name and return its short name (if defined).
     pub fn qualified_short_name(&self, name: &str) -> Option<&str> {
-        self.symbols.by_qualified_name.get(name).map(|&sym| self.symbols.local_name(sym))
+        self.symbols
+            .by_qualified_name
+            .get(name)
+            .map(|&sym| self.symbols.local_name(sym))
     }
 
     /// Allocate a nullary functor term from an already-interned symbol.
@@ -6473,7 +6706,11 @@ impl KnowledgeBase {
         mut named_args: SmallVec<[(Symbol, TermId); 2]>,
     ) -> TermId {
         self.canonicalize_record_named_args(functor, &mut named_args);
-        self.alloc(Term::Fn { functor, pos_args, named_args })
+        self.alloc(Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        })
     }
 
     // ── List construction ────────────────────────────────────────
@@ -6653,7 +6890,9 @@ impl KnowledgeBase {
     ) -> Rc<NodeOccurrence> {
         let fields_value = self.build_named_tuple_fields_value(fields);
         NodeOccurrence::new_type(
-            node_occurrence::TypeNode::NamedTuple { fields: fields_value },
+            node_occurrence::TypeNode::NamedTuple {
+                fields: fields_value,
+            },
             span,
             owner,
         )
@@ -6733,7 +6972,12 @@ impl KnowledgeBase {
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
         NodeOccurrence::new_type(
-            node_occurrence::TypeNode::Arrow { param, result, effects, arity },
+            node_occurrence::TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            },
             span,
             owner,
         )
@@ -6837,11 +7081,7 @@ impl KnowledgeBase {
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
-        NodeOccurrence::new_effect_expr(
-            node_occurrence::EffectExprNode::Open { tail },
-            span,
-            owner,
-        )
+        NodeOccurrence::new_effect_expr(node_occurrence::EffectExprNode::Open { tail }, span, owner)
     }
 
     /// EffectExpression `empty_row` carried as an occurrence.
@@ -6855,20 +7095,29 @@ impl KnowledgeBase {
 
     /// Convenience: sort_ref from a name string (resolves or interns the name).
     pub fn make_sort_ref_by_name(&mut self, name: &str) -> TermId {
-        let sym = if let Some(s) = self.try_resolve_symbol(name) { s } else { self.intern(name) };
+        let sym = if let Some(s) = self.try_resolve_symbol(name) {
+            s
+        } else {
+            self.intern(name)
+        };
         self.make_sort_ref(sym)
     }
 
     /// `parameterized(base: <type>, bindings: List[TypeBinding])`.
-    pub fn make_parameterized_type(&mut self, base: TermId, bindings: &[(Symbol, TermId)]) -> TermId {
+    pub fn make_parameterized_type(
+        &mut self,
+        base: TermId,
+        bindings: &[(Symbol, TermId)],
+    ) -> TermId {
         // WI-361 producer flip: term-backed — the base sort IS the functor and the
         // bindings ARE the named args (`List[T = Int]` = `Fn{List, named:[(T, …)]}`),
         // with no `parameterized(base, bindings: List[TypeBinding])` wrapper. The base
         // sort is the discriminating functor (native `rules_by_functor`/discrim
         // selectivity, produced directly). `base` is a sort reference `Ref(S)` (post
         // make_sort_ref flip), read via the reader.
-        let base_sym = crate::kb::typing::extract_sort_ref_sym(self, &crate::kb::term_view::TermIdView(base))
-            .expect("make_parameterized_type: base must be a sort reference");
+        let base_sym =
+            crate::kb::typing::extract_sort_ref_sym(self, &crate::kb::term_view::TermIdView(base))
+                .expect("make_parameterized_type: base must be a sort reference");
         if bindings.is_empty() {
             // A parameterized type with no bindings IS the bare sort (`List[]` ≡
             // `List`) — emit `Ref(S)`, never a degenerate no-arg `Fn{S}` (which
@@ -6989,12 +7238,8 @@ impl KnowledgeBase {
     /// the soundness-preserving fallback (typically "reject the missing
     /// side" so the check returns false without claiming compatibility).
     pub fn try_make_empty_effects_rows(&mut self) -> Option<TermId> {
-        let empty_sym = self.try_resolve_symbol(
-            "anthill.prelude.EffectExpression.empty_row",
-        )?;
-        let rows_sym = self.try_resolve_symbol(
-            "anthill.prelude.TypeExtractor.EffectsRows",
-        )?;
+        let empty_sym = self.try_resolve_symbol("anthill.prelude.EffectExpression.empty_row")?;
+        let rows_sym = self.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")?;
         let empty = self.alloc(Term::Fn {
             functor: empty_sym,
             pos_args: SmallVec::new(),
@@ -7146,18 +7391,12 @@ impl KnowledgeBase {
         // sorted by display name with the wrapper applied so canonical
         // form is stable regardless of how each atom arrived.
         use crate::kb::term::Term;
-        let absent_sym = self.try_resolve_symbol(
-            "anthill.prelude.EffectExpression.absent",
-        );
-        let present_sym = self.try_resolve_symbol(
-            "anthill.prelude.EffectExpression.present",
-        );
+        let absent_sym = self.try_resolve_symbol("anthill.prelude.EffectExpression.absent");
+        let present_sym = self.try_resolve_symbol("anthill.prelude.EffectExpression.present");
         // WI-478: a `guarded(label, guard)` atom (a ground guarded effect) is, like
         // `present`/`absent`, already a complete EffectExpression atom — keep it
         // as-is rather than wrapping the whole `guarded(…)` Fn in `present(…)`.
-        let guarded_sym = self.try_resolve_symbol(
-            "anthill.prelude.EffectExpression.guarded",
-        );
+        let guarded_sym = self.try_resolve_symbol("anthill.prelude.EffectExpression.guarded");
         let mut atoms: Vec<TermId> = Vec::new();
         // WI-441: ALL row-tail Vars are collected — a row UNION (`{ES, EF}`,
         // the lazy combinators' merge row) folds each as its own `open(…)`.
@@ -7366,13 +7605,16 @@ impl KnowledgeBase {
         let name_key = self.intern("name");
         let type_key = self.intern("type");
 
-        let field_terms: Vec<TermId> = fields.iter().map(|(field_name, field_type)| {
-            let name_ref = self.alloc(Term::Ref(*field_name));
-            let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-            args.push((name_key, name_ref));
-            args.push((type_key, *field_type));
-            self.make_entity_term(element_sym, SmallVec::new(), args)
-        }).collect();
+        let field_terms: Vec<TermId> = fields
+            .iter()
+            .map(|(field_name, field_type)| {
+                let name_ref = self.alloc(Term::Ref(*field_name));
+                let mut args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                args.push((name_key, name_ref));
+                args.push((type_key, *field_type));
+                self.make_entity_term(element_sym, SmallVec::new(), args)
+            })
+            .collect();
 
         let fields_list = self.build_list(&field_terms);
 
@@ -7437,12 +7679,19 @@ impl KnowledgeBase {
     /// field type is carrier-agnostic — a `denoted`-bearing field type (a
     /// value-in-type / dependent field) rides as `Value::Node`, a ground field
     /// type as `Value::Term`.
-    pub fn register_entity_field_types(&mut self, functor: Symbol, fields: Vec<(Symbol, crate::eval::value::Value)>) {
+    pub fn register_entity_field_types(
+        &mut self,
+        functor: Symbol,
+        fields: Vec<(Symbol, crate::eval::value::Value)>,
+    ) {
         self.entity_field_types.insert(functor, fields);
     }
 
     /// Look up the field types for an entity functor (carrier-agnostic `Value`).
-    pub fn entity_field_types(&self, functor: Symbol) -> Option<&[(Symbol, crate::eval::value::Value)]> {
+    pub fn entity_field_types(
+        &self,
+        functor: Symbol,
+    ) -> Option<&[(Symbol, crate::eval::value::Value)]> {
         self.entity_field_types.get(&functor).map(|v| v.as_slice())
     }
 
@@ -7574,7 +7823,8 @@ impl KnowledgeBase {
                     qualified_name
                 )
             };
-            self.symbols.define(short, qualified_name, SymbolKind::Operation, scope)
+            self.symbols
+                .define(short, qualified_name, SymbolKind::Operation, scope)
         };
         self.builtins.insert(sym, tag);
     }
@@ -7610,12 +7860,24 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.reflect.short_name", BuiltinTag::ShortName);
         self.register_builtin_tag("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
         self.register_builtin_tag("anthill.reflect.not", BuiltinTag::Not);
-        self.register_builtin_tag("anthill.reflect.typing.is_entity_of", BuiltinTag::IsEntityOf);
-        self.register_builtin_tag("anthill.reflect.typing.extract_sort_ref", BuiltinTag::ExtractSort);
+        self.register_builtin_tag(
+            "anthill.reflect.typing.is_entity_of",
+            BuiltinTag::IsEntityOf,
+        );
+        self.register_builtin_tag(
+            "anthill.reflect.typing.extract_sort_ref",
+            BuiltinTag::ExtractSort,
+        );
         // WI-860 (058 §3.6) — the provision classifier behind `self_provides` /
         // `default_provider`.
-        self.register_builtin_tag("anthill.reflect.typing.dispatch_carrier", BuiltinTag::DispatchCarrier);
-        self.register_builtin_tag("anthill.reflect.resolve_sort_instantiation_param", BuiltinTag::ResolveSortInstParam);
+        self.register_builtin_tag(
+            "anthill.reflect.typing.dispatch_carrier",
+            BuiltinTag::DispatchCarrier,
+        );
+        self.register_builtin_tag(
+            "anthill.reflect.resolve_sort_instantiation_param",
+            BuiltinTag::ResolveSortInstParam,
+        );
         self.register_builtin_tag("anthill.reflect.scope", BuiltinTag::Scope);
         self.register_builtin_tag("anthill.reflect.kind", BuiltinTag::Kind);
         self.register_builtin_tag("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
@@ -7708,10 +7970,22 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);
 
         // Occurrence builtins (stubs — full implementations in future phases)
-        self.register_builtin_tag("anthill.reflect.occurrence_term", BuiltinTag::OccurrenceTerm);
-        self.register_builtin_tag("anthill.reflect.occurrence_span", BuiltinTag::OccurrenceSpan);
-        self.register_builtin_tag("anthill.reflect.occurrence_owner", BuiltinTag::OccurrenceOwner);
-        self.register_builtin_tag("anthill.reflect.sub_occurrences", BuiltinTag::SubOccurrences);
+        self.register_builtin_tag(
+            "anthill.reflect.occurrence_term",
+            BuiltinTag::OccurrenceTerm,
+        );
+        self.register_builtin_tag(
+            "anthill.reflect.occurrence_span",
+            BuiltinTag::OccurrenceSpan,
+        );
+        self.register_builtin_tag(
+            "anthill.reflect.occurrence_owner",
+            BuiltinTag::OccurrenceOwner,
+        );
+        self.register_builtin_tag(
+            "anthill.reflect.sub_occurrences",
+            BuiltinTag::SubOccurrences,
+        );
         self.register_builtin_tag("anthill.reflect.operation_body", BuiltinTag::OperationBody);
         // WI-627: cache the equality-connective symbols now that they're defined.
         self.cache_connective_syms();
@@ -7727,8 +8001,12 @@ impl KnowledgeBase {
                 SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
                 SymbolDef::Unresolved { name } => name.clone(),
             };
-            let sym = self.symbols.by_qualified_name.get(&qualified)
-                .copied().unwrap_or(old_sym);
+            let sym = self
+                .symbols
+                .by_qualified_name
+                .get(&qualified)
+                .copied()
+                .unwrap_or(old_sym);
             self.builtins.insert(sym, tag);
         }
         // WI-627: a builtin's canonical symbol may have been remapped above;
@@ -7872,7 +8150,9 @@ impl KnowledgeBase {
     /// `Value::Node` occurrence goal (WI-246) is dispatched without lowering.
     pub fn get_builtin_view<V: term_view::TermView>(&self, goal: &V) -> Option<BuiltinTag> {
         match goal.head(self) {
-            term_view::ViewHead::Functor { functor: Some(sym), .. } => self.builtin_of(sym),
+            term_view::ViewHead::Functor {
+                functor: Some(sym), ..
+            } => self.builtin_of(sym),
             _ => None,
         }
     }
@@ -7907,8 +8187,8 @@ impl TermSource for KnowledgeBase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use term::Literal;
     use smallvec::SmallVec;
+    use term::Literal;
 
     // ── WI-969: a KB without the prelude ─────────────────────────
     //
@@ -7975,8 +8255,15 @@ mod tests {
         // erased, and the reason a bare `intern("eq")` found none of the loaded
         // `[simp]` equations.
         let eq = kb.eq_functor();
-        assert_eq!(Some(eq), kb.try_resolve_symbol("anthill.prelude.PartialEq.eq"));
-        assert_ne!(eq, kb.intern("eq"), "the qualified head and a bare `eq` must stay distinct");
+        assert_eq!(
+            Some(eq),
+            kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        );
+        assert_ne!(
+            eq,
+            kb.intern("eq"),
+            "the qualified head and a bare `eq` must stay distinct"
+        );
 
         let unify = kb.unify_functor();
         assert_eq!(Some(unify), kb.try_resolve_symbol("anthill.kernel.unify"));
@@ -7993,21 +8280,27 @@ mod tests {
         use term::Var;
         let mut kb = KnowledgeBase::new();
         let (vz, vw, vs, vfree, seven) = {
-            let z = kb.intern("z"); let vz = kb.fresh_var(z);
-            let w = kb.intern("w"); let vw = kb.fresh_var(w);
-            let s = kb.intern("s"); let vs = kb.fresh_var(s);
-            let fr = kb.intern("free"); let vfree = kb.fresh_var(fr);
+            let z = kb.intern("z");
+            let vz = kb.fresh_var(z);
+            let w = kb.intern("w");
+            let vw = kb.fresh_var(w);
+            let s = kb.intern("s");
+            let vs = kb.fresh_var(s);
+            let fr = kb.intern("free");
+            let vfree = kb.fresh_var(fr);
             let seven = kb.alloc(Term::Const(Literal::Int(7)));
             (vz, vw, vs, vfree, seven)
         };
         let mut subst = subst::Substitution::new();
-        subst.bindings.insert(vz, Value::Var(Var::Global(vw)));   // z → w
-        subst.bindings.insert(vw, Value::term(seven));            // w → 7
-        subst.bindings.insert(vs, Value::Var(Var::Global(vs)));   // s → s (cycle)
+        subst.bindings.insert(vz, Value::Var(Var::Global(vw))); // z → w
+        subst.bindings.insert(vw, Value::term(seven)); // w → 7
+        subst.bindings.insert(vs, Value::Var(Var::Global(vs))); // s → s (cycle)
 
         // z chases z → w → 7.
         match kb.reify_value(&Value::Var(Var::Global(vz)), &subst) {
-            Value::Term { id: t, .. } => assert!(matches!(kb.get_term(t), Term::Const(Literal::Int(7)))),
+            Value::Term { id: t, .. } => {
+                assert!(matches!(kb.get_term(t), Term::Const(Literal::Int(7))))
+            }
             other => panic!("z should chase to Int64(7), got {other:?}"),
         }
         // Self-binding terminates and returns the var.
@@ -8034,9 +8327,18 @@ mod tests {
         use term::Var;
         let mut kb = KnowledgeBase::new();
         let f = kb.intern("pair");
-        let a_vid = { let n = kb.intern("a"); kb.fresh_var(n) };
-        let v1 = { let n = kb.intern("v1"); kb.fresh_var(n) };
-        let v2 = { let n = kb.intern("v2"); kb.fresh_var(n) };
+        let a_vid = {
+            let n = kb.intern("a");
+            kb.fresh_var(n)
+        };
+        let v1 = {
+            let n = kb.intern("v1");
+            kb.fresh_var(n)
+        };
+        let v2 = {
+            let n = kb.intern("v2");
+            kb.fresh_var(n)
+        };
         let a_term = kb.alloc(Term::Var(Var::Global(a_vid)));
         let one = kb.alloc(Term::Const(Literal::Int(1)));
         let two = kb.alloc(Term::Const(Literal::Int(2)));
@@ -8059,7 +8361,9 @@ mod tests {
         // inner vars are resolved (before the fix these stayed `Var` leaves).
         let t = node_occurrence::value_to_term(&mut kb, &val).expect("answer lowers to a term");
         match kb.get_term(t).clone() {
-            Term::Fn { functor, pos_args, .. } => {
+            Term::Fn {
+                functor, pos_args, ..
+            } => {
                 assert_eq!(functor, f, "functor preserved");
                 assert!(
                     matches!(kb.get_term(pos_args[0]), Term::Const(Literal::Int(1))),
@@ -8197,8 +8501,14 @@ mod tests {
 
         // Retract removes it from the active indexes.
         kb.retract(rid);
-        assert!(kb.rules_by_functor(f_sym).is_empty(), "retracted value fact left in rules_by_functor");
-        assert!(kb.query_view(&query).is_empty(), "retracted value fact still queryable");
+        assert!(
+            kb.rules_by_functor(f_sym).is_empty(),
+            "retracted value fact left in rules_by_functor"
+        );
+        assert!(
+            kb.query_view(&query).is_empty(),
+            "retracted value fact still queryable"
+        );
     }
 
     #[test]
@@ -8319,7 +8629,11 @@ mod tests {
             ..resolve::ResolveConfig::default()
         };
         let solutions = kb.resolve(&[goal], &config);
-        assert_eq!(solutions.len(), 1, "the value fact must be found by the full resolver");
+        assert_eq!(
+            solutions.len(),
+            1,
+            "the value fact must be found by the full resolver"
+        );
 
         // ?x binds the Node *as a Value*, identity preserved through the answer
         // substitution — the carrier-agnostic substitution result.
@@ -8346,7 +8660,12 @@ mod tests {
             other => panic!("reify(?x) should yield the Node, got {other:?}"),
         }
         match kb.reify(goal, &subst) {
-            Value::Entity { functor, pos, named, .. } => {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+                ..
+            } => {
                 assert_eq!(functor, f_sym, "reify(vf(?x)) keeps the functor");
                 assert!(named.is_empty(), "vf has no named args");
                 match &pos[..] {
@@ -8413,7 +8732,11 @@ mod tests {
 
         // The dedup fingerprints the Node structure, so it keeps both — it does
         // NOT collapse them to one var key (the pre-WI-348 materialize-to-`TermId` bug).
-        assert_eq!(solutions.len(), 2, "distinct Node answers must NOT be deduped to one");
+        assert_eq!(
+            solutions.len(),
+            2,
+            "distinct Node answers must NOT be deduped to one"
+        );
 
         let nodes: Vec<_> = solutions
             .iter()
@@ -8471,12 +8794,18 @@ mod tests {
         let h1b = entity_head(&mut kb, "c1");
         if let (Value::Entity { pos: p1, .. }, Value::Entity { pos: p2, .. }) = (&h1a, &h1b) {
             if let (Value::Node(o1), Value::Node(o2)) = (&p1[0], &p2[0]) {
-                assert!(!Rc::ptr_eq(o1, o2), "the two child occurrences are distinct Rc allocations");
+                assert!(
+                    !Rc::ptr_eq(o1, o2),
+                    "the two child occurrences are distinct Rc allocations"
+                );
             }
         }
         let r1 = kb.assert_fact_value(h1a, sort, domain, None);
         let r2 = kb.assert_fact_value(h1b, sort, domain, None);
-        assert_eq!(r1, r2, "structurally-identical Entity heads must dedup to one RuleEntry");
+        assert_eq!(
+            r1, r2,
+            "structurally-identical Entity heads must dedup to one RuleEntry"
+        );
 
         // (2) A structurally-distinct head gets its own RuleId (no over-dedup) —
         //     the invariant `value_fact_dedup_keeps_distinct_node_answers` guards
@@ -8491,7 +8820,10 @@ mod tests {
         kb.retract(r1);
         let h3 = entity_head(&mut kb, "c1");
         let r4 = kb.assert_fact_value(h3, sort, domain, None);
-        assert_ne!(r1, r4, "re-assert after retract allocates a fresh RuleEntry");
+        assert_ne!(
+            r1, r4,
+            "re-assert after retract allocates a fresh RuleEntry"
+        );
         // …and re-asserting that revived head once more dedups to it.
         let h4 = entity_head(&mut kb, "c1");
         let r5 = kb.assert_fact_value(h4, sort, domain, None);
@@ -8552,7 +8884,12 @@ mod tests {
     /// a `FactRef` locates its row by a private slot index with no `Value` carrier
     /// at all. So this subject is opaque by NATURE, not by omission — the property
     /// these tests need and the one `SetLit` and `OpRef` both lacked.
-    fn wi815_head(kb: &mut KnowledgeBase, functor: Symbol, n: i64, opaque: bool) -> crate::eval::value::Value {
+    fn wi815_head(
+        kb: &mut KnowledgeBase,
+        functor: Symbol,
+        n: i64,
+        opaque: bool,
+    ) -> crate::eval::value::Value {
         use crate::kb::node_occurrence::{Expr, NodeOccurrence};
         use crate::kb::term::Literal;
         use crate::span::{SourceId, SourceSpan};
@@ -8688,8 +9025,14 @@ mod tests {
         let h2 = wi815_head(&mut kb, f_sym, 2, true);
         let k1 = term_view::goal_fingerprint(&kb, &h1, &sigma);
         let k2 = term_view::goal_fingerprint(&kb, &h2, &sigma);
-        assert_eq!(k1, k2, "an Opaque child erases the difference — this is the hazard");
-        assert!(!k1.is_opaque_free(), "so the key is lossy and must not be used");
+        assert_eq!(
+            k1, k2,
+            "an Opaque child erases the difference — this is the hazard"
+        );
+        assert!(
+            !k1.is_opaque_free(),
+            "so the key is lossy and must not be used"
+        );
 
         // (2) THE GUARD: `value_fact_dedup_key` therefore answers `None` for both,
         //     which is what keeps the shared key from ever reaching the index.
@@ -8755,8 +9098,8 @@ mod tests {
         let domain = kb.intern("test");
         let kind = ClauseKind::Fact;
         let sigma = subst::Substitution::new();
-        let lit = |kb: &mut KnowledgeBase, n: i64| {
-            Value::Term { id: kb.alloc(Term::Const(crate::kb::term::Literal::Int(n))) }
+        let lit = |kb: &mut KnowledgeBase, n: i64| Value::Term {
+            id: kb.alloc(Term::Const(crate::kb::term::Literal::Int(n))),
         };
 
         // (1) ORDER. `(x: 1, y: 2)` and `(y: 2, x: 1)` are two different tuples.
@@ -8807,10 +9150,16 @@ mod tests {
         let g1 = tuple(vec![(d, one.clone()), (d, two.clone())]);
         let g2 = tuple(vec![(d, one.clone()), (d, three.clone())]);
         let kg1 = term_view::goal_fingerprint(&kb, &g1, &sigma);
-        assert!(!kg1.is_opaque_free(), "a repeated label makes the key unusable");
+        assert!(
+            !kg1.is_opaque_free(),
+            "a repeated label makes the key unusable"
+        );
         let q1 = kb.assert_fact_value(g1, kind, domain, None);
         let q2 = kb.assert_fact_value(g2, kind, domain, None);
-        assert_ne!(q1, q2, "duplicate-label heads must not collapse into one fact");
+        assert_ne!(
+            q1, q2,
+            "duplicate-label heads must not collapse into one fact"
+        );
 
         // (3) ANONYMOUS FUNCTOR. `Value::Unit` and an EMPTY `Value::Tuple` both head
         //     as `Functor{None, 0, 0}` and key as one payload-BEARING token
@@ -8828,7 +9177,10 @@ mod tests {
             term_view::goal_fingerprint(&kb, &empty_tuple, &sigma),
             "Unit and an empty Tuple are indistinguishable through the view — the hazard",
         );
-        assert!(unit_key.is_opaque_free(), "and opaque-freedom cannot see it");
+        assert!(
+            unit_key.is_opaque_free(),
+            "and opaque-freedom cannot see it"
+        );
         assert!(
             kb.value_fact_dedup_key(&Value::Unit).is_none()
                 && kb.value_fact_dedup_key(&empty_tuple).is_none(),
@@ -8871,7 +9223,8 @@ mod tests {
         // THE PRECONDITION, asserted rather than assumed — this test measures
         // nothing if the KB happens to intern both names.
         assert!(
-            kb.try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried").is_some(),
+            kb.try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried")
+                .is_some(),
             "the head must really announce a functor with arity 2",
         );
         assert!(kb.lookup_symbol("value").is_some(), "`value` is interned");
@@ -8909,7 +9262,10 @@ mod tests {
             !ka.is_opaque_free(),
             "a head promising more named children than the view supplies must degrade",
         );
-        assert!(kb.value_fact_dedup_key(&a).is_none(), "and fact dedup must refuse it");
+        assert!(
+            kb.value_fact_dedup_key(&a).is_none(),
+            "and fact dedup must refuse it"
+        );
     }
 
     /// WI-815 — ONE OCCURRENCE, THREE CARRIERS, ONE KEY. A `Spliced` leaf carries a
@@ -9022,12 +9378,10 @@ mod tests {
         kb.assert_fact_value(Value::Term { id: head }, ClauseKind::Fact, domain, None);
 
         let config = resolve::ResolveConfig::default();
-        let query = |sym: Symbol| {
-            Value::Entity {
-                functor: p,
-                pos: Rc::from(vec![Value::SymbolRef(sym)]),
-                named: Rc::from(Vec::<(Symbol, Value)>::new()),
-            }
+        let query = |sym: Symbol| Value::Entity {
+            functor: p,
+            pos: Rc::from(vec![Value::SymbolRef(sym)]),
+            named: Rc::from(Vec::<(Symbol, Value)>::new()),
         };
 
         // (1) A goal carrying the symbol as `Value::SymbolRef` MATCHES the fact
@@ -9057,7 +9411,8 @@ mod tests {
         // (3) …and it lowers back to exactly that `TermId` — hash-consing makes
         //     this an identity check, not a structural one.
         assert_eq!(
-            kb.alloc_from_value(&Value::SymbolRef(foo)).expect("SymbolRef lowers"),
+            kb.alloc_from_value(&Value::SymbolRef(foo))
+                .expect("SymbolRef lowers"),
             foo_ref,
             "the round-trip is lossless: SymbolRef(s) → Term::Ref(s)",
         );
@@ -9128,7 +9483,10 @@ mod tests {
         let vh2 = wi815_head(&mut kb, f, 1, false);
         let r_value2 = kb.assert_fact_value(vh2, kind, domain, None);
         assert_eq!(r_term, r_term2, "Term heads still dedup among themselves");
-        assert_eq!(r_value, r_value2, "value heads still dedup among themselves");
+        assert_eq!(
+            r_value, r_value2,
+            "value heads still dedup among themselves"
+        );
     }
 
     /// WI-815 — WHY THE LOSSY-KEY GUARD CANNOT BE DRIVEN AT THE FACT LEVEL, pinned
@@ -9215,11 +9573,24 @@ mod tests {
 
         // Carrier-neutral core: a `Value::Node` operand resolves with NO reification
         // — the whole point of WI-697.
-        let zero_node = Value::Node(crate::kb::node_occurrence::materialize_from_handle(&kb, zero));
-        let nat_node = Value::Node(crate::kb::node_occurrence::materialize_from_handle(&kb, nat));
-        assert!(kb.is_entity_of_view(&zero_node, &Value::term(nat)), "Node sub ⊳ Term sup");
-        assert!(kb.is_entity_of_view(&zero_node, &nat_node), "Node sub ⊳ Node sup");
-        assert!(!kb.is_entity_of_view(&nat_node, &zero_node), "Node Nat ⋫ Node zero");
+        let zero_node = Value::Node(crate::kb::node_occurrence::materialize_from_handle(
+            &kb, zero,
+        ));
+        let nat_node = Value::Node(crate::kb::node_occurrence::materialize_from_handle(
+            &kb, nat,
+        ));
+        assert!(
+            kb.is_entity_of_view(&zero_node, &Value::term(nat)),
+            "Node sub ⊳ Term sup"
+        );
+        assert!(
+            kb.is_entity_of_view(&zero_node, &nat_node),
+            "Node sub ⊳ Node sup"
+        );
+        assert!(
+            !kb.is_entity_of_view(&nat_node, &zero_node),
+            "Node Nat ⋫ Node zero"
+        );
 
         // Cross-spelling: register `succ` as the pre-canon `Fn{succ}`; a post-canon
         // `Ref(succ)` (WI-511 alloc canon, gated on is_constructor_symbol) query
@@ -9227,7 +9598,10 @@ mod tests {
         let succ_fn = kb.make_name_term("succ"); // Fn{succ} (succ not a ctor yet)
         kb.register_entity_of(succ_fn, nat); // now succ IS a constructor
         let succ_ref = kb.make_name_term("succ"); // alloc canonicalizes Fn{succ} → Ref(succ)
-        assert_ne!(succ_fn, succ_ref, "the two spellings must be distinct TermIds");
+        assert_ne!(
+            succ_fn, succ_ref,
+            "the two spellings must be distinct TermIds"
+        );
         assert!(kb.is_entity_of(succ_fn, nat), "Fn{{succ}} spelling");
         assert!(kb.is_entity_of(succ_ref, nat), "Ref(succ) spelling");
 
@@ -9244,8 +9618,14 @@ mod tests {
             pos_args: smallvec::SmallVec::from_elem(nat, 1),
             named_args: smallvec::SmallVec::new(),
         });
-        assert!(kb.is_entity_of(box_zero, box_zero), "structurally identical");
-        assert!(!kb.is_entity_of(box_zero, box_nat), "same head, diff args ⇒ not equal");
+        assert!(
+            kb.is_entity_of(box_zero, box_zero),
+            "structurally identical"
+        );
+        assert!(
+            !kb.is_entity_of(box_zero, box_nat),
+            "same head, diff args ⇒ not equal"
+        );
 
         // Nullary gate: an APPLIED constructor `succ(zero)` is NOT an entity of its
         // sort — the parent lookup fires only for a bare constructor identity, as
@@ -9256,7 +9636,10 @@ mod tests {
             pos_args: smallvec::SmallVec::from_elem(zero, 1),
             named_args: smallvec::SmallVec::new(),
         });
-        assert!(!kb.is_entity_of(succ_applied, nat), "applied succ(zero) ⋫ Nat (nullary-gated)");
+        assert!(
+            !kb.is_entity_of(succ_applied, nat),
+            "applied succ(zero) ⋫ Nat (nullary-gated)"
+        );
     }
 
     #[test]
@@ -9425,7 +9808,11 @@ mod tests {
 
         // Closure: collect the var inside the Node + close to De Bruijn + index.
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
-        assert_eq!(kb.rule_arity(rid), 1, "?x inside the Node is the rule's one var");
+        assert_eq!(
+            kb.rule_arity(rid),
+            1,
+            "?x inside the Node is the rule's one var"
+        );
 
         // Discoverable by a query on its functor (gap-2 keying).
         let yv = kb.fresh_var(vf);
@@ -9474,7 +9861,9 @@ mod tests {
         // Fact thing("active").
         let active = kb.alloc(Term::Const(Literal::String("active".into())));
         let thing_active = kb.alloc(Term::Fn {
-            functor: thing, pos_args: SmallVec::from_elem(active, 1), named_args: SmallVec::new(),
+            functor: thing,
+            pos_args: SmallVec::from_elem(active, 1),
+            named_args: SmallVec::new(),
         });
         kb.assert_fact(thing_active, sort, domain, None);
 
@@ -9482,7 +9871,9 @@ mod tests {
         let xv = kb.fresh_var(vf);
         let xt = kb.alloc(Term::Var(Var::Global(xv)));
         let g_x = kb.alloc(Term::Fn {
-            functor: g, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: g,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let g_occ = node_occurrence::materialize_from_handle(&kb, g_x);
         let head = Value::Entity {
@@ -9491,7 +9882,9 @@ mod tests {
             named: Rc::from(Vec::<(Symbol, Value)>::new()),
         };
         let thing_x = kb.alloc(Term::Fn {
-            functor: thing, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: thing,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[thing_x]);
         kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
@@ -9502,34 +9895,62 @@ mod tests {
         let yv = kb.fresh_var(vf);
         let yt = kb.alloc(Term::Var(Var::Global(yv)));
         let g_y = kb.alloc(Term::Fn {
-            functor: g, pos_args: SmallVec::from_elem(yt, 1), named_args: SmallVec::new(),
+            functor: g,
+            pos_args: SmallVec::from_elem(yt, 1),
+            named_args: SmallVec::new(),
         });
         let q_var = kb.alloc(Term::Fn {
-            functor: vf, pos_args: SmallVec::from_elem(g_y, 1), named_args: SmallVec::new(),
+            functor: vf,
+            pos_args: SmallVec::from_elem(g_y, 1),
+            named_args: SmallVec::new(),
         });
         let sols = kb.resolve(&[q_var], &config);
-        assert_eq!(sols.len(), 1, "vf(g(?y)) should resolve through the value rule head");
+        assert_eq!(
+            sols.len(),
+            1,
+            "vf(g(?y)) should resolve through the value rule head"
+        );
         let bound = kb.reify(yt, &sols[0].subst).expect_term();
-        assert_eq!(bound, active, "nested ?y must bind to \"active\", got {:?}", bound);
+        assert_eq!(
+            bound, active,
+            "nested ?y must bind to \"active\", got {:?}",
+            bound
+        );
 
         // Query vf(g("active")) → succeeds (body thing("active") holds).
         let g_active = kb.alloc(Term::Fn {
-            functor: g, pos_args: SmallVec::from_elem(active, 1), named_args: SmallVec::new(),
+            functor: g,
+            pos_args: SmallVec::from_elem(active, 1),
+            named_args: SmallVec::new(),
         });
         let q_ok = kb.alloc(Term::Fn {
-            functor: vf, pos_args: SmallVec::from_elem(g_active, 1), named_args: SmallVec::new(),
+            functor: vf,
+            pos_args: SmallVec::from_elem(g_active, 1),
+            named_args: SmallVec::new(),
         });
-        assert_eq!(kb.resolve(&[q_ok], &config).len(), 1, "vf(g(\"active\")) should hold");
+        assert_eq!(
+            kb.resolve(&[q_ok], &config).len(),
+            1,
+            "vf(g(\"active\")) should hold"
+        );
 
         // Query vf(g("missing")) → fails (no thing("missing")).
         let missing = kb.alloc(Term::Const(Literal::String("missing".into())));
         let g_missing = kb.alloc(Term::Fn {
-            functor: g, pos_args: SmallVec::from_elem(missing, 1), named_args: SmallVec::new(),
+            functor: g,
+            pos_args: SmallVec::from_elem(missing, 1),
+            named_args: SmallVec::new(),
         });
         let q_no = kb.alloc(Term::Fn {
-            functor: vf, pos_args: SmallVec::from_elem(g_missing, 1), named_args: SmallVec::new(),
+            functor: vf,
+            pos_args: SmallVec::from_elem(g_missing, 1),
+            named_args: SmallVec::new(),
         });
-        assert_eq!(kb.resolve(&[q_no], &config).len(), 0, "vf(g(\"missing\")) should fail");
+        assert_eq!(
+            kb.resolve(&[q_no], &config).len(),
+            0,
+            "vf(g(\"missing\")) should fail"
+        );
     }
 
     #[test]
@@ -9554,10 +9975,14 @@ mod tests {
         let xv = kb.fresh_var(p);
         let xt = kb.alloc(Term::Var(Var::Global(xv)));
         let head = kb.alloc(Term::Fn {
-            functor: p, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: p,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_q = kb.alloc(Term::Fn {
-            functor: q, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: q,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
@@ -9574,7 +9999,9 @@ mod tests {
         let body_term = node_occurrence::occurrence_to_term(&mut kb, &fresh_nodes[0]);
         let five = kb.alloc(Term::Const(Literal::Int(5)));
         let expected = kb.alloc(Term::Fn {
-            functor: q, pos_args: SmallVec::from_elem(five, 1), named_args: SmallVec::new(),
+            functor: q,
+            pos_args: SmallVec::from_elem(five, 1),
+            named_args: SmallVec::new(),
         });
         assert_eq!(
             body_term, expected,
@@ -9605,10 +10032,14 @@ mod tests {
         let xv = kb.fresh_var(p);
         let xt = kb.alloc(Term::Var(Var::Global(xv)));
         let head = kb.alloc(Term::Fn {
-            functor: p, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: p,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_q = kb.alloc(Term::Fn {
-            functor: q, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: q,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
@@ -9622,19 +10053,29 @@ mod tests {
         tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), entity);
 
         let (fresh_nodes, links) = kb.with_fresh_vars(rid, &tree_subst);
-        assert!(!links.is_contradiction(), "a reifiable Entity must NOT drop the candidate");
+        assert!(
+            !links.is_contradiction(),
+            "a reifiable Entity must NOT drop the candidate"
+        );
         assert_eq!(fresh_nodes.len(), 1);
 
         let body_term = node_occurrence::occurrence_to_term(&mut kb, &fresh_nodes[0]);
         let one = kb.alloc(Term::Const(Literal::Int(1)));
         let two = kb.alloc(Term::Const(Literal::Int(2)));
         let mk_12 = kb.alloc(Term::Fn {
-            functor: mk, pos_args: SmallVec::from_slice(&[one, two]), named_args: SmallVec::new(),
+            functor: mk,
+            pos_args: SmallVec::from_slice(&[one, two]),
+            named_args: SmallVec::new(),
         });
         let expected = kb.alloc(Term::Fn {
-            functor: q, pos_args: SmallVec::from_elem(mk_12, 1), named_args: SmallVec::new(),
+            functor: q,
+            pos_args: SmallVec::from_elem(mk_12, 1),
+            named_args: SmallVec::new(),
         });
-        assert_eq!(body_term, expected, "Entity with scalar children must reify into the body");
+        assert_eq!(
+            body_term, expected,
+            "Entity with scalar children must reify into the body"
+        );
     }
 
     #[test]
@@ -9661,10 +10102,14 @@ mod tests {
         let xv = kb.fresh_var(p);
         let xt = kb.alloc(Term::Var(Var::Global(xv)));
         let head = kb.alloc(Term::Fn {
-            functor: p, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: p,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_q = kb.alloc(Term::Fn {
-            functor: q, pos_args: SmallVec::from_elem(xt, 1), named_args: SmallVec::new(),
+            functor: q,
+            pos_args: SmallVec::from_elem(xt, 1),
+            named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
@@ -9688,7 +10133,10 @@ mod tests {
             links.is_contradiction(),
             "an un-reifiable carrier must drop the candidate (contradiction), not panic/leak",
         );
-        assert!(fresh_nodes.is_empty(), "dropped candidate yields no body nodes");
+        assert!(
+            fresh_nodes.is_empty(),
+            "dropped candidate yields no body nodes"
+        );
     }
 
     #[test]
@@ -9713,7 +10161,9 @@ mod tests {
 
         // Fact `marker` + rule `pr(?a, ?b) :- marker` (arity 2 → De Bruijn path).
         let marker_t = kb.alloc(Term::Fn {
-            functor: marker, pos_args: SmallVec::new(), named_args: SmallVec::new(),
+            functor: marker,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
         });
         kb.assert_fact(marker_t, sort, domain, None);
         let av = kb.fresh_var(pr);
@@ -9721,7 +10171,9 @@ mod tests {
         let bv = kb.fresh_var(pr);
         let bt = kb.alloc(Term::Var(Var::Global(bv)));
         let head = kb.alloc(Term::Fn {
-            functor: pr, pos_args: SmallVec::from_slice(&[at, bt]), named_args: SmallVec::new(),
+            functor: pr,
+            pos_args: SmallVec::from_slice(&[at, bt]),
+            named_args: SmallVec::new(),
         });
         let body_nodes = kb.term_body_to_nodes(&[marker_t]);
         kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
@@ -9782,7 +10234,10 @@ mod tests {
         let target = kb.alloc(Term::Const(Literal::Int(42)));
 
         let s = kb.match_term(var_term, target).expect("should match");
-        assert_eq!(s.resolve_as_value(vid).map(|v| v.expect_term()), Some(target));
+        assert_eq!(
+            s.resolve_as_value(vid).map(|v| v.expect_term()),
+            Some(target)
+        );
     }
 
     #[test]
@@ -9929,7 +10384,8 @@ mod tests {
             named: Vec::new().into(),
         };
 
-        let subst = kb.match_view(pattern, &value_target)
+        let subst = kb
+            .match_view(pattern, &value_target)
             .expect("match should succeed");
         // ?x's binding is the Value (not a TermId) — lineage preserved.
         match subst.resolve_as_value(xv) {
@@ -9937,7 +10393,10 @@ mod tests {
             other => panic!("expected Value::Str, got {other:?}"),
         }
         // resolve() returns None because the binding isn't a TermId.
-        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term { .. })));
+        assert!(!matches!(
+            subst.resolve_as_value(xv),
+            Some(Value::Term { .. })
+        ));
     }
 
     #[test]
@@ -9980,7 +10439,8 @@ mod tests {
 
         // One-directional `match_view_oneway`: the target var is inert → no match.
         assert!(
-            kb.match_view_oneway(pattern, &term_view::TermIdView(target)).is_none(),
+            kb.match_view_oneway(pattern, &term_view::TermIdView(target))
+                .is_none(),
             "match_view_oneway must NOT bind a target var (the hypothesis-discharge break)",
         );
     }
@@ -10018,7 +10478,11 @@ mod tests {
             pos: Vec::new().into(),
             named: vec![(a_field, Value::Int(1)), (b_field, Value::Str("hi".into()))].into(),
         };
-        let leaf_val = Value::Entity { functor: leaf, pos: Vec::new().into(), named: Vec::new().into() };
+        let leaf_val = Value::Entity {
+            functor: leaf,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        };
         let nested_tuple = Value::Tuple {
             pos: vec![Value::Int(2), leaf_val.clone()].into(),
             named: Vec::new().into(),
@@ -10029,16 +10493,20 @@ mod tests {
             named: Vec::new().into(),
         };
 
-        let subst = kb.match_view(pattern, &target).expect("match should succeed");
+        let subst = kb
+            .match_view(pattern, &target)
+            .expect("match should succeed");
 
         match subst.resolve_as_value(xv) {
             Some(Value::Entity { functor, named, .. }) => {
                 assert_eq!(*functor, inner);
                 assert_eq!(named.len(), 2);
-                assert!(named.iter().any(|(k, v)|
-                    *k == a_field && matches!(v, Value::Int(1))));
-                assert!(named.iter().any(|(k, v)|
-                    *k == b_field && matches!(v, Value::Str(s) if s == "hi")));
+                assert!(named
+                    .iter()
+                    .any(|(k, v)| *k == a_field && matches!(v, Value::Int(1))));
+                assert!(named
+                    .iter()
+                    .any(|(k, v)| *k == b_field && matches!(v, Value::Str(s) if s == "hi")));
             }
             other => panic!("expected Value::Entity(Inner) for ?x, got {other:?}"),
         }
@@ -10056,8 +10524,14 @@ mod tests {
         }
 
         // Both variables bind to non-Term Values → resolve() returns None.
-        assert!(!matches!(subst.resolve_as_value(xv), Some(Value::Term { .. })));
-        assert!(!matches!(subst.resolve_as_value(yv), Some(Value::Term { .. })));
+        assert!(!matches!(
+            subst.resolve_as_value(xv),
+            Some(Value::Term { .. })
+        ));
+        assert!(!matches!(
+            subst.resolve_as_value(yv),
+            Some(Value::Term { .. })
+        ));
     }
 
     #[test]
@@ -10102,25 +10576,39 @@ mod tests {
         );
         let target = Value::Node(add_occ);
 
-        let subst = kb.match_view(pattern, &target).expect("match should succeed");
+        let subst = kb
+            .match_view(pattern, &target)
+            .expect("match should succeed");
 
         match subst.resolve_as_value(av) {
             Some(Value::Node(occ)) => {
                 assert!(matches!(occ.as_expr(), Some(Expr::Const(Literal::Int(1)))));
-                assert!(Rc::ptr_eq(&occ, &child_a), "?a should bind the same Rc child");
+                assert!(
+                    Rc::ptr_eq(&occ, &child_a),
+                    "?a should bind the same Rc child"
+                );
             }
             other => panic!("expected Value::Node for ?a, got {other:?}"),
         }
         match subst.resolve_as_value(bv) {
             Some(Value::Node(occ)) => {
                 assert!(matches!(occ.as_expr(), Some(Expr::Const(Literal::Int(2)))));
-                assert!(Rc::ptr_eq(&occ, &child_b), "?b should bind the same Rc child");
+                assert!(
+                    Rc::ptr_eq(&occ, &child_b),
+                    "?b should bind the same Rc child"
+                );
             }
             other => panic!("expected Value::Node for ?b, got {other:?}"),
         }
         // Non-Term bindings → narrowing to a term returns None (lineage preserved).
-        assert!(!matches!(subst.resolve_as_value(av), Some(Value::Term { .. })));
-        assert!(!matches!(subst.resolve_as_value(bv), Some(Value::Term { .. })));
+        assert!(!matches!(
+            subst.resolve_as_value(av),
+            Some(Value::Term { .. })
+        ));
+        assert!(!matches!(
+            subst.resolve_as_value(bv),
+            Some(Value::Term { .. })
+        ));
     }
 
     #[test]
@@ -10205,21 +10693,38 @@ mod tests {
         let head = arrow_occ.head(&kb);
         assert_eq!(functor_of(&head), Some(arrow_sym));
         assert!(
-            matches!(head, ViewHead::Functor { named_arity: 4, pos_arity: 0, .. }),
+            matches!(
+                head,
+                ViewHead::Functor {
+                    named_arity: 4,
+                    pos_arity: 0,
+                    ..
+                }
+            ),
             "arrow exposes param/result/effects + the WI-791 arity, got {head:?}",
         );
 
         // arrow.param / arrow.result are ground (no denoted) → hash-consed Terms.
         let p = arrow_occ.named_arg(&kb, param_key).expect("arrow.param");
-        assert!(matches!(p, ViewItem::Term(t) if t == param_ty), "param ground, got {p:?}");
+        assert!(
+            matches!(p, ViewItem::Term(t) if t == param_ty),
+            "param ground, got {p:?}"
+        );
         let r = arrow_occ.named_arg(&kb, result_key).expect("arrow.result");
-        assert!(matches!(r, ViewItem::Term(t) if t == result_ty), "result ground, got {r:?}");
+        assert!(
+            matches!(r, ViewItem::Term(t) if t == result_ty),
+            "result ground, got {r:?}"
+        );
 
         // Walk the poisoned spine through `TermView`, functor by functor.
-        let eff = arrow_occ.named_arg(&kb, effects_key).expect("arrow.effects");
+        let eff = arrow_occ
+            .named_arg(&kb, effects_key)
+            .expect("arrow.effects");
         assert_eq!(functor_of(&eff.head(&kb)), Some(effects_rows_sym));
 
-        let merge_v = eff.named_arg(&kb, effects_expr_key).expect("effects_rows.effects_expr");
+        let merge_v = eff
+            .named_arg(&kb, effects_expr_key)
+            .expect("effects_rows.effects_expr");
         assert_eq!(functor_of(&merge_v.head(&kb)), Some(merge_sym));
 
         // merge.left is poisoned (Node → absent); merge.right is the ground
@@ -10239,7 +10744,14 @@ mod tests {
         // and its `Term::Fn` twin identically.
         assert_eq!(functor_of(&paramd.head(&kb)), Some(modify_sym));
         assert!(
-            matches!(paramd.head(&kb), ViewHead::Functor { named_arity: 1, pos_arity: 0, .. }),
+            matches!(
+                paramd.head(&kb),
+                ViewHead::Functor {
+                    named_arity: 1,
+                    pos_arity: 0,
+                    ..
+                }
+            ),
             "parameterized exposes its single binding T as a named arg, got {:?}",
             paramd.head(&kb),
         );
@@ -10247,20 +10759,27 @@ mod tests {
         // The binding value `T = denoted(c)` is reached as the named arg `T`,
         // carrying the identity-bearing occurrence (the poison source) — not a
         // hash-consed Term.
-        let t_arg = paramd.named_arg(&kb, t_sym).expect("parameterized.T binding");
+        let t_arg = paramd
+            .named_arg(&kb, t_sym)
+            .expect("parameterized.T binding");
         let ViewItem::Node(denoted_seen) = &t_arg else {
             panic!("binding value is the poisoned denoted Node, got {t_arg:?}");
         };
-        assert!(Rc::ptr_eq(denoted_seen, &denoted_occ), "denoted Rc identity preserved");
+        assert!(
+            Rc::ptr_eq(denoted_seen, &denoted_occ),
+            "denoted Rc identity preserved"
+        );
 
         // Storage is unchanged (`TypeNode::Parameterized { base, bindings }`); the
         // Rc identity of the carrier occurrence is preserved through the view.
         let ViewItem::Node(param_seen) = &paramd else {
             panic!("parameterized read as a Node occurrence, got {paramd:?}");
         };
-        assert!(Rc::ptr_eq(param_seen, &param_occ), "view preserves Rc identity");
-        let TypeNode::Denoted { value } =
-            denoted_seen.as_type().expect("denoted is a Type node")
+        assert!(
+            Rc::ptr_eq(param_seen, &param_occ),
+            "view preserves Rc identity"
+        );
+        let TypeNode::Denoted { value } = denoted_seen.as_type().expect("denoted is a Type node")
         else {
             panic!("expected Denoted");
         };
@@ -10303,10 +10822,18 @@ mod tests {
         });
 
         let via_term = kb.match_term(pattern, target).expect("match_term");
-        let via_view = kb.match_view(pattern, &TermIdView(target)).expect("match_view");
+        let via_view = kb
+            .match_view(pattern, &TermIdView(target))
+            .expect("match_view");
 
-        assert_eq!(via_term.resolve_as_value(xv).map(|v| v.expect_term()), via_view.resolve_as_value(xv).map(|v| v.expect_term()));
-        assert_eq!(via_term.resolve_as_value(xv).map(|v| v.expect_term()), Some(a));
+        assert_eq!(
+            via_term.resolve_as_value(xv).map(|v| v.expect_term()),
+            via_view.resolve_as_value(xv).map(|v| v.expect_term())
+        );
+        assert_eq!(
+            via_term.resolve_as_value(xv).map(|v| v.expect_term()),
+            Some(a)
+        );
     }
 
     #[test]
@@ -10325,7 +10852,9 @@ mod tests {
 
         let result = kb.subst_term(option_t, t, int);
         match kb.get_term(result) {
-            Term::Fn { functor, pos_args, .. } => {
+            Term::Fn {
+                functor, pos_args, ..
+            } => {
                 assert_eq!(*functor, option_sym);
                 assert_eq!(pos_args.len(), 1);
                 assert_eq!(pos_args[0], int);
@@ -10411,7 +10940,10 @@ mod tests {
         let results = kb.query_view(&pattern);
         assert_eq!(results.len(), 1);
         let (_, ref s) = results[0];
-        assert_eq!(s.resolve_as_value(vid).map(|v| v.expect_term()), Some(alice));
+        assert_eq!(
+            s.resolve_as_value(vid).map(|v| v.expect_term()),
+            Some(alice)
+        );
     }
 
     #[test]
@@ -10458,10 +10990,17 @@ mod tests {
         let node_hits = kb.query_view(&Value::Node(occ));
 
         assert_eq!(node_hits.len(), 1, "Value::Node goal matches one fact");
-        assert_eq!(node_hits.len(), term_hits.len(), "same candidate count as TermId goal");
+        assert_eq!(
+            node_hits.len(),
+            term_hits.len(),
+            "same candidate count as TermId goal"
+        );
         assert_eq!(node_hits[0].0, term_hits[0].0, "same matched rule/fact");
         assert_eq!(
-            node_hits[0].1.resolve_as_value(vid).map(|v| v.expect_term()),
+            node_hits[0]
+                .1
+                .resolve_as_value(vid)
+                .map(|v| v.expect_term()),
             Some(alice),
             "?x bound to \"alice\" via the occurrence goal",
         );
@@ -10679,7 +11218,8 @@ mod wi518_occurrence_guard_resolution_tests {
     fn lq_ctor(kb: &mut KnowledgeBase, short: &str) -> Symbol {
         let qn = format!("anthill.reflect.LogicalQuery.{short}");
         let root_scope = kb.global_scope();
-        kb.symbols.define(short, &qn, SymbolKind::Operation, root_scope)
+        kb.symbols
+            .define(short, &qn, SymbolKind::Operation, root_scope)
     }
 
     /// Build `no_q(condition: pattern_query(term: <leaf>), body: empty_query)` — a
@@ -10810,7 +11350,10 @@ mod wi518_occurrence_guard_resolution_tests {
         // The synthetic occurrence query carries no resolvable trigger sort, so wire
         // the guard to the asserted fact's sort by hand (the per-assert lookup keys
         // on `guards_by_sort`).
-        kb.guards_by_sort.entry(trigger_sort).or_default().push(cid.index());
+        kb.guards_by_sort
+            .entry(trigger_sort)
+            .or_default()
+            .push(cid.index());
 
         let edge = kb.intern("edge");
         let n1 = kb.make_name_term("n1");
@@ -10944,7 +11487,8 @@ mod wi628_guard_truncation_tests {
     fn lq_ctor(kb: &mut KnowledgeBase, short: &str) -> Symbol {
         let qn = format!("anthill.reflect.LogicalQuery.{short}");
         let root_scope = kb.global_scope();
-        kb.symbols.define(short, &qn, SymbolKind::Operation, root_scope)
+        kb.symbols
+            .define(short, &qn, SymbolKind::Operation, root_scope)
     }
 
     /// Assert `loop(?x) :- loop(?x)` — a non-terminating recursion that TRUNCATES at
@@ -11026,7 +11570,11 @@ mod wi628_guard_truncation_tests {
     fn expect_undecidable(checks: &[GuardCheck], label: &str) {
         match checks {
             [GuardCheck::Undecidable(Some(l), detail)] => {
-                assert_eq!(l.as_str(), label, "undecidable finding carries the source label");
+                assert_eq!(
+                    l.as_str(),
+                    label,
+                    "undecidable finding carries the source label"
+                );
                 assert!(
                     detail.contains("undecidable"),
                     "reason should name the undecidability: {detail}"

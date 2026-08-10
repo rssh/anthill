@@ -40,7 +40,10 @@ fn eval_int(src: &str, op: &str) -> i64 {
     if let Err(errs) = try_load_kb_with(src) {
         panic!("expected a clean load; got: {errs:?}");
     }
-    match interp_for(src).call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp_for(src)
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -62,8 +65,14 @@ end
 "#;
     let via_op = eval_int(src, "test.wi793.foldleft.drive_op");
     let via_lambda = eval_int(src, "test.wi793.foldleft.drive_lambda");
-    assert_eq!(via_op, 123, "the operation spelling is the control and already worked");
-    assert_eq!(via_lambda, via_op, "the lambda spelling must reach the same answer");
+    assert_eq!(
+        via_op, 123,
+        "the operation spelling is the control and already worked"
+    );
+    assert_eq!(
+        via_lambda, via_op,
+        "the lambda spelling must reach the same answer"
+    );
 }
 
 /// `foldRight` was affected identically and is fixed identically. Its callback takes the
@@ -85,8 +94,14 @@ end
 "#;
     let via_op = eval_int(src, "test.wi793.foldright.drive_op");
     let via_lambda = eval_int(src, "test.wi793.foldright.drive_lambda");
-    assert_eq!(via_op, 321, "foldRight folds from the right, so the digits reverse");
-    assert_eq!(via_lambda, via_op, "the lambda spelling must reach the same answer");
+    assert_eq!(
+        via_op, 321,
+        "foldRight folds from the right, so the digits reverse"
+    );
+    assert_eq!(
+        via_lambda, via_op,
+        "the lambda spelling must reach the same answer"
+    );
 }
 
 /// IT IS NOT ABOUT LITERALS. The literal is just the most reachable receiver whose type
@@ -131,8 +146,14 @@ end
 "#;
     let qualified = eval_int(src, "test.wi793.spellings.drive_qualified");
     let dot = eval_int(src, "test.wi793.spellings.drive_dot");
-    assert_eq!(dot, 123, "the dot spelling was never broken — it is the control");
-    assert_eq!(qualified, dot, "the qualified spelling must reach the same answer");
+    assert_eq!(
+        dot, 123,
+        "the dot spelling was never broken — it is the control"
+    );
+    assert_eq!(
+        qualified, dot,
+        "the qualified spelling must reach the same answer"
+    );
 }
 
 /// NESTED: the receiver argument is itself a projecting higher-order call, so resolving
@@ -168,9 +189,12 @@ namespace test.wi793.wronguse
     List.foldLeft([1, 2, 3], 0, lambda (acc, x) -> acc + len(x))
 end
 "#;
-    let errs = try_load_kb_with(src).err().expect("using an Int64 element as a String must fail");
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("using an Int64 element as a String must fail");
     assert!(
-        errs.iter().any(|e| e.contains("expected String, got Int64")),
+        errs.iter()
+            .any(|e| e.contains("expected String, got Int64")),
         "the diagnostic must name the element mismatch, not the projection; got: {errs:?}",
     );
 }
@@ -266,7 +290,9 @@ namespace test.wi793.badrecv
     List.foldLeft(nosuchthing(), 0, lambda (acc, x) -> acc * 10 + x)
 end
 "#;
-    let errs = try_load_kb_with(src).err().expect("an unresolvable receiver must fail to load");
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("an unresolvable receiver must fail to load");
     assert!(
         errs.iter().any(|e| e.contains("nosuchthing")),
         "the staged argument's OWN error must surface, not a downstream `xs.T` complaint; \

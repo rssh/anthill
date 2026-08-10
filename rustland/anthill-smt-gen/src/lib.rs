@@ -26,9 +26,9 @@ use std::rc::Rc;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
+use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::{KnowledgeBase, ProgramClause};
-use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -132,10 +132,7 @@ pub fn emit_obligation_with(
 /// `lower_bound_violation` whose body is the inductive
 /// preconditions plus `lt(d_next, d_min)`. `unsat` proves no
 /// (d_prev, step) can drive d_next below d_min.
-pub fn emit_satisfiability_check(
-    kb: &KnowledgeBase,
-    rule_qn: &str,
-) -> Result<String, SmtGenError> {
+pub fn emit_satisfiability_check(kb: &KnowledgeBase, rule_qn: &str) -> Result<String, SmtGenError> {
     emit_satisfiability_check_with(kb, rule_qn, &ProofConfig::default())
 }
 
@@ -210,7 +207,8 @@ pub fn lift_rule_to_implication_clause(
     if clauses.is_empty() {
         return Err(SmtGenError::new(format!("rule '{rule_qn}' not found")));
     }
-    clauses.into_iter()
+    clauses
+        .into_iter()
         .map(|clause| lift_one_clause(kb, rule_qn, clause))
         .collect()
 }
@@ -234,7 +232,8 @@ fn lift_one_clause(
             "rule '{rule_qn}' is not citable: no `-:` (then) clause. \
              Citable rules must state their conclusion explicitly via \
              the `-:` separator. Classical violation-shape rules (body \
-             unsat) are not lifted as implications.")));
+             unsat) are not lifted as implications."
+        )));
     }
 
     let premises = match emitter.assertions.len() {
@@ -261,18 +260,19 @@ fn lift_one_clause(
         if emitter.free_vars.is_empty() {
             return Ok(format!("(assert {imp})"));
         }
-        let decls: Vec<String> = emitter.free_vars.iter()
+        let decls: Vec<String> = emitter
+            .free_vars
+            .iter()
             .map(|v| format!("({v} Real)"))
             .collect();
-        return Ok(format!(
-            "(assert (forall ({}) {imp}))",
-            decls.join(" ")
-        ));
+        return Ok(format!("(assert (forall ({}) {imp}))", decls.join(" ")));
     }
 
     // shared_arity > 0: emit declare-consts for step-new vars +
     // a ground assert for the implication.
-    let mut step_new: Vec<&String> = emitter.free_vars.iter()
+    let mut step_new: Vec<&String> = emitter
+        .free_vars
+        .iter()
         .filter(|v| parse_synthetic_var_name(v).map_or(false, |idx| idx >= shared_arity))
         .collect();
     step_new.sort();
@@ -395,7 +395,11 @@ impl<'kb> Emitter<'kb> {
     /// per-clause path [`Self::collect_rule_clause`] should be used by
     /// the caller iterating over `kb.program_clauses_by_qn(rule_qn)`.
     fn collect_rule(&mut self, rule_qn: &str) -> Result<(), SmtGenError> {
-        let clause = self.kb.program_clauses_by_qn(rule_qn).into_iter().next()
+        let clause = self
+            .kb
+            .program_clauses_by_qn(rule_qn)
+            .into_iter()
+            .next()
             .ok_or_else(|| SmtGenError::new(format!("rule '{rule_qn}' not found")))?;
         self.collect_rule_clause(rule_qn, &clause)
     }
@@ -477,14 +481,17 @@ impl<'kb> Emitter<'kb> {
         // body. For satisfiability mode (no result var) it's fine if
         // every body var is either bound or free.
         if !self.result_var.is_empty() {
-            let result_smt = local_bindings.get(&self.result_var).ok_or_else(||
+            let result_smt = local_bindings.get(&self.result_var).ok_or_else(|| {
                 SmtGenError::new(format!(
                     "rule body never bound the result variable '?{}'",
-                    self.result_var)))?;
+                    self.result_var
+                ))
+            })?;
             self.body_smtlib = format!(
                 "(define-fun {} () Real {})",
                 sanitize_smt_id(&self.result_var),
-                result_smt);
+                result_smt
+            );
         }
 
         // Compute free vars: any var_<i> referenced by an assertion
@@ -497,14 +504,14 @@ impl<'kb> Emitter<'kb> {
         // string; without this it would emit undeclared and z3 would error. The
         // result var itself is in `local_bindings`, so it is skipped (never
         // double-declared), and `free_vars` are rendered before `body_smtlib`.
-        let scan = self.assertions.iter()
+        let scan = self
+            .assertions
+            .iter()
             .chain(self.conclusion_assertions.iter())
             .chain(std::iter::once(&self.body_smtlib));
         for assertion in scan {
             for tok in assertion.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if parse_synthetic_var_name(tok).is_some()
-                    && !local_bindings.contains_key(tok)
-                {
+                if parse_synthetic_var_name(tok).is_some() && !local_bindings.contains_key(tok) {
                     self.free_vars.insert(tok.to_string());
                 }
             }
@@ -524,7 +531,8 @@ impl<'kb> Emitter<'kb> {
                 "cos/sin (uninterpreted-trig over-approximation) in an obligation \
                  with a `-:` conclusion is unsound: the relaxation under-approximates \
                  under the conclusion's negation. State the property as a violation \
-                 rule (body unsat), not a positive-form `-:` rule."));
+                 rule (body unsat), not a positive-form `-:` rule.",
+            ));
         }
         Ok(())
     }
@@ -537,7 +545,9 @@ impl<'kb> Emitter<'kb> {
     ) -> Result<(), SmtGenError> {
         let Some((functor, pos_args, named_args)) = occ_as_fn(goal) else {
             return Err(SmtGenError::new(format!(
-                "non-Fn body goal: {:?}", goal.as_expr().map(std::mem::discriminant))));
+                "non-Fn body goal: {:?}",
+                goal.as_expr().map(std::mem::discriminant)
+            )));
         };
         let qn = self.kb.qualified_name_of(functor);
 
@@ -548,7 +558,9 @@ impl<'kb> Emitter<'kb> {
         if is_eq_functor(self.kb, functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
-                    "= goal: expected 2 pos_args, got {}", pos_args.len())));
+                    "= goal: expected 2 pos_args, got {}",
+                    pos_args.len()
+                )));
             }
             // Bare-DeBruijn LHS → string binding (cheap inline substitution
             // for downstream uses). Anything else (e.g. `?d * ?d = ?d_sq`)
@@ -597,7 +609,9 @@ impl<'kb> Emitter<'kb> {
         if let Some(smt_op) = map_inequality_op(qn) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
-                    "{qn}: expected 2 pos_args, got {}", pos_args.len())));
+                    "{qn}: expected 2 pos_args, got {}",
+                    pos_args.len()
+                )));
             }
             let a = self.translate_expr(&pos_args[0], bindings)?;
             let b = self.translate_expr(&pos_args[1], bindings)?;
@@ -638,15 +652,22 @@ impl<'kb> Emitter<'kb> {
         // Rule call: `<rule_qn>(?result_var)` — single-arg shorthand
         // that yields one inline SMT expression. Used by call sites
         // like `step_distance_bound(?delta)`.
-        if pos_args.len() == 1 && named_args.is_empty()
-            && self.kb.program_clauses_by_functor(functor).iter()
+        if pos_args.len() == 1
+            && named_args.is_empty()
+            && self
+                .kb
+                .program_clauses_by_functor(functor)
+                .iter()
                 .any(|clause| !clause.is_fact())
         {
             let bind_idx = match pos_args[0].as_expr() {
                 Some(Expr::Var(Var::DeBruijn(i))) => *i,
-                other => return Err(SmtGenError::new(format!(
-                    "v0: rule call's pos arg must be a DeBruijn var, got {:?}",
-                    other.map(std::mem::discriminant)))),
+                other => {
+                    return Err(SmtGenError::new(format!(
+                        "v0: rule call's pos arg must be a DeBruijn var, got {:?}",
+                        other.map(std::mem::discriminant)
+                    )))
+                }
             };
             let inlined = self.translate_called_rule(qn)?;
             bindings.insert(synthetic_var_name(bind_idx), inlined);
@@ -676,7 +697,8 @@ impl<'kb> Emitter<'kb> {
         }
 
         Err(SmtGenError::new(format!(
-            "v0: unhandled body goal functor '{qn}'")))
+            "v0: unhandled body goal functor '{qn}'"
+        )))
     }
 
     /// Try to match a multi-pos-arg call against any ground fact
@@ -702,7 +724,9 @@ impl<'kb> Emitter<'kb> {
         // edits invalidate downstream proofs).
         let functor_qn = self.kb.qualified_name_of(functor).to_string();
         for clause in candidates {
-            if !clause.is_fact() { continue; }
+            if !clause.is_fact() {
+                continue;
+            }
             self.visited_rules.insert(functor_qn.clone());
             let Value::Term { id: head, .. } = clause.head else {
                 return Err(SmtGenError::new(format!(
@@ -710,9 +734,15 @@ impl<'kb> Emitter<'kb> {
                 )));
             };
             let head_occ = materialize_from_handle(self.kb, head);
-            let Some((_, fpos, fnamed)) = occ_as_fn(&head_occ) else { continue };
-            if !fnamed.is_empty() { continue; }
-            if fpos.len() != call_args.len() { continue; }
+            let Some((_, fpos, fnamed)) = occ_as_fn(&head_occ) else {
+                continue;
+            };
+            if !fnamed.is_empty() {
+                continue;
+            }
+            if fpos.len() != call_args.len() {
+                continue;
+            }
 
             // Probe — does every concrete call slot equal the
             // corresponding fact slot? Variable slots match anything.
@@ -728,7 +758,9 @@ impl<'kb> Emitter<'kb> {
                     break;
                 }
             }
-            if !matched { continue; }
+            if !matched {
+                continue;
+            }
 
             // Apply bindings.
             for (idx, fact_occ) in bind_pairs {
@@ -774,7 +806,10 @@ impl<'kb> Emitter<'kb> {
             Some(s) => s,
             None => return Ok(false),
         };
-        let clause = match self.kb.program_clauses_by_functor(sym).into_iter()
+        let clause = match self
+            .kb
+            .program_clauses_by_functor(sym)
+            .into_iter()
             .find(|clause| !clause.is_fact())
         {
             Some(clause) => clause,
@@ -792,13 +827,18 @@ impl<'kb> Emitter<'kb> {
         let head_occ = materialize_from_handle(self.kb, head);
         let head_pos: Vec<Rc<NodeOccurrence>> = match occ_as_fn(&head_occ) {
             Some((_, pos, named)) if named.is_empty() => pos.to_vec(),
-            _ => return Err(SmtGenError::new(format!(
-                "v0: inlined rule '{callee_qn}' must have only pos args in head"))),
+            _ => {
+                return Err(SmtGenError::new(format!(
+                    "v0: inlined rule '{callee_qn}' must have only pos args in head"
+                )))
+            }
         };
         if head_pos.len() != call_args.len() {
             return Err(SmtGenError::new(format!(
                 "rule call arity mismatch for '{callee_qn}': expected {}, got {}",
-                head_pos.len(), call_args.len())));
+                head_pos.len(),
+                call_args.len()
+            )));
         }
 
         // Prepare callee-local bindings: each head ?DeBruijn becomes
@@ -854,7 +894,9 @@ impl<'kb> Emitter<'kb> {
         // `real_pose_at(0, Leader, ?l)` binds ?l → Pose), and the
         // caller needs those propagated to its own synthetic names.
         let final_ent = std::mem::replace(&mut self.entity_bindings, saved_ent);
-        if let Some(e) = err { return Err(e); }
+        if let Some(e) = err {
+            return Err(e);
+        }
 
         // Propagate body-bound head values back to the caller — both
         // arithmetic strings and entity_bindings.
@@ -868,7 +910,8 @@ impl<'kb> Emitter<'kb> {
                 }
             }
             if let Some(entity_occ) = final_ent.get(&head_synth) {
-                self.entity_bindings.insert(caller_synth, Rc::clone(entity_occ));
+                self.entity_bindings
+                    .insert(caller_synth, Rc::clone(entity_occ));
             }
         }
         Ok(true)
@@ -922,7 +965,8 @@ impl<'kb> Emitter<'kb> {
                 "WI-687: nullary head constructor `{}` inlining '{callee_qn}' does not match \
                  the call argument {:?} (the specialized arm does not apply to this call)",
                 self.kb.qualified_name_of(h_null),
-                call_arg.as_expr().map(std::mem::discriminant))));
+                call_arg.as_expr().map(std::mem::discriminant)
+            )));
         }
 
         // Constructor-shaped head arg (WI-687): structurally match the call. The
@@ -933,40 +977,62 @@ impl<'kb> Emitter<'kb> {
                 return Err(SmtGenError::new(format!(
                     "v0: inlined rule '{callee_qn}' head arg must be a De Bruijn var \
                      or a constructor, got {:?}",
-                    head_arg.as_expr().map(std::mem::discriminant))));
+                    head_arg.as_expr().map(std::mem::discriminant)
+                )));
             };
             let Some(cc) = self.resolve_call_ctor(call_arg) else {
                 return Err(SmtGenError::new(format!(
                     "WI-687: '{callee_qn}' expects a concrete `{}` construction at a \
                      constructor-shaped head arg, but the call supplied {:?}",
                     self.kb.qualified_name_of(hf),
-                    call_arg.as_expr().map(std::mem::discriminant))));
+                    call_arg.as_expr().map(std::mem::discriminant)
+                )));
             };
             let Some((cf, cpos, cnamed)) = occ_as_fn(&cc) else {
                 return Err(SmtGenError::new(format!(
-                    "WI-687: '{callee_qn}' call arg resolved to a non-construction")));
+                    "WI-687: '{callee_qn}' call arg resolved to a non-construction"
+                )));
             };
             if hf != cf || hpos.len() != cpos.len() || hnamed.len() != cnamed.len() {
                 return Err(SmtGenError::new(format!(
                     "WI-687: structural head mismatch inlining '{callee_qn}': head `{}` \
                      vs call `{}`",
-                    self.kb.qualified_name_of(hf), self.kb.qualified_name_of(cf))));
+                    self.kb.qualified_name_of(hf),
+                    self.kb.qualified_name_of(cf)
+                )));
             }
             for (hp, cp) in hpos.iter().zip(cpos.iter()) {
                 self.bind_head_arg(
-                    callee_qn, hp, cp, caller_bindings, callee_str, callee_ent, head_caller)?;
+                    callee_qn,
+                    hp,
+                    cp,
+                    caller_bindings,
+                    callee_str,
+                    callee_ent,
+                    head_caller,
+                )?;
             }
             for (hs, hv) in hnamed {
                 let short = self.kb.local_name_of(*hs).rsplit('.').next();
-                let Some((_, cv)) = cnamed.iter()
+                let Some((_, cv)) = cnamed
+                    .iter()
                     .find(|(cs, _)| self.kb.local_name_of(*cs).rsplit('.').next() == short)
                 else {
                     return Err(SmtGenError::new(format!(
                         "WI-687: constructor-shaped head field '{}' absent in call arg to \
-                         '{callee_qn}'", self.kb.local_name_of(*hs))));
+                         '{callee_qn}'",
+                        self.kb.local_name_of(*hs)
+                    )));
                 };
                 self.bind_head_arg(
-                    callee_qn, hv, cv, caller_bindings, callee_str, callee_ent, head_caller)?;
+                    callee_qn,
+                    hv,
+                    cv,
+                    caller_bindings,
+                    callee_str,
+                    callee_ent,
+                    head_caller,
+                )?;
             }
             return Ok(());
         }
@@ -1001,9 +1067,9 @@ impl<'kb> Emitter<'kb> {
             Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
                 // Nullary symbol — not arithmetic; ignore.
             }
-            _ if occ_as_fn(call_arg)
-                .is_some_and(|(f, _, _)| self.kb.entity_field_types(f).is_some()
-                    || self.kb.is_constructor_symbol(f)) =>
+            _ if occ_as_fn(call_arg).is_some_and(|(f, _, _)| {
+                self.kb.entity_field_types(f).is_some() || self.kb.is_constructor_symbol(f)
+            }) =>
             {
                 // Concrete entity / constructor at the call site — expose it for
                 // field_access on the callee side.
@@ -1019,7 +1085,8 @@ impl<'kb> Emitter<'kb> {
                 return Err(SmtGenError::new(format!(
                     "WI-687: '{callee_qn}' head leaf bound to a computed (non-entity) \
                      argument {:?}; pass a variable, literal, or entity construction",
-                    call_arg.as_expr().map(std::mem::discriminant))));
+                    call_arg.as_expr().map(std::mem::discriminant)
+                )));
             }
             _ => {}
         }
@@ -1048,11 +1115,13 @@ impl<'kb> Emitter<'kb> {
     /// numeric value (literal-as-Real coercion). The occurrence twin of the
     /// former `terms_match` (WI-246).
     fn occs_match(&self, a: &Rc<NodeOccurrence>, b: &Rc<NodeOccurrence>) -> bool {
-        if Rc::ptr_eq(a, b) { return true; }
+        if Rc::ptr_eq(a, b) {
+            return true;
+        }
         match (a.as_expr(), b.as_expr()) {
             (Some(Expr::Const(Literal::Float(x))), Some(Expr::Const(Literal::Float(y)))) => x == y,
-            (Some(Expr::Const(Literal::Int(x))),   Some(Expr::Const(Literal::Int(y))))   => x == y,
-            (Some(Expr::Const(Literal::Int(i))),   Some(Expr::Const(Literal::Float(f))))
+            (Some(Expr::Const(Literal::Int(x))), Some(Expr::Const(Literal::Int(y)))) => x == y,
+            (Some(Expr::Const(Literal::Int(i))), Some(Expr::Const(Literal::Float(f))))
             | (Some(Expr::Const(Literal::Float(f))), Some(Expr::Const(Literal::Int(i)))) => {
                 (*i as f64) == f.into_inner()
             }
@@ -1064,8 +1133,10 @@ impl<'kb> Emitter<'kb> {
                         && px.len() == py.len()
                         && nx.len() == ny.len()
                         && px.iter().zip(py.iter()).all(|(a, b)| self.occs_match(a, b))
-                        && nx.iter().zip(ny.iter()).all(|((sa, ta), (sb, tb))|
-                            sa == sb && self.occs_match(ta, tb))
+                        && nx
+                            .iter()
+                            .zip(ny.iter())
+                            .all(|((sa, ta), (sb, tb))| sa == sb && self.occs_match(ta, tb))
                 }
                 _ => false,
             },
@@ -1080,12 +1151,18 @@ impl<'kb> Emitter<'kb> {
     /// fresh local bindings don't collide with the caller's.
     fn translate_called_rule(&mut self, callee_qn: &str) -> Result<String, SmtGenError> {
         self.visited_rules.insert(callee_qn.to_string());
-        let sym = self.kb.try_resolve_symbol(callee_qn)
+        let sym = self
+            .kb
+            .try_resolve_symbol(callee_qn)
             .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
-        let clause = self.kb.program_clauses_by_functor(sym).into_iter()
+        let clause = self
+            .kb
+            .program_clauses_by_functor(sym)
+            .into_iter()
             .find(|clause| !clause.is_fact())
-            .ok_or_else(|| SmtGenError::new(format!(
-                "rule call '{callee_qn}' has no defining clauses")))?;
+            .ok_or_else(|| {
+                SmtGenError::new(format!("rule call '{callee_qn}' has no defining clauses"))
+            })?;
 
         let Value::Term { id: head, .. } = clause.head else {
             return Err(SmtGenError::new(format!(
@@ -1094,24 +1171,32 @@ impl<'kb> Emitter<'kb> {
         };
         let head_occ = materialize_from_handle(self.kb, head);
         let result_idx = match occ_as_fn(&head_occ) {
-            Some((_, pos_args, _)) if pos_args.len() == 1 => {
-                match pos_args[0].as_expr() {
-                    Some(Expr::Var(Var::DeBruijn(i))) => *i,
-                    _ => return Err(SmtGenError::new(format!(
-                        "v0: called rule '{callee_qn}' head must be ?DeBruijn"))),
+            Some((_, pos_args, _)) if pos_args.len() == 1 => match pos_args[0].as_expr() {
+                Some(Expr::Var(Var::DeBruijn(i))) => *i,
+                _ => {
+                    return Err(SmtGenError::new(format!(
+                        "v0: called rule '{callee_qn}' head must be ?DeBruijn"
+                    )))
                 }
+            },
+            _ => {
+                return Err(SmtGenError::new(format!(
+                    "v0: called rule '{callee_qn}' must have exactly one pos arg in head"
+                )))
             }
-            _ => return Err(SmtGenError::new(format!(
-                "v0: called rule '{callee_qn}' must have exactly one pos arg in head"))),
         };
         let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
         for goal in &clause.body_nodes {
             self.process_body_goal(goal, &mut local_bindings)?;
         }
-        local_bindings.get(&synthetic_var_name(result_idx))
+        local_bindings
+            .get(&synthetic_var_name(result_idx))
             .cloned()
-            .ok_or_else(|| SmtGenError::new(format!(
-                "called rule '{callee_qn}' never bound its result var")))
+            .ok_or_else(|| {
+                SmtGenError::new(format!(
+                    "called rule '{callee_qn}' never bound its result var"
+                ))
+            })
     }
 
     /// Translate an arithmetic expression (anthill prelude ops) to
@@ -1140,7 +1225,8 @@ impl<'kb> Emitter<'kb> {
                 Ok(bindings.get(&synth).cloned().unwrap_or(synth))
             }
             Some(Expr::Var(other)) => Err(SmtGenError::new(format!(
-                "v0: expected DeBruijn var in expression, got {other:?}"))),
+                "v0: expected DeBruijn var in expression, got {other:?}"
+            ))),
             Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => {
                 Ok(sanitize_smt_id(self.kb.local_name_of(*s)))
             }
@@ -1149,7 +1235,11 @@ impl<'kb> Emitter<'kb> {
             // refold feeds exactly this). Lower to SMT-LIB `(ite cond t e)` —
             // the condition is Bool, the branches Real. SMT-LIB `ite` is
             // polymorphic in the branch sort, so it works in LRA/NRA/LIA alike.
-            Some(Expr::If { condition, then_branch, else_branch }) => {
+            Some(Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            }) => {
                 let c = self.translate_condition(condition, bindings)?;
                 let t = self.translate_expr(then_branch, bindings)?;
                 let e = self.translate_expr(else_branch, bindings)?;
@@ -1169,7 +1259,8 @@ impl<'kb> Emitter<'kb> {
                 let Some((functor, pos_args, _named)) = occ_as_fn(occ) else {
                     return Err(SmtGenError::new(format!(
                         "v0: unhandled expression: {:?}",
-                        occ.as_expr().map(std::mem::discriminant))));
+                        occ.as_expr().map(std::mem::discriminant)
+                    )));
                 };
                 let op = self.kb.qualified_name_of(functor);
                 // `ite(cond, then, else)` functor form (WI-680): the surface
@@ -1182,7 +1273,9 @@ impl<'kb> Emitter<'kb> {
                 if is_ite_op(op) {
                     if pos_args.len() != 3 {
                         return Err(SmtGenError::new(format!(
-                            "ite: expected 3 pos_args, got {}", pos_args.len())));
+                            "ite: expected 3 pos_args, got {}",
+                            pos_args.len()
+                        )));
                     }
                     let c = self.translate_condition(&pos_args[0], bindings)?;
                     let t = self.translate_expr(&pos_args[1], bindings)?;
@@ -1197,7 +1290,9 @@ impl<'kb> Emitter<'kb> {
                 if let Some(trig) = map_trig_op(op) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
-                            "{op}: expected 1 pos_arg, got {}", pos_args.len())));
+                            "{op}: expected 1 pos_arg, got {}",
+                            pos_args.len()
+                        )));
                     }
                     let a = self.translate_expr(&pos_args[0], bindings)?;
                     self.trig_args.insert(a.clone());
@@ -1206,7 +1301,9 @@ impl<'kb> Emitter<'kb> {
                 if let Some(smt_op) = map_unary_op(op) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
-                            "{op}: expected 1 pos_arg, got {}", pos_args.len())));
+                            "{op}: expected 1 pos_arg, got {}",
+                            pos_args.len()
+                        )));
                     }
                     let a = self.translate_expr(&pos_args[0], bindings)?;
                     if smt_op == "anthill_abs" {
@@ -1216,12 +1313,17 @@ impl<'kb> Emitter<'kb> {
                 }
                 let smt_op = match map_arith_op(op) {
                     Some(o) => o,
-                    None => return Err(SmtGenError::new(format!(
-                        "v0: unhandled arithmetic op '{op}'"))),
+                    None => {
+                        return Err(SmtGenError::new(format!(
+                            "v0: unhandled arithmetic op '{op}'"
+                        )))
+                    }
                 };
                 if pos_args.len() != 2 {
                     return Err(SmtGenError::new(format!(
-                        "{op}: expected 2 pos_args, got {}", pos_args.len())));
+                        "{op}: expected 2 pos_args, got {}",
+                        pos_args.len()
+                    )));
                 }
                 let a = self.translate_expr(&pos_args[0], bindings)?;
                 let b = self.translate_expr(&pos_args[1], bindings)?;
@@ -1244,19 +1346,26 @@ impl<'kb> Emitter<'kb> {
         bindings: &BTreeMap<String, String>,
     ) -> Result<String, SmtGenError> {
         if let Some(Expr::Const(Literal::Bool(b))) = occ.as_expr() {
-            return Ok(if *b { "true".to_string() } else { "false".to_string() });
+            return Ok(if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            });
         }
         let Some((functor, pos_args, _named)) = occ_as_fn(occ) else {
             return Err(SmtGenError::new(format!(
                 "v0: unhandled condition shape: {:?}",
-                occ.as_expr().map(std::mem::discriminant))));
+                occ.as_expr().map(std::mem::discriminant)
+            )));
         };
         let qn = self.kb.qualified_name_of(functor);
         // Relational comparison → SMT-LIB predicate over Real operands.
         if let Some(smt_op) = map_inequality_op(&qn) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
-                    "{qn}: expected 2 pos_args in condition, got {}", pos_args.len())));
+                    "{qn}: expected 2 pos_args in condition, got {}",
+                    pos_args.len()
+                )));
             }
             let a = self.translate_expr(&pos_args[0], bindings)?;
             let b = self.translate_expr(&pos_args[1], bindings)?;
@@ -1266,7 +1375,9 @@ impl<'kb> Emitter<'kb> {
         if is_eq_functor(self.kb, functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
-                    "=: expected 2 pos_args in condition, got {}", pos_args.len())));
+                    "=: expected 2 pos_args in condition, got {}",
+                    pos_args.len()
+                )));
             }
             let a = self.translate_expr(&pos_args[0], bindings)?;
             let b = self.translate_expr(&pos_args[1], bindings)?;
@@ -1277,16 +1388,20 @@ impl<'kb> Emitter<'kb> {
             let arity = if conn == "not" { 1 } else { 2 };
             if pos_args.len() != arity {
                 return Err(SmtGenError::new(format!(
-                    "{qn}: expected {arity} pos_args in condition, got {}", pos_args.len())));
+                    "{qn}: expected {arity} pos_args in condition, got {}",
+                    pos_args.len()
+                )));
             }
-            let subs: Result<Vec<String>, _> = pos_args.iter()
+            let subs: Result<Vec<String>, _> = pos_args
+                .iter()
                 .map(|p| self.translate_condition(p, bindings))
                 .collect();
             return Ok(format!("({conn} {})", subs?.join(" ")));
         }
         Err(SmtGenError::new(format!(
             "v0: unhandled condition functor '{qn}' (expected a relational op, \
-             `=`, or a Bool connective and/or/not)")))
+             `=`, or a Bool connective and/or/not)"
+        )))
     }
 
     /// Substitute `env` (this frame's entity bindings: synth var name →
@@ -1316,7 +1431,9 @@ impl<'kb> Emitter<'kb> {
         env: &BTreeMap<String, Rc<NodeOccurrence>>,
         str_env: &BTreeMap<String, String>,
     ) -> Result<Rc<NodeOccurrence>, SmtGenError> {
-        let Some(expr) = occ.as_expr() else { return Ok(Rc::clone(occ)) };
+        let Some(expr) = occ.as_expr() else {
+            return Ok(Rc::clone(occ));
+        };
         let rebuilt = match expr {
             Expr::Var(Var::DeBruijn(i)) => {
                 let synth = synthetic_var_name(*i);
@@ -1337,44 +1454,71 @@ impl<'kb> Emitter<'kb> {
                     None => Err(SmtGenError::new(format!(
                         "close_occ: parameter ?{i} in a body-derived entity is bound \
                          on neither the entity nor the scalar channel — it cannot be \
-                         closed across the inline boundary"))),
+                         closed across the inline boundary"
+                    ))),
                 };
             }
             Expr::Var(_) | Expr::Const(_) | Expr::Ref(_) | Expr::Ident(_) => {
                 return Ok(Rc::clone(occ));
             }
-            Expr::Apply { functor, pos_args, named_args, type_args } => Expr::Apply {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                type_args,
+            } => Expr::Apply {
                 functor: *functor,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
                 type_args: type_args.clone(),
             },
-            Expr::Constructor { name, pos_args, named_args, from_projection } => Expr::Constructor {
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                from_projection,
+            } => Expr::Constructor {
                 name: *name,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
                 from_projection: *from_projection,
             },
-            Expr::Instantiation { name, pos_args, named_args } => Expr::Instantiation {
+            Expr::Instantiation {
+                name,
+                pos_args,
+                named_args,
+            } => Expr::Instantiation {
                 name: *name,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
             },
-            Expr::DotApply { receiver, name, pos_args, named_args } => Expr::DotApply {
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args,
+                named_args,
+            } => Expr::DotApply {
                 receiver: self.close_occ(receiver, env, str_env)?,
                 name: *name,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
             },
-            Expr::If { condition, then_branch, else_branch } => Expr::If {
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => Expr::If {
                 condition: self.close_occ(condition, env, str_env)?,
                 then_branch: self.close_occ(then_branch, env, str_env)?,
                 else_branch: self.close_occ(else_branch, env, str_env)?,
             },
-            other => return Err(SmtGenError::new(format!(
-                "close_occ: unhandled occurrence shape in a defining-equation \
-                 body: {:?}", std::mem::discriminant(other))),
-            ),
+            other => {
+                return Err(SmtGenError::new(format!(
+                    "close_occ: unhandled occurrence shape in a defining-equation \
+                 body: {:?}",
+                    std::mem::discriminant(other)
+                )))
+            }
         };
         Ok(NodeOccurrence::new_expr(rebuilt, occ.span, occ.owner))
     }
@@ -1385,7 +1529,9 @@ impl<'kb> Emitter<'kb> {
         env: &BTreeMap<String, Rc<NodeOccurrence>>,
         str_env: &BTreeMap<String, String>,
     ) -> Result<Vec<Rc<NodeOccurrence>>, SmtGenError> {
-        occs.iter().map(|o| self.close_occ(o, env, str_env)).collect()
+        occs.iter()
+            .map(|o| self.close_occ(o, env, str_env))
+            .collect()
     }
 
     fn close_named(
@@ -1394,7 +1540,10 @@ impl<'kb> Emitter<'kb> {
         env: &BTreeMap<String, Rc<NodeOccurrence>>,
         str_env: &BTreeMap<String, String>,
     ) -> Result<Vec<(Symbol, Rc<NodeOccurrence>)>, SmtGenError> {
-        named.iter().map(|(s, o)| Ok((*s, self.close_occ(o, env, str_env)?))).collect()
+        named
+            .iter()
+            .map(|(s, o)| Ok((*s, self.close_occ(o, env, str_env)?)))
+            .collect()
     }
 
     /// Resolve `field_access(?obj, Ident(field))` (possibly nested)
@@ -1415,17 +1564,20 @@ impl<'kb> Emitter<'kb> {
         let (object_occ, field_name) = self.as_field_access(occ).ok_or_else(|| {
             SmtGenError::new(format!(
                 "resolve_field_access: not a field projection: {:?}",
-                occ.as_expr().map(std::mem::discriminant)))
+                occ.as_expr().map(std::mem::discriminant)
+            ))
         })?;
 
         // Step 1: resolve the object to an entity constructor occurrence.
         let entity_occ: Rc<NodeOccurrence> = match object_occ.as_expr() {
             Some(Expr::Var(Var::DeBruijn(i))) => {
                 let synth = synthetic_var_name(*i);
-                self.entity_bindings.get(&synth).cloned().ok_or_else(||
+                self.entity_bindings.get(&synth).cloned().ok_or_else(|| {
                     SmtGenError::new(format!(
                         "field_access on '?{synth}': no entity binding\
-                         (caller did not supply a concrete entity)")))?
+                         (caller did not supply a concrete entity)"
+                    ))
+                })?
             }
             _ => {
                 // A nested projection (`?p.position.x`) — the object is
@@ -1438,7 +1590,8 @@ impl<'kb> Emitter<'kb> {
                 } else {
                     return Err(SmtGenError::new(format!(
                         "field_access: cannot resolve object: {:?}",
-                        object_occ.as_expr().map(std::mem::discriminant))));
+                        object_occ.as_expr().map(std::mem::discriminant)
+                    )));
                 }
             }
         };
@@ -1447,7 +1600,8 @@ impl<'kb> Emitter<'kb> {
         let Some((_, _, named_args)) = occ_as_fn(&entity_occ) else {
             return Err(SmtGenError::new(format!(
                 "field_access: object resolved to non-Fn occurrence: {:?}",
-                entity_occ.as_expr().map(std::mem::discriminant))));
+                entity_occ.as_expr().map(std::mem::discriminant)
+            )));
         };
         for (sym, val_occ) in named_args.iter() {
             if self.kb.local_name_of(*sym) == field_name {
@@ -1455,7 +1609,8 @@ impl<'kb> Emitter<'kb> {
             }
         }
         Err(SmtGenError::new(format!(
-            "field_access: field '{field_name}' not found in entity")))
+            "field_access: field '{field_name}' not found in entity"
+        )))
     }
 
     /// Recognize a field projection in either occurrence representation and
@@ -1472,11 +1627,19 @@ impl<'kb> Emitter<'kb> {
     ///     `pos_args`/`named_args` is a method call (returns `None`).
     fn as_field_access(&self, occ: &Rc<NodeOccurrence>) -> Option<(Rc<NodeOccurrence>, String)> {
         match occ.as_expr()? {
-            Expr::DotApply { receiver, name, pos_args, named_args } => {
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args,
+                named_args,
+            } => {
                 if !pos_args.is_empty() || !named_args.is_empty() {
                     return None;
                 }
-                Some((Rc::clone(receiver), self.kb.local_name_of(*name).to_string()))
+                Some((
+                    Rc::clone(receiver),
+                    self.kb.local_name_of(*name).to_string(),
+                ))
             }
             _ => {
                 let (functor, pos_args, _named) = occ_as_fn(occ)?;
@@ -1511,9 +1674,14 @@ impl<'kb> Emitter<'kb> {
         let term = self.kb.get_term(head);
         let (functor, pos_args) = match term {
             Term::Bottom => return HeadShape::Bottom,
-            Term::Fn { functor, pos_args, .. } => (*functor, pos_args.clone()),
-            other => return HeadShape::Unsupported(format!(
-                "rule head must be Fn or Bottom, got {other:?}")),
+            Term::Fn {
+                functor, pos_args, ..
+            } => (*functor, pos_args.clone()),
+            other => {
+                return HeadShape::Unsupported(format!(
+                    "rule head must be Fn or Bottom, got {other:?}"
+                ))
+            }
         };
         let qn = self.kb.qualified_name_of(functor);
         if is_eq_functor(self.kb, functor)
@@ -1525,8 +1693,11 @@ impl<'kb> Emitter<'kb> {
         if pos_args.len() == 1 {
             let result_idx = match self.kb.get_term(pos_args[0]) {
                 Term::Var(Var::DeBruijn(i)) => *i,
-                other => return HeadShape::Unsupported(format!(
-                    "v0: function-like rule head's pos_arg must be DeBruijn var, got {other:?}")),
+                other => {
+                    return HeadShape::Unsupported(format!(
+                        "v0: function-like rule head's pos_arg must be DeBruijn var, got {other:?}"
+                    ))
+                }
             };
             return HeadShape::FunctionLike { result_idx };
         }
@@ -1537,7 +1708,8 @@ impl<'kb> Emitter<'kb> {
         }
         HeadShape::Unsupported(format!(
             "v0: rule head shape not supported (functor={qn}, pos_args={})",
-            pos_args.len()))
+            pos_args.len()
+        ))
     }
 
     /// For each entity referenced in the rule body, find its
@@ -1554,8 +1726,12 @@ impl<'kb> Emitter<'kb> {
     /// order) would otherwise decide which head the harvest picks.
     fn collect_facts_for_referenced_entities(&mut self) -> Result<(), SmtGenError> {
         for entity_qn in self.referenced_entities.clone() {
-            let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else { continue };
-            let candidates = self.kb.read_facts(sym, &[], BodiedRulePolicy::Refuse)
+            let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else {
+                continue;
+            };
+            let candidates = self
+                .kb
+                .read_facts(sym, &[], BodiedRulePolicy::Refuse)
                 .map_err(|e| match e {
                     ExtentReadError::BodiedRule { .. } => SmtGenError::new(format!(
                         "bodied rule for referenced entity `{entity_qn}` refused: {e} — \
@@ -1578,14 +1754,21 @@ impl<'kb> Emitter<'kb> {
                          SMT v0 requires term-carried numeric fields"
                     )));
                 };
-                let Term::Fn { named_args, .. } = self.kb.get_term(head) else { continue };
-                let any_concrete = named_args.iter().any(|(_, t)|
-                    literal_as_real(self.kb.get_term(*t)).is_some());
-                if !any_concrete { continue; }
+                let Term::Fn { named_args, .. } = self.kb.get_term(head) else {
+                    continue;
+                };
+                let any_concrete = named_args
+                    .iter()
+                    .any(|(_, t)| literal_as_real(self.kb.get_term(*t)).is_some());
+                if !any_concrete {
+                    continue;
+                }
                 for (field_sym, val_term) in named_args {
                     let field_name = self.kb.local_name_of(*field_sym).to_string();
                     let const_name = sanitize_smt_id(&field_name);
-                    if !self.field_consts.contains_key(&const_name) { continue; }
+                    if !self.field_consts.contains_key(&const_name) {
+                        continue;
+                    }
                     if let Some(v) = literal_as_real(self.kb.get_term(*val_term)) {
                         self.field_consts.insert(const_name, v);
                     }
@@ -1601,7 +1784,8 @@ impl<'kb> Emitter<'kb> {
         let mut out = String::new();
         out.push_str(&format!(
             "; Generated by anthill-smt-gen for obligation {}.\n",
-            obligation.rule_qn));
+            obligation.rule_qn
+        ));
         out.push_str(&format!("; Logic: {logic}.\n"));
         if let Some(t) = config.timeout_ms {
             out.push_str(&format!("(set-option :timeout {t})\n"));
@@ -1612,7 +1796,10 @@ impl<'kb> Emitter<'kb> {
         emit_abs_prelude(&mut out, self.uses_abs, config);
 
         for (name, value) in &self.field_consts {
-            out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
+            out.push_str(&format!(
+                "(define-fun {name} () Real {})\n",
+                format_real(*value)
+            ));
         }
         out.push('\n');
 
@@ -1625,11 +1812,13 @@ impl<'kb> Emitter<'kb> {
 
         out.push_str(&format!(
             "; Obligation: {} <= {}\n",
-            self.result_var, obligation.upper_bound));
+            self.result_var, obligation.upper_bound
+        ));
         out.push_str(&format!(
             "(assert (not (<= {} {})))\n",
             sanitize_smt_id(&self.result_var),
-            format_real(obligation.upper_bound)));
+            format_real(obligation.upper_bound)
+        ));
         match &config.tactic_expr {
             Some(expr) => out.push_str(&format!("(check-sat-using {expr})\n")),
             None => out.push_str("(check-sat)\n"),
@@ -1644,7 +1833,8 @@ impl<'kb> Emitter<'kb> {
         let logic = config.logic.as_deref().unwrap_or("LRA");
         let mut out = String::new();
         out.push_str(&format!(
-            "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"));
+            "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"
+        ));
         out.push_str("; `unsat` ⇒ rule body has no solution ⇒ encoded property holds.\n");
         if let Some(t) = config.timeout_ms {
             out.push_str(&format!("(set-option :timeout {t})\n"));
@@ -1655,7 +1845,10 @@ impl<'kb> Emitter<'kb> {
         emit_abs_prelude(&mut out, self.uses_abs, config);
 
         for (name, value) in &self.field_consts {
-            out.push_str(&format!("(define-fun {name} () Real {})\n", format_real(*value)));
+            out.push_str(&format!(
+                "(define-fun {name} () Real {})\n",
+                format_real(*value)
+            ));
         }
         out.push('\n');
 
@@ -1721,7 +1914,10 @@ impl<'kb> Emitter<'kb> {
 /// `unknown` verdicts).
 fn emit_abs_prelude(out: &mut String, uses_abs: bool, config: &ProofConfig) {
     let needs = uses_abs
-        || config.assumptions.iter().any(|a| a.contains("anthill_abs "));
+        || config
+            .assumptions
+            .iter()
+            .any(|a| a.contains("anthill_abs "));
     if needs {
         out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
     }
@@ -1734,20 +1930,25 @@ fn emit_abs_prelude(out: &mut String, uses_abs: bool, config: &ProofConfig) {
 /// are otherwise uninterpreted, so the proof holds for EVERY θ (yaw-independent)
 /// rather than assuming a concrete angle. No-op when no trig was rendered.
 fn emit_trig_prelude(out: &mut String, trig_args: &BTreeSet<String>) {
-    if trig_args.is_empty() { return; }
+    if trig_args.is_empty() {
+        return;
+    }
     out.push_str("; Trig as uninterpreted reals + Pythagorean identity (WI-681).\n");
     out.push_str("(declare-fun anthill_cos (Real) Real)\n");
     out.push_str("(declare-fun anthill_sin (Real) Real)\n");
     for a in trig_args {
         out.push_str(&format!(
             "(assert (= (+ (* (anthill_cos {a}) (anthill_cos {a})) \
-             (* (anthill_sin {a}) (anthill_sin {a}))) 1.0))\n"));
+             (* (anthill_sin {a}) (anthill_sin {a}))) 1.0))\n"
+        ));
     }
     out.push('\n');
 }
 
 fn emit_assumptions(out: &mut String, config: &ProofConfig) {
-    if config.assumptions.is_empty() { return; }
+    if config.assumptions.is_empty() {
+        return;
+    }
     out.push_str("; Cited-lemma assumptions (from `using` clause).\n");
     // Dedupe `(declare-const var_<i> Real)` lines across all
     // assumptions — different cited step rules may share step-new
@@ -1757,7 +1958,9 @@ fn emit_assumptions(out: &mut String, config: &ProofConfig) {
     let mut seen_decls: BTreeSet<String> = BTreeSet::new();
     for clause in &config.assumptions {
         for line in clause.split('\n') {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if line.starts_with("(declare-const ") {
                 if !seen_decls.insert(line.to_string()) {
                     continue;
@@ -1811,19 +2014,41 @@ fn emit_outcome_getters(out: &mut String, config: &ProofConfig) {
 /// `Emitter::as_field_access`).
 fn occ_as_fn(
     occ: &NodeOccurrence,
-) -> Option<(Symbol, &[Rc<NodeOccurrence>], &[(Symbol, Rc<NodeOccurrence>)])> {
+) -> Option<(
+    Symbol,
+    &[Rc<NodeOccurrence>],
+    &[(Symbol, Rc<NodeOccurrence>)],
+)> {
     match occ.as_expr()? {
-        Expr::Apply { functor, pos_args, named_args, .. } => {
-            Some((*functor, pos_args, named_args))
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => Some((*functor, pos_args, named_args)),
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
         }
-        Expr::Constructor { name, pos_args, named_args, .. }
-        | Expr::Instantiation { name, pos_args, named_args }
-        | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
-            Some((*name, pos_args, named_args))
+        | Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
         }
-        Expr::ApplyWithin { functor, args, named_args, .. } => {
-            Some((*functor, args, named_args))
-        }
+        | Expr::ConstructorWithin {
+            name,
+            pos_args,
+            named_args,
+            ..
+        } => Some((*name, pos_args, named_args)),
+        Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            ..
+        } => Some((*functor, args, named_args)),
         _ => None,
     }
 }
@@ -1890,8 +2115,8 @@ fn map_arith_op(qn: &str) -> Option<&'static str> {
         "anthill.prelude.Numeric.add" | "Numeric.add" | "add" => Some("+"),
         "anthill.prelude.Numeric.sub" | "Numeric.sub" | "sub" => Some("-"),
         "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*"),
-        "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/"),
-        "anthill.prelude.Int64.div"     | "Int64.div"             => Some("div"),
+        "anthill.prelude.Float.div" | "Float.div" | "div" => Some("/"),
+        "anthill.prelude.Int64.div" | "Int64.div" => Some("div"),
         _ => None,
     }
 }
@@ -1973,7 +2198,7 @@ fn is_ite_op(qn: &str) -> bool {
 fn map_bool_connective(qn: &str) -> Option<&'static str> {
     match qn {
         "anthill.prelude.Bool.and" | "Bool.and" | "and" => Some("and"),
-        "anthill.prelude.Bool.or"  | "Bool.or"  | "or"  => Some("or"),
+        "anthill.prelude.Bool.or" | "Bool.or" | "or" => Some("or"),
         "anthill.prelude.Bool.not" | "Bool.not" | "not" => Some("not"),
         _ => None,
     }
@@ -1986,10 +2211,26 @@ fn map_inequality_op(qn: &str) -> Option<&'static str> {
     // WI-644 / proposal 004: gt/lt/gte/lte moved from `Ord` onto the `PartialOrd`
     // base (Ord kept as `Ord.*` aliases for any legacy QN).
     match qn {
-        "anthill.prelude.PartialOrd.lte" | "PartialOrd.lte" | "anthill.prelude.Ord.lte" | "Ord.lte" | "lte" => Some("<="),
-        "anthill.prelude.PartialOrd.lt"  | "PartialOrd.lt"  | "anthill.prelude.Ord.lt"  | "Ord.lt"  | "lt"  => Some("<"),
-        "anthill.prelude.PartialOrd.gte" | "PartialOrd.gte" | "anthill.prelude.Ord.gte" | "Ord.gte" | "gte" => Some(">="),
-        "anthill.prelude.PartialOrd.gt"  | "PartialOrd.gt"  | "anthill.prelude.Ord.gt"  | "Ord.gt"  | "gt"  => Some(">"),
+        "anthill.prelude.PartialOrd.lte"
+        | "PartialOrd.lte"
+        | "anthill.prelude.Ord.lte"
+        | "Ord.lte"
+        | "lte" => Some("<="),
+        "anthill.prelude.PartialOrd.lt"
+        | "PartialOrd.lt"
+        | "anthill.prelude.Ord.lt"
+        | "Ord.lt"
+        | "lt" => Some("<"),
+        "anthill.prelude.PartialOrd.gte"
+        | "PartialOrd.gte"
+        | "anthill.prelude.Ord.gte"
+        | "Ord.gte"
+        | "gte" => Some(">="),
+        "anthill.prelude.PartialOrd.gt"
+        | "PartialOrd.gt"
+        | "anthill.prelude.Ord.gt"
+        | "Ord.gt"
+        | "gt" => Some(">"),
         _ => None,
     }
 }
@@ -1999,7 +2240,9 @@ fn map_inequality_op(qn: &str) -> Option<&'static str> {
 /// base) in goal position; `Term::Fn` may also carry the unqualified short form.
 fn is_eq_functor(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) -> bool {
     let qn = kb.qualified_name_of(sym);
-    if qn == "=" || qn == "anthill.prelude.PartialEq.eq" || qn == "anthill.prelude.Eq.eq" { return true; }
+    if qn == "=" || qn == "anthill.prelude.PartialEq.eq" || qn == "anthill.prelude.Eq.eq" {
+        return true;
+    }
     let short = kb.local_name_of(sym);
     short == "=" || short == "eq"
 }

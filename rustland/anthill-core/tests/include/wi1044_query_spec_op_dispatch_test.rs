@@ -238,14 +238,22 @@ fn a_two_supplier_query_is_refused() {
     let msg = msgs.join("\n");
     assert_eq!(msgs.len(), 1, "one call, one refusal: {msg}");
     assert!(msg.contains("ambiguous dispatch"), "{msg}");
-    assert!(msg.contains("Desc.describe"), "the spec op must be named: {msg}");
-    assert!(msg.contains(&format!("carrier `{ns}.Leaf`")), "the carrier must be named: {msg}");
+    assert!(
+        msg.contains("Desc.describe"),
+        "the spec op must be named: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("carrier `{ns}.Leaf`")),
+        "the carrier must be named: {msg}"
+    );
     assert!(
         msg.contains(&format!("the carrier's own member '{ns}.Leaf.describe'")),
         "route 1 named by its route: {msg}",
     );
     assert!(
-        msg.contains(&format!("an instance fact binding `describe = {ns}.otherDescribe`")),
+        msg.contains(&format!(
+            "an instance fact binding `describe = {ns}.otherDescribe`"
+        )),
         "route 2 quoted by the BINDING the author wrote: {msg}",
     );
 }
@@ -289,7 +297,9 @@ fn a_two_supplier_query_never_answers_the_default() {
     let mut kb = crate::common::load_kb_with(&src);
     let answers = query_answers(&mut kb, &describe_pattern(ns));
     assert!(
-        !answers.iter().any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
+        !answers
+            .iter()
+            .any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
         "a two-supplier carrier must not produce a definite Int — the only one \
          reachable by folding is the spec's DEFAULT, which is the wrong answer this \
          ticket exists to stop: {answers:?}",
@@ -411,12 +421,22 @@ fn a_backtracked_receiver_reclassifies_per_carrier() {
     // accident). What must hold is that BOTH suppliers are reached, which a stuck
     // stamp makes impossible: it would answer one number twice.
     for (first, second) in [("leaf", "twig"), ("twig", "leaf")] {
-        let got = definite(first, second, "  rule answer(?r) :- pick(?x), Desc.describe(?x, ?r)\n");
-        let mut ints: Vec<i64> =
-            got.iter().filter_map(|v| match v { Value::Int(i) => Some(*i), _ => None }).collect();
+        let got = definite(
+            first,
+            second,
+            "  rule answer(?r) :- pick(?x), Desc.describe(?x, ?r)\n",
+        );
+        let mut ints: Vec<i64> = got
+            .iter()
+            .filter_map(|v| match v {
+                Value::Int(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
         ints.sort();
         assert_eq!(
-            ints, vec![5, 7],
+            ints,
+            vec![5, 7],
             "each activation must reclassify from ITS OWN receiver ({first} first)",
         );
     }

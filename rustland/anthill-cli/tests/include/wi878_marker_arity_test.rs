@@ -15,7 +15,6 @@
 //! an ordinary (undefined) functor and the CLI reports it loudly, while a
 //! well-formed marker at its canonical arity still resolves unchanged.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 /// Queried against `wi754/props.anthill` — top-level `base(1)`/`base(2)` facts and
@@ -48,7 +47,12 @@ fn answered(out: &crate::common::Output) -> bool {
 #[test]
 fn some_in_at_wrong_arity_is_refused_not_silent() {
     let out = query_props(&["some_in(x)"]);
-    assert!(is_refused(&out, "some_in"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "some_in"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
     // THE pin: the old bug printed a silent, confident `no solutions` for a name
     // that resolves to nothing. A refusal must not also report an empty answer.
     assert!(
@@ -62,14 +66,24 @@ fn some_in_at_wrong_arity_is_refused_not_silent() {
 #[test]
 fn forall_in_at_wrong_arity_is_refused() {
     let out = query_props(&["forall_in(x)"]);
-    assert!(is_refused(&out, "forall_in"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "forall_in"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 /// The 3-ary hereditary-Harrop marker (WI-108) at the wrong arity is refused too.
 #[test]
 fn forall_impl_at_wrong_arity_is_refused() {
     let out = query_props(&["forall_impl(x)"]);
-    assert!(is_refused(&out, "forall_impl"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "forall_impl"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 /// The OTHER arity class: `__pop_assumption` is the 1-ary scope-discharge marker,
@@ -95,7 +109,11 @@ fn pop_assumption_at_wrong_arity_is_refused() {
 #[test]
 fn a_well_formed_forall_still_resolves() {
     let out = query_props(&["(forall ?x in [1, 2]: base(?x))"]);
-    assert!(answered(&out), "a well-formed forall must resolve, not be refused; stderr:\n{}", out.stderr);
+    assert!(
+        answered(&out),
+        "a well-formed forall must resolve, not be refused; stderr:\n{}",
+        out.stderr
+    );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
 }
 
@@ -106,6 +124,10 @@ fn a_well_formed_forall_still_resolves() {
 #[test]
 fn a_well_formed_some_still_resolves() {
     let out = query_props(&["(some ?x in [1, 2]: base(?x))"]);
-    assert!(answered(&out), "a well-formed some must resolve, not be refused; stderr:\n{}", out.stderr);
+    assert!(
+        answered(&out),
+        "a well-formed some must resolve, not be refused; stderr:\n{}",
+        out.stderr
+    );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
 }

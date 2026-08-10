@@ -167,7 +167,10 @@ pub struct SourceSpan {
 
 impl SourceSpan {
     pub fn new(source: SourceId, start: u32, end: u32) -> Self {
-        Self { source, span: Span::new(start, end) }
+        Self {
+            source,
+            span: Span::new(start, end),
+        }
     }
 
     pub fn from_span(source: SourceId, span: Span) -> Self {
@@ -201,7 +204,9 @@ pub struct SourceRegistry {
 
 impl SourceRegistry {
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Register a source by name only (no text/path). Span rendering against

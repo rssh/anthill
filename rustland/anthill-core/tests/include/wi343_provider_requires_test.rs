@@ -11,18 +11,21 @@
 //! (`candidate_provider_sub_goals` — `candidate_sub_goals_owned` before WI-857 split
 //! the dictionary's spec and provider halves — plus `collect_provides_candidates`).
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -34,7 +37,10 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── A carrier providing a spec must satisfy that spec's `requires` ──────
@@ -62,11 +68,15 @@ fn provider_missing_required_subspec_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(),
+    assert!(
+        !errs.is_empty(),
         "expected an UnsatisfiedProviderRequires error: Widget provides Comparable \
-         (which requires Nameable) without providing Nameable; got clean load");
-    assert!(text.contains("Comparable") && text.contains("Nameable") && text.contains("Widget"),
-        "expected the diagnostic to name Widget, Comparable, and Nameable; got:\n{text}");
+         (which requires Nameable) without providing Nameable; got clean load"
+    );
+    assert!(
+        text.contains("Comparable") && text.contains("Nameable") && text.contains("Widget"),
+        "expected the diagnostic to name Widget, Comparable, and Nameable; got:\n{text}"
+    );
 }
 
 // ── A complete provision (carrier provides the spec AND its requires) ───
@@ -95,9 +105,11 @@ fn provider_with_required_subspec_loads() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "Widget provides both Nameable and Comparable; should load clean; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── A spec with no `requires` provided by a carrier is fine ─────────────
@@ -120,9 +132,11 @@ fn provider_of_requireless_spec_loads() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "providing a requirement-free spec should load clean; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── WI-356: binding-precise — a provider satisfying the sub-spec at the
@@ -161,12 +175,16 @@ fn provider_satisfies_subspec_at_wrong_bindings_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(),
+    assert!(
+        !errs.is_empty(),
         "expected an UnsatisfiedProviderRequires error: VS[V=Carrier, F=NonRing] \
          requires Ring[F=NonRing], and NonRing does not provide Ring (the carrier \
-         providing Ring at a different binding must not satisfy it); got clean load");
-    assert!(text.contains("wi356.wrongbind.VS") && text.contains("wi356.wrongbind.Ring"),
-        "expected the diagnostic to name VS and its unmet Ring requirement; got:\n{text}");
+         providing Ring at a different binding must not satisfy it); got clean load"
+    );
+    assert!(
+        text.contains("wi356.wrongbind.VS") && text.contains("wi356.wrongbind.Ring"),
+        "expected the diagnostic to name VS and its unmet Ring requirement; got:\n{text}"
+    );
 }
 
 // ── WI-356: transitive — a gap two hops down the `requires` chain errors ──
@@ -203,11 +221,15 @@ fn provider_transitive_requires_gap_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(),
+    assert!(
+        !errs.is_empty(),
         "expected an UnsatisfiedProviderRequires error: Thing provides A (and Spec, \
-         which requires A which requires B) but does not provide B; got clean load");
-    assert!(text.contains("wi356.transitive.B"),
-        "expected the diagnostic to name the unmet transitive requirement B; got:\n{text}");
+         which requires A which requires B) but does not provide B; got clean load"
+    );
+    assert!(
+        text.contains("wi356.transitive.B"),
+        "expected the diagnostic to name the unmet transitive requirement B; got:\n{text}"
+    );
 }
 
 // ── WI-359: the SHORTHAND `requires Ring[F]` (Ring's param is named `T`, so
@@ -246,12 +268,16 @@ fn shorthand_requires_binding_precise_wrong_field_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(),
+    assert!(
+        !errs.is_empty(),
         "expected an UnsatisfiedProviderRequires error: VS[F=NonRing] requires Ring over \
          NonRing (which provides no Ring); the shorthand `requires Ring[F]` must now carry \
-         the F binding so the check is binding-precise; got clean load");
-    assert!(text.contains("wi359.shorthand.VS") && text.contains("wi359.shorthand.Ring"),
-        "expected the diagnostic to name VS and its unmet Ring requirement; got:\n{text}");
+         the F binding so the check is binding-precise; got clean load"
+    );
+    assert!(
+        text.contains("wi359.shorthand.VS") && text.contains("wi359.shorthand.Ring"),
+        "expected the diagnostic to name VS and its unmet Ring requirement; got:\n{text}"
+    );
 }
 
 #[test]
@@ -279,7 +305,10 @@ fn shorthand_requires_binding_precise_right_field_loads() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "VS[V=Carrier, F=Carrier] requires Ring over Carrier, which provides Ring; \
-         should load clean; got:\n{}", errors_text(&errs));
+         should load clean; got:\n{}",
+        errors_text(&errs)
+    );
 }

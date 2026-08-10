@@ -174,7 +174,10 @@ fn wi730_where_conjunction_of_three_atoms() {
 #[test]
 fn wi730_where_disjunction_keeps_and_drops() {
     let mut interp = interp_for(SRC);
-    assert_eq!(drain(&mut interp, "orKeepsBoth"), vec!["alice/30", "bob/25"]);
+    assert_eq!(
+        drain(&mut interp, "orKeepsBoth"),
+        vec!["alice/30", "bob/25"]
+    );
     assert_eq!(
         drain(&mut interp, "orDropsAll"),
         Vec::<String>::new(),
@@ -268,8 +271,9 @@ end
             // condition nor the reason; asserting only "mentions guarded_of" would
             // pass for BOTH, so the assertion pins the reason and the offending name.
             assert!(
-                errs.iter().any(|e| e.contains("alwaysTrue")
-                    && e.contains("it has no meaning as a query goal")),
+                errs.iter()
+                    .any(|e| e.contains("alwaysTrue")
+                        && e.contains("it has no meaning as a query goal")),
                 "expected the macro's own untranslatable-condition text naming \
                  `alwaysTrue`, got: {errs:?}",
             );

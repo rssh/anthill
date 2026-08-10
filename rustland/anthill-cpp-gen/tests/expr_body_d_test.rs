@@ -31,8 +31,7 @@ fn entity_constructor_literal_emits_brace_init() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_d.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_d.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("return Pose{x, 0};"),
@@ -55,8 +54,7 @@ fn entity_constructor_named_args_reorder_to_field_order() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_d_reorder.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_d_reorder.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("return Pose{a, b};"),
@@ -75,8 +73,7 @@ fn list_literal_emits_brace_init() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_d_list.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_d_list.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("return {x, 1, 2};"),
@@ -107,8 +104,7 @@ fn match_over_nullary_sum_emits_holds_alternative_chain() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_d_match.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_d_match.Calc").expect("emit Calc");
 
     // The last branch falls through unconditionally — innermost arm
     // is just `2`, the previous two test their tags.
@@ -143,8 +139,7 @@ fn match_with_let_in_branch_body() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.expr_d_compose.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.expr_d_compose.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("std::holds_alternative<Pos>(s)"),
@@ -170,8 +165,7 @@ fn entity_constructor_literal_compiles() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.expr_d_compile.Calc")
-        .expect("emit Calc");
+    let traits = emit_traits_struct(&mut kb, "test.expr_d_compile.Calc").expect("emit Calc");
 
     let cxx = match find_cxx() {
         Some(c) => c,

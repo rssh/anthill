@@ -14,21 +14,23 @@
 //!   `<Sort>.induction` rules actually prove their universal from a
 //!   base case + IH-using step case.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap();
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p).unwrap();
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
@@ -45,7 +47,8 @@ fn resolve_one(kb: &mut KnowledgeBase, goal: TermId) -> bool {
 /// Build `qn(args...)` where `qn` is the qualified name of a head goal
 /// already loaded in the KB.
 fn make_call(kb: &mut KnowledgeBase, qn: &str, args: &[TermId]) -> TermId {
-    let sym = kb.try_resolve_symbol(qn)
+    let sym = kb
+        .try_resolve_symbol(qn)
         .unwrap_or_else(|| panic!("symbol {qn} not in KB"));
     kb.alloc(Term::Fn {
         functor: sym,
@@ -100,8 +103,10 @@ fn t3_skolem_reflexivity_succeeds() {
     let mut kb = load_with(src);
     let stub = kb.make_name_term("test.forall_impl.t3a.stub_root");
     let goal = make_call(&mut kb, "test.forall_impl.t3a.t3a_witness", &[stub]);
-    assert!(resolve_one(&mut kb, goal),
-        "Tier 3: reflexivity for skolem ?x should succeed");
+    assert!(
+        resolve_one(&mut kb, goal),
+        "Tier 3: reflexivity for skolem ?x should succeed"
+    );
 }
 
 #[test]
@@ -123,8 +128,10 @@ fn t3_skolem_cannot_unify_with_concrete_succeeds_only_if_unsound() {
     let mut kb = load_with(src);
     let stub = kb.make_name_term("test.forall_impl.t3b.stub_root");
     let goal = make_call(&mut kb, "test.forall_impl.t3b.t3b_witness", &[stub]);
-    assert!(!resolve_one(&mut kb, goal),
-        "Tier 3 soundness: skolem ?x must not unify with 5 — universal must fail");
+    assert!(
+        !resolve_one(&mut kb, goal),
+        "Tier 3 soundness: skolem ?x must not unify with 5 — universal must fail"
+    );
 }
 
 // =================================================================
@@ -156,8 +163,10 @@ fn t4_assumption_lets_step_case_use_ih() {
     let mut kb = load_with(src);
     let stub = kb.make_name_term("test.forall_impl.t4.stub_root");
     let goal = make_call(&mut kb, "test.forall_impl.t4.t4_step", &[stub]);
-    assert!(resolve_one(&mut kb, goal),
-        "Tier 4: IH-as-assumption must let the step discharge");
+    assert!(
+        resolve_one(&mut kb, goal),
+        "Tier 4: IH-as-assumption must let the step discharge"
+    );
 }
 
 // =================================================================
@@ -189,8 +198,10 @@ fn t4_assumption_does_not_leak_to_next_body_goal() {
     let mut kb = load_with(src);
     let stub = kb.make_name_term("test.forall_impl.t4_leak.stub_root");
     let goal = make_call(&mut kb, "test.forall_impl.t4_leak.leaky_witness", &[stub]);
-    assert!(!resolve_one(&mut kb, goal),
-        "Tier 4 scoping: assumed antecedent must not leak past the consequent");
+    assert!(
+        !resolve_one(&mut kb, goal),
+        "Tier 4 scoping: assumed antecedent must not leak past the consequent"
+    );
 }
 
 // =================================================================
@@ -231,14 +242,22 @@ fn structural_induction_proves_property_via_auto_generated_rule() {
     let mut kb = load_with(src);
 
     // Sanity: direct fact query confirms prop_holds is registered.
-    let nil_sym = kb.try_resolve_symbol("test.forall_impl.struct_ind.IntList.i_nil")
+    let nil_sym = kb
+        .try_resolve_symbol("test.forall_impl.struct_ind.IntList.i_nil")
         .expect("IntList.i_nil must be defined");
     let nil_ref = kb.alloc(Term::Ref(nil_sym));
-    let direct = make_call(&mut kb, "test.forall_impl.struct_ind.prop_holds", &[nil_ref]);
-    assert!(resolve_one(&mut kb, direct),
-        "sanity: direct prop_holds(i_nil) must succeed");
+    let direct = make_call(
+        &mut kb,
+        "test.forall_impl.struct_ind.prop_holds",
+        &[nil_ref],
+    );
+    assert!(
+        resolve_one(&mut kb, direct),
+        "sanity: direct prop_holds(i_nil) must succeed"
+    );
 
-    let pred_sym = kb.try_resolve_symbol("test.forall_impl.struct_ind.prop_holds")
+    let pred_sym = kb
+        .try_resolve_symbol("test.forall_impl.struct_ind.prop_holds")
         .expect("prop_holds must be defined");
     let pred_ref = kb.alloc(Term::Ref(pred_sym));
     let goal = make_call(
@@ -246,9 +265,11 @@ fn structural_induction_proves_property_via_auto_generated_rule() {
         "test.forall_impl.struct_ind.IntList.induction",
         &[pred_ref],
     );
-    assert!(resolve_one(&mut kb, goal),
+    assert!(
+        resolve_one(&mut kb, goal),
         "structural induction: auto-generated IntList.induction(prop_holds) \
-         must discharge given the fact + cons rule");
+         must discharge given the fact + cons rule"
+    );
 }
 
 // =================================================================
@@ -271,7 +292,8 @@ fn gap_minimal_rigid_vs_fact_concrete_does_not_match() {
         end
     "#;
     let mut kb = load_with(src);
-    let pred_sym = kb.try_resolve_symbol("test.forall_impl.rigid_vs_fact.tree_holds")
+    let pred_sym = kb
+        .try_resolve_symbol("test.forall_impl.rigid_vs_fact.tree_holds")
         .expect("tree_holds defined");
     let rigid_name = kb.intern("l");
     let rigid_vid = kb.fresh_var(rigid_name);
@@ -288,10 +310,12 @@ fn gap_minimal_rigid_vs_fact_concrete_does_not_match() {
         ..Default::default()
     };
     let solutions = kb.resolve(&[goal], &cfg);
-    assert!(solutions.is_empty(),
+    assert!(
+        solutions.is_empty(),
         "tree_holds(!l) must not match `fact tree_holds(leaf)` — \
          Rigid cannot unify with the concrete `leaf` Ref. Got {} solutions.",
-        solutions.len());
+        solutions.len()
+    );
 }
 
 #[test]
@@ -318,7 +342,8 @@ fn gap_minimal_rigid_vs_concrete_pattern_does_not_match() {
     let mut kb = load_with(src);
 
     // Build goal `tree_holds(!l)` with !l a Rigid var allocated by us.
-    let pred_sym = kb.try_resolve_symbol("test.forall_impl.rigid_match.tree_holds")
+    let pred_sym = kb
+        .try_resolve_symbol("test.forall_impl.rigid_match.tree_holds")
         .expect("tree_holds defined");
     let rigid_name = kb.intern("l");
     let rigid_vid = kb.fresh_var(rigid_name);
@@ -339,10 +364,13 @@ fn gap_minimal_rigid_vs_concrete_pattern_does_not_match() {
         ..Default::default()
     };
     let solutions = kb.resolve(&[goal], &cfg);
-    assert!(solutions.is_empty(),
+    assert!(
+        solutions.is_empty(),
         "tree_holds(!l) should NOT have solutions — Rigid cannot match \
          the rule's concrete `branch(...)` head, and there is no fact for \
-         a bare rigid argument. Got {} solutions.", solutions.len());
+         a bare rigid argument. Got {} solutions.",
+        solutions.len()
+    );
 }
 
 #[test]
@@ -364,16 +392,15 @@ fn gap_multi_recursive_constructor_emits_multiple_ihs() {
         end
     "#;
     let mut kb = load_with(src);
-    let pred_sym = kb.try_resolve_symbol("test.forall_impl.tree.tree_holds")
+    let pred_sym = kb
+        .try_resolve_symbol("test.forall_impl.tree.tree_holds")
         .expect("tree_holds must be defined");
     let pred_ref = kb.alloc(Term::Ref(pred_sym));
-    let goal = make_call(
-        &mut kb,
-        "test.forall_impl.tree.Tree.induction",
-        &[pred_ref],
+    let goal = make_call(&mut kb, "test.forall_impl.tree.Tree.induction", &[pred_ref]);
+    assert!(
+        resolve_one(&mut kb, goal),
+        "multi-recursive: Tree.induction must discharge with both IHs"
     );
-    assert!(resolve_one(&mut kb, goal),
-        "multi-recursive: Tree.induction must discharge with both IHs");
 }
 
 #[test]
@@ -392,7 +419,8 @@ fn gap_skolem_does_not_leak_into_caller_solution() {
         end
     "#;
     let mut kb = load_with(src);
-    let marker_sym = kb.try_resolve_symbol("test.forall_impl.no_leak.Witness.marker")
+    let marker_sym = kb
+        .try_resolve_symbol("test.forall_impl.no_leak.Witness.marker")
         .expect("marker entity must exist");
     let marker_ref = kb.alloc(Term::Ref(marker_sym));
     let goal = make_call(
@@ -414,7 +442,11 @@ fn gap_skolem_does_not_leak_into_caller_solution() {
                 Term::Var(Var::Rigid(_)) => {
                     panic!("skolem leaked into caller solution: term {t:?}");
                 }
-                Term::Fn { pos_args, named_args, .. } => {
+                Term::Fn {
+                    pos_args,
+                    named_args,
+                    ..
+                } => {
                     stack.extend(pos_args.iter().copied());
                     stack.extend(named_args.iter().map(|(_, t)| *t));
                 }
@@ -444,7 +476,11 @@ fn gap_duplicate_binders_in_forall_impl() {
     "#;
     let mut kb = load_with(src);
     let stub = kb.make_name_term("test.forall_impl.dup_binder.stub_root");
-    let goal = make_call(&mut kb, "test.forall_impl.dup_binder.dup_binder_rule", &[stub]);
+    let goal = make_call(
+        &mut kb,
+        "test.forall_impl.dup_binder.dup_binder_rule",
+        &[stub],
+    );
     // Currently: loader does not reject; rule discharges (the two
     // skolems collapse). Pinning the current behaviour.
     let _ = resolve_one(&mut kb, goal);
@@ -476,8 +512,10 @@ fn gap_nested_forall_impl_in_consequent() {
     let mut kb = load_with(src);
     let stub = kb.make_name_term("test.forall_impl.nested.stub_root");
     let goal = make_call(&mut kb, "test.forall_impl.nested.nested_witness", &[stub]);
-    assert!(resolve_one(&mut kb, goal),
-        "nested forall_impl with trivially-true inner consequent must discharge");
+    assert!(
+        resolve_one(&mut kb, goal),
+        "nested forall_impl with trivially-true inner consequent must discharge"
+    );
 }
 
 #[test]
@@ -499,16 +537,15 @@ fn structural_induction_on_stdlib_polymorphic_list() {
     "#;
     let mut kb = load_with(src);
 
-    let pred_sym = kb.try_resolve_symbol("test.forall_impl.poly_list.poly_pred")
+    let pred_sym = kb
+        .try_resolve_symbol("test.forall_impl.poly_list.poly_pred")
         .expect("poly_pred must be defined");
     let pred_ref = kb.alloc(Term::Ref(pred_sym));
 
-    let goal = make_call(
-        &mut kb,
-        "anthill.prelude.List.induction",
-        &[pred_ref],
-    );
-    assert!(resolve_one(&mut kb, goal),
+    let goal = make_call(&mut kb, "anthill.prelude.List.induction", &[pred_ref]);
+    assert!(
+        resolve_one(&mut kb, goal),
         "polymorphic structural induction: auto-generated \
-         anthill.prelude.List.induction(poly_pred) must discharge");
+         anthill.prelude.List.induction(poly_pred) must discharge"
+    );
 }

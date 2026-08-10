@@ -20,7 +20,8 @@
 use anthill_core::eval::Interpreter;
 
 fn expect_int(v: anthill_core::eval::Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // A lazy identity carrier (`map` without the transform): wraps a source Stream and
@@ -80,7 +81,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(&format!("{REWRAP}\n{src}"));
     let run = |interp: &mut Interpreter, op: &str| {
-        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_int(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     // The acceptance: the unqualified source peel value-dispatches on the List
     // carrier rather than self-dispatching to Rewrap.splitFirst (a MatchFailed).

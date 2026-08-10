@@ -23,8 +23,8 @@ fn load_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -56,12 +56,20 @@ fn cons_value(kb: &mut KnowledgeBase, hd: Value, tl: Value) -> Value {
     let tail = kb.intern("tail");
     let mut named = vec![(head, hd), (tail, tl)];
     named.sort_by_key(|(s, _)| s.index());
-    Value::Entity { functor: cons, pos: vec![].into(), named: named.into() }
+    Value::Entity {
+        functor: cons,
+        pos: vec![].into(),
+        named: named.into(),
+    }
 }
 
 fn nil_value(kb: &KnowledgeBase) -> Value {
     let nil = sym(kb, "anthill.prelude.List.nil");
-    Value::Entity { functor: nil, pos: vec![].into(), named: vec![].into() }
+    Value::Entity {
+        functor: nil,
+        pos: vec![].into(),
+        named: vec![].into(),
+    }
 }
 
 /// Assert a parameterized type `Fn{S, named: [(_, P), ...]}` carries a param `P`
@@ -213,7 +221,11 @@ fn value_type_term_unbound_var_reads_store_bound() {
 
 /// A reflect-`*Literal` entity carrying its elements positionally (no declared field).
 fn literal_value(kb: &KnowledgeBase, qn: &str, elems: Vec<Value>) -> Value {
-    Value::Entity { functor: sym(kb, qn), pos: elems.into(), named: vec![].into() }
+    Value::Entity {
+        functor: sym(kb, qn),
+        pos: elems.into(),
+        named: vec![].into(),
+    }
 }
 
 /// WI-578 (phase-2b review item A) — an un-desugared `[...]` reaches the value-typer as
@@ -224,7 +236,11 @@ fn literal_value(kb: &KnowledgeBase, qn: &str, elems: Vec<Value>) -> Value {
 fn value_type_term_of_list_literal_is_list_of_int() {
     let mut kb = load_kb();
     let subst = Substitution::new();
-    let lit = literal_value(&kb, "anthill.reflect.ListLiteral", vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let lit = literal_value(
+        &kb,
+        "anthill.reflect.ListLiteral",
+        vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+    );
     let ty = value_type_term(&mut kb, &subst, &lit);
     let head = sort_functor_of_view(&kb, &ty).expect("list literal has a sort head");
     assert_sort_named(&kb, head, "List");
@@ -237,7 +253,11 @@ fn value_type_term_of_list_literal_is_list_of_int() {
 fn value_type_term_of_set_literal_is_set_of_int() {
     let mut kb = load_kb();
     let subst = Substitution::new();
-    let lit = literal_value(&kb, "anthill.reflect.SetLiteral", vec![Value::Int(1), Value::Int(2)]);
+    let lit = literal_value(
+        &kb,
+        "anthill.reflect.SetLiteral",
+        vec![Value::Int(1), Value::Int(2)],
+    );
     let ty = value_type_term(&mut kb, &subst, &lit);
     let head = sort_functor_of_view(&kb, &ty).expect("set literal has a sort head");
     assert_sort_named(&kb, head, "Set");

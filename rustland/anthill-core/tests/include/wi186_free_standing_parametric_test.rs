@@ -18,9 +18,8 @@
 //! Companion to WI-185 (let-binding type annotations) under the same
 //! proposal — the two close out the proposal-035 surface forms.
 
-
-use anthill_core::eval::Value;
 use crate::common::interp_for;
+use anthill_core::eval::Value;
 
 #[test]
 fn id_polymorphic_free_standing_int() {
@@ -33,7 +32,9 @@ namespace test.wi186_id_int
 end
 "#;
     let mut interp = interp_for(src);
-    let r = interp.call("test.wi186_id_int.main", &[]).expect("call main");
+    let r = interp
+        .call("test.wi186_id_int.main", &[])
+        .expect("call main");
     assert_eq!(r.as_int(), Some(42));
 }
 
@@ -48,7 +49,9 @@ namespace test.wi186_id_str
 end
 "#;
     let mut interp = interp_for(src);
-    let r = interp.call("test.wi186_id_str.main", &[]).expect("call main");
+    let r = interp
+        .call("test.wi186_id_str.main", &[])
+        .expect("call main");
     match r {
         Value::Str(s) => assert_eq!(s, "hello"),
         other => panic!("expected Str(\"hello\"), got {:?}", other),
@@ -72,9 +75,13 @@ namespace test.wi186_id_two
 end
 "#;
     let mut interp = interp_for(src);
-    let n = interp.call("test.wi186_id_two.as_int", &[]).expect("as_int");
+    let n = interp
+        .call("test.wi186_id_two.as_int", &[])
+        .expect("as_int");
     assert_eq!(n.as_int(), Some(7));
-    let s = interp.call("test.wi186_id_two.as_str", &[]).expect("as_str");
+    let s = interp
+        .call("test.wi186_id_two.as_str", &[])
+        .expect("as_str");
     match s {
         Value::Str(t) => assert_eq!(t, "ok"),
         other => panic!("expected Str, got {:?}", other),
@@ -101,9 +108,16 @@ namespace test.wi186_make_pair
 end
 "#;
     let mut interp = interp_for(src);
-    let r = interp.call("test.wi186_make_pair.main", &[]).expect("call main");
+    let r = interp
+        .call("test.wi186_make_pair.main", &[])
+        .expect("call main");
     match r {
-        Value::Entity { functor, pos, named, .. } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
             let name = interp.kb().local_name_of(functor);
             assert!(
                 name == "pair" || name == "anthill.prelude.Pair.pair",
@@ -115,9 +129,15 @@ end
             for (_, v) in named.iter() {
                 values.push(v.clone());
             }
-            let saw_str = values.iter().any(|v| matches!(v, Value::Str(s) if s == "wi"));
+            let saw_str = values
+                .iter()
+                .any(|v| matches!(v, Value::Str(s) if s == "wi"));
             let saw_int = values.iter().any(|v| v.as_int() == Some(186));
-            assert!(saw_str, "expected to see 'wi' string in pair, got {:?}", values);
+            assert!(
+                saw_str,
+                "expected to see 'wi' string in pair, got {:?}",
+                values
+            );
             assert!(saw_int, "expected to see 186 in pair, got {:?}", values);
         }
         other => panic!("expected Pair entity, got {:?}", other),

@@ -15,8 +15,8 @@
 //! cannot tell them apart without type context. Inside a type (`(List[T=Int]) ->
 //! Bool`) the parameterized form IS recovered, as the arrow case below shows.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -42,7 +42,10 @@ fn arrow_single_effect_prints_unbraced() {
     let b = kb.make_sort_ref_by_name("Bool");
     let eff = kb.make_sort_ref_by_name("Error");
     let arrow = kb.make_arrow_type(int, b, &[eff], 1);
-    assert_eq!(TermPrinter::new(&kb).print_term(arrow), "(Int64) -> Bool @ Error");
+    assert_eq!(
+        TermPrinter::new(&kb).print_term(arrow),
+        "(Int64) -> Bool @ Error"
+    );
 }
 
 #[test]

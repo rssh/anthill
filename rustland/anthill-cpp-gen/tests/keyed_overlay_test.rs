@@ -39,38 +39,53 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
     let mut kb = load_kb_with(source);
 
     // No profile, no binding (declared-signature position) → language base.
-    assert_eq!(cpp_host_type(&mut kb, "Widget", None, None).unwrap().as_deref(), Some("Base"));
+    assert_eq!(
+        cpp_host_type(&mut kb, "Widget", None, None)
+            .unwrap()
+            .as_deref(),
+        Some("Base")
+    );
 
     // Profile active, no binding → the profile overlay shadows the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), None).unwrap().as_deref(),
+        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), None)
+            .unwrap()
+            .as_deref(),
         Some("Profile")
     );
 
     // Binding active (carrier-dispatch boundary) → the binding overlay shadows
     // both the profile overlay and the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), Some("gadget")).unwrap().as_deref(),
+        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), Some("gadget"))
+            .unwrap()
+            .as_deref(),
         Some("Bound")
     );
 
     // Binding active with no profile → binding still shadows the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, Some("gadget")).unwrap().as_deref(),
+        cpp_host_type(&mut kb, "Widget", None, Some("gadget"))
+            .unwrap()
+            .as_deref(),
         Some("Bound")
     );
 
     // A profile with no matching overlay falls through to the base — an
     // unrelated profile must not accidentally pick another profile's entry.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp17-stl"), None).unwrap().as_deref(),
+        cpp_host_type(&mut kb, "Widget", Some("cpp17-stl"), None)
+            .unwrap()
+            .as_deref(),
         Some("Base")
     );
 
     // A binding with no matching overlay falls through (no profile here) to the
     // base — the base sentinel is always last in the active-key list.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, Some("no-such-binding")).unwrap().as_deref(),
+        cpp_host_type(&mut kb, "Widget", None, Some("no-such-binding"))
+            .unwrap()
+            .as_deref(),
         Some("Base")
     );
 }
@@ -97,15 +112,16 @@ fn profile_threads_into_declared_signature_lowering() {
     "#;
     let mut kb = load_kb_with(source);
 
-    let base = emit_namespace_header_with_profile(&mut kb, "test.pf", None)
-        .expect("emit test.pf (base)");
+    let base =
+        emit_namespace_header_with_profile(&mut kb, "test.pf", None).expect("emit test.pf (base)");
     assert!(
         base.contains("double x;") && !base.contains("float x;"),
         "without a profile, Holder.x should lower to the base double:\n{base}"
     );
 
-    let overlay = emit_namespace_header_with_profile(&mut kb, "test.pf", Some("cpp20-stl".to_string()))
-        .expect("emit test.pf (cpp20-stl)");
+    let overlay =
+        emit_namespace_header_with_profile(&mut kb, "test.pf", Some("cpp20-stl".to_string()))
+            .expect("emit test.pf (cpp20-stl)");
     assert!(
         overlay.contains("float x;"),
         "under cpp20-stl, Holder.x should lower to the profile overlay float:\n{overlay}"

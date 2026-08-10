@@ -19,13 +19,18 @@
 use crate::common::LAMBDA_HINT as HINT;
 
 fn load_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// WI-784: the lambda cases here are DRIVEN, not merely loaded — the callback
 /// arity defect they sit on was invisible to `load_errors`.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -72,8 +77,15 @@ namespace test.wi605.single
 end
 "#,
     );
-    assert_eq!(errs.len(), 1, "expected exactly the targeted error; got: {errs:?}");
-    assert!(errs[0].contains(HINT), "expected the lambda-keyword hint; got: {errs:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly the targeted error; got: {errs:?}"
+    );
+    assert!(
+        errs[0].contains(HINT),
+        "expected the lambda-keyword hint; got: {errs:?}"
+    );
 }
 
 /// The keyword form of the SAME body loads clean — the WI's hypothesized
@@ -101,7 +113,10 @@ end
         "`lambda (x, acc) -> …` in an op-body argument position must load clean; got: {errs:?}",
     );
     assert_eq!(
-        run_int(&mut crate::common::interp_for(src), "test.wi605.keyword.drive"),
+        run_int(
+            &mut crate::common::interp_for(src),
+            "test.wi605.keyword.drive"
+        ),
         2,
         "the multi-binder lambda callback must actually APPLY, not just load",
     );
@@ -121,8 +136,15 @@ namespace test.wi605.effectful
 end
 "#,
     );
-    assert_eq!(errs.len(), 1, "expected exactly the targeted error; got: {errs:?}");
-    assert!(errs[0].contains(HINT), "expected the lambda-keyword hint; got: {errs:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "expected exactly the targeted error; got: {errs:?}"
+    );
+    assert!(
+        errs[0].contains(HINT),
+        "expected the lambda-keyword hint; got: {errs:?}"
+    );
 }
 
 /// A function-typed op PARAM named `arrow`, legitimately applied — the
@@ -153,9 +175,14 @@ end
         "applying a function-typed param named `arrow` must load clean; got: {:?}",
         load_errors(src),
     );
-    let via_op = run_int(&mut crate::common::interp_for(src), "test.wi605.paramarrow.drive_op");
-    let via_lambda =
-        run_int(&mut crate::common::interp_for(src), "test.wi605.paramarrow.drive_lambda");
+    let via_op = run_int(
+        &mut crate::common::interp_for(src),
+        "test.wi605.paramarrow.drive_op",
+    );
+    let via_lambda = run_int(
+        &mut crate::common::interp_for(src),
+        "test.wi605.paramarrow.drive_lambda",
+    );
     assert_eq!(via_op, -7, "the operation spelling is the control");
     assert_eq!(
         via_lambda, via_op,
@@ -205,7 +232,10 @@ end
         1,
         "a sort named `arrow` must not suppress the diagnostic; got: {errs:?}",
     );
-    assert!(errs[0].contains(HINT), "expected the lambda-keyword hint; got: {errs:?}");
+    assert!(
+        errs[0].contains(HINT),
+        "expected the lambda-keyword hint; got: {errs:?}"
+    );
 }
 
 /// An explicit call to an undefined `arrow` was WRITTEN as a call (not

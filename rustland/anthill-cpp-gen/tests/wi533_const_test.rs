@@ -79,7 +79,11 @@ fn namespace_const_emits_inline_constexpr_and_compiles() {
         header.contains("inline constexpr int64_t MAX_RETRIES = 5;"),
         "expected a namespace-level inline constexpr:\n{header}"
     );
-    compile_header(&header, "wi533ns", "test::wi533ns::Packet p{1};\n    (void)p;");
+    compile_header(
+        &header,
+        "wi533ns",
+        "test::wi533ns::Packet p{1};\n    (void)p;",
+    );
 }
 
 #[test]
@@ -108,7 +112,11 @@ fn const_referencing_infinity_lowers_to_numeric_limits_and_compiles() {
         header.contains("#include <limits>"),
         "emitting numeric_limits must pull in <limits>:\n{header}"
     );
-    compile_header(&header, "wi533inf", "test::wi533inf::Dummy d{0.0};\n    (void)d;");
+    compile_header(
+        &header,
+        "wi533inf",
+        "test::wi533inf::Dummy d{0.0};\n    (void)d;",
+    );
 }
 
 /// WI-889 — all THREE Float IEEE specials lower from the cpp `const_map` (the
@@ -144,7 +152,11 @@ fn all_three_float_ieee_specials_lower_from_const_map_and_compile() {
         header.contains("#include <limits>"),
         "the numeric_limits expressions must pull in <limits>:\n{header}"
     );
-    compile_header(&header, "wi889cpp", "test::wi889cpp::Dummy d{0.0};\n    (void)d;");
+    compile_header(
+        &header,
+        "wi889cpp",
+        "test::wi889cpp::Dummy d{0.0};\n    (void)d;",
+    );
 }
 
 #[test]
@@ -168,7 +180,11 @@ fn string_const_emits_string_view_and_compiles() {
         header.contains("#include <string_view>"),
         "string_view const must pull <string_view>:\n{header}"
     );
-    compile_header(&header, "wi533str", "test::wi533str::Box b{1};\n    (void)b;");
+    compile_header(
+        &header,
+        "wi533str",
+        "test::wi533str::Box b{1};\n    (void)b;",
+    );
 }
 
 #[test]
@@ -185,12 +201,19 @@ fn const_only_sort_emits_struct_member_and_compiles() {
     "#;
     let mut kb = load_kb_with(source);
     let header = emit_namespace_header(&mut kb, "test.wi533only").expect("emit ns header");
-    assert!(header.contains("struct Channels"), "const-only sort must emit a struct:\n{header}");
+    assert!(
+        header.contains("struct Channels"),
+        "const-only sort must emit a struct:\n{header}"
+    );
     assert!(
         header.contains("static constexpr int64_t BROADCAST = -1;"),
         "const-only sort must carry its const:\n{header}"
     );
-    compile_header(&header, "wi533only", "(void)test::wi533only::Channels::BROADCAST;");
+    compile_header(
+        &header,
+        "wi533only",
+        "(void)test::wi533only::Channels::BROADCAST;",
+    );
 }
 
 #[test]
@@ -217,8 +240,16 @@ fn namespace_and_sort_body_consts_do_not_collide() {
         header.contains("static constexpr int64_t BROADCAST = -1;"),
         "sort-body const as a struct member:\n{header}"
     );
-    assert_eq!(header.matches("NS_LEVEL").count(), 1, "NS_LEVEL must appear once:\n{header}");
-    assert_eq!(header.matches("BROADCAST").count(), 1, "BROADCAST must appear once:\n{header}");
+    assert_eq!(
+        header.matches("NS_LEVEL").count(),
+        1,
+        "NS_LEVEL must appear once:\n{header}"
+    );
+    assert_eq!(
+        header.matches("BROADCAST").count(),
+        1,
+        "BROADCAST must appear once:\n{header}"
+    );
     assert!(
         !header.contains("inline constexpr int64_t BROADCAST"),
         "the sort-body const must not also emit at namespace scope:\n{header}"

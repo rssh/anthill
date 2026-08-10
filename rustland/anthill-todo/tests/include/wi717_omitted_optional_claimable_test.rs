@@ -8,7 +8,6 @@
 //! listed"; `next` resolves the KB `claimable` rule directly, so it is the
 //! CLI surface where the drop showed.
 
-
 use std::process::Command;
 
 use crate::common::setup_domainless_project;
@@ -42,7 +41,11 @@ fn omitted_optionals_stay_claimable_and_listed() {
         .args(["-d", dir, "next", "--all"])
         .output()
         .unwrap();
-    assert!(next.status.success(), "next failed: {}", String::from_utf8_lossy(&next.stderr));
+    assert!(
+        next.status.success(),
+        "next failed: {}",
+        String::from_utf8_lossy(&next.stderr)
+    );
     let next_out = String::from_utf8_lossy(&next.stdout);
     assert!(
         next_out.contains("WI-001"),
@@ -58,10 +61,20 @@ fn omitted_optionals_stay_claimable_and_listed() {
         .args(["-d", dir, "list"])
         .output()
         .unwrap();
-    assert!(list.status.success(), "list failed: {}", String::from_utf8_lossy(&list.stderr));
+    assert!(
+        list.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
     let list_out = String::from_utf8_lossy(&list.stdout);
-    assert!(list_out.contains("WI-001"), "WI-001 missing from list: {list_out}");
-    assert!(list_out.contains("WI-002"), "WI-002 missing from list: {list_out}");
+    assert!(
+        list_out.contains("WI-001"),
+        "WI-001 missing from list: {list_out}"
+    );
+    assert!(
+        list_out.contains("WI-002"),
+        "WI-002 missing from list: {list_out}"
+    );
     assert!(
         !list_out.contains("-- blocked --"),
         "neither item has unmet deps, so no blocked section: {list_out}"

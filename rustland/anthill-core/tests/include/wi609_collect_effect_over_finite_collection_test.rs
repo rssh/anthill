@@ -35,7 +35,9 @@ namespace test.wi609b
     collect(src)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "collect(src) over a FiniteCollection-typed param should thread its result \
@@ -76,7 +78,9 @@ namespace test.wi609
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "a combinator's collect body over a FiniteCollection source should thread \

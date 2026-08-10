@@ -2,7 +2,6 @@
 //! the named-list sequence view (topo order, `(blocked: …)`, `<- next`,
 //! `[missing]` rows), mirroring the native run_list_tagged byte for byte.
 
-
 use std::process::Command;
 
 use crate::common::setup_project;
@@ -50,18 +49,30 @@ fact Tag(workitem: "WI-999", name: "seq")
 fn run_bundle(proj: &std::path::Path, args: &[&str]) -> String {
     let mut full = vec!["-d", proj.to_str().unwrap(), "--anthill"];
     full.extend_from_slice(args);
-    let out = Command::new(BIN).args(&full).output().expect("run anthill-todo");
-    assert!(out.status.success(),
-        "command failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo");
+    assert!(
+        out.status.success(),
+        "command failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 fn run_native(proj: &std::path::Path, args: &[&str]) -> String {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    let out = Command::new(BIN).args(&full).output().expect("run anthill-todo");
-    assert!(out.status.success(),
-        "command failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo");
+    assert!(
+        out.status.success(),
+        "command failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 

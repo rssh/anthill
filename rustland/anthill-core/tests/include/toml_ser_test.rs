@@ -1,15 +1,14 @@
 /// Integration tests for term serialization (TOML/JSON ↔ KB terms).
-
 use anthill_core::intern::Symbol;
+use anthill_core::kb::load;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load;
 use anthill_core::parse;
-use anthill_core::persistence::term_ser;
 use anthill_core::persistence::print::TermPrinter;
+use anthill_core::persistence::term_ser;
 
-use smallvec::SmallVec;
 use anthill_core::kb::ClauseKind;
+use smallvec::SmallVec;
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -27,7 +26,8 @@ use anthill_core::kb::ClauseKind;
 /// nothing at all. Loading the real stdlib is what makes `List[T = String]`
 /// mean a parametric `anthill.prelude.List`.
 fn build_test_kb() -> KnowledgeBase {
-    crate::common::load_kb_with(r#"
+    crate::common::load_kb_with(
+        r#"
 namespace test
 
 import anthill.prelude.{List, String}
@@ -52,7 +52,8 @@ sort Project {
     entity Project(name: String, language: String)
 }
 end
-"#)
+"#,
+    )
 }
 
 // ── Primitive tests ─────────────────────────────────────────────
@@ -71,12 +72,12 @@ name = "my-app"
 language = "rust"
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load_toml should succeed");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load_toml should succeed");
     assert_eq!(count, 1);
 
     // Query by functor
-    let project_sym = kb.try_resolve_symbol("test.Project")
+    let project_sym = kb
+        .try_resolve_symbol("test.Project")
         .expect("Project should be resolved");
     let results = kb.rules_by_functor(project_sym);
     assert_eq!(results.len(), 1);
@@ -97,8 +98,7 @@ fn load_json_primitives() {
         "data": { "name": "my-app", "language": "rust" }
     }"#;
 
-    let count = term_ser::load_json(&mut kb, json_src, domain)
-        .expect("load_json should succeed");
+    let count = term_ser::load_json(&mut kb, json_src, domain).expect("load_json should succeed");
     assert_eq!(count, 1);
 }
 
@@ -127,11 +127,11 @@ y = 3.14
 flag = true
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load int/float/bool");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load int/float/bool");
     assert_eq!(count, 1);
 
-    let nums_sym = kb.try_resolve_symbol("test.Nums")
+    let nums_sym = kb
+        .try_resolve_symbol("test.Nums")
         .expect("Nums should be resolved");
     let results = kb.rules_by_functor(nums_sym);
     assert_eq!(results.len(), 1);
@@ -155,11 +155,12 @@ status = "Open"
 tags = ["rust", "core"]
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load_toml with list should succeed");
+    let count =
+        term_ser::load_toml(&mut kb, toml_src, domain).expect("load_toml with list should succeed");
     assert_eq!(count, 1);
 
-    let task_sym = kb.try_resolve_symbol("test.Task")
+    let task_sym = kb
+        .try_resolve_symbol("test.Task")
         .expect("Task should be resolved");
     let results = kb.rules_by_functor(task_sym);
     assert_eq!(results.len(), 1);
@@ -169,7 +170,10 @@ tags = ["rust", "core"]
     // Ground cons/nil spines print as list literals (the round-trippable
     // form — a bare `nil`/`cons` print reloads as a name reference that
     // no longer unifies with list patterns; see TermPrinter).
-    assert!(text.contains("[\"rust\", \"core\"]"), "expected list literal in: {text}");
+    assert!(
+        text.contains("[\"rust\", \"core\"]"),
+        "expected list literal in: {text}"
+    );
 }
 
 // ── Multiple entries ────────────────────────────────────────────
@@ -196,11 +200,11 @@ status = "Closed"
 tags = ["urgent"]
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load multiple entries");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load multiple entries");
     assert_eq!(count, 2);
 
-    let task_sym = kb.try_resolve_symbol("test.Task")
+    let task_sym = kb
+        .try_resolve_symbol("test.Task")
         .expect("Task should be resolved");
     let results = kb.rules_by_functor(task_sym);
     assert_eq!(results.len(), 2);
@@ -224,8 +228,7 @@ status = "Open"
 tags = [{ ToolPasses = "cargo-test" }, { Compiles = "src" }]
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load with constructors");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load with constructors");
     assert_eq!(count, 1);
 }
 
@@ -247,12 +250,10 @@ status = "?s"
 tags = []
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load with variables");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load with variables");
     assert_eq!(count, 1);
 
-    let task_sym = kb.try_resolve_symbol("test.Task")
-        .expect("Task resolved");
+    let task_sym = kb.try_resolve_symbol("test.Task").expect("Task resolved");
     let results = kb.rules_by_functor(task_sym);
     assert_eq!(results.len(), 1);
 
@@ -276,11 +277,11 @@ name = "\\?not-a-variable"
 language = "rust"
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load escaped variable");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load escaped variable");
     assert_eq!(count, 1);
 
-    let project_sym = kb.try_resolve_symbol("test.Project")
+    let project_sym = kb
+        .try_resolve_symbol("test.Project")
         .expect("Project resolved");
     let results = kb.rules_by_functor(project_sym);
     assert_eq!(results.len(), 1);
@@ -289,7 +290,10 @@ language = "rust"
     let printer = TermPrinter::new(&kb);
     let text = printer.print_term(head);
     // Should contain the literal "?not-a-variable" as a string, not a logic variable
-    assert!(text.contains("\"?not-a-variable\""), "expected quoted escaped string in: {text}");
+    assert!(
+        text.contains("\"?not-a-variable\""),
+        "expected quoted escaped string in: {text}"
+    );
 }
 
 // ── JSON tests ──────────────────────────────────────────────────
@@ -317,8 +321,7 @@ fn load_json_full_envelope() {
         ]
     }"#;
 
-    let count = term_ser::load_json(&mut kb, json_src, domain)
-        .expect("load JSON envelope");
+    let count = term_ser::load_json(&mut kb, json_src, domain).expect("load JSON envelope");
     assert_eq!(count, 2);
 }
 
@@ -347,14 +350,13 @@ status = "Open"
 tags = []
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("load multi-section");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load multi-section");
     assert_eq!(count, 2, "should load 1 project + 1 task");
 
-    let project_sym = kb.try_resolve_symbol("test.Project")
+    let project_sym = kb
+        .try_resolve_symbol("test.Project")
         .expect("Project resolved");
-    let task_sym = kb.try_resolve_symbol("test.Task")
-        .expect("Task resolved");
+    let task_sym = kb.try_resolve_symbol("test.Task").expect("Task resolved");
     assert_eq!(kb.rules_by_functor(project_sym).len(), 1);
     assert_eq!(kb.rules_by_functor(task_sym).len(), 1);
 }
@@ -363,7 +365,8 @@ tags = []
 
 /// Build a Project("my-app", "rust") fact and return its RuleId.
 fn assert_project_fact(kb: &mut KnowledgeBase, domain: Symbol) -> anthill_core::kb::RuleId {
-    let project_sym = kb.try_resolve_symbol("test.Project")
+    let project_sym = kb
+        .try_resolve_symbol("test.Project")
         .expect("Project resolved");
     let name_sym = kb.intern("name");
     let lang_sym = kb.intern("language");
@@ -393,9 +396,15 @@ fn serialize_simple_facts_toml() {
 
     let toml_str = term_ser::serialize_toml(&kb, "test.Project", &[rid])
         .expect("serialize_toml should succeed");
-    assert!(toml_str.contains("my-app"), "expected 'my-app' in: {toml_str}");
+    assert!(
+        toml_str.contains("my-app"),
+        "expected 'my-app' in: {toml_str}"
+    );
     assert!(toml_str.contains("rust"), "expected 'rust' in: {toml_str}");
-    assert!(toml_str.contains("[meta]"), "expected [meta] in: {toml_str}");
+    assert!(
+        toml_str.contains("[meta]"),
+        "expected [meta] in: {toml_str}"
+    );
 }
 
 #[test]
@@ -406,8 +415,14 @@ fn serialize_simple_facts_json() {
 
     let json_str = term_ser::serialize_json(&kb, "test.Project", &[rid])
         .expect("serialize_json should succeed");
-    assert!(json_str.contains("my-app"), "expected 'my-app' in: {json_str}");
-    assert!(json_str.contains("\"meta\""), "expected 'meta' in: {json_str}");
+    assert!(
+        json_str.contains("my-app"),
+        "expected 'my-app' in: {json_str}"
+    );
+    assert!(
+        json_str.contains("\"meta\""),
+        "expected 'meta' in: {json_str}"
+    );
 }
 
 #[test]
@@ -434,15 +449,19 @@ tags = ["rust", "core"]
     let facts = kb.rules_by_functor(task_sym);
     assert_eq!(facts.len(), 1);
 
-    let json_str = term_ser::serialize_json(&kb, "test.Task", &facts)
-        .expect("serialize_json should succeed");
+    let json_str =
+        term_ser::serialize_json(&kb, "test.Task", &facts).expect("serialize_json should succeed");
     // The fixture's strings ("T-001", "Test task", "Open", "rust", "core")
     // contain no "nil"; a stray terminator element would surface as one.
-    assert!(json_str.contains("rust") && json_str.contains("core"),
-        "expected the list elements in: {json_str}");
-    assert!(!json_str.contains("nil"),
+    assert!(
+        json_str.contains("rust") && json_str.contains("core"),
+        "expected the list elements in: {json_str}"
+    );
+    assert!(
+        !json_str.contains("nil"),
         "tags array must end at the `nil` terminator, not append it as an \
-         element; got: {json_str}");
+         element; got: {json_str}"
+    );
 }
 
 // ── Round-trip tests ────────────────────────────────────────────
@@ -461,28 +480,27 @@ name = "my-app"
 language = "rust"
 "#;
 
-    let count = term_ser::load_toml(&mut kb, toml_src, domain)
-        .expect("initial load");
+    let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("initial load");
     assert_eq!(count, 1);
 
     // Find the fact
-    let project_sym = kb.try_resolve_symbol("test.Project")
+    let project_sym = kb
+        .try_resolve_symbol("test.Project")
         .expect("Project resolved");
     let facts = kb.rules_by_functor(project_sym);
     assert_eq!(facts.len(), 1);
 
     // Serialize
-    let toml_out = term_ser::serialize_toml(&kb, "test.Project", &facts)
-        .expect("serialize");
+    let toml_out = term_ser::serialize_toml(&kb, "test.Project", &facts).expect("serialize");
 
     // Reload into fresh KB
     let mut kb2 = build_test_kb();
     let domain2 = kb2.intern("test_domain2");
-    let count2 = term_ser::load_toml(&mut kb2, &toml_out, domain2)
-        .expect("reload");
+    let count2 = term_ser::load_toml(&mut kb2, &toml_out, domain2).expect("reload");
     assert_eq!(count2, 1);
 
-    let project_sym2 = kb2.try_resolve_symbol("test.Project")
+    let project_sym2 = kb2
+        .try_resolve_symbol("test.Project")
         .expect("Project resolved in kb2");
     let facts2 = kb2.rules_by_functor(project_sym2);
     assert_eq!(facts2.len(), 1);
@@ -498,21 +516,19 @@ fn round_trip_json() {
         "data": { "name": "round-trip", "language": "anthill" }
     }"#;
 
-    let count = term_ser::load_json(&mut kb, json_src, domain)
-        .expect("initial load");
+    let count = term_ser::load_json(&mut kb, json_src, domain).expect("initial load");
     assert_eq!(count, 1);
 
-    let project_sym = kb.try_resolve_symbol("test.Project")
+    let project_sym = kb
+        .try_resolve_symbol("test.Project")
         .expect("Project resolved");
     let facts = kb.rules_by_functor(project_sym);
 
-    let json_out = term_ser::serialize_json(&kb, "test.Project", &facts)
-        .expect("serialize");
+    let json_out = term_ser::serialize_json(&kb, "test.Project", &facts).expect("serialize");
 
     let mut kb2 = build_test_kb();
     let domain2 = kb2.intern("test_domain2");
-    let count2 = term_ser::load_json(&mut kb2, &json_out, domain2)
-        .expect("reload");
+    let count2 = term_ser::load_json(&mut kb2, &json_out, domain2).expect("reload");
     assert_eq!(count2, 1);
 }
 
@@ -664,16 +680,22 @@ x = 1
 /// error loudly rather than round-trip to the wrong value.
 #[test]
 fn serialize_nested_option_some_none_errors_loudly() {
-    let mut kb = crate::common::load_kb_with(r#"
+    let mut kb = crate::common::load_kb_with(
+        r#"
 namespace test
 import anthill.prelude.{Option, Int64}
 sort Box { entity Box(inner: Option[T = Option[T = Int64]]) }
 end
-"#);
+"#,
+    );
 
     // Build `inner = some(value: none())` directly (the lossy shape).
-    let none_sym = kb.try_resolve_symbol("anthill.prelude.Option.none").expect("Option.none");
-    let some_sym = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
+    let none_sym = kb
+        .try_resolve_symbol("anthill.prelude.Option.none")
+        .expect("Option.none");
+    let some_sym = kb
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .expect("Option.some");
     let value_sym = kb.intern("value");
     let none_t = kb.alloc(Term::Ref(none_sym));
     let mut some_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
@@ -711,17 +733,22 @@ end
 /// fields. It must serialize as an ordinary entity instead.
 #[test]
 fn serialize_user_entity_named_cons_is_not_flattened_as_list() {
-    let mut kb = crate::common::load_kb_with(r#"
+    let mut kb = crate::common::load_kb_with(
+        r#"
 namespace test
 import anthill.prelude.{List, Int64}
 sort Holder { entity Holder(c: Pair, tags: List[T = Int64]) }
 sort Pair { entity cons(x: Int64, y: Int64) }
 end
-"#);
+"#,
+    );
 
-    let cons_sym = kb.try_resolve_symbol("test.Pair.cons").expect("test.Pair.cons resolved");
+    let cons_sym = kb
+        .try_resolve_symbol("test.Pair.cons")
+        .expect("test.Pair.cons resolved");
     assert_ne!(
-        kb.qualified_name_of(cons_sym), "anthill.prelude.List.cons",
+        kb.qualified_name_of(cons_sym),
+        "anthill.prelude.List.cons",
         "fixture must use a DISTINCT user `cons`, not the prelude one",
     );
 
@@ -739,7 +766,9 @@ end
         named_args: cons_named,
     });
 
-    let holder_sym = kb.try_resolve_symbol("test.Holder").expect("Holder resolved");
+    let holder_sym = kb
+        .try_resolve_symbol("test.Holder")
+        .expect("Holder resolved");
     let c_sym = kb.intern("c");
     let mut holder_named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
     holder_named.push((c_sym, cons_term));
@@ -758,7 +787,10 @@ end
         "user `cons` entity must keep its name (not be flattened as a list), got: {json}"
     );
     assert!(
-        json.contains("\"x\"") && json.contains("\"y\"") && json.contains('1') && json.contains('2'),
+        json.contains("\"x\"")
+            && json.contains("\"y\"")
+            && json.contains('1')
+            && json.contains('2'),
         "user `cons` fields must survive serialization, got: {json}"
     );
 }
@@ -769,12 +801,14 @@ end
 /// never discrim-matched the named pattern; the deserializer must error loudly.
 #[test]
 fn deserialize_multifield_ctor_scalar_payload_errors_loudly() {
-    let mut kb = crate::common::load_kb_with(r#"
+    let mut kb = crate::common::load_kb_with(
+        r#"
 namespace test
 sort Rec { entity Rec(outcome: Outcome) }
 sort Outcome { entity Verified(at: String, by: String)  entity Pending }
 end
-"#);
+"#,
+    );
 
     let domain = kb.intern("d");
     // `Verified` needs `at` + `by`; a bare scalar can't supply them.
@@ -785,7 +819,8 @@ end
     let errs = term_ser::load_json(&mut kb, json_src, domain)
         .expect_err("multi-field ctor with a scalar payload must error loudly");
     assert!(
-        errs.iter().any(|e| matches!(e, term_ser::SerError::InvalidValue(_))),
+        errs.iter()
+            .any(|e| matches!(e, term_ser::SerError::InvalidValue(_))),
         "expected InvalidValue for foreign positional payload, got: {errs:?}"
     );
 }

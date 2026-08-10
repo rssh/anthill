@@ -41,7 +41,11 @@ fn fully_var_self_referential_constraint_holds_without_self_loop() {
         "{GRAPH}\n  constraint no_self_loop: no ?p -: edge(from: ?p, to: ?p)\n  fact edge(from: a, to: b)\nend\n"
     ))
     .unwrap_or_else(|errs| panic!("self-loop-free data must satisfy the constraint, got: {errs:?}"));
-    assert_eq!(kb.guard_count(), 1, "the constraint should register one guard");
+    assert_eq!(
+        kb.guard_count(),
+        1,
+        "the constraint should register one guard"
+    );
 }
 
 /// The exclusion half stays honest: a REAL self-loop data fact violates the
@@ -104,6 +108,9 @@ fn var_query_over_entity_functor_returns_only_data_facts() {
         Term::Fn { functor, .. } => *functor,
         other => panic!("expected an entity binding for ?from, got {other:?}"),
     };
-    assert_ne!(bound_sym, node_sym, "?from must not bind to the field TYPE Node");
+    assert_ne!(
+        bound_sym, node_sym,
+        "?from must not bind to the field TYPE Node"
+    );
     assert_eq!(bound_sym, a_sym, "?from must bind to the entity a");
 }

@@ -1,3 +1,7 @@
+use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 /// Integration tests for operation binding via instantiation substitution.
 ///
 /// Tests load source files into a KB and verify:
@@ -5,13 +9,7 @@
 /// - SortRequiresInfo spec (SortView) completed with all bindings
 /// - resolve_sort_instantiation_param builtin extracts bindings
 /// - auto-bind works for same-named operations
-
-
 use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Term, TermId, Var};
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::resolve::ResolveConfig;
 
 use smallvec::SmallVec;
 
@@ -24,12 +22,12 @@ fn load_monoid_kb() -> KnowledgeBase {
     let monoid_path = testcases_dir.join("fact-substitution/monoid.anthill");
     files.push(monoid_path);
 
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
 
@@ -46,7 +44,10 @@ fn load_monoid_kb() -> KnowledgeBase {
 }
 
 fn default_config() -> ResolveConfig {
-    ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
+    ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    }
 }
 
 /// Create a fresh logic variable term with the given debug name.
@@ -58,27 +59,21 @@ fn make_var(kb: &mut KnowledgeBase, name: &str) -> TermId {
 
 /// Build a SortRequiresInfo query with 2 named args (sort_ref, spec).
 /// Missing args are filled with fresh variables.
-fn make_requires_query(
-    kb: &mut KnowledgeBase,
-    sort_ref: TermId,
-    spec: TermId,
-) -> TermId {
+fn make_requires_query(kb: &mut KnowledgeBase, sort_ref: TermId, spec: TermId) -> TermId {
     let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
     let sort_ref_sym = kb.intern("sort_ref");
     let spec_sym = kb.intern("spec");
     kb.alloc(Term::Fn {
         functor: requires_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (sort_ref_sym, sort_ref),
-            (spec_sym, spec),
-        ]),
+        named_args: SmallVec::from_slice(&[(sort_ref_sym, sort_ref), (spec_sym, spec)]),
     })
 }
 
 /// Build a query goal with positional args.
 fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId {
-    let sym = kb.try_resolve_symbol(name)
+    let sym = kb
+        .try_resolve_symbol(name)
         .unwrap_or_else(|| kb.intern(name));
     kb.alloc(Term::Fn {
         functor: sym,
@@ -88,21 +83,35 @@ fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId 
 }
 
 /// Find a named arg key symbol by short name.
-fn find_named_arg_sym_by_short(kb: &KnowledgeBase, named_args: &[(anthill_core::intern::Symbol, TermId)], short: &str) -> Option<anthill_core::intern::Symbol> {
-    named_args.iter().find(|(sym, _)| {
-        let name = kb.local_name_of(*sym);
-        let s = name.rsplit('.').next().unwrap_or(name);
-        s == short
-    }).map(|(sym, _)| *sym)
+fn find_named_arg_sym_by_short(
+    kb: &KnowledgeBase,
+    named_args: &[(anthill_core::intern::Symbol, TermId)],
+    short: &str,
+) -> Option<anthill_core::intern::Symbol> {
+    named_args
+        .iter()
+        .find(|(sym, _)| {
+            let name = kb.local_name_of(*sym);
+            let s = name.rsplit('.').next().unwrap_or(name);
+            s == short
+        })
+        .map(|(sym, _)| *sym)
 }
 
 /// Find a named arg by its short name (last segment of qualified name).
-fn find_named_arg_by_short(kb: &KnowledgeBase, named_args: &[(anthill_core::intern::Symbol, TermId)], short: &str) -> Option<TermId> {
-    named_args.iter().find(|(sym, _)| {
-        let name = kb.local_name_of(*sym);
-        let s = name.rsplit('.').next().unwrap_or(name);
-        s == short
-    }).map(|(_, tid)| *tid)
+fn find_named_arg_by_short(
+    kb: &KnowledgeBase,
+    named_args: &[(anthill_core::intern::Symbol, TermId)],
+    short: &str,
+) -> Option<TermId> {
+    named_args
+        .iter()
+        .find(|(sym, _)| {
+            let name = kb.local_name_of(*sym);
+            let s = name.rsplit('.').next().unwrap_or(name);
+            s == short
+        })
+        .map(|(_, tid)| *tid)
 }
 
 /// Extract the short name from a term (works for both Fn and Ref).
@@ -126,25 +135,45 @@ fn extract_short_name(kb: &KnowledgeBase, tid: TermId) -> String {
 fn base_subst_computed_for_monoid() {
     let kb = load_monoid_kb();
     let monoid_sym = kb.resolve_symbol("test.monoid.Monoid");
-    let base = kb.sort_base_subst(monoid_sym)
+    let base = kb
+        .sort_base_subst(monoid_sym)
         .expect("Monoid should have a base_subst");
 
     // Monoid has 3 slots: T (param), combine (op), identity (op)
-    assert_eq!(base.len(), 3, "Monoid should have 3 slots (T, combine, identity)");
+    assert_eq!(
+        base.len(),
+        3,
+        "Monoid should have 3 slots (T, combine, identity)"
+    );
 
-    let slot_names: Vec<&str> = base.iter()
+    let slot_names: Vec<&str> = base
+        .iter()
         .map(|(sym, _)| kb.local_name_of(*sym))
         .map(|n| n.rsplit('.').next().unwrap_or(n))
         .collect();
 
-    assert!(slot_names.contains(&"T"), "should contain T param, got: {:?}", slot_names);
-    assert!(slot_names.contains(&"combine"), "should contain combine op, got: {:?}", slot_names);
-    assert!(slot_names.contains(&"identity"), "should contain identity op, got: {:?}", slot_names);
+    assert!(
+        slot_names.contains(&"T"),
+        "should contain T param, got: {:?}",
+        slot_names
+    );
+    assert!(
+        slot_names.contains(&"combine"),
+        "should contain combine op, got: {:?}",
+        slot_names
+    );
+    assert!(
+        slot_names.contains(&"identity"),
+        "should contain identity op, got: {:?}",
+        slot_names
+    );
 
     // Each value should be Ref(same_sym)
     for (sym, tid) in base {
         match kb.get_term(*tid) {
-            Term::Ref(ref_sym) => assert_eq!(*ref_sym, *sym, "base subst value should be Ref(same_sym)"),
+            Term::Ref(ref_sym) => {
+                assert_eq!(*ref_sym, *sym, "base subst value should be Ref(same_sym)")
+            }
             other => panic!("base subst value should be Ref, got: {:?}", other),
         }
     }
@@ -169,32 +198,50 @@ fn requires_spec_inst_completed_for_int_add() {
 
     // spec should be SortView(Monoid(), T=Int64(), combine=Ref(add), identity=Ref(zero))
     match kb.get_term(inst_tid).clone() {
-        Term::Fn { ref functor, ref named_args, .. } => {
+        Term::Fn {
+            ref functor,
+            ref named_args,
+            ..
+        } => {
             let functor_name = kb.local_name_of(*functor);
             assert!(
                 functor_name == "SortView" || functor_name.ends_with(".SortView"),
                 "spec should be SortView, got: {functor_name}"
             );
             // Should have all 3 bindings
-            assert_eq!(named_args.len(), 3, "spec should have 3 named args (T, combine, identity), got {}", named_args.len());
+            assert_eq!(
+                named_args.len(),
+                3,
+                "spec should have 3 named args (T, combine, identity), got {}",
+                named_args.len()
+            );
 
             // Check T binding -> Int64
             let t_tid = find_named_arg_by_short(&kb, &named_args, "T");
             assert!(t_tid.is_some(), "should have T binding");
             let t_short = extract_short_name(&kb, t_tid.unwrap());
-            assert_eq!(t_short, "Int64", "T should be bound to Int64, got: {t_short}");
+            assert_eq!(
+                t_short, "Int64",
+                "T should be bound to Int64, got: {t_short}"
+            );
 
             // Check combine binding -> add
             let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
             assert!(c_tid.is_some(), "should have combine binding");
             let c_short = extract_short_name(&kb, c_tid.unwrap());
-            assert_eq!(c_short, "add", "combine should be bound to add, got: {c_short}");
+            assert_eq!(
+                c_short, "add",
+                "combine should be bound to add, got: {c_short}"
+            );
 
             // Check identity binding -> zero
             let i_tid = find_named_arg_by_short(&kb, &named_args, "identity");
             assert!(i_tid.is_some(), "should have identity binding");
             let i_short = extract_short_name(&kb, i_tid.unwrap());
-            assert_eq!(i_short, "zero", "identity should be bound to zero, got: {i_short}");
+            assert_eq!(
+                i_short, "zero",
+                "identity should be bound to zero, got: {i_short}"
+            );
         }
         _ => panic!("spec should be Fn term"),
     }
@@ -223,13 +270,19 @@ fn requires_spec_inst_completed_for_int_mul() {
             let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
             assert!(c_tid.is_some(), "should have combine binding");
             let c_short = extract_short_name(&kb, c_tid.unwrap());
-            assert_eq!(c_short, "multiply", "combine should be bound to multiply, got: {c_short}");
+            assert_eq!(
+                c_short, "multiply",
+                "combine should be bound to multiply, got: {c_short}"
+            );
 
             // Check identity -> one
             let i_tid = find_named_arg_by_short(&kb, &named_args, "identity");
             assert!(i_tid.is_some(), "should have identity binding");
             let i_short = extract_short_name(&kb, i_tid.unwrap());
-            assert_eq!(i_short, "one", "identity should be bound to one, got: {i_short}");
+            assert_eq!(
+                i_short, "one",
+                "identity should be bound to one, got: {i_short}"
+            );
         }
         _ => panic!("spec should be Fn term"),
     }
@@ -254,17 +307,23 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     // Extract the T named arg key from the spec (it might be scoped as Monoid.T)
     let t_key_sym = match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
-            find_named_arg_sym_by_short(&kb, named_args, "T")
-                .expect("spec should have T")
+            find_named_arg_sym_by_short(&kb, named_args, "T").expect("spec should have T")
         }
         _ => panic!("spec should be Fn"),
     };
     let t_ref = kb.alloc(Term::Ref(t_key_sym));
     let var_val = make_var(&mut kb, "val");
-    let param_goal = make_goal(&mut kb, "anthill.reflect.resolve_sort_instantiation_param", &[inst_tid, t_ref, var_val]);
+    let param_goal = make_goal(
+        &mut kb,
+        "anthill.reflect.resolve_sort_instantiation_param",
+        &[inst_tid, t_ref, var_val],
+    );
 
     let solutions2 = kb.resolve(&[param_goal], &config);
-    assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for T");
+    assert!(
+        !solutions2.is_empty(),
+        "resolve_sort_instantiation_param should succeed for T"
+    );
 
     let val_tid = kb.reify(var_val, &solutions2[0].subst).expect_term();
     // WI-391: a concrete bare-sort binding value is the canonical `Ref(Int64)` (the
@@ -274,9 +333,15 @@ fn resolve_sort_inst_param_extracts_type_binding() {
     let name = match kb.get_term(val_tid) {
         Term::Ref(s) => kb.local_name_of(*s).to_owned(),
         Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
-        other => panic!("T value should be Int64 (Ref(Int64) or Int64()), got: {:?}", other),
+        other => panic!(
+            "T value should be Int64 (Ref(Int64) or Int64()), got: {:?}",
+            other
+        ),
     };
-    assert!(name == "Int64" || name.ends_with(".Int64"), "T should resolve to Int64, got: {name}");
+    assert!(
+        name == "Int64" || name.ends_with(".Int64"),
+        "T should resolve to Int64, got: {name}"
+    );
 }
 
 #[test]
@@ -295,18 +360,23 @@ fn resolve_sort_inst_param_extracts_operation_binding() {
 
     // Extract the combine named arg key from spec
     let combine_key_sym = match kb.get_term(inst_tid).clone() {
-        Term::Fn { ref named_args, .. } => {
-            find_named_arg_sym_by_short(&kb, named_args, "combine")
-                .expect("spec should have combine")
-        }
+        Term::Fn { ref named_args, .. } => find_named_arg_sym_by_short(&kb, named_args, "combine")
+            .expect("spec should have combine"),
         _ => panic!("spec should be Fn"),
     };
     let combine_ref = kb.alloc(Term::Ref(combine_key_sym));
     let var_val = make_var(&mut kb, "val");
-    let param_goal = make_goal(&mut kb, "anthill.reflect.resolve_sort_instantiation_param", &[inst_tid, combine_ref, var_val]);
+    let param_goal = make_goal(
+        &mut kb,
+        "anthill.reflect.resolve_sort_instantiation_param",
+        &[inst_tid, combine_ref, var_val],
+    );
 
     let solutions2 = kb.resolve(&[param_goal], &config);
-    assert!(!solutions2.is_empty(), "resolve_sort_instantiation_param should succeed for combine");
+    assert!(
+        !solutions2.is_empty(),
+        "resolve_sort_instantiation_param should succeed for combine"
+    );
 
     let val_tid = kb.reify(var_val, &solutions2[0].subst).expect_term();
     let short = extract_short_name(&kb, val_tid);
@@ -327,7 +397,10 @@ fn auto_bind_same_named_operations() {
 
     let config = default_config();
     let solutions = kb.resolve(&[goal], &config);
-    assert!(!solutions.is_empty(), "should find Requires for AutoBindTest");
+    assert!(
+        !solutions.is_empty(),
+        "should find Requires for AutoBindTest"
+    );
 
     let sol = &solutions[0];
     let inst_tid = kb.reify(var_inst, &sol.subst).expect_term();
@@ -335,21 +408,29 @@ fn auto_bind_same_named_operations() {
     match kb.get_term(inst_tid).clone() {
         Term::Fn { ref named_args, .. } => {
             // Should have all 3 bindings: T, combine, identity
-            assert_eq!(named_args.len(), 3, "spec should have 3 named args after auto-bind");
-
-
+            assert_eq!(
+                named_args.len(),
+                3,
+                "spec should have 3 named args after auto-bind"
+            );
 
             // Check combine was auto-bound
             let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
             assert!(c_tid.is_some(), "combine should be auto-bound");
             let c_short = extract_short_name(&kb, c_tid.unwrap());
-            assert_eq!(c_short, "combine", "auto-bound combine should point to AutoBindTest's combine, got: {c_short}");
+            assert_eq!(
+                c_short, "combine",
+                "auto-bound combine should point to AutoBindTest's combine, got: {c_short}"
+            );
 
             // Check identity was auto-bound
             let i_tid = find_named_arg_by_short(&kb, &named_args, "identity");
             assert!(i_tid.is_some(), "identity should be auto-bound");
             let i_short = extract_short_name(&kb, i_tid.unwrap());
-            assert_eq!(i_short, "identity", "auto-bound identity should point to AutoBindTest's identity, got: {i_short}");
+            assert_eq!(
+                i_short, "identity",
+                "auto-bound identity should point to AutoBindTest's identity, got: {i_short}"
+            );
         }
         _ => panic!("spec should be Fn term"),
     }

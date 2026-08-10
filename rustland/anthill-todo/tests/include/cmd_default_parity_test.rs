@@ -30,7 +30,16 @@ const SCENARIO: &[&[&str]] = &[
     &["add", "base work", "--acceptance", "cargo-test"],
     &["add", "second work", "--depends", "WI-001", "--tag", "seq"],
     &["add", "third work", "--depends", "WI-002", "--tag", "seq"],
-    &["insert", "prereq for third", "--before", "WI-003", "--depends", "WI-001", "--tag", "seq"],
+    &[
+        "insert",
+        "prereq for third",
+        "--before",
+        "WI-003",
+        "--depends",
+        "WI-001",
+        "--tag",
+        "seq",
+    ],
     &["tag", "WI-001", "seq"],
     &["status"],
     &["list"],
@@ -43,7 +52,13 @@ const SCENARIO: &[&[&str]] = &[
     &["--agent", "claude", "claim", "WI-001"],
     &["--agent", "claude", "deliver", "WI-001"],
     &["verify", "WI-001"],
-    &["--agent", "claude", "feedback", "WI-002", "some feedback text"],
+    &[
+        "--agent",
+        "claude",
+        "feedback",
+        "WI-002",
+        "some feedback text",
+    ],
     &["show", "WI-002"],
     &["update", "WI-002", "--description", "second work updated"],
     &["add-dependency", "WI-003", "WI-001"],
@@ -67,7 +82,11 @@ fn default_path_reproduces_the_golden_transcript() {
         .arg("init")
         .output()
         .expect("run init");
-    assert!(init.status.success(), "init failed: {}", String::from_utf8_lossy(&init.stderr));
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
 
     let mut transcript = String::new();
     for args in SCENARIO {
@@ -77,7 +96,10 @@ fn default_path_reproduces_the_golden_transcript() {
 
         let mut full: Vec<&str> = vec!["-d", proj.to_str().unwrap()];
         full.extend_from_slice(args);
-        let out = Command::new(BIN).args(&full).output().expect("run anthill-todo");
+        let out = Command::new(BIN)
+            .args(&full)
+            .output()
+            .expect("run anthill-todo");
 
         // Mirror the capture script: trailing newlines trimmed, stdout
         // before stderr, each section emitted only when non-empty.

@@ -35,7 +35,6 @@
 //! (WI-926), but that symbol is NOT marked a constructor (measured), so its scope
 //! term stayed an `Fn` and its members answered before this change as well.
 
-
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, Var};
 use anthill_core::kb::KnowledgeBase;
@@ -87,7 +86,10 @@ fn an_operation_names_its_declaring_sort() {
         !kb.is_constructor_symbol(kb.try_resolve_symbol("wi984.Tank").unwrap()),
         "precondition: this scope's owner is NOT a constructor",
     );
-    assert_eq!(scope_qn(&kb, "wi984.Tank.fill").as_deref(), Some("wi984.Tank"));
+    assert_eq!(
+        scope_qn(&kb, "wi984.Tank.fill").as_deref(),
+        Some("wi984.Tank")
+    );
 }
 
 /// `scope(?sym, ?owner)` — the LANGUAGE-level reader of the same projection, which
@@ -97,8 +99,12 @@ fn an_operation_names_its_declaring_sort() {
 #[test]
 fn the_scope_builtin_answers_for_a_constructor_owned_scope() {
     let mut kb = crate::common::load_kb_with(SOURCE);
-    let field = kb.try_resolve_symbol("wi984.Tank.Full.litres").expect("field symbol");
-    let owner = kb.try_resolve_symbol("wi984.Tank.Full").expect("owner symbol");
+    let field = kb
+        .try_resolve_symbol("wi984.Tank.Full.litres")
+        .expect("field symbol");
+    let owner = kb
+        .try_resolve_symbol("wi984.Tank.Full")
+        .expect("owner symbol");
 
     let scope_sym = kb.resolve_symbol("anthill.reflect.scope");
     let field_ref = kb.alloc(Term::Ref(field));

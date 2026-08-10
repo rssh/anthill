@@ -187,7 +187,9 @@ fn drain_int_pairs(v: Value) -> Vec<(i64, i64)> {
 #[test]
 fn wi727_fix_restrict_and_drop_1collapse() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.names_at_30", &[]).expect("names_at_30 runs");
+    let r = interp
+        .call("test.wi727fix.names_at_30", &[])
+        .expect("names_at_30 runs");
     let mut got = drain_strings(r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
@@ -197,7 +199,9 @@ fn wi727_fix_restrict_and_drop_1collapse() {
 #[test]
 fn wi727_fix_restrict_other_column() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.ages_of_alice", &[]).expect("ages_of_alice runs");
+    let r = interp
+        .call("test.wi727fix.ages_of_alice", &[])
+        .expect("ages_of_alice runs");
     assert_eq!(drain_ints(r), vec![30]);
 }
 
@@ -205,7 +209,9 @@ fn wi727_fix_restrict_other_column() {
 #[test]
 fn wi727_fix_named_arg_head() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.named_head_at_30", &[]).expect("named_head_at_30 runs");
+    let r = interp
+        .call("test.wi727fix.named_head_at_30", &[])
+        .expect("named_head_at_30 runs");
     let mut got = drain_strings(r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
@@ -217,7 +223,9 @@ fn wi727_fix_named_arg_head() {
 #[test]
 fn wi727_fix_mixed_prefix() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.mixed_prefix_at_30", &[]).expect("mixed_prefix_at_30 runs");
+    let r = interp
+        .call("test.wi727fix.mixed_prefix_at_30", &[])
+        .expect("mixed_prefix_at_30 runs");
     let mut got = drain_strings(r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
@@ -228,7 +236,9 @@ fn wi727_fix_mixed_prefix() {
 #[test]
 fn wi727_fix_empty_is_identity() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.identity_fix", &[]).expect("identity_fix runs");
+    let r = interp
+        .call("test.wi727fix.identity_fix", &[])
+        .expect("identity_fix runs");
     let mut rows = 0usize;
     let mut cur = r;
     while let Value::Entity { named, .. } = &cur {
@@ -251,7 +261,10 @@ fn wi727_fix_empty_is_identity() {
             _ => break,
         }
     }
-    assert_eq!(rows, 3, "identity fix keeps all three persons with full schema");
+    assert_eq!(
+        rows, 3,
+        "identity fix keeps all three persons with full schema"
+    );
 }
 
 /// Drop ONE of three columns → a TWO-column named-tuple schema (not a 1-collapse). Both
@@ -259,7 +272,9 @@ fn wi727_fix_empty_is_identity() {
 #[test]
 fn wi727_fix_drop_one_of_three() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.bc_where_a1", &[]).expect("bc_where_a1 runs");
+    let r = interp
+        .call("test.wi727fix.bc_where_a1", &[])
+        .expect("bc_where_a1 runs");
     let mut got = drain_int_pairs(r);
     got.sort();
     assert_eq!(got, vec![(2, 3), (20, 30)]);
@@ -270,7 +285,9 @@ fn wi727_fix_drop_one_of_three() {
 #[test]
 fn wi727_fix_two_constants() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi727fix.b_where_a1_c3", &[]).expect("b_where_a1_c3 runs");
+    let r = interp
+        .call("test.wi727fix.b_where_a1_c3", &[])
+        .expect("b_where_a1_c3 runs");
     assert_eq!(drain_ints(r), vec![2]);
 }
 

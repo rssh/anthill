@@ -6,24 +6,24 @@
 //! sort-level type-param Vars so that the return type `Option[T = T]` walks
 //! down to `Option[T = Term]`.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
-use anthill_core::kb::typing::{
-    extract_sort_ref_sym, get_named_arg, type_check_expr, TypingEnv,
-};
+use anthill_core::kb::typing::{extract_sort_ref_sym, get_named_arg, type_check_expr, TypingEnv};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 use smallvec::SmallVec;
 
 fn load_stdlib_kb() -> KnowledgeBase {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
@@ -35,13 +35,17 @@ fn stream_head_option_on_concrete_stream_yields_option_with_concrete_t() {
     let mut kb = load_stdlib_kb();
 
     // WI-567: the former `Stream.head` (Option-returning) is now `headOption`.
-    let head_sym = kb.try_resolve_symbol("anthill.prelude.Stream.headOption")
+    let head_sym = kb
+        .try_resolve_symbol("anthill.prelude.Stream.headOption")
         .expect("Stream.headOption registered");
-    let stream_sym = kb.try_resolve_symbol("anthill.prelude.Stream")
+    let stream_sym = kb
+        .try_resolve_symbol("anthill.prelude.Stream")
         .expect("Stream registered");
-    let term_sym = kb.try_resolve_symbol("anthill.reflect.Term")
+    let term_sym = kb
+        .try_resolve_symbol("anthill.reflect.Term")
         .expect("Term registered");
-    let error_sym = kb.try_resolve_symbol("anthill.prelude.Error")
+    let error_sym = kb
+        .try_resolve_symbol("anthill.prelude.Error")
         .expect("anthill.prelude.Error registered");
 
     let t_field = kb.intern("T");
@@ -49,14 +53,14 @@ fn stream_head_option_on_concrete_stream_yields_option_with_concrete_t() {
     let term_ty = kb.make_sort_ref(term_sym);
     let error_ty = kb.make_sort_ref(error_sym);
     let stream_base = kb.make_sort_ref(stream_sym);
-    let stream_concrete = kb.make_parameterized_type(
-        stream_base,
-        &[(t_field, term_ty), (e_field, error_ty)],
-    );
+    let stream_concrete =
+        kb.make_parameterized_type(stream_base, &[(t_field, term_ty), (e_field, error_ty)]);
 
-    let apply_arg_sym = kb.try_resolve_symbol("anthill.reflect.ApplyArg")
+    let apply_arg_sym = kb
+        .try_resolve_symbol("anthill.reflect.ApplyArg")
         .expect("ApplyArg registered");
-    let var_ref_sym = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
     let name_arg = kb.intern("name");
     let value_arg = kb.intern("value");
@@ -103,7 +107,11 @@ fn stream_head_option_on_concrete_stream_yields_option_with_concrete_t() {
     // base sort IS the functor; the `T` binding is the `T` named arg directly
     // (no deep `parameterized(base: sort_ref(Option), bindings: [...])` wrapper).
     let (base_sym, named_args) = match kb.get_term(ty) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         _ => panic!("expected parameterized return type; got {ty_str}"),
     };
     assert_eq!(

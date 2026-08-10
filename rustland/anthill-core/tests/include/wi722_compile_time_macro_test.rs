@@ -50,7 +50,8 @@ end
 "#;
 
 fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-    kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("symbol `{qn}` not found"))
+    kb.try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("symbol `{qn}` not found"))
 }
 
 /// The macro fires at COMPILE time: the consumer's stored body is rewritten from
@@ -92,9 +93,18 @@ fn macro_output_re_types_and_evaluates() {
 fn classifier_is_signature_directed() {
     use anthill_core::kb::typing::is_macro;
     let kb = crate::common::load_kb_with(SRC);
-    assert!(is_macro(&kb, sym(&kb, "test.wi722.wrap")), "wrap is occ->occ");
-    assert!(!is_macro(&kb, sym(&kb, "test.wi722.wrapped")), "wrapped is Int64->Int64");
-    assert!(!is_macro(&kb, sym(&kb, "test.wi722.trigger")), "trigger is Int64->Int64");
+    assert!(
+        is_macro(&kb, sym(&kb, "test.wi722.wrap")),
+        "wrap is occ->occ"
+    );
+    assert!(
+        !is_macro(&kb, sym(&kb, "test.wi722.wrapped")),
+        "wrapped is Int64->Int64"
+    );
+    assert!(
+        !is_macro(&kb, sym(&kb, "test.wi722.trigger")),
+        "trigger is Int64->Int64"
+    );
     // A container of an occurrence is NOT a macro result (the open-edge guard):
     // `operation_body -> Option[NodeOccurrence]` must not be misread.
     assert!(
@@ -127,7 +137,8 @@ end
         Ok(_) => panic!("an impure macro must be rejected at load, but the spec loaded"),
     };
     assert!(
-        errs.iter().any(|e| e.contains("macro") && e.contains("pure")),
+        errs.iter()
+            .any(|e| e.contains("macro") && e.contains("pure")),
         "expected a macro-purity load error, got: {errs:?}",
     );
 }

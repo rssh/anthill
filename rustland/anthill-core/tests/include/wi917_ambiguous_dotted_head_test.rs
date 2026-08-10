@@ -34,9 +34,7 @@ use anthill_core::intern::ResolveResult;
 use anthill_core::kb::extent::ExtentRegError;
 use anthill_core::kb::{load, KnowledgeBase};
 
-use crate::common::{
-    load_kb_with, mount_extent, query_pattern_term, try_load_kb_with,
-};
+use crate::common::{load_kb_with, mount_extent, query_pattern_term, try_load_kb_with};
 
 /// Two namespaces declaring the SAME sort names, so a scope seeing both resolves each
 /// HEAD ambiguously. `SortInfo` doubles as an implicit-tier spelling (WI-907's subject),
@@ -123,7 +121,9 @@ fn a_single_import_still_resolves_the_identical_dotted_path() {
     let kb = load_kb_with(&source_citing_dotted(&["wi917.alpha"]));
 
     assert!(
-        kb.rules_by_functor_iter(kb.resolve_symbol("wi917.use.r917")).next().is_some(),
+        kb.rules_by_functor_iter(kb.resolve_symbol("wi917.use.r917"))
+            .next()
+            .is_some(),
         "the citing rule must have loaded, which is what proves the path resolved",
     );
 }
@@ -140,12 +140,17 @@ fn an_ambiguous_dotted_head_at_a_query_pattern_reads_as_ambiguous() {
     let verdict = load::resolve_name_in_kb(&kb, "SortInfo.si917a", scope);
 
     let ResolveResult::Ambiguous(candidates) = verdict else {
-        panic!("the ladder must answer AMBIGUOUS, not {verdict:?} — the CLI reports what \
-                this returns, and `NotFound` is the false 'nothing is in scope for it'");
+        panic!(
+            "the ladder must answer AMBIGUOUS, not {verdict:?} — the CLI reports what \
+                this returns, and `NotFound` is the false 'nothing is in scope for it'"
+        );
     };
     assert_eq!(
         kb.candidate_names(&candidates),
-        &["wi917.alpha.SortInfo".to_owned(), "wi917.beta.SortInfo".to_owned()],
+        &[
+            "wi917.alpha.SortInfo".to_owned(),
+            "wi917.beta.SortInfo".to_owned()
+        ],
     );
 }
 
@@ -165,7 +170,10 @@ fn an_ambiguous_dotted_host_name_is_refused_as_ambiguous_not_absent() {
     };
     assert_eq!(
         candidates,
-        &["wi917.alpha.Widget917".to_owned(), "wi917.beta.Widget917".to_owned()],
+        &[
+            "wi917.alpha.Widget917".to_owned(),
+            "wi917.beta.Widget917".to_owned()
+        ],
     );
 }
 
@@ -196,7 +204,10 @@ fn a_contested_name_is_found_in_every_position_wi863_tolerates() {
             1,
             "`{pattern}` names a contested `SortInfo`, which must be reported wherever it \
              is written; got {:?}",
-            found.iter().map(|&s| kb.local_name_of(s).to_owned()).collect::<Vec<_>>(),
+            found
+                .iter()
+                .map(|&s| kb.local_name_of(s).to_owned())
+                .collect::<Vec<_>>(),
         );
         assert_ne!(
             found[0], contested,

@@ -88,8 +88,7 @@ end
 
 fn emit(rule: &str) -> String {
     let kb = load_kb_with(SRC);
-    emit_satisfiability_check(&kb, rule)
-        .unwrap_or_else(|e| panic!("emit {rule}: {}", e.message))
+    emit_satisfiability_check(&kb, rule).unwrap_or_else(|e| panic!("emit {rule}: {}", e.message))
 }
 
 /// WI-894 — an `ite` reached through `import anthill.prelude.Bool.{ite}` lowers by its
@@ -164,21 +163,36 @@ fn boolean_connectives_lower_in_condition() {
 
 #[test]
 fn true_property_is_unsat() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let v = verdict("test.wi680.clamp_negative", "wi680_clamp_nonneg");
-    assert_eq!(v, "unsat", "clamp(x) >= 0 holds ⇒ its violation is unsat — got {v:?}");
+    assert_eq!(
+        v, "unsat",
+        "clamp(x) >= 0 holds ⇒ its violation is unsat — got {v:?}"
+    );
 }
 
 #[test]
 fn false_property_is_sat() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let v = verdict("test.wi680.clamp_nonpos", "wi680_clamp_nonpos");
-    assert_eq!(v, "sat", "clamp(x) > 0 is FALSE (x<0 ⇒ clamp=0) ⇒ its violation is sat — got {v:?}");
+    assert_eq!(
+        v, "sat",
+        "clamp(x) > 0 is FALSE (x<0 ⇒ clamp=0) ⇒ its violation is sat — got {v:?}"
+    );
 }
 
 #[test]
 fn and_semantics_z3() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     // and(x>=0, x<0) is a contradiction ⇒ r=0 ⇒ `r>=1` unsat. Would be sat if
     // `and` were lowered as `or`.
     let v = verdict("test.wi680.cand_ge1", "wi680_and");
@@ -187,7 +201,10 @@ fn and_semantics_z3() {
 
 #[test]
 fn or_semantics_z3() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     // or(x>=0, x<0) is a tautology ⇒ r=2 ⇒ `r<=1` unsat. Would be sat if `or`
     // were lowered as `and`.
     let v = verdict("test.wi680.cor_le1", "wi680_or");
@@ -196,7 +213,10 @@ fn or_semantics_z3() {
 
 #[test]
 fn not_semantics_z3() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     // r=1 iff not(x>=0) i.e. x<0; so `x>=0 AND r>=1` unsat. Would be sat if
     // `not` were the identity.
     let v = verdict("test.wi680.cnot_pos", "wi680_not");
@@ -205,10 +225,16 @@ fn not_semantics_z3() {
 
 #[test]
 fn free_var_only_in_ite_body_is_declared() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     // `?x` appears only inside the ite in `freevar`'s (define-fun var_w ...);
     // with the body_smtlib scan it is declared and z3 solves (sat). Without it,
     // z3 errors on an unknown constant ⇒ verdict != "sat".
     let v = verdict("test.wi680.freevar", "wi680_freevar");
-    assert_eq!(v, "sat", "a free input inside an ite-bound result must be declared — got {v:?}");
+    assert_eq!(
+        v, "sat",
+        "a free input inside an ite-bound result must be declared — got {v:?}"
+    );
 }

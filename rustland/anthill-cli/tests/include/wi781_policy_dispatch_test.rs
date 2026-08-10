@@ -60,7 +60,8 @@ fn prove_dry_run(name: &str, src: &str) -> Output {
 /// whole clause rather than on the word `forall`, so the test pins WHICH clause
 /// is spliced — the lemma's premise ⇒ conclusion — not merely that some
 /// quantifier survived.
-const LIFTED_HYPOTHESIS: &str = "(assert (forall ((var_0 Real)) (=> (>= var_0 5.0) (>= var_0 3.0))))";
+const LIFTED_HYPOTHESIS: &str =
+    "(assert (forall ((var_0 Real)) (=> (>= var_0 5.0) (>= var_0 3.0))))";
 
 /// CONTROL. With no policy fact the cite defaults to `LiftedAxiom`, so the
 /// document is exactly what it was before WI-781. Without this, the Inline test

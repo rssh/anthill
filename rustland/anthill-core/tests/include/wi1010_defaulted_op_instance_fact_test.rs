@@ -75,7 +75,10 @@ use anthill_core::eval::Value;
 /// second full stdlib `load_all` per call.
 pub(crate) fn probe(ns: &str, src: &str) -> i64 {
     let op = format!("{ns}.probe");
-    match crate::common::interp_for(src).call(&op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match crate::common::interp_for(src)
+        .call(&op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -148,7 +151,11 @@ fn a_fact_completing_a_type_only_provision_beats_the_default() {
          fact Desc[T = Leaf, describe = leafDescribe]\n",
         "",
     );
-    assert_eq!(probe(ns, &src), 7, "a type-only provision beside the fact changes nothing");
+    assert_eq!(
+        probe(ns, &src),
+        7,
+        "a type-only provision beside the fact changes nothing"
+    );
 }
 
 /// ROUTE 3 — a WITNESS sort supplying the defaulted op. The same defect one route
@@ -165,7 +172,11 @@ fn a_witness_supplied_impl_beats_the_spec_default() {
          operation describe(x: Leaf) -> Int64 = 7\n  end\n",
         "",
     );
-    assert_eq!(probe(ns, &src), 7, "a witness sort's member is an implementation, not a gap");
+    assert_eq!(
+        probe(ns, &src),
+        7,
+        "a witness sort's member is an implementation, not a gap"
+    );
 }
 
 /// ROUTE 1, THE CONTROL — passes either way by design. The carrier's own member is
@@ -190,7 +201,11 @@ fn the_carriers_own_member_still_beats_the_default() {
 fn a_carrier_with_no_supplier_still_runs_the_default() {
     let ns = "test.wi1010.gap";
     let src = program(ns, "    provides Desc[T = Leaf]\n", "", "");
-    assert_eq!(probe(ns, &src), 1, "nothing supplies `describe` — the default fills the gap");
+    assert_eq!(
+        probe(ns, &src),
+        1,
+        "nothing supplies `describe` — the default fills the gap"
+    );
 }
 
 /// THE EVAL HALF. The typer pins the fixtures above statically (the receiver's static

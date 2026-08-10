@@ -6,26 +6,30 @@
 //!   (b) `s: Cell[?S]` + op-level `requires WorkItemStore[S]`
 //!   (c) `sort Driver { sort S = ? requires WorkItemStore[S] ... operation drive(s: Cell[S]) }`
 
-
 use anthill_core::eval::{self, Interpreter, Value};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_bundle_context(driver_src: &str) -> Result<KnowledgeBase, Vec<load::LoadError>> {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files
+        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src)
-            .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(driver_src).expect("parse driver"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -83,7 +87,10 @@ namespace test.wi204_form_b
   end
 end
 "#;
-    report("form_b (op-level requires + ?S)", load_bundle_context(driver));
+    report(
+        "form_b (op-level requires + ?S)",
+        load_bundle_context(driver),
+    );
 }
 
 #[test]
@@ -106,7 +113,10 @@ namespace test.wi204_form_c
   end
 end
 "#;
-    report("form_c (sort-level S + requires)", load_bundle_context(driver));
+    report(
+        "form_c (sort-level S + requires)",
+        load_bundle_context(driver),
+    );
 }
 
 #[test]
@@ -145,8 +155,7 @@ end
 "#;
     let kb = load_bundle_context(driver_src).expect("load");
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register builtins");
+    eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
 
     // Build a Value::Cell holding wis(SomeBackend, 0). Backend doesn't
     // need to be registered for retrieve — we just want to confirm the
@@ -154,7 +163,8 @@ end
     // retrieve builtin (no store registered for the wis backend) OR
     // returns empty (if retrieve gracefully no-ops). Either way it
     // proves dispatch works.
-    let wis_sym = interp.kb_mut()
+    let wis_sym = interp
+        .kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
     let backend_field = interp.kb_mut().intern("backend");
     let counter_field = interp.kb_mut().intern("id_counter");
@@ -172,7 +182,8 @@ end
         named: vec![
             (backend_field, dummy_backend),
             (counter_field, Value::Int(1)),
-        ].into(),
+        ]
+        .into(),
     };
     let handle = interp.alloc_cell(wis_value);
     let cell_value = Value::Cell(handle);
@@ -205,7 +216,11 @@ end
     // (a requirement-slot Internal, a DeferToRequirement projection error),
     // which is the vacuous-pass class this test already fell into once.
     match result {
-        Ok(Value::Entity { functor, ref pos, ref named }) => {
+        Ok(Value::Entity {
+            functor,
+            ref pos,
+            ref named,
+        }) => {
             let qn = interp.kb().qualified_name_of(functor);
             assert!(
                 qn == "anthill.prelude.Option.none" && pos.is_empty() && named.is_empty(),
@@ -263,12 +278,15 @@ end
                 let spec_name = kb.local_name_of(spec_sym).to_string();
                 origins.push((rewritten, spec_name));
             }
-            println!("[form_c_concrete] dispatch_origin entries: {}", origins.len());
+            println!(
+                "[form_c_concrete] dispatch_origin entries: {}",
+                origins.len()
+            );
             for (tid, name) in &origins {
                 println!("  rewritten_tid={tid:?} spec={name}");
             }
-            let hit_lookup = origins.iter().any(|(_, name)| name == "lookup")
-                || matches!(store_lookup, Some(_));
+            let hit_lookup =
+                origins.iter().any(|(_, name)| name == "lookup") || matches!(store_lookup, Some(_));
             println!("[form_c_concrete] hit_lookup={hit_lookup}");
         }
         Err(errs) => {

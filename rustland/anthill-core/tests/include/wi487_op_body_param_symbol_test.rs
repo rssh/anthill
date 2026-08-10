@@ -25,8 +25,8 @@ fn load_kb(extra: &str) -> KnowledgeBase {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -34,8 +34,7 @@ fn load_kb(extra: &str) -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| panic!("load: {errs:?}"));
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| panic!("load: {errs:?}"));
     kb
 }
 
@@ -77,7 +76,9 @@ fn op_body_param_var_shares_operationinfo_symbol() {
     // The op body's `?b` var(s) must carry that exact Symbol — by IDENTITY,
     // not merely by name. Before WI-487 this was a distinct freshly-interned
     // "b" Symbol.
-    let body = kb.op_body_node(use_peek).expect("op_body_node for use_peek");
+    let body = kb
+        .op_body_node(use_peek)
+        .expect("op_body_node for use_peek");
     let mut names = Vec::new();
     collect_global_var_names(body, &mut names);
     assert!(

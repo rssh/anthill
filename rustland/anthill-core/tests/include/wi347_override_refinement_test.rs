@@ -13,18 +13,21 @@
 //! unaffected — see the matching stdlib-stays-green assertions in the
 //! wi343/wi345 suites.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extra: &str) -> Vec<String> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -91,8 +94,10 @@ fn override_matching_effect_loads() {
         end
     "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(),
-        "override declaring the spec's own effect should load clean; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "override declaring the spec's own effect should load clean; got: {errs:?}"
+    );
 }
 
 // ── a pure override (no effects) is fine ────────────────────────────────
@@ -115,8 +120,10 @@ fn override_pure_op_loads() {
         end
     "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(),
-        "a pure override of a pure spec op should load clean; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a pure override of a pure spec op should load clean; got: {errs:?}"
+    );
 }
 
 // ── dropping a spec effect (narrowing) loads clean ──────────────────────
@@ -143,8 +150,10 @@ fn override_dropping_effect_loads() {
         end
     "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(),
-        "an override that drops a spec effect (narrows the row) should load clean; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "an override that drops a spec effect (narrows the row) should load clean; got: {errs:?}"
+    );
 }
 
 // ── strengthening the precondition is rejected ──────────────────────────
@@ -171,9 +180,11 @@ fn override_strengthening_precondition_rejected() {
     "#;
     let errs = load_errors(src);
     assert!(
-        errs.iter().any(|e|
-            e.contains("wi347.pre_strong.Carrier") && e.contains("op") && e.contains("precondition")),
-        "expected IncompatibleOverride: the override strengthens the precondition; got: {errs:?}");
+        errs.iter().any(|e| e.contains("wi347.pre_strong.Carrier")
+            && e.contains("op")
+            && e.contains("precondition")),
+        "expected IncompatibleOverride: the override strengthens the precondition; got: {errs:?}"
+    );
 }
 
 // ── weakening the postcondition is rejected ─────────────────────────────
@@ -199,9 +210,11 @@ fn override_weakening_postcondition_rejected() {
     "#;
     let errs = load_errors(src);
     assert!(
-        errs.iter().any(|e|
-            e.contains("wi347.post_weak.Carrier") && e.contains("op") && e.contains("postcondition")),
-        "expected IncompatibleOverride: the override weakens the postcondition; got: {errs:?}");
+        errs.iter().any(|e| e.contains("wi347.post_weak.Carrier")
+            && e.contains("op")
+            && e.contains("postcondition")),
+        "expected IncompatibleOverride: the override weakens the postcondition; got: {errs:?}"
+    );
 }
 
 // ── matching contract loads clean (param-alignment) ─────────────────────
@@ -227,6 +240,8 @@ fn override_matching_contract_loads() {
         end
     "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(),
-        "matching precondition/postcondition on spec and override should load clean; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "matching precondition/postcondition on spec and override should load clean; got: {errs:?}"
+    );
 }

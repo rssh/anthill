@@ -3,13 +3,12 @@
 /// The tree-sitter grammar produces flat infix chains: `[a, +, b, *, c]`.
 /// This module applies operator precedence and associativity to produce
 /// nested `Term::Fn` calls: `add(a, mul(b, c))`.
-
 use smallvec::SmallVec;
 
+use super::ir::SimpleTermStore;
 use crate::intern::{Symbol, SymbolTable};
 use crate::kb::term::{Term, TermId};
 use crate::span::Span;
-use super::ir::SimpleTermStore;
 
 // ── Operator properties ─────────────────────────────────────────
 
@@ -73,49 +72,233 @@ pub fn is_equation_functor(name: &str) -> bool {
 
 fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
     static TABLE: &[(&str, InfixEntry)] = &[
-        ("|",  InfixEntry { priority: 1, assoc: Assoc::Left,  functor: "or",  continuation: None }),
-        ("or", InfixEntry { priority: 1, assoc: Assoc::Left,  functor: "or",  continuation: None }),
-        ("&",  InfixEntry { priority: 2, assoc: Assoc::Left,  functor: "and", continuation: None }),
-        ("and",InfixEntry { priority: 2, assoc: Assoc::Left,  functor: "and", continuation: None }),
-        ("=",  InfixEntry { priority: 3, assoc: Assoc::None,  functor: EQ_FUNCTOR,  continuation: None }),
-        ("!=", InfixEntry { priority: 3, assoc: Assoc::None,  functor: "neq", continuation: None }),
+        (
+            "|",
+            InfixEntry {
+                priority: 1,
+                assoc: Assoc::Left,
+                functor: "or",
+                continuation: None,
+            },
+        ),
+        (
+            "or",
+            InfixEntry {
+                priority: 1,
+                assoc: Assoc::Left,
+                functor: "or",
+                continuation: None,
+            },
+        ),
+        (
+            "&",
+            InfixEntry {
+                priority: 2,
+                assoc: Assoc::Left,
+                functor: "and",
+                continuation: None,
+            },
+        ),
+        (
+            "and",
+            InfixEntry {
+                priority: 2,
+                assoc: Assoc::Left,
+                functor: "and",
+                continuation: None,
+            },
+        ),
+        (
+            "=",
+            InfixEntry {
+                priority: 3,
+                assoc: Assoc::None,
+                functor: EQ_FUNCTOR,
+                continuation: None,
+            },
+        ),
+        (
+            "!=",
+            InfixEntry {
+                priority: 3,
+                assoc: Assoc::None,
+                functor: "neq",
+                continuation: None,
+            },
+        ),
         // WI-522 / proposal 049: `<=>` = unify (anthill.kernel.unify). It lexes as one
         // `operator_symbol` token (the regex matches the longest run, so `<=>` wins over
         // `<=`); here it maps to the `unify` functor. The resolver `builtin_unify` is WI-523.
-        ("<=>",InfixEntry { priority: 3, assoc: Assoc::None,  functor: UNIFY_FUNCTOR, continuation: None }),
+        (
+            "<=>",
+            InfixEntry {
+                priority: 3,
+                assoc: Assoc::None,
+                functor: UNIFY_FUNCTOR,
+                continuation: None,
+            },
+        ),
         // WI-615 / proposal 051: `===` = structural identity test (anthill.kernel.struct_eq).
         // Like `<=>`, it lexes as one `operator_symbol` token — the longest-run regex makes
         // `===` win over `==`/`=` — so no grammar change is needed. Maps to the `struct_eq`
         // functor; the resolver reuses `builtin_eq` (structural, never dispatches). Distinct
         // from `=`/`eq` (`anthill.prelude.PartialEq.eq`), which is semantic (Phase 2 / WI-616).
-        ("===",InfixEntry { priority: 3, assoc: Assoc::None,  functor: STRUCT_EQ_FUNCTOR, continuation: None }),
-        ("<",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lt",  continuation: None }),
-        ("<=", InfixEntry { priority: 4, assoc: Assoc::None,  functor: "lte", continuation: None }),
-        (">",  InfixEntry { priority: 4, assoc: Assoc::None,  functor: "gt",  continuation: None }),
-        (">=", InfixEntry { priority: 4, assoc: Assoc::None,  functor: "gte", continuation: None }),
-        ("+",  InfixEntry { priority: 5, assoc: Assoc::Left,  functor: "add", continuation: None }),
-        ("-",  InfixEntry { priority: 5, assoc: Assoc::Left,  functor: "sub", continuation: None }),
-        ("*",  InfixEntry { priority: 6, assoc: Assoc::Left,  functor: "mul", continuation: None }),
-        ("/",  InfixEntry { priority: 6, assoc: Assoc::Left,  functor: "div", continuation: None }),
-        ("%",  InfixEntry { priority: 6, assoc: Assoc::Left,  functor: "mod", continuation: None }),
-        ("mod",InfixEntry { priority: 6, assoc: Assoc::Left,  functor: "mod", continuation: None }),
-        ("div",InfixEntry { priority: 6, assoc: Assoc::Left,  functor: "div", continuation: None }),
-        ("^",  InfixEntry { priority: 7, assoc: Assoc::Right, functor: "pow", continuation: None }),
-        ("->", InfixEntry {
-            priority: 8,
-            assoc: Assoc::Right,
-            functor: ARROW_FUNCTOR,
-            continuation: Some(ContinuationEntry { token: "@", functor: ARROW_EFFECT_FUNCTOR }),
-        }),
+        (
+            "===",
+            InfixEntry {
+                priority: 3,
+                assoc: Assoc::None,
+                functor: STRUCT_EQ_FUNCTOR,
+                continuation: None,
+            },
+        ),
+        (
+            "<",
+            InfixEntry {
+                priority: 4,
+                assoc: Assoc::None,
+                functor: "lt",
+                continuation: None,
+            },
+        ),
+        (
+            "<=",
+            InfixEntry {
+                priority: 4,
+                assoc: Assoc::None,
+                functor: "lte",
+                continuation: None,
+            },
+        ),
+        (
+            ">",
+            InfixEntry {
+                priority: 4,
+                assoc: Assoc::None,
+                functor: "gt",
+                continuation: None,
+            },
+        ),
+        (
+            ">=",
+            InfixEntry {
+                priority: 4,
+                assoc: Assoc::None,
+                functor: "gte",
+                continuation: None,
+            },
+        ),
+        (
+            "+",
+            InfixEntry {
+                priority: 5,
+                assoc: Assoc::Left,
+                functor: "add",
+                continuation: None,
+            },
+        ),
+        (
+            "-",
+            InfixEntry {
+                priority: 5,
+                assoc: Assoc::Left,
+                functor: "sub",
+                continuation: None,
+            },
+        ),
+        (
+            "*",
+            InfixEntry {
+                priority: 6,
+                assoc: Assoc::Left,
+                functor: "mul",
+                continuation: None,
+            },
+        ),
+        (
+            "/",
+            InfixEntry {
+                priority: 6,
+                assoc: Assoc::Left,
+                functor: "div",
+                continuation: None,
+            },
+        ),
+        (
+            "%",
+            InfixEntry {
+                priority: 6,
+                assoc: Assoc::Left,
+                functor: "mod",
+                continuation: None,
+            },
+        ),
+        (
+            "mod",
+            InfixEntry {
+                priority: 6,
+                assoc: Assoc::Left,
+                functor: "mod",
+                continuation: None,
+            },
+        ),
+        (
+            "div",
+            InfixEntry {
+                priority: 6,
+                assoc: Assoc::Left,
+                functor: "div",
+                continuation: None,
+            },
+        ),
+        (
+            "^",
+            InfixEntry {
+                priority: 7,
+                assoc: Assoc::Right,
+                functor: "pow",
+                continuation: None,
+            },
+        ),
+        (
+            "->",
+            InfixEntry {
+                priority: 8,
+                assoc: Assoc::Right,
+                functor: ARROW_FUNCTOR,
+                continuation: Some(ContinuationEntry {
+                    token: "@",
+                    functor: ARROW_EFFECT_FUNCTOR,
+                }),
+            },
+        ),
     ];
     TABLE.iter().find(|(k, _)| *k == op).map(|(_, v)| v)
 }
 
 pub(crate) fn prefix_entry(op: &str) -> Option<&'static PrefixEntry> {
     static TABLE: &[(&str, PrefixEntry)] = &[
-        ("!",   PrefixEntry { priority: 9, functor: "not" }),
-        ("not", PrefixEntry { priority: 9, functor: "not" }),
-        ("-",   PrefixEntry { priority: 9, functor: "neg" }),
+        (
+            "!",
+            PrefixEntry {
+                priority: 9,
+                functor: "not",
+            },
+        ),
+        (
+            "not",
+            PrefixEntry {
+                priority: 9,
+                functor: "not",
+            },
+        ),
+        (
+            "-",
+            PrefixEntry {
+                priority: 9,
+                functor: "neg",
+            },
+        ),
     ];
     TABLE.iter().find(|(k, _)| *k == op).map(|(_, v)| v)
 }
@@ -170,7 +353,11 @@ pub(crate) fn mint_op_node(
     span: Span,
 ) -> TermId {
     let tid = terms.alloc(
-        Term::Fn { functor, pos_args, named_args: SmallVec::new() },
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args: SmallVec::new(),
+        },
         span,
     );
     terms.mark_minted(tid);
@@ -191,8 +378,7 @@ fn desugar(
     // nud: prefix operator or operand
     let mut left = match &elements[pos] {
         InfixElement::Operator(op) => {
-            let entry = prefix_entry(op)
-                .ok_or_else(|| format!("unknown prefix operator: {op}"))?;
+            let entry = prefix_entry(op).ok_or_else(|| format!("unknown prefix operator: {op}"))?;
             pos += 1;
             let (right, new_pos) = desugar(elements, pos, entry.priority, terms, symbols)?;
             pos = new_pos;
@@ -224,9 +410,7 @@ fn desugar(
 
         // None-associative: reject chaining of same-priority operators
         if entry.assoc == Assoc::None && entry.priority == min_bp {
-            return Err(format!(
-                "non-associative operator `{op}` cannot be chained"
-            ));
+            return Err(format!("non-associative operator `{op}` cannot be chained"));
         }
 
         pos += 1; // consume operator
@@ -250,15 +434,16 @@ fn desugar(
                 let functor = symbols.intern(cont.functor);
                 let span = op_span(terms, left, right);
                 left = mint_op_node(
-                    terms, functor, SmallVec::from_slice(&[left, middle, right]), span,
+                    terms,
+                    functor,
+                    SmallVec::from_slice(&[left, middle, right]),
+                    span,
                 );
             } else {
                 // No continuation — binary infix
                 let functor = symbols.intern(entry.functor);
                 let span = op_span(terms, left, middle);
-                left = mint_op_node(
-                    terms, functor, SmallVec::from_slice(&[left, middle]), span,
-                );
+                left = mint_op_node(terms, functor, SmallVec::from_slice(&[left, middle]), span);
             }
         } else {
             // Binary infix
@@ -271,9 +456,7 @@ fn desugar(
 
             let functor = symbols.intern(entry.functor);
             let span = op_span(terms, left, right);
-            left = mint_op_node(
-                terms, functor, SmallVec::from_slice(&[left, right]), span,
-            );
+            left = mint_op_node(terms, functor, SmallVec::from_slice(&[left, right]), span);
         }
     }
 
@@ -311,9 +494,12 @@ mod tests {
     fn fmt_term(terms: &SimpleTermStore, symbols: &SymbolTable, tid: TermId) -> String {
         match terms.get(tid) {
             Term::Ident(sym) => symbols.local_name(*sym).to_string(),
-            Term::Fn { functor, pos_args, .. } => {
+            Term::Fn {
+                functor, pos_args, ..
+            } => {
                 let name = symbols.local_name(*functor);
-                let args: Vec<String> = pos_args.iter()
+                let args: Vec<String> = pos_args
+                    .iter()
                     .map(|&a| fmt_term(terms, symbols, a))
                     .collect();
                 format!("{name}({})", args.join(", "))

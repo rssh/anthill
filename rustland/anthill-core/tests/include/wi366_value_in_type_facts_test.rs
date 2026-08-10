@@ -37,8 +37,8 @@ fn load_kb(extras: &[&str]) -> (KnowledgeBase, Vec<String>) {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -62,8 +62,7 @@ fn value_carries_node(v: &Value) -> bool {
     match v {
         Value::Node(_) => true,
         Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
-            pos.iter().any(value_carries_node)
-                || named.iter().any(|(_, x)| value_carries_node(x))
+            pos.iter().any(value_carries_node) || named.iter().any(|(_, x)| value_carries_node(x))
         }
         _ => false,
     }
@@ -88,9 +87,17 @@ fn any_node_carrying_fact(kb: &KnowledgeBase, functor_qn: &str) -> bool {
 fn term_carries_denoted(kb: &KnowledgeBase, t: anthill_core::kb::term::TermId) -> bool {
     use anthill_core::kb::term::{Term, TermId};
     let (is_denoted, children): (bool, Vec<TermId>) = match kb.get_term(t) {
-        Term::Fn { functor, pos_args, named_args } => (
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => (
             kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.Denoted",
-            pos_args.iter().copied().chain(named_args.iter().map(|(_, c)| *c)).collect(),
+            pos_args
+                .iter()
+                .copied()
+                .chain(named_args.iter().map(|(_, c)| *c))
+                .collect(),
         ),
         _ => (false, Vec::new()),
     };
@@ -262,25 +269,40 @@ end
 
 /// The `spec` field's `E` binding of the (sort-body) `SortProvidesInfo` whose
 /// `sort_ref` is `<ns>.MyList`. Term carrier only (a `{}` row is ground).
-fn provides_e_binding(
-    kb: &KnowledgeBase,
-    ns: &str,
-) -> Option<anthill_core::kb::term::TermId> {
+fn provides_e_binding(kb: &KnowledgeBase, ns: &str) -> Option<anthill_core::kb::term::TermId> {
     use anthill_core::kb::term::Term;
     let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
     let myl = kb.try_resolve_symbol(&format!("{ns}.MyList"))?;
-    for rid in kb.rules_by_functor(sym).into_iter().filter(|r| kb.is_fact(*r)) {
-        let Value::Term { id: t, .. } = kb.rule_head_value(rid) else { continue };
-        let Term::Fn { named_args, .. } = kb.get_term(*t) else { continue };
+    for rid in kb
+        .rules_by_functor(sym)
+        .into_iter()
+        .filter(|r| kb.is_fact(*r))
+    {
+        let Value::Term { id: t, .. } = kb.rule_head_value(rid) else {
+            continue;
+        };
+        let Term::Fn { named_args, .. } = kb.get_term(*t) else {
+            continue;
+        };
         let matches_ns = named_args
             .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "sort_ref")
-            .is_some_and(|(_, v)| matches!(kb.get_term(*v),
-                Term::Fn { functor, .. } if *functor == myl));
-        if !matches_ns { continue; }
-        let spec = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "spec")?.1;
+            .is_some_and(|(_, v)| {
+                matches!(kb.get_term(*v),
+                Term::Fn { functor, .. } if *functor == myl)
+            });
+        if !matches_ns {
+            continue;
+        }
+        let spec = named_args
+            .iter()
+            .find(|(s, _)| kb.local_name_of(*s) == "spec")?
+            .1;
         if let Term::Fn { named_args: sv, .. } = kb.get_term(spec) {
-            return sv.iter().find(|(s, _)| kb.local_name_of(*s) == "E").map(|(_, t)| *t);
+            return sv
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "E")
+                .map(|(_, t)| *t);
         }
     }
     None
@@ -478,8 +500,11 @@ fn query_pattern_written_empty_effect_row_lowers() {
     let parsed = parse::parse(src).expect("parse query pattern");
     // WI-966: the scan's verdict is asserted, not discarded — MEASURED empty.
     let errs = load::scan_definitions(&mut kb, &[&parsed]);
-    assert!(errs.is_empty(), "the CLI query-pattern scan must be clean: {:?}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+    assert!(
+        errs.is_empty(),
+        "the CLI query-pattern scan must be clean: {:?}",
+        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+    );
     let global_scope = kb.global_scope();
     let mut var_map = HashMap::new();
     let mut term = None;
@@ -526,7 +551,9 @@ namespace test.wi366.ground
 end
 "#;
     let (kb, _errs) = load_kb(&[src]);
-    let alias_sym = kb.try_resolve_symbol("SortAlias").expect("SortAlias resolves");
+    let alias_sym = kb
+        .try_resolve_symbol("SortAlias")
+        .expect("SortAlias resolves");
     let bar = kb
         .try_resolve_symbol("test.wi366.ground.Bar")
         .expect("Bar resolves");
@@ -565,9 +592,16 @@ fn carrier_requires_spec(
         .into_iter()
         .filter(|r| kb.is_fact(*r))
         .find_map(|rid| {
-            let Value::Term { id: t, .. } = kb.rule_head_value(rid) else { return None };
-            let Term::Fn { named_args, .. } = kb.get_term(*t) else { return None };
-            let sr = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "sort_ref")?.1;
+            let Value::Term { id: t, .. } = kb.rule_head_value(rid) else {
+                return None;
+            };
+            let Term::Fn { named_args, .. } = kb.get_term(*t) else {
+                return None;
+            };
+            let sr = named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "sort_ref")?
+                .1;
             let sr_functor = match kb.get_term(sr) {
                 Term::Fn { functor, .. } => *functor,
                 Term::Ref(s) => *s,
@@ -576,7 +610,10 @@ fn carrier_requires_spec(
             if sr_functor != carrier {
                 return None;
             }
-            named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "spec").map(|(_, t)| *t)
+            named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == "spec")
+                .map(|(_, t)| *t)
         })
 }
 
@@ -601,7 +638,10 @@ fn value_to_term_denoted_round_trips_to_ground_twin() {
     let denoted_occ = kb.make_denoted_occ(three_occ, sp, None);
     let param_occ = kb.make_parameterized_occ(
         TypeChild::Ground(foo),
-        vec![(t_sym, TypeChild::Ground(int_ref)), (n_sym, TypeChild::Node(denoted_occ))],
+        vec![
+            (t_sym, TypeChild::Ground(int_ref)),
+            (n_sym, TypeChild::Node(denoted_occ)),
+        ],
         sp,
         None,
     );
@@ -687,13 +727,27 @@ fn positioned_is_a_structural_term() {
     let pa2 = kb.make_positioned(site_a, x);
     let pb = kb.make_positioned(site_b, x);
     assert_eq!(pa1, pa2, "same (pos, internal) → one hash-consed TermId");
-    assert_ne!(pa1, pb, "different pos (binding site) → distinct term (no collision)");
-    let Term::Fn { functor, named_args, .. } = kb.get_term(pa1) else {
+    assert_ne!(
+        pa1, pb,
+        "different pos (binding site) → distinct term (no collision)"
+    );
+    let Term::Fn {
+        functor,
+        named_args,
+        ..
+    } = kb.get_term(pa1)
+    else {
         panic!("Positioned must be a Term::Fn");
     };
     assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.Positioned");
-    let got_pos = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "pos").map(|(_, t)| *t);
-    let got_int = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "internal").map(|(_, t)| *t);
+    let got_pos = named_args
+        .iter()
+        .find(|(s, _)| kb.local_name_of(*s) == "pos")
+        .map(|(_, t)| *t);
+    let got_int = named_args
+        .iter()
+        .find(|(s, _)| kb.local_name_of(*s) == "internal")
+        .map(|(_, t)| *t);
     assert_eq!(got_pos, Some(site_a), "pos child reads back");
     assert_eq!(got_int, Some(x), "internal child reads back");
 }

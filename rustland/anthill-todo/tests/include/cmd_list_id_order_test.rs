@@ -24,7 +24,6 @@
 //! DESIGN: it is what makes the two failures attributable to the boundary and to
 //! padding rather than to the sort having broken generally.
 
-
 use std::process::Command;
 
 use crate::common::setup_project;
@@ -34,9 +33,15 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 fn run(proj: &std::path::Path, args: &[&str]) -> String {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    let out = Command::new(BIN).args(&full).output().expect("run anthill-todo");
-    assert!(out.status.success(),
-        "command failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo");
+    assert!(
+        out.status.success(),
+        "command failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -92,10 +97,17 @@ fn zero_padding_does_not_decide_the_order() {
 
     let got = listed_ids(&run(&proj, &["list"]));
     assert_eq!(got.len(), 3, "all three rows must be listed: {got:?}");
-    assert_eq!(got[2], "WI-999", "94 comes before 999 however 94 is written: {got:?}");
+    assert_eq!(
+        got[2], "WI-999",
+        "94 comes before 999 however 94 is written: {got:?}"
+    );
     // The two spellings of 94 tie on number, so the whole-id tie-break decides
     // and the order is defined rather than arbitrary — `lt` on the full string.
-    assert_eq!(&got[..2], &["WI-0094", "WI-94"], "tie-break is the whole id: {got:?}");
+    assert_eq!(
+        &got[..2],
+        &["WI-0094", "WI-94"],
+        "tie-break is the whole id: {got:?}"
+    );
 }
 
 /// CONTROL — passes with or without the fix. Below 1000 the two orders agree,

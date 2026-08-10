@@ -43,7 +43,8 @@ fn param(kb: &mut KnowledgeBase, name: &str) -> Value {
 }
 
 fn neq_sym(kb: &mut KnowledgeBase) -> Symbol {
-    kb.try_resolve_symbol("anthill.prelude.PartialEq.neq").expect("neq")
+    kb.try_resolve_symbol("anthill.prelude.PartialEq.neq")
+        .expect("neq")
 }
 
 #[test]
@@ -65,11 +66,23 @@ fn in_body_proof_short_form_loads_as_expr_proof_and_types() {
         end
         "#,
     );
-    let f = kb.try_resolve_symbol("wi538.short.Box.f").expect("f symbol");
+    let f = kb
+        .try_resolve_symbol("wi538.short.Box.f")
+        .expect("f symbol");
     let body = kb.op_body_node(f).expect("op body node for f");
     match body.as_expr() {
-        Some(Expr::Proof { target, strategy, using, conclude, body }) => {
-            assert_eq!(kb.local_name_of(*target), "trivial", "target is the rule name");
+        Some(Expr::Proof {
+            target,
+            strategy,
+            using,
+            conclude,
+            body,
+        }) => {
+            assert_eq!(
+                kb.local_name_of(*target),
+                "trivial",
+                "target is the rule name"
+            );
             assert_eq!(
                 strategy.map(|s| kb.local_name_of(s)),
                 Some("derivation"),
@@ -77,7 +90,10 @@ fn in_body_proof_short_form_loads_as_expr_proof_and_types() {
             );
             assert!(using.is_empty(), "no `using` cites");
             assert!(conclude.is_none(), "short form has no conclude goal");
-            assert!(body.as_expr().is_some(), "the continuation is an expression");
+            assert!(
+                body.as_expr().is_some(),
+                "the continuation is an expression"
+            );
         }
         other => panic!("expected Expr::Proof, got {other:?}"),
     }
@@ -101,11 +117,19 @@ fn in_body_proof_conclude_form_loads_as_expr_proof_and_types() {
         end
         "#,
     );
-    let f = kb.try_resolve_symbol("wi538.concl.Box.f").expect("f symbol");
+    let f = kb
+        .try_resolve_symbol("wi538.concl.Box.f")
+        .expect("f symbol");
     let body = kb.op_body_node(f).expect("op body node for f");
     match body.as_expr() {
-        Some(Expr::Proof { target, conclude, .. }) => {
-            assert_eq!(kb.local_name_of(*target), "handle", "target is the citation handle");
+        Some(Expr::Proof {
+            target, conclude, ..
+        }) => {
+            assert_eq!(
+                kb.local_name_of(*target),
+                "handle",
+                "target is the citation handle"
+            );
             assert!(conclude.is_some(), "conclude goal present");
         }
         other => panic!("expected Expr::Proof, got {other:?}"),
@@ -171,7 +195,9 @@ fn proof_is_transparent_to_simp_rewriting() {
         end
         "#,
     );
-    let wrapped = kb.try_resolve_symbol("wi538.simp.Box.wrapped").expect("wrapped");
+    let wrapped = kb
+        .try_resolve_symbol("wi538.simp.Box.wrapped")
+        .expect("wrapped");
     let body = kb.op_body_node(wrapped).expect("wrapped body");
     let Some(Expr::Proof { body: cont, .. }) = body.as_expr() else {
         panic!("wrapped op body is not Expr::Proof");
@@ -180,12 +206,16 @@ fn proof_is_transparent_to_simp_rewriting() {
     // propagated the rewrite into the stored tree.
     match cont.as_expr() {
         Some(Expr::Apply { functor, .. }) => assert_eq!(
-            kb.local_name_of(*functor), "regular",
+            kb.local_name_of(*functor),
+            "regular",
             "the [simp] rewrite must propagate through the proof — continuation \
-             should be `regular`, got apply:{}", kb.local_name_of(*functor)),
+             should be `regular`, got apply:{}",
+            kb.local_name_of(*functor)
+        ),
         Some(Expr::DotApply { .. }) => panic!(
             "the [simp] rewrite was DROPPED: the proof continuation is still \
-             dot_apply (simp_rewrite::reassemble missing the Expr::Proof arm)"),
+             dot_apply (simp_rewrite::reassemble missing the Expr::Proof arm)"
+        ),
         other => panic!("unexpected proof continuation form: {other:?}"),
     }
 }

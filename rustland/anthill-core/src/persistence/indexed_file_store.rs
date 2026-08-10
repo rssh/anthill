@@ -28,9 +28,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::intern::Symbol;
+use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::typing::get_named_arg;
 use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
-use crate::kb::term::{Literal, Term, TermId};
 use crate::span::Span;
 
 use super::file_store::{FileConvention, FileStore};
@@ -88,7 +88,9 @@ impl IndexedFileStore {
 /// Read a String-typed `id` named argument from a term. Returns the
 /// value if present and the field is a String literal.
 fn extract_string_id(kb: &KnowledgeBase, term_id: TermId) -> Option<String> {
-    let Term::Fn { named_args, .. } = kb.get_term(term_id) else { return None };
+    let Term::Fn { named_args, .. } = kb.get_term(term_id) else {
+        return None;
+    };
     let val = get_named_arg(kb, named_args, "id")?;
     if let Term::Const(Literal::String(s)) = kb.get_term(val) {
         return Some(s.clone());
@@ -181,7 +183,8 @@ impl Store for IndexedFileStore {
             Term::Ref(s) => *s,
             _ => return Ok(Vec::new()),
         };
-        Ok(kb.rules_by_functor(functor)
+        Ok(kb
+            .rules_by_functor(functor)
             .into_iter()
             .map(|rid| kb.rule_head(rid))
             .filter(|head| pattern_matches(kb, pattern, *head))
@@ -199,9 +202,8 @@ impl Store for IndexedFileStore {
                 by_path.entry(path).or_default().push(span);
             }
             for (path, mut spans) in by_path {
-                let source = fs::read_to_string(&path).map_err(|e| {
-                    PersistenceError::Io(format!("read {}: {e}", path.display()))
-                })?;
+                let source = fs::read_to_string(&path)
+                    .map_err(|e| PersistenceError::Io(format!("read {}: {e}", path.display())))?;
                 spans.sort_by(|a, b| b.start.cmp(&a.start));
                 let mut content = source;
                 for span in spans {
@@ -209,14 +211,13 @@ impl Store for IndexedFileStore {
                 }
                 let temp_path = path.with_extension("anthill.tmp");
                 fs::write(&temp_path, &content).map_err(|e| {
-                    PersistenceError::Io(format!(
-                        "write {}: {e}", temp_path.display()
-                    ))
+                    PersistenceError::Io(format!("write {}: {e}", temp_path.display()))
                 })?;
                 fs::rename(&temp_path, &path).map_err(|e| {
                     PersistenceError::Io(format!(
                         "rename {} → {}: {e}",
-                        temp_path.display(), path.display(),
+                        temp_path.display(),
+                        path.display(),
                     ))
                 })?;
             }
@@ -248,17 +249,30 @@ fn pattern_matches(kb: &KnowledgeBase, pattern: TermId, fact: TermId) -> bool {
         (Term::Ref(ps), Term::Ref(fs)) => ps == fs,
         (Term::Ident(ps), Term::Ident(fs)) => ps == fs,
         (
-            Term::Fn { functor: pf, pos_args: pp, named_args: pn },
-            Term::Fn { functor: ff, pos_args: fp, named_args: fn_args },
+            Term::Fn {
+                functor: pf,
+                pos_args: pp,
+                named_args: pn,
+            },
+            Term::Fn {
+                functor: ff,
+                pos_args: fp,
+                named_args: fn_args,
+            },
         ) => {
             if pf != ff || pp.len() != fp.len() {
                 return false;
             }
-            if !pp.iter().zip(fp.iter()).all(|(a, b)| pattern_matches(kb, *a, *b)) {
+            if !pp
+                .iter()
+                .zip(fp.iter())
+                .all(|(a, b)| pattern_matches(kb, *a, *b))
+            {
                 return false;
             }
             pn.iter().all(|&(p_name, p_val)| {
-                fn_args.iter()
+                fn_args
+                    .iter()
                     .find(|(n, _)| *n == p_name)
                     .is_some_and(|(_, fv)| pattern_matches(kb, p_val, *fv))
             })

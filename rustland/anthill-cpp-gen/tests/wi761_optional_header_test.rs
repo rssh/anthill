@@ -26,7 +26,10 @@ fn empty_namespace_is_ok_none() {
     );
     let out = emit_optional_namespace_header_with_profile(&mut kb, "test.wi761.empty", None)
         .expect("an empty namespace is a benign outcome, not a codegen error");
-    assert!(out.is_none(), "empty namespace must yield Ok(None), got {out:?}");
+    assert!(
+        out.is_none(),
+        "empty namespace must yield Ok(None), got {out:?}"
+    );
 }
 
 /// The bug: a GENUINE lowering failure stays an `Err`, distinguishable from the
@@ -57,8 +60,14 @@ fn genuine_lowering_failure_is_err_not_none() {
     .expect_err("an unrealizable effect must surface as Err, not be swallowed as Ok(None)");
 
     let msg = err.to_string();
-    assert!(msg.contains("ConsoleOutput"), "must name the offending effect: {msg}");
-    assert!(msg.contains("cpp20-stl"), "must name the active profile: {msg}");
+    assert!(
+        msg.contains("ConsoleOutput"),
+        "must name the offending effect: {msg}"
+    );
+    assert!(
+        msg.contains("cpp20-stl"),
+        "must name the active profile: {msg}"
+    );
 }
 
 /// A namespace that DOES declare something lowers to `Ok(Some(header))`.
@@ -75,7 +84,10 @@ fn nonempty_namespace_is_ok_some() {
     let out = emit_optional_namespace_header_with_profile(&mut kb, "test.wi761.ok", None)
         .expect("a non-empty namespace lowers without error");
     let header = out.expect("a non-empty namespace yields Ok(Some(header))");
-    assert!(header.contains("struct Point"), "header must carry the declared entity:\n{header}");
+    assert!(
+        header.contains("struct Point"),
+        "header must carry the declared entity:\n{header}"
+    );
 }
 
 /// The REQUIRED entry point keeps failing loudly on the SAME empty namespace the

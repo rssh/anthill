@@ -95,7 +95,14 @@ impl Dictionary {
     }
 
     fn from_value_with(ctor: Symbol, impl_key: Symbol, v: &Value) -> Option<Dictionary> {
-        let Value::Entity { functor, pos, named } = v else { return None };
+        let Value::Entity {
+            functor,
+            pos,
+            named,
+        } = v
+        else {
+            return None;
+        };
         if *functor != ctor {
             return None;
         }
@@ -196,10 +203,16 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let global = kb.global_scope();
         kb.symbols.define_qualified_only(
-            "Dictionary", "anthill.realization.runtime.Dictionary", SymbolKind::Sort, global,
+            "Dictionary",
+            "anthill.realization.runtime.Dictionary",
+            SymbolKind::Sort,
+            global,
         );
         kb.symbols.define_qualified_only(
-            "impl", "anthill.realization.runtime.Dictionary.impl", SymbolKind::Operation, global,
+            "impl",
+            "anthill.realization.runtime.Dictionary.impl",
+            SymbolKind::Operation,
+            global,
         );
         kb
     }
@@ -220,17 +233,19 @@ mod tests {
     #[test]
     fn a_dictionary_still_names_its_carrier_sort() {
         let kb = kb_with_dictionary_sort();
-        let (ctor, _) = crate::kb::term_view::dictionary_view_syms(&kb)
-            .expect("both names are interned above");
+        let (ctor, _) =
+            crate::kb::term_view::dictionary_view_syms(&kb).expect("both names are interned above");
         let impl_sym = ctor;
         assert_eq!(
-            kb.sort_of_constructor(ctor), None,
+            kb.sort_of_constructor(ctor),
+            None,
             "PREMISE: `Dictionary` is constructor-less, so the belongs-to index has \
              no entry for it — which is why the carrier row needs a fallback at all",
         );
         let dict = Dictionary::build(&kb, impl_sym, []).expect("both names resolve");
         assert_eq!(
-            crate::eval::eval::runtime_carrier_sort(&kb, dict.as_value()), Some(ctor),
+            crate::eval::eval::runtime_carrier_sort(&kb, dict.as_value()),
+            Some(ctor),
             "a dictionary value names the `Dictionary` sort as its carrier — the \
              WI-577 row, relocated rather than dropped",
         );

@@ -26,30 +26,39 @@
 //! unwraps a nested `EffectsRows` wrapper during decomposition.
 
 use anthill_core::eval::Value;
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 /// Load full stdlib + Rust host bindings + `extra`; return load (typer) errors.
 fn load_errs(extra: &str) -> Vec<LoadError> {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).err().unwrap_or_default()
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .err()
+        .unwrap_or_default()
 }
 
 fn fmt(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // ── (1)+(2) Type-check: the headline chain dispatches and infers ────────
@@ -71,7 +80,11 @@ namespace wi278.chain
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "headline chain should type-check:\n{}", fmt(&errs));
+    assert!(
+        errs.is_empty(),
+        "headline chain should type-check:\n{}",
+        fmt(&errs)
+    );
 }
 
 #[test]
@@ -91,7 +104,11 @@ namespace wi278.infer
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "map should infer Dst = Bool from the callback:\n{}", fmt(&errs));
+    assert!(
+        errs.is_empty(),
+        "map should infer Dst = Bool from the callback:\n{}",
+        fmt(&errs)
+    );
 }
 
 #[test]
@@ -108,14 +125,18 @@ namespace wi278.infer_neg
 end
 "#;
     let errs = load_errs(src);
-    assert!(!errs.is_empty(),
-        "a Stream[Bool] map result must not satisfy a Stream[Int64] return");
+    assert!(
+        !errs.is_empty(),
+        "a Stream[Bool] map result must not satisfy a Stream[Int64] return"
+    );
     // Pin the REASON: it must be the return-type element mismatch (Bool vs
     // Int64), not some unrelated parse/import/effect failure — otherwise the
     // test would rubber-stamp any error and miss a real inference regression.
     let text = fmt(&errs);
-    assert!(text.contains("run.return") && text.contains("Bool"),
-        "expected a return-type element mismatch naming Bool; got:\n{text}");
+    assert!(
+        text.contains("run.return") && text.contains("Bool"),
+        "expected a return-type element mismatch naming Bool; got:\n{text}"
+    );
 }
 
 // ── (3) Eval: the dispatched chain runs through the lazy carriers ────────
@@ -172,7 +193,8 @@ end
 #[test]
 fn dot_chain_evaluates_on_literal_receiver() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let got = interp.call("wi278.eval.chain_literal", &[])
+    let got = interp
+        .call("wi278.eval.chain_literal", &[])
         .unwrap_or_else(|e| panic!("call chain_literal: {e:?}"));
     assert_eq!(expect_int(got), 345);
 }
@@ -183,8 +205,11 @@ fn dot_chain_evaluates_on_param_receiver() {
     // to `chain_param_sum` so the receiver reaches dispatch as an operation
     // PARAM value — the WI-280 bare-identifier value-receiver path.
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let arg = interp.call("wi278.eval.mk_list", &[]).expect("build arg list");
-    let got = interp.call("wi278.eval.chain_param_sum", &[arg])
+    let arg = interp
+        .call("wi278.eval.mk_list", &[])
+        .expect("build arg list");
+    let got = interp
+        .call("wi278.eval.chain_param_sum", &[arg])
         .unwrap_or_else(|e| panic!("call chain_param_sum: {e:?}"));
     assert_eq!(expect_int(got), 12);
 }
@@ -192,7 +217,8 @@ fn dot_chain_evaluates_on_param_receiver() {
 #[test]
 fn dot_chain_evaluates_on_let_receiver() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let got = interp.call("wi278.eval.chain_let", &[])
+    let got = interp
+        .call("wi278.eval.chain_let", &[])
         .unwrap_or_else(|e| panic!("call chain_let: {e:?}"));
     assert_eq!(expect_int(got), 345);
 }
@@ -200,7 +226,8 @@ fn dot_chain_evaluates_on_let_receiver() {
 #[test]
 fn dot_chain_evaluates_to_empty_when_all_filtered() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
-    let got = interp.call("wi278.eval.chain_empty", &[])
+    let got = interp
+        .call("wi278.eval.chain_empty", &[])
         .unwrap_or_else(|e| panic!("call chain_empty: {e:?}"));
     assert_eq!(expect_int(got), 0);
 }

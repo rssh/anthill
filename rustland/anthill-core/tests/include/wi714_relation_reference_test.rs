@@ -600,7 +600,8 @@ end
 "#;
     let errs = try_load_kb_with(src).err().unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("differing free-variable slots")),
+        errs.iter()
+            .any(|e| e.contains("differing free-variable slots")),
         "heterogeneous clauses must be a loud load error, got: {errs:?}"
     );
 }
@@ -982,7 +983,9 @@ namespace test.wi714poly
 end
 "#;
     try_load_kb_with(ok_src).unwrap_or_else(|errs| {
-        panic!("binding an unconstrained column must be accepted and narrow to Int64; got: {errs:?}")
+        panic!(
+            "binding an unconstrained column must be accepted and narrow to Int64; got: {errs:?}"
+        )
     });
 
     // The MISmatched consumer is rejected: the surviving column narrowed to Int64, so a
@@ -1043,8 +1046,9 @@ namespace test.wi714bq.use
     r.takeN(5)
 end
 "#;
-    let kb = crate::common::try_load_kb_with_files(&[DATA, USE])
-        .unwrap_or_else(|errs| panic!("bare-qualified namespace reference must load; got: {errs:?}"));
+    let kb = crate::common::try_load_kb_with_files(&[DATA, USE]).unwrap_or_else(|errs| {
+        panic!("bare-qualified namespace reference must load; got: {errs:?}")
+    });
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp)
         .expect("register builtins");
@@ -1104,7 +1108,11 @@ end
         .expect("appliedRows drains the sort-scoped applied relation");
     let mut got2 = collect_int_list(&applied);
     got2.sort();
-    assert_eq!(got2, vec![1, 2], "the applied `Sort.rule()` resolves to the same relation");
+    assert_eq!(
+        got2,
+        vec![1, 2],
+        "the applied `Sort.rule()` resolves to the same relation"
+    );
 }
 
 /// The proposal's negative invariant (§"`x.name` on a runtime value is not a way to
@@ -1133,7 +1141,8 @@ end
 "#;
     let errs = try_load_kb_with(SRC).err().unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("no such member") || e.contains("dot dispatch")),
+        errs.iter()
+            .any(|e| e.contains("no such member") || e.contains("dot dispatch")),
         "dotting a runtime value with a rule name must be a loud dispatch error, got: {errs:?}"
     );
 }
@@ -1400,7 +1409,11 @@ fn collect_string_list(v: &Value) -> Vec<String> {
     let mut cur = v.clone();
     loop {
         match cur {
-            Value::Entity { functor: _, ref named, .. } if !named.is_empty() => {
+            Value::Entity {
+                functor: _,
+                ref named,
+                ..
+            } if !named.is_empty() => {
                 // cons(head: <String>, tail: <List>)
                 let mut head: Option<String> = None;
                 let mut tail: Option<Value> = None;

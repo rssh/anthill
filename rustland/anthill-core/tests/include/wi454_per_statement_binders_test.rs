@@ -13,8 +13,8 @@
 //! machinery end-to-end.
 
 use anthill_core::intern::SymbolTable;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::{
     self,
     ir::{Item, Name, SortWithBody, TypeExpr},
@@ -68,9 +68,10 @@ fn summarize(items: &[Item], syms: &SymbolTable) -> Vec<ParamShape> {
             Item::AbstractSort(a) if matches!(a.definition, TypeExpr::Variable { .. }) => {
                 Some(ParamShape::Simple(short(&a.name, syms)))
             }
-            Item::SortWithBody(s) if s.is_type_param => {
-                Some(ParamShape::Hk(short(&s.name, syms), summarize(&s.items, syms)))
-            }
+            Item::SortWithBody(s) if s.is_type_param => Some(ParamShape::Hk(
+                short(&s.name, syms),
+                summarize(&s.items, syms),
+            )),
             _ => None,
         })
         .collect()
@@ -122,8 +123,14 @@ end
         ParamShape::Simple("B".into()),
     ];
     assert_eq!(enc, expected, "sanity: the enclosing-list form's summary");
-    assert_eq!(brk, enc, "bracket per-statement form must match the enclosing list");
-    assert_eq!(v, enc, "?-marker per-statement form must match the enclosing list");
+    assert_eq!(
+        brk, enc,
+        "bracket per-statement form must match the enclosing list"
+    );
+    assert_eq!(
+        v, enc,
+        "?-marker per-statement form must match the enclosing list"
+    );
 }
 
 /// A bare bracket binder `sort [A]` desugars to a simple `sort A = ?` AbstractSort,
@@ -142,10 +149,14 @@ end
     let holder = find_sort(&parsed.items, syms, "Holder").expect("Holder");
     assert_eq!(
         summarize(&holder.items, syms),
-        vec![ParamShape::Simple("A".into()), ParamShape::Simple("B".into())],
+        vec![
+            ParamShape::Simple("A".into()),
+            ParamShape::Simple("B".into())
+        ],
     );
     assert!(
-        find_sort(&holder.items, syms, "A").is_none() && find_sort(&holder.items, syms, "B").is_none(),
+        find_sort(&holder.items, syms, "A").is_none()
+            && find_sort(&holder.items, syms, "B").is_none(),
         "a bare binder must NOT become a structured SortWithBody"
     );
 }
@@ -212,8 +223,8 @@ fn load_errors(extra: &str) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -242,7 +253,10 @@ fn per_statement_hk_form_loads_clean() {
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "per-statement HK CpsMonad should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "per-statement HK CpsMonad should load clean: {errs:?}"
+    );
 }
 
 /// Simple-param per-statement form (`sort ?A` / `sort [B]`) with a real use loads
@@ -260,5 +274,8 @@ fn per_statement_simple_form_loads_clean() {
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "per-statement Duo should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "per-statement Duo should load clean: {errs:?}"
+    );
 }

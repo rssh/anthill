@@ -96,7 +96,11 @@ namespace test.wi084purity.ok
 end
 "#;
     let r = try_load_kb_with(src);
-    assert!(r.is_ok(), "pure const bodies must load cleanly:\n{}", errs(r));
+    assert!(
+        r.is_ok(),
+        "pure const bodies must load cleanly:\n{}",
+        errs(r)
+    );
 }
 
 #[test]
@@ -112,5 +116,9 @@ namespace test.wi084purity.pureop
 end
 "#;
     let r = try_load_kb_with(src);
-    assert!(r.is_ok(), "a const calling a pure op must load:\n{}", errs(r));
+    assert!(
+        r.is_ok(),
+        "a const calling a pure op must load:\n{}",
+        errs(r)
+    );
 }

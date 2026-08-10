@@ -17,7 +17,10 @@
 use crate::common::{interp_for, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -32,7 +35,8 @@ fn assert_arg_mismatch(src: &str, expected_ty: &str, got_ty: &str) {
     };
     let want = format!("expected {expected_ty}, got {got_ty}");
     assert!(
-        errs.iter().any(|e| e.contains("type mismatch") && e.contains(&want)),
+        errs.iter()
+            .any(|e| e.contains("type mismatch") && e.contains(&want)),
         "rejection must be the op-arg type mismatch `{want}`; got: {errs:?}",
     );
 }
@@ -131,8 +135,16 @@ end
         try_load_kb_with(src).err(),
     );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi775ok.drive_named"), 5, "name-keyed round trip");
-    assert_eq!(run_int(&mut interp, "test.wi775ok.drive_pos"), 5, "positional round trip");
+    assert_eq!(
+        run_int(&mut interp, "test.wi775ok.drive_named"),
+        5,
+        "name-keyed round trip"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi775ok.drive_pos"),
+        5,
+        "positional round trip"
+    );
 }
 
 /// The SAME hole on the `Function[A, B]` surface, which `arrow_parts` decomposes
@@ -221,5 +233,9 @@ end
         try_load_kb_with(src).err(),
     );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi775param.fold_it"), 123, "foldLeft shift over [1,2,3]");
+    assert_eq!(
+        run_int(&mut interp, "test.wi775param.fold_it"),
+        123,
+        "foldLeft shift over [1,2,3]"
+    );
 }

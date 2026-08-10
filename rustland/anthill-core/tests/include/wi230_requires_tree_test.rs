@@ -8,13 +8,12 @@
 //! 3. `flatten_requires_tree` reproduces the same set of entries that
 //!    `requires_chain` returns (consistency between tree and flat views).
 
-
+use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
-    flatten_requires_tree, requires_chain, requires_tree, RequiresNode, RequiresEntry,
+    flatten_requires_tree, requires_chain, requires_tree, RequiresEntry, RequiresNode,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::parse;
 
 use crate::common::collect_stdlib_and_rust_bindings;
@@ -128,7 +127,10 @@ end
     // loader represents a bare name reference as either `Term::Ref(s)`
     // or nullary `Term::Fn(s, [], [])`; both shapes mean "Ref(s)" for
     // substitution purposes.
-    fn extract_t_binding(kb: &KnowledgeBase, node: &RequiresNode) -> Option<anthill_core::intern::Symbol> {
+    fn extract_t_binding(
+        kb: &KnowledgeBase,
+        node: &RequiresNode,
+    ) -> Option<anthill_core::intern::Symbol> {
         // WI-662: `entry.spec` is now a carrier-faithful `Value`; these test specs
         // are ground, so read the hash-consed term through `Value::Term`.
         let anthill_core::eval::Value::Term { id: spec_tid, .. } = &node.entry.spec else {
@@ -145,9 +147,11 @@ end
             }
             match kb.get_term(*v) {
                 Term::Ref(s) => return Some(*s),
-                Term::Fn { functor, pos_args, named_args }
-                    if pos_args.is_empty() && named_args.is_empty() =>
-                {
+                Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                } if pos_args.is_empty() && named_args.is_empty() => {
                     return Some(*functor);
                 }
                 _ => return None,
@@ -269,9 +273,11 @@ end
         .expect("outer.Main");
     let outer_chain = requires_chain(&mut kb, outer_main);
     assert_eq!(
-        outer_chain.len(), 1,
+        outer_chain.len(),
+        1,
         "outer.Main requires only Spec; got {:?}",
-        outer_chain.iter()
+        outer_chain
+            .iter()
             .map(|e| kb.qualified_name_of(e.required_sort).to_string())
             .collect::<Vec<_>>()
     );
@@ -283,7 +289,8 @@ end
         .try_resolve_symbol("test.collide.inner.Helper")
         .expect("Helper");
     let helper_chain = requires_chain(&mut kb, helper);
-    let names: Vec<String> = helper_chain.iter()
+    let names: Vec<String> = helper_chain
+        .iter()
         .map(|e| kb.qualified_name_of(e.required_sort).to_string())
         .collect();
     assert_eq!(

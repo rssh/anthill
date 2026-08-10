@@ -165,13 +165,22 @@ pub(crate) const RIVAL_WITNESS: &str = "\n  sort Rival\n    import anthill.prelu
 
 /// Assert the refusal is the SUPPLIER tie and names both routes.
 pub(crate) fn assert_supplier_tie(msg: &str, ns: &str, route_two: &str) {
-    assert!(msg.contains(&format!("{ns}.Desc.describe")), "the spec op must be named: {msg}");
-    assert!(msg.contains(&format!("carrier `{ns}.Leaf`")), "the carrier must be named: {msg}");
+    assert!(
+        msg.contains(&format!("{ns}.Desc.describe")),
+        "the spec op must be named: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("carrier `{ns}.Leaf`")),
+        "the carrier must be named: {msg}"
+    );
     assert!(
         msg.contains(&format!("the carrier's own member '{ns}.Leaf.describe'")),
         "route 1 must be named BY ROUTE: {msg}",
     );
-    assert!(msg.contains(route_two), "the rival must be named by ITS route: {msg}");
+    assert!(
+        msg.contains(route_two),
+        "the rival must be named by ITS route: {msg}"
+    );
     // The span is what raising at the typer buys over raising at the call: it locates
     // the CALL, not the declarations, which are individually legal. Asserted through
     // `located`, which additionally hands back the BODY — so this pins that the message
@@ -270,7 +279,12 @@ fn a_witness_supplier_no_longer_silently_outranks_the_carriers_member() {
 #[test]
 fn a_rule_reaching_the_tie_through_an_operation_is_refused() {
     let ns = "test.wi1027.rule";
-    let msg = refusal(&program(ns, OWN_UNRUNNABLE, RIVAL_FACT, "\n  rule answer(?r) :- probe(?r)\n"));
+    let msg = refusal(&program(
+        ns,
+        OWN_UNRUNNABLE,
+        RIVAL_FACT,
+        "\n  rule answer(?r) :- probe(?r)\n",
+    ));
     assert!(
         msg.contains("ambiguous dispatch") && msg.contains("Desc.describe"),
         "the operation the rule bridges into must report the tie at load: {msg}",
@@ -328,9 +342,14 @@ fn a_provision_tie_is_still_reported_as_a_provider_tie() {
 #[test]
 fn a_bracket_selecting_the_witness_still_loads_and_runs() {
     let ns = "test.wi1027.selected";
-    let src = program(ns, OWN_RUNNABLE, RIVAL_WITNESS, "")
-        .replace("Desc.describe(leaf())", "Desc.describe[Desc = Rival](leaf())");
-    assert!(src.contains("[Desc = Rival]"), "fixture guard: the bracket must be written");
+    let src = program(ns, OWN_RUNNABLE, RIVAL_WITNESS, "").replace(
+        "Desc.describe(leaf())",
+        "Desc.describe[Desc = Rival](leaf())",
+    );
+    assert!(
+        src.contains("[Desc = Rival]"),
+        "fixture guard: the bracket must be written"
+    );
     assert_eq!(
         probe(ns, &src),
         9,

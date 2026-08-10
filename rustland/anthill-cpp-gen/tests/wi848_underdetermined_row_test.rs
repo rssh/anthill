@@ -62,7 +62,10 @@ fn include_mapping_fact_omitting_required_include_contributes_no_probe() {
     let baseline = emit_inc("").expect("baseline emits cleanly");
     let with_malformed = emit_inc(r#"fact IncludeMapping(lang: "cpp", host_type: "int64_t")"#)
         .expect("an IncludeMapping missing `include` contributes no mapping, not an error");
-    assert!(baseline.contains("#include <cstdint>"), "stdlib probe present in baseline:\n{baseline}");
+    assert!(
+        baseline.contains("#include <cstdint>"),
+        "stdlib probe present in baseline:\n{baseline}"
+    );
     assert_eq!(
         with_malformed, baseline,
         "a fact missing the required `include` adds no probe — header identical to baseline"
@@ -82,7 +85,10 @@ fn include_mapping_rule_head_leaving_include_unconstrained_contributes_no_probe(
          \n            :- Toggle(on: true)"
     ))
     .expect("an unconstrained-head IncludeMapping contributes no mapping, not an error");
-    assert!(baseline.contains("#include <cstdint>"), "stdlib probe present in baseline:\n{baseline}");
+    assert!(
+        baseline.contains("#include <cstdint>"),
+        "stdlib probe present in baseline:\n{baseline}"
+    );
     assert_eq!(
         with_malformed, baseline,
         "a rule head leaving `include` unconstrained adds no probe — header identical to baseline"
@@ -154,8 +160,11 @@ fn naming_convention_omitting_required_method_case_is_ambiguous_not_silent() {
     // LOUDLY rather than silently picking one (or emitting a wrong `ping` spelling).
     // Unlike the probe-set / keyed readers above, this reader does not skip an
     // under-determined row — the difference is its aggregation, not `row_named_term`.
-    let err = emit_sensor_traits(r#"fact NamingConvention(language: "cpp", source_case: "snake_case")"#)
-        .expect_err("an under-determined cpp convention competes with the stdlib's — ambiguous");
+    let err =
+        emit_sensor_traits(r#"fact NamingConvention(language: "cpp", source_case: "snake_case")"#)
+            .expect_err(
+                "an under-determined cpp convention competes with the stdlib's — ambiguous",
+            );
     assert!(err.contains("ambiguous"), "names the ambiguity: {err}");
     assert!(err.contains("NamingConvention"), "names the functor: {err}");
 }

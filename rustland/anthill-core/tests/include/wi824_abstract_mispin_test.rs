@@ -147,7 +147,12 @@ fn sole_error_at(src: &str, site: &str) -> String {
     let mut hits = errs.iter().filter(|e| e.contains(site));
     let found = hits
         .next()
-        .unwrap_or_else(|| panic!("no load error names `{site}`; got:\n  {}", errs.join("\n  ")))
+        .unwrap_or_else(|| {
+            panic!(
+                "no load error names `{site}`; got:\n  {}",
+                errs.join("\n  ")
+            )
+        })
         .clone();
     assert!(
         hits.next().is_none(),
@@ -194,7 +199,11 @@ fn positive_control_load_error_is_reported() {
 fn cross_sort_construction_refuses_unconditioned_provider() {
     let src = program(
         "wi824.xsort",
-        &[UNCONDITIONED_PROVIDER, CROSS_SORT_CALLERS, &driver("Caller.a(leaf())")],
+        &[
+            UNCONDITIONED_PROVIDER,
+            CROSS_SORT_CALLERS,
+            &driver("Caller.a(leaf())"),
+        ],
     );
     let text = sole_error_at(&src, "wi824.xsort.Callee.b.requires");
     assert!(
@@ -214,7 +223,11 @@ fn cross_sort_construction_refuses_unconditioned_provider() {
 fn cross_sort_construction_refuses_conditional_provider_too() {
     let src = program(
         "wi824.xsortc",
-        &[CONDITIONAL_PROVIDER, CROSS_SORT_CALLERS, &driver("Caller.a(leaf())")],
+        &[
+            CONDITIONAL_PROVIDER,
+            CROSS_SORT_CALLERS,
+            &driver("Caller.a(leaf())"),
+        ],
     );
     let text = sole_error_at(&src, "wi824.xsortc.Callee.b.requires");
     assert!(
@@ -293,13 +306,13 @@ fn abstract_body_call_still_licensed_when_covered() {
 fn conditional_parametric_provider_resolves_at_concrete_binding() {
     let src = program(
         "wi824.conc",
-        &[
-            CONDITIONAL_PROVIDER,
-            &driver("Desc.describe(wrap(leaf()))"),
-        ],
+        &[CONDITIONAL_PROVIDER, &driver("Desc.describe(wrap(leaf()))")],
     );
     let got = eval_fresh(&src, "wi824.conc.Driver.drive");
-    assert!(matches!(got, Ok(Value::Int(12))), "expected Ok(Int(12)); got {got:?}");
+    assert!(
+        matches!(got, Ok(Value::Int(12))),
+        "expected Ok(Int(12)); got {got:?}"
+    );
 }
 
 /// Same control for the UNCONDITIONED provider — the one WI-824 refuses at an
@@ -332,11 +345,11 @@ fn unconditioned_parametric_provider_resolves_at_concrete_binding() {
 fn base_impl_still_wins_at_its_own_binding() {
     let src = program(
         "wi824.base",
-        &[
-            UNCONDITIONED_PROVIDER,
-            &driver("Desc.describe(leaf())"),
-        ],
+        &[UNCONDITIONED_PROVIDER, &driver("Desc.describe(leaf())")],
     );
     let got = eval_fresh(&src, "wi824.base.Driver.drive");
-    assert!(matches!(got, Ok(Value::Int(1))), "expected Ok(Int(1)); got {got:?}");
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "expected Ok(Int(1)); got {got:?}"
+    );
 }

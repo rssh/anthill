@@ -93,10 +93,14 @@ end
 #[test]
 fn point_with_nan_field_is_not_equal() {
     let mut i = interp(SRC);
-    assert!(!call_bool(&mut i, "test.wi664.p_nan_eq"),
-        "eq(Point(nan,0), Point(nan,0)) must be false — field-wise eq propagates IEEE nan != nan");
-    assert!(call_bool(&mut i, "test.wi664.p_nan_neq"),
-        "neq(Point(nan,0), Point(nan,0)) must be true");
+    assert!(
+        !call_bool(&mut i, "test.wi664.p_nan_eq"),
+        "eq(Point(nan,0), Point(nan,0)) must be false — field-wise eq propagates IEEE nan != nan"
+    );
+    assert!(
+        call_bool(&mut i, "test.wi664.p_nan_neq"),
+        "neq(Point(nan,0), Point(nan,0)) must be true"
+    );
 }
 
 /// A Float-containing composite with NO NaN behaves as an ordinary product: equal
@@ -104,10 +108,14 @@ fn point_with_nan_field_is_not_equal() {
 #[test]
 fn point_without_nan_is_field_wise_equal() {
     let mut i = interp(SRC);
-    assert!(call_bool(&mut i, "test.wi664.p_eq"),
-        "eq(Point(1.0,2.0), Point(1.0,2.0)) must be true");
-    assert!(!call_bool(&mut i, "test.wi664.p_ne"),
-        "eq(Point(1.0,2.0), Point(1.0,3.0)) must be false (y differs)");
+    assert!(
+        call_bool(&mut i, "test.wi664.p_eq"),
+        "eq(Point(1.0,2.0), Point(1.0,2.0)) must be true"
+    );
+    assert!(
+        !call_bool(&mut i, "test.wi664.p_ne"),
+        "eq(Point(1.0,2.0), Point(1.0,3.0)) must be false (y differs)"
+    );
 }
 
 /// `===` / `struct_eq` stays STRUCTURAL — `Point(nan,_) === Point(nan,_)` is true
@@ -116,8 +124,10 @@ fn point_without_nan_is_field_wise_equal() {
 #[test]
 fn struct_eq_on_composite_nan_stays_structural() {
     let mut i = interp(SRC);
-    assert!(call_bool(&mut i, "test.wi664.p_seq_nan"),
-        "Point(nan,_) === Point(nan,_) must stay true — struct_eq is structural");
+    assert!(
+        call_bool(&mut i, "test.wi664.p_seq_nan"),
+        "Point(nan,_) === Point(nan,_) must stay true — struct_eq is structural"
+    );
 }
 
 /// An all-`Eq` composite (only `Int` fields) is unaffected — structural equality
@@ -125,8 +135,14 @@ fn struct_eq_on_composite_nan_stays_structural() {
 #[test]
 fn all_eq_composite_unaffected() {
     let mut i = interp(SRC);
-    assert!(call_bool(&mut i, "test.wi664.duple_eq"), "eq(Duple(1,2), Duple(1,2)) must be true");
-    assert!(!call_bool(&mut i, "test.wi664.duple_ne"), "eq(Duple(1,2), Duple(1,9)) must be false");
+    assert!(
+        call_bool(&mut i, "test.wi664.duple_eq"),
+        "eq(Duple(1,2), Duple(1,2)) must be true"
+    );
+    assert!(
+        !call_bool(&mut i, "test.wi664.duple_ne"),
+        "eq(Duple(1,2), Duple(1,9)) must be false"
+    );
 }
 
 /// Nested: a `Float` two levels down (`Line(Point(nan,_), _)`) still follows IEEE
@@ -134,10 +150,14 @@ fn all_eq_composite_unaffected() {
 #[test]
 fn nested_composite_nan_recurses() {
     let mut i = interp(SRC);
-    assert!(!call_bool(&mut i, "test.wi664.line_nan_eq"),
-        "eq over a Line with a nested Point(nan,_) must be false");
-    assert!(call_bool(&mut i, "test.wi664.line_eq"),
-        "eq over two identical NaN-free Lines must be true");
+    assert!(
+        !call_bool(&mut i, "test.wi664.line_nan_eq"),
+        "eq over a Line with a nested Point(nan,_) must be false"
+    );
+    assert!(
+        call_bool(&mut i, "test.wi664.line_eq"),
+        "eq over two identical NaN-free Lines must be true"
+    );
 }
 
 /// `TotalFloat` is the lawful boundary: `eq(TotalFloat(nan), TotalFloat(nan))`
@@ -146,10 +166,14 @@ fn nested_composite_nan_recurses() {
 #[test]
 fn totalfloat_boundary_stays_reflexive() {
     let mut i = interp(SRC);
-    assert!(call_bool(&mut i, "test.wi664.tf_nan_eq"),
-        "eq(TotalFloat(nan), TotalFloat(nan)) must stay true (lawful boundary)");
-    assert!(call_bool(&mut i, "test.wi664.wtf_nan_eq"),
-        "eq(WrapTF(TotalFloat(nan)), …) must be true — TotalFloat shields the inner Float");
+    assert!(
+        call_bool(&mut i, "test.wi664.tf_nan_eq"),
+        "eq(TotalFloat(nan), TotalFloat(nan)) must stay true (lawful boundary)"
+    );
+    assert!(
+        call_bool(&mut i, "test.wi664.wtf_nan_eq"),
+        "eq(WrapTF(TotalFloat(nan)), …) must be true — TotalFloat shields the inner Float"
+    );
 }
 
 // ── AXIS 2: resolver (SLD) field-wise semantic equality ──────────────────────
@@ -158,15 +182,30 @@ fn totalfloat_boundary_stays_reflexive() {
 /// symbolic const the resolver never folds, so `value_f64` can't see it; a
 /// `Literal::Float` IS unwrapped, so this is what actually exercises the resolver's
 /// field-wise IEEE path (the pre-existing const-folding gap is orthogonal).
-fn point_term(kb: &mut KnowledgeBase, ctor: Symbol, x: Symbol, y: Symbol, xv: f64, yv: f64) -> TermId {
+fn point_term(
+    kb: &mut KnowledgeBase,
+    ctor: Symbol,
+    x: Symbol,
+    y: Symbol,
+    xv: f64,
+    yv: f64,
+) -> TermId {
     use anthill_core::kb::term::Literal;
     let xt = kb.alloc(Term::Const(Literal::Float(xv.into())));
     let yt = kb.alloc(Term::Const(Literal::Float(yv.into())));
-    kb.make_entity_term(ctor, SmallVec::new(), SmallVec::from_slice(&[(x, xt), (y, yt)]))
+    kb.make_entity_term(
+        ctor,
+        SmallVec::new(),
+        SmallVec::from_slice(&[(x, xt), (y, yt)]),
+    )
 }
 
 fn eq_goal(kb: &mut KnowledgeBase, eq_sym: Symbol, a: TermId, b: TermId) -> TermId {
-    kb.alloc(Term::Fn { functor: eq_sym, pos_args: SmallVec::from_slice(&[a, b]), named_args: SmallVec::new() })
+    kb.alloc(Term::Fn {
+        functor: eq_sym,
+        pos_args: SmallVec::from_slice(&[a, b]),
+        named_args: SmallVec::new(),
+    })
 }
 
 /// The resolver mirror (`sem_eq_core` → field-wise): resolving `eq(point(nan,0),
@@ -177,31 +216,45 @@ fn eq_goal(kb: &mut KnowledgeBase, eq_sym: Symbol, a: TermId, b: TermId) -> Term
 fn resolver_field_wise_eq_agrees() {
     let mut kb = crate::common::load_kb_with(SRC);
     let cfg = ResolveConfig::default();
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("PartialEq.eq");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("PartialEq.eq");
     // The `point` constructor's functor — scanned by short name over the
     // entity registry (WI-632 retired `resolve_entity_functor`; this test just
     // needs the unique `point` ctor of its own fixture).
     let ctor = {
         let funcs: Vec<_> = kb.entity_field_type_functors().copied().collect();
-        funcs.into_iter().find(|&f| kb.local_name_of(f) == "point").expect("point constructor")
+        funcs
+            .into_iter()
+            .find(|&f| kb.local_name_of(f) == "point")
+            .expect("point constructor")
     };
     let fields = kb.entity_field_names(ctor).expect("point fields").to_vec();
     let (x, y) = (fields[0], fields[1]);
 
     let pnan = point_term(&mut kb, ctor, x, y, f64::NAN, 0.0);
     let g_nan = eq_goal(&mut kb, eq_sym, pnan, pnan);
-    assert_eq!(kb.resolve(&[g_nan], &cfg).len(), 0,
-        "eq(point(nan,0), point(nan,0)) must be false in SLD (field-wise IEEE), matching eval");
+    assert_eq!(
+        kb.resolve(&[g_nan], &cfg).len(),
+        0,
+        "eq(point(nan,0), point(nan,0)) must be false in SLD (field-wise IEEE), matching eval"
+    );
 
     let p12 = point_term(&mut kb, ctor, x, y, 1.0, 2.0);
     let g_eq = eq_goal(&mut kb, eq_sym, p12, p12);
-    assert_eq!(kb.resolve(&[g_eq], &cfg).len(), 1,
-        "eq(point(1,2), point(1,2)) must resolve (field-wise all-equal)");
+    assert_eq!(
+        kb.resolve(&[g_eq], &cfg).len(),
+        1,
+        "eq(point(1,2), point(1,2)) must resolve (field-wise all-equal)"
+    );
 
     let p13 = point_term(&mut kb, ctor, x, y, 1.0, 3.0);
     let g_ne = eq_goal(&mut kb, eq_sym, p12, p13);
-    assert_eq!(kb.resolve(&[g_ne], &cfg).len(), 0,
-        "eq(point(1,2), point(1,3)) must not resolve (y differs)");
+    assert_eq!(
+        kb.resolve(&[g_ne], &cfg).len(),
+        0,
+        "eq(point(1,2), point(1,3)) must not resolve (y differs)"
+    );
 }
 
 // ── AXIS 1: derived NonEq classification (load-time rejection) ───────────────
@@ -222,9 +275,12 @@ namespace test.wi664.badeq
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("provides both") && e.contains("NonEq") && e.contains("P")),
+        errs.iter()
+            .any(|e| e.contains("provides both") && e.contains("NonEq") && e.contains("P")),
         "expected an Eq⊥NonEq conflict for P (a Float-containing composite); got:\n{}",
         errs.join("\n"),
     );
@@ -251,9 +307,12 @@ namespace test.wi664.mutrec
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("provides both") && e.contains("NonEq") && e.contains("Forest")),
+        errs.iter()
+            .any(|e| e.contains("provides both") && e.contains("NonEq") && e.contains("Forest")),
         "Forest transitively reaches a Float through the Tree↔Forest recursion; \
          provides Eq[Forest] must be rejected (sound fixpoint); got:\n{}",
         errs.join("\n"),
@@ -280,8 +339,10 @@ namespace test.wi664.opbound
 end
 "#;
     if let Err(errs) = crate::common::try_load_kb_with(src) {
-        panic!("op-bound-eq carrier W must load (a lawful boundary), not false-derive NonEq; got:\n{}",
-            errs.join("\n"));
+        panic!(
+            "op-bound-eq carrier W must load (a lawful boundary), not false-derive NonEq; got:\n{}",
+            errs.join("\n")
+        );
     }
 }
 
@@ -300,6 +361,9 @@ namespace test.wi664.goodeq
 end
 "#;
     if let Err(errs) = crate::common::try_load_kb_with(src) {
-        panic!("expected a clean load for an all-Eq composite Q; got:\n{}", errs.join("\n"));
+        panic!(
+            "expected a clean load for an all-Eq composite Q; got:\n{}",
+            errs.join("\n")
+        );
     }
 }

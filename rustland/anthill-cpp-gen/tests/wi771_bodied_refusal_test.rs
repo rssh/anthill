@@ -47,7 +47,11 @@ fn bodied_generated_rule_is_refused_loudly() {
         .expect_err("a bodied Generated rule must be refused, never head-matched");
     // The refusal renders the offending rule (`head :- body`), so the message
     // names the offender — not merely "a bodied rule exists".
-    assert!(err.message.contains(":-"), "refusal renders the rule: {}", err.message);
+    assert!(
+        err.message.contains(":-"),
+        "refusal renders the rule: {}",
+        err.message
+    );
     assert!(
         err.message.contains("Generated"),
         "refusal names the functor: {}",
@@ -88,7 +92,11 @@ fn bodied_implementation_rule_is_refused_loudly() {
     let err = CarrierTable::from_kb(&kb)
         .err()
         .expect("a bodied Implementation rule must be refused, never head-matched");
-    assert!(err.message.contains(":-"), "refusal renders the rule: {}", err.message);
+    assert!(
+        err.message.contains(":-"),
+        "refusal renders the rule: {}",
+        err.message
+    );
     assert!(
         err.message.contains("Implementation"),
         "refusal names the functor: {}",

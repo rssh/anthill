@@ -14,8 +14,8 @@
 //! spec-satisfaction method (the `(3).min(5) -> Ord.min` shape) did not
 //! dispatch.
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 /// Load stdlib + `extra` source; return the KB plus any load errors
@@ -23,11 +23,14 @@ use anthill_core::parse;
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -39,7 +42,10 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── The core case: dispatch via a spec the receiver's sort provides ─────
@@ -64,10 +70,12 @@ fn dot_method_dispatches_via_provided_spec() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected ?a.pick(?b) to dispatch to Comparable.pick via fact \
          Comparable[Widget] and type-check; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── The dispatched call threads the spec's own `requires` ───────────────
@@ -99,10 +107,12 @@ fn dot_spec_method_threads_requires() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected ?a.pick(?b) to dispatch and thread Comparable[Widget] \
          (which requires Nameable[Widget], provided); got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── Regression: the no-match path still fires when no spec provides it ──
@@ -127,11 +137,18 @@ fn dot_no_provided_spec_still_reports_no_match() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(), "expected a no-match error for ?a.zonk(?b)");
-    assert!(text.contains("no such member (dot dispatch)") && text.contains("zonk"),
-        "expected a dot-dispatch no-match diagnostic naming 'zonk'; got:\n{text}");
-    assert!(text.contains("Widget"),
-        "expected the no-match diagnostic to name the receiver's sort Widget; got:\n{text}");
+    assert!(
+        !errs.is_empty(),
+        "expected a no-match error for ?a.zonk(?b)"
+    );
+    assert!(
+        text.contains("no such member (dot dispatch)") && text.contains("zonk"),
+        "expected a dot-dispatch no-match diagnostic naming 'zonk'; got:\n{text}"
+    );
+    assert!(
+        text.contains("Widget"),
+        "expected the no-match diagnostic to name the receiver's sort Widget; got:\n{text}"
+    );
 }
 
 // ── The acceptance shape on a real builtin: Int64 → Ord.min ───────────
@@ -140,11 +157,14 @@ fn dot_no_provided_spec_still_reports_no_match() {
 /// (`anthill-stl/anthill/`), where `fact Eq/Ord/Numeric[T = Int64]` live.
 fn load_capturing_errors_with_stl(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -171,9 +191,11 @@ fn dot_min_dispatches_via_int_ordered() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors_with_stl(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected ?x.min(?y) to dispatch to Ord.min via fact Ord[Int64]; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── Unsatisfied spec-level requires is now diagnosed (WI-343) ───────────
@@ -205,9 +227,13 @@ fn dot_spec_method_unsatisfied_requires_errors_wi343() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(),
+    assert!(
+        !errs.is_empty(),
         "WI-343: Gadget provides Comparable (which requires Nameable) without \
-         providing Nameable → should be rejected; got clean load");
-    assert!(text.contains("Comparable") && text.contains("Nameable"),
-        "expected the diagnostic to name Comparable and its unmet Nameable; got:\n{text}");
+         providing Nameable → should be rejected; got clean load"
+    );
+    assert!(
+        text.contains("Comparable") && text.contains("Nameable"),
+        "expected the diagnostic to name Comparable and its unmet Nameable; got:\n{text}"
+    );
 }

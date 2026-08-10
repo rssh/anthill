@@ -30,7 +30,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("lack") && e.contains("Modify")),
         "a Modify[c]-declaring pred must be rejected by Iterable.find's \
          -Modify[x] lacks-constraint; got: {errs:?}",
     );
@@ -50,7 +51,8 @@ end
 "#;
     let errs = load_errors(&[filter_src]);
     assert!(
-        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("lack") && e.contains("Modify")),
         "a Modify[c]-declaring pred must be rejected by Iterable.filter; got: {errs:?}",
     );
 
@@ -65,7 +67,8 @@ end
 "#;
     let errs = load_errors(&[map_src]);
     assert!(
-        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("lack") && e.contains("Modify")),
         "a Modify[c]-declaring transform must be rejected by Iterable.map; got: {errs:?}",
     );
 }
@@ -105,7 +108,8 @@ end
 "#;
     let errs = load_errors(&[undeclared]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Beep")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Beep")),
         "the pred's Beep must surface at the CALLER's boundary when \
          undeclared; got: {errs:?}",
     );
@@ -136,7 +140,8 @@ end
 "#;
     let errs = load_errors(&[mutating]);
     assert!(
-        errs.iter().any(|e| e.contains("lack") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("lack") && e.contains("Modify")),
         "find over List[Cell] with a REALLY-mutating pred (Cell.set in the \
          body) must be rejected by the -Modify[x] lacks; got: {errs:?}",
     );
@@ -197,7 +202,8 @@ end
 "#;
     let errs = load_errors(&[undeclared]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Beep")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Beep")),
         "the pred's Beep must surface at the CONSUMING caller's boundary when \
          undeclared; got: {errs:?}",
     );

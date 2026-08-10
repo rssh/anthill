@@ -99,14 +99,18 @@ fn via_symbol(kb: &KnowledgeBase, owner_qn: &str, param: &str) -> u32 {
 
 /// The variable the OPERATION declares for `param`, straight off its record.
 fn via_declaration(kb: &KnowledgeBase, op_qn: &str, param: &str) -> u32 {
-    let op = kb.try_resolve_symbol(op_qn).expect("the operation must be defined");
+    let op = kb
+        .try_resolve_symbol(op_qn)
+        .expect("the operation must be defined");
     let rec = lookup_operation_info(kb, op).expect("a declared operation has an OperationInfo");
     let (_, var) = rec
         .type_params
         .iter()
         .find(|(n, _)| kb.local_name_of(*n) == param)
         .unwrap_or_else(|| panic!("`{op_qn}` must declare type param `{param}`"));
-    var.as_global().unwrap_or_else(|| panic!("`{op_qn}.{param}` must be a flex Global var")).raw()
+    var.as_global()
+        .unwrap_or_else(|| panic!("`{op_qn}.{param}` must be a flex Global var"))
+        .raw()
 }
 
 #[test]
@@ -137,7 +141,10 @@ fn distinct_operations_do_not_share_one_type_param_variable() {
     let kb = load_kb_with(IDENT_SRC);
     let cmp_t = via_symbol(&kb, "test.wi943.identity.OpHolder.cmp", "T");
     let cmp2_t = via_symbol(&kb, "test.wi943.identity.OpHolder.cmp2", "T");
-    assert_ne!(cmp_t, cmp2_t, "`cmp[T]` and `cmp2[T]` are two parameters, not one");
+    assert_ne!(
+        cmp_t, cmp2_t,
+        "`cmp[T]` and `cmp2[T]` are two parameters, not one"
+    );
 
     let a = via_symbol(&kb, "test.wi943.identity.OpHolder.pair", "A");
     let b = via_symbol(&kb, "test.wi943.identity.OpHolder.pair", "B");
@@ -181,9 +188,10 @@ end
     // wrong could not pass by returning some Int. `cmp2` reverses its arguments, so the
     // two operations must disagree — which they cannot do if their `T`s are one var.
     let mut interp = crate::common::interp_for(src);
-    for (entry, want) in
-        [("test.wi943.covered.Driver.via", 1), ("test.wi943.covered.Driver.via2", -1)]
-    {
+    for (entry, want) in [
+        ("test.wi943.covered.Driver.via", 1),
+        ("test.wi943.covered.Driver.via2", -1),
+    ] {
         match interp.call(entry, &[Value::Int(0)]) {
             Ok(Value::Int(n)) => {
                 assert_eq!(n, want, "{entry} must compare through its own requirement")
@@ -216,7 +224,9 @@ namespace test.wi943.sortparam
 end
 "#,
     );
-    let holder = kb.try_resolve_symbol("test.wi943.sortparam.SortHolder").expect("sort");
+    let holder = kb
+        .try_resolve_symbol("test.wi943.sortparam.SortHolder")
+        .expect("sort");
     assert_eq!(
         kb.type_params_of_sort(holder),
         vec!["T".to_string()],
@@ -225,7 +235,9 @@ end
     let via_sym = via_symbol(&kb, "test.wi943.sortparam.SortHolder", "T");
 
     // The declaration side for a sort param: the `SortAlias(T, Var)` fact's target.
-    let t_sym = kb.try_resolve_symbol("test.wi943.sortparam.SortHolder.T").expect("SortHolder.T");
+    let t_sym = kb
+        .try_resolve_symbol("test.wi943.sortparam.SortHolder.T")
+        .expect("SortHolder.T");
     let declared = crate::common::sort_alias_backing_var(&kb, t_sym)
         .expect("`sort T = ?` must assert a `SortAlias` with a Var target")
         .raw();

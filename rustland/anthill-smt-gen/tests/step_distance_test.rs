@@ -93,10 +93,14 @@ fn lf1_with_step_bound_kb() -> anthill_core::kb::KnowledgeBase {
 #[test]
 fn step_distance_bound_inlines_called_rule() {
     let kb = lf1_with_step_bound_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
-        upper_bound: 7.0,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
+            upper_bound: 7.0,
+        },
+    )
+    .expect("emit");
 
     // The inlined comm_delay_max body should appear in the
     // step_distance_bound expression — concretely, the propagation
@@ -111,22 +115,35 @@ fn step_distance_bound_inlines_called_rule() {
         "GPS noise term `(* 4.0 epsilon)` missing:\n{smt}"
     );
     // Three entities ⇒ three sets of consts.
-    assert!(smt.contains("(define-fun epsilon () Real 1.5)"),
-            "epsilon const missing:\n{smt}");
-    assert!(smt.contains("(define-fun leader_speed_max () Real 8.0)"),
-            "leader_speed_max const missing:\n{smt}");
-    assert!(smt.contains("(define-fun range_max () Real 100.0)"),
-            "range_max const missing:\n{smt}");
+    assert!(
+        smt.contains("(define-fun epsilon () Real 1.5)"),
+        "epsilon const missing:\n{smt}"
+    );
+    assert!(
+        smt.contains("(define-fun leader_speed_max () Real 8.0)"),
+        "leader_speed_max const missing:\n{smt}"
+    );
+    assert!(
+        smt.contains("(define-fun range_max () Real 100.0)"),
+        "range_max const missing:\n{smt}"
+    );
 }
 
 #[test]
 fn step_distance_bound_z3_says_unsat_at_seven_meters() {
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let kb = lf1_with_step_bound_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
-        upper_bound: 7.0,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
+            upper_bound: 7.0,
+        },
+    )
+    .expect("emit");
     let verdict = run_z3("smt_gen_step_unsat", &smt);
     assert!(
         verdict == "unsat",
@@ -140,12 +157,19 @@ fn step_distance_bound_z3_says_sat_at_six_meters() {
     // the bound `delta ≤ 6.0` is genuinely false, and Z3 should
     // produce `sat` (a counterexample exists). If both bounds gave
     // `unsat`, the obligation translation would be vacuous.
-    if !z3_available() { eprintln!("z3 not available — skipping"); return; }
+    if !z3_available() {
+        eprintln!("z3 not available — skipping");
+        return;
+    }
     let kb = lf1_with_step_bound_kb();
-    let smt = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
-        upper_bound: 6.0,
-    }).expect("emit");
+    let smt = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.step.step_distance_bound".to_string(),
+            upper_bound: 6.0,
+        },
+    )
+    .expect("emit");
     let verdict = run_z3("smt_gen_step_sat", &smt);
     assert!(
         verdict == "sat",

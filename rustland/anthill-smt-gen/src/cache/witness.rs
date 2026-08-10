@@ -23,7 +23,8 @@ use super::key::CACHE_FORMAT_VERSION;
 
 /// Per-project witness sidecar directory.
 pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {
-    let repo_canon = repo_root.canonicalize()
+    let repo_canon = repo_root
+        .canonicalize()
         .unwrap_or_else(|_| repo_root.to_path_buf());
     let mut h = Sha256::new();
     h.update(repo_canon.to_string_lossy().as_bytes());
@@ -38,8 +39,15 @@ pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {
 
 /// Sanitise a rule QN into a filesystem-safe filename.
 pub fn witness_path(witness_dir: &Path, rule_qn: &str) -> PathBuf {
-    let safe: String = rule_qn.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' { c } else { '_' })
+    let safe: String = rule_qn
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     witness_dir.join(format!("{safe}.json"))
 }
@@ -107,8 +115,8 @@ pub fn store_witness(witness_dir: &Path, sidecar: &WitnessSidecar) -> io::Result
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(sidecar)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let bytes =
+        serde_json::to_vec_pretty(sidecar).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, &path)?;
     Ok(path)
@@ -121,7 +129,9 @@ pub fn load_witness(witness_dir: &Path, rule_qn: &str) -> Option<WitnessSidecar>
     let path = witness_path(witness_dir, rule_qn);
     let bytes = fs::read(&path).ok()?;
     let sidecar: WitnessSidecar = serde_json::from_slice(&bytes).ok()?;
-    if sidecar.rule_qn != rule_qn { return None; }
+    if sidecar.rule_qn != rule_qn {
+        return None;
+    }
     Some(sidecar)
 }
 

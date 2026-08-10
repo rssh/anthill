@@ -17,8 +17,8 @@
 //! CALL-TIME concrete-fill grounding (`getV(c) : Int64` when `c`'s sort provides the
 //! spec with `V = Int64`).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -27,8 +27,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -168,7 +168,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("String") || e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("String") || e.contains("Int64")),
         "self-carrier T.V grounds to Int64; a String body must be rejected; got: {errs:?}"
     );
 }
@@ -271,7 +272,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("String") || e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("String") || e.contains("Int64")),
         "Box.rd(c) ties V to Int64; a String read must be rejected; got: {errs:?}"
     );
 }
@@ -357,7 +359,8 @@ fn op_type_param_projection_grounding_rejects_wrong_type() {
          \x20 operation useBad(c: CounterState) -> String = getV(c)",
     )]);
     assert!(
-        errs.iter().any(|e| e.contains("String") || e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("String") || e.contains("Int64")),
         "a String return must be rejected (T.V grounds to Int64); got: {errs:?}"
     );
 }

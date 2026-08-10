@@ -107,7 +107,9 @@ pub fn discharge_by_derivation(
     };
     for rule_id in rules {
         if kb.is_fact(rule_id) {
-            return DerivationOutcome::Proved { tree_hash: derivation_tree_hash(rule_qn) };
+            return DerivationOutcome::Proved {
+                tree_hash: derivation_tree_hash(rule_qn),
+            };
         }
         // Resolve the rule's body as a goal list. The occurrence body
         // (`Value::Node` goals) is used directly — the resolver is
@@ -116,7 +118,9 @@ pub fn discharge_by_derivation(
         let (fresh_nodes, _links) = kb.with_fresh_vars(rule_id, &empty);
         let goals: Vec<Value> = fresh_nodes.into_iter().map(Value::Node).collect();
         if !kb.resolve_goals(goals, &config).is_empty() {
-            return DerivationOutcome::Proved { tree_hash: derivation_tree_hash(rule_qn) };
+            return DerivationOutcome::Proved {
+                tree_hash: derivation_tree_hash(rule_qn),
+            };
         }
     }
     DerivationOutcome::NoDerivation
@@ -136,7 +140,10 @@ pub enum VerdictWrite {
     FailedUnknown { reason: String },
     /// `result = Failed(Disproved(counterexample, solver))`, the
     /// counterexample rendered as a string-bearing reflect term.
-    FailedDisproved { counterexample: String, solver: String },
+    FailedDisproved {
+        counterexample: String,
+        solver: String,
+    },
 }
 
 /// Build the `ProofWitness.SldDerivation(tree_hash)` term.
@@ -159,9 +166,16 @@ pub fn make_sld_witness(kb: &mut KnowledgeBase, tree_hash: &str) -> TermId {
 pub fn set_proof_result(kb: &mut KnowledgeBase, rid: RuleId, verdict: VerdictWrite) -> bool {
     let head = kb.rule_head(rid);
     let (functor, mut named) = match kb.get_term(head) {
-        Term::Fn { functor, named_args, .. } => (*functor, named_args.clone()),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
         _ => {
-            debug_assert!(false, "set_proof_result: ProofRecord {rid:?} has a non-Fn head");
+            debug_assert!(
+                false,
+                "set_proof_result: ProofRecord {rid:?} has a non-Fn head"
+            );
             return false;
         }
     };
@@ -189,7 +203,10 @@ pub fn set_proof_result(kb: &mut KnowledgeBase, rid: RuleId, verdict: VerdictWri
     // Every `ProofRecord` carries a `result` field (realization.anthill); a
     // missing one would mean asserting an unchanged fact while the caller
     // reports a flip — surface it rather than quietly diverge.
-    debug_assert!(wrote_result, "set_proof_result: ProofRecord {rid:?} has no `result` field");
+    debug_assert!(
+        wrote_result,
+        "set_proof_result: ProofRecord {rid:?} has no `result` field"
+    );
 
     let sort = kb.rule_clause_kind(rid);
     let domain = kb.rule_domain(rid);
@@ -215,7 +232,10 @@ fn build_verdict_terms(kb: &mut KnowledgeBase, verdict: VerdictWrite) -> (TermId
             let result = make_obligation_status(kb, "Failed", unknown);
             (result, None)
         }
-        VerdictWrite::FailedDisproved { counterexample, solver } => {
+        VerdictWrite::FailedDisproved {
+            counterexample,
+            solver,
+        } => {
             let disproved = make_proof_result_disproved(kb, &counterexample, &solver);
             let result = make_obligation_status(kb, "Failed", disproved);
             (result, None)
@@ -227,7 +247,11 @@ fn build_verdict_terms(kb: &mut KnowledgeBase, verdict: VerdictWrite) -> (TermId
 fn make_obligation_status(kb: &mut KnowledgeBase, variant: &str, proof_result: TermId) -> TermId {
     let sym = kb.resolve_symbol(&format!("anthill.realization.ObligationStatus.{variant}"));
     let k = kb.intern("result");
-    kb.make_entity_term(sym, SmallVec::new(), SmallVec::from_slice(&[(k, proof_result)]))
+    kb.make_entity_term(
+        sym,
+        SmallVec::new(),
+        SmallVec::from_slice(&[(k, proof_result)]),
+    )
 }
 
 /// `ProofResult.Proved(witness, solver, duration: 0ms)`. The duration is a
@@ -257,7 +281,11 @@ fn make_proof_result_unknown(kb: &mut KnowledgeBase, reason: &str) -> TermId {
 
 /// `ProofResult.Disproved(counterexample, solver)`. The counterexample rides
 /// as a string-bearing reflect term (the cli has no structured model term).
-fn make_proof_result_disproved(kb: &mut KnowledgeBase, counterexample: &str, solver: &str) -> TermId {
+fn make_proof_result_disproved(
+    kb: &mut KnowledgeBase,
+    counterexample: &str,
+    solver: &str,
+) -> TermId {
     let sym = kb.resolve_symbol("anthill.prelude.Meta.ProofResult.Disproved");
     let ce = kb.alloc(Term::Const(Literal::String(counterexample.to_string())));
     let solver_t = kb.alloc(Term::Const(Literal::String(solver.to_string())));
@@ -334,7 +362,9 @@ pub fn verify_proofs(kb: &mut KnowledgeBase) -> Vec<ProofReport> {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(head) = kb.fact_head_term(rid) else { continue };
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
         let named = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,
@@ -377,34 +407,49 @@ pub fn verify_proofs(kb: &mut KnowledgeBase) -> Vec<ProofReport> {
                 } else {
                     // Map the outcome to either the proved tree hash or a failure
                     // reason, then build + write the verdict in ONE place.
-                    let proved = match discharge_by_derivation(kb, &rule_qn, DEFAULT_DERIVATION_DEPTH, 1) {
-                        DerivationOutcome::Proved { tree_hash } => Ok(tree_hash),
-                        DerivationOutcome::NoDerivation => Err(format!(
-                            "no derivation found within depth {DEFAULT_DERIVATION_DEPTH}"
-                        )),
-                        DerivationOutcome::RuleNotFound => Err("target rule not in KB".to_string()),
-                        DerivationOutcome::NoRules => Err("target QN indexes no rules".to_string()),
-                    };
+                    let proved =
+                        match discharge_by_derivation(kb, &rule_qn, DEFAULT_DERIVATION_DEPTH, 1) {
+                            DerivationOutcome::Proved { tree_hash } => Ok(tree_hash),
+                            DerivationOutcome::NoDerivation => Err(format!(
+                                "no derivation found within depth {DEFAULT_DERIVATION_DEPTH}"
+                            )),
+                            DerivationOutcome::RuleNotFound => {
+                                Err("target rule not in KB".to_string())
+                            }
+                            DerivationOutcome::NoRules => {
+                                Err("target QN indexes no rules".to_string())
+                            }
+                        };
                     let (write, verdict) = match proved {
                         Ok(tree_hash) => {
                             let witness = make_sld_witness(kb, &tree_hash);
                             (
-                                VerdictWrite::Discharged { witness, solver: "derivation".to_string() },
+                                VerdictWrite::Discharged {
+                                    witness,
+                                    solver: "derivation".to_string(),
+                                },
                                 ProofVerdict::Discharged,
                             )
                         }
                         Err(reason) => (
-                            VerdictWrite::FailedUnknown { reason: reason.clone() },
+                            VerdictWrite::FailedUnknown {
+                                reason: reason.clone(),
+                            },
                             ProofVerdict::Failed { reason },
                         ),
                     };
                     let wrote = set_proof_result(kb, rid, write);
-                    debug_assert!(wrote, "verify_proofs: write-back failed for `{rule_qn}` ({rid:?})");
+                    debug_assert!(
+                        wrote,
+                        "verify_proofs: write-back failed for `{rule_qn}` ({rid:?})"
+                    );
                     verdict
                 }
             }
             Tier::External(tool) => ProofVerdict::Deferred {
-                reason: format!("external `by {tool}` — run `anthill prove` (z3 lives downstream of core)"),
+                reason: format!(
+                    "external `by {tool}` — run `anthill prove` (z3 lives downstream of core)"
+                ),
             },
             Tier::Open => ProofVerdict::Deferred {
                 reason: "open obligation (no `by` clause)".to_string(),
@@ -552,7 +597,10 @@ fn discharge_contract_proof(
     // step: `result` IS what the body computes. A pure-value body (`cons(head: x,
     // tail: s)`) grounds `result` outright; an op-call body leaves only the inner
     // call to fold while proving (one fewer fold level than `result ↦ op(args)`).
-    let body_occ = rec.body_node.as_ref().expect("body_node present (checked above)");
+    let body_occ = rec
+        .body_node
+        .as_ref()
+        .expect("body_node present (checked above)");
     let body_term = super::node_occurrence::occurrence_to_term(kb, body_occ);
     let body_sub = substitute_ref_terms_term(kb, body_term, &sigma);
     let op_qn = kb.qualified_name_of(op_sym).to_string();
@@ -620,9 +668,15 @@ fn discharge_contract_proof(
     let wrote = set_proof_result(
         kb,
         rid,
-        VerdictWrite::Discharged { witness, solver: "contract-derivation".to_string() },
+        VerdictWrite::Discharged {
+            witness,
+            solver: "contract-derivation".to_string(),
+        },
     );
-    debug_assert!(wrote, "discharge_contract_proof: write-back failed for `{rule_qn}` ({rid:?})");
+    debug_assert!(
+        wrote,
+        "discharge_contract_proof: write-back failed for `{rule_qn}` ({rid:?})"
+    );
     ProofVerdict::Discharged
 }
 
@@ -671,10 +725,17 @@ fn write_contract_failed(
     let wrote = set_proof_result(
         kb,
         rid,
-        VerdictWrite::FailedUnknown { reason: reason.to_string() },
+        VerdictWrite::FailedUnknown {
+            reason: reason.to_string(),
+        },
     );
-    debug_assert!(wrote, "write_contract_failed: write-back failed for `{rule_qn}` ({rid:?})");
-    ProofVerdict::Failed { reason: reason.to_string() }
+    debug_assert!(
+        wrote,
+        "write_contract_failed: write-back failed for `{rule_qn}` ({rid:?})"
+    );
+    ProofVerdict::Failed {
+        reason: reason.to_string(),
+    }
 }
 
 // ── record readers ───────────────────────────────────────────────────
@@ -738,7 +799,11 @@ fn is_auto_registered(kb: &KnowledgeBase, named: &SmallVec<[(Symbol, TermId); 2]
         Some(f) => f,
         None => return false,
     };
-    let short = kb.qualified_name_of(functor).rsplit('.').next().unwrap_or("");
+    let short = kb
+        .qualified_name_of(functor)
+        .rsplit('.')
+        .next()
+        .unwrap_or("");
     short == "ScopeAxiom" || short == "Specialization"
 }
 
@@ -753,5 +818,3 @@ fn term_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
         _ => None,
     }
 }
-
-

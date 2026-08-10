@@ -30,8 +30,8 @@
 //! the matching cases are ACCEPTED, so the synthesized body type provably carries
 //! the concrete denoted value, not a wildcard.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -40,8 +40,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -142,7 +142,10 @@ namespace test.wi404.vpuse
 end
 "#;
     let errs = load_errors(&[vec, consumer]);
-    assert!(errs.is_empty(), "value-place denoted self-conformance (WI-404); got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "value-place denoted self-conformance (WI-404); got: {errs:?}"
+    );
 }
 
 /// Value-place SOUNDNESS control: the body produces `N = c` but the declared return
@@ -201,7 +204,10 @@ namespace test.wi404.aluse
 end
 "#;
     let errs = load_errors(&[vec, consumer]);
-    assert!(errs.is_empty(), "denoted-bearing alias self-conformance (WI-404); got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "denoted-bearing alias self-conformance (WI-404); got: {errs:?}"
+    );
 }
 
 /// A sort-MEMBER op (the abstract-member path) whose return carries the denoted —
@@ -220,5 +226,8 @@ namespace test.wi404.mvec
 end
 "#;
     let errs = load_errors(&[vec]);
-    assert!(errs.is_empty(), "member-op denoted return self-conformance (WI-404); got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "member-op denoted return self-conformance (WI-404); got: {errs:?}"
+    );
 }

@@ -1,5 +1,4 @@
 /// Parse errors with source spans.
-
 use crate::span::{LineIndex, Span};
 
 #[derive(Clone, Debug)]
@@ -84,5 +83,4 @@ impl ParseError {
     pub fn format_located_at(&self, path: &std::path::Path, loc: &LineIndex) -> String {
         crate::span::render_located(Some(path), self.format_at(loc), true)
     }
-
 }

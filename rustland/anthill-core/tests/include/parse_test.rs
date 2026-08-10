@@ -1,11 +1,9 @@
+use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::{KnowledgeBase, SortKind};
 /// Integration tests: parse .anthill source → verify IR structure → load into KB → query.
-
-
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
-use anthill_core::kb::{KnowledgeBase, SortKind};
-use anthill_core::kb::term::{Term, TermId, Literal, Var};
-use anthill_core::kb::load::{self, NullResolver};
 
 use crate::common::{collect_anthill_files, stdlib_dir};
 use anthill_core::kb::ClauseKind;
@@ -13,7 +11,10 @@ use anthill_core::kb::ClauseKind;
 fn first_operation(parsed: &ParsedFile) -> &Operation {
     match &parsed.items[0] {
         Item::Operation(o) => o,
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -29,7 +30,10 @@ fn parse_empty_namespace() {
             assert_eq!(parsed.symbols.local_name(n.name.last()), "banking");
             assert!(n.items.is_empty());
         }
-        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Namespace, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -48,7 +52,9 @@ fn parse_literal_in_type_arg_is_denoted() {
         other => panic!("expected Parameterized field type, got {other:?}"),
     };
     assert!(
-        bindings.iter().any(|b| matches!(b.bound, TypeExpr::Denoted(_))),
+        bindings
+            .iter()
+            .any(|b| matches!(b.bound, TypeExpr::Denoted(_))),
         "expected a Denoted binding for the literal `3`, got {bindings:?}"
     );
 }
@@ -82,10 +88,16 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // (Assumes `Modify` is in scope from the prelude effects.)
     fn contains_functor(kb: &KnowledgeBase, t: TermId, name: &str) -> bool {
         match kb.get_term(t) {
-            Term::Fn { functor, pos_args, named_args } => {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
                 kb.local_name_of(*functor) == name
                     || pos_args.iter().any(|&a| contains_functor(kb, a, name))
-                    || named_args.iter().any(|(_, v)| contains_functor(kb, *v, name))
+                    || named_args
+                        .iter()
+                        .any(|(_, v)| contains_functor(kb, *v, name))
             }
             _ => false,
         }
@@ -113,7 +125,9 @@ fn modify_name_arg_denotes_by_resolution_kind() {
         let full = format!("{MODIFY}{src}");
         let parsed = parse::parse(&full).map_err(|e| format!("parse: {e:?}"))?;
         load::load(&mut kb, &parsed, &NullResolver).map_err(|e| format!("load: {e:?}"))?;
-        let sym = kb.try_resolve_symbol("f").ok_or("operation `f` not found")?;
+        let sym = kb
+            .try_resolve_symbol("f")
+            .ok_or("operation `f` not found")?;
         let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
             .ok_or("no OperationInfo for `f`")?;
         Ok((kb, rec.effects))
@@ -130,8 +144,9 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // (1b) kb is an ENTITY -> NOT denoted (sort_ref). A standalone entity is
     // sugar for a single-constructor sort (§6.3), so its bare name is a TYPE.
     // WI-313: entities are NOT value-in-type (this was the original mis-modeling).
-    let (kbe, effe) = effects_of_f("sort KB\n  entity kb\nend\noperation f() -> Int64 effects Modify[kb]\n")
-        .expect("entity case should load");
+    let (kbe, effe) =
+        effects_of_f("sort KB\n  entity kb\nend\noperation f() -> Int64 effects Modify[kb]\n")
+            .expect("entity case should load");
     assert!(
         effe.iter().all(|e| !label_denotes(&kbe, e)),
         "Modify[kb] with kb an entity should be sort_ref (NOT denoted), effects={effe:?}",
@@ -140,8 +155,9 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // (1c) kb is a zero-arg OPERATION (value-producing, like reflect's ambient-KB
     // accessor) -> denoted. This is the value-in-type case WI-313 was really
     // about: `kb()` yields a value, so a reference to it in a type slot denotes.
-    let (kbo, effo) = effects_of_f("operation kb() -> Int64\noperation f() -> Int64 effects Modify[kb]\n")
-        .expect("operation case should load");
+    let (kbo, effo) =
+        effects_of_f("operation kb() -> Int64\noperation f() -> Int64 effects Modify[kb]\n")
+            .expect("operation case should load");
     assert!(
         effo.iter().any(|e| label_denotes(&kbo, e)),
         "Modify[kb] with kb a zero-arg operation should denote, effects={effo:?}",
@@ -177,16 +193,20 @@ fn modify_value_param_in_effects_is_denoted() {
     // occurrence does not re-ground to a queryable term).
     use anthill_core::kb::node_occurrence::{Expr, NodeKind, TypeChild, TypeNode};
 
-    let kb = load_with_stdlib(r#"
+    let kb = load_with_stdlib(
+        r#"
 namespace test.wi302
   import anthill.prelude.{Cell, Int64}
 
   operation set_cell(c: Cell[V = Int64], value: Int64) -> Cell[V = Int64]
     effects Modify[c]
 end
-"#);
+"#,
+    );
 
-    let sym = kb.try_resolve_symbol("test.wi302.set_cell").expect("set_cell symbol");
+    let sym = kb
+        .try_resolve_symbol("test.wi302.set_cell")
+        .expect("set_cell symbol");
     let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
         .expect("OperationInfo for set_cell")
         .effects;
@@ -217,7 +237,9 @@ end
         other => panic!("value-param `c` in Modify[c] must lower to denoted, got {other:?}"),
     };
     match &denoted_value.kind {
-        NodeKind::Expr { expr: Expr::Ref(s), .. } => {
+        NodeKind::Expr {
+            expr: Expr::Ref(s), ..
+        } => {
             assert_eq!(kb.local_name_of(*s), "c", "denoted should carry Ref(c)")
         }
         other => panic!("expected Ref(c) inside denoted, got {other:?}"),
@@ -235,7 +257,8 @@ fn modify_compound_value_path_in_effects_is_denoted() {
     // into an unresolvable `"b.contents"` and emitted a stray `unresolved name`.
     use anthill_core::kb::node_occurrence::{Expr, NodeKind, TypeChild, TypeNode};
 
-    let kb = load_with_stdlib(r#"
+    let kb = load_with_stdlib(
+        r#"
 namespace test.wi302.compound
   import anthill.prelude.{Int64}
 
@@ -247,9 +270,12 @@ namespace test.wi302.compound
   operation touch(b: Box) -> Int64
     effects Modify[b.contents]
 end
-"#);
+"#,
+    );
 
-    let sym = kb.try_resolve_symbol("test.wi302.compound.touch").expect("touch symbol");
+    let sym = kb
+        .try_resolve_symbol("test.wi302.compound.touch")
+        .expect("touch symbol");
     let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
         .expect("OperationInfo for touch")
         .effects;
@@ -278,12 +304,34 @@ end
     };
     // The denoted value is the field-access chain `b.contents` = DotApply{Ref(b), contents}.
     match &denoted_value.kind {
-        NodeKind::Expr { expr: Expr::DotApply { receiver, name, pos_args, named_args }, .. } => {
-            assert!(pos_args.is_empty() && named_args.is_empty(), "a field access has no call args");
-            assert_eq!(kb.local_name_of(*name), "contents", "outer access is `.contents`");
+        NodeKind::Expr {
+            expr:
+                Expr::DotApply {
+                    receiver,
+                    name,
+                    pos_args,
+                    named_args,
+                },
+            ..
+        } => {
+            assert!(
+                pos_args.is_empty() && named_args.is_empty(),
+                "a field access has no call args"
+            );
+            assert_eq!(
+                kb.local_name_of(*name),
+                "contents",
+                "outer access is `.contents`"
+            );
             match &receiver.kind {
-                NodeKind::Expr { expr: Expr::Ref(s), .. } => {
-                    assert_eq!(kb.local_name_of(*s), "b", "receiver of `.contents` is Ref(b)")
+                NodeKind::Expr {
+                    expr: Expr::Ref(s), ..
+                } => {
+                    assert_eq!(
+                        kb.local_name_of(*s),
+                        "b",
+                        "receiver of `.contents` is Ref(b)"
+                    )
                 }
                 other => panic!("expected Ref(b) as the receiver, got {other:?}"),
             }
@@ -303,7 +351,8 @@ fn compound_value_path_denoted_lowers_to_term_twin() {
     use anthill_core::kb::node_occurrence::{occurrence_to_term, NodeKind, TypeChild, TypeNode};
     use anthill_core::kb::term_view::{views_structurally_equal, TermIdView};
 
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.wi302.lower
   import anthill.prelude.{Int64}
   sort Box
@@ -313,8 +362,11 @@ namespace test.wi302.lower
   operation touch(b: Box) -> Int64
     effects Modify[b.contents]
 end
-"#);
-    let sym = kb.try_resolve_symbol("test.wi302.lower.touch").expect("touch symbol");
+"#,
+    );
+    let sym = kb
+        .try_resolve_symbol("test.wi302.lower.touch")
+        .expect("touch symbol");
     // Extract the `b.contents` denoted VALUE occurrence (the DotApply chain).
     let value_occ = {
         let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
@@ -333,7 +385,9 @@ end
                 NodeKind::Type(TypeNode::Denoted { value }) => std::rc::Rc::clone(value),
                 other => panic!("expected denoted, got {other:?}"),
             },
-            TypeChild::Ground(g) => panic!("expected a denoted Node, got ground {:?}", kb.get_term(*g)),
+            TypeChild::Ground(g) => {
+                panic!("expected a denoted Node, got ground {:?}", kb.get_term(*g))
+            }
         }
     };
     // Lower the DotApply value to its term twin (must NOT panic / reify to bottom).
@@ -341,7 +395,11 @@ end
     // The twin is isomorphic to the occurrence under the WI-425 view — same dot_apply
     // head, keys, and `b.contents` children — so cross-carrier discrim agrees.
     assert!(
-        views_structurally_equal(&kb, &TermIdView(term), &Value::Node(std::rc::Rc::clone(&value_occ))),
+        views_structurally_equal(
+            &kb,
+            &TermIdView(term),
+            &Value::Node(std::rc::Rc::clone(&value_occ))
+        ),
         "lowered `b.contents` term must be isomorphic to its DotApply occurrence; term = {:?}",
         kb.get_term(term),
     );
@@ -413,16 +471,19 @@ fn wi342_e2_modify_c_loads_value_carried() {
     // (a *value fact*), read back via `lookup_operation_info` — there is no
     // `op_effects` side-table. This is the end-to-end assertion that the loader
     // builds the value fact and the lookup decodes the Node label.
-    let kb = load_with_stdlib(r#"
+    let kb = load_with_stdlib(
+        r#"
 namespace test.wi342
   import anthill.prelude.{Cell, Int64}
 
   operation set_cell(c: Cell[V = Int64], value: Int64) -> Cell[V = Int64]
     effects Modify[c]
 end
-"#);
+"#,
+    );
 
-    let sym = kb.try_resolve_symbol("test.wi342.set_cell")
+    let sym = kb
+        .try_resolve_symbol("test.wi342.set_cell")
         .expect("set_cell symbol");
     let effects = anthill_core::kb::op_info::lookup_operation_info(&kb, sym)
         .expect("OperationInfo for set_cell")
@@ -438,7 +499,8 @@ end
     // A ground effect label, by contrast, stays a Value::Term and its
     // OperationInfo fact stays a hash-consed (non-value) fact — confirming the
     // carrier is decided by the presence of a `denoted`, not blanket-applied.
-    let kb_ground = load_with_stdlib(r#"
+    let kb_ground = load_with_stdlib(
+        r#"
 namespace test.wi342b
   import anthill.prelude.{Int64}
 
@@ -449,8 +511,10 @@ namespace test.wi342b
   operation may_fail(x: Int64) -> Int64
     effects Error
 end
-"#);
-    let sym2 = kb_ground.try_resolve_symbol("test.wi342b.may_fail")
+"#,
+    );
+    let sym2 = kb_ground
+        .try_resolve_symbol("test.wi342b.may_fail")
         .expect("may_fail symbol");
     let effects2 = anthill_core::kb::op_info::lookup_operation_info(&kb_ground, sym2)
         .expect("OperationInfo for may_fail")
@@ -467,10 +531,15 @@ end
     // which is what lets the effect label live in the queryable fact instead of
     // the now-deleted `op_effects` side-table. The ground `may_fail` op, by
     // contrast, keeps a hash-consed `Value::Term` head.
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
+    let op_info_sym = kb
+        .try_resolve_symbol("anthill.reflect.OperationInfo")
+        .unwrap();
     let has_value_fact = kb.rules_by_functor(op_info_sym).into_iter().any(|rid| {
         kb.is_fact(rid)
-            && !matches!(kb.rule_head_value(rid), anthill_core::eval::Value::Term { .. })
+            && !matches!(
+                kb.rule_head_value(rid),
+                anthill_core::eval::Value::Term { .. }
+            )
     });
     assert!(
         has_value_fact,
@@ -493,19 +562,31 @@ end
     let parsed = parse::parse(src).expect("parse failed");
     let ns = match &parsed.items[0] {
         Item::Namespace(n) => n,
-        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Namespace, got {:?}",
+            std::mem::discriminant(other)
+        ),
     };
-    let entity = ns.items.iter().find_map(|it| match it {
-        Item::Entity(e) => Some(e),
-        _ => None,
-    }).expect("entity Box");
+    let entity = ns
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Item::Entity(e) => Some(e),
+            _ => None,
+        })
+        .expect("entity Box");
     match &entity.fields[0].ty {
         TypeExpr::Parameterized { name, bindings } => {
-            let segs: Vec<String> = name.segments.iter()
+            let segs: Vec<String> = name
+                .segments
+                .iter()
                 .map(|s| parsed.symbols.local_name(*s).to_string())
                 .collect();
-            assert_eq!(segs, vec!["anthill", "prelude", "List"],
-                "qualified application base must keep all segments, got {segs:?}");
+            assert_eq!(
+                segs,
+                vec!["anthill", "prelude", "List"],
+                "qualified application base must keep all segments, got {segs:?}"
+            );
             assert_eq!(bindings.len(), 1, "expected one binding (T = Int64)");
         }
         other => panic!("expected Parameterized field type, got {other:?}"),
@@ -527,7 +608,10 @@ fn parse_abstract_sort() {
             assert!(s.visibility.is_none());
             assert!(matches!(s.definition, TypeExpr::Variable { .. }));
         }
-        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected AbstractSort, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -553,7 +637,10 @@ fn parse_abstract_sort_named_variable() {
                 other => panic!("expected Variable type, got {:?}", other),
             }
         }
-        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected AbstractSort, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -588,7 +675,10 @@ fn parse_sort_with_body() {
                 other => panic!("expected Entity, got {:?}", std::mem::discriminant(other)),
             }
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -601,7 +691,9 @@ fn parse_fact_with_meta() {
         Item::Fact(f) => {
             // The term should be a fn_term: parent("alice", "bob")
             match parsed.terms.get(f.term) {
-                Term::Fn { functor, pos_args, .. } => {
+                Term::Fn {
+                    functor, pos_args, ..
+                } => {
                     assert_eq!(parsed.symbols.local_name(*functor), "parent");
                     assert_eq!(pos_args.len(), 2);
                     // Check first arg is "alice"
@@ -653,13 +745,18 @@ end
                     assert_eq!(o.requires.len(), 1);
                     assert_eq!(o.ensures.len(), 1);
                 }
-                other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+                other => panic!(
+                    "expected Operation, got {:?}",
+                    std::mem::discriminant(other)
+                ),
             }
         }
-        other => panic!("expected Namespace, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Namespace, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
-
 
 #[test]
 fn parse_line_comment() {
@@ -671,7 +768,10 @@ fn parse_line_comment() {
         Item::AbstractSort(s) => {
             assert_eq!(parsed.symbols.local_name(s.name.last()), "T");
         }
-        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected AbstractSort, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -709,16 +809,28 @@ fn load_sort_with_body_registers_entity_of() {
     let zero_term = kb.resolve_qualified_name_term("Nat.zero");
 
     // Check entity-of relationship
-    assert!(kb.is_entity_of(zero_term, nat_term), "zero should be entity of Nat");
-    assert!(!kb.is_entity_of(nat_term, zero_term), "Nat should not be entity of zero");
+    assert!(
+        kb.is_entity_of(zero_term, nat_term),
+        "zero should be entity of Nat"
+    );
+    assert!(
+        !kb.is_entity_of(nat_term, zero_term),
+        "Nat should not be entity of zero"
+    );
 
     // Check sort kinds
-    assert_eq!(kb.sort_kind(kb.name_term_sym(nat_term)), Some(SortKind::Sort));
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(nat_term)),
+        Some(SortKind::Sort)
+    );
     assert_eq!(kb.sort_kind(kb.name_term_sym(zero_term)), None); // entities aren't sorts
 
     // Check children
     let children = kb.sort_children(kb.name_term_sym(nat_term));
-    assert!(children.len() >= 2, "Nat should have at least 2 children (zero, succ)");
+    assert!(
+        children.len() >= 2,
+        "Nat should have at least 2 children (zero, succ)"
+    );
 }
 
 #[test]
@@ -758,22 +870,33 @@ end
 
     // Check we have facts of various sorts
     let ns_sort = ClauseKind::Namespace;
-    assert!(!kb.clauses_of_kind(ns_sort).is_empty(), "should have Namespace fact");
+    assert!(
+        !kb.clauses_of_kind(ns_sort).is_empty(),
+        "should have Namespace fact"
+    );
 
     // WI-515: entity declarations no longer assert a same-functor schema fact
     // under sort `Entity` (it polluted var-quantified queries); the
     // declaration-side record is the entity field-types registry.
-    let dollars_sym = kb.try_resolve_symbol("banking.Money.dollars").expect("dollars symbol");
+    let dollars_sym = kb
+        .try_resolve_symbol("banking.Money.dollars")
+        .expect("dollars symbol");
     assert!(
         kb.entity_field_types(dollars_sym).is_some(),
         "should have entity field types registered"
     );
 
     let op_sort = ClauseKind::Operation;
-    assert!(!kb.clauses_of_kind(op_sort).is_empty(), "should have Operation fact");
+    assert!(
+        !kb.clauses_of_kind(op_sort).is_empty(),
+        "should have Operation fact"
+    );
 
     let fact_sort = ClauseKind::Fact;
-    assert!(!kb.clauses_of_kind(fact_sort).is_empty(), "should have Fact fact");
+    assert!(
+        !kb.clauses_of_kind(fact_sort).is_empty(),
+        "should have Fact fact"
+    );
 
     // Check sort relationship: dollars < Money
     let money_term = kb.resolve_qualified_name_term("banking.Money");
@@ -797,10 +920,15 @@ fn load_workitem_and_query() {
     let fid = workitems[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, named_args, .. } => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
             assert_eq!(kb.local_name_of(*functor), "WorkItem");
             assert!(!named_args.is_empty());
-            let id_arg = named_args.iter()
+            let id_arg = named_args
+                .iter()
                 .find(|(k, _)| kb.local_name_of(*k) == "id")
                 .expect("missing 'id' arg");
             match kb.get_term(id_arg.1) {
@@ -849,14 +977,19 @@ end
     // Operations should be registered as facts with sort "Operation"
     let op_sort = ClauseKind::Operation;
     let ops = kb.clauses_of_kind(op_sort);
-    assert_eq!(ops.len(), 2, "should have 2 Operation facts (deposit, withdraw)");
+    assert_eq!(
+        ops.len(),
+        2,
+        "should have 2 Operation facts (deposit, withdraw)"
+    );
 
     // The operation facts should be scoped to the Account sort (not a separate domain)
     let account_domain = kb.resolve_qualified_name_sym("Account");
     let account_term = kb.make_name_term_from_sym(account_domain);
     for &fid in &ops {
         assert_eq!(
-            kb.fact_domain(fid), account_domain,
+            kb.fact_domain(fid),
+            account_domain,
             "operation should be scoped to the Account sort"
         );
     }
@@ -865,12 +998,24 @@ end
     let mut op_names: Vec<String> = Vec::new();
     for &fid in &ops {
         match kb.get_term(kb.fact_term(fid)) {
-            Term::Fn { functor, named_args, .. } => {
-                assert_eq!(kb.local_name_of(*functor), "OperationInfo",
-                    "operation facts should use OperationInfo functor");
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => {
+                assert_eq!(
+                    kb.local_name_of(*functor),
+                    "OperationInfo",
+                    "operation facts should use OperationInfo functor"
+                );
                 // Extract the "name" field (a Ref term)
-                let name_entry = named_args.iter().find(|(sym, _)| kb.local_name_of(*sym) == "name");
-                assert!(name_entry.is_some(), "OperationInfo should have 'name' field");
+                let name_entry = named_args
+                    .iter()
+                    .find(|(sym, _)| kb.local_name_of(*sym) == "name");
+                assert!(
+                    name_entry.is_some(),
+                    "OperationInfo should have 'name' field"
+                );
                 let (_, name_tid) = name_entry.unwrap();
                 match kb.get_term(*name_tid) {
                     Term::Ref(sym) => op_names.push(kb.local_name_of(*sym).to_owned()),
@@ -880,15 +1025,26 @@ end
             other => panic!("expected Fn term for operation, got {:?}", other),
         }
     }
-    assert!(op_names.contains(&"deposit".to_owned()), "should have deposit operation");
-    assert!(op_names.contains(&"withdraw".to_owned()), "should have withdraw operation");
+    assert!(
+        op_names.contains(&"deposit".to_owned()),
+        "should have deposit operation"
+    );
+    assert!(
+        op_names.contains(&"withdraw".to_owned()),
+        "should have withdraw operation"
+    );
 
     // The sort itself should be Defined (has entities) with constructors as entity children
-    assert_eq!(kb.sort_kind(kb.name_term_sym(account_term)), Some(SortKind::Sort));
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(account_term)),
+        Some(SortKind::Sort)
+    );
 
     let checking_term = kb.resolve_qualified_name_term("Account.checking");
-    assert!(kb.is_entity_of(checking_term, account_term),
-        "checking should be entity of Account");
+    assert!(
+        kb.is_entity_of(checking_term, account_term),
+        "checking should be entity of Account"
+    );
     assert_eq!(kb.sort_kind(kb.name_term_sym(checking_term)), None); // entities aren't sorts
 }
 
@@ -918,10 +1074,16 @@ sort Store {
     for &fid in &ops {
         let term = kb.get_term(kb.fact_term(fid));
         match term {
-            Term::Fn { functor, named_args, .. } => {
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => {
                 assert_eq!(kb.local_name_of(*functor), "OperationInfo");
                 // Extract operation name from "name" field
-                let name_entry = named_args.iter().find(|(sym, _)| kb.local_name_of(*sym) == "name");
+                let name_entry = named_args
+                    .iter()
+                    .find(|(sym, _)| kb.local_name_of(*sym) == "name");
                 let name = match name_entry {
                     Some((_, tid)) => match kb.get_term(*tid) {
                         Term::Ref(sym) => kb.local_name_of(*sym).to_owned(),
@@ -930,11 +1092,14 @@ sort Store {
                     None => "?".to_owned(),
                 };
                 // Find "effects" cons-list
-                let effects_entry = named_args.iter().find(|(sym, _)| {
-                    kb.local_name_of(*sym) == "effects"
-                });
-                assert!(effects_entry.is_some(),
-                    "operation '{}' should have 'effects' named arg", name);
+                let effects_entry = named_args
+                    .iter()
+                    .find(|(sym, _)| kb.local_name_of(*sym) == "effects");
+                assert!(
+                    effects_entry.is_some(),
+                    "operation '{}' should have 'effects' named arg",
+                    name
+                );
 
                 // Count elements in cons-list
                 let (_, effects_list_tid) = effects_entry.unwrap();
@@ -945,8 +1110,11 @@ sort Store {
                     "process" => 2,
                     _ => panic!("unexpected operation: {}", name),
                 };
-                assert_eq!(count, expected,
-                    "operation '{}' should have {} effect(s)", name, expected);
+                assert_eq!(
+                    count, expected,
+                    "operation '{}' should have {} effect(s)",
+                    name, expected
+                );
             }
             other => panic!("expected Fn term for operation, got {:?}", other),
         }
@@ -972,17 +1140,26 @@ fn load_operation_with_abstract_effect() {
     // Abstract effect E should still be stored in effects list
     let term = kb.get_term(kb.fact_term(ops[0]));
     match term {
-        Term::Fn { functor, named_args, .. } => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
             assert_eq!(kb.local_name_of(*functor), "OperationInfo");
-            let effects_entry = named_args.iter().find(|(sym, _)| {
-                kb.local_name_of(*sym) == "effects"
-            });
-            assert!(effects_entry.is_some(),
-                "OperationInfo should have 'effects' even for abstract effects");
+            let effects_entry = named_args
+                .iter()
+                .find(|(sym, _)| kb.local_name_of(*sym) == "effects");
+            assert!(
+                effects_entry.is_some(),
+                "OperationInfo should have 'effects' even for abstract effects"
+            );
             // Should have 1 effect element (abstract E)
             let (_, effects_list_tid) = effects_entry.unwrap();
-            assert_eq!(cons_list_to_vec(&kb, *effects_list_tid).len(), 1,
-                "should have 1 abstract effect");
+            assert_eq!(
+                cons_list_to_vec(&kb, *effects_list_tid).len(),
+                1,
+                "should have 1 abstract effect"
+            );
         }
         other => panic!("expected Fn term, got {:?}", other),
     }
@@ -1039,8 +1216,11 @@ fn member_facts_for_sort_with_body() {
                 let kind = get_named_arg(&kb, term, "kind").expect("MemberInfo.kind");
                 let kind_functor = match kb.get_term(kind) {
                     Term::Ref(sym) => *sym,
-                    Term::Fn { functor, pos_args, named_args }
-                        if pos_args.is_empty() && named_args.is_empty() => *functor,
+                    Term::Fn {
+                        functor,
+                        pos_args,
+                        named_args,
+                    } if pos_args.is_empty() && named_args.is_empty() => *functor,
                     other => panic!("expected nullary MemberKind constructor, got {other:?}"),
                 };
                 assert_eq!(kind_functor, ctor_sym);
@@ -1077,8 +1257,11 @@ end
         .collect();
 
     // Should have: AccountId (Sort), checking (Constructor), savings (Constructor), deposit (Operation)
-    assert!(member_facts.len() >= 4,
-        "Account should have at least 4 members, got {}", member_facts.len());
+    assert!(
+        member_facts.len() >= 4,
+        "Account should have at least 4 members, got {}",
+        member_facts.len()
+    );
 }
 
 #[test]
@@ -1105,8 +1288,11 @@ fn member_facts_for_namespace() {
         .collect();
 
     // Should have: Account (Constructor), deposit (Operation)
-    assert_eq!(member_facts.len(), 2,
-        "banking namespace should have 2 member facts");
+    assert_eq!(
+        member_facts.len(),
+        2,
+        "banking namespace should have 2 member facts"
+    );
 }
 
 #[test]
@@ -1134,8 +1320,10 @@ fn member_facts_queryable_by_domain() {
         .count();
 
     // T (Sort), none (Constructor), some (Constructor) = 3 members
-    assert_eq!(member_count, 3,
-        "Option should have 3 members (T, none, some)");
+    assert_eq!(
+        member_count, 3,
+        "Option should have 3 members (T, none, some)"
+    );
 }
 
 #[test]
@@ -1158,13 +1346,17 @@ end
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let description_info = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     assert_eq!(
-        kb.entity_field_names(member_info)
-            .map(|fields| fields.iter().map(|field| kb.local_name_of(*field)).collect::<Vec<_>>()),
+        kb.entity_field_names(member_info).map(|fields| fields
+            .iter()
+            .map(|field| kb.local_name_of(*field))
+            .collect::<Vec<_>>()),
         Some(vec!["name", "kind", "parent"]),
     );
     assert_eq!(
-        kb.entity_field_names(description_info)
-            .map(|fields| fields.iter().map(|field| kb.local_name_of(*field)).collect::<Vec<_>>()),
+        kb.entity_field_names(description_info).map(|fields| fields
+            .iter()
+            .map(|field| kb.local_name_of(*field))
+            .collect::<Vec<_>>()),
         Some(vec!["target", "content", "index"]),
     );
     assert_eq!(
@@ -1205,26 +1397,28 @@ fn reflection_inventory_schemas_survive_an_empty_relation() {
     let description_info = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     // Declared schemas are present despite zero emitted rows.
     assert_eq!(
-        kb.entity_field_names(member_info)
-            .map(|fields| fields.iter().map(|field| kb.local_name_of(*field)).collect::<Vec<_>>()),
+        kb.entity_field_names(member_info).map(|fields| fields
+            .iter()
+            .map(|field| kb.local_name_of(*field))
+            .collect::<Vec<_>>()),
         Some(vec!["name", "kind", "parent"]),
     );
     assert_eq!(
-        kb.entity_field_names(description_info)
-            .map(|fields| fields.iter().map(|field| kb.local_name_of(*field)).collect::<Vec<_>>()),
+        kb.entity_field_names(description_info).map(|fields| fields
+            .iter()
+            .map(|field| kb.local_name_of(*field))
+            .collect::<Vec<_>>()),
         Some(vec!["target", "content", "index"]),
     );
     // Resolve yields an EMPTY relation, not a schema error.
-    assert!(
-        kb.read_facts_resolved(member_info, &[])
-            .expect("MemberInfo resolves on an empty relation")
-            .is_empty(),
-    );
-    assert!(
-        kb.read_facts_resolved(description_info, &[])
-            .expect("DescriptionInfo resolves on an empty relation")
-            .is_empty(),
-    );
+    assert!(kb
+        .read_facts_resolved(member_info, &[])
+        .expect("MemberInfo resolves on an empty relation")
+        .is_empty(),);
+    assert!(kb
+        .read_facts_resolved(description_info, &[])
+        .expect("DescriptionInfo resolves on an empty relation")
+        .is_empty(),);
 }
 
 // ── Requires declaration tests ──────────────────────────────────
@@ -1251,20 +1445,31 @@ fn parse_sort_with_requires() {
                             assert_eq!(parsed.symbols.local_name(name.last()), "Eq");
                             assert_eq!(bindings.len(), 1);
                             // Named binding: Eq[T = T]
-                            let p = bindings[0].param.as_ref().expect("named binding should have param");
+                            let p = bindings[0]
+                                .param
+                                .as_ref()
+                                .expect("named binding should have param");
                             assert_eq!(parsed.symbols.local_name(p.last()), "T");
                             match &bindings[0].bound {
-                                TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "T"),
+                                TypeExpr::Simple(n) => {
+                                    assert_eq!(parsed.symbols.local_name(n.last()), "T")
+                                }
                                 other => panic!("expected Simple bound, got {:?}", other),
                             }
                         }
                         other => panic!("expected Parameterized type, got {:?}", other),
                     }
                 }
-                other => panic!("expected RequiresDecl, got {:?}", std::mem::discriminant(other)),
+                other => panic!(
+                    "expected RequiresDecl, got {:?}",
+                    std::mem::discriminant(other)
+                ),
             }
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -1292,7 +1497,8 @@ sort Ord {
     // The requirement should be scoped to the Ord sort
     let ordered_domain = kb.resolve_qualified_name_sym("Ord");
     assert_eq!(
-        kb.fact_domain(reqs[0]), ordered_domain,
+        kb.fact_domain(reqs[0]),
+        ordered_domain,
         "requirement should be scoped to the Ord sort"
     );
 
@@ -1300,10 +1506,23 @@ sort Ord {
     let fid = reqs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, named_args, .. } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => {
             assert_eq!(kb.local_name_of(*functor), "SortRequiresInfo");
-            assert_eq!(pos_args.len(), 0, "SortRequiresInfo should use named args, not positional");
-            assert_eq!(named_args.len(), 2, "SortRequiresInfo should have 2 named args: sort_ref, spec");
+            assert_eq!(
+                pos_args.len(),
+                0,
+                "SortRequiresInfo should use named args, not positional"
+            );
+            assert_eq!(
+                named_args.len(),
+                2,
+                "SortRequiresInfo should have 2 named args: sort_ref, spec"
+            );
         }
         other => panic!("expected Fn term for Requirement, got {:?}", other),
     }
@@ -1339,10 +1558,16 @@ fn parse_requires_positional_binding() {
                         other => panic!("expected Parameterized type, got {:?}", other),
                     }
                 }
-                other => panic!("expected RequiresDecl, got {:?}", std::mem::discriminant(other)),
+                other => panic!(
+                    "expected RequiresDecl, got {:?}",
+                    std::mem::discriminant(other)
+                ),
             }
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -1353,7 +1578,12 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
         *found = true;
         return;
     }
-    if let Term::Fn { pos_args, named_args, .. } = kb.get_term(term) {
+    if let Term::Fn {
+        pos_args,
+        named_args,
+        ..
+    } = kb.get_term(term)
+    {
         for &id in pos_args.iter() {
             check_term_contains(kb, id, target, found);
         }
@@ -1391,8 +1621,7 @@ end
 
     // Load both files into the same KB — order shouldn't matter for basic loading
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&parsed_x, &parsed_y], &NullResolver)
-        .expect("load_all failed");
+    load::load_all(&mut kb, &[&parsed_x, &parsed_y], &NullResolver).expect("load_all failed");
 
     // Both namespaces should be registered
     let ns_sort = ClauseKind::Namespace;
@@ -1427,7 +1656,10 @@ end
         let term = kb.fact_term(fid);
         check_term_contains(&kb, term, measure_ref, &mut area_refs_measure);
     }
-    assert!(area_refs_measure, "Geometry's area should reference Measure");
+    assert!(
+        area_refs_measure,
+        "Geometry's area should reference Measure"
+    );
 
     // convert operation is in Units namespace but references Shape
     let mut convert_refs_shape = false;
@@ -1454,17 +1686,18 @@ fn mutual_reference_load_order_independent() {
 
     // Load A then B
     let mut kb1 = KnowledgeBase::new();
-    load::load_all(&mut kb1, &[&parsed_a, &parsed_b], &NullResolver)
-        .expect("load A,B failed");
+    load::load_all(&mut kb1, &[&parsed_a, &parsed_b], &NullResolver).expect("load A,B failed");
 
     // Load B then A
     let mut kb2 = KnowledgeBase::new();
-    load::load_all(&mut kb2, &[&parsed_b, &parsed_a], &NullResolver)
-        .expect("load B,A failed");
+    load::load_all(&mut kb2, &[&parsed_b, &parsed_a], &NullResolver).expect("load B,A failed");
 
     // Both should have the same fact counts
-    assert_eq!(kb1.fact_count(), kb2.fact_count(),
-        "load order should not affect fact count");
+    assert_eq!(
+        kb1.fact_count(),
+        kb2.fact_count(),
+        "load order should not affect fact count"
+    );
 
     // Both should have the same sort relationships
     let a1 = kb1.resolve_qualified_name_term("A");
@@ -1486,7 +1719,11 @@ fn mutual_reference_load_order_independent() {
 fn stdlib_parse_all_files() {
     let dir = stdlib_dir();
     let files = collect_anthill_files(&dir);
-    assert!(!files.is_empty(), "no .anthill files found in {}", dir.display());
+    assert!(
+        !files.is_empty(),
+        "no .anthill files found in {}",
+        dir.display()
+    );
 
     let mut failed = Vec::new();
     for path in &files {
@@ -1495,18 +1732,28 @@ fn stdlib_parse_all_files() {
         let rel = path.strip_prefix(&dir).unwrap_or(path);
         match parse::parse(&source) {
             Ok(parsed) => {
-                assert!(!parsed.items.is_empty(),
-                    "{}: parsed OK but produced no items", rel.display());
+                assert!(
+                    !parsed.items.is_empty(),
+                    "{}: parsed OK but produced no items",
+                    rel.display()
+                );
             }
             Err(errors) => {
-                failed.push(format!("{}: {} error(s): {:?}",
-                    rel.display(), errors.len(), errors));
+                failed.push(format!(
+                    "{}: {} error(s): {:?}",
+                    rel.display(),
+                    errors.len(),
+                    errors
+                ));
             }
         }
     }
 
-    assert!(failed.is_empty(),
-        "stdlib files failed to parse:\n  {}", failed.join("\n  "));
+    assert!(
+        failed.is_empty(),
+        "stdlib files failed to parse:\n  {}",
+        failed.join("\n  ")
+    );
 }
 
 #[test]
@@ -1515,12 +1762,12 @@ fn stdlib_load_all_into_kb() {
     let files = collect_anthill_files(&dir);
     assert!(!files.is_empty());
 
-    let parsed: Vec<_> = files.iter()
+    let parsed: Vec<_> = files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
 
@@ -1528,25 +1775,40 @@ fn stdlib_load_all_into_kb() {
     let mut kb = KnowledgeBase::new();
     let load_result = load::load_all(&mut kb, &refs, &NullResolver);
 
-    assert!(kb.fact_count() > 0,
-        "KB should contain facts after loading {} stdlib files", files.len());
+    assert!(
+        kb.fact_count() > 0,
+        "KB should contain facts after loading {} stdlib files",
+        files.len()
+    );
 
     if let Err(ref errors) = load_result {
         // Print diagnostics before asserting so they're visible on failure
-        let mut unresolved: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut unresolved: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for e in errors {
-            if let load::LoadError::UnresolvedName { name, scope_name, .. } = e.peel() {
-                *unresolved.entry(format!("{name} (in {scope_name})")).or_default() += 1;
+            if let load::LoadError::UnresolvedName {
+                name, scope_name, ..
+            } = e.peel()
+            {
+                *unresolved
+                    .entry(format!("{name} (in {scope_name})"))
+                    .or_default() += 1;
             }
         }
-        eprintln!("stdlib load: {} errors from {} files:", errors.len(), files.len());
+        eprintln!(
+            "stdlib load: {} errors from {} files:",
+            errors.len(),
+            files.len()
+        );
         for (key, count) in &unresolved {
             eprintln!("  {key}: {count}x");
         }
     }
-    assert!(load_result.is_ok(),
+    assert!(
+        load_result.is_ok(),
         "stdlib should load with 0 errors, got {}",
-        load_result.as_ref().err().map_or(0, |e| e.len()));
+        load_result.as_ref().err().map_or(0, |e| e.len())
+    );
 }
 
 #[test]
@@ -1556,19 +1818,23 @@ fn nested_namespace_sees_outer_imports() {
     // names defined there (Path).
     let dir = crate::common::testcases_dir().join("nested-namespace-imports");
     let files = crate::common::collect_anthill_files(&dir);
-    assert!(!files.is_empty(), "expected test files in {}", dir.display());
+    assert!(
+        !files.is_empty(),
+        "expected test files in {}",
+        dir.display()
+    );
 
     // Also load stdlib prelude so that List, String, Bool are available
     let stdlib_dir = crate::common::stdlib_dir();
     let mut all_files = crate::common::collect_anthill_files(&stdlib_dir);
     all_files.extend(files);
 
-    let parsed: Vec<_> = all_files.iter()
+    let parsed: Vec<_> = all_files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
 
@@ -1581,9 +1847,11 @@ fn nested_namespace_sees_outer_imports() {
             eprintln!("  error: {e}");
         }
     }
-    assert!(load_result.is_ok(),
+    assert!(
+        load_result.is_ok(),
         "nested namespace should resolve outer imports, got {} errors",
-        load_result.as_ref().err().map_or(0, |e| e.len()));
+        load_result.as_ref().err().map_or(0, |e| e.len())
+    );
 }
 
 #[test]
@@ -1658,7 +1926,10 @@ fn parse_abstract_sort_with_description() {
             assert!(matches!(s.definition, TypeExpr::Variable { .. }));
             assert_eq!(s.descriptions, vec!["Monetary amount"]);
         }
-        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected AbstractSort, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -1681,8 +1952,15 @@ fn load_describe_emits_desc_fact() {
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
+            assert_eq!(
+                kb.qualified_name_of(*functor),
+                "anthill.reflect.DescriptionInfo"
+            );
             assert_eq!(named_args.len(), 3);
             match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
@@ -1710,13 +1988,24 @@ fn load_abstract_sort_description_emits_desc_fact() {
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
-    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact from inline description");
+    assert_eq!(
+        descs.len(),
+        1,
+        "should have 1 DescriptionInfo fact from inline description"
+    );
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
+            assert_eq!(
+                kb.qualified_name_of(*functor),
+                "anthill.reflect.DescriptionInfo"
+            );
             assert_eq!(named_args.len(), 3);
             match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
@@ -1743,13 +2032,20 @@ fn parse_variable_with_description() {
             match &r.heads[0] {
                 RuleHead::Term(tid) => {
                     match parsed.terms.get(*tid) {
-                        Term::Fn { functor, pos_args, .. } => {
+                        Term::Fn {
+                            functor, pos_args, ..
+                        } => {
                             assert_eq!(parsed.symbols.local_name(*functor), "foo");
                             assert_eq!(pos_args.len(), 1);
                             // The variable term should have a description
-                            assert!(parsed.terms.descriptions.contains_key(&pos_args[0]),
-                                "variable should have a description entry");
-                            assert_eq!(parsed.terms.descriptions[&pos_args[0]], vec!["the x value"]);
+                            assert!(
+                                parsed.terms.descriptions.contains_key(&pos_args[0]),
+                                "variable should have a description entry"
+                            );
+                            assert_eq!(
+                                parsed.terms.descriptions[&pos_args[0]],
+                                vec!["the x value"]
+                            );
                         }
                         other => panic!("expected Fn term, got {:?}", other),
                     }
@@ -1770,13 +2066,24 @@ fn load_variable_description_emits_fact() {
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
-    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact from variable annotation");
+    assert_eq!(
+        descs.len(),
+        1,
+        "should have 1 DescriptionInfo fact from variable annotation"
+    );
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
-        Term::Fn { functor, named_args, .. } => {
-            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
+            assert_eq!(
+                kb.qualified_name_of(*functor),
+                "anthill.reflect.DescriptionInfo"
+            );
             assert_eq!(named_args.len(), 3);
             match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
@@ -1815,7 +2122,10 @@ fn parse_abstract_sort_multiple_descriptions() {
             assert_eq!(parsed.symbols.local_name(s.name.last()), "Money");
             assert_eq!(s.descriptions, vec!["Monetary amount", "Used in banking"]);
         }
-        other => panic!("expected AbstractSort, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected AbstractSort, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -1835,7 +2145,10 @@ sort WorkStatus {
             assert_eq!(s.descriptions, vec!["Tracks work progress"]);
             assert_eq!(s.items.len(), 2);
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -1852,21 +2165,28 @@ fn load_describe_multiple_blocks_emits_facts() {
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
-    assert_eq!(descs.len(), 2, "should have 2 DescriptionInfo facts from multi-block describe");
+    assert_eq!(
+        descs.len(),
+        2,
+        "should have 2 DescriptionInfo facts from multi-block describe"
+    );
 
     // Collect description texts
-    let mut texts: Vec<String> = descs.iter().map(|fid| {
-        let tid = kb.fact_term(*fid);
-        match kb.get_term(tid) {
-            Term::Fn { .. } => {
-                match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
-                    Term::Const(Literal::String(s)) => s.clone(),
-                    other => panic!("expected String, got {:?}", other),
+    let mut texts: Vec<String> = descs
+        .iter()
+        .map(|fid| {
+            let tid = kb.fact_term(*fid);
+            match kb.get_term(tid) {
+                Term::Fn { .. } => {
+                    match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
+                        Term::Const(Literal::String(s)) => s.clone(),
+                        other => panic!("expected String, got {:?}", other),
+                    }
                 }
+                other => panic!("expected Fn, got {:?}", other),
             }
-            other => panic!("expected Fn, got {:?}", other),
-        }
-    }).collect();
+        })
+        .collect();
     texts.sort();
     assert_eq!(texts, vec!["A bank account", "Holds funds"]);
 }
@@ -1880,7 +2200,11 @@ fn load_abstract_sort_multiple_descriptions_emits_facts() {
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
-    assert_eq!(descs.len(), 2, "should have 2 DescriptionInfo facts from multi-description abstract sort");
+    assert_eq!(
+        descs.len(),
+        2,
+        "should have 2 DescriptionInfo facts from multi-description abstract sort"
+    );
 }
 
 #[test]
@@ -1896,13 +2220,20 @@ sort WorkStatus {
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
-    assert_eq!(descs.len(), 1, "should have 1 DescriptionInfo fact from sort_with_body");
+    assert_eq!(
+        descs.len(),
+        1,
+        "should have 1 DescriptionInfo fact from sort_with_body"
+    );
 
     let fid = descs[0];
     let tid = kb.fact_term(fid);
     match kb.get_term(tid) {
         Term::Fn { functor, .. } => {
-            assert_eq!(kb.qualified_name_of(*functor), "anthill.reflect.DescriptionInfo");
+            assert_eq!(
+                kb.qualified_name_of(*functor),
+                "anthill.reflect.DescriptionInfo"
+            );
             match kb.get_term(get_named_arg(&kb, tid, "content").expect("content field")) {
                 Term::Const(Literal::String(s)) => {
                     assert_eq!(s, "Tracks work progress");
@@ -1922,15 +2253,13 @@ fn parse_variable_multiple_descriptions() {
         Item::Rule(r) => {
             assert_eq!(r.heads.len(), 1, "expected single head");
             match &r.heads[0] {
-                RuleHead::Term(tid) => {
-                    match parsed.terms.get(*tid) {
-                        Term::Fn { pos_args, .. } => {
-                            let descs = &parsed.terms.descriptions[&pos_args[0]];
-                            assert_eq!(descs, &vec!["first", "second"]);
-                        }
-                        other => panic!("expected Fn, got {:?}", other),
+                RuleHead::Term(tid) => match parsed.terms.get(*tid) {
+                    Term::Fn { pos_args, .. } => {
+                        let descs = &parsed.terms.descriptions[&pos_args[0]];
+                        assert_eq!(descs, &vec!["first", "second"]);
                     }
-                }
+                    other => panic!("expected Fn, got {:?}", other),
+                },
                 other => panic!("expected Term head, got {:?}", other),
             }
         }
@@ -1950,7 +2279,10 @@ fn parse_operation_with_variable_types() {
             assert_eq!(parsed.symbols.local_name(o.name.last()), "identity");
             assert_eq!(o.params.len(), 1);
             match &o.params[0].ty {
-                TypeExpr::Variable { term_id, descriptions } => {
+                TypeExpr::Variable {
+                    term_id,
+                    descriptions,
+                } => {
                     assert!(descriptions.is_empty());
                     // Verify it's a named variable (not anonymous)
                     match parsed.terms.get(*term_id) {
@@ -1963,18 +2295,19 @@ fn parse_operation_with_variable_types() {
                 other => panic!("expected Variable type, got {:?}", other),
             }
             match &o.return_type {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => {
-                            assert_eq!(parsed.symbols.local_name(vid.name()), "T");
-                        }
-                        other => panic!("expected Var, got {:?}", other),
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => {
+                        assert_eq!(parsed.symbols.local_name(vid.name()), "T");
                     }
-                }
+                    other => panic!("expected Var, got {:?}", other),
+                },
                 other => panic!("expected Variable return type, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -2002,8 +2335,10 @@ fn variable_types_share_scope_in_operation() {
                 Term::Var(Var::Global(vid)) => vid.raw(),
                 _ => panic!("expected Var"),
             };
-            assert_eq!(param_var, ret_var,
-                "?X should share identity across param and return type");
+            assert_eq!(
+                param_var, ret_var,
+                "?X should share identity across param and return type"
+            );
         }
         _ => panic!("expected Operation"),
     }
@@ -2057,8 +2392,11 @@ end
     let import_errors: Vec<_> = errors.iter().filter(|e| {
         matches!(e.peel(), load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path.Foo")
     }).collect();
-    assert!(!import_errors.is_empty(),
-        "should report UnresolvedImport for 'nonexistent.path.Foo', got: {:?}", errors);
+    assert!(
+        !import_errors.is_empty(),
+        "should report UnresolvedImport for 'nonexistent.path.Foo', got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2076,8 +2414,11 @@ end
     let import_errors: Vec<_> = errors.iter().filter(|e| {
         matches!(e.peel(), load::LoadError::UnresolvedImport { path, .. } if path == "nonexistent.path")
     }).collect();
-    assert!(!import_errors.is_empty(),
-        "should report UnresolvedImport for 'nonexistent.path', got: {:?}", errors);
+    assert!(
+        !import_errors.is_empty(),
+        "should report UnresolvedImport for 'nonexistent.path', got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2103,11 +2444,15 @@ end
     let result = load::load(&mut kb, &parsed, &NullResolver);
 
     if let Err(errors) = &result {
-        let import_errors: Vec<_> = errors.iter()
+        let import_errors: Vec<_> = errors
+            .iter()
             .filter(|e| matches!(e.peel(), load::LoadError::UnresolvedImport { .. }))
             .collect();
-        assert!(import_errors.is_empty(),
-            "selective import of enum entities should resolve; got: {:?}", import_errors);
+        assert!(
+            import_errors.is_empty(),
+            "selective import of enum entities should resolve; got: {:?}",
+            import_errors
+        );
     }
     // Loaded successfully, or only had errors unrelated to this import.
 
@@ -2131,11 +2476,15 @@ end
     let result = load::load(&mut kb, &parsed, &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved selective import");
 
-    let import_errors: Vec<_> = errors.iter().filter(|e| {
-        matches!(e.peel(), load::LoadError::UnresolvedImport { .. })
-    }).collect();
-    assert!(!import_errors.is_empty(),
-        "should report UnresolvedImport errors, got: {:?}", errors);
+    let import_errors: Vec<_> = errors
+        .iter()
+        .filter(|e| matches!(e.peel(), load::LoadError::UnresolvedImport { .. }))
+        .collect();
+    assert!(
+        !import_errors.is_empty(),
+        "should report UnresolvedImport errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2153,14 +2502,19 @@ fn unresolved_name_is_hard_error() {
     let unresolved: Vec<_> = errors.iter().filter(|e| {
         matches!(e.peel(), load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
     }).collect();
-    assert!(!unresolved.is_empty(),
-        "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);
+    assert!(
+        !unresolved.is_empty(),
+        "should report UnresolvedName for 'Nonexistent', got: {:?}",
+        errors
+    );
 
     // Verify span is non-default (the name has a real source location)
     for err in &unresolved {
         if let load::LoadError::UnresolvedName { span, .. } = err.peel() {
-            assert!(span.end > span.start,
-                "span should be non-empty for unresolved name");
+            assert!(
+                span.end > span.start,
+                "span should be non-empty for unresolved name"
+            );
         }
     }
 }
@@ -2249,8 +2603,7 @@ sort B {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver)
-        .expect("circular requires should not panic");
+    load::load(&mut kb, &parsed, &NullResolver).expect("circular requires should not panic");
 
     // Both sorts should exist
     let a_term = kb.resolve_qualified_name_term("A");
@@ -2260,7 +2613,11 @@ sort B {
     // Both should have requirements
     let req_sort = ClauseKind::Requirement;
     let reqs = kb.clauses_of_kind(req_sort);
-    assert_eq!(reqs.len(), 2, "should have 2 requirements (A requires B, B requires A)");
+    assert_eq!(
+        reqs.len(),
+        2,
+        "should have 2 requirements (A requires B, B requires A)"
+    );
 }
 
 // ── Multi-file namespace dedup tests ────────────────────────────
@@ -2307,20 +2664,26 @@ fn multi_file_same_namespace_no_duplicate_facts() {
     let parsed2 = parse::parse(file2).expect("parse file2");
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver)
-        .expect("load failed");
+    load::load_all(&mut kb, &[&parsed1, &parsed2], &NullResolver).expect("load failed");
 
     let ns_sort = ClauseKind::Namespace;
     let ns_facts = kb.clauses_of_kind(ns_sort);
     // Two files both declare `namespace ns` — should produce 1 Namespace fact, not 2
-    let ns_count = ns_facts.iter().filter(|&&fid| {
-        if let Term::Fn { functor, .. } = kb.get_term(kb.fact_term(fid)) {
-            kb.local_name_of(*functor) == "ns"
-        } else {
-            false
-        }
-    }).count();
-    assert_eq!(ns_count, 1, "namespace ns should have exactly 1 Namespace fact, got {}", ns_count);
+    let ns_count = ns_facts
+        .iter()
+        .filter(|&&fid| {
+            if let Term::Fn { functor, .. } = kb.get_term(kb.fact_term(fid)) {
+                kb.local_name_of(*functor) == "ns"
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        ns_count, 1,
+        "namespace ns should have exactly 1 Namespace fact, got {}",
+        ns_count
+    );
 }
 
 // ── Dotted name intermediate namespace tests ────────────────────
@@ -2338,26 +2701,37 @@ fn dotted_name_creates_intermediate_namespaces() {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Check that `a` and `a.b` are registered as Namespace symbols
-    assert!(kb.has_qualified_name("a"),
-        "implicit namespace 'a' should exist");
-    assert!(kb.has_qualified_name("a.b"),
-        "implicit namespace 'a.b' should exist");
+    assert!(
+        kb.has_qualified_name("a"),
+        "implicit namespace 'a' should exist"
+    );
+    assert!(
+        kb.has_qualified_name("a.b"),
+        "implicit namespace 'a.b' should exist"
+    );
 
     // Check that `C` is findable by qualified name
-    assert!(kb.has_qualified_name("a.b.C"),
-        "sort 'a.b.C' should be registered by qualified name");
+    assert!(
+        kb.has_qualified_name("a.b.C"),
+        "sort 'a.b.C' should be registered by qualified name"
+    );
 
     // Check that `C` has short_name "C" (not "a.b.C")
-    assert_eq!(kb.qualified_short_name("a.b.C"), Some("C"),
-        "sort should have short name 'C'");
+    assert_eq!(
+        kb.qualified_short_name("a.b.C"),
+        Some("C"),
+        "sort should have short name 'C'"
+    );
 
     // `C` should be a registered sort with constructor `mkC`
     let c_term = kb.resolve_qualified_name_term("a.b.C");
     assert_eq!(kb.sort_kind(kb.name_term_sym(c_term)), Some(SortKind::Sort));
 
     // Entity `mkC` inside sort `a.b.C` gets fully-qualified name
-    assert!(kb.has_qualified_name("a.b.C.mkC"),
-        "entity mkC inside sort a.b.C should have qualified name 'a.b.C.mkC'");
+    assert!(
+        kb.has_qualified_name("a.b.C.mkC"),
+        "entity mkC inside sort a.b.C should have qualified name 'a.b.C.mkC'"
+    );
 }
 
 #[test]
@@ -2399,15 +2773,24 @@ fn dotted_namespace_creates_hierarchy() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    assert!(kb.has_qualified_name("a"),
-        "implicit namespace 'a' should exist");
-    assert!(kb.has_qualified_name("a.b"),
-        "implicit namespace 'a.b' should exist");
-    assert!(kb.has_qualified_name("a.b.c"),
-        "explicit namespace 'a.b.c' should exist");
+    assert!(
+        kb.has_qualified_name("a"),
+        "implicit namespace 'a' should exist"
+    );
+    assert!(
+        kb.has_qualified_name("a.b"),
+        "implicit namespace 'a.b' should exist"
+    );
+    assert!(
+        kb.has_qualified_name("a.b.c"),
+        "explicit namespace 'a.b.c' should exist"
+    );
 
     // X should be defined in the `a.b.c` scope with fully-qualified name
-    assert!(kb.has_qualified_name("a.b.c.X"), "sort X should be registered as 'a.b.c.X'");
+    assert!(
+        kb.has_qualified_name("a.b.c.X"),
+        "sort X should be registered as 'a.b.c.X'"
+    );
 }
 
 #[test]
@@ -2457,16 +2840,21 @@ fn nested_items_have_qualified_names() {
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     // Sort Eq at top level
-    assert!(kb.has_qualified_name("Eq"),
-        "sort Eq should be registered");
+    assert!(kb.has_qualified_name("Eq"), "sort Eq should be registered");
     // Type param T inside Eq
-    assert!(kb.has_qualified_name("Eq.T"),
-        "type param T should have qualified name 'Eq.T'");
+    assert!(
+        kb.has_qualified_name("Eq.T"),
+        "type param T should have qualified name 'Eq.T'"
+    );
     // Operations inside Eq
-    assert!(kb.has_qualified_name("Eq.eq"),
-        "operation eq should have qualified name 'Eq.eq'");
-    assert!(kb.has_qualified_name("Eq.neq"),
-        "operation neq should have qualified name 'Eq.neq'");
+    assert!(
+        kb.has_qualified_name("Eq.eq"),
+        "operation eq should have qualified name 'Eq.eq'"
+    );
+    assert!(
+        kb.has_qualified_name("Eq.neq"),
+        "operation neq should have qualified name 'Eq.neq'"
+    );
 }
 
 #[test]
@@ -2482,12 +2870,18 @@ fn nested_items_in_dotted_sort_have_qualified_names() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    assert!(kb.has_qualified_name("anthill.prelude.Eq"),
-        "sort should have qualified name 'anthill.prelude.Eq'");
-    assert!(kb.has_qualified_name("anthill.prelude.Eq.T"),
-        "type param should have qualified name 'anthill.prelude.Eq.T'");
-    assert!(kb.has_qualified_name("anthill.prelude.PartialEq.eq"),
-        "operation should have qualified name 'anthill.prelude.Eq.eq'");
+    assert!(
+        kb.has_qualified_name("anthill.prelude.Eq"),
+        "sort should have qualified name 'anthill.prelude.Eq'"
+    );
+    assert!(
+        kb.has_qualified_name("anthill.prelude.Eq.T"),
+        "type param should have qualified name 'anthill.prelude.Eq.T'"
+    );
+    assert!(
+        kb.has_qualified_name("anthill.prelude.PartialEq.eq"),
+        "operation should have qualified name 'anthill.prelude.Eq.eq'"
+    );
 }
 
 #[test]
@@ -2505,16 +2899,26 @@ fn nested_items_in_namespace_have_qualified_names() {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    assert!(kb.has_qualified_name("anthill.reflect"),
-        "namespace should have qualified name 'anthill.reflect'");
-    assert!(kb.has_qualified_name("anthill.reflect.Term"),
-        "sort Term should have qualified name 'anthill.reflect.Term'");
-    assert!(kb.has_qualified_name("anthill.reflect.Term.Const"),
-        "entity Const should have qualified name 'anthill.reflect.Term.Const'");
-    assert!(kb.has_qualified_name("anthill.reflect.Term.Fn"),
-        "entity Fn should have qualified name 'anthill.reflect.Term.Fn'");
-    assert!(kb.has_qualified_name("anthill.reflect.SortInfo"),
-        "sort SortInfo should have qualified name 'anthill.reflect.SortInfo'");
+    assert!(
+        kb.has_qualified_name("anthill.reflect"),
+        "namespace should have qualified name 'anthill.reflect'"
+    );
+    assert!(
+        kb.has_qualified_name("anthill.reflect.Term"),
+        "sort Term should have qualified name 'anthill.reflect.Term'"
+    );
+    assert!(
+        kb.has_qualified_name("anthill.reflect.Term.Const"),
+        "entity Const should have qualified name 'anthill.reflect.Term.Const'"
+    );
+    assert!(
+        kb.has_qualified_name("anthill.reflect.Term.Fn"),
+        "entity Fn should have qualified name 'anthill.reflect.Term.Fn'"
+    );
+    assert!(
+        kb.has_qualified_name("anthill.reflect.SortInfo"),
+        "sort SortInfo should have qualified name 'anthill.reflect.SortInfo'"
+    );
 }
 
 // ── Abstract sort variable preservation tests ────────────────────
@@ -2538,7 +2942,9 @@ fn load_abstract_sort_variable_emits_sort_alias() {
 
     let tid = kb.fact_term(*alias_facts[0]);
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
+        Term::Fn {
+            functor, pos_args, ..
+        } => {
             assert_eq!(kb.local_name_of(*functor), "SortAlias");
             assert_eq!(pos_args.len(), 2);
             // Second arg should be a Var term (the logical variable ?Element)
@@ -2567,13 +2973,19 @@ fn load_abstract_sort_anonymous_variable_emits_sort_alias() {
         let tid = kb.fact_term(**fid);
         matches!(kb.get_term(tid), Term::Fn { functor, .. } if kb.local_name_of(*functor) == "SortAlias")
     }).collect();
-    assert_eq!(alias_facts.len(), 1, "should have 1 SortAlias fact for anonymous variable");
+    assert_eq!(
+        alias_facts.len(),
+        1,
+        "should have 1 SortAlias fact for anonymous variable"
+    );
 
     let tid = kb.fact_term(*alias_facts[0]);
     match kb.get_term(tid) {
         Term::Fn { pos_args, .. } => {
-            assert!(matches!(kb.get_term(pos_args[1]), Term::Var(_)),
-                "target should be a Var term");
+            assert!(
+                matches!(kb.get_term(pos_args[1]), Term::Var(_)),
+                "target should be a Var term"
+            );
         }
         other => panic!("expected Fn term, got {:?}", other),
     }
@@ -2596,20 +3008,23 @@ fn load_abstract_sort_shared_variables() {
     assert_eq!(alias_facts.len(), 2, "should have 2 SortAlias facts");
 
     // Extract the VarIds from both SortAlias targets
-    let var_ids: Vec<u32> = alias_facts.iter().map(|fid| {
-        let tid = kb.fact_term(**fid);
-        match kb.get_term(tid) {
-            Term::Fn { pos_args, .. } => {
-                match kb.get_term(pos_args[1]) {
+    let var_ids: Vec<u32> = alias_facts
+        .iter()
+        .map(|fid| {
+            let tid = kb.fact_term(**fid);
+            match kb.get_term(tid) {
+                Term::Fn { pos_args, .. } => match kb.get_term(pos_args[1]) {
                     Term::Var(Var::Global(vid)) => vid.raw(),
                     other => panic!("expected Var, got {:?}", other),
-                }
+                },
+                other => panic!("expected Fn, got {:?}", other),
             }
-            other => panic!("expected Fn, got {:?}", other),
-        }
-    }).collect();
-    assert_eq!(var_ids[0], var_ids[1],
-        "?X should share the same VarId across both sort definitions");
+        })
+        .collect();
+    assert_eq!(
+        var_ids[0], var_ids[1],
+        "?X should share the same VarId across both sort definitions"
+    );
 }
 
 // ── Universal type variable tests ─────────────────────────────────
@@ -2626,21 +3041,17 @@ fn parse_entity_with_anonymous_variable_fields() {
             assert_eq!(e.fields.len(), 2);
             // Both fields should be TypeExpr::Variable
             let vid0 = match &e.fields[0].ty {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => vid.raw(),
-                        other => panic!("expected Var for field x, got {:?}", other),
-                    }
-                }
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => vid.raw(),
+                    other => panic!("expected Var for field x, got {:?}", other),
+                },
                 other => panic!("expected Variable type for field x, got {:?}", other),
             };
             let vid1 = match &e.fields[1].ty {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => vid.raw(),
-                        other => panic!("expected Var for field y, got {:?}", other),
-                    }
-                }
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => vid.raw(),
+                    other => panic!("expected Var for field y, got {:?}", other),
+                },
                 other => panic!("expected Variable type for field y, got {:?}", other),
             };
             assert_ne!(vid0, vid1, "anonymous ? fields should have distinct VarIds");
@@ -2660,27 +3071,23 @@ fn parse_entity_with_named_variable_fields_shared() {
             assert_eq!(parsed.symbols.local_name(e.name.last()), "Pair");
             assert_eq!(e.fields.len(), 2);
             let vid0 = match &e.fields[0].ty {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => {
-                            assert_eq!(parsed.symbols.local_name(vid.name()), "T");
-                            vid.raw()
-                        }
-                        other => panic!("expected Var for field a, got {:?}", other),
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => {
+                        assert_eq!(parsed.symbols.local_name(vid.name()), "T");
+                        vid.raw()
                     }
-                }
+                    other => panic!("expected Var for field a, got {:?}", other),
+                },
                 other => panic!("expected Variable type for field a, got {:?}", other),
             };
             let vid1 = match &e.fields[1].ty {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => {
-                            assert_eq!(parsed.symbols.local_name(vid.name()), "T");
-                            vid.raw()
-                        }
-                        other => panic!("expected Var for field b, got {:?}", other),
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => {
+                        assert_eq!(parsed.symbols.local_name(vid.name()), "T");
+                        vid.raw()
                     }
-                }
+                    other => panic!("expected Var for field b, got {:?}", other),
+                },
                 other => panic!("expected Variable type for field b, got {:?}", other),
             };
             assert_eq!(vid0, vid1, "named ?T fields should share the same VarId");
@@ -2699,21 +3106,17 @@ fn parse_entity_with_distinct_named_variables() {
         Item::Entity(e) => {
             assert_eq!(e.fields.len(), 2);
             let vid0 = match &e.fields[0].ty {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => vid.raw(),
-                        other => panic!("expected Var for field a, got {:?}", other),
-                    }
-                }
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => vid.raw(),
+                    other => panic!("expected Var for field a, got {:?}", other),
+                },
                 other => panic!("expected Variable type for field a, got {:?}", other),
             };
             let vid1 = match &e.fields[1].ty {
-                TypeExpr::Variable { term_id, .. } => {
-                    match parsed.terms.get(*term_id) {
-                        Term::Var(Var::Global(vid)) => vid.raw(),
-                        other => panic!("expected Var for field b, got {:?}", other),
-                    }
-                }
+                TypeExpr::Variable { term_id, .. } => match parsed.terms.get(*term_id) {
+                    Term::Var(Var::Global(vid)) => vid.raw(),
+                    other => panic!("expected Var for field b, got {:?}", other),
+                },
                 other => panic!("expected Variable type for field b, got {:?}", other),
             };
             assert_ne!(vid0, vid1, "?A and ?B should have distinct VarIds");
@@ -2740,7 +3143,11 @@ fn parse_term_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::SymbolTa
 }
 
 /// Recursively format a parse-IR term for test assertions.
-fn fmt_ir_term(terms: &SimpleTermStore, symbols: &anthill_core::intern::SymbolTable, tid: TermId) -> String {
+fn fmt_ir_term(
+    terms: &SimpleTermStore,
+    symbols: &anthill_core::intern::SymbolTable,
+    tid: TermId,
+) -> String {
     match terms.get(tid) {
         Term::Var(Var::Global(vid)) => format!("?{}", symbols.local_name(vid.name())),
         Term::Var(Var::DeBruijn(n)) => format!("?#{n}"),
@@ -2748,9 +3155,14 @@ fn fmt_ir_term(terms: &SimpleTermStore, symbols: &anthill_core::intern::SymbolTa
         Term::Ref(sym) => symbols.local_name(*sym).to_string(),
         Term::Const(Literal::Int(n)) => format!("{n}"),
         Term::Const(Literal::String(s)) => format!("\"{s}\""),
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let name = symbols.local_name(*functor);
-            let mut parts: Vec<String> = pos_args.iter()
+            let mut parts: Vec<String> = pos_args
+                .iter()
                 .map(|&a| fmt_ir_term(terms, symbols, a))
                 .collect();
             for (key, val) in named_args.iter() {
@@ -2790,7 +3202,11 @@ fn parse_right_assoc_pow() {
 /// Helper: parse a rule body and return its goal terms.
 fn parse_rule_body_goals_ir(
     body: &str,
-) -> (SimpleTermStore, anthill_core::intern::SymbolTable, Vec<TermId>) {
+) -> (
+    SimpleTermStore,
+    anthill_core::intern::SymbolTable,
+    Vec<TermId>,
+) {
     let source = format!("rule r: h(?x) :- {body}\n");
     let parsed = parse::parse(&source).expect("parse failed");
     let goals = match &parsed.items[0] {
@@ -2813,7 +3229,10 @@ fn parse_struct_eq_operator_desugars_to_struct_eq() {
     // WI-615 / proposal 051: `a === b` desugars to struct_eq(a, b) (greedy-lexed over `==`/`=`).
     let (terms, symbols, goals) = parse_rule_body_goals_ir("?x === f(?y)");
     assert_eq!(goals.len(), 1);
-    assert_eq!(fmt_ir_term(&terms, &symbols, goals[0]), "struct_eq(?x, f(?y))");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, goals[0]),
+        "struct_eq(?x, f(?y))"
+    );
 }
 
 #[test]
@@ -2831,7 +3250,10 @@ fn parse_let_in_rule_head_is_rejected() {
     // A head is a conclusion, not a binding goal: heads/body share `_goal` in the
     // grammar, so a `let` parses there, but the converter rejects it loudly.
     let result = parse::parse("rule r: let ?v = f(?x) :- g(?v)\n");
-    assert!(result.is_err(), "expected `let` in a rule head to be rejected");
+    assert!(
+        result.is_err(),
+        "expected `let` in a rule head to be rejected"
+    );
 }
 
 #[test]
@@ -2861,7 +3283,10 @@ fn parse_new_operators() {
 fn parse_ternary_arrow_effect() {
     // ?a -> ?b @ ?c → arrow_effect(?a, ?b, ?c)
     let (terms, symbols, term) = parse_term_ir("?a -> ?b @ ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "arrow_effect(?a, ?b, ?c)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "arrow_effect(?a, ?b, ?c)"
+    );
 }
 
 #[test]
@@ -2919,7 +3344,10 @@ fn parse_single_element_set_literal() {
 fn parse_multi_element_set_literal() {
     // {?a, ?b, ?c} → SetLiteral(?a, ?b, ?c)
     let (terms, symbols, term) = parse_term_ir("{?a, ?b, ?c}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral(?a, ?b, ?c)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "SetLiteral(?a, ?b, ?c)"
+    );
 }
 
 #[test]
@@ -2942,21 +3370,30 @@ fn parse_unit_tuple() {
 fn parse_positional_tuple() {
     // (1, 2) → TupleLiteral(_1: 1, _2: 2)
     let (terms, symbols, term) = parse_term_ir("(1, 2)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral(_1: 1, _2: 2)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "TupleLiteral(_1: 1, _2: 2)"
+    );
 }
 
 #[test]
 fn parse_named_tuple() {
     // (x: 1, y: 2) → TupleLiteral(x: 1, y: 2)
     let (terms, symbols, term) = parse_term_ir("(x: 1, y: 2)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral(x: 1, y: 2)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "TupleLiteral(x: 1, y: 2)"
+    );
 }
 
 #[test]
 fn parse_tuple_variables() {
     // (?a, ?b) → TupleLiteral(_1: ?a, _2: ?b)
     let (terms, symbols, term) = parse_term_ir("(?a, ?b)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral(_1: ?a, _2: ?b)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "TupleLiteral(_1: ?a, _2: ?b)"
+    );
 }
 
 #[test]
@@ -2964,19 +3401,20 @@ fn parse_tuple_type_in_operation() {
     let source = "operation foo() -> (Int64, String)\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
-        Item::Operation(o) => {
-            match &o.return_type {
-                TypeExpr::Tuple(fields) => {
-                    assert_eq!(fields.len(), 2);
-                    let name1 = parsed.symbols.local_name(fields[0].0);
-                    let name2 = parsed.symbols.local_name(fields[1].0);
-                    assert_eq!(name1, "_1");
-                    assert_eq!(name2, "_2");
-                }
-                other => panic!("expected Tuple type, got {:?}", other),
+        Item::Operation(o) => match &o.return_type {
+            TypeExpr::Tuple(fields) => {
+                assert_eq!(fields.len(), 2);
+                let name1 = parsed.symbols.local_name(fields[0].0);
+                let name2 = parsed.symbols.local_name(fields[1].0);
+                assert_eq!(name1, "_1");
+                assert_eq!(name2, "_2");
             }
-        }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Tuple type, got {:?}", other),
+        },
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -2985,19 +3423,20 @@ fn parse_named_tuple_type_in_operation() {
     let source = "operation bar() -> (name: String, age: Int64)\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
-        Item::Operation(o) => {
-            match &o.return_type {
-                TypeExpr::Tuple(fields) => {
-                    assert_eq!(fields.len(), 2);
-                    let name1 = parsed.symbols.local_name(fields[0].0);
-                    let name2 = parsed.symbols.local_name(fields[1].0);
-                    assert_eq!(name1, "name");
-                    assert_eq!(name2, "age");
-                }
-                other => panic!("expected Tuple type, got {:?}", other),
+        Item::Operation(o) => match &o.return_type {
+            TypeExpr::Tuple(fields) => {
+                assert_eq!(fields.len(), 2);
+                let name1 = parsed.symbols.local_name(fields[0].0);
+                let name2 = parsed.symbols.local_name(fields[1].0);
+                assert_eq!(name1, "name");
+                assert_eq!(name2, "age");
             }
-        }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Tuple type, got {:?}", other),
+        },
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3018,7 +3457,10 @@ fn parse_single_element_collection_literal() {
 #[test]
 fn parse_multi_element_collection_literal() {
     let (terms, symbols, term) = parse_term_ir("[?a, ?b, ?c]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(?a, ?b, ?c)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "ListLiteral(?a, ?b, ?c)"
+    );
 }
 
 #[test]
@@ -3035,9 +3477,15 @@ fn head_tail_literal_surface_removed() {
     // `[?h | ?t]` now parses as a SINGLE-element list whose element is the
     // infix `or(?h, ?t)` — NOT a head-tail `ListLiteral(?h, tail: ?t)`.
     let (terms, symbols, term) = parse_term_ir("[?h | ?t]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(or(?h, ?t))");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "ListLiteral(or(?h, ?t))"
+    );
     let (terms, symbols, term) = parse_term_ir("[?a, ?b | ?t]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(?a, or(?b, ?t))");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "ListLiteral(?a, or(?b, ?t))"
+    );
 }
 
 // ── Field access tests ───────────────────────────────────────
@@ -3054,21 +3502,30 @@ fn parse_field_access_variable() {
 fn parse_field_access_chained() {
     // ?x.y.z → dot_apply(dot_apply(?x, y), z)
     let (terms, symbols, term) = parse_term_ir("?x.y.z");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "dot_apply(dot_apply(?x, y), z)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "dot_apply(dot_apply(?x, y), z)"
+    );
 }
 
 #[test]
 fn parse_field_access_in_fn_arg() {
     // f(?a.b, ?c) → f(dot_apply(?a, b), ?c)
     let (terms, symbols, term) = parse_term_ir("f(?a.b, ?c)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "f(dot_apply(?a, b), ?c)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "f(dot_apply(?a, b), ?c)"
+    );
 }
 
 #[test]
 fn parse_field_access_in_infix() {
     // ?x.y = ?z → eq(dot_apply(?x, y), ?z)
     let (terms, symbols, term) = parse_term_ir("?x.y = ?z");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "eq(dot_apply(?x, y), ?z)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "eq(dot_apply(?x, y), ?z)"
+    );
 }
 
 #[test]
@@ -3108,8 +3565,16 @@ fn parse_field_access_in_operation_body() {
         for i in items {
             match i {
                 Item::Operation(o) => return Some(o),
-                Item::Namespace(n) => if let Some(o) = find_op(&n.items) { return Some(o); },
-                Item::SortWithBody(s) => if let Some(o) = find_op(&s.items) { return Some(o); },
+                Item::Namespace(n) => {
+                    if let Some(o) = find_op(&n.items) {
+                        return Some(o);
+                    }
+                }
+                Item::SortWithBody(s) => {
+                    if let Some(o) = find_op(&s.items) {
+                        return Some(o);
+                    }
+                }
                 _ => {}
             }
         }
@@ -3130,7 +3595,11 @@ fn parse_arrow_type_unary() {
     match &parsed.items[0] {
         Item::Operation(o) => {
             match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effects } => {
+                TypeExpr::Arrow {
+                    params,
+                    return_type,
+                    effects,
+                } => {
                     assert_eq!(params.len(), 1);
                     // Unnamed param `(A)` — no field_decl name.
                     assert!(params[0].0.is_none());
@@ -3147,7 +3616,10 @@ fn parse_arrow_type_unary() {
                 other => panic!("expected Arrow type, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3158,16 +3630,26 @@ fn parse_arrow_type_named_params() {
     match &parsed.items[0] {
         Item::Operation(o) => {
             match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effects } => {
+                TypeExpr::Arrow {
+                    params,
+                    return_type,
+                    effects,
+                } => {
                     // WI-355: named params `(acc: A, elem: B)` — names are now
                     // PRESERVED (spec §5.4), not discarded.
                     assert_eq!(params.len(), 2);
-                    assert_eq!(parsed.symbols.local_name(params[0].0.expect("acc name")), "acc");
+                    assert_eq!(
+                        parsed.symbols.local_name(params[0].0.expect("acc name")),
+                        "acc"
+                    );
                     match &params[0].1 {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "A"),
                         other => panic!("expected Simple param, got {:?}", other),
                     }
-                    assert_eq!(parsed.symbols.local_name(params[1].0.expect("elem name")), "elem");
+                    assert_eq!(
+                        parsed.symbols.local_name(params[1].0.expect("elem name")),
+                        "elem"
+                    );
                     match &params[1].1 {
                         TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "B"),
                         other => panic!("expected Simple param, got {:?}", other),
@@ -3181,7 +3663,10 @@ fn parse_arrow_type_named_params() {
                 other => panic!("expected Arrow type, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3194,25 +3679,30 @@ fn parse_arrow_type_single_named_param() {
     let source = "operation findp(p: (x: A) -> B) -> B\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
-        Item::Operation(o) => {
-            match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effects } => {
-                    assert_eq!(params.len(), 1);
-                    assert_eq!(parsed.symbols.local_name(params[0].0.expect("x name")), "x");
-                    match &params[0].1 {
-                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "A"),
-                        other => panic!("expected Simple param, got {:?}", other),
-                    }
-                    match return_type.as_ref() {
-                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "B"),
-                        other => panic!("expected Simple return, got {:?}", other),
-                    }
-                    assert!(effects.is_empty());
+        Item::Operation(o) => match &o.params[0].ty {
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                effects,
+            } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(parsed.symbols.local_name(params[0].0.expect("x name")), "x");
+                match &params[0].1 {
+                    TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "A"),
+                    other => panic!("expected Simple param, got {:?}", other),
                 }
-                other => panic!("expected Arrow type, got {:?}", other),
+                match return_type.as_ref() {
+                    TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "B"),
+                    other => panic!("expected Simple return, got {:?}", other),
+                }
+                assert!(effects.is_empty());
             }
-        }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Arrow type, got {:?}", other),
+        },
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3225,7 +3715,12 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
     // Collect every `NamedTupleElement` name symbol reachable under `t` (WI-361:
     // named-tuple element records relocated from `Type.TypeField`).
     fn typefield_names(kb: &KnowledgeBase, t: TermId, out: &mut Vec<String>) {
-        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
+        if let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = kb.get_term(t)
+        {
             if kb.local_name_of(*functor) == "NamedTupleElement" {
                 for (k, v) in named_args {
                     if kb.local_name_of(*k) == "name" {
@@ -3237,8 +3732,12 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
             }
             let pos: Vec<TermId> = pos_args.to_vec();
             let nmd: Vec<TermId> = named_args.iter().map(|(_, v)| *v).collect();
-            for a in pos { typefield_names(kb, a, out); }
-            for v in nmd { typefield_names(kb, v, out); }
+            for a in pos {
+                typefield_names(kb, a, out);
+            }
+            for v in nmd {
+                typefield_names(kb, v, out);
+            }
         }
     }
     fn callback_field_names(src: &str) -> Vec<String> {
@@ -3259,14 +3758,21 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
     }
 
     // Named params preserved.
-    let named = callback_field_names("operation foo(f: (acc: Int64, elem: Int64) -> Int64) -> Int64\n");
-    assert_eq!(named, vec!["acc".to_string(), "elem".to_string()],
-        "named arrow params should lower to fields acc/elem, got {named:?}");
+    let named =
+        callback_field_names("operation foo(f: (acc: Int64, elem: Int64) -> Int64) -> Int64\n");
+    assert_eq!(
+        named,
+        vec!["acc".to_string(), "elem".to_string()],
+        "named arrow params should lower to fields acc/elem, got {named:?}"
+    );
 
     // Unnamed params → 1-based positional, not 0-based.
     let unnamed = callback_field_names("operation foo(f: (Int64, Int64) -> Int64) -> Int64\n");
-    assert_eq!(unnamed, vec!["_1".to_string(), "_2".to_string()],
-        "unnamed arrow params should lower to 1-based _1/_2, got {unnamed:?}");
+    assert_eq!(
+        unnamed,
+        vec!["_1".to_string(), "_2".to_string()],
+        "unnamed arrow params should lower to 1-based _1/_2, got {unnamed:?}"
+    );
 }
 
 #[test]
@@ -3274,24 +3780,31 @@ fn parse_arrow_type_with_effect() {
     let source = "operation run(f: (A) -> B @ Modifies) -> B\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
-        Item::Operation(o) => {
-            match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effects } => {
-                    assert_eq!(params.len(), 1);
-                    match return_type.as_ref() {
-                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "B"),
-                        other => panic!("expected Simple return, got {:?}", other),
-                    }
-                    assert_eq!(effects.len(), 1, "expected exactly one effect");
-                    match &effects[0] {
-                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "Modifies"),
-                        other => panic!("expected Simple effect, got {:?}", other),
-                    }
+        Item::Operation(o) => match &o.params[0].ty {
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                effects,
+            } => {
+                assert_eq!(params.len(), 1);
+                match return_type.as_ref() {
+                    TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "B"),
+                    other => panic!("expected Simple return, got {:?}", other),
                 }
-                other => panic!("expected Arrow type, got {:?}", other),
+                assert_eq!(effects.len(), 1, "expected exactly one effect");
+                match &effects[0] {
+                    TypeExpr::Simple(n) => {
+                        assert_eq!(parsed.symbols.local_name(n.last()), "Modifies")
+                    }
+                    other => panic!("expected Simple effect, got {:?}", other),
+                }
             }
-        }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Arrow type, got {:?}", other),
+        },
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3300,20 +3813,24 @@ fn parse_arrow_type_with_effect_set() {
     let source = "operation run(f: (A) -> B @ {Modifies, Reads}) -> B\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
-        Item::Operation(o) => {
-            match &o.params[0].ty {
-                TypeExpr::Arrow { effects, .. } => {
-                    assert_eq!(effects.len(), 2, "expected braced effect set of 2");
-                    let names: Vec<&str> = effects.iter().map(|e| match e {
+        Item::Operation(o) => match &o.params[0].ty {
+            TypeExpr::Arrow { effects, .. } => {
+                assert_eq!(effects.len(), 2, "expected braced effect set of 2");
+                let names: Vec<&str> = effects
+                    .iter()
+                    .map(|e| match e {
                         TypeExpr::Simple(n) => parsed.symbols.local_name(n.last()),
                         other => panic!("expected Simple effect, got {:?}", other),
-                    }).collect();
-                    assert_eq!(names, vec!["Modifies", "Reads"]);
-                }
-                other => panic!("expected Arrow type, got {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(names, vec!["Modifies", "Reads"]);
             }
-        }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Arrow type, got {:?}", other),
+        },
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3348,8 +3865,10 @@ sort Host {
         Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
         other => panic!("expected arrow Fn, got {:?}", other),
     };
-    assert_eq!(functor_name, "Arrow",
-        "arrow-effect term should be built via prelude TypeExtractor.Arrow");
+    assert_eq!(
+        functor_name, "Arrow",
+        "arrow-effect term should be built via prelude TypeExtractor.Arrow"
+    );
 
     // WI-307 v1a: the effects field is `effects_rows(effects_expr: <EX>)`,
     // not a List. Walk the wrapper down to the EffectExpression payload.
@@ -3358,8 +3877,10 @@ sort Host {
         Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
         other => panic!("expected effects_rows Fn, got {:?}", other),
     };
-    assert_eq!(er_functor, "EffectsRows",
-        "arrow.effects should be wrapped in the EffectsRows Type entity");
+    assert_eq!(
+        er_functor, "EffectsRows",
+        "arrow.effects should be wrapped in the EffectsRows Type entity"
+    );
 
     // Walk the canonical right-folded `merge(present(l), merge(...,
     // empty_row))` chain and collect the present-label types.
@@ -3368,9 +3889,11 @@ sort Host {
     let mut node = expr;
     loop {
         let (functor, args) = match kb.get_term(node) {
-            Term::Fn { functor, named_args, .. } => {
-                (kb.local_name_of(*functor).to_owned(), named_args.clone())
-            }
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (kb.local_name_of(*functor).to_owned(), named_args.clone()),
             other => panic!("expected EffectExpression Fn, got {:?}", other),
         };
         match functor.as_str() {
@@ -3380,17 +3903,21 @@ sort Host {
                 break;
             }
             "merge" => {
-                let left = args.iter()
+                let left = args
+                    .iter()
                     .find(|(s, _)| kb.local_name_of(*s) == "left")
-                    .map(|(_, v)| *v).expect("merge.left");
+                    .map(|(_, v)| *v)
+                    .expect("merge.left");
                 if let Term::Fn { functor: lf, .. } = kb.get_term(left) {
                     if kb.local_name_of(*lf) == "present" {
                         labels.push(named_arg(&kb, left, "label"));
                     }
                 }
-                let right = args.iter()
+                let right = args
+                    .iter()
                     .find(|(s, _)| kb.local_name_of(*s) == "right")
-                    .map(|(_, v)| *v).expect("merge.right");
+                    .map(|(_, v)| *v)
+                    .expect("merge.right");
                 node = right;
             }
             other => panic!("unexpected EffectExpression head `{}`", other),
@@ -3402,14 +3929,21 @@ sort Host {
     // — the base sort IS the functor (no `parameterized(base: sort_ref(…))`
     // wrapper). The canonical-form sort orders labels by `type_display_name`, so
     // the order here is alphabetical (`Modifies` before `Reads`).
-    let names: Vec<String> = labels.iter().map(|&effect| {
-        match kb.get_term(effect) {
+    let names: Vec<String> = labels
+        .iter()
+        .map(|&effect| match kb.get_term(effect) {
             Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
-            other => panic!("expected term-backed parameterized effect Fn, got {:?}", other),
-        }
-    }).collect();
-    assert_eq!(names, vec!["Modifies".to_owned(), "Reads".to_owned()],
-        "effect bases should be Modifies, Reads in canonical (alphabetic) order");
+            other => panic!(
+                "expected term-backed parameterized effect Fn, got {:?}",
+                other
+            ),
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Modifies".to_owned(), "Reads".to_owned()],
+        "effect bases should be Modifies, Reads in canonical (alphabetic) order"
+    );
 
     // WI-173: the arrow's pretty-print is now SURFACE syntax — `(<param>) ->
     // <result> @ {<e1>, <e2>}` — not the `Arrow(param: …, effects:
@@ -3418,12 +3952,21 @@ sort Host {
     // internal `EffectsRows`/`effects:` field shape.
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
     let printed = printer.print_term(arrow_term);
-    assert!(printed.contains("Modifies") && printed.contains("Reads"),
-        "printer output should mention both effect bases; got `{}`", printed);
-    assert!(printed.contains("->") && printed.contains("@ {"),
-        "printer output should be surface arrow + braced effect set; got `{}`", printed);
-    assert!(!printed.contains("EffectsRows") && !printed.contains("effects:"),
-        "printer output must not leak the internal effects-row blob; got `{}`", printed);
+    assert!(
+        printed.contains("Modifies") && printed.contains("Reads"),
+        "printer output should mention both effect bases; got `{}`",
+        printed
+    );
+    assert!(
+        printed.contains("->") && printed.contains("@ {"),
+        "printer output should be surface arrow + braced effect set; got `{}`",
+        printed
+    );
+    assert!(
+        !printed.contains("EffectsRows") && !printed.contains("effects:"),
+        "printer output must not leak the internal effects-row blob; got `{}`",
+        printed
+    );
 }
 
 // ── WI-327 EffectExpression surface grammar ─────────────────────────────
@@ -3446,7 +3989,8 @@ sort Host
   entity host
 "#;
     let source_bare = format!("{preamble}\n  operation foo() -> Int64 effects Modify[host]\nend\n");
-    let source_plus = format!("{preamble}\n  operation foo() -> Int64 effects +Modify[host]\nend\n");
+    let source_plus =
+        format!("{preamble}\n  operation foo() -> Int64 effects +Modify[host]\nend\n");
     let parsed_bare = parse::parse(&source_bare).expect("bare parse failed");
     let parsed_plus = parse::parse(&source_plus).expect("`+E` parse failed");
 
@@ -3471,10 +4015,16 @@ sort Host
         // OperationInfo.effects is still a cons-list at the reflect-side
         // (the canonical effects_rows lives in the arrow.effects path).
         match kb.get_term(eff_list) {
-            Term::Fn { functor, named_args, .. } if kb.local_name_of(*functor) == "cons" => {
-                let head = named_args.iter()
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } if kb.local_name_of(*functor) == "cons" => {
+                let head = named_args
+                    .iter()
                     .find(|(s, _)| kb.local_name_of(*s) == "head")
-                    .map(|(_, v)| *v).expect("cons.head");
+                    .map(|(_, v)| *v)
+                    .expect("cons.head");
                 // WI-361: head is the term-backed effect `Fn{Modify, named}` —
                 // the base sort IS the functor (no `parameterized(base:…)` wrapper).
                 match kb.get_term(head) {
@@ -3488,10 +4038,15 @@ sort Host
 
     let name_bare = first_label_name(&kb_bare, eff_bare);
     let name_plus = first_label_name(&kb_plus, eff_plus);
-    assert_eq!(name_bare, name_plus,
-        "`effects +E` should lower identically to `effects E`");
-    assert_eq!(name_bare, "Modify",
-        "expected the effect to be Modify; got `{}`", name_bare);
+    assert_eq!(
+        name_bare, name_plus,
+        "`effects +E` should lower identically to `effects E`"
+    );
+    assert_eq!(
+        name_bare, "Modify",
+        "expected the effect to be Modify; got `{}`",
+        name_bare
+    );
 }
 
 /// WI-327: `-E` parses and lowers to an `absent(E)` atom inside the
@@ -3516,19 +4071,26 @@ end
     let foo_op = find_operation_info(&mut kb, "foo");
     let eff_list = named_arg(&kb, foo_op, "effects");
     let head = match kb.get_term(eff_list) {
-        Term::Fn { functor, named_args, .. } if kb.local_name_of(*functor) == "cons" => {
-            named_args.iter()
-                .find(|(s, _)| kb.local_name_of(*s) == "head")
-                .map(|(_, v)| *v).expect("cons.head")
-        }
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } if kb.local_name_of(*functor) == "cons" => named_args
+            .iter()
+            .find(|(s, _)| kb.local_name_of(*s) == "head")
+            .map(|(_, v)| *v)
+            .expect("cons.head"),
         other => panic!("expected cons head, got {:?}", other),
     };
     let head_functor = match kb.get_term(head) {
         Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
         other => panic!("expected Fn head, got {:?}", other),
     };
-    assert_eq!(head_functor, "absent",
-        "`-E` should lower to an `absent(...)` atom; got `{}`", head_functor);
+    assert_eq!(
+        head_functor, "absent",
+        "`-E` should lower to an `absent(...)` atom; got `{}`",
+        head_functor
+    );
 }
 
 /// WI-327: `merge(E1, E2)` flattens identically to the braced-set form.
@@ -3546,8 +4108,12 @@ end
 sort Host
   entity host
 "#;
-    let source_merge = format!("{preamble}\n  operation foo() -> Int64 effects merge(Modify[host], Reads[host])\nend\n");
-    let source_braced = format!("{preamble}\n  operation foo() -> Int64 effects {{Modify[host], Reads[host]}}\nend\n");
+    let source_merge = format!(
+        "{preamble}\n  operation foo() -> Int64 effects merge(Modify[host], Reads[host])\nend\n"
+    );
+    let source_braced = format!(
+        "{preamble}\n  operation foo() -> Int64 effects {{Modify[host], Reads[host]}}\nend\n"
+    );
     let parsed_merge = parse::parse(&source_merge).expect("merge parse failed");
     let parsed_braced = parse::parse(&source_braced).expect("braced parse failed");
 
@@ -3563,11 +4129,17 @@ sort Host
         let mut n = 0;
         loop {
             match kb.get_term(node) {
-                Term::Fn { functor, named_args, .. } if kb.local_name_of(*functor) == "cons" => {
+                Term::Fn {
+                    functor,
+                    named_args,
+                    ..
+                } if kb.local_name_of(*functor) == "cons" => {
                     n += 1;
-                    let tail = named_args.iter()
+                    let tail = named_args
+                        .iter()
                         .find(|(s, _)| kb.local_name_of(*s) == "tail")
-                        .map(|(_, v)| *v).expect("cons.tail");
+                        .map(|(_, v)| *v)
+                        .expect("cons.tail");
                     node = tail;
                 }
                 _ => return n,
@@ -3580,10 +4152,16 @@ sort Host
     let eff_merge = named_arg(&kb_merge, op_merge, "effects");
     let eff_braced = named_arg(&kb_braced, op_braced, "effects");
 
-    assert_eq!(count_cons(&kb_merge, eff_merge), 2,
-        "merge(E1, E2) should flatten to 2 effects");
-    assert_eq!(count_cons(&kb_braced, eff_braced), 2,
-        "braced {{E1, E2}} should produce 2 effects");
+    assert_eq!(
+        count_cons(&kb_merge, eff_merge),
+        2,
+        "merge(E1, E2) should flatten to 2 effects"
+    );
+    assert_eq!(
+        count_cons(&kb_braced, eff_braced),
+        2,
+        "braced {{E1, E2}} should produce 2 effects"
+    );
 }
 
 #[test]
@@ -3591,20 +4169,25 @@ fn parse_arrow_type_nullary() {
     let source = "operation delay(f: () -> A) -> A\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
-        Item::Operation(o) => {
-            match &o.params[0].ty {
-                TypeExpr::Arrow { params, return_type, effects } => {
-                    assert_eq!(params.len(), 0);
-                    match return_type.as_ref() {
-                        TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "A"),
-                        other => panic!("expected Simple return, got {:?}", other),
-                    }
-                    assert!(effects.is_empty());
+        Item::Operation(o) => match &o.params[0].ty {
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                effects,
+            } => {
+                assert_eq!(params.len(), 0);
+                match return_type.as_ref() {
+                    TypeExpr::Simple(n) => assert_eq!(parsed.symbols.local_name(n.last()), "A"),
+                    other => panic!("expected Simple return, got {:?}", other),
                 }
-                other => panic!("expected Arrow type, got {:?}", other),
+                assert!(effects.is_empty());
             }
-        }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Arrow type, got {:?}", other),
+        },
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3631,12 +4214,23 @@ end
     match &parsed.items[0] {
         Item::SortWithBody(s) => {
             assert_eq!(parsed.symbols.local_name(s.name.last()), "Ring");
-            let op_count = s.items.iter().filter(|i| matches!(i, Item::Operation(_))).count();
-            let rule_count = s.items.iter().filter(|i| matches!(i, Item::Rule(_))).count();
+            let op_count = s
+                .items
+                .iter()
+                .filter(|i| matches!(i, Item::Operation(_)))
+                .count();
+            let rule_count = s
+                .items
+                .iter()
+                .filter(|i| matches!(i, Item::Rule(_)))
+                .count();
             assert_eq!(op_count, 5, "Ring should have 5 operations");
             assert_eq!(rule_count, 3, "Ring should have 3 rules (laws)");
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3661,10 +4255,16 @@ end
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     // Ring is an algebraic spec (no entity constructors), classified as Abstract
-    assert_eq!(kb.sort_kind(kb.name_term_sym(ring_term)), Some(SortKind::Sort));
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(ring_term)),
+        Some(SortKind::Sort)
+    );
 
     // Ring has sort T + operations — verify it loaded successfully
-    assert!(kb.fact_count() > 0, "KB should have facts after loading Ring");
+    assert!(
+        kb.fact_count() > 0,
+        "KB should have facts after loading Ring"
+    );
 }
 
 #[test]
@@ -3688,28 +4288,36 @@ end
             let req = s.items.iter().find(|i| matches!(i, Item::RequiresDecl(_)));
             assert!(req.is_some(), "should have requires declaration");
             match req.unwrap() {
-                Item::RequiresDecl(r) => {
-                    match &r.type_expr {
-                        TypeExpr::Parameterized { name, bindings } => {
-                            assert_eq!(parsed.symbols.local_name(name.last()), "Ring");
-                            assert_eq!(bindings.len(), 1);
-                            assert!(bindings[0].param.is_none());
-                        }
-                        other => panic!("expected Parameterized, got {:?}", other),
+                Item::RequiresDecl(r) => match &r.type_expr {
+                    TypeExpr::Parameterized { name, bindings } => {
+                        assert_eq!(parsed.symbols.local_name(name.last()), "Ring");
+                        assert_eq!(bindings.len(), 1);
+                        assert!(bindings[0].param.is_none());
                     }
-                }
+                    other => panic!("expected Parameterized, got {:?}", other),
+                },
                 _ => unreachable!(),
             }
 
             // Check map_coeffs has arrow type param (R) -> R
-            let ops: Vec<_> = s.items.iter().filter_map(|i| match i {
-                Item::Operation(o) => Some(o),
-                _ => None,
-            }).collect();
-            let map_op = ops.iter().find(|o| parsed.symbols.local_name(o.name.last()) == "map_coeffs")
+            let ops: Vec<_> = s
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Operation(o) => Some(o),
+                    _ => None,
+                })
+                .collect();
+            let map_op = ops
+                .iter()
+                .find(|o| parsed.symbols.local_name(o.name.last()) == "map_coeffs")
                 .expect("should have map_coeffs operation");
             match &map_op.params[1].ty {
-                TypeExpr::Arrow { params, return_type, effects } => {
+                TypeExpr::Arrow {
+                    params,
+                    return_type,
+                    effects,
+                } => {
                     assert_eq!(params.len(), 1);
                     assert!(effects.is_empty());
                     match &params[0].1 {
@@ -3724,7 +4332,10 @@ end
                 other => panic!("expected Arrow type, got {:?}", other),
             }
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3757,11 +4368,20 @@ fact Polynom[Int64]
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     let polynom_term = kb.resolve_qualified_name_term("Polynom");
-    assert_eq!(kb.sort_kind(kb.name_term_sym(ring_term)), Some(SortKind::Sort));
-    assert_eq!(kb.sort_kind(kb.name_term_sym(polynom_term)), Some(SortKind::Sort));
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(ring_term)),
+        Some(SortKind::Sort)
+    );
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(polynom_term)),
+        Some(SortKind::Sort)
+    );
 
     // Both sorts loaded successfully into the KB
-    assert!(kb.fact_count() > 0, "KB should have facts after loading Ring + Polynom");
+    assert!(
+        kb.fact_count() > 0,
+        "KB should have facts after loading Ring + Polynom"
+    );
 }
 
 #[test]
@@ -3778,17 +4398,31 @@ end
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
         Item::SortWithBody(s) => {
-            let rules: Vec<_> = s.items.iter().filter(|i| matches!(i, Item::Rule(_))).collect();
-            assert_eq!(rules.len(), 2, "Ring should have 2 rules (commutativity, distributivity)");
+            let rules: Vec<_> = s
+                .items
+                .iter()
+                .filter(|i| matches!(i, Item::Rule(_)))
+                .collect();
+            assert_eq!(
+                rules.len(),
+                2,
+                "Ring should have 2 rules (commutativity, distributivity)"
+            );
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
-    assert_eq!(kb.sort_kind(kb.name_term_sym(ring_term)), Some(SortKind::Sort));
+    assert_eq!(
+        kb.sort_kind(kb.name_term_sym(ring_term)),
+        Some(SortKind::Sort)
+    );
 }
 
 // ── Expression body tests ──────────────────────────────────────
@@ -3805,14 +4439,19 @@ fn parse_operation_with_simple_body() {
             let body = op.body.unwrap();
             // Body should be an infix term desugared to add(x, x)
             match parsed.terms.get(body) {
-                Term::Fn { functor, pos_args, .. } => {
+                Term::Fn {
+                    functor, pos_args, ..
+                } => {
                     assert_eq!(parsed.symbols.local_name(*functor), "add");
                     assert_eq!(pos_args.len(), 2);
                 }
                 other => panic!("expected Fn term for body, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3825,7 +4464,10 @@ fn parse_operation_without_body() {
         Item::Operation(op) => {
             assert!(op.body.is_none(), "operation without = should have no body");
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3844,17 +4486,23 @@ fn parse_operation_with_match_body() {
             assert!(op.body.is_some());
             let body = op.body.unwrap();
             match parsed.terms.get(body) {
-                Term::Fn { functor, pos_args, .. } => {
+                Term::Fn {
+                    functor, pos_args, ..
+                } => {
                     assert_eq!(parsed.symbols.local_name(*functor), "match_expr");
                     // pos_args[0] = scrutinee, pos_args[1..] = branches
                     assert_eq!(pos_args.len(), 3, "1 scrutinee + 2 branches");
 
                     // Check first branch: case nil -> 0
                     match parsed.terms.get(pos_args[1]) {
-                        Term::Fn { functor: bf, pos_args: bargs, .. } => {
+                        Term::Fn {
+                            functor: bf,
+                            pos_args: bargs,
+                            ..
+                        } => {
                             assert_eq!(parsed.symbols.local_name(*bf), "match_branch");
                             assert_eq!(bargs.len(), 2); // pattern, body
-                            // Pattern should be pattern_var(nil)
+                                                        // Pattern should be pattern_var(nil)
                             match parsed.terms.get(bargs[0]) {
                                 Term::Fn { functor: pf, .. } => {
                                     assert_eq!(parsed.symbols.local_name(*pf), "pattern_var");
@@ -3868,7 +4516,10 @@ fn parse_operation_with_match_body() {
                 other => panic!("expected match_expr, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3901,8 +4552,8 @@ fn parse_dangling_case_rejected() {
 #[test]
 fn parse_fires_on_syntax_error() {
     // MISSING branch: an unclosed namespace leaves the `}` missing.
-    let missing = parse::parse("namespace test {\n")
-        .expect_err("unclosed namespace must fail parse");
+    let missing =
+        parse::parse("namespace test {\n").expect_err("unclosed namespace must fail parse");
     assert!(
         missing.iter().any(|e| e.message.contains("missing")),
         "expected a `missing` diagnostic, got: {missing:?}",
@@ -3965,13 +4616,18 @@ fn parse_let_bound_inner_match_ok() {
     // Outer match keeps both arms (scrutinee + 2 branches).
     match &parsed.items[0] {
         Item::Operation(op) => match parsed.terms.get(op.body.unwrap()) {
-            Term::Fn { functor, pos_args, .. } => {
+            Term::Fn {
+                functor, pos_args, ..
+            } => {
                 assert_eq!(parsed.symbols.local_name(*functor), "match_expr");
                 assert_eq!(pos_args.len(), 3, "outer match: 1 scrutinee + 2 branches");
             }
             other => panic!("expected match_expr, got {other:?}"),
         },
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -3989,7 +4645,8 @@ fn parse_single_line_match_arms_ok() {
 // check would read it as shallower than space-indented siblings.)
 #[test]
 fn parse_mixed_indent_flat_match_ok() {
-    let source = "operation f(x: Int64) -> Int64 =\n  match x\n        case a -> 1\n\tcase b -> 2\n";
+    let source =
+        "operation f(x: Int64) -> Int64 =\n  match x\n        case a -> 1\n\tcase b -> 2\n";
     parse::parse(source).expect("mixed tab/space flat match should parse");
 }
 
@@ -4002,14 +4659,19 @@ fn parse_operation_with_if_body() {
             assert!(op.body.is_some());
             let body = op.body.unwrap();
             match parsed.terms.get(body) {
-                Term::Fn { functor, pos_args, .. } => {
+                Term::Fn {
+                    functor, pos_args, ..
+                } => {
                     assert_eq!(parsed.symbols.local_name(*functor), "if_expr");
                     assert_eq!(pos_args.len(), 3); // condition, then, else
                 }
                 other => panic!("expected if_expr, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4027,12 +4689,18 @@ fn parse_operation_with_let_body() {
             let body = op.body.unwrap();
             // Outer let_chain
             match parsed.terms.get(body) {
-                Term::Fn { functor, pos_args, .. } => {
+                Term::Fn {
+                    functor, pos_args, ..
+                } => {
                     assert_eq!(parsed.symbols.local_name(*functor), "let_expr");
                     assert_eq!(pos_args.len(), 3); // pattern, value, body
-                    // Inner body should be another let_chain
+                                                   // Inner body should be another let_chain
                     match parsed.terms.get(pos_args[2]) {
-                        Term::Fn { functor: inner_f, pos_args: inner_args, .. } => {
+                        Term::Fn {
+                            functor: inner_f,
+                            pos_args: inner_args,
+                            ..
+                        } => {
                             assert_eq!(parsed.symbols.local_name(*inner_f), "let_expr");
                             assert_eq!(inner_args.len(), 3);
                         }
@@ -4042,7 +4710,10 @@ fn parse_operation_with_let_body() {
                 other => panic!("expected let_expr, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4055,12 +4726,18 @@ fn parse_operation_with_lambda_body() {
             assert!(op.body.is_some());
             let body = op.body.unwrap();
             match parsed.terms.get(body) {
-                Term::Fn { functor, pos_args, .. } => {
+                Term::Fn {
+                    functor, pos_args, ..
+                } => {
                     assert_eq!(parsed.symbols.local_name(*functor), "lambda_expr");
                     assert_eq!(pos_args.len(), 2); // param pattern, body
-                    // Param should be pattern_var(y)
+                                                   // Param should be pattern_var(y)
                     match parsed.terms.get(pos_args[0]) {
-                        Term::Fn { functor: pf, pos_args: pargs, .. } => {
+                        Term::Fn {
+                            functor: pf,
+                            pos_args: pargs,
+                            ..
+                        } => {
                             assert_eq!(parsed.symbols.local_name(*pf), "pattern_var");
                             assert_eq!(pargs.len(), 1);
                             match parsed.terms.get(pargs[0]) {
@@ -4076,7 +4753,10 @@ fn parse_operation_with_lambda_body() {
                 other => panic!("expected lambda, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4095,22 +4775,29 @@ fn parse_pattern_wildcard() {
                     // Branch pattern should be pattern_wildcard
                     let branch = parsed.terms.get(pos_args[1]);
                     match branch {
-                        Term::Fn { pos_args: bargs, .. } => {
-                            match parsed.terms.get(bargs[0]) {
-                                Term::Fn { functor, pos_args: wargs, .. } => {
-                                    assert_eq!(parsed.symbols.local_name(*functor), "pattern_wildcard");
-                                    assert!(wargs.is_empty());
-                                }
-                                other => panic!("expected pattern_wildcard, got {:?}", other),
+                        Term::Fn {
+                            pos_args: bargs, ..
+                        } => match parsed.terms.get(bargs[0]) {
+                            Term::Fn {
+                                functor,
+                                pos_args: wargs,
+                                ..
+                            } => {
+                                assert_eq!(parsed.symbols.local_name(*functor), "pattern_wildcard");
+                                assert!(wargs.is_empty());
                             }
-                        }
+                            other => panic!("expected pattern_wildcard, got {:?}", other),
+                        },
                         other => panic!("expected match_branch, got {:?}", other),
                     }
                 }
                 other => panic!("expected match_expr, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4128,13 +4815,22 @@ fn parse_pattern_constructor() {
                 Term::Fn { pos_args, .. } => {
                     let branch = parsed.terms.get(pos_args[1]);
                     match branch {
-                        Term::Fn { pos_args: bargs, .. } => {
+                        Term::Fn {
+                            pos_args: bargs, ..
+                        } => {
                             // Pattern = pattern_constructor(Ident(cons), pattern_var(h), pattern_var(t))
                             match parsed.terms.get(bargs[0]) {
-                                Term::Fn { functor, pos_args: cargs, .. } => {
-                                    assert_eq!(parsed.symbols.local_name(*functor), "pattern_constructor");
+                                Term::Fn {
+                                    functor,
+                                    pos_args: cargs,
+                                    ..
+                                } => {
+                                    assert_eq!(
+                                        parsed.symbols.local_name(*functor),
+                                        "pattern_constructor"
+                                    );
                                     assert_eq!(cargs.len(), 3); // name + 2 sub-patterns
-                                    // First arg is the constructor name
+                                                                // First arg is the constructor name
                                     match parsed.terms.get(cargs[0]) {
                                         Term::Ident(sym) => {
                                             assert_eq!(parsed.symbols.local_name(*sym), "cons");
@@ -4151,7 +4847,10 @@ fn parse_pattern_constructor() {
                 other => panic!("expected match_expr, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4169,26 +4868,33 @@ fn parse_pattern_literal() {
                 Term::Fn { pos_args, .. } => {
                     let branch = parsed.terms.get(pos_args[1]);
                     match branch {
-                        Term::Fn { pos_args: bargs, .. } => {
-                            match parsed.terms.get(bargs[0]) {
-                                Term::Fn { functor, pos_args: largs, .. } => {
-                                    assert_eq!(parsed.symbols.local_name(*functor), "pattern_literal");
-                                    assert_eq!(largs.len(), 1);
-                                    match parsed.terms.get(largs[0]) {
-                                        Term::Const(Literal::Int(0)) => {}
-                                        other => panic!("expected Int64(0), got {:?}", other),
-                                    }
+                        Term::Fn {
+                            pos_args: bargs, ..
+                        } => match parsed.terms.get(bargs[0]) {
+                            Term::Fn {
+                                functor,
+                                pos_args: largs,
+                                ..
+                            } => {
+                                assert_eq!(parsed.symbols.local_name(*functor), "pattern_literal");
+                                assert_eq!(largs.len(), 1);
+                                match parsed.terms.get(largs[0]) {
+                                    Term::Const(Literal::Int(0)) => {}
+                                    other => panic!("expected Int64(0), got {:?}", other),
                                 }
-                                other => panic!("expected pattern_literal, got {:?}", other),
                             }
-                        }
+                            other => panic!("expected pattern_literal, got {:?}", other),
+                        },
                         other => panic!("expected match_branch, got {:?}", other),
                     }
                 }
                 other => panic!("expected match_expr, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4210,7 +4916,10 @@ fn parse_operation_body_with_clauses() {
                 other => panic!("expected div Fn, got {:?}", other),
             }
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4239,10 +4948,16 @@ end
                         other => panic!("expected add, got {:?}", other),
                     }
                 }
-                other => panic!("expected OperationBlock, got {:?}", std::mem::discriminant(other)),
+                other => panic!(
+                    "expected OperationBlock, got {:?}",
+                    std::mem::discriminant(other)
+                ),
             }
         }
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4264,12 +4979,12 @@ fn try_load_with_stdlib(
 ) -> Result<KnowledgeBase, Vec<anthill_core::kb::load::LoadError>> {
     let dir = stdlib_dir();
     let files = collect_anthill_files(&dir);
-    let mut all_parsed: Vec<_> = files.iter()
+    let mut all_parsed: Vec<_> = files
+        .iter()
         .map(|path| {
             let source = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
+            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
         })
         .collect();
     let extra = parse::parse(extra_source).expect("parse extra source failed");
@@ -4280,7 +4995,6 @@ fn try_load_with_stdlib(
     load::load_all(&mut kb, &refs, &NullResolver)?;
     Ok(kb)
 }
-
 
 /// Helper (WI-305): the operation body is no longer a fact field — it lives in
 /// the `op_body_node` side-table. Given an OperationInfo / OperationImpl term,
@@ -4302,11 +5016,10 @@ fn op_body_occ(
 
 fn get_named_arg<'a>(kb: &'a KnowledgeBase, term_id: TermId, field: &str) -> Option<TermId> {
     match kb.get_term(term_id) {
-        Term::Fn { named_args, .. } => {
-            named_args.iter()
-                .find(|(sym, _)| kb.local_name_of(*sym) == field)
-                .map(|&(_, tid)| tid)
-        }
+        Term::Fn { named_args, .. } => named_args
+            .iter()
+            .find(|(sym, _)| kb.local_name_of(*sym) == field)
+            .map(|&(_, tid)| tid),
         _ => None,
     }
 }
@@ -4337,12 +5050,14 @@ fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
 
 #[test]
 fn load_operation_with_if_body() {
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.expr
   operation max(a: Int64, b: Int64) -> Int64 =
     if gt(a, b) then a else b
 end
-"#);
+"#,
+    );
 
     use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.max");
@@ -4350,15 +5065,34 @@ end
     // body now lives in the op_body_node side-table (WI-305) → Expr::If
     let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
     match body.as_expr() {
-        Some(Expr::If { condition, then_branch, else_branch }) => {
+        Some(Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        }) => {
             // condition is an Apply (gt(a, b))
-            assert!(matches!(condition.as_expr(), Some(Expr::Apply { .. })),
-                "condition should be an apply, got {:?}", condition.as_expr());
+            assert!(
+                matches!(condition.as_expr(), Some(Expr::Apply { .. })),
+                "condition should be an apply, got {:?}",
+                condition.as_expr()
+            );
             // both branches are var references (Expr::VarRef / Expr::Var)
-            assert!(matches!(then_branch.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
-                "then_branch should be a var ref, got {:?}", then_branch.as_expr());
-            assert!(matches!(else_branch.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
-                "else_branch should be a var ref, got {:?}", else_branch.as_expr());
+            assert!(
+                matches!(
+                    then_branch.as_expr(),
+                    Some(Expr::VarRef { .. } | Expr::Var(_))
+                ),
+                "then_branch should be a var ref, got {:?}",
+                then_branch.as_expr()
+            );
+            assert!(
+                matches!(
+                    else_branch.as_expr(),
+                    Some(Expr::VarRef { .. } | Expr::Var(_))
+                ),
+                "else_branch should be a var ref, got {:?}",
+                else_branch.as_expr()
+            );
         }
         other => panic!("expected If, got {other:?}"),
     }
@@ -4366,7 +5100,8 @@ end
 
 #[test]
 fn load_operation_with_match_body() {
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.expr
   sort Nat
     entity zero
@@ -4377,7 +5112,8 @@ namespace test.expr
         case succ(_) -> false
   end
 end
-"#);
+"#,
+    );
 
     use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.Nat.is_zero");
@@ -4385,10 +5121,19 @@ end
     // body now lives in the op_body_node side-table (WI-305) → Expr::Match
     let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
     match body.as_expr() {
-        Some(Expr::Match { scrutinee, branches }) => {
+        Some(Expr::Match {
+            scrutinee,
+            branches,
+        }) => {
             // scrutinee is a var ref (n)
-            assert!(matches!(scrutinee.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
-                "scrutinee should be a var ref, got {:?}", scrutinee.as_expr());
+            assert!(
+                matches!(
+                    scrutinee.as_expr(),
+                    Some(Expr::VarRef { .. } | Expr::Var(_))
+                ),
+                "scrutinee should be a var ref, got {:?}",
+                scrutinee.as_expr()
+            );
             assert_eq!(branches.len(), 2, "two branches");
 
             // First branch: pattern = constructor_pattern(zero), body = bool literal
@@ -4396,11 +5141,18 @@ end
             let branch1 = &branches[0];
             use anthill_core::kb::node_occurrence::Pattern;
             assert!(
-                matches!(branch1.pattern.as_pattern(), Some(Pattern::Constructor { .. })),
-                "branch pattern should be a Constructor pattern, got {:?}", branch1.pattern.as_pattern(),
+                matches!(
+                    branch1.pattern.as_pattern(),
+                    Some(Pattern::Constructor { .. })
+                ),
+                "branch pattern should be a Constructor pattern, got {:?}",
+                branch1.pattern.as_pattern(),
             );
-            assert!(matches!(branch1.body.as_expr(), Some(Expr::Const(_))),
-                "branch body should be a bool literal, got {:?}", branch1.body.as_expr());
+            assert!(
+                matches!(branch1.body.as_expr(), Some(Expr::Const(_))),
+                "branch body should be a bool literal, got {:?}",
+                branch1.body.as_expr()
+            );
             // Guard should be none
             assert!(branch1.guard.is_none(), "branch guard should be none");
         }
@@ -4410,31 +5162,45 @@ end
 
 #[test]
 fn load_operation_with_let_body() {
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.expr
   operation double(x: Int64) -> Int64 =
     let y = x
     add(y, y)
 end
-"#);
+"#,
+    );
 
     use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.double");
     let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
     match body.as_expr() {
-        Some(Expr::Let { pattern, value, body: inner_body, .. }) => {
+        Some(Expr::Let {
+            pattern,
+            value,
+            body: inner_body,
+            ..
+        }) => {
             // WI-318: pattern is now a Pattern-kind occurrence.
             use anthill_core::kb::node_occurrence::Pattern;
             assert!(
                 matches!(pattern.as_pattern(), Some(Pattern::Var { .. })),
-                "let pattern should be a Var pattern, got {:?}", pattern.as_pattern(),
+                "let pattern should be a Var pattern, got {:?}",
+                pattern.as_pattern(),
             );
             // value is a var ref (x)
-            assert!(matches!(value.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
-                "value should be a var ref, got {:?}", value.as_expr());
+            assert!(
+                matches!(value.as_expr(), Some(Expr::VarRef { .. } | Expr::Var(_))),
+                "value should be a var ref, got {:?}",
+                value.as_expr()
+            );
             // inner body is an Apply (add(y, y))
-            assert!(matches!(inner_body.as_expr(), Some(Expr::Apply { .. })),
-                "inner body should be an apply, got {:?}", inner_body.as_expr());
+            assert!(
+                matches!(inner_body.as_expr(), Some(Expr::Apply { .. })),
+                "inner body should be an apply, got {:?}",
+                inner_body.as_expr()
+            );
         }
         other => panic!("expected Let, got {other:?}"),
     }
@@ -4442,24 +5208,30 @@ end
 
 #[test]
 fn load_operation_with_lambda_body() {
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.expr
   import anthill.prelude.{Function, Int64}
   operation make_inc() -> Function[Int64, Int64] =
     lambda x -> add(x, 1)
 end
-"#);
+"#,
+    );
 
     use anthill_core::kb::node_occurrence::Expr;
     let op_info = find_op_info(&mut kb, "test.expr.make_inc");
     let body = op_body_occ(&kb, op_info, "name").expect("op body missing");
     match body.as_expr() {
-        Some(Expr::Lambda { param, body: lambda_body }) => {
+        Some(Expr::Lambda {
+            param,
+            body: lambda_body,
+        }) => {
             // WI-318: param is now a Pattern-kind Rc<NodeOccurrence>.
             use anthill_core::kb::node_occurrence::Pattern;
             assert!(
                 matches!(param.as_pattern(), Some(Pattern::Var { .. })),
-                "lambda param is a Pattern::Var, got {:?}", param.as_pattern(),
+                "lambda param is a Pattern::Var, got {:?}",
+                param.as_pattern(),
             );
             // lambda body is an Apply (add(x, 1)) with 2 positional args
             match lambda_body.as_expr() {
@@ -4486,46 +5258,64 @@ fn parse_tuple_literal_with_lambda_element() {
     let parsed = parse::parse(source).expect("parse failed");
     let op = match &parsed.items[0] {
         Item::Operation(op) => op,
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     };
     let body = op.body.expect("body missing");
     let named = match parsed.terms.get(body) {
-        Term::Fn { functor, named_args, .. } => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
             assert_eq!(parsed.symbols.local_name(*functor), "TupleLiteral");
             named_args.clone()
         }
         other => panic!("expected TupleLiteral, got {:?}", other),
     };
     // The lambda element survived conversion (not dropped, not errored).
-    let has_lambda = named.iter().any(|(_, v)| matches!(
-        parsed.terms.get(*v),
-        Term::Fn { functor, .. } if parsed.symbols.local_name(*functor) == "lambda_expr"
-    ));
-    assert!(has_lambda, "lambda element should be preserved in the tuple, got {named:?}");
+    let has_lambda = named.iter().any(|(_, v)| {
+        matches!(
+            parsed.terms.get(*v),
+            Term::Fn { functor, .. } if parsed.symbols.local_name(*functor) == "lambda_expr"
+        )
+    });
+    assert!(
+        has_lambda,
+        "lambda element should be preserved in the tuple, got {named:?}"
+    );
 }
 
 #[test]
 fn load_operation_without_body() {
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.expr
   operation abstract_op(x: Int64) -> Int64
 end
-"#);
+"#,
+    );
 
     let op_info = find_op_info(&mut kb, "test.expr.abstract_op");
     // No body field anymore (WI-305); a body-less op has no op_body_node entry.
-    assert!(op_body_occ(&kb, op_info, "name").is_none(),
-        "declaration-only op should have no body occurrence");
+    assert!(
+        op_body_occ(&kb, op_info, "name").is_none(),
+        "declaration-only op should have no body occurrence"
+    );
 }
 
 #[test]
 fn load_operation_impl_fact_emitted() {
-    let mut kb = load_with_stdlib(r#"
+    let mut kb = load_with_stdlib(
+        r#"
 namespace test.expr
   operation incr(x: Int64) -> Int64 =
     add(x, 1)
 end
-"#);
+"#,
+    );
 
     // Check OperationImpl fact was emitted
     let impl_sort = ClauseKind::OperationImpl;
@@ -4534,8 +5324,8 @@ end
     let mut found = false;
     for &fid in &impls {
         let tid = kb.fact_term(fid);
-        let op_sym = get_named_arg(&kb, tid, "operation")
-            .and_then(|op_tid| match kb.get_term(op_tid) {
+        let op_sym =
+            get_named_arg(&kb, tid, "operation").and_then(|op_tid| match kb.get_term(op_tid) {
                 Term::Ref(sym) | Term::Ident(sym) => Some(*sym),
                 _ => None,
             });
@@ -4550,8 +5340,11 @@ end
                     // op_body_node side-table via the OperationImpl `operation`.
                     use anthill_core::kb::node_occurrence::Expr;
                     let body = op_body_occ(&kb, tid, "operation").expect("op body missing");
-                    assert!(matches!(body.as_expr(), Some(Expr::Apply { .. })),
-                        "op body should be an apply, got {:?}", body.as_expr());
+                    assert!(
+                        matches!(body.as_expr(), Some(Expr::Apply { .. })),
+                        "op body should be an apply, got {:?}",
+                        body.as_expr()
+                    );
                 }
             }
         }
@@ -4575,7 +5368,10 @@ fn parse_records_term_spans() {
                 span,
             );
         }
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -4594,7 +5390,8 @@ sort Math {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let double_sym = kb.try_resolve_symbol("Math.double")
+    let double_sym = kb
+        .try_resolve_symbol("Math.double")
         .or_else(|| kb.try_resolve_symbol("double"))
         .expect("double operation should be resolved");
     assert!(
@@ -4618,12 +5415,18 @@ sort Math {
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
-    let f_sym = kb.try_resolve_symbol("Math.f")
+    let f_sym = kb
+        .try_resolve_symbol("Math.f")
         .or_else(|| kb.try_resolve_symbol("f"))
         .expect("f operation should be resolved");
     let body = kb.op_body_node(f_sym).expect("op body present");
     match body.as_expr() {
-        Some(Expr::DotApply { name, pos_args, named_args, .. }) => {
+        Some(Expr::DotApply {
+            name,
+            pos_args,
+            named_args,
+            ..
+        }) => {
             assert_eq!(kb.local_name_of(*name), "g", "method name");
             assert_eq!(pos_args.len(), 1, "one positional arg (?a)");
             assert!(named_args.is_empty());
@@ -4645,15 +5448,24 @@ fn incorrect_program_error_includes_line_number() {
     let unresolved: Vec<_> = errors.iter().filter(|e| {
         matches!(e.peel(), load::LoadError::UnresolvedName { name, .. } if name == "Nonexistent")
     }).collect();
-    assert!(!unresolved.is_empty(),
-        "should report UnresolvedName for 'Nonexistent', got: {:?}", errors);
+    assert!(
+        !unresolved.is_empty(),
+        "should report UnresolvedName for 'Nonexistent', got: {:?}",
+        errors
+    );
 
     // Verify format_with_source produces "line:col: ..." with correct line
     let formatted = unresolved[0].format_at(&anthill_core::span::LineIndex::new(source));
-    assert!(formatted.starts_with("2:"),
-        "error should point to line 2, got: {}", formatted);
-    assert!(formatted.contains("Nonexistent"),
-        "error should mention the unresolved name, got: {}", formatted);
+    assert!(
+        formatted.starts_with("2:"),
+        "error should point to line 2, got: {}",
+        formatted
+    );
+    assert!(
+        formatted.contains("Nonexistent"),
+        "error should mention the unresolved name, got: {}",
+        formatted
+    );
 }
 
 // ── Regression: descriptions with unicode and embedded keywords ────
@@ -4674,8 +5486,7 @@ fn parse_workitem_description_with_unicode_punctuation() {
   depends_on: [],
   status: Open)
 "#;
-    let parsed = parse::parse(source)
-        .expect("WorkItem fact with unicode punctuation must parse");
+    let parsed = parse::parse(source).expect("WorkItem fact with unicode punctuation must parse");
     assert_eq!(parsed.items.len(), 1);
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver)
@@ -4698,8 +5509,8 @@ fn parse_description_containing_status_open_substring() {
   depends_on: [],
   status: Open)
 "#;
-    let parsed = parse::parse(source)
-        .expect("description with literal `status: Open` substring must parse");
+    let parsed =
+        parse::parse(source).expect("description with literal `status: Open` substring must parse");
     assert_eq!(parsed.items.len(), 1);
 
     let mut kb = KnowledgeBase::new();
@@ -4759,7 +5570,11 @@ fn parse_operation_with_single_type_param() {
 fn parse_operation_with_multiple_type_params() {
     let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> Pair\n").expect("parse failed");
     let op = first_operation(&parsed);
-    let names: Vec<_> = op.type_params.iter().map(|p| parsed.symbols.local_name(p.name)).collect();
+    let names: Vec<_> = op
+        .type_params
+        .iter()
+        .map(|p| parsed.symbols.local_name(p.name))
+        .collect();
     assert_eq!(names, vec!["A", "B"]);
 }
 
@@ -4772,7 +5587,8 @@ fn parse_operation_with_multiple_type_params() {
 fn parse_operation_type_param_with_default_is_refused() {
     let errs = crate::common::parse_errs("operation defaulted[T = Int64](x: T) -> T\n");
     assert!(
-        errs.iter().any(|e| e.contains("type parameter `T` carries a default")),
+        errs.iter()
+            .any(|e| e.contains("type parameter `T` carries a default")),
         "a declared type-param default must be refused by name; got: {errs:?}",
     );
 }
@@ -4790,13 +5606,23 @@ fn parse_operation_entry_carries_type_params() {
     let parsed = parse::parse(source).expect("parse failed");
     let sort = match &parsed.items[0] {
         Item::SortWithBody(s) => s,
-        other => panic!("expected SortWithBody, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected SortWithBody, got {:?}",
+            std::mem::discriminant(other)
+        ),
     };
     let op = match &sort.items[0] {
         Item::Operation(o) => o,
-        other => panic!("expected Operation, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected Operation, got {:?}",
+            std::mem::discriminant(other)
+        ),
     };
-    let names: Vec<_> = op.type_params.iter().map(|p| parsed.symbols.local_name(p.name)).collect();
+    let names: Vec<_> = op
+        .type_params
+        .iter()
+        .map(|p| parsed.symbols.local_name(p.name))
+        .collect();
     assert_eq!(names, vec!["A", "B"]);
 }
 
@@ -4804,7 +5630,9 @@ fn parse_operation_entry_carries_type_params() {
 /// nodes — these encode call-site `[A = Int64, ...]` type-args. Returns
 /// every bindings list found, in allocation order.
 fn collect_parse_type_args(parsed: &ParsedFile) -> Vec<Vec<SortBinding>> {
-    parsed.terms.iter()
+    parsed
+        .terms
+        .iter()
         .filter_map(|(_, t)| match t {
             Term::ParseAux(aux) => match aux.as_ref() {
                 ParseAux::SortBindings(bindings) => Some(bindings.clone()),
@@ -4890,7 +5718,8 @@ fn find_operation_info(kb: &mut KnowledgeBase, short_name: &str) -> TermId {
 
 fn named_arg(kb: &KnowledgeBase, term: TermId, key: &str) -> TermId {
     match kb.get_term(term) {
-        Term::Fn { named_args, .. } => named_args.iter()
+        Term::Fn { named_args, .. } => named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == key)
             .map(|(_, t)| *t)
             .unwrap_or_else(|| panic!("missing named arg `{}`", key)),
@@ -4902,11 +5731,21 @@ fn cons_list_to_vec(kb: &KnowledgeBase, mut list: TermId) -> Vec<TermId> {
     let mut out = Vec::new();
     loop {
         match kb.get_term(list) {
-            Term::Fn { functor, named_args, .. } if kb.local_name_of(*functor) == "cons" => {
-                let h = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "head")
-                    .map(|(_, t)| *t).expect("cons head");
-                let t = named_args.iter().find(|(s, _)| kb.local_name_of(*s) == "tail")
-                    .map(|(_, t)| *t).expect("cons tail");
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } if kb.local_name_of(*functor) == "cons" => {
+                let h = named_args
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == "head")
+                    .map(|(_, t)| *t)
+                    .expect("cons head");
+                let t = named_args
+                    .iter()
+                    .find(|(s, _)| kb.local_name_of(*s) == "tail")
+                    .map(|(_, t)| *t)
+                    .expect("cons tail");
                 out.push(h);
                 list = t;
             }
@@ -4939,9 +5778,7 @@ fn load_op_type_param_resolves_bare_name_to_var() {
 fn load_op_type_param_shares_var_across_param_and_return() {
     // Bare-name references to a declared type param share a VarId
     // throughout the operation.
-    let parsed = parse::parse(
-        "operation identity[A](x: A) -> A\n"
-    ).expect("parse failed");
+    let parsed = parse::parse("operation identity[A](x: A) -> A\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
@@ -4955,15 +5792,15 @@ fn load_op_type_param_shares_var_across_param_and_return() {
 
     let vid_param = assert_var_id(&kb, param_x_type);
     let vid_return = assert_var_id(&kb, return_type);
-    assert_eq!(vid_param, vid_return,
-        "two bare-name references to `A` must share a VarId");
+    assert_eq!(
+        vid_param, vid_return,
+        "two bare-name references to `A` must share a VarId"
+    );
 }
 
 #[test]
 fn load_op_distinct_type_params_get_distinct_vars() {
-    let parsed = parse::parse(
-        "operation pair[A, B](a: A, b: B) -> A\n"
-    ).expect("parse failed");
+    let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> A\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
 
@@ -5000,8 +5837,10 @@ operation just[A](x: A) -> Box[A]
     let bound_value = named_arg(&kb, return_type, "T");
     let vid_return = assert_var_id(&kb, bound_value);
 
-    assert_eq!(vid_param, vid_return,
-        "`A` in param and `A` inside Box[A] must share a VarId");
+    assert_eq!(
+        vid_param, vid_return,
+        "`A` in param and `A` inside Box[A] must share a VarId"
+    );
 }
 
 #[test]
@@ -5046,7 +5885,8 @@ fn wi342_tyslot_lambda_carries_modify_effect() {
     // compares it cross-carrier against the declared (ground) `@ {Modify[s]}`.
     //
     // POSITIVE: the declared effect matches the lambda's actual effect → loads.
-    let kb = load_with_stdlib(r#"
+    let kb = load_with_stdlib(
+        r#"
 namespace test.wi342lambda
   import anthill.prelude.{Cell, Int64}
 
@@ -5056,7 +5896,8 @@ namespace test.wi342lambda
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64] @ {Modify[s]}
     = lambda v -> set_cell(s, v)
 end
-"#);
+"#,
+    );
     assert!(
         kb.try_resolve_symbol("test.wi342lambda.outer").is_some(),
         "outer should have loaded",
@@ -5101,7 +5942,8 @@ fn wi342_env_dataflow_let_bound_lambda_carries_modify_effect() {
     // declared arrow — exercising the env-carries-Node path end-to-end.
     //
     // POSITIVE: declared `@ {Modify[s]}` matches the bound lambda's effect → loads.
-    let kb = load_with_stdlib(r#"
+    let kb = load_with_stdlib(
+        r#"
 namespace test.wi342letenv
   import anthill.prelude.{Cell, Int64}
 
@@ -5112,7 +5954,8 @@ namespace test.wi342letenv
     = let f = lambda v -> set_cell(s, v)
       f
 end
-"#);
+"#,
+    );
     assert!(
         kb.try_resolve_symbol("test.wi342letenv.outer").is_some(),
         "outer should have loaded (the let-bound lambda's Modify[s] must survive \

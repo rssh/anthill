@@ -26,8 +26,8 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 
+use super::node_occurrence::{for_each_child, Expr, NodeKind, NodeOccurrence};
 use super::term::{Term, TermId};
-use super::node_occurrence::{Expr, NodeKind, NodeOccurrence, for_each_child};
 use super::typing::{list_to_vec, lookup_spec_op_dispatch, requires_chain_flat};
 use super::KnowledgeBase;
 
@@ -80,17 +80,19 @@ fn compute_op_requirements(
     if let Some(body_node) = body {
         walk_calls_node(&body_node, &mut |callee_sym, callee_bindings| {
             if let Some(spec_sort) = lookup_spec_op_dispatch(kb, callee_sym) {
-                push_unique(&mut result, OpRequirement {
-                    spec_sort,
-                    bindings: callee_bindings.clone(),
-                });
+                push_unique(
+                    &mut result,
+                    OpRequirement {
+                        spec_sort,
+                        bindings: callee_bindings.clone(),
+                    },
+                );
             }
             // Transitive contribution. v0 simplification: callee's
             // bindings are not substituted by call-site subst — the
             // rewrite pass will refine this when it produces the
             // per-call bindings the design's substitute() needs.
-            let transitive =
-                compute_op_requirements(kb, callee_sym, in_progress, memo);
+            let transitive = compute_op_requirements(kb, callee_sym, in_progress, memo);
             for req in transitive {
                 push_unique(&mut result, req);
             }
@@ -128,7 +130,9 @@ pub(crate) fn walk_calls_node(
     let mut stack: Vec<std::rc::Rc<NodeOccurrence>> = Vec::with_capacity(32);
     stack.push(std::rc::Rc::clone(root));
     while let Some(occ) = stack.pop() {
-        let NodeKind::Expr { expr, .. } = &occ.kind else { continue };
+        let NodeKind::Expr { expr, .. } = &occ.kind else {
+            continue;
+        };
         if let Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. } = expr {
             // v0: per-call bindings empty — the rewrite pass populates
             // them from the typer's per-call subst.
@@ -186,21 +190,29 @@ pub(crate) fn operations_of_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Sy
     // raw `name != Some(sort_sym)` re-filter below preserves this site's exact-`==` match
     // (raw `==` within a canonical bucket returns the same exact fact).
     for rid in crate::kb::typing::sort_info_rids_by_sort(kb, sort_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let Some(head) = kb.fact_head_term(rid) else { continue };
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args.clone(),
             _ => continue,
         };
-        let name_match = named_args.iter()
+        let name_match = named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "name")
             .and_then(|(_, v)| match kb.get_term(*v) {
                 Term::Ref(s) => Some(*s),
                 Term::Fn { functor, .. } => Some(*functor),
                 _ => None,
             });
-        if name_match != Some(sort_sym) { continue; }
-        let ops_tid = match named_args.iter()
+        if name_match != Some(sort_sym) {
+            continue;
+        }
+        let ops_tid = match named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| *v)
         {
@@ -234,11 +246,14 @@ namespace test.wi222.empty_reqs
 end
 "#;
         let kb = load_with_src(src);
-        let op_sym = kb.try_resolve_symbol("test.wi222.empty_reqs.simple")
+        let op_sym = kb
+            .try_resolve_symbol("test.wi222.empty_reqs.simple")
             .expect("simple registered");
         let reqs = op_requirements(&kb, op_sym);
-        assert!(reqs.is_empty(),
-            "simple op with no calls must have empty requirements; got {reqs:?}");
+        assert!(
+            reqs.is_empty(),
+            "simple op with no calls must have empty requirements; got {reqs:?}"
+        );
     }
 
     #[test]
@@ -253,13 +268,17 @@ namespace test.wi222.spec_call
 end
 "#;
         let kb = load_with_src(src);
-        let op_sym = kb.try_resolve_symbol("test.wi222.spec_call.caller")
+        let op_sym = kb
+            .try_resolve_symbol("test.wi222.spec_call.caller")
             .expect("caller registered");
-        let eq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq")
+        let eq_sort = kb
+            .try_resolve_symbol("anthill.prelude.PartialEq")
             .expect("Eq registered");
         let reqs = op_requirements(&kb, op_sym);
-        assert!(reqs.iter().any(|r| r.spec_sort == eq_sort),
-            "caller calls Eq.eq, so Eq must appear in requirements; got {reqs:?}");
+        assert!(
+            reqs.iter().any(|r| r.spec_sort == eq_sort),
+            "caller calls Eq.eq, so Eq must appear in requirements; got {reqs:?}"
+        );
     }
 
     #[test]
@@ -283,8 +302,14 @@ end
         // contributions, so both should be empty.
         let a_reqs = op_requirements(&kb, a_sym);
         let b_reqs = op_requirements(&kb, b_sym);
-        assert!(a_reqs.is_empty(), "a → b → a cycle should produce empty reqs; got {a_reqs:?}");
-        assert!(b_reqs.is_empty(), "b → a → b cycle should produce empty reqs; got {b_reqs:?}");
+        assert!(
+            a_reqs.is_empty(),
+            "a → b → a cycle should produce empty reqs; got {a_reqs:?}"
+        );
+        assert!(
+            b_reqs.is_empty(),
+            "b → a → b cycle should produce empty reqs; got {b_reqs:?}"
+        );
     }
 
     #[test]
@@ -303,12 +328,15 @@ namespace test.wi222.coverage_ok
 end
 "#;
         let kb = load_with_src(src);
-        let sort_sym = kb.try_resolve_symbol("test.wi222.coverage_ok.CoverageOk")
+        let sort_sym = kb
+            .try_resolve_symbol("test.wi222.coverage_ok.CoverageOk")
             .expect("CoverageOk registered");
         let uncovered = check_sort_requirements_coverage(&kb, sort_sym);
-        assert!(uncovered.is_empty(),
+        assert!(
+            uncovered.is_empty(),
             "sort with matching requires clause should have no uncovered \
-             requirements; got {uncovered:?}");
+             requirements; got {uncovered:?}"
+        );
     }
 
     #[test]
@@ -325,12 +353,15 @@ namespace test.wi222.coverage_missing
 end
 "#;
         let kb = load_with_src(src);
-        let sort_sym = kb.try_resolve_symbol("test.wi222.coverage_missing.CoverageMissing")
+        let sort_sym = kb
+            .try_resolve_symbol("test.wi222.coverage_missing.CoverageMissing")
             .expect("CoverageMissing registered");
         let eq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq").unwrap();
         let uncovered = check_sort_requirements_coverage(&kb, sort_sym);
-        assert!(uncovered.iter().any(|u| u.requirement.spec_sort == eq_sort),
-            "sort calling eq() without `requires Eq[T]` must be flagged; got {uncovered:?}");
+        assert!(
+            uncovered.iter().any(|u| u.requirement.spec_sort == eq_sort),
+            "sort calling eq() without `requires Eq[T]` must be flagged; got {uncovered:?}"
+        );
     }
 
     #[test]
@@ -347,13 +378,17 @@ namespace test.wi222.dedupe
 end
 "#;
         let kb = load_with_src(src);
-        let foo_sym = kb.try_resolve_symbol("test.wi222.dedupe.foo")
+        let foo_sym = kb
+            .try_resolve_symbol("test.wi222.dedupe.foo")
             .expect("foo registered");
-        let eq_sort = kb.try_resolve_symbol("anthill.prelude.PartialEq")
+        let eq_sort = kb
+            .try_resolve_symbol("anthill.prelude.PartialEq")
             .expect("Eq registered");
         let reqs = op_requirements(&kb, foo_sym);
         let eq_count = reqs.iter().filter(|r| r.spec_sort == eq_sort).count();
-        assert_eq!(eq_count, 1,
-            "two calls to Eq.eq should fold to one requirement; got {reqs:?}");
+        assert_eq!(
+            eq_count, 1,
+            "two calls to Eq.eq should fold to one requirement; got {reqs:?}"
+        );
     }
 }

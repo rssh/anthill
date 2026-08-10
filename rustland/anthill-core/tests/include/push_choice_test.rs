@@ -5,18 +5,18 @@
 //! `or(?a, ?b) :- push_choice(?a, ?b)` rule lifts the primitive to a
 //! regular rule head.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
 /// Build a `Term::Ref(qualified_name_sym)` term — matches how entities
 /// stored in args appear in the KB after loading.
 fn ref_term(kb: &mut KnowledgeBase, qualified: &str) -> TermId {
-    let sym = kb.try_resolve_symbol(qualified)
+    let sym = kb
+        .try_resolve_symbol(qualified)
         .unwrap_or_else(|| panic!("symbol {qualified} not in KB"));
     kb.alloc(Term::Ref(sym))
 }
@@ -24,19 +24,23 @@ fn ref_term(kb: &mut KnowledgeBase, qualified: &str) -> TermId {
 fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let parsed_extra = parse::parse(extra)
-        .unwrap_or_else(|e| panic!("parse extra: {e:?}"));
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap();
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p).unwrap();
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parsed_extra);
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => {}
         Err(errs) => {
-            for e in &errs { eprintln!("LOAD ERR: {}", e); }
+            for e in &errs {
+                eprintln!("LOAD ERR: {}", e);
+            }
             panic!("load failed with {} errors", errs.len());
         }
     }
@@ -71,12 +75,17 @@ fn push_choice_yields_two_solutions_via_facts() {
     });
     let cfg = ResolveConfig::default();
     let solutions = kb.resolve(&[goal], &cfg);
-    assert_eq!(solutions.len(), 2, "two branches × one fact each = 2 solutions");
+    assert_eq!(
+        solutions.len(),
+        2,
+        "two branches × one fact each = 2 solutions"
+    );
 
     // Distinct bindings for ?x: one solution has ?x = b1, other has ?x = b2.
     let b1 = ref_term(&mut kb, "test.pc.both.Branch.b1");
     let b2 = ref_term(&mut kb, "test.pc.both.Branch.b2");
-    let mut bindings: Vec<u32> = solutions.iter()
+    let mut bindings: Vec<u32> = solutions
+        .iter()
         .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     bindings.sort();
@@ -172,11 +181,16 @@ fn or_rule_succeeds_via_either_branch_with_facts() {
     });
     let cfg = ResolveConfig::default();
     let solutions = kb.resolve(&[goal], &cfg);
-    assert_eq!(solutions.len(), 2, "or should yield one solution per succeeding branch");
+    assert_eq!(
+        solutions.len(),
+        2,
+        "or should yield one solution per succeeding branch"
+    );
 
     let t1 = ref_term(&mut kb, "test.pc.or_rule.Tag.t1");
     let t2 = ref_term(&mut kb, "test.pc.or_rule.Tag.t2");
-    let mut bindings: Vec<u32> = solutions.iter()
+    let mut bindings: Vec<u32> = solutions
+        .iter()
         .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     bindings.sort();
@@ -221,7 +235,11 @@ fn push_choice_shares_tail_with_both_branches() {
     });
     let cfg = ResolveConfig::default();
     let solutions = kb.resolve(&[goal], &cfg);
-    assert_eq!(solutions.len(), 2, "two branches × shared tail = 2 solutions");
+    assert_eq!(
+        solutions.len(),
+        2,
+        "two branches × shared tail = 2 solutions"
+    );
 
     let m1 = ref_term(&mut kb, "test.pc.tail.Marker.m1");
     for sol in &solutions {
@@ -231,7 +249,8 @@ fn push_choice_shares_tail_with_both_branches() {
 
     let t1 = ref_term(&mut kb, "test.pc.tail.Tag.t1");
     let t2 = ref_term(&mut kb, "test.pc.tail.Tag.t2");
-    let mut x_bindings: Vec<u32> = solutions.iter()
+    let mut x_bindings: Vec<u32> = solutions
+        .iter()
         .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     x_bindings.sort();
@@ -272,12 +291,17 @@ fn or_rule_handles_nested_disjunction() {
     });
     let cfg = ResolveConfig::default();
     let solutions = kb.resolve(&[goal], &cfg);
-    assert_eq!(solutions.len(), 3, "nested or yields one solution per leaf branch");
+    assert_eq!(
+        solutions.len(),
+        3,
+        "nested or yields one solution per leaf branch"
+    );
 
     let ta = ref_term(&mut kb, "test.pc.nested.Tag.ta");
     let tb = ref_term(&mut kb, "test.pc.nested.Tag.tb");
     let tc = ref_term(&mut kb, "test.pc.nested.Tag.tc");
-    let mut bindings: Vec<u32> = solutions.iter()
+    let mut bindings: Vec<u32> = solutions
+        .iter()
         .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     bindings.sort();
@@ -320,12 +344,15 @@ fn or_rule_isolates_substitutions_across_branches() {
 
     let ta = ref_term(&mut kb, "test.pc.isolate.Tag.ta");
     let tb = ref_term(&mut kb, "test.pc.isolate.Tag.tb");
-    let bindings: std::collections::HashSet<u32> = solutions.iter()
+    let bindings: std::collections::HashSet<u32> = solutions
+        .iter()
         .map(|sol| kb.reify(x_term, &sol.subst).expect_term().raw())
         .collect();
     let expected: std::collections::HashSet<u32> = [ta.raw(), tb.raw()].into_iter().collect();
-    assert_eq!(bindings, expected,
-        "σ isolation: each branch must bind ?x to its own value, not leak across");
+    assert_eq!(
+        bindings, expected,
+        "σ isolation: each branch must bind ?x to its own value, not leak across"
+    );
 }
 
 #[test]
@@ -352,7 +379,12 @@ fn wi580_relational_append_solves_first_arg() {
     });
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     let definite: Vec<_> = sols.iter().filter(|s| s.is_definite()).collect();
-    assert_eq!(definite.len(), 1, "expected exactly one definite solution; got {} total", sols.len());
+    assert_eq!(
+        definite.len(),
+        1,
+        "expected exactly one definite solution; got {} total",
+        sols.len()
+    );
 
     // ?a must be [1] = cons(head:1, tail:nil). Compare hash-consed TermIds.
     let one = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
@@ -363,11 +395,16 @@ fn wi580_relational_append_solves_first_arg() {
         let nils = kb.try_resolve_symbol("anthill.prelude.List.nil").unwrap();
         kb.alloc(Term::Ref(nils))
     };
-    let mut na = SmallVec::<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>::new();
+    let mut na =
+        SmallVec::<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]>::new();
     na.push((heads, one));
     na.push((tails, nilt));
     na.sort_by_key(|(s, _)| s.index());
-    let expected = kb.alloc(Term::Fn { functor: conss, pos_args: SmallVec::new(), named_args: na });
+    let expected = kb.alloc(Term::Fn {
+        functor: conss,
+        pos_args: SmallVec::new(),
+        named_args: na,
+    });
 
     // WI-690 inc2: the unfold binds ?a to a Node pattern, so the answer now rides
     // the Node carrier; lower it (any carrier) to its Term twin and compare.
@@ -396,7 +433,9 @@ fn wi668_term_carried_opcall_eq_case_splits() {
 
     let conss = kb.try_resolve_symbol("anthill.prelude.List.cons").unwrap();
     let nils = kb.try_resolve_symbol("anthill.prelude.List.nil").unwrap();
-    let appends = kb.try_resolve_symbol("anthill.prelude.List.append").unwrap();
+    let appends = kb
+        .try_resolve_symbol("anthill.prelude.List.append")
+        .unwrap();
     let fields = kb.entity_field_names(conss).expect("cons fields").to_vec();
     let (heads, tails) = (fields[0], fields[1]);
 
@@ -405,7 +444,11 @@ fn wi668_term_carried_opcall_eq_case_splits() {
         na.push((heads, h));
         na.push((tails, t));
         na.sort_by_key(|(s, _)| s.index());
-        kb.alloc(Term::Fn { functor: conss, pos_args: SmallVec::new(), named_args: na })
+        kb.alloc(Term::Fn {
+            functor: conss,
+            pos_args: SmallVec::new(),
+            named_args: na,
+        })
     };
 
     let nilt = kb.alloc(Term::Ref(nils));
@@ -439,13 +482,16 @@ fn wi668_term_carried_opcall_eq_case_splits() {
     );
 
     let expected = mk_cons(&mut kb, one, nilt); // [1]
-    // WI-690 inc2: the Value::Term operand still case-splits (op_call_as_occ's
-    // Term arm), but the answer now rides the Node carrier (Node unify goals);
-    // lower it (any carrier) to its Term twin and compare.
+                                                // WI-690 inc2: the Value::Term operand still case-splits (op_call_as_occ's
+                                                // Term arm), but the answer now rides the Node carrier (Node unify goals);
+                                                // lower it (any carrier) to its Term twin and compare.
     let got_val = kb.reify(a_term, &definite[0].subst);
     let got = anthill_core::kb::node_occurrence::value_to_term(&mut kb, &got_val)
         .expect("?a should reify to a ground term (any carrier)");
-    assert_eq!(got, expected, "?a should be [1] (Value::Term operand case-splits; answer Node-carried)");
+    assert_eq!(
+        got, expected,
+        "?a should be [1] (Value::Term operand case-splits; answer Node-carried)"
+    );
 }
 
 #[test]
@@ -471,7 +517,11 @@ fn wi580_catchall_arm_declines_no_overgeneration() {
     let s = kb.intern("_n");
     let nvid = kb.fresh_var(s);
     let nt = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(nvid)));
-    let goal = kb.alloc(Term::Fn { functor: q, pos_args: SmallVec::from_slice(&[nt]), named_args: SmallVec::new() });
+    let goal = kb.alloc(Term::Fn {
+        functor: q,
+        pos_args: SmallVec::from_slice(&[nt]),
+        named_args: SmallVec::new(),
+    });
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(
         sols.iter().all(|s| !s.is_definite()),
@@ -501,7 +551,11 @@ fn wi580_op_call_other_operand_declines() {
     let bv = kb.fresh_var(sb);
     let at = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(av)));
     let bt = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(bv)));
-    let goal = kb.alloc(Term::Fn { functor: q, pos_args: SmallVec::from_slice(&[at, bt]), named_args: SmallVec::new() });
+    let goal = kb.alloc(Term::Fn {
+        functor: q,
+        pos_args: SmallVec::from_slice(&[at, bt]),
+        named_args: SmallVec::new(),
+    });
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(
         sols.iter().all(|s| !s.is_definite()),
@@ -535,8 +589,14 @@ const MEMBER_EQ_SRC: &str = r#"
 "#;
 
 fn zero_arg_solutions(kb: &mut KnowledgeBase, pred: &str) -> usize {
-    let sym = kb.try_resolve_symbol(pred).unwrap_or_else(|| panic!("no symbol {pred}"));
-    let goal = kb.alloc(Term::Fn { functor: sym, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    let sym = kb
+        .try_resolve_symbol(pred)
+        .unwrap_or_else(|| panic!("no symbol {pred}"));
+    let goal = kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
     kb.resolve(&[goal], &ResolveConfig::default())
         .iter()
         .filter(|s| s.is_definite())
@@ -605,9 +665,21 @@ fn wi580_member_over_rule_defined_eq_decides() {
         end
     "#;
     let mut kb = load_with(src);
-    assert_eq!(zero_arg_solutions(&mut kb, "test.wi580ce.red_in_red"), 1, "red is a member of [red]");
-    assert_eq!(zero_arg_solutions(&mut kb, "test.wi580ce.red_in_blue"), 0, "red is NOT a member of [blue]");
-    assert_eq!(zero_arg_solutions(&mut kb, "test.wi580ce.blue_in_rb"), 1, "blue is a member of [red, blue]");
+    assert_eq!(
+        zero_arg_solutions(&mut kb, "test.wi580ce.red_in_red"),
+        1,
+        "red is a member of [red]"
+    );
+    assert_eq!(
+        zero_arg_solutions(&mut kb, "test.wi580ce.red_in_blue"),
+        0,
+        "red is NOT a member of [blue]"
+    );
+    assert_eq!(
+        zero_arg_solutions(&mut kb, "test.wi580ce.blue_in_rb"),
+        1,
+        "blue is a member of [red, blue]"
+    );
 }
 
 #[test]
@@ -630,7 +702,11 @@ fn wi580_member_relational_unground_residualizes_not_wrong() {
     let s = kb.intern("_l");
     let lvid = kb.fresh_var(s);
     let lt = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(lvid)));
-    let goal = kb.alloc(Term::Fn { functor: sym, pos_args: SmallVec::from_slice(&[lt]), named_args: SmallVec::new() });
+    let goal = kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::from_slice(&[lt]),
+        named_args: SmallVec::new(),
+    });
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(
         sols.iter().all(|s| !s.is_definite()),

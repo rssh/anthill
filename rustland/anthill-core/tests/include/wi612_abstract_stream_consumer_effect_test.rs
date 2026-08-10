@@ -24,7 +24,9 @@ namespace test.wi612
     Iterable.isEmpty(s)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "Iterable.isEmpty(s) over an abstract-E Stream param should thread the \
@@ -46,7 +48,9 @@ namespace test.wi612b
     Iterable.find(s, is_big)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "Iterable.find(s, p) over an abstract-E Stream param should thread the \

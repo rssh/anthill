@@ -11,8 +11,8 @@
 //! projection (`Stream[T = xs.T]`) or a concrete demand (`Stream[T = Int64]`) on a bare
 //! receiver still fails (`l.T` is a neutral, equal only to itself).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -21,8 +21,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -38,7 +38,10 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 }
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -75,7 +78,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("iter3.return") && e.contains("Stream")),
+        errs.iter()
+            .any(|e| e.contains("iter3.return") && e.contains("Stream")),
         "returning `l` as Stream[T = xs.T] must be a return mismatch — l.T ≠ xs.T (the \
          threading is real); got: {errs:?}",
     );
@@ -94,7 +98,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("iter4.return") && e.contains("Stream")),
+        errs.iter()
+            .any(|e| e.contains("iter4.return") && e.contains("Stream")),
         "returning a bare `l` as Stream[T = Int64] must be a return mismatch — l.T (neutral) \
          ≠ Int64; got: {errs:?}",
     );
@@ -182,7 +187,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("idswap.return") && e.contains("Spec2")),
+        errs.iter()
+            .any(|e| e.contains("idswap.return") && e.contains("Spec2")),
         "a swapped multi-param projection must be a return mismatch (b.A ≠ b.B); got: {errs:?}",
     );
 }

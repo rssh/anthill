@@ -68,13 +68,19 @@ end
     });
 
     let mut interp = interp_for(SRC);
-    match interp.call("app.callSite", &[]).expect("`util.f()` must run") {
+    match interp
+        .call("app.callSite", &[])
+        .expect("`util.f()` must run")
+    {
         Value::Int(n) => assert_eq!(n, 41, "`util.f()` must reach `app.util.f`"),
         other => panic!("expected the helper's Int, got {other:?}"),
     }
     // The rule citation reaches a NON-empty relation — proof the name bound the
     // relation `app.util.rel` (extent {7}) rather than merely loading.
-    match interp.call("app.citeSite", &[]).expect("`util.rel.isEmpty` must run") {
+    match interp
+        .call("app.citeSite", &[])
+        .expect("`util.rel.isEmpty` must run")
+    {
         Value::Bool(b) => assert!(
             !b,
             "`util.rel` must bind the relation `app.util.rel`, whose extent is {{7}}"
@@ -127,7 +133,10 @@ end
     });
 
     let mut interp = interp_for(SRC);
-    match interp.call("test.wi752abs.callSite", &[]).expect("the absolute call must run") {
+    match interp
+        .call("test.wi752abs.callSite", &[])
+        .expect("the absolute call must run")
+    {
         Value::Int(n) => assert_eq!(n, 41, "must reach `myroot.inner.helper`"),
         other => panic!("expected an Int, got {other:?}"),
     }
@@ -251,7 +260,8 @@ end
 fn proof_record_targets(kb: &mut KnowledgeBase) -> Vec<String> {
     // WI-922: found by HEAD FUNCTOR, which is the RESOLVED symbol —
     // `kb.intern(qn)` mints a different one in a disjoint space.
-    let sort_sym = kb.try_resolve_symbol("anthill.realization.ProofRecord")
+    let sort_sym = kb
+        .try_resolve_symbol("anthill.realization.ProofRecord")
         .expect("resolve anthill.realization.ProofRecord");
     let rules = kb.rules_by_functor(sort_sym);
     let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
@@ -309,7 +319,10 @@ end
             )
         });
         let mut interp = interp_for(src);
-        match interp.call("test.wi752int.callSite", &[]).expect("`lib.util()` must run") {
+        match interp
+            .call("test.wi752int.callSite", &[])
+            .expect("`lib.util()` must run")
+        {
             Value::Int(n) => assert_eq!(
                 n, 41,
                 "with an {label} `internal` member, `lib.util()` must answer the \
@@ -347,7 +360,8 @@ end
         .err()
         .expect("an `internal` operation with no other reading must NOT load");
     assert!(
-        errs.iter().any(|e| e.contains("hidden") && e.contains("internal")),
+        errs.iter()
+            .any(|e| e.contains("hidden") && e.contains("internal")),
         "the forbidden-internal diagnostic must survive the fall-through — it is the \
          precise finding, and losing it to a generic unknown-name error is the \
          regression this guards; got: {errs:?}"
@@ -396,7 +410,8 @@ end
         .err()
         .expect("`lib.hidden` is internal to `lib` — the call must NOT load");
     assert!(
-        errs.iter().any(|e| e.contains("hidden") && e.contains("internal")),
+        errs.iter()
+            .any(|e| e.contains("hidden") && e.contains("internal")),
         "the qualified path has an ANSWER — a forbidden `internal` one — so the gate \
          must keep the name whole and report it; got: {errs:?}"
     );

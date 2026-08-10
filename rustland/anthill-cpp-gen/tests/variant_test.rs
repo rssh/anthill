@@ -22,8 +22,7 @@ fn nullary_sum_emits_variant_alias() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_sum(&mut kb, "test.sum_nullary.StepResult")
-        .expect("emit StepResult sum");
+    let cpp = emit_sum(&mut kb, "test.sum_nullary.StepResult").expect("emit StepResult sum");
 
     let expected = "\
 struct Quit {
@@ -51,12 +50,18 @@ fn sum_with_field_carrying_constructors() {
     let mut kb = load_kb_with(source);
     let cpp = emit_sum(&mut kb, "test.sum_fielded.Shape").expect("emit Shape sum");
 
-    assert!(cpp.contains("struct Circle {\n    double radius;\n};"),
-            "Circle struct missing or wrong:\n{cpp}");
-    assert!(cpp.contains("struct Square {\n    double side;\n};"),
-            "Square struct missing or wrong:\n{cpp}");
-    assert!(cpp.contains("using Shape = std::variant<Circle, Square>;"),
-            "variant alias missing:\n{cpp}");
+    assert!(
+        cpp.contains("struct Circle {\n    double radius;\n};"),
+        "Circle struct missing or wrong:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("struct Square {\n    double side;\n};"),
+        "Square struct missing or wrong:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("using Shape = std::variant<Circle, Square>;"),
+        "variant alias missing:\n{cpp}"
+    );
 }
 
 #[test]
@@ -96,22 +101,33 @@ fn namespace_header_with_sums_compiles() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let header = emit_namespace_header(&mut kb, "test.mixed")
-        .expect("emit test.mixed header");
+    let header = emit_namespace_header(&mut kb, "test.mixed").expect("emit test.mixed header");
 
     // Includes set
-    assert!(header.contains("#include <variant>"),
-            "<variant> missing:\n{header}");
+    assert!(
+        header.contains("#include <variant>"),
+        "<variant> missing:\n{header}"
+    );
     // Vec2 (flat entity) emitted
     assert!(header.contains("struct Vec2 {"), "Vec2 missing:\n{header}");
     // Shape sum emitted
-    assert!(header.contains("struct Circle {"), "Circle missing:\n{header}");
-    assert!(header.contains("struct Square {"), "Square missing:\n{header}");
-    assert!(header.contains("using Shape = std::variant<Circle, Square>;"),
-            "Shape variant alias missing:\n{header}");
+    assert!(
+        header.contains("struct Circle {"),
+        "Circle missing:\n{header}"
+    );
+    assert!(
+        header.contains("struct Square {"),
+        "Square missing:\n{header}"
+    );
+    assert!(
+        header.contains("using Shape = std::variant<Circle, Square>;"),
+        "Shape variant alias missing:\n{header}"
+    );
     // Status sum (zero-field constructors) emitted
-    assert!(header.contains("using Status = std::variant<Err, Ok>;"),
-            "Status variant alias missing:\n{header}");
+    assert!(
+        header.contains("using Status = std::variant<Err, Ok>;"),
+        "Status variant alias missing:\n{header}"
+    );
 
     // Compile.
     let cxx = match find_cxx() {

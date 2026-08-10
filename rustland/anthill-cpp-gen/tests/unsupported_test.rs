@@ -93,7 +93,10 @@ fn recursive_anonymous_lambda_rejected() {
     // definition — no instantiation needed.
     let driver = format!("#include <cstdint>\n{cpp}\nint main() {{ return 0; }}\n");
     if let Some((ok, stderr)) = try_compile("wi891_nontemplate", &driver) {
-        assert!(!ok, "unlowerable non-template body must NOT compile:\n{driver}");
+        assert!(
+            !ok,
+            "unlowerable non-template body must NOT compile:\n{driver}"
+        );
         assert!(
             stderr.contains("recursive anonymous lambda not supported in cpp17-stl"),
             "compiler diagnostic must carry the codegen-time message:\n{stderr}"
@@ -132,7 +135,8 @@ fn degrade_inside_higher_kinded_sort_falls_back_to_plain_static_assert() {
         "must NOT key dependent_false on the template-template param (ill-formed):\n{cpp}"
     );
     assert!(
-        cpp.contains("static_assert(false,") && cpp.contains("recursive anonymous lambda not supported"),
+        cpp.contains("static_assert(false,")
+            && cpp.contains("recursive anonymous lambda not supported"),
         "HK-only scope must fall back to static_assert(false) carrying the message:\n{cpp}"
     );
 
@@ -208,7 +212,10 @@ fn recursive_anonymous_lambda_in_template_struct_uses_dependent_false() {
         "wi891_template_instantiated",
         &format!("{base}int main() {{ (void)Calc<int>::lam(0); return 0; }}\n"),
     ) {
-        assert!(!ok, "instantiating the unlowerable template member must NOT compile");
+        assert!(
+            !ok,
+            "instantiating the unlowerable template member must NOT compile"
+        );
         assert!(
             stderr.contains("recursive anonymous lambda not supported in cpp17-stl"),
             "compiler diagnostic must carry the codegen-time message:\n{stderr}"

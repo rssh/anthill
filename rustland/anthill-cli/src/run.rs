@@ -86,20 +86,24 @@ fn find_main_providers(kb: &mut KnowledgeBase) -> Result<Vec<Symbol>, String> {
         };
         let sort_ref_tid = field_term(sort_ref_field, "sort_ref")?;
         let spec_tid = field_term(spec_field, "spec")?;
-        let (Some(sr), Some(sp)) = (sort_ref_tid, spec_tid) else { continue };
+        let (Some(sr), Some(sp)) = (sort_ref_tid, spec_tid) else {
+            continue;
+        };
 
         // `spec` comes in three shapes depending on how the refining sort
         // wrote its `requires` clause (see proposal 028 §Entry-point
         // discovery). Ours is the unparameterized `Term::Fn` form.
         let spec_sym = match kb.get_term(sp) {
             Term::Ref(s) => Some(*s),
-            Term::Fn { functor, pos_args, .. } if *functor == view_sym && !pos_args.is_empty() => {
-                spec_sort_symbol(kb, pos_args[0])
-            }
+            Term::Fn {
+                functor, pos_args, ..
+            } if *functor == view_sym && !pos_args.is_empty() => spec_sort_symbol(kb, pos_args[0]),
             Term::Fn { functor, .. } => Some(*functor),
             _ => None,
         };
-        if spec_sym != Some(main_sym) { continue }
+        if spec_sym != Some(main_sym) {
+            continue;
+        }
 
         if let Some(provider) = spec_sort_symbol(kb, sr) {
             providers.push(provider);
@@ -225,7 +229,9 @@ fn base_dirs_for(paths: &[PathBuf]) -> Vec<PathBuf> {
             if p.is_dir() {
                 p.parent().map(|pp| pp.to_path_buf())
             } else {
-                p.parent().and_then(|pp| pp.parent()).map(|pp| pp.to_path_buf())
+                p.parent()
+                    .and_then(|pp| pp.parent())
+                    .map(|pp| pp.to_path_buf())
             }
         })
         .collect::<std::collections::HashSet<_>>()
@@ -258,8 +264,10 @@ fn run_inner(args: &RunArgs) -> Result<i32, i32> {
     let mut interp = Interpreter::new(kb);
     runner::register_runtime(&mut interp)?;
 
-    let args_value = runner::build_args_value(&mut interp, &args.args)
-        .map_err(|e| { eprintln!("error: {e}"); runner::EXIT_RUNTIME })?;
+    let args_value = runner::build_args_value(&mut interp, &args.args).map_err(|e| {
+        eprintln!("error: {e}");
+        runner::EXIT_RUNTIME
+    })?;
 
     let result = interp.call(&main_qname, &[args_value]);
     Ok(runner::exit_code_from_main(interp.kb(), result))
@@ -272,7 +280,9 @@ fn select_entry(
 ) -> Result<Symbol, i32> {
     match providers.len() {
         0 => {
-            eprintln!("error: no program entry found (expected `sort … requires anthill.cli.Main`)");
+            eprintln!(
+                "error: no program entry found (expected `sort … requires anthill.cli.Main`)"
+            );
             Err(runner::EXIT_COMPILE)
         }
         1 => {

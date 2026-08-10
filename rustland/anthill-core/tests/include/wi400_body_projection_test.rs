@@ -17,8 +17,8 @@
 //! Design: `docs/design/path-dependent-types.md` §4.1 ("the operation-body site is
 //! WI-400's PRIMARY site") + its test matrix.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -27,8 +27,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -89,7 +89,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("String")),
         "k : s.cell.T is String, so a body returning it under -> Int64 must be rejected; \
          got: {errs:?}",
     );
@@ -221,7 +222,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("s.provider.K") && e.contains("t.provider.K")),
+        errs.iter()
+            .any(|e| e.contains("s.provider.K") && e.contains("t.provider.K")),
         "distinct receivers s vs t must NOT be forced equal — k: s.provider.K returned as \
          t.provider.K must be rejected (non-injective head); got: {errs:?}",
     );
@@ -248,7 +250,9 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("Bogus") && (e.contains("requires") || e.contains("declares a member"))),
+        errs.iter()
+            .any(|e| e.contains("Bogus")
+                && (e.contains("requires") || e.contains("declares a member"))),
         "no `requires` bound declares a member Bogus, so s.provider.Bogus must be a loud \
          error (not a silent neutral); got: {errs:?}",
     );

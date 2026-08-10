@@ -80,7 +80,10 @@ fn the_namespace_header_defines_the_eponymous_sort_once() {
         1,
         "exactly one `struct Point` definition:\n{header}",
     );
-    assert!(header.contains(EXPECTED_POINT), "fields then operations:\n{header}");
+    assert!(
+        header.contains(EXPECTED_POINT),
+        "fields then operations:\n{header}"
+    );
     // The neighbours are untouched — the merge is not a blanket rewrite.
     assert_eq!(header.matches("struct Plain").count(), 1, "{header}");
     assert_eq!(header.matches("struct Calc").count(), 1, "{header}");
@@ -135,8 +138,14 @@ fn both_by_name_entry_points_answer_with_the_whole_type() {
     let mut kb = load_kb_with(SRC);
     let as_entity = emit_entity_struct(&mut kb, "test.wi931.Point").expect("emit Point");
     let as_traits = emit_traits_struct(&mut kb, "test.wi931.Point").expect("emit Point traits");
-    assert_eq!(as_entity, EXPECTED_POINT, "entity entry point:\n{as_entity}");
-    assert_eq!(as_traits, EXPECTED_POINT, "traits entry point:\n{as_traits}");
+    assert_eq!(
+        as_entity, EXPECTED_POINT,
+        "entity entry point:\n{as_entity}"
+    );
+    assert_eq!(
+        as_traits, EXPECTED_POINT,
+        "traits entry point:\n{as_traits}"
+    );
 }
 
 /// SUBJECT — an eponymous sort is NOT a traits class, so the CLI's

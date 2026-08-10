@@ -56,8 +56,7 @@ macro_rules! version_string {
 #[macro_export]
 macro_rules! clap_version {
     () => {{
-        static VERSION: ::std::sync::OnceLock<::std::string::String> =
-            ::std::sync::OnceLock::new();
+        static VERSION: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
         VERSION
             .get_or_init(|| $crate::format_version_no_name(env!("CARGO_PKG_VERSION")))
             .as_str()

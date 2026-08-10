@@ -154,9 +154,18 @@ namespace wi893.literalHead
 end
 "#;
     let errs = crate::common::parse_errs(SRC);
-    let heads = errs.iter().filter(|e| e.contains("rule head must be an atom")).count();
-    let facts = errs.iter().filter(|e| e.contains("fact must be an atom")).count();
-    assert_eq!(heads, 2, "both literal rule heads must be refused; got {errs:?}");
+    let heads = errs
+        .iter()
+        .filter(|e| e.contains("rule head must be an atom"))
+        .count();
+    let facts = errs
+        .iter()
+        .filter(|e| e.contains("fact must be an atom"))
+        .count();
+    assert_eq!(
+        heads, 2,
+        "both literal rule heads must be refused; got {errs:?}"
+    );
     assert_eq!(facts, 2, "both literal facts must be refused; got {errs:?}");
 }
 

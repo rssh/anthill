@@ -179,11 +179,14 @@ fn a_call_bracket_binds_the_enclosing_sorts_type_param() {
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("mk.v") && e.contains("expected String, got Int64")),
+        errs.iter()
+            .any(|e| e.contains("mk.v") && e.contains("expected String, got Int64")),
         "the bracket must PIN `T = String` so the argument `5` is the mismatch; got: {errs:?}",
     );
     assert!(
-        !errs.iter().any(|e| e.contains("go.return") || e.contains("unknown type-param")),
+        !errs
+            .iter()
+            .any(|e| e.contains("go.return") || e.contains("unknown type-param")),
         "and neither the RETURN (the pre-WI-839 report, where the binding meant nothing) \
          nor `unknown type-param` (the post-WI-839 one, where it was merely heard) may \
          still be what this program says; got: {errs:?}",
@@ -208,7 +211,14 @@ fn an_agreeing_sort_level_binding_loads_and_runs() {
     operation go(n: Int64) -> Int64 = Box.peek(Box.mk[T = Int64](5))
   end"#,
     );
-    assert_eq!(eval_int(&src, "wi841.sortlevelok.Use.go", "an agreeing bracket must run"), 5);
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi841.sortlevelok.Use.go",
+            "an agreeing bracket must run"
+        ),
+        5
+    );
 }
 
 /// An UNMATCHED key on the same callee stays the WI-839 diagnostic: widening rule (1)
@@ -227,7 +237,11 @@ fn an_unknown_key_on_a_sort_level_callee_is_still_loud() {
     operation go(n: Int64) -> Box[T = Int64] = Box.mk[Bogus = String](5)
   end"#,
     );
-    refused_with(&src, "unknown type-param 'Bogus'", "an unmatched key names no slot");
+    refused_with(
+        &src,
+        "unknown type-param 'Bogus'",
+        "an unmatched key names no slot",
+    );
 }
 
 // ── Piece 2: key → slot, and the value it selects ────────────────────
@@ -254,23 +268,39 @@ fn driver(call: &str) -> String {
 #[test]
 fn selection_overrides_the_search_and_the_value_shows_it() {
     let build = |call: &str| {
-        program("wi841.override", PARAMETRIC_RIVAL, &format!("{HOLDER_SORT_LEVEL}{}", driver(call)))
+        program(
+            "wi841.override",
+            PARAMETRIC_RIVAL,
+            &format!("{HOLDER_SORT_LEVEL}{}", driver(call)),
+        )
     };
     let searched = build("Holder.probe(2, 3)");
     let pinned_add = build("Holder.probe[Monoid = AddM](2, 3)");
     let pinned_any = build("Holder.probe[Monoid = AnyM](2, 3)");
 
     assert_eq!(
-        eval_int(&searched, "wi841.override.Driver.go", "tier 2 picks the most specific"),
+        eval_int(
+            &searched,
+            "wi841.override.Driver.go",
+            "tier 2 picks the most specific"
+        ),
         5,
         "CONTROL: with no bracket the search takes the GROUND provider",
     );
     assert_eq!(
-        eval_int(&pinned_add, "wi841.override.Driver.go", "pinning the search's own answer"),
+        eval_int(
+            &pinned_add,
+            "wi841.override.Driver.go",
+            "pinning the search's own answer"
+        ),
         5,
     );
     assert_eq!(
-        eval_int(&pinned_any, "wi841.override.Driver.go", "pinning the LESS specific one"),
+        eval_int(
+            &pinned_any,
+            "wi841.override.Driver.go",
+            "pinning the LESS specific one"
+        ),
         99,
         "tier 1 outranks tier 2: `[Monoid = AnyM]` selects the provider the search \
          would not have chosen, and the answer changes with it",
@@ -335,7 +365,11 @@ fn a_pin_outranks_a_deferral_to_the_enclosing_frame() {
         )
     };
     assert_eq!(
-        eval_int(&build("Monoid.combine(a, b)"), "wi841.deferral.Driver.go", "the deferral"),
+        eval_int(
+            &build("Monoid.combine(a, b)"),
+            "wi841.deferral.Driver.go",
+            "the deferral"
+        ),
         5,
         "CONTROL: unbracketed, the body reads the frame dictionary the search filled",
     );
@@ -380,7 +414,10 @@ fn an_op_scoped_selection_that_could_differ_is_refused_not_ignored() {
             ),
         )
     };
-    for call in ["Holder.probe[Monoid = AddM](2, 3)", "Holder.probe[Monoid = AnyM](2, 3)"] {
+    for call in [
+        "Holder.probe[Monoid = AddM](2, 3)",
+        "Holder.probe[Monoid = AnyM](2, 3)",
+    ] {
         refused_with(
             &build(call),
             "cannot be honoured",
@@ -391,7 +428,11 @@ fn an_op_scoped_selection_that_could_differ_is_refused_not_ignored() {
     // CONTROL 1 — unbracketed, the same program loads and runs. The refusal is about
     // the SELECTION, not about op-scoped requirements or about two providers.
     assert_eq!(
-        eval_int(&build("Holder.probe(2, 3)"), "wi841.unthreadable.Driver.go", "unbracketed"),
+        eval_int(
+            &build("Holder.probe(2, 3)"),
+            "wi841.unthreadable.Driver.go",
+            "unbracketed"
+        ),
         99,
     );
 
@@ -400,7 +441,10 @@ fn an_op_scoped_selection_that_could_differ_is_refused_not_ignored() {
     let sort_level = program(
         "wi841.threadable",
         PARAMETRIC_RIVAL,
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = AddM](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = AddM](2, 3)")
+        ),
     );
     assert_eq!(
         eval_int(&sort_level, "wi841.threadable.Driver.go", "sort-level twin"),
@@ -427,7 +471,10 @@ fn a_spec_short_name_selects_an_op_scoped_slot() {
             driver("Holder.probe[Monoid = AddM](2, 3)")
         ),
     );
-    assert_eq!(eval_int(&src, "wi841.opscoped.Driver.go", "op-scoped selection runs"), 5);
+    assert_eq!(
+        eval_int(&src, "wi841.opscoped.Driver.go", "op-scoped selection runs"),
+        5
+    );
 }
 
 /// §4.2's "a direct spec-op call is the same case": the callee has no `requires` of
@@ -440,7 +487,14 @@ fn a_direct_spec_op_call_selects_its_own_dispatch() {
         "",
         &driver("Monoid.combine[Monoid = AddM](2, 3)"),
     );
-    assert_eq!(eval_int(&src, "wi841.direct.Driver.go", "a direct spec-op call selects"), 5);
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi841.direct.Driver.go",
+            "a direct spec-op call selects"
+        ),
+        5
+    );
 }
 
 /// Rule (1) SUBSUMES the named-slot case (§4.2): a binder is an ordinary type
@@ -468,7 +522,11 @@ fn a_named_sort_level_binder_selects() {
         ),
     );
     assert_eq!(
-        eval_int(&src, "wi841.namedsort.Driver.go", "a sort-level binder selects"),
+        eval_int(
+            &src,
+            "wi841.namedsort.Driver.go",
+            "a sort-level binder selects"
+        ),
         5,
         "AddM's 5, not the search's 99 — else the binder bound a parameter and \
          selected nothing, which is exactly the WI-840 state",
@@ -494,7 +552,11 @@ fn an_op_level_named_binder_on_an_unthreadable_slot_is_refused() {
             driver("Holder.probe[m = AddM](2, 3)")
         ),
     );
-    refused_with(&src, "cannot be honoured", "an op-scoped slot threads no selection");
+    refused_with(
+        &src,
+        "cannot be honoured",
+        "an op-scoped slot threads no selection",
+    );
 }
 
 /// A slot the author NAMED is no longer answered by its spec's short name: the binder
@@ -537,7 +599,10 @@ fn a_qualified_key_is_refused() {
     let src = program(
         "wi841.qualified",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[wi841.qualified.Monoid = AddM](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[wi841.qualified.Monoid = AddM](2, 3)")
+        ),
     );
     refused_with(
         &src,
@@ -570,7 +635,11 @@ fn a_short_name_ambiguous_across_two_anonymous_slots_is_loud() {
         "names more than one requirement slot",
         "two anonymous slots of one spec leave the short name no unique answer",
     );
-    refused_with(&src, "requires <name>: Monoid", "and the message must name the fix");
+    refused_with(
+        &src,
+        "requires <name>: Monoid",
+        "and the message must name the fix",
+    );
 }
 
 /// An operation type parameter colliding with its ENCLOSING SORT's is refused AT THE
@@ -604,12 +673,20 @@ fn a_witness_that_provides_nothing_is_loud() {
     let src = program(
         "wi841.noprov",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = NoProv](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = NoProv](2, 3)")
+        ),
     );
-    refused_with(&src, "does not provide", "a non-provider cannot be selected");
+    refused_with(
+        &src,
+        "does not provide",
+        "a non-provider cannot be selected",
+    );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("NoProv") && e.contains("Monoid")),
+        errs.iter()
+            .any(|e| e.contains("NoProv") && e.contains("Monoid")),
         "the message must name BOTH the witness and the spec; got: {errs:?}",
     );
 }
@@ -622,7 +699,10 @@ fn a_slot_bound_to_a_non_sort_is_refused() {
     let src = program(
         "wi841.notasort",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = 42](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = 42](2, 3)")
+        ),
     );
     refused_with(&src, "must name a WITNESS SORT", "a literal is no witness");
 }
@@ -634,9 +714,16 @@ fn a_witness_of_another_spec_is_loud() {
     let src = program(
         "wi841.wrongspec",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = Marker](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = Marker](2, 3)")
+        ),
     );
-    refused_with(&src, "does not provide", "a provider of another spec is not a witness here");
+    refused_with(
+        &src,
+        "does not provide",
+        "a provider of another spec is not a witness here",
+    );
 }
 
 /// Check 3 (§1.1): a CONCRETE provider — a sort with constructors — is a backend
@@ -676,7 +763,14 @@ fn selecting_a_concrete_provider_is_refused_not_preferred() {
 "#,
         &driver("Monoid.combine(pebble(), pebble())"),
     );
-    assert_eq!(eval_int(&control, "wi841.concreteok.Driver.go", "the value-directed call runs"), 3);
+    assert_eq!(
+        eval_int(
+            &control,
+            "wi841.concreteok.Driver.go",
+            "the value-directed call runs"
+        ),
+        3
+    );
 }
 
 /// Check 3 does not leak into rule (1)'s ordinary business: a type-argument binding
@@ -701,7 +795,10 @@ fn a_concrete_type_argument_is_not_a_selection() {
     operation go(n: Int64) -> Box[T = Pebble] = Box.mk[T = Pebble](pebble())
   end"#,
     );
-    loads_clean(&src, "binding a type PARAMETER to a concrete sort is not a witness selection");
+    loads_clean(
+        &src,
+        "binding a type PARAMETER to a concrete sort is not a witness selection",
+    );
 }
 
 // ── §4.5 step 0, and the routes that must not swallow a pin ──────────
@@ -720,7 +817,10 @@ fn a_pin_at_other_bindings_is_loud_on_every_route() {
     let sort_level = program(
         "wi841.otherbind1",
         OTHER_BINDINGS,
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = StrM](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = StrM](2, 3)")
+        ),
     );
     refused_with(&sort_level, "not at the bindings", "dictionary route");
 
@@ -783,7 +883,11 @@ fn a_pin_at_other_bindings_is_loud_on_every_route() {
         ),
     );
     assert_eq!(
-        eval_int(&positional_ok, "wi841.otherbind5.Driver.go", "positional + right witness"),
+        eval_int(
+            &positional_ok,
+            "wi841.otherbind5.Driver.go",
+            "positional + right witness"
+        ),
         5,
     );
 
@@ -803,7 +907,14 @@ fn a_pin_at_other_bindings_is_loud_on_every_route() {
   end"#,
         ),
     );
-    assert_eq!(eval_int(&ok, "wi841.otherbindok.Driver.go", "StrM at its own bindings"), 7);
+    assert_eq!(
+        eval_int(
+            &ok,
+            "wi841.otherbindok.Driver.go",
+            "StrM at its own bindings"
+        ),
+        7
+    );
 }
 
 /// NON-VACUITY for the Strategy-1/2 SKIP: explicit selection outranks a FORWARD
@@ -836,9 +947,17 @@ fn a_pin_is_not_forwarded_past_by_a_covering_caller_frame() {
          silent no-dict that dies at eval",
     );
 
-    let control = program("wi841.forwardok", OTHER_BINDINGS, &body("Holder.probe(a, b)"));
+    let control = program(
+        "wi841.forwardok",
+        OTHER_BINDINGS,
+        &body("Holder.probe(a, b)"),
+    );
     assert_eq!(
-        eval_int(&control, "wi841.forwardok.Driver.go", "the unpinned forward still works"),
+        eval_int(
+            &control,
+            "wi841.forwardok.Driver.go",
+            "the unpinned forward still works"
+        ),
         5,
     );
 }
@@ -877,7 +996,11 @@ fn a_selection_does_not_reach_sub_resolutions() {
         ),
     );
     assert_eq!(
-        eval_int(&src, "wi841.subgoal.Driver.go", "a conditional witness still searches its subgoal"),
+        eval_int(
+            &src,
+            "wi841.subgoal.Driver.go",
+            "a conditional witness still searches its subgoal"
+        ),
         1005,
         "1000 + AddM's 2+3: the pin selected WrapM at the TOP goal, and WrapM's own \
          `requires Monoid[T = E]` subgoal was answered by SEARCH (AddM), not by the pin",
@@ -935,7 +1058,11 @@ fn an_op_level_type_argument_still_binds_and_still_reports() {
     operation go(n: Int64) -> Int64 = Id.idy[Bogus = Int64](n)
   end"#,
     );
-    refused_with(&bogus, "unknown type-param 'Bogus'", "WI-839's message is unchanged");
+    refused_with(
+        &bogus,
+        "unknown type-param 'Bogus'",
+        "WI-839's message is unchanged",
+    );
 }
 
 /// A POSITIONAL binding reaches the operation's OWN parameters and stops there.
@@ -959,7 +1086,11 @@ fn a_positional_binds_the_ops_own_params_and_selection_stays_by_name() {
   end"#,
     );
     assert_eq!(
-        eval_int(&ok, "wi841.positional.Id.go", "a positional binds the op's own param"),
+        eval_int(
+            &ok,
+            "wi841.positional.Id.go",
+            "a positional binds the op's own param"
+        ),
         0,
     );
 
@@ -987,9 +1118,11 @@ fn an_unbracketed_requires_call_is_unchanged() {
         "",
         &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe(2, 3)")),
     );
-    assert_eq!(eval_int(&src, "wi841.nobracket.Driver.go", "the search answers it"), 5);
+    assert_eq!(
+        eval_int(&src, "wi841.nobracket.Driver.go", "the search answers it"),
+        5
+    );
 }
-
 
 // ── /code-review round: seven defects, each driven before it was fixed ─────
 
@@ -1003,22 +1136,34 @@ fn the_two_provider_failures_say_different_things() {
     let at_other = program(
         "wi841.msgbind",
         OTHER_BINDINGS,
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = StrM](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = StrM](2, 3)")
+        ),
     );
     refused_with(&at_other, "not at the bindings", "provides, but not here");
     let errs = load_errs(&at_other);
     assert!(
-        !errs.iter().any(|e| e.contains("must name a sort that declares")),
+        !errs
+            .iter()
+            .any(|e| e.contains("must name a sort that declares")),
         "a witness that DOES declare the fact must not be told to declare it; got: {errs:?}",
     );
 
     let never = program(
         "wi841.msgnone",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = NoProv](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = NoProv](2, 3)")
+        ),
     );
     refused_with(&never, "does not provide", "provides nothing");
-    refused_with(&never, "must name a sort that declares", "and IS told to declare one");
+    refused_with(
+        &never,
+        "must name a sort that declares",
+        "and IS told to declare one",
+    );
 }
 
 /// A CONCRETE sort that provides NOTHING is a typo, not a coherence rule. Check 1
@@ -1033,9 +1178,16 @@ fn a_concrete_non_provider_is_not_reported_as_a_provider() {
     entity conc
   end
 "#,
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = Conc](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = Conc](2, 3)")
+        ),
     );
-    refused_with(&src, "does not provide", "the real mistake is that it provides nothing");
+    refused_with(
+        &src,
+        "does not provide",
+        "the real mistake is that it provides nothing",
+    );
     let errs = load_errs(&src);
     assert!(
         !errs.iter().any(|e| e.contains("is a CONCRETE provider")),
@@ -1050,7 +1202,10 @@ fn the_non_sort_refusal_names_the_spec_not_the_operation() {
     let src = program(
         "wi841.nsmsg",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Monoid = 42](2, 3)")),
+        &format!(
+            "{HOLDER_SORT_LEVEL}{}",
+            driver("Holder.probe[Monoid = 42](2, 3)")
+        ),
     );
     let errs = load_errs(&src);
     assert!(
@@ -1058,7 +1213,9 @@ fn the_non_sort_refusal_names_the_spec_not_the_operation() {
         "the advice must name the SPEC to declare; got: {errs:?}",
     );
     assert!(
-        !errs.iter().any(|e| e.contains("fact wi841.nsmsg.Holder.probe[")),
+        !errs
+            .iter()
+            .any(|e| e.contains("fact wi841.nsmsg.Holder.probe[")),
         "and must not name the OPERATION as the thing to declare; got: {errs:?}",
     );
 }
@@ -1086,12 +1243,20 @@ fn a_pin_outranks_the_same_sort_inherit() {
         )
     };
     assert_eq!(
-        eval_int(&build("S.inner(a, b)"), "wi841.samesort.Driver.go", "the inherit"),
+        eval_int(
+            &build("S.inner(a, b)"),
+            "wi841.samesort.Driver.go",
+            "the inherit"
+        ),
         5,
         "CONTROL: unbracketed, the sibling inherits the frame the search filled",
     );
     assert_eq!(
-        eval_int(&build("S.inner[Monoid = AnyM](a, b)"), "wi841.samesort.Driver.go", "pinned"),
+        eval_int(
+            &build("S.inner[Monoid = AnyM](a, b)"),
+            "wi841.samesort.Driver.go",
+            "pinned"
+        ),
         99,
         "the bracket must be honoured rather than inherited past",
     );
@@ -1172,5 +1337,8 @@ fn the_named_sort_level_channel_survives_the_positional_restriction() {
     operation go(n: Int64) -> Int64 = Box.peek(Box.mk[T = Int64](5))
   end"#,
     );
-    assert_eq!(eval_int(&src, "wi841.namedstill.Use.go", "named still binds"), 5);
+    assert_eq!(
+        eval_int(&src, "wi841.namedstill.Use.go", "named still binds"),
+        5
+    );
 }

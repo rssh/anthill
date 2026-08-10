@@ -14,8 +14,8 @@
 //! a mismatch can be traced to its origin without hand-instrumenting each
 //! candidate.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn try_load(extra: &str) -> Vec<load::LoadError> {
@@ -39,7 +39,15 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
 fn first_origin_mismatch(errs: &[LoadError]) -> &LoadError {
     errs.iter()
         // WI-745: whole-KB typer errors are now file-stamped (`Located`); peel to match the variant.
-        .find(|e| matches!(e.peel(), LoadError::TypeMismatch { origin: Some(_), .. }))
+        .find(|e| {
+            matches!(
+                e.peel(),
+                LoadError::TypeMismatch {
+                    origin: Some(_),
+                    ..
+                }
+            )
+        })
         .unwrap_or_else(|| panic!("expected a TypeMismatch with a typer origin, got: {errs:?}"))
 }
 
@@ -54,7 +62,12 @@ end
 "#;
     let errs = try_load(src);
     let err = first_origin_mismatch(&errs);
-    let LoadError::TypeMismatch { origin: Some(o), .. } = err.peel() else { unreachable!() };
+    let LoadError::TypeMismatch {
+        origin: Some(o), ..
+    } = err.peel()
+    else {
+        unreachable!()
+    };
 
     // (2) the diagnostic distinguishes the originating context variant.
     assert_eq!(
@@ -90,7 +103,12 @@ end
 "#;
     let errs = try_load(src);
     let err = first_origin_mismatch(&errs);
-    let LoadError::TypeMismatch { origin: Some(o), .. } = err.peel() else { unreachable!() };
+    let LoadError::TypeMismatch {
+        origin: Some(o), ..
+    } = err.peel()
+    else {
+        unreachable!()
+    };
 
     assert_eq!(
         o.context_kind, "entity-field",

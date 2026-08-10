@@ -5,10 +5,9 @@
 //! impl body — whereas the plain `Interpreter::call` seeds self-referential
 //! placeholders and the cross-sort dispatch mis-resolves.
 
-
 use anthill_core::eval::{self, EvalError, Interpreter, Value};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -36,26 +35,33 @@ end
 
 fn load_with_driver() -> KnowledgeBase {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files
+        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(POLY_DRIVER).expect("parse driver"));
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
     kb
 }
 
@@ -64,7 +70,8 @@ fn load_with_driver() -> KnowledgeBase {
 /// IndexedFileStore is registered), only the dispatch path that should
 /// reach FileBasedWorkitemStore.lookup's body.
 fn build_cell_wis(interp: &mut Interpreter) -> Value {
-    let wis_sym = interp.kb_mut()
+    let wis_sym = interp
+        .kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
     let backend_field = interp.kb_mut().intern("backend");
     let counter_field = interp.kb_mut().intern("id_counter");
@@ -73,13 +80,17 @@ fn build_cell_wis(interp: &mut Interpreter) -> Value {
         functor: wis_sym,
         pos: vec![].into(),
         named: vec![
-            (backend_field, Value::Entity {
-                functor: fake_backend_sym,
-                pos: vec![].into(),
-                named: vec![].into(),
-            }),
+            (
+                backend_field,
+                Value::Entity {
+                    functor: fake_backend_sym,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
             (counter_field, Value::Int(1)),
-        ].into(),
+        ]
+        .into(),
     };
     let handle = interp.alloc_cell(wis_value);
     Value::Cell(handle)
@@ -96,7 +107,8 @@ fn polymorphic_entry_op_runs_when_dict_supplied() {
 
     // FileBasedWorkitemStore has no own `requires`, so the dictionary's
     // sub-dicts list is empty.
-    let filebased = interp.kb_mut()
+    let filebased = interp
+        .kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore");
     let dict = crate::common::dict(&interp, filebased, []);
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
@@ -170,10 +182,7 @@ fn plain_call_on_polymorphic_op_documents_the_gap() {
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());
 
-    let result = interp.call(
-        "test.wi236_poly.Driver.drive",
-        &[cell, id_arg],
-    );
+    let result = interp.call("test.wi236_poly.Driver.drive", &[cell, id_arg]);
     eprintln!("[wi236-gap] plain-call result: {result:?}");
     // We don't assert a specific error shape here — the point is
     // that some failure occurs along the cross-sort dispatch path
@@ -225,26 +234,33 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     // dispatch classification must still fire so the runtime reaches
     // the impl body instead of erroring `unknown operation: lookup`.
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files
+        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(MULTI_OP_DRIVER).expect("parse multi-op driver"));
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
 
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp).expect("builtins");
@@ -252,7 +268,8 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());
 
-    let filebased = interp.kb_mut()
+    let filebased = interp
+        .kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore");
     let dict = crate::common::dict(&interp, filebased, []);
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();

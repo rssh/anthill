@@ -31,19 +31,22 @@
 //! lands and the dispatched spec op grounds its effect row to the carrier's
 //! real effect.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra sources → load-error strings (empty Vec on clean load).
 fn load_errors(extras: &[&str]) -> Vec<String> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     for ex in extras {
         parsed.push(parse::parse(ex).expect("parse extra"));
     }
@@ -117,7 +120,8 @@ end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Modify")),
         "a pure consumer calling MutBox.peek directly (effects Modify[b]) must be \
          rejected with an undeclared-effect diagnostic naming Modify; got: {errs:?}",
     );
@@ -149,7 +153,8 @@ end
 "#;
     let errs = load_errors(&[CARRIER, consumer]);
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect") && e.contains("Modify")),
+        errs.iter()
+            .any(|e| e.contains("undeclared effect") && e.contains("Modify")),
         "a pure consumer calling MutBox.peek THROUGH the Box spec op must be \
          rejected with an undeclared-effect diagnostic naming Modify — the \
          dispatched effect must ground to the carrier's Modify[b], not {{}}; \

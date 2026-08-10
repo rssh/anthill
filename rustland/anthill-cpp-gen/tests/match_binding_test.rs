@@ -25,8 +25,7 @@ fn option_some_binding_lowers_to_value_iife() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.mb_opt.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.mb_opt.Calc").expect("emit Calc");
 
     // tag check on the some-arm uses has_value()
     assert!(
@@ -65,8 +64,7 @@ fn variant_constructor_pattern_binds_fields() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.mb_var.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.mb_var.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("std::holds_alternative<Circle>(s)"),
@@ -100,8 +98,7 @@ fn nested_let_inside_branch_body_works() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.mb_nested.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.mb_nested.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("auto w = o.value();"),
@@ -132,8 +129,7 @@ fn wildcard_branch_after_constructor_works() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.mb_wild.Calc")
-        .expect("emit Calc");
+    let cpp = emit_traits_struct(&mut kb, "test.mb_wild.Calc").expect("emit Calc");
 
     assert!(
         cpp.contains("o.has_value()"),

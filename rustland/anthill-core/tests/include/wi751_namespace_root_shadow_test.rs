@@ -101,9 +101,11 @@ end
             )
         });
         let mut interp = interp_for(&source);
-        match interp.call(&format!("{ns}.useIt"), &[]).unwrap_or_else(|e| {
-            panic!("with {shape} named after the root, the call must run; got {e:?}")
-        }) {
+        match interp
+            .call(&format!("{ns}.useIt"), &[])
+            .unwrap_or_else(|e| {
+                panic!("with {shape} named after the root, the call must run; got {e:?}")
+            }) {
             Value::Int(n) => assert_eq!(
                 n, 41,
                 "with {shape} named after the root, `myroot.inner.helper()` must reach \
@@ -138,7 +140,10 @@ namespace outer.user
 end
 "#;
     let mut interp = interp_for(SRC);
-    match interp.call("outer.user.useIt", &[]).expect("`x.foo()` must run") {
+    match interp
+        .call("outer.user.useIt", &[])
+        .expect("`x.foo()` must run")
+    {
         Value::Int(n) => assert_eq!(
             n, 41,
             "`x.foo()` inside `outer.user` must mean the SIBLING `outer.x.foo` that \
@@ -190,9 +195,7 @@ namespace outer.user
   operation useIt() -> Int64 effects Error = x.bar()
 end
 "#;
-    for (src, label) in
-        [(WITH_GLOBAL_TWIN, "with"), (NO_GLOBAL_TWIN, "without")]
-    {
+    for (src, label) in [(WITH_GLOBAL_TWIN, "with"), (NO_GLOBAL_TWIN, "without")] {
         let errs = try_load_kb_with(src).err().unwrap_or_else(|| {
             panic!(
                 "`x.bar()` names no member of the sibling `outer.x` that the head \
@@ -268,7 +271,10 @@ namespace test.wi751field
 end
 "#;
     let mut interp = interp_for(SRC);
-    match interp.call("test.wi751field.useIt", &[]).expect("`data.user.name()` must run") {
+    match interp
+        .call("test.wi751field.useIt", &[])
+        .expect("`data.user.name()` must run")
+    {
         Value::Int(n) => assert_eq!(
             n, 41,
             "`data.user.name()` must reach the operation in namespace `data.user`, not \
@@ -405,15 +411,17 @@ namespace test.wi751loud2
   operation bad() -> Int64 effects Error = helper()
 end
 "#;
-    for (src, needle) in
-        [(NO_SUCH_PATH, "myroot.inner.nosuchmember"), (SHORT_NAME_UNIMPORTED, "helper")]
-    {
+    for (src, needle) in [
+        (NO_SUCH_PATH, "myroot.inner.nosuchmember"),
+        (SHORT_NAME_UNIMPORTED, "helper"),
+    ] {
         let source = format!("{HELPERS}{src}");
         let errs = try_load_kb_with(&source)
             .err()
             .unwrap_or_else(|| panic!("`{needle}` names nothing reachable — must NOT load"));
         assert!(
-            errs.iter().any(|e| e.contains(needle) && e.contains("unknown functor")),
+            errs.iter()
+                .any(|e| e.contains(needle) && e.contains("unknown functor")),
             "`{needle}` must stay the loud unknown-functor error rather than being \
              rescued by the absolute rung; got: {errs:?}"
         );
@@ -444,7 +452,8 @@ end
         .err()
         .expect("an `internal` operation named by its absolute path must NOT load");
     assert!(
-        errs.iter().any(|e| e.contains("hidden") && e.contains("internal")),
+        errs.iter()
+            .any(|e| e.contains("hidden") && e.contains("internal")),
         "naming an `internal` symbol by its absolute path must report the forbidden \
          internal access, not resolve silently; got: {errs:?}"
     );

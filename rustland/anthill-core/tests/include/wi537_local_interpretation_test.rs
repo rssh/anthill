@@ -18,12 +18,12 @@
 
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
+use anthill_core::kb::node_occurrence::NodeKind;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::typing::{
     binding_gamma_fact, match_arm_gamma_facts, prove_from_gamma, refute_guard, FlowEnv,
 };
-use anthill_core::kb::node_occurrence::NodeKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 use std::rc::Rc;
@@ -57,7 +57,8 @@ fn param(kb: &mut KnowledgeBase, name: &str) -> Value {
 }
 
 fn neq_sym(kb: &mut KnowledgeBase) -> Symbol {
-    kb.try_resolve_symbol("anthill.prelude.PartialEq.neq").expect("neq")
+    kb.try_resolve_symbol("anthill.prelude.PartialEq.neq")
+        .expect("neq")
 }
 
 #[test]
@@ -74,7 +75,10 @@ fn flow_env_assume_is_copy_on_write() {
 
     let narrowed = flow.assume(&kb, fact);
     assert!(!narrowed.is_empty(), "assume extends Γ");
-    assert!(flow.is_empty(), "assume is copy-on-write — parent Γ unchanged");
+    assert!(
+        flow.is_empty(),
+        "assume is copy-on-write — parent Γ unchanged"
+    );
 }
 
 #[test]
@@ -176,7 +180,13 @@ fn span() -> SourceSpan {
 }
 
 fn lit_pat(n: i64) -> Rc<NodeOccurrence> {
-    NodeOccurrence::new_pattern(Pattern::Literal { value: Literal::Int(n) }, span(), None)
+    NodeOccurrence::new_pattern(
+        Pattern::Literal {
+            value: Literal::Int(n),
+        },
+        span(),
+        None,
+    )
 }
 
 fn wildcard_pat() -> Rc<NodeOccurrence> {
@@ -199,7 +209,11 @@ fn match_case_0_carries_neq_into_the_wildcard_arm() {
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
 
     assert_eq!(facts[0].len(), 1, "case 0 ⇒ one pattern fact eq(s,0)");
-    assert_eq!(facts[1].len(), 1, "the wildcard arm ⇒ neq(s,0) from the earlier case 0");
+    assert_eq!(
+        facts[1].len(),
+        1,
+        "the wildcard arm ⇒ neq(s,0) from the earlier case 0"
+    );
 
     // Round-trip the wildcard arm's Γ through the bridge: the negation proves,
     // and it refutes the div guard eq(s,0).
@@ -207,10 +221,16 @@ fn match_case_0_carries_neq_into_the_wildcard_arm() {
     for f in &facts[1] {
         flow = flow.assume(&kb, f.clone());
     }
-    assert!(prove_from_gamma(&mut kb, &flow, &facts[1][0]), "neq(s,0) ∈ Γ ⊢ neq(s,0)");
+    assert!(
+        prove_from_gamma(&mut kb, &flow, &facts[1][0]),
+        "neq(s,0) ∈ Γ ⊢ neq(s,0)"
+    );
     let eq_sym = kb.eq_functor();
     let guard = goal(eq_sym, vec![s.clone(), Value::Int(0)]);
-    assert!(refute_guard(&mut kb, &flow, &guard), "the wildcard arm refutes the guard eq(s,0)");
+    assert!(
+        refute_guard(&mut kb, &flow, &guard),
+        "the wildcard arm refutes the guard eq(s,0)"
+    );
 }
 
 #[test]
@@ -249,8 +269,11 @@ fn match_negation_indexes_a_varref_scrutinee() {
     // indexable, so it never exercised the binder path that was actually dead.)
     let mut kb = crate::common::load_kb_with("namespace wi537.varref\nend\n");
     let b = kb.intern("b");
-    let scrutinee =
-        Value::Node(NodeOccurrence::new_expr(Expr::VarRef { name: b }, span(), None));
+    let scrutinee = Value::Node(NodeOccurrence::new_expr(
+        Expr::VarRef { name: b },
+        span(),
+        None,
+    ));
     let arms = vec![(lit_pat(0), false), (wildcard_pat(), false)];
     let facts = match_arm_gamma_facts(&mut kb, &scrutinee, &arms, &[]);
     assert_eq!(facts[1].len(), 1, "wildcard arm ⇒ neq(varref(b), 0)");
@@ -303,7 +326,10 @@ fn match_nullary_ctor_arms_accumulate_negations() {
         flow = flow.assume(&kb, f.clone());
     }
     for f in &facts[2] {
-        assert!(prove_from_gamma(&mut kb, &flow, f), "each wildcard-arm negation proves from Γ");
+        assert!(
+            prove_from_gamma(&mut kb, &flow, f),
+            "each wildcard-arm negation proves from Γ"
+        );
     }
 }
 
@@ -320,7 +346,11 @@ fn match_binding_arm_carries_alias_fact_but_no_negation() {
     // `x` is NOT in the (empty) constructor set ⇒ a binding.
     let arms = vec![(var_pat(x), false), (lit_pat(0), false)];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
-    assert_eq!(facts[0].len(), 1, "a binding arm carries the alias fact eq(s, x)");
+    assert_eq!(
+        facts[0].len(),
+        1,
+        "a binding arm carries the alias fact eq(s, x)"
+    );
     let flow = FlowEnv::empty().assume(&kb, facts[0][0].clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[0][0]),
@@ -341,20 +371,32 @@ fn match_constructor_binder_arm_carries_destructure_fact() {
     // This is the producer the WI-537 era deferred (a binder headed `Opaque`, and a
     // fresh existential matched nothing); a per-site binder identity makes it live.
     let mut kb = crate::common::load_kb_with("namespace wi537.matchctor\nend\n");
-    let some = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
-    let none = kb.try_resolve_symbol("anthill.prelude.Option.none").expect("Option.none");
+    let some = kb
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .expect("Option.some");
+    let none = kb
+        .try_resolve_symbol("anthill.prelude.Option.none")
+        .expect("Option.none");
     let x = kb.intern("x");
     let s = param(&mut kb, "?s");
     // `some(x)` is a constructor pattern with one binder sub-pattern; `none` is a
     // nullary-ctor arm.
     let some_x = NodeOccurrence::new_pattern(
-        Pattern::Constructor { name: some, pos_args: vec![var_pat(x)], named_args: vec![] },
+        Pattern::Constructor {
+            name: some,
+            pos_args: vec![var_pat(x)],
+            named_args: vec![],
+        },
         span(),
         None,
     );
     let arms = vec![(some_x, false), (var_pat(none), false)];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[some, none]);
-    assert_eq!(facts[0].len(), 1, "the some(x) arm carries one destructure fact eq(s, some(x))");
+    assert_eq!(
+        facts[0].len(),
+        1,
+        "the some(x) arm carries one destructure fact eq(s, some(x))"
+    );
     let flow = FlowEnv::empty().assume(&kb, facts[0][0].clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[0][0]),
@@ -378,7 +420,10 @@ fn binding_gamma_fact_relates_a_let_binder_to_its_value() {
     ));
     let fact = binding_gamma_fact(&mut kb, x, value, span(), None);
     let flow = FlowEnv::empty().assume(&kb, fact.clone());
-    assert!(!flow.is_empty(), "the binding fact is indexable and enters Γ");
+    assert!(
+        !flow.is_empty(),
+        "the binding fact is indexable and enters Γ"
+    );
     assert!(
         prove_from_gamma(&mut kb, &flow, &fact),
         "eq(var_ref(x), 0) ∈ Γ ⊢ eq(var_ref(x), 0)"
@@ -426,22 +471,30 @@ fn shadowed_let_binders_get_distinct_symbols() {
         end
         "#,
     );
-    let f = kb.try_resolve_symbol("wi550.shadow.Box.f").expect("f symbol");
+    let f = kb
+        .try_resolve_symbol("wi550.shadow.Box.f")
+        .expect("f symbol");
     let body = kb.op_body_node(f).expect("op body node for f");
     let mut binders = Vec::new();
     let mut refs = Vec::new();
     collect_binder_and_ref_syms(body, &mut binders, &mut refs);
 
-    let x_binders: Vec<Symbol> =
-        binders.iter().copied().filter(|s| kb.local_name_of(*s) == "x").collect();
+    let x_binders: Vec<Symbol> = binders
+        .iter()
+        .copied()
+        .filter(|s| kb.local_name_of(*s) == "x")
+        .collect();
     assert_eq!(x_binders.len(), 2, "two `let x` binders in the body");
     assert_ne!(
         x_binders[0], x_binders[1],
         "the two same-named `x` binders are alpha-renamed to DISTINCT symbols"
     );
 
-    let x_refs: Vec<Symbol> =
-        refs.iter().copied().filter(|s| kb.local_name_of(*s) == "x").collect();
+    let x_refs: Vec<Symbol> = refs
+        .iter()
+        .copied()
+        .filter(|s| kb.local_name_of(*s) == "x")
+        .collect();
     assert!(!x_refs.is_empty(), "the body references `x`");
     for r in &x_refs {
         assert!(

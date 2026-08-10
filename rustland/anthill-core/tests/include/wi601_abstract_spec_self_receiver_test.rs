@@ -21,7 +21,10 @@
 use anthill_core::eval::{Interpreter, Value};
 
 fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }

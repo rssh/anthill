@@ -14,11 +14,14 @@
 //! the component off the runtime `Value::Tuple` — a named component by short
 //! name (from `named`), a positional `_N` component by index (from `pos`).
 
-use anthill_core::eval::Value;
 use crate::common::{interp_for, try_load_kb_with};
+use anthill_core::eval::Value;
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -54,9 +57,21 @@ end
         try_load_kb_with(src).err(),
     );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi638.lit_x"), 10, "(x:10,y:20).x");
-    assert_eq!(run_int(&mut interp, "test.wi638.lit_y"), 20, "(x:10,y:20).y");
-    assert_eq!(run_int(&mut interp, "test.wi638.use_param"), 7, "t.x on a named-tuple param");
+    assert_eq!(
+        run_int(&mut interp, "test.wi638.lit_x"),
+        10,
+        "(x:10,y:20).x"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi638.lit_y"),
+        20,
+        "(x:10,y:20).y"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi638.use_param"),
+        7,
+        "t.x on a named-tuple param"
+    );
     assert_eq!(run_int(&mut interp, "test.wi638.pos1"), 100, "(100,200)._1");
     assert_eq!(run_int(&mut interp, "test.wi638.pos2"), 200, "(100,200)._2");
 }
@@ -86,9 +101,21 @@ end
         try_load_kb_with(src).err(),
     );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi638c.nested"), 6, "(a: (m,n), b).a.n");
-    assert_eq!(run_int(&mut interp, "test.wi638c.of_entity"), 42, "(b: box(42), k).b.value");
-    assert_eq!(run_int(&mut interp, "test.wi638c.pos_nested"), 20, "((10,20),30)._1._2");
+    assert_eq!(
+        run_int(&mut interp, "test.wi638c.nested"),
+        6,
+        "(a: (m,n), b).a.n"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi638c.of_entity"),
+        42,
+        "(b: box(42), k).b.value"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi638c.pos_nested"),
+        20,
+        "((10,20),30)._1._2"
+    );
 }
 
 /// Ordering-robustness (the concern behind `tuple_order_test.rs`): component
@@ -115,10 +142,21 @@ namespace test.wi638ord
     = (zqzeta: 1, zqalpha: 2).zqalpha
 end
 "#;
-    assert!(try_load_kb_with(src).is_ok(), "adversarial-order tuple must type-check");
+    assert!(
+        try_load_kb_with(src).is_ok(),
+        "adversarial-order tuple must type-check"
+    );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi638ord.get_zeta"), 1, ".zqzeta by name");
-    assert_eq!(run_int(&mut interp, "test.wi638ord.get_alpha"), 2, ".zqalpha by name");
+    assert_eq!(
+        run_int(&mut interp, "test.wi638ord.get_zeta"),
+        1,
+        ".zqzeta by name"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi638ord.get_alpha"),
+        2,
+        ".zqalpha by name"
+    );
 }
 
 /// A component that the tuple does NOT declare stays a loud dot-dispatch error —

@@ -19,8 +19,8 @@
 //! `builtin_comparison_op_on_concrete_no_instance_loads` (the stdlib itself relies
 //! on this: `needs_rebuild`'s `gt` on two `Timestamp`s).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra source → (kb, load errors). Mirrors `wi325_missing_requires_test`.
@@ -29,8 +29,8 @@ fn try_load(extra: &str) -> (KnowledgeBase, Vec<load::LoadError>) {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -44,7 +44,10 @@ fn try_load(extra: &str) -> (KnowledgeBase, Vec<load::LoadError>) {
 }
 
 fn fmt_errs(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A user-defined spec (`Relatable`) whose op is *relational* (`-> Bool`, used as a

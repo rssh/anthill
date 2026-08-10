@@ -3,22 +3,20 @@
 /// Rust implementation of TypingEnv, TypeResult, TypeError, and type_check.
 /// Types are TermId values in the KB (types are terms in anthill).
 /// Effects are tracked as List[Type] alongside the value type.
-
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use super::term::{Term, TermId, Literal, Var, VarId};
+use super::discrim::SubstTree;
 use super::node_occurrence::{
     for_each_child, for_each_pattern_child, materialize_from_handle, pattern_annotation_value,
-    value_to_pattern_annotation, with_pattern_annotation,
-    value_to_term, EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild,
-    TypeNode,
+    value_to_pattern_annotation, value_to_term, with_pattern_annotation, EffectExprNode, Expr,
+    MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild, TypeNode,
 };
-use super::discrim::SubstTree;
 use super::persist_subst::BindValue;
+use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
@@ -540,45 +538,74 @@ impl RuleField {
 
 #[derive(Clone, Debug)]
 pub enum TypeErrorContext {
-    EntityField { entity: Symbol, field: Symbol },
+    EntityField {
+        entity: Symbol,
+        field: Symbol,
+    },
     /// WI-385: an operation ARGUMENT whose inferred type does not conform to
     /// the declared parameter type. `op_name` is the called operation,
     /// `param` the declared parameter the argument was bound to.
-    OperationArgument { op_name: Symbol, param: Symbol },
-    OperationReturn { op_name: Symbol },
-    OperationEffects { op_name: Symbol },
-    OperationMatch { op_name: Symbol },
-    Rule { name: Symbol, field: RuleField },
-    LetBinding { var: Symbol },
+    OperationArgument {
+        op_name: Symbol,
+        param: Symbol,
+    },
+    OperationReturn {
+        op_name: Symbol,
+    },
+    OperationEffects {
+        op_name: Symbol,
+    },
+    OperationMatch {
+        op_name: Symbol,
+    },
+    Rule {
+        name: Symbol,
+        field: RuleField,
+    },
+    LetBinding {
+        var: Symbol,
+    },
     /// WI-420: a bare operation reference rejected as a first-class function
     /// value (eta-expansion) because its enclosing sort carries a `requires`
     /// chain — the runtime `Value::OpRef` cannot carry the requirement
     /// dictionary yet, so it would crash at eval on an unbound `__req_*`.
-    OperationAsFunctionValue { op_name: Symbol },
+    OperationAsFunctionValue {
+        op_name: Symbol,
+    },
     /// WI-374: a call whose arguments bind a SHARED type parameter
     /// inconsistently — the §3 parametricity tie, enforced:
     /// `append(intList, strList)` binds `List.T` to both elements.
-    OperationTypeParams { op_name: Symbol },
+    OperationTypeParams {
+        op_name: Symbol,
+    },
     /// WI-759: a dot projection `x.m` whose member RESOLVES but whose type does not — an
     /// abstract field type with no readable interface, a variant-divergent field type. Kept
     /// distinct from `DotDispatchNoMatch` ("no such member"): the member is right there, so
     /// naming it as missing would point the user at the wrong thing.
-    DotProjection { member: Symbol },
+    DotProjection {
+        member: Symbol,
+    },
     /// WI-794: a pattern binder whose WRITTEN `: Type` annotation contradicts the type
     /// the context threads into that slot (a callback parameter, a tuple component, a
     /// destructured field). The binder is named because the annotation is per-BINDER —
     /// pointing at the whole lambda would leave the reader hunting which one is wrong.
-    BinderAnnotation { binder: Symbol },
+    BinderAnnotation {
+        binder: Symbol,
+    },
 }
 
 impl TypeErrorContext {
     pub fn entity_name(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeErrorContext::EntityField { entity, .. } => kb.local_name_of(*entity).to_string(),
-            TypeErrorContext::OperationArgument { op_name, .. } => kb.local_name_of(*op_name).to_string(),
+            TypeErrorContext::OperationArgument { op_name, .. } => {
+                kb.local_name_of(*op_name).to_string()
+            }
             TypeErrorContext::OperationReturn { op_name }
             | TypeErrorContext::OperationEffects { op_name }
-            | TypeErrorContext::OperationMatch { op_name } => kb.local_name_of(*op_name).to_string(),
+            | TypeErrorContext::OperationMatch { op_name } => {
+                kb.local_name_of(*op_name).to_string()
+            }
             TypeErrorContext::Rule { name, .. } => kb.local_name_of(*name).to_string(),
             TypeErrorContext::LetBinding { var } => kb.local_name_of(*var).to_string(),
             TypeErrorContext::OperationAsFunctionValue { op_name }
@@ -618,7 +645,9 @@ impl TypeErrorContext {
     pub fn field_name(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeErrorContext::EntityField { field, .. } => kb.local_name_of(*field).to_string(),
-            TypeErrorContext::OperationArgument { param, .. } => kb.local_name_of(*param).to_string(),
+            TypeErrorContext::OperationArgument { param, .. } => {
+                kb.local_name_of(*param).to_string()
+            }
             TypeErrorContext::OperationReturn { .. } => "return".to_string(),
             TypeErrorContext::OperationEffects { .. } => "effects".to_string(),
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
@@ -645,7 +674,9 @@ impl TypeError {
 
     pub fn format(&self, kb: &KnowledgeBase) -> String {
         match self {
-            TypeError::TypeMismatch { expected, actual, .. } => {
+            TypeError::TypeMismatch {
+                expected, actual, ..
+            } => {
                 // WI-795: the SAME pair renderer `to_load_error` uses. This is a
                 // second, currently-unreached rendering of the same two values —
                 // rendering them independently here would silently reintroduce the
@@ -669,14 +700,21 @@ impl TypeError {
             TypeError::UndefinedDataFunctor { name, .. } => {
                 crate::kb::load::undefined_rule_body_term_message(kb.qualified_name_of(*name))
             }
-            TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
-                let sort_names: Vec<String> =
-                    owning_sorts.iter().map(|s| kb.local_name_of(*s).to_string()).collect();
+            TypeError::BareMemberCall {
+                member,
+                owning_sorts,
+                dot_dispatchable,
+                ..
+            } => {
+                let sort_names: Vec<String> = owning_sorts
+                    .iter()
+                    .map(|s| kb.local_name_of(*s).to_string())
+                    .collect();
                 bare_member_call_message(kb.local_name_of(*member), &sort_names, *dot_dispatchable)
             }
-            TypeError::UnreducedEquationFunctor { functor, census, .. } => {
-                unreduced_equation_functor_message(kb.qualified_name_of(*functor), *census)
-            }
+            TypeError::UnreducedEquationFunctor {
+                functor, census, ..
+            } => unreduced_equation_functor_message(kb.qualified_name_of(*functor), *census),
             TypeError::DispatchNoMatch { op, unmet, .. } => {
                 format!(
                     "dispatch failed: no impl of {} for the per-call bindings{}",
@@ -696,14 +734,18 @@ impl TypeError {
             // WI-1012: rendered by the channel's own owner, shared with the eval
             // `Display` and both `LoadError` renderings (the `MacroRejected` /
             // `unselected_instance_message` discipline).
-            TypeError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair, .. } => {
-                ambiguous_spec_op_dispatch_message(
-                    kb.qualified_name_of(*op),
-                    kb.qualified_name_of(*carrier),
-                    candidates,
-                    *repair,
-                )
-            }
+            TypeError::AmbiguousSpecOpDispatch {
+                op,
+                carrier,
+                candidates,
+                repair,
+                ..
+            } => ambiguous_spec_op_dispatch_message(
+                kb.qualified_name_of(*op),
+                kb.qualified_name_of(*carrier),
+                candidates,
+                *repair,
+            ),
             TypeError::NoSuchTypeParam { op, name, .. } => {
                 format!(
                     "{} has no type parameter named '{}'",
@@ -711,7 +753,9 @@ impl TypeError {
                     kb.local_name_of(*name),
                 )
             }
-            TypeError::ExcessCallTypeArgs { op, given, free, .. } => {
+            TypeError::ExcessCallTypeArgs {
+                op, given, free, ..
+            } => {
                 format!(
                     "{} is over-applied at its type-argument bracket: {given} positional \
                      type argument(s) but {free} type parameter(s) left to bind",
@@ -733,7 +777,9 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*callee)),
                 )
             }
-            TypeError::AmbiguousRequirementKey { op, name, slots, .. } => {
+            TypeError::AmbiguousRequirementKey {
+                op, name, slots, ..
+            } => {
                 format!(
                     "'{}' names more than one requirement slot of {} ({}) — a spec's \
                      SHORT NAME selects a provider only when it picks out ONE anonymous \
@@ -755,7 +801,9 @@ impl TypeError {
                     spec_qn,
                 )
             }
-            TypeError::SlotSelectionUnindexable { op, owner, binder, .. } => {
+            TypeError::SlotSelectionUnindexable {
+                op, owner, binder, ..
+            } => {
                 format!(
                     "the `[{} = …]` binding on `{}` at {} names a requirement slot whose \
                      position in that sort's dictionary chain could not be established, \
@@ -765,7 +813,13 @@ impl TypeError {
                     kb.qualified_name_of(*op),
                 )
             }
-            TypeError::UnthreadableSelection { op, spec, witness, candidates, .. } => {
+            TypeError::UnthreadableSelection {
+                op,
+                spec,
+                witness,
+                candidates,
+                ..
+            } => {
                 format!(
                     "`[{} = {}]` cannot be honoured at {}: the requirement is declared \
                      on the OPERATION, and an operation-scoped `requires` has no \
@@ -785,7 +839,13 @@ impl TypeError {
                     candidates.join(", "),
                 )
             }
-            TypeError::WitnessDoesNotProvide { op, witness, spec, at_bindings, .. } => {
+            TypeError::WitnessDoesNotProvide {
+                op,
+                witness,
+                spec,
+                at_bindings,
+                ..
+            } => {
                 let spec_qn = kb.qualified_name_of(*spec);
                 if *at_bindings {
                     format!(
@@ -808,7 +868,9 @@ impl TypeError {
                     )
                 }
             }
-            TypeError::ValueDirectedSelection { op, witness, spec, .. } => {
+            TypeError::ValueDirectedSelection {
+                op, witness, spec, ..
+            } => {
                 format!(
                     "{} is a CONCRETE provider of {} — its values carry their own sort, \
                      so the dispatch at {} is already directed by the value and an \
@@ -820,7 +882,13 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*witness)),
                 )
             }
-            TypeError::ConflictingSelection { op, spec, first, second, .. } => {
+            TypeError::ConflictingSelection {
+                op,
+                spec,
+                first,
+                second,
+                ..
+            } => {
                 format!(
                     "two providers are selected for {} at the call to {}: {} and {} — \
                      one spec, one witness per call",
@@ -841,7 +909,10 @@ impl TypeError {
                 )
             }
             TypeError::MissingRequiresForSpecOp {
-                spec_op_sym, spec_sort_sym, abstract_params, ..
+                spec_op_sym,
+                spec_sort_sym,
+                abstract_params,
+                ..
             } => {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
                 let spec_qn = kb.qualified_name_of(*spec_sort_sym);
@@ -857,10 +928,18 @@ impl TypeError {
                     params_list.join(", "),
                 )
             }
-            TypeError::UnsatisfiableRequirement { op, callee_sort, eta, refusal, .. } => {
-                refusal.render(kb, *op, *callee_sort, *eta)
-            }
-            TypeError::NonBoolOpInGoalPosition { op_sym, return_sort, .. } => {
+            TypeError::UnsatisfiableRequirement {
+                op,
+                callee_sort,
+                eta,
+                refusal,
+                ..
+            } => refusal.render(kb, *op, *callee_sort, *eta),
+            TypeError::NonBoolOpInGoalPosition {
+                op_sym,
+                return_sort,
+                ..
+            } => {
                 let op_qn = kb.qualified_name_of(*op_sym);
                 format!(
                     "operation `{}` returns `{}`, not `Bool` — it cannot be used as a rule-body condition (goal position). Only a Bool-returning operation is gated there as `eq({}(…), true)`; a non-Bool operation has no relational reading",
@@ -880,7 +959,11 @@ impl TypeError {
             TypeError::BottomExpr { .. } => {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
-            TypeError::DotDispatchNoMatch { member, receiver_sort, .. } => {
+            TypeError::DotDispatchNoMatch {
+                member,
+                receiver_sort,
+                ..
+            } => {
                 let m = kb.local_name_of(*member);
                 match receiver_sort {
                     Some(s) => format!(
@@ -896,17 +979,18 @@ impl TypeError {
             TypeError::ForbiddenInternalField { entity, field, .. } => {
                 format!(
                     "'{}' is an internal field of {} and cannot be projected from another scope",
-                    kb.local_name_of(*field), kb.qualified_name_of(*entity),
+                    kb.local_name_of(*field),
+                    kb.qualified_name_of(*entity),
                 )
             }
             // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
             // shared with the eval `Display` and both `LoadError` renderings.
-            TypeError::MacroRejected { macro_name, detail, .. } => {
-                crate::eval::macro_rejection_message(
-                    Some(kb.qualified_name_of(*macro_name)),
-                    detail,
-                )
-            }
+            TypeError::MacroRejected {
+                macro_name, detail, ..
+            } => crate::eval::macro_rejection_message(
+                Some(kb.qualified_name_of(*macro_name)),
+                detail,
+            ),
             TypeError::Multiple { errors } => {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
                 parts.join("; ")
@@ -918,7 +1002,9 @@ impl TypeError {
                     kb.qualified_name_of(*op),
                 )
             }
-            TypeError::Other { expected, actual, .. } => {
+            TypeError::Other {
+                expected, actual, ..
+            } => {
                 format!("expected {}, got {}", expected, actual)
             }
         }
@@ -985,7 +1071,13 @@ impl TypeError {
     pub fn to_load_error(&self, kb: &KnowledgeBase) -> super::load::LoadError {
         use super::load::{LoadError, TypeMismatchOrigin};
         match self {
-            TypeError::TypeMismatch { context, expected, actual, site, .. } => {
+            TypeError::TypeMismatch {
+                context,
+                expected,
+                actual,
+                site,
+                ..
+            } => {
                 // WI-795: rendered as a PAIR, not as two independent sides — an
                 // arity-only arrow mismatch is invisible to the per-side
                 // renderer. See [`render_mismatch_pair`].
@@ -1037,26 +1129,31 @@ impl TypeError {
             },
             TypeError::UndefinedDataFunctor { name, .. } => LoadError::UndefinedRuleBodyTerm {
                 functor: kb.qualified_name_of(*name).to_string(),
-                span: self.span(kb).unwrap_or_else(|| crate::span::Span::new(0, 0)),
+                span: self
+                    .span(kb)
+                    .unwrap_or_else(|| crate::span::Span::new(0, 0)),
             },
-            TypeError::BareMemberCall { member, owning_sorts, dot_dispatchable, .. } => {
-                LoadError::BareMemberCall {
-                    span: self.span(kb),
-                    member: kb.local_name_of(*member).to_string(),
-                    owning_sorts: owning_sorts
-                        .iter()
-                        .map(|s| kb.local_name_of(*s).to_string())
-                        .collect(),
-                    dot_dispatchable: *dot_dispatchable,
-                }
-            }
-            TypeError::UnreducedEquationFunctor { functor, census, .. } => {
-                LoadError::UnreducedEquationFunctor {
-                    span: self.span(kb),
-                    functor: kb.qualified_name_of(*functor).to_string(),
-                    census: *census,
-                }
-            }
+            TypeError::BareMemberCall {
+                member,
+                owning_sorts,
+                dot_dispatchable,
+                ..
+            } => LoadError::BareMemberCall {
+                span: self.span(kb),
+                member: kb.local_name_of(*member).to_string(),
+                owning_sorts: owning_sorts
+                    .iter()
+                    .map(|s| kb.local_name_of(*s).to_string())
+                    .collect(),
+                dot_dispatchable: *dot_dispatchable,
+            },
+            TypeError::UnreducedEquationFunctor {
+                functor, census, ..
+            } => LoadError::UnreducedEquationFunctor {
+                span: self.span(kb),
+                functor: kb.qualified_name_of(*functor).to_string(),
+                census: *census,
+            },
             TypeError::DispatchNoMatch { op, unmet, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -1089,15 +1186,19 @@ impl TypeError {
             // the whole diagnostic (the author has to know which of three syntaxes to
             // delete). Spanned: the typer holds the call's span at the moment it
             // declines to pin.
-            TypeError::AmbiguousSpecOpDispatch { op, carrier, candidates, repair, .. } => {
-                LoadError::AmbiguousSpecOpDispatch {
-                    op: kb.qualified_name_of(*op).to_string(),
-                    carrier: kb.qualified_name_of(*carrier).to_string(),
-                    candidates: candidates.clone(),
-                    repair: *repair,
-                    span: self.span(kb),
-                }
-            }
+            TypeError::AmbiguousSpecOpDispatch {
+                op,
+                carrier,
+                candidates,
+                repair,
+                ..
+            } => LoadError::AmbiguousSpecOpDispatch {
+                op: kb.qualified_name_of(*op).to_string(),
+                carrier: kb.qualified_name_of(*carrier).to_string(),
+                candidates: candidates.clone(),
+                repair: *repair,
+                span: self.span(kb),
+            },
             TypeError::NoSuchTypeParam { op, name, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -1106,7 +1207,9 @@ impl TypeError {
                 actual_type: format!("unknown type-param '{}'", kb.local_name_of(*name)),
                 span: self.span(kb),
             },
-            TypeError::ExcessCallTypeArgs { op, given, free, .. } => LoadError::TypeMismatch {
+            TypeError::ExcessCallTypeArgs {
+                op, given, free, ..
+            } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
@@ -1130,9 +1233,11 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*callee).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: "an operation, which declares the type parameters a \
-                                call-site `[…]` bracket binds".to_string(),
+                                call-site `[…]` bracket binds"
+                    .to_string(),
                 actual_type: "a callee with no type-parameter list (a function value, \
-                              an applied rule, a constructor)".to_string(),
+                              an applied rule, a constructor)"
+                    .to_string(),
                 span: self.span(kb),
             },
             // WI-841 — the four selection refusals. Each renders through `format`, so
@@ -1144,7 +1249,8 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: format!(
-                    "'{}' to name ONE requirement slot", kb.local_name_of(*name),
+                    "'{}' to name ONE requirement slot",
+                    kb.local_name_of(*name),
                 ),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -1153,26 +1259,24 @@ impl TypeError {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
+                expected_type: format!("a witness sort for {}", kb.qualified_name_of(*spec),),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::SlotSelectionUnindexable {
+                op, owner, binder, ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_arg".to_string(),
                 expected_type: format!(
-                    "a witness sort for {}", kb.qualified_name_of(*spec),
+                    "a locatable requirement slot `{}` on {}",
+                    kb.local_name_of(*binder),
+                    kb.qualified_name_of(*owner),
                 ),
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
-            TypeError::SlotSelectionUnindexable { op, owner, binder, .. } => {
-                LoadError::TypeMismatch {
-                    origin: None,
-                    entity_name: kb.qualified_name_of(*op).to_string(),
-                    field_name: "type_arg".to_string(),
-                    expected_type: format!(
-                        "a locatable requirement slot `{}` on {}",
-                        kb.local_name_of(*binder),
-                        kb.qualified_name_of(*owner),
-                    ),
-                    actual_type: self.format(kb),
-                    span: self.span(kb),
-                }
-            }
             TypeError::UnthreadableSelection { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -1196,8 +1300,7 @@ impl TypeError {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
-                expected_type: "no explicit witness — this dispatch is value-directed"
-                    .to_string(),
+                expected_type: "no explicit witness — this dispatch is value-directed".to_string(),
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
@@ -1214,10 +1317,12 @@ impl TypeError {
             },
             // WI-709: the SAME `LoadError` the type position raises — one written type,
             // one diagnostic, wherever it appears.
-            TypeError::InvalidTypeArgument { sort, problem, .. } => LoadError::InvalidTypeArgument {
-                detail: problem.describe(kb, *sort),
-                span: self.span(kb),
-            },
+            TypeError::InvalidTypeArgument { sort, problem, .. } => {
+                LoadError::InvalidTypeArgument {
+                    detail: problem.describe(kb, *sort),
+                    span: self.span(kb),
+                }
+            }
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
                 let op_qn = kb.qualified_name_of(*op);
                 let suggestion = format!(
@@ -1235,7 +1340,10 @@ impl TypeError {
                 }
             }
             TypeError::MissingRequiresForSpecOp {
-                spec_op_sym, spec_sort_sym, abstract_params, ..
+                spec_op_sym,
+                spec_sort_sym,
+                abstract_params,
+                ..
             } => {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
                 let spec_qn = kb.qualified_name_of(*spec_sort_sym);
@@ -1253,22 +1361,33 @@ impl TypeError {
                     origin: None,
                     entity_name: op_qn.to_string(),
                     field_name: "requires".to_string(),
-                    expected_type: format!("`requires {}[…]` covering abstract type parameter", spec_short),
+                    expected_type: format!(
+                        "`requires {}[…]` covering abstract type parameter",
+                        spec_short
+                    ),
                     actual_type: suggestion,
                     span: self.span(kb),
                 }
             }
-            TypeError::UnsatisfiableRequirement { op, callee_sort, eta, refusal, .. } => {
-                LoadError::TypeMismatch {
-                    origin: None,
-                    entity_name: kb.qualified_name_of(*op).to_string(),
-                    field_name: "requires".to_string(),
-                    expected_type: "a requirement suppliable at this call site".to_string(),
-                    actual_type: refusal.render(kb, *op, *callee_sort, *eta),
-                    span: self.span(kb),
-                }
-            }
-            TypeError::NonBoolOpInGoalPosition { op_sym, return_sort, .. } => {
+            TypeError::UnsatisfiableRequirement {
+                op,
+                callee_sort,
+                eta,
+                refusal,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requires".to_string(),
+                expected_type: "a requirement suppliable at this call site".to_string(),
+                actual_type: refusal.render(kb, *op, *callee_sort, *eta),
+                span: self.span(kb),
+            },
+            TypeError::NonBoolOpInGoalPosition {
+                op_sym,
+                return_sort,
+                ..
+            } => {
                 let op_qn = kb.qualified_name_of(*op_sym).to_string();
                 let ret = kb.qualified_name_of(*return_sort).to_string();
                 LoadError::TypeMismatch {
@@ -1306,7 +1425,11 @@ impl TypeError {
                 actual_type: "bottom / post-elaboration form".to_string(),
                 span: self.span(kb),
             },
-            TypeError::DotDispatchNoMatch { member, receiver_sort, .. } => LoadError::TypeMismatch {
+            TypeError::DotDispatchNoMatch {
+                member,
+                receiver_sort,
+                ..
+            } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: receiver_sort
                     .map(|s| kb.qualified_name_of(s).to_string())
@@ -1319,7 +1442,9 @@ impl TypeError {
             TypeError::ForbiddenInternalField { entity, field, .. } => {
                 let declared_in = {
                     let q = kb.qualified_name_of(*entity);
-                    q.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_else(|| q.to_string())
+                    q.rsplit_once('.')
+                        .map(|(p, _)| p.to_string())
+                        .unwrap_or_else(|| q.to_string())
                 };
                 LoadError::ForbiddenInternalAccess {
                     name: kb.local_name_of(*field).to_string(),
@@ -1331,13 +1456,13 @@ impl TypeError {
             // WI-757: SPANNED and its own variant, for the reason WI-819 gave —
             // it is user-reachable, and an unspanned diagnostic renders with no
             // `line:col` at all.
-            TypeError::MacroRejected { macro_name, detail, .. } => {
-                LoadError::MacroRejected {
-                    macro_name: kb.qualified_name_of(*macro_name).to_string(),
-                    detail: detail.clone(),
-                    span: self.span(kb).unwrap_or_default(),
-                }
-            }
+            TypeError::MacroRejected {
+                macro_name, detail, ..
+            } => LoadError::MacroRejected {
+                macro_name: kb.qualified_name_of(*macro_name).to_string(),
+                detail: detail.clone(),
+                span: self.span(kb).unwrap_or_default(),
+            },
             TypeError::Multiple { errors } => {
                 // Lossy: keep the first error's structured form so legacy
                 // single-error consumers see something. Callers that care
@@ -1366,7 +1491,13 @@ impl TypeError {
                 actual_type: "unsatisfied precondition".to_string(),
                 span: self.span(kb),
             },
-            TypeError::Other { context, expected, actual, site, .. } => LoadError::TypeMismatch {
+            TypeError::Other {
+                context,
+                expected,
+                actual,
+                site,
+                ..
+            } => LoadError::TypeMismatch {
                 origin: Some(TypeMismatchOrigin {
                     error_kind: "Other",
                     context_kind: context.kind_tag(),
@@ -1560,7 +1691,10 @@ impl TypingEnv {
     /// [`Self::param_rigids`] field doc). `sort_rigid_len` is how many leading
     /// entries belong to the enclosing SORT; the rest are the operation's own.
     pub fn set_param_rigids(&mut self, rigids: Rc<Vec<(VarId, TermId)>>, sort_rigid_len: usize) {
-        debug_assert!(sort_rigid_len <= rigids.len(), "sort prefix longer than the list");
+        debug_assert!(
+            sort_rigid_len <= rigids.len(),
+            "sort prefix longer than the list"
+        );
         self.param_rigids = rigids;
         self.sort_rigid_len = sort_rigid_len;
     }
@@ -1706,7 +1840,9 @@ pub struct FlowEnv {
 impl FlowEnv {
     /// Γ₀ — the empty seed at body entry.
     pub fn empty() -> Self {
-        FlowEnv { facts: Rc::new(SubstTree::new()) }
+        FlowEnv {
+            facts: Rc::new(SubstTree::new()),
+        }
     }
 
     /// No facts yet (distinguishes the Γ₀ seed from a narrowed branch env).
@@ -1749,7 +1885,10 @@ impl FlowEnv {
         // → O(depth²). A *distinct* fact per level still grows Γ by one (the
         // genuine flow-sensitive cost); only exact repeats are elided.
         if !self.facts.is_empty()
-            && self.facts.query_raw(kb, &fact).iter()
+            && self
+                .facts
+                .query_raw(kb, &fact)
+                .iter()
                 .any(|(stored, _)| views_structurally_equal(kb, stored, &fact))
         {
             return self.clone();
@@ -1785,18 +1924,27 @@ pub struct Env {
 impl Env {
     /// Seed at the typer boundary: a borrowed `TypingEnv` + the empty Γ₀.
     fn new(types: &TypingEnv) -> Self {
-        Env { types: Rc::new(types.clone()), flow: FlowEnv::empty() }
+        Env {
+            types: Rc::new(types.clone()),
+            flow: FlowEnv::empty(),
+        }
     }
 
     /// Re-wrap with an extended type context (entering a let / lambda / match
     /// arm), carrying the SAME Γ forward (the binding narrows types, not Γ).
     fn with_types(&self, types: TypingEnv) -> Self {
-        Env { types: Rc::new(types), flow: self.flow.clone() }
+        Env {
+            types: Rc::new(types),
+            flow: self.flow.clone(),
+        }
     }
 
     /// Re-wrap with a narrowed Γ (the `if` fork), sharing the SAME types.
     fn with_flow(&self, flow: FlowEnv) -> Self {
-        Env { types: Rc::clone(&self.types), flow }
+        Env {
+            types: Rc::clone(&self.types),
+            flow,
+        }
     }
 }
 
@@ -1863,7 +2011,12 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
 /// KB) — the caller then keeps the effect rather than guess.
 fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
     let (eq_sym, neq_sym) = eq_neq_functors(kb);
-    if let ViewHead::Functor { functor: Some(f), pos_arity, named_arity } = goal.head(kb) {
+    if let ViewHead::Functor {
+        functor: Some(f),
+        pos_arity,
+        named_arity,
+    } = goal.head(kb)
+    {
         let swapped = if f == eq_sym {
             neq_sym
         } else if Some(f) == neq_sym {
@@ -1882,7 +2035,9 @@ fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
             for i in 0..pos_arity {
                 // A positional slot inside the declared arity must be present;
                 // a None here is a malformed goal, not a case to skip silently.
-                let item = goal.pos_arg(kb, i).expect("pos_arg in range during negate_goal");
+                let item = goal
+                    .pos_arg(kb, i)
+                    .expect("pos_arg in range during negate_goal");
                 args.push(item.to_value());
             }
             return Some(kb.make_goal_value(target, args));
@@ -1913,7 +2068,11 @@ fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
 /// constructor can only be by name — the pattern equivalent of resolving any written
 /// identifier. Callers then hold the RESOLVED constructor and compare it canonically
 /// downstream, so `same_symbol`'s last-segment bridge no longer rides pattern coverage.
-fn resolve_pattern_ctor(kb: &KnowledgeBase, name: Symbol, scrutinee_ctors: &[Symbol]) -> Option<Symbol> {
+fn resolve_pattern_ctor(
+    kb: &KnowledgeBase,
+    name: Symbol,
+    scrutinee_ctors: &[Symbol],
+) -> Option<Symbol> {
     let want = short_name_of(kb.qualified_name_of(name));
     scrutinee_ctors
         .iter()
@@ -1989,11 +2148,14 @@ fn pattern_match_value(
             // ONLY in `admit_binders` mode; for a negation it has no ground value.
             match pattern_var_ctor_sym(kb, *name, scrutinee_ctors) {
                 Some(ctor) => Some(Value::term(kb.alloc(Term::Ref(ctor)))),
-                None => admit_binders
-                    .then(|| binder_ref_value(*name, pattern.span, pattern.owner)),
+                None => admit_binders.then(|| binder_ref_value(*name, pattern.span, pattern.owner)),
             }
         }
-        Pattern::Constructor { name, pos_args, named_args } => {
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let name = *name;
             // Every sub-pattern must yield a value (`?` short-circuits to `None`
             // on the first one that doesn't — a wildcard hole in either mode, or a
@@ -2014,7 +2176,11 @@ fn pattern_match_value(
             Some(if pos.is_empty() && named.is_empty() {
                 Value::term(kb.alloc(Term::Ref(name)))
             } else {
-                Value::Entity { functor: name, pos: Rc::from(pos), named: Rc::from(named) }
+                Value::Entity {
+                    functor: name,
+                    pos: Rc::from(pos),
+                    named: Rc::from(named),
+                }
             })
         }
         Pattern::Tuple { .. } => None,
@@ -2137,7 +2303,12 @@ impl TypeResult {
     /// unchanged. A producer of a `Value`-carried type (the LambdaBody Node
     /// arrow) builds `TypeResult { ty: <Value>, .. }` directly.
     pub fn pure(ty: TermId, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
-        Self { ty: Value::term(ty), env, effects: Vec::new(), node }
+        Self {
+            ty: Value::term(ty),
+            env,
+            effects: Vec::new(),
+            node,
+        }
     }
 
     /// Pure result whose type is already carrier-agnostic (`Value`) — e.g. a
@@ -2145,21 +2316,34 @@ impl TypeResult {
     /// A). A `Value::Node` (denoted-bearing callback arrow) flows through
     /// unchanged.
     pub fn pure_value(ty: Value, env: TypingEnv, node: Rc<NodeOccurrence>) -> Self {
-        Self { ty, env, effects: Vec::new(), node }
+        Self {
+            ty,
+            env,
+            effects: Vec::new(),
+            node,
+        }
     }
 }
 
 /// Filter effects: keep only external effects (on non-local resources).
 /// Effects on let-bound resources are local and don't propagate.
-pub(crate) fn external_effects(kb: &KnowledgeBase, env: &TypingEnv, effects: &[Value]) -> Vec<Value> {
-    effects.iter().filter(|effect| {
-        // An effect like Modify[store] — check if 'store' is a local resource
-        // Effect terms are sort_ref or parameterized. Extract the resource symbol.
-        match extract_effect_resource_sym(kb, effect) {
-            Some(sym) => !env.is_local_resource(sym),
-            None => true, // can't determine resource — assume external
-        }
-    }).cloned().collect()
+pub(crate) fn external_effects(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    effects: &[Value],
+) -> Vec<Value> {
+    effects
+        .iter()
+        .filter(|effect| {
+            // An effect like Modify[store] — check if 'store' is a local resource
+            // Effect terms are sort_ref or parameterized. Extract the resource symbol.
+            match extract_effect_resource_sym(kb, effect) {
+                Some(sym) => !env.is_local_resource(sym),
+                None => true, // can't determine resource — assume external
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 /// Extract the resource symbol named by an effect label, carrier-agnostically
@@ -2174,7 +2358,9 @@ pub(crate) fn extract_effect_resource_sym(kb: &KnowledgeBase, effect: &Value) ->
     let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, effect) else {
         return None;
     };
-    bindings.iter().find_map(|(_, v)| effect_binding_resource(kb, v))
+    bindings
+        .iter()
+        .find_map(|(_, v)| effect_binding_resource(kb, v))
 }
 
 /// The resource sort a `Modify` binding value names — `denoted(Ref(c)) → c` —
@@ -2210,7 +2396,10 @@ fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
         other => {
             // A scalar/`Var`/`Entity` is a typer bug here (types are `Term`/`Node`);
             // mint a fresh `?ungrounded` type var so we don't panic in release.
-            debug_assert!(false, "WI-342: non-type Value in a TypeChild slot: {other:?}");
+            debug_assert!(
+                false,
+                "WI-342: non-type Value in a TypeChild slot: {other:?}"
+            );
             let sym = kb.intern("?ungrounded");
             TypeChild::Ground(kb.make_type_var(sym))
         }
@@ -2318,15 +2507,25 @@ fn concat_named_tuple_types(
 ) -> Result<Value, String> {
     let fa = match extract_type(kb, a) {
         TypeExtractor::NamedTuple(f) => f,
-        _ => return Err("`concat` operand `a` must be a named-tuple type (a relation with at \
+        _ => {
+            return Err(
+                "`concat` operand `a` must be a named-tuple type (a relation with at \
                          least two named columns); a 1-collapse / membership schema is not \
-                         supported".to_string()),
+                         supported"
+                    .to_string(),
+            )
+        }
     };
     let fb = match extract_type(kb, b) {
         TypeExtractor::NamedTuple(f) => f,
-        _ => return Err("`concat` operand `b` must be a named-tuple type (a relation with at \
+        _ => {
+            return Err(
+                "`concat` operand `b` must be a named-tuple type (a relation with at \
                          least two named columns); a 1-collapse / membership schema is not \
-                         supported".to_string()),
+                         supported"
+                    .to_string(),
+            )
+        }
     };
     let mut merged: Vec<(Symbol, Value)> = Vec::with_capacity(fa.len() + fb.len());
     merged.extend(fa);
@@ -2351,17 +2550,25 @@ fn concat_named_tuple_types(
 fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool {
     match extract_type(kb, ty) {
         TypeExtractor::Parameterized { base, bindings } => {
-            base == sort_sym || bindings.iter().any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
+            base == sort_sym
+                || bindings
+                    .iter()
+                    .any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
         }
         // WI-791: `arity` is a COUNT, not a type — no sort can hide in it.
-        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => {
             type_mentions_sort(kb, &param, sort_sym)
                 || type_mentions_sort(kb, &result, sort_sym)
                 || type_mentions_sort(kb, &effects, sort_sym)
         }
-        TypeExtractor::NamedTuple(fields) => {
-            fields.iter().any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
-        }
+        TypeExtractor::NamedTuple(fields) => fields
+            .iter()
+            .any(|(_, v)| type_mentions_sort(kb, v, sort_sym)),
         TypeExtractor::EffectsRows(e) => type_mentions_sort(kb, &e, sort_sym),
         _ => false,
     }
@@ -2394,7 +2601,12 @@ fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_
                     walk(kb, v, syms, out);
                 }
             }
-            TypeExtractor::Arrow { param, result, effects, arity: _ } => {
+            TypeExtractor::Arrow {
+                param,
+                result,
+                effects,
+                arity: _,
+            } => {
                 walk(kb, &param, syms, out);
                 walk(kb, &result, syms, out);
                 walk(kb, &effects, syms, out);
@@ -2675,9 +2887,11 @@ fn without_named_tuple_types(
             Vec::new()
         }
         _ => {
-            return Err("`Without` drop operand must be a record (named tuple) of the columns \
+            return Err(
+                "`Without` drop operand must be a record (named tuple) of the columns \
                         to drop — the record a variadic capture (`...args: R`) produces"
-                .to_string())
+                    .to_string(),
+            )
         }
     };
     if drop_fields.is_empty() {
@@ -2688,10 +2902,12 @@ fn without_named_tuple_types(
     let t_fields = match extract_type(kb, t) {
         TypeExtractor::NamedTuple(f) => f,
         _ => {
-            return Err("`Without` base operand must be a named-tuple type (a relation with at \
+            return Err(
+                "`Without` base operand must be a named-tuple type (a relation with at \
                         least two named columns); dropping from a 1-collapse / membership \
                         schema is not supported"
-                .to_string())
+                    .to_string(),
+            )
         }
     };
     // Membership + type checks — the LOAD errors that give the capture its meaning (§2.2).
@@ -2723,8 +2939,10 @@ fn without_named_tuple_types(
     }
     // Keep every base field NOT dropped, in the base's order; collapse the residual as a
     // relation schema does (0 → `Unit`, 1 → the element, ≥2 → the named tuple).
-    let kept: Vec<(Symbol, Value)> =
-        t_fields.into_iter().filter(|(tn, _)| !dropped.contains(tn)).collect();
+    let kept: Vec<(Symbol, Value)> = t_fields
+        .into_iter()
+        .filter(|(tn, _)| !dropped.contains(tn))
+        .collect();
     Ok(collapse_schema(kb, &kept, site.sp))
 }
 
@@ -2851,7 +3069,10 @@ fn resolve_projected_member(
         return fields
             .iter()
             .find(|(f, _)| short_name_of(kb.local_name_of(*f)) == field_name)
-            .map(|(_, t)| ProjectedMember { ty: t.clone(), owners: Vec::new() })
+            .map(|(_, t)| ProjectedMember {
+                ty: t.clone(),
+                owners: Vec::new(),
+            })
             .ok_or(MemberMiss::NoSuchMember);
     }
     let recv_sort = sort_functor_of_view(kb, recv_ty).ok_or(MemberMiss::NoSuchMember)?;
@@ -2872,7 +3093,10 @@ fn resolve_projected_member(
     // symbol across a sort's constructors — so the variants differ in their `owners` entry,
     // never in the field symbol itself.
     let field_sym = owners.first().ok_or(MemberMiss::NoSuchMember)?.1;
-    let ctx = TypeErrorContext::EntityField { entity: recv_sort, field: field_sym };
+    let ctx = TypeErrorContext::EntityField {
+        entity: recv_sort,
+        field: field_sym,
+    };
     // The field's DECLARED type with the receiver's type-arguments substituted — the
     // `Option[T = String].value : String` step. Its own failure (an abstract field type with
     // no interface to read, a divergent multi-variant type) is already a projection
@@ -2975,7 +3199,6 @@ fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
         _ => None,
     }
 }
-
 
 /// WI-462: thread a tuple LITERAL's EXPECTED component types into its inferred ones, IN
 /// PLACE. A component's inferred type can be a free var (`cons(h, t)` over a bare
@@ -3150,7 +3373,11 @@ fn merge_effects_into(kb: &KnowledgeBase, acc: &mut Vec<Value>, incoming: &[Valu
 /// Returns the symbol the variable refers to when `occ`'s Expr is a
 /// `VarRef`; otherwise `None`.
 fn extract_var_ref_sym_node(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    if let NodeKind::Expr { expr: Expr::VarRef { name }, .. } = &occ.kind {
+    if let NodeKind::Expr {
+        expr: Expr::VarRef { name },
+        ..
+    } = &occ.kind
+    {
         Some(*name)
     } else {
         None
@@ -3215,9 +3442,7 @@ fn substitute_ref_syms_value(
         Value::Term { id: t, .. } => Value::term(substitute_ref_syms(kb, *t, map)),
         // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
         // `Modify[c]` → the caller's `Modify[s]`) via the occurrence rewriter.
-        Value::Node(occ) => {
-            Value::Node(super::node_occurrence::substitute_ref_syms_occ(occ, map))
-        }
+        Value::Node(occ) => Value::Node(super::node_occurrence::substitute_ref_syms_occ(occ, map)),
         other => other.clone(),
     }
 }
@@ -3301,7 +3526,12 @@ fn rewrite_type_occ_deep(
     let mut changed = false;
     let rebuilt: Option<NodeKind> = match &occ.kind {
         NodeKind::Type(node) => match node {
-            TypeNode::Arrow { param, result, effects, arity } => {
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
                 let (p, r, e) = (
                     child(kb, subst, param, ground, &mut changed),
                     child(kb, subst, result, ground, &mut changed),
@@ -3323,13 +3553,18 @@ fn rewrite_type_occ_deep(
                     .iter()
                     .map(|(s, c)| (*s, child(kb, subst, c, ground, &mut changed)))
                     .collect();
-                Some(NodeKind::Type(TypeNode::Parameterized { base: b, bindings: bs }))
+                Some(NodeKind::Type(TypeNode::Parameterized {
+                    base: b,
+                    bindings: bs,
+                }))
             }
             TypeNode::EffectsRows { effects_expr } => {
                 let e = child(kb, subst, effects_expr, ground, &mut changed);
                 Some(NodeKind::Type(TypeNode::EffectsRows { effects_expr: e }))
             }
-            TypeNode::Denoted { .. } | TypeNode::NamedTuple { .. } | TypeNode::ExprCarried { .. } => None,
+            TypeNode::Denoted { .. }
+            | TypeNode::NamedTuple { .. }
+            | TypeNode::ExprCarried { .. } => None,
         },
         NodeKind::EffectExpr(node) => match node {
             EffectExprNode::Merge { left, right } => {
@@ -3337,7 +3572,10 @@ fn rewrite_type_occ_deep(
                     child(kb, subst, left, ground, &mut changed),
                     child(kb, subst, right, ground, &mut changed),
                 );
-                Some(NodeKind::EffectExpr(EffectExprNode::Merge { left: l, right: r }))
+                Some(NodeKind::EffectExpr(EffectExprNode::Merge {
+                    left: l,
+                    right: r,
+                }))
             }
             EffectExprNode::Present { label } => {
                 let l = child(kb, subst, label, ground, &mut changed);
@@ -3427,11 +3665,7 @@ fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Valu
 /// destructured head). Recurse into the parameterized type's children while
 /// preserving the top-level `Value::Node` surfacing (a denoted-bearing
 /// type-param value is carried, not re-grounded).
-fn walk_pattern_field_type_deep(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    ty: &Value,
-) -> Value {
+fn walk_pattern_field_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: &Value) -> Value {
     // Top-level type-param var → resolve through the subst's `Value` binding
     // first, so a `Value::Node` (denoted) binding surfaces rather than being
     // dropped by the term-only deep walk (which keeps a Node-bound var).
@@ -3440,8 +3674,12 @@ fn walk_pattern_field_type_deep(
     let mut cur = ty.clone();
     let mut visited: SmallVec<[VarId; 4]> = SmallVec::new();
     loop {
-        let Value::Term { id: t, .. } = &cur else { break };
-        let Term::Var(Var::Global(vid)) = kb.get_term(*t) else { break };
+        let Value::Term { id: t, .. } = &cur else {
+            break;
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(*t) else {
+            break;
+        };
         let vid = *vid;
         if visited.contains(&vid) {
             break;
@@ -3502,9 +3740,18 @@ pub fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
 /// contract). An unrecognized carried shape stays `?`.
 fn denoted_value_display(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
     match &occ.kind {
-        NodeKind::Expr { expr: Expr::Ref(s), .. } => kb.local_name_of(*s).to_string(),
-        NodeKind::Expr { expr: Expr::DotApply { receiver, name, .. }, .. } => {
-            format!("{}.{}", denoted_value_display(kb, receiver), kb.local_name_of(*name))
+        NodeKind::Expr {
+            expr: Expr::Ref(s), ..
+        } => kb.local_name_of(*s).to_string(),
+        NodeKind::Expr {
+            expr: Expr::DotApply { receiver, name, .. },
+            ..
+        } => {
+            format!(
+                "{}.{}",
+                denoted_value_display(kb, receiver),
+                kb.local_name_of(*name)
+            )
         }
         // WI-404: a value-in-type LITERAL (`3` in `Vec[N = 3]`, carried as
         // `Expr::Const` — see `value_term_to_occ`) renders as the literal value, so a
@@ -3512,7 +3759,10 @@ fn denoted_value_display(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         // vs `N = 4`) rather than the `?` fallthrough that hid which binding clashed.
         // The comparison itself was already correct (it reads the carried value, not
         // this display); this is the rendering half of the ticket's symptom.
-        NodeKind::Expr { expr: Expr::Const(lit), .. } => literal_display(lit),
+        NodeKind::Expr {
+            expr: Expr::Const(lit),
+            ..
+        } => literal_display(lit),
         _ => "?".to_string(),
     }
 }
@@ -3526,7 +3776,11 @@ fn literal_display(lit: &Literal) -> String {
         Literal::BigInt(n) => n.to_string(),
         Literal::Float(f) => {
             let s = f.to_string();
-            if s.contains('.') { s } else { format!("{s}.0") }
+            if s.contains('.') {
+                s
+            } else {
+                format!("{s}.0")
+            }
         }
         Literal::String(s) => {
             // The canonical `.anthill` string escaper (shared with `TermPrinter`), so
@@ -3759,10 +4013,15 @@ fn render_mismatch_pair_by_cause(
     expected: &Value,
     actual: &Value,
 ) -> (String, String) {
-    let (e, a) = (type_display_name_value(kb, expected), type_display_name_value(kb, actual));
+    let (e, a) = (
+        type_display_name_value(kb, expected),
+        type_display_name_value(kb, actual),
+    );
     // `lookup_symbol`, not `intern`: a diagnostic renders off `&KnowledgeBase`. A
     // KB that never interned "arity" holds no arrow, so there is nothing to qualify.
-    let Some(arity_key) = kb.lookup_symbol("arity") else { return (e, a) };
+    let Some(arity_key) = kb.lookup_symbol("arity") else {
+        return (e, a);
+    };
     match (
         arrow_display_arity(kb, expected, arity_key),
         arrow_display_arity(kb, actual, arity_key),
@@ -3869,7 +4128,11 @@ fn one_collapse_note(label: &str, elem: &str) -> String {
 ///    normalized to bare by the loader). Bounded by that asymmetry, not by luck — but it is
 ///    the asymmetry, not the assert, that is load-bearing, so re-measure if binding-key
 ///    interning changes.
-fn one_collapse_site(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> Option<(String, String)> {
+fn one_collapse_site(
+    kb: &KnowledgeBase,
+    expected: &Value,
+    actual: &Value,
+) -> Option<(String, String)> {
     match extract_type(kb, expected) {
         TypeExtractor::NamedTuple(fields) if fields.len() == 1 => {
             let (label, elem) = &fields[0];
@@ -3877,9 +4140,14 @@ fn one_collapse_site(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> Op
             (elem_rendered == type_display_name_value(kb, actual))
                 .then(|| (kb.local_name_of(*label).to_string(), elem_rendered))
         }
-        TypeExtractor::Parameterized { base: expected_base, bindings: expected_args } => {
-            let TypeExtractor::Parameterized { base: actual_base, bindings: actual_args } =
-                extract_type(kb, actual)
+        TypeExtractor::Parameterized {
+            base: expected_base,
+            bindings: expected_args,
+        } => {
+            let TypeExtractor::Parameterized {
+                base: actual_base,
+                bindings: actual_args,
+            } = extract_type(kb, actual)
             else {
                 return None;
             };
@@ -3985,7 +4253,9 @@ fn arrow_param_list_is_own(kb: &KnowledgeBase, ty: &Value, arity: usize) -> bool
     if arity == 1 {
         return true;
     }
-    let Some(param) = view_child_value(kb, ty, "param") else { return false };
+    let Some(param) = view_child_value(kb, ty, "param") else {
+        return false;
+    };
     matches!(type_head(kb, &param), TypeHead::NamedTuple)
         && named_tuple_fields(kb, &param).len() == arity
 }
@@ -4003,7 +4273,11 @@ fn type_child_is_named_tuple(kb: &KnowledgeBase, child: &TypeChild) -> bool {
 
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
     match kb.get_term(ty) {
-        Term::Fn { functor, named_args, .. } => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => {
             let fname = kb.local_name_of(*functor);
             // WI-361: a bare sort is `Term::Ref(S)` (the `Term::Ref` arm below),
             // and a parameterized type is `Fn{S, named}` whose functor is the base
@@ -4028,27 +4302,28 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                     });
                     format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
                 }
-                "TypeVar" => {
-                    extract_ref_field(kb, named_args, "name")
-                        .map(|s| format!("?{}", kb.local_name_of(s)))
-                        .unwrap_or_else(|| "?".to_string())
-                }
+                "TypeVar" => extract_ref_field(kb, named_args, "name")
+                    .map(|s| format!("?{}", kb.local_name_of(s)))
+                    .unwrap_or_else(|| "?".to_string()),
                 "NamedTuple" => {
                     let fields_tid = get_named_arg(kb, named_args, "fields");
                     let fields = fields_tid.map(|f| list_to_vec(kb, f)).unwrap_or_default();
-                    let parts: Vec<String> = fields.iter().map(|f| {
-                        if let Term::Fn { named_args: fa, .. } = kb.get_term(*f) {
-                            let n = extract_ref_field(kb, fa, "name")
-                                .map(|s| kb.local_name_of(s).to_string())
-                                .unwrap_or_else(|| "?".to_string());
-                            let t = get_named_arg(kb, fa, "type")
-                                .map(|v| type_display_name(kb, v))
-                                .unwrap_or_else(|| "?".to_string());
-                            format!("{}: {}", n, t)
-                        } else {
-                            "?".to_string()
-                        }
-                    }).collect();
+                    let parts: Vec<String> = fields
+                        .iter()
+                        .map(|f| {
+                            if let Term::Fn { named_args: fa, .. } = kb.get_term(*f) {
+                                let n = extract_ref_field(kb, fa, "name")
+                                    .map(|s| kb.local_name_of(s).to_string())
+                                    .unwrap_or_else(|| "?".to_string());
+                                let t = get_named_arg(kb, fa, "type")
+                                    .map(|v| type_display_name(kb, v))
+                                    .unwrap_or_else(|| "?".to_string());
+                                format!("{}: {}", n, t)
+                            } else {
+                                "?".to_string()
+                            }
+                        })
+                        .collect();
                     format!("({})", parts.join(", "))
                 }
                 "Nothing" => "nothing".to_string(),
@@ -4098,8 +4373,11 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                 _ => {
                     // Fallback: raw term display (for non-type terms)
                     let name = fname.to_string();
-                    let params: Vec<String> = named_args.iter()
-                        .map(|(s, v)| format!("{} = {}", kb.local_name_of(*s), type_display_name(kb, *v)))
+                    let params: Vec<String> = named_args
+                        .iter()
+                        .map(|(s, v)| {
+                            format!("{} = {}", kb.local_name_of(*s), type_display_name(kb, *v))
+                        })
                         .collect();
                     if params.is_empty() {
                         name
@@ -4137,13 +4415,16 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
 }
 
 /// Extract a Ref(sym) from a named arg field.
-fn extract_ref_field(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId); 2]>, key: &str) -> Option<Symbol> {
-    get_named_arg(kb, named_args, key)
-        .and_then(|tid| match kb.get_term(tid) {
-            Term::Ref(s) => Some(*s),
-            Term::Ident(s) => Some(*s),
-            _ => None,
-        })
+fn extract_ref_field(
+    kb: &KnowledgeBase,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    key: &str,
+) -> Option<Symbol> {
+    get_named_arg(kb, named_args, key).and_then(|tid| match kb.get_term(tid) {
+        Term::Ref(s) => Some(*s),
+        Term::Ident(s) => Some(*s),
+        _ => None,
+    })
 }
 
 /// Functor symbols of a sort's constructor children.
@@ -4157,8 +4438,13 @@ fn sort_constructor_syms(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
     kb.sort_children(sort).to_vec()
 }
 
-pub fn get_named_arg(kb: &KnowledgeBase, named_args: &SmallVec<[(Symbol, TermId); 2]>, key: &str) -> Option<TermId> {
-    named_args.iter()
+pub fn get_named_arg(
+    kb: &KnowledgeBase,
+    named_args: &SmallVec<[(Symbol, TermId); 2]>,
+    key: &str,
+) -> Option<TermId> {
+    named_args
+        .iter()
         .find(|(s, _)| kb.local_name_of(*s) == key)
         .map(|(_, v)| *v)
 }
@@ -4184,23 +4470,35 @@ pub fn extract_sym_arg(
     pos_args: &SmallVec<[TermId; 4]>,
     key: &str,
 ) -> Option<Symbol> {
-    named_args.iter()
+    named_args
+        .iter()
         .find(|(s, _)| kb.local_name_of(*s) == key)
         .and_then(|(_, v)| match kb.get_term(*v) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),
             _ => None,
         })
-        .or_else(|| pos_args.first().and_then(|v| match kb.get_term(*v) {
-            Term::Ref(s) | Term::Ident(s) => Some(*s),
-            _ => None,
-        }))
+        .or_else(|| {
+            pos_args.first().and_then(|v| match kb.get_term(*v) {
+                Term::Ref(s) | Term::Ident(s) => Some(*s),
+                _ => None,
+            })
+        })
 }
 
 pub fn unwrap_option(kb: &KnowledgeBase, opt: TermId) -> Option<TermId> {
-    if let Term::Fn { functor, pos_args, named_args } = kb.get_term(opt) {
+    if let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(opt)
+    {
         if kb.local_name_of(*functor) == "some" {
-            if !pos_args.is_empty() { return Some(pos_args[0]); }
-            if !named_args.is_empty() { return Some(named_args[0].1); }
+            if !pos_args.is_empty() {
+                return Some(pos_args[0]);
+            }
+            if !named_args.is_empty() {
+                return Some(named_args[0].1);
+            }
         }
     }
     None
@@ -4210,28 +4508,43 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
     let mut items = Vec::new();
     loop {
         match kb.get_term(term) {
-            Term::Fn { functor, named_args, pos_args } => {
+            Term::Fn {
+                functor,
+                named_args,
+                pos_args,
+            } => {
                 let name = kb.local_name_of(*functor);
-                if name == "nil" { break; }
+                if name == "nil" {
+                    break;
+                }
                 if name == "cons" {
-                    let head = named_args.iter()
+                    let head = named_args
+                        .iter()
                         .find(|(s, _)| kb.local_name_of(*s) == "head")
                         .map(|(_, v)| *v)
                         .or_else(|| pos_args.first().copied());
-                    let tail = named_args.iter()
+                    let tail = named_args
+                        .iter()
                         .find(|(s, _)| kb.local_name_of(*s) == "tail")
                         .map(|(_, v)| *v)
                         .or_else(|| pos_args.get(1).copied());
-                    if let Some(h) = head { items.push(h); }
-                    if let Some(t) = tail { term = t; } else { break; }
-                } else { break; }
+                    if let Some(h) = head {
+                        items.push(h);
+                    }
+                    if let Some(t) = tail {
+                        term = t;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
             _ => break,
         }
     }
     items
 }
-
 
 // ── Iterative-typer work ops ───────────────────────────────────
 //
@@ -4283,7 +4596,12 @@ fn push_visit(
     fuel: usize,
 ) {
     work.push(TypeWorkOp::Build(TypeBuildFrame::Stamp));
-    work.push(TypeWorkOp::Visit { occ, env, expected, fuel });
+    work.push(TypeWorkOp::Visit {
+        occ,
+        env,
+        expected,
+        fuel,
+    });
 }
 
 /// Push a Visit with no top-down hint. Used at positions where the
@@ -4499,23 +4817,46 @@ enum TypeBuildFrame {
     /// else branch types (checked against `expected` when present), not
     /// just the then-branch type. Replaces the recursive-helper arm so a
     /// deep else-if chain stays on the heap.
-    IfExpr { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, expected: Option<Value> },
+    IfExpr {
+        occ: Rc<NodeOccurrence>,
+        env: Rc<TypingEnv>,
+        expected: Option<Value>,
+    },
     /// WI-538: an in-body proof reassembles to `Expr::Proof` with its
     /// (possibly `[simp]`-rewritten) `conclude?` + `body` children; its
     /// type is the continuation's. `env` is the pre-proof type env.
-    ProofStmt { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, has_conclude: bool },
+    ProofStmt {
+        occ: Rc<NodeOccurrence>,
+        env: Rc<TypingEnv>,
+        has_conclude: bool,
+    },
     /// WI-285: all list elements finished; drain `count`, infer the
     /// element type (`element_hint` when bound by an outer
     /// `List[T = X]`, else the first element's type), build
     /// `List[T = elem]` (former `check_list_literal`).
-    ListLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<Value>, count: usize },
+    ListLit {
+        occ: Rc<NodeOccurrence>,
+        env: Rc<TypingEnv>,
+        element_hint: Option<Value>,
+        count: usize,
+    },
     /// WI-285: as [`TypeBuildFrame::ListLit`], for `Set[T = elem]`.
-    SetLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, element_hint: Option<Value>, count: usize },
+    SetLit {
+        occ: Rc<NodeOccurrence>,
+        env: Rc<TypingEnv>,
+        element_hint: Option<Value>,
+        count: usize,
+    },
     /// WI-285: all tuple fields finished (positional then named);
     /// drain `pos_count + named_names.len()`, building the named-tuple
     /// type (`_0`, `_1`, … for positional fields, declared names for
     /// named ones; former `check_tuple_literal`).
-    TupleLit { occ: Rc<NodeOccurrence>, env: Rc<TypingEnv>, pos_count: usize, named_names: Vec<Symbol> },
+    TupleLit {
+        occ: Rc<NodeOccurrence>,
+        env: Rc<TypingEnv>,
+        pos_count: usize,
+        named_names: Vec<Symbol>,
+    },
     /// WI-284: record a node's inferred type. Pushed by [`push_visit`]
     /// just under the node's Visit, so when it pops the node's
     /// `TypeResult` is on top of `results`. Peeks that result — never
@@ -4608,8 +4949,11 @@ pub fn type_check_node(
     // firing is enabled) and thread them into every per-node `fire_simp`, so the
     // Apply/Constructor build frames no longer re-scan the functor buckets at each
     // node. Empty when `simp_enabled` is false — `fire_simp` is then never called.
-    let simp_rids: Vec<RuleId> =
-        if simp_enabled { kb.simp_equation_rids() } else { Vec::new() };
+    let simp_rids: Vec<RuleId> = if simp_enabled {
+        kb.simp_equation_rids()
+    } else {
+        Vec::new()
+    };
     type_check_node_gated(kb, env, occ, expected, simp_enabled, &simp_rids)
 }
 
@@ -4639,19 +4983,34 @@ pub fn type_check_node_gated(
     // as the fuel-bounded `simp_rewrite::run` did) instead of recursing the
     // host stack to overflow. Children inherit the fuel unchanged; only a
     // fire spends it. Matches the WI-285 iterative discipline.
-    push_visit(&mut work, Rc::clone(occ), Env::new(env), expected, super::simp_rewrite::SIMP_FUEL);
+    push_visit(
+        &mut work,
+        Rc::clone(occ),
+        Env::new(env),
+        expected,
+        super::simp_rewrite::SIMP_FUEL,
+    );
     while let Some(op) = work.pop() {
         match op {
-            TypeWorkOp::Visit { occ, env, expected, fuel } => {
-                visit_type(kb, occ, env, expected, fuel, &mut work, &mut results)
-            }
+            TypeWorkOp::Visit {
+                occ,
+                env,
+                expected,
+                fuel,
+            } => visit_type(kb, occ, env, expected, fuel, &mut work, &mut results),
             TypeWorkOp::Build(frame) => {
                 build_type(kb, frame, simp_enabled, simp_rids, &mut work, &mut results)
             }
         }
     }
-    debug_assert_eq!(results.len(), 1, "iterative typer: expected exactly one result");
-    results.pop().expect("iterative typer: missing final result")
+    debug_assert_eq!(
+        results.len(),
+        1,
+        "iterative typer: expected exactly one result"
+    );
+    results
+        .pop()
+        .expect("iterative typer: missing final result")
 }
 
 /// Type-check a bare-identifier reference (Ref / Ident / VarRef) by
@@ -4723,7 +5082,11 @@ fn check_bare_ref(
         // today), so the row must be too.
         let ret = Value::term(ret_ty);
         let ret = open_existential_return(
-            kb, impl_parent_sort_of_op(kb, sym), &ret, occ.span, occ.owner,
+            kb,
+            impl_parent_sort_of_op(kb, sym),
+            &ret,
+            occ.span,
+            occ.owner,
         )
         .unwrap_or(ret);
         return Ok(TypeResult::pure_value(ret, env.clone(), Rc::clone(occ)));
@@ -4742,7 +5105,8 @@ fn check_bare_ref(
     // `Type` slot: gating on the expected type keeps a stray sort name in an
     // ordinary value position the loud `UnresolvedName` it is today, rather than
     // silently typing as a type value.
-    if kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) && expects_reflect_type(kb, expected)
+    if kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort)
+        && expects_reflect_type(kb, expected)
     {
         let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
         return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
@@ -4764,7 +5128,11 @@ fn check_bare_ref(
     // it ends, with a diagnostic that says what it actually is.
     if kb.has_kind(sym, crate::intern::SymbolKind::EquationFunctor) {
         let census = super::simp_rewrite::equation_clause_census(kb, sym);
-        return Err(TypeError::UnreducedEquationFunctor { span, functor: sym, census });
+        return Err(TypeError::UnreducedEquationFunctor {
+            span,
+            functor: sym,
+            census,
+        });
     }
     Err(TypeError::UnresolvedName { span, name: sym })
 }
@@ -4821,7 +5189,10 @@ fn relation_reference_type_applied(
     let arg_err = |kb: &KnowledgeBase, msg: String| TypeError::Other {
         site: TypeError::here(),
         span,
-        context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
+        context: TypeErrorContext::Rule {
+            name: sym,
+            field: RuleField::Whole,
+        },
         expected: "supplied arguments that bind the relation's free columns".to_string(),
         actual: format!("{} (relation `{}`)", msg, kb.qualified_name_of(sym)),
     };
@@ -4830,8 +5201,11 @@ fn relation_reference_type_applied(
     // argument (positionals first, then named) binds. A bad arity / unknown param /
     // double-bind is a loud error.
     let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-    let column_names: Vec<Symbol> =
-        columns.iter().map(|c| c.name).filter(|n| seen.insert(*n)).collect();
+    let column_names: Vec<Symbol> = columns
+        .iter()
+        .map(|c| c.name)
+        .filter(|n| seen.insert(*n))
+        .collect();
     let named_keys: Vec<Symbol> = named_args.iter().map(|(k, _)| *k).collect();
     let bound = resolve_relation_arg_columns(&column_names, pos_args.len(), &named_keys)
         .map_err(|e| arg_err(kb, e.message(kb)))?;
@@ -4915,7 +5289,10 @@ fn relation_columns_across_clauses(
     let head_err = |kb: &KnowledgeBase, msg: &str| TypeError::Other {
         site: TypeError::here(),
         span,
-        context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
+        context: TypeErrorContext::Rule {
+            name: sym,
+            field: RuleField::Whole,
+        },
         expected: "a relation with a uniform, simple-variable head interface".to_string(),
         actual: format!("{} (rule `{}`)", msg, kb.qualified_name_of(sym)),
     };
@@ -4979,7 +5356,10 @@ fn relation_columns_across_clauses(
                     return Err(TypeError::Other {
                         site: TypeError::here(),
                         span,
-                        context: TypeErrorContext::Rule { name: sym, field: RuleField::Whole },
+                        context: TypeErrorContext::Rule {
+                            name: sym,
+                            field: RuleField::Whole,
+                        },
                         expected: "a common column type across relation clauses".to_string(),
                         actual: format!("disjoint types for column `{}`", kb.local_name_of(cname)),
                     });
@@ -5063,7 +5443,13 @@ fn relation_type_from_columns(
     // (Typing §3). Pinned HERE (at the value site), not on the sort — a concrete override on
     // the abstract sort op would widen it (WI-347); the sort threads `E` abstractly.
     let error_row = error_effect_row(kb);
-    Ok(assemble_relation_type(kb, relation_sym, &columns, error_row, sp))
+    Ok(assemble_relation_type(
+        kb,
+        relation_sym,
+        &columns,
+        error_row,
+        sp,
+    ))
 }
 
 /// WI-714 — the canonical `{Error}` access-effect row (a `present(Error)` effects row), the
@@ -5136,10 +5522,12 @@ fn projection_columns(
     let fields = match extract_type(kb, schema) {
         TypeExtractor::NamedTuple(fs) => fs,
         _ => {
-            return Err("`Project` operand `T` must be a named-tuple type (a relation with at \
+            return Err(
+                "`Project` operand `T` must be a named-tuple type (a relation with at \
                         least two named columns); a 1-collapse / membership schema has no \
                         named column to select by name"
-                .to_string())
+                    .to_string(),
+            )
         }
     };
     // Resolve each source column against the schema by SHORT name — the schema field
@@ -5172,23 +5560,30 @@ fn projection_columns(
 /// `r.(person: name, years: age)`. A named tuple is the natural carrier because the keep spec
 /// IS a map from result key to source name, and there are no singleton types (WI-759), so the
 /// source name reaches type position only as a denoted.
-fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol, String)>, String> {
+fn keep_spec_projections(
+    kb: &KnowledgeBase,
+    keep: &Value,
+) -> Result<Vec<(Symbol, String)>, String> {
     let TypeExtractor::NamedTuple(fields) = extract_type(kb, keep) else {
-        return Err("`Project` operand `Keep` must be a named-tuple type mapping each result \
+        return Err(
+            "`Project` operand `Keep` must be a named-tuple type mapping each result \
                     key to its source column name (`Keep = (person: \"name\")`)"
-            .to_string());
+                .to_string(),
+        );
     };
     let projections: Vec<(Symbol, String)> = fields
         .iter()
         .map(|(result_key, source)| {
-            denoted_name(kb, source).map(|s| (*result_key, s)).ok_or_else(|| {
-                format!(
+            denoted_name(kb, source)
+                .map(|s| (*result_key, s))
+                .ok_or_else(|| {
+                    format!(
                     "`Project` keep-spec entry `{}` must name its source column as a string in \
                      type position (a `denoted`), which is how a compile-time name reaches a \
                      type argument",
                     short_name_of(kb.local_name_of(*result_key))
                 )
-            })
+                })
         })
         .collect::<Result<_, _>>()?;
     // WI-763 — a duplicate RESULT key. The dot surface rejects this at parse
@@ -5214,7 +5609,10 @@ fn keep_spec_projections(kb: &KnowledgeBase, keep: &Value) -> Result<Vec<(Symbol
     // comparison (WI-638 mode 3), not a cross-scope symbol identity (WI-672).
     for (i, (key, _)) in projections.iter().enumerate() {
         let key_name = short_name_of(kb.local_name_of(*key));
-        if projections[..i].iter().any(|(k, _)| short_name_of(kb.local_name_of(*k)) == key_name) {
+        if projections[..i]
+            .iter()
+            .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == key_name)
+        {
             return Err(format!(
                 "`Project` keep spec names the result key `{key_name}` twice; each key is a \
                  distinct column of the projected schema, so it must appear once"
@@ -5300,9 +5698,14 @@ fn build_relation_projection(
     // The runtime spec: a `Value::Tuple` mapping each RESULT key to its source column
     // NAME (a `Value::Str`), in projection order. `project_run` selects `r`'s column of
     // that source name and re-keys it to the result key.
-    let spec_named: Vec<(Symbol, Value)> =
-        projections.iter().map(|(k, src)| (*k, Value::Str(src.clone()))).collect();
-    let spec = Value::Tuple { pos: Vec::new().into(), named: spec_named.into() };
+    let spec_named: Vec<(Symbol, Value)> = projections
+        .iter()
+        .map(|(k, src)| (*k, Value::Str(src.clone())))
+        .collect();
+    let spec = Value::Tuple {
+        pos: Vec::new().into(),
+        named: spec_named.into(),
+    };
     let pass = super::simp_rewrite::simp_pass(kb);
     // Splice the spec as a `Term` carrier (the `project_run` `spec: Term` slot); the
     // `Expr::Spliced` typer arm reads `inferred_type`, so stamp it (as `where`/`join` do).
@@ -5325,7 +5728,9 @@ fn build_relation_projection(
     });
     let Some(keep_param) = keep_param else {
         return Some(Err(projection_type_error(
-            &TypeErrorContext::OperationReturn { op_name: project_run },
+            &TypeErrorContext::OperationReturn {
+                op_name: project_run,
+            },
             Some(occ.span.span),
             &format!(
                 "`anthill.prelude.Relation.project_run` must declare a `{}` type parameter — \
@@ -5373,7 +5778,12 @@ fn build_relation_projection(
             effects: recv_effects.to_vec(),
             node: Rc::clone(receiver_node),
         }),
-        Ok(TypeResult { ty: term_ty, env: env.clone(), effects: Vec::new(), node: spliced }),
+        Ok(TypeResult {
+            ty: term_ty,
+            env: env.clone(),
+            effects: Vec::new(),
+            node: spliced,
+        }),
     ];
     Some(check_apply_iter(
         kb,
@@ -5402,11 +5812,15 @@ fn relation_column_access_parts(
     field: &Rc<NodeOccurrence>,
 ) -> Option<(Rc<NodeOccurrence>, String)> {
     match field.as_expr()? {
-        Expr::DotApply { receiver, name, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            Some((Rc::clone(receiver), short_name_of(kb.local_name_of(*name)).to_string()))
-        }
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some((
+            Rc::clone(receiver),
+            short_name_of(kb.local_name_of(*name)).to_string(),
+        )),
         _ => None,
     }
 }
@@ -5478,7 +5892,13 @@ fn try_relation_projection_tuple(
     named_results: &[Result<TypeResult, TypeError>],
     occ: &Rc<NodeOccurrence>,
 ) -> Option<Result<TypeResult, TypeError>> {
-    if !matches!(occ.as_expr(), Some(Expr::Constructor { from_projection: true, .. })) {
+    if !matches!(
+        occ.as_expr(),
+        Some(Expr::Constructor {
+            from_projection: true,
+            ..
+        })
+    ) {
         return None;
     }
     // A TOTAL guard, not a `debug_assert`. Both conditions are implied by the mark —
@@ -5512,8 +5932,11 @@ fn try_relation_projection_tuple(
         projections.push((*label, source));
     }
     let receiver = receiver?;
-    let columns =
-        projections.iter().map(|(_, src)| src.as_str()).collect::<Vec<_>>().join(", ");
+    let columns = projections
+        .iter()
+        .map(|(_, src)| src.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     // VERIFIED, not assumed (the loop above) — every field shares this receiver, so taking
     // the FIRST field's receiver is sound and not merely licensed by the mark. The hazard
     // the check closes: the mark rides through rewrites (`simp_rewrite::reassemble` carries
@@ -5554,7 +5977,9 @@ fn try_relation_projection_tuple(
     let recv_ty = projection_receiver_type(kb, env, &receiver);
     let (Some(receiver), Some(recv_ty)) = (lowered, recv_ty) else {
         return Some(Err(projection_type_error(
-            &TypeErrorContext::DotProjection { member: projections[0].0 },
+            &TypeErrorContext::DotProjection {
+                member: projections[0].0,
+            },
             Some(occ.span.span),
             &format!(
                 "this is a column projection `({columns})` over ONE receiver, but the \
@@ -5579,7 +6004,16 @@ fn try_relation_projection_tuple(
         .first()
         .map(|r| r.as_ref().expect("aggregator").effects.as_slice())
         .unwrap_or(&[]);
-    build_relation_projection(kb, env, flow, &recv_ty, recv_effects, &receiver, &projections, occ)
+    build_relation_projection(
+        kb,
+        env,
+        flow,
+        &recv_ty,
+        recv_effects,
+        &receiver,
+        &projections,
+        occ,
+    )
 }
 
 /// WI-714 — the identity of a rule-head argument SLOT, stable across a relation's
@@ -5624,7 +6058,11 @@ pub(crate) fn rule_head_var_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<(SlotK
     let globals = kb.rule_globals(rid);
     let n = globals.len();
     let (pos_args, named_args) = match kb.get_term(head) {
-        Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => (pos_args.clone(), named_args.clone()),
         _ => return Vec::new(),
     };
     let mut slots: Vec<(SlotKey, Symbol, u32)> =
@@ -5681,9 +6119,15 @@ fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseCol
 /// reference over it is rejected loudly. A fully-ground compound (`pair(1, 2)`,
 /// no variable) is a legitimate filter and returns `false`.
 fn clause_head_has_compound_var(kb: &KnowledgeBase, rid: RuleId) -> bool {
-    let Some(head) = kb.fact_head_term(rid) else { return false };
+    let Some(head) = kb.fact_head_term(rid) else {
+        return false;
+    };
     let (pos_args, named_args) = match kb.get_term(head) {
-        Term::Fn { pos_args, named_args, .. } => (pos_args.clone(), named_args.clone()),
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => (pos_args.clone(), named_args.clone()),
         _ => return false,
     };
     let is_compound_var = |kb: &KnowledgeBase, arg: TermId| -> bool {
@@ -5719,10 +6163,9 @@ pub(crate) enum RelationArgError {
 impl RelationArgError {
     pub(crate) fn message(&self, kb: &KnowledgeBase) -> String {
         match self {
-            Self::PositionalOutOfRange(i) => format!(
-                "positional argument #{} has no free column to bind",
-                i + 1
-            ),
+            Self::PositionalOutOfRange(i) => {
+                format!("positional argument #{} has no free column to bind", i + 1)
+            }
             Self::UnknownParam(k) => format!(
                 "named argument `{}` names no free column",
                 kb.local_name_of(*k)
@@ -5784,7 +6227,9 @@ pub(crate) fn resolve_relation_arg_columns(
 /// `expected` whose own head sort is likewise unresolvable.
 fn expects_reflect_type(kb: &KnowledgeBase, expected: Option<&Value>) -> bool {
     let Some(exp) = expected else { return false };
-    let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else { return false };
+    let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else {
+        return false;
+    };
     extract_sort_ref_sym(kb, exp) == Some(type_sym)
 }
 
@@ -5873,7 +6318,15 @@ fn operation_as_function_value(
     // arity, whatever its sole parameter's type happens to look like. `get_a(t: (a,
     // b))` mints arity 1 even though `param` is a 2-field `named_tuple`, so it no
     // longer passes for the genuinely 2-parameter `(p: A, q: B) -> R`.
-    Some(make_arrow_value(kb, &param, &return_type, &op.effects, op.params.len(), span, owner))
+    Some(make_arrow_value(
+        kb,
+        &param,
+        &return_type,
+        &op.effects,
+        op.params.len(),
+        span,
+        owner,
+    ))
 }
 
 /// WI-700: is `sym` a NULLARY (zero-parameter) operation? Only a nullary op has both
@@ -5962,8 +6415,10 @@ fn attach_eta_dispatch_dict(
     if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
         unify_types(kb, &mut subst, &ep, &fp);
     }
-    let caller_requires =
-        env.enclosing_dict_chain().cloned().unwrap_or_else(DictChain::empty);
+    let caller_requires = env
+        .enclosing_dict_chain()
+        .cloned()
+        .unwrap_or_else(DictChain::empty);
     // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
     // BRACKET — there is no call here to write one on.
     //
@@ -5987,7 +6442,12 @@ fn attach_eta_dispatch_dict(
     let selected = if names_any_requirement_slot(kb, sym) {
         match lookup_operation_info_full(kb, sym) {
             Some(op) => selections_from_slot_bindings(
-                kb, &subst, &op, sym, Vec::new(), Some(occ.span.span),
+                kb,
+                &subst,
+                &op,
+                sym,
+                Vec::new(),
+                Some(occ.span.span),
             )?,
             None => Vec::new(),
         }
@@ -5995,8 +6455,13 @@ fn attach_eta_dispatch_dict(
         Vec::new()
     };
     match build_concrete_dispatch_dict(
-        kb, &subst, parent, env.enclosing_sort(), &caller_requires,
-        env.param_rigids(), &selected,
+        kb,
+        &subst,
+        parent,
+        env.enclosing_sort(),
+        &caller_requires,
+        env.param_rigids(),
+        &selected,
     ) {
         Ok(Some(dict)) => {
             occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
@@ -6110,9 +6575,18 @@ fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Valu
 /// which is the very thing WI-443 removed.
 fn relation_ref_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<Value> {
     let name = match &arg.kind {
-        NodeKind::Expr { expr: Expr::VarRef { name }, .. }
-        | NodeKind::Expr { expr: Expr::Ref(name), .. }
-        | NodeKind::Expr { expr: Expr::Ident(name), .. } => *name,
+        NodeKind::Expr {
+            expr: Expr::VarRef { name },
+            ..
+        }
+        | NodeKind::Expr {
+            expr: Expr::Ref(name),
+            ..
+        }
+        | NodeKind::Expr {
+            expr: Expr::Ident(name),
+            ..
+        } => *name,
         _ => return None,
     };
     if !kb.cites_a_relation(name) {
@@ -6129,7 +6603,13 @@ fn relation_ref_arg_type(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Op
 /// ahead of the hints, because a staged argument is visited before any hint exists and
 /// these are exactly the arguments a hint is for.
 fn is_hof_shaped(arg: &Rc<NodeOccurrence>) -> bool {
-    matches!(&arg.kind, NodeKind::Expr { expr: Expr::Lambda { .. } | Expr::VarRef { .. }, .. })
+    matches!(
+        &arg.kind,
+        NodeKind::Expr {
+            expr: Expr::Lambda { .. } | Expr::VarRef { .. },
+            ..
+        }
+    )
 }
 
 /// WI-793: the UNIFIED `pos_args ++ named_args` index of the argument bound to parameter
@@ -6147,7 +6627,10 @@ fn param_arg_index(
     if param_pos < pos_len {
         return Some(param_pos);
     }
-    named_args.iter().position(|(n, _)| same_label(kb, *n, psym)).map(|k| pos_len + k)
+    named_args
+        .iter()
+        .position(|(n, _)| same_label(kb, *n, psym))
+        .map(|k| pos_len + k)
 }
 
 /// WI-793: the argument at a unified [`param_arg_index`].
@@ -6182,7 +6665,9 @@ fn param_sym_for_arg_index(
         return ps.get(unified).map(|(s, _)| *s);
     }
     let label = named_args.get(unified - pos_len)?.0;
-    ps.iter().find(|(s, _)| same_label(kb, *s, label)).map(|(s, _)| *s)
+    ps.iter()
+        .find(|(s, _)| same_label(kb, *s, label))
+        .map(|(s, _)| *s)
 }
 
 /// WI-485 + WI-793: the param→argument-type map that lets a sibling callback param's
@@ -6257,7 +6742,9 @@ fn known_arg_types_and_staged(
         let Some(unified) = param_arg_index(kb, *psym, j, pos_args.len(), named_args) else {
             continue;
         };
-        let Some(a) = arg_at(pos_args, named_args, unified) else { continue };
+        let Some(a) = arg_at(pos_args, named_args, unified) else {
+            continue;
+        };
         // A sibling callback param may project this arg's schema (`join`'s
         // `cond: (c: r1.T, q: r2.T) -> Bool`). The env covers a let-bound receiver
         // (WI-723); a bare RULE-reference arg (`join(r1, r2, …)`'s `r2`) is a
@@ -6360,8 +6847,10 @@ fn op_tp_pinning_params(
     }
     let ps = &op.params;
     // ONE walk per param type, shared by the hof-side scan and the collect.
-    let mentions: Vec<bool> =
-        ps.iter().map(|(_, t)| type_mentions_op_tp(kb, t, &tp_vars)).collect();
+    let mentions: Vec<bool> = ps
+        .iter()
+        .map(|(_, t)| type_mentions_op_tp(kb, t, &tp_vars))
+        .collect();
     let some_hof_mentions_tp = ps.iter().enumerate().any(|(j, (psym, _))| {
         mentions[j]
             && param_arg_index(kb, *psym, j, pos_args.len(), named_args)
@@ -6398,7 +6887,11 @@ fn type_term_mentions_op_tp(kb: &KnowledgeBase, tid: TermId, tp_vars: &[VarId]) 
         return true;
     }
     match kb.get_term(tid) {
-        Term::Fn { pos_args, named_args, .. } => pos_args
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => pos_args
             .iter()
             .chain(named_args.iter().map(|(_, t)| t))
             .any(|c| type_term_mentions_op_tp(kb, *c, tp_vars)),
@@ -6555,10 +7048,16 @@ fn eliminate_callback_hint_projection(
 /// SORT-param refs but keys its functor test on sort-param symbols only.
 fn type_term_mentions_type_var(kb: &KnowledgeBase, tid: TermId) -> bool {
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.TypeVar"
                 || pos_args.iter().any(|a| type_term_mentions_type_var(kb, *a))
-                || named_args.iter().any(|(_, a)| type_term_mentions_type_var(kb, *a))
+                || named_args
+                    .iter()
+                    .any(|(_, a)| type_term_mentions_type_var(kb, *a))
         }
         _ => false,
     }
@@ -6592,7 +7091,10 @@ fn nested_call_arg_hint(
     let pt = param_type?;
     let is_call_arg = matches!(
         &arg.kind,
-        NodeKind::Expr { expr: Expr::Apply { .. }, .. }
+        NodeKind::Expr {
+            expr: Expr::Apply { .. },
+            ..
+        }
     );
     let pins_by_equality = resolved_type_is_ground(kb, pt)
         && !matches!(pt, Value::Term { id: t, .. } if type_term_mentions_type_var(kb, *t));
@@ -6643,9 +7145,18 @@ fn type_slot_arg_hint(
 /// of every call and constructor the typer visits.
 fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     let head = match &arg.kind {
-        NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => *s,
-        NodeKind::Expr { expr: Expr::VarRef { name }, .. } => *name,
-        NodeKind::Expr { expr: Expr::Apply { functor, .. }, .. } => *functor,
+        NodeKind::Expr {
+            expr: Expr::Ref(s) | Expr::Ident(s),
+            ..
+        } => *s,
+        NodeKind::Expr {
+            expr: Expr::VarRef { name },
+            ..
+        } => *name,
+        NodeKind::Expr {
+            expr: Expr::Apply { functor, .. },
+            ..
+        } => *functor,
         _ => return false,
     };
     kb.kind_of(head) == Some(crate::intern::SymbolKind::Sort)
@@ -6804,7 +7315,9 @@ fn try_fire_dot_rule(
         if !same_sort_canonical(kb, recv_sort, encl) && !sort_provides(kb, recv_sort, encl) {
             continue;
         }
-        let Some((lhs, rhs, _fresh)) = super::simp_rewrite::open_equation(kb, rid) else { continue };
+        let Some((lhs, rhs, _fresh)) = super::simp_rewrite::open_equation(kb, rid) else {
+            continue;
+        };
         if let Some(subst) = match_dot_rule_lhs(kb, lhs, member, receiver, pos_args, named_args) {
             return super::simp_rewrite::instantiate_rhs(kb, rhs, &subst, from).map(Some);
         }
@@ -6849,11 +7362,21 @@ fn find_spec_op_for_provided_sort(
         // A value-fact SortProvidesInfo (denoted-bearing spec) carries no spec
         // base via the term-only path; occurrence dispatch is gated effect-
         // expressions-as-types work, so skip rather than panic on a value head.
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else {
+            continue;
+        };
         // Carrier-keyed: the receiver's sort IS the provider — `(3).min(5)` →
         // `Ord.min` via `fact Ord[Int]`. WI-672: canonical sort identity (see
         // `same_sort_canonical`), not `same_symbol`'s last-segment bridge.
@@ -6920,7 +7443,10 @@ fn find_spec_op_for_provided_sort(
     // prior first-match behavior. See kernel-language.md §8.7.
     let tied: Vec<Symbol> = nearest.iter().map(|(s, _)| *s).collect();
     if let Some(winner) = most_refined_spec(kb, &tied) {
-        if let Some((_, op)) = nearest.iter().find(|(s, _)| same_sort_canonical(kb, *s, winner)) {
+        if let Some((_, op)) = nearest
+            .iter()
+            .find(|(s, _)| same_sort_canonical(kb, *s, winner))
+        {
             return Some(*op);
         }
     }
@@ -6941,7 +7467,9 @@ fn most_refined_spec(kb: &mut KnowledgeBase, specs: &[Symbol]) -> Option<Symbol>
             // WI-672 canonical: `specs`/`required_sort` are resolved (stdlib specs
             // qualified; top-level user specs self-consistent — see `entries_cover`).
             same_sort_canonical(kb, other, cand)
-                || chain.iter().any(|e| same_sort_canonical(kb, e.required_sort, other))
+                || chain
+                    .iter()
+                    .any(|e| same_sort_canonical(kb, e.required_sort, other))
         }) {
             return Some(cand);
         }
@@ -6991,7 +7519,10 @@ fn find_spec_op_for_required_sort(
             continue;
         }
         let spec_sym = entry.required_sort;
-        if definers.iter().any(|(s, _)| same_sort_canonical(kb, *s, spec_sym)) {
+        if definers
+            .iter()
+            .any(|(s, _)| same_sort_canonical(kb, *s, spec_sym))
+        {
             continue;
         }
         let spec_term = kb.alloc(Term::Ref(spec_sym));
@@ -7005,7 +7536,10 @@ fn find_spec_op_for_required_sort(
     // Multi-spec TIE: prefer the requires-REFINEMENT (mirrors the provides resolver).
     let tied: Vec<Symbol> = definers.iter().map(|(s, _)| *s).collect();
     if let Some(winner) = most_refined_spec(kb, &tied) {
-        if let Some((_, op)) = definers.iter().find(|(s, _)| same_sort_canonical(kb, *s, winner)) {
+        if let Some((_, op)) = definers
+            .iter()
+            .find(|(s, _)| same_sort_canonical(kb, *s, winner))
+        {
             return Some(*op);
         }
     }
@@ -7187,11 +7721,11 @@ fn bind_var_pattern_to_node(
 fn dot_member_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
     match kb.get_term(t) {
         Term::Ref(s) | Term::Ident(s) => Some(*s),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            Some(*functor)
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
         _ => None,
     }
 }
@@ -7206,11 +7740,11 @@ fn collect_positional_arg_value_pats(kb: &KnowledgeBase, args_t: TermId) -> Opti
     // `ApplyArg(name: <none/some>, value: <pat>)`.
     for elem in list_to_vec(kb, args_t) {
         let aargs = match kb.get_term(elem) {
-            Term::Fn { functor, named_args, .. }
-                if short_name_of(kb.local_name_of(*functor)) == "ApplyArg" =>
-            {
-                named_args.clone()
-            }
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } if short_name_of(kb.local_name_of(*functor)) == "ApplyArg" => named_args.clone(),
             _ => return None,
         };
         // Positional only: `name` must be `none()` (a named arg is `some(...)`).
@@ -7250,8 +7784,10 @@ fn visit_type(
     let occ_span = Some(occ.span.span);
     let expr = match &occ.kind {
         NodeKind::Expr { expr, .. } => expr,
-        NodeKind::RuleHead { .. } | NodeKind::Pattern { .. }
-        | NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
+        NodeKind::RuleHead { .. }
+        | NodeKind::Pattern { .. }
+        | NodeKind::Type(_)
+        | NodeKind::EffectExpr(_) => {
             // RuleHead never appears in op/rule body position; Pattern
             // is reached via its parent Expr's pattern slot and handled
             // there, not as a typing target on its own (WI-318).
@@ -7263,7 +7799,11 @@ fn visit_type(
     };
     match expr {
         // ── Iterative cases ─────────────────────────────────────
-        Expr::Let { pattern, value, body } => {
+        Expr::Let {
+            pattern,
+            value,
+            body,
+        } => {
             // WI-511: pattern is a Pattern-kind occurrence, read occurrence-native
             // by the env-extension helpers — no `pattern_to_term` bridge.
             let pattern = Rc::clone(pattern);
@@ -7275,8 +7815,8 @@ fn visit_type(
             // downstream of this line (WI-399 projection elimination, WI-400
             // alias canonicalization, the value's expected type, and the
             // WI-379 conformance check at `LetAfterValue`) is unchanged.
-            let annotation = extract_pattern_type_ann(&pattern)
-                .map(|ann| pattern_annotation_value(kb, ann));
+            let annotation =
+                extract_pattern_type_ann(&pattern).map(|ann| pattern_annotation_value(kb, ann));
             // WI-399: discharge an expression-carried projection (`s.cell.T`) in the
             // let annotation HERE, where `env` resolves the receiver's type — the
             // let-binding peer of the op-call elimination in `check_apply_iter`. The
@@ -7308,13 +7848,19 @@ fn visit_type(
                         &ann,
                         occ.span,
                     );
-                    let var =
-                        extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
+                    let var = extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::LetBinding { var };
                     // WI-459: a let-annotation is a BODY-site projection — the receiver is
                     // the in-scope value itself, there is no call argument to re-key to
                     // (`None`).
-                    match eliminate_type_projections(kb, &ann, &env.var_bindings, None, &ctx, occ_span) {
+                    match eliminate_type_projections(
+                        kb,
+                        &ann,
+                        &env.var_bindings,
+                        None,
+                        &ctx,
+                        occ_span,
+                    ) {
                         Ok(elim) => {
                             // WI-1059: the rewrite lands in the STORED tree (`LetFinal`
                             // reassembles the `Let` from its children so a rewrite in any
@@ -7367,7 +7913,10 @@ fn visit_type(
             // the value's expected type (WI-270) — thread it directly.
             push_visit(work, value_occ, env, annotation, fuel);
         }
-        Expr::Match { scrutinee, branches } => {
+        Expr::Match {
+            scrutinee,
+            branches,
+        } => {
             let scrutinee_occ = Rc::clone(scrutinee);
             let branches_cloned: Vec<MatchBranch> = branches
                 .iter()
@@ -7427,7 +7976,9 @@ fn visit_type(
             let param_type: Value = ann_type
                 .or_else(|| {
                     // Checking direction: the expected arrow's param slot, as-is.
-                    expected.as_ref().and_then(|exp| extract_function_param_type(kb, exp))
+                    expected
+                        .as_ref()
+                        .and_then(|exp| extract_function_param_type(kb, exp))
                 })
                 .unwrap_or_else(|| {
                     let fresh = kb.intern("?param");
@@ -7442,7 +7993,11 @@ fn visit_type(
             // components; this is the channel WI-794 measured as unchecked.
             let mut binder_errors = Vec::new();
             let param = bind_and_label_pattern(
-                kb, &mut lambda_env, &param, Some(param_type.clone()), &mut binder_errors,
+                kb,
+                &mut lambda_env,
+                &param,
+                Some(param_type.clone()),
+                &mut binder_errors,
             );
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
@@ -7467,27 +8022,37 @@ fn visit_type(
         }
 
         // ── Leaf cases ──────────────────────────────────────────
-        Expr::Const(Literal::Int(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Int64"), unwrap_env(env), Rc::clone(&occ)),
-        )),
+        Expr::Const(Literal::Int(_)) => results.push(Ok(TypeResult::pure(
+            kb.make_sort_ref_by_name("Int64"),
+            unwrap_env(env),
+            Rc::clone(&occ),
+        ))),
         // A `BigInt` literal is one that exceeded `i64` at parse — it cannot be
         // an `Int` value, so it types as `BigInt`. (Previously lumped with
         // `Int`; the WI-379 args-before-expected order made that mis-typing
         // visible — `100…0 + 100…0` declared `-> BigInt` pinned `Numeric.T` to
         // the literal's type from the argument, so a literal typed `Int` made
         // the sum `Int`, rejected against the `BigInt` return.)
-        Expr::Const(Literal::BigInt(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("BigInt"), unwrap_env(env), Rc::clone(&occ)),
-        )),
-        Expr::Const(Literal::Float(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Float"), unwrap_env(env), Rc::clone(&occ)),
-        )),
-        Expr::Const(Literal::String(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("String"), unwrap_env(env), Rc::clone(&occ)),
-        )),
-        Expr::Const(Literal::Bool(_)) => results.push(Ok(
-            TypeResult::pure(kb.make_sort_ref_by_name("Bool"), unwrap_env(env), Rc::clone(&occ)),
-        )),
+        Expr::Const(Literal::BigInt(_)) => results.push(Ok(TypeResult::pure(
+            kb.make_sort_ref_by_name("BigInt"),
+            unwrap_env(env),
+            Rc::clone(&occ),
+        ))),
+        Expr::Const(Literal::Float(_)) => results.push(Ok(TypeResult::pure(
+            kb.make_sort_ref_by_name("Float"),
+            unwrap_env(env),
+            Rc::clone(&occ),
+        ))),
+        Expr::Const(Literal::String(_)) => results.push(Ok(TypeResult::pure(
+            kb.make_sort_ref_by_name("String"),
+            unwrap_env(env),
+            Rc::clone(&occ),
+        ))),
+        Expr::Const(Literal::Bool(_)) => results.push(Ok(TypeResult::pure(
+            kb.make_sort_ref_by_name("Bool"),
+            unwrap_env(env),
+            Rc::clone(&occ),
+        ))),
         // `Handle(_)` literals are reserved for materialized runtime
         // values; they never appear in surface source. If one shows up,
         // it's a post-elaboration form being re-typed.
@@ -7498,24 +8063,50 @@ fn visit_type(
         // else adopt the context's expected type; else we genuinely don't know it
         // → loud error, never a fabricated one.
         Expr::Spliced(_) => match occ.inferred_type().or_else(|| expected.clone()) {
-            Some(ty) => {
-                results.push(Ok(TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))))
-            }
+            Some(ty) => results.push(Ok(TypeResult::pure_value(
+                ty,
+                unwrap_env(env),
+                Rc::clone(&occ),
+            ))),
             None => results.push(Err(TypeError::BottomExpr { span: occ_span })),
         },
         Expr::Ref(sym) => {
-            let r = check_bare_ref(kb, &*env, &env.flow, *sym, occ_span, &occ, expected.as_ref());
+            let r = check_bare_ref(
+                kb,
+                &*env,
+                &env.flow,
+                *sym,
+                occ_span,
+                &occ,
+                expected.as_ref(),
+            );
             results.push(r);
         }
         Expr::Ident(sym) => {
-            let r = check_bare_ref(kb, &*env, &env.flow, *sym, occ_span, &occ, expected.as_ref());
+            let r = check_bare_ref(
+                kb,
+                &*env,
+                &env.flow,
+                *sym,
+                occ_span,
+                &occ,
+                expected.as_ref(),
+            );
             results.push(r);
         }
         Expr::VarRef { name } => {
             // WI-275: thread the expected type so a bare operation reference in a
             // function-typed position is eta-lifted to a function value rather than
             // denoting its return type.
-            let r = check_bare_ref(kb, &*env, &env.flow, *name, occ_span, &occ, expected.as_ref());
+            let r = check_bare_ref(
+                kb,
+                &*env,
+                &env.flow,
+                *name,
+                occ_span,
+                &occ,
+                expected.as_ref(),
+            );
             results.push(r);
         }
 
@@ -7524,7 +8115,12 @@ fn visit_type(
         // forward order, then a Build frame that drains the
         // pre-computed arg results and runs the subst / dispatch /
         // classify logic without recursing through `type_check_node`.
-        Expr::Apply { functor, pos_args, named_args, .. } => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => {
             let functor = *functor;
             // WI-707: a SORT-headed application in a slot that expects a `Type` is a
             // parameterized TYPE — `is_modifiable(Cell[V = Int64])` — not a call. Its
@@ -7534,14 +8130,16 @@ fn visit_type(
             // (`Map[K = String, V = Cell[V = Int64]]`). The Build frame turns the node
             // into the `Type` result; eval assembles the type term (`start_sort_type`).
             // `None` for every ordinary call, which then takes the hints below unchanged.
-            let sort_app_hint: Option<Value> =
-                if kb.kind_of(functor) == Some(crate::intern::SymbolKind::Sort)
-                    && expects_reflect_type(kb, expected.as_ref())
-                {
-                    Some(Value::term(kb.make_sort_ref_by_name("anthill.prelude.Type")))
-                } else {
-                    None
-                };
+            let sort_app_hint: Option<Value> = if kb.kind_of(functor)
+                == Some(crate::intern::SymbolKind::Sort)
+                && expects_reflect_type(kb, expected.as_ref())
+            {
+                Some(Value::term(
+                    kb.make_sort_ref_by_name("anthill.prelude.Type"),
+                ))
+            } else {
+                None
+            };
             // WI-657(5): keep `pos_args`/`named_args` as the borrowed pattern slots for
             // every local read AND the reversed push_visit loops; clone ONCE into the
             // Build frame below. Previously they were cloned into locals here and cloned
@@ -7561,12 +8159,22 @@ fn visit_type(
             // (fully ground) — the `expected → argument` half of bidirectional
             // inference (`nested_call_arg_hint`). The lookup is gated on the
             // call actually having a lambda/ref or nested-call argument.
-            let has_hof_arg =
-                pos_args.iter().chain(named_args.iter().map(|(_, a)| a)).any(is_hof_shaped);
+            let has_hof_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(is_hof_shaped);
             let has_call_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
-                .any(|a| matches!(&a.kind, NodeKind::Expr { expr: Expr::Apply { .. }, .. }));
+                .any(|a| {
+                    matches!(
+                        &a.kind,
+                        NodeKind::Expr {
+                            expr: Expr::Apply { .. },
+                            ..
+                        }
+                    )
+                });
             // WI-206 / WI-707: a sort-naming argument needs the callee's declared param
             // type as its hint too (`type_slot_arg_hint`), so the param lookup must fire
             // for it — `has_hof_arg` only covers Lambda/VarRef shapes and would miss a
@@ -7600,8 +8208,13 @@ fn visit_type(
                 // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
                 // argument's type, so hint everything and visit everything.
                 let (pos_hints, named_hints) = apply_arg_hints(
-                    kb, functor, op_params.as_ref(), &sort_app_hint,
-                    pos_args, named_args, &known_param_arg_types,
+                    kb,
+                    functor,
+                    op_params.as_ref(),
+                    &sort_app_hint,
+                    pos_args,
+                    named_args,
+                    &known_param_arg_types,
                 );
                 work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
                     occ: occ_clone,
@@ -7678,11 +8291,22 @@ fn visit_type(
                 for (k, &unified) in staged.iter().enumerate().rev() {
                     let arg = arg_at(pos_args, named_args, unified)
                         .expect("WI-793: a staged index was produced by `arg_at` itself");
-                    push_visit(work, Rc::clone(arg), env.clone(), staged_hints[k].clone(), fuel);
+                    push_visit(
+                        work,
+                        Rc::clone(arg),
+                        env.clone(),
+                        staged_hints[k].clone(),
+                        fuel,
+                    );
                 }
             }
         }
-        Expr::Constructor { name, pos_args, named_args, .. } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        } => {
             let name = *name;
             // WI-657(5): borrow the pattern slots for local reads + the push_visit loops;
             // clone once into the Build frame below (was two clones per Constructor).
@@ -7699,7 +8323,11 @@ fn visit_type(
             // constructor` threads. (The `Expr::TupleLit` IR is a non-surface shape whose build
             // frame takes no expected, so a hint on it would be dropped — not recognized here.)
             fn is_tuple_lit(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-                let NodeKind::Expr { expr: Expr::Constructor { name, .. }, .. } = &arg.kind else {
+                let NodeKind::Expr {
+                    expr: Expr::Constructor { name, .. },
+                    ..
+                } = &arg.kind
+                else {
                     return false;
                 };
                 // WI-657(6): O(1) Symbol compare against the cached TupleLiteral symbol.
@@ -7730,7 +8358,15 @@ fn visit_type(
             let has_call_field = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
-                .any(|a| matches!(&a.kind, NodeKind::Expr { expr: Expr::Apply { .. }, .. }));
+                .any(|a| {
+                    matches!(
+                        &a.kind,
+                        NodeKind::Expr {
+                            expr: Expr::Apply { .. },
+                            ..
+                        }
+                    )
+                });
             // WI-462: a TUPLE-LITERAL field value gets the constructor's expected pushed
             // down to its component types (so `some((h, t))` under `Option[(xs.T, …)]`
             // threads `h ⟹ xs.T`); other field values keep the nested-call hint.
@@ -7762,7 +8398,9 @@ fn visit_type(
                     let field = field_types.as_ref().and_then(|fs| fs.get(i)).cloned();
                     if is_tuple_lit(kb, arg) {
                         if let Some((fs, _)) = &field {
-                            if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fs, &expected) {
+                            if let Some(h) =
+                                tuple_field_expected_from_ctor(kb, name, *fs, &expected)
+                            {
                                 return Some(h);
                             }
                         }
@@ -7778,7 +8416,8 @@ fn visit_type(
                 .iter()
                 .map(|(fname, arg)| {
                     if is_tuple_lit(kb, arg) {
-                        if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fname, &expected) {
+                        if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fname, &expected)
+                        {
                             return Some(h);
                         }
                     }
@@ -7814,7 +8453,11 @@ fn visit_type(
         //    Visits + a Build frame that drains their results. No
         //    re-entry into `type_check_node`, so a deep else-if chain
         //    (which nests in the else branch) stays on the heap.
-        Expr::If { condition, then_branch, else_branch } => {
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             let condition = Rc::clone(condition);
             let then_branch = Rc::clone(then_branch);
             let else_branch = Rc::clone(else_branch);
@@ -7834,12 +8477,22 @@ fn visit_type(
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
             // the if's `expected` (WI-270), now under their narrowed Γ.
-            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr { occ: Rc::clone(&occ), env: Rc::clone(&env.types), expected: expected.clone() }));
+            work.push(TypeWorkOp::Build(TypeBuildFrame::IfExpr {
+                occ: Rc::clone(&occ),
+                env: Rc::clone(&env.types),
+                expected: expected.clone(),
+            }));
             push_visit(work, else_branch, else_env, expected.clone(), fuel);
             push_visit(work, then_branch, then_env, expected, fuel);
             push_visit_no_hint(work, condition, env, fuel);
         }
-        Expr::Proof { target, strategy, conclude, body, .. } => {
+        Expr::Proof {
+            target,
+            strategy,
+            conclude,
+            body,
+            ..
+        } => {
             // WI-538 / proposal 025 §"In-body and control-flow proofs":
             // discharge the proof's goal from the local Γ and, on
             // success, `assume` it into Γ for the continuation (the
@@ -7898,7 +8551,9 @@ fn visit_type(
             let elems = elems.clone();
             // WI-270: an outer `List[T = X]` makes X each element's
             // expected, and the empty-list fallback.
-            let element_hint = expected.as_ref().and_then(|exp| extract_type_param(kb, exp, "T"));
+            let element_hint = expected
+                .as_ref()
+                .and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env.types),
@@ -7911,7 +8566,9 @@ fn visit_type(
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let element_hint = expected.as_ref().and_then(|exp| extract_type_param(kb, exp, "T"));
+            let element_hint = expected
+                .as_ref()
+                .and_then(|exp| extract_type_param(kb, exp, "T"));
             work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env.types),
@@ -7974,7 +8631,11 @@ fn visit_type(
                 let fresh = kb.intern("?logical_var");
                 Value::term(kb.make_type_var(fresh))
             });
-            results.push(Ok(TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ))));
+            results.push(Ok(TypeResult::pure_value(
+                ty,
+                unwrap_env(env),
+                Rc::clone(&occ),
+            )));
         }
 
         // WI-279: a value-receiver dot form `?x.member(args)` / `?x.member`.
@@ -7982,7 +8643,12 @@ fn visit_type(
         // resolves `member` against the receiver's least sort and synthesizes
         // the dispatched call. Running here (in the typer, env in hand) is what
         // lets a receiver referencing a let/lambda/match-bound local resolve.
-        Expr::DotApply { receiver, name, pos_args, named_args } => {
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        } => {
             let member = *name;
             let receiver = Rc::clone(receiver);
             // WI-443: only the receiver is pre-typed (its sort drives the
@@ -8068,20 +8734,23 @@ fn reassemble_match(
         Some(Expr::Match { branches, .. }) => branches,
         _ => return Rc::clone(occ),
     };
-    let mut children: Vec<Rc<NodeOccurrence>> =
-        Vec::with_capacity(1 + branch_results.len() * 3);
+    let mut children: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + branch_results.len() * 3);
     children.push(Rc::clone(scr_node));
     debug_assert_eq!(
         branch_patterns.len(),
         branches.len(),
         "WI-803: one relabelled pattern per branch",
     );
-    for ((branch, pattern), r) in
-        branches.iter().zip(branch_patterns.iter()).zip(branch_results.iter())
+    for ((branch, pattern), r) in branches
+        .iter()
+        .zip(branch_patterns.iter())
+        .zip(branch_results.iter())
     {
         // WI-318: emit pattern in for_each_child order.
         children.push(Rc::clone(pattern));
-        children.push(Rc::clone(&r.as_ref().expect("reassemble_match: Ok body").node));
+        children.push(Rc::clone(
+            &r.as_ref().expect("reassemble_match: Ok body").node,
+        ));
         if let Some(g) = &branch.guard {
             children.push(Rc::clone(g));
         }
@@ -8288,8 +8957,17 @@ fn build_type(
         // visit everything" order could not express, and the reason a lambda's binder can
         // now read an element type off a literal receiver.
         TypeBuildFrame::ApplyHints {
-            occ, fn_sym, pos_args, named_args, env, expected, fuel,
-            staged, op_params, sort_app_hint, mut known,
+            occ,
+            fn_sym,
+            pos_args,
+            named_args,
+            env,
+            expected,
+            fuel,
+            staged,
+            op_params,
+            sort_app_hint,
+            mut known,
         } => {
             // Staging is keyed off the callee's declared params, so reaching here with
             // none is not a degraded case to tolerate — it would silently give EVERY
@@ -8315,15 +8993,24 @@ fn build_type(
                 // exactly what this call used before staging existed.
                 if let Ok(r) = &staged_results[k] {
                     if let Some(psym) = param_sym_for_arg_index(
-                        kb, &op_params, unified, pos_args.len(), &named_args,
+                        kb,
+                        &op_params,
+                        unified,
+                        pos_args.len(),
+                        &named_args,
                     ) {
                         known.insert(psym, r.ty.clone());
                     }
                 }
             }
             let (pos_hints, named_hints) = apply_arg_hints(
-                kb, fn_sym, Some(&op_params), &sort_app_hint,
-                &pos_args, &named_args, &known,
+                kb,
+                fn_sym,
+                Some(&op_params),
+                &sort_app_hint,
+                &pos_args,
+                &named_args,
+                &known,
             );
             let staged_pairs: Vec<(usize, Result<TypeResult, TypeError>)> =
                 staged.iter().copied().zip(staged_results).collect();
@@ -8343,17 +9030,36 @@ fn build_type(
                 if staged.contains(&(pos_args.len() + k)) {
                     continue;
                 }
-                push_visit(work, Rc::clone(arg), env.clone(), named_hints[k].clone(), fuel);
+                push_visit(
+                    work,
+                    Rc::clone(arg),
+                    env.clone(),
+                    named_hints[k].clone(),
+                    fuel,
+                );
             }
             for (i, arg) in pos_args.iter().enumerate().rev() {
                 if staged.contains(&i) {
                     continue;
                 }
-                push_visit(work, Rc::clone(arg), env.clone(), pos_hints[i].clone(), fuel);
+                push_visit(
+                    work,
+                    Rc::clone(arg),
+                    env.clone(),
+                    pos_hints[i].clone(),
+                    fuel,
+                );
             }
         }
         TypeBuildFrame::Apply {
-            occ, fn_sym, pos_args, named_args, env, expected, fuel, staged_results,
+            occ,
+            fn_sym,
+            pos_args,
+            named_args,
+            env,
+            expected,
+            fuel,
+            staged_results,
         } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - (total - staged_results.len());
@@ -8365,9 +9071,7 @@ fn build_type(
             // arguments in order; the permutation exists only because a staged argument's
             // result necessarily lands on the results stack before its siblings', whatever
             // its position in the call.
-            let mut arg_results: Vec<Result<TypeResult, TypeError>> = if staged_results
-                .is_empty()
-            {
+            let mut arg_results: Vec<Result<TypeResult, TypeError>> = if staged_results.is_empty() {
                 drained
             } else {
                 let mut slots: Vec<Option<Result<TypeResult, TypeError>>> =
@@ -8387,9 +9091,7 @@ fn build_type(
                 );
                 slots
                     .into_iter()
-                    .map(|s| {
-                        s.expect("WI-793: staged + visited results cover every argument")
-                    })
+                    .map(|s| s.expect("WI-793: staged + visited results cover every argument"))
                     .collect()
             };
             let named_results = arg_results.split_off(pos_args.len());
@@ -8490,15 +9192,19 @@ fn build_type(
                     .first()
                     .and_then(|r| r.as_ref().ok())
                     .map(|tr| &tr.ty);
-                if let Some(spec_op) =
-                    redirect_provider_self_spec_op(kb, &env, fn_sym, recv_ty)
-                {
+                if let Some(spec_op) = redirect_provider_self_spec_op(kb, &env, fn_sym, recv_ty) {
                     // `node` was `reassemble_children` of this Apply frame's occurrence,
                     // so it is always an `Expr::Apply` here — a non-Apply would be a
                     // build-frame invariant break, not a silent skip (which would
                     // resurface the bug as the original eval MatchFailed).
                     let NodeKind::Expr {
-                        expr: Expr::Apply { pos_args: np, named_args: nn, type_args: ta, .. },
+                        expr:
+                            Expr::Apply {
+                                pos_args: np,
+                                named_args: nn,
+                                type_args: ta,
+                                ..
+                            },
                         ..
                     } = &node.kind
                     else {
@@ -8522,12 +9228,30 @@ fn build_type(
             }
             let span = Some(node.span.span);
             let r = check_apply_iter(
-                kb, &*env, &env.flow, &node, fn_sym, &pos_args, &named_args,
-                &pos_results, &named_results, span, expected,
+                kb,
+                &*env,
+                &env.flow,
+                &node,
+                fn_sym,
+                &pos_args,
+                &named_args,
+                &pos_results,
+                &named_results,
+                span,
+                expected,
             );
             results.push(r);
         }
-        TypeBuildFrame::Constructor { occ, ctor_sym, pos_args, named_args, env, span, expected, fuel } => {
+        TypeBuildFrame::Constructor {
+            occ,
+            ctor_sym,
+            pos_args,
+            named_args,
+            env,
+            span,
+            expected,
+            fuel,
+        } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - total;
             let mut arg_results: Vec<Result<TypeResult, TypeError>> =
@@ -8562,13 +9286,28 @@ fn build_type(
                 node
             };
             let r = check_constructor_iter(
-                kb, &*env, &env.flow, ctor_sym, &pos_args, &named_args,
-                &pos_results, &named_results, span, expected, &node,
+                kb,
+                &*env,
+                &env.flow,
+                ctor_sym,
+                &pos_args,
+                &named_args,
+                &pos_results,
+                &named_results,
+                span,
+                expected,
+                &node,
             );
             results.push(r);
         }
         TypeBuildFrame::DotApply {
-            occ, member, pos_args: pos_nodes, named_args: named_nodes, env, expected, fuel,
+            occ,
+            member,
+            pos_args: pos_nodes,
+            named_args: named_nodes,
+            env,
+            expected,
+            fuel,
         } => {
             // Only the receiver was pre-typed (WI-443) — pop its result.
             let recv = match results.pop().expect("DotApply: missing receiver result") {
@@ -8623,7 +9362,14 @@ fn build_type(
             if fuel > 0 && simp_enabled {
                 if let Some(rs) = recv_sort {
                     match try_fire_dot_rule(
-                        kb, rs, member, &receiver_node, &pos_nodes, &named_nodes, &occ, simp_rids,
+                        kb,
+                        rs,
+                        member,
+                        &receiver_node,
+                        &pos_nodes,
+                        &named_nodes,
+                        &occ,
+                        simp_rids,
                     ) {
                         Ok(Some(synth)) => {
                             push_visit(work, synth, env, expected, fuel - 1);
@@ -8696,7 +9442,8 @@ fn build_type(
                 None
             };
             if let Some(op_sym) = op_sym {
-                let mut synth_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(1 + pos_nodes.len());
+                let mut synth_pos: Vec<Rc<NodeOccurrence>> =
+                    Vec::with_capacity(1 + pos_nodes.len());
                 synth_pos.push(receiver_node);
                 synth_pos.extend(pos_nodes);
                 let pass = super::simp_rewrite::simp_pass(kb);
@@ -8766,8 +9513,7 @@ fn build_type(
                         // reduction report it against the rewritten node. (The reduction
                         // checks too, off this same resolution, which is what closes the
                         // hand-written desugared form that never passes through dot dispatch.)
-                        if let Some((ctor, fsym)) =
-                            hidden_field_owner(kb, &m, env.enclosing_sort())
+                        if let Some((ctor, fsym)) = hidden_field_owner(kb, &m, env.enclosing_sort())
                         {
                             results.push(Err(TypeError::ForbiddenInternalField {
                                 span: dot_span,
@@ -8829,7 +9575,15 @@ fn build_type(
                 receiver_sort: recv_sort,
             }));
         }
-        TypeBuildFrame::LetAfterValue { occ, pattern, annotation, body_occ, body_expected, fuel, outer_flow } => {
+        TypeBuildFrame::LetAfterValue {
+            occ,
+            pattern,
+            annotation,
+            body_occ,
+            body_expected,
+            fuel,
+            outer_flow,
+        } => {
             let value_r = results.pop().expect("LetAfterValue: missing value result");
             // Propagate failure up rather than typing the body under a
             // synthesized env — see WI-204 feedback (no fallbacks).
@@ -8860,16 +9614,14 @@ fn build_type(
             if let (Some(ann), Some(vty)) = (annotation.as_ref(), value_ty.as_ref()) {
                 let mut subst = Substitution::new();
                 if !types_compatible(kb, &mut subst, vty, ann) {
-                    let var = extract_pattern_var_name(&pattern)
-                        .unwrap_or_else(|| kb.intern("_"));
+                    let var = extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
                     // WI-801: through the shared renderer — `let f: Function[A =
                     // (Int64, Int64), B = Int64] = lambda (p, q, r) -> p` is the
                     // same arity disagreement as the op-arg channel's, and
                     // rendered raw it prints the two sides identically.
                     let (ann, vty) = (ann.clone(), vty.clone());
-                    let err = conformance_error(
-                        kb, ann, vty, None, TypeErrorContext::LetBinding { var },
-                    );
+                    let err =
+                        conformance_error(kb, ann, vty, None, TypeErrorContext::LetBinding { var });
                     results.push(Err(err));
                     return;
                 }
@@ -8953,13 +9705,30 @@ fn build_type(
                 None => body_flow,
             };
             work.push(TypeWorkOp::Build(TypeBuildFrame::LetFinal {
-                occ, value_node, value_effects, pattern,
+                occ,
+                value_node,
+                value_effects,
+                pattern,
             }));
             // WI-537: the body's types come from the value result (`ext_env`),
             // its Γ from the let-site flow narrowed by the binding fact above.
-            push_visit(work, body_occ, Env { types: Rc::new(ext_env), flow: body_flow }, body_expected, fuel);
+            push_visit(
+                work,
+                body_occ,
+                Env {
+                    types: Rc::new(ext_env),
+                    flow: body_flow,
+                },
+                body_expected,
+                fuel,
+            );
         }
-        TypeBuildFrame::LetFinal { occ, value_node, value_effects, pattern } => {
+        TypeBuildFrame::LetFinal {
+            occ,
+            value_node,
+            value_effects,
+            pattern,
+        } => {
             let body_r = results.pop().expect("LetFinal: missing body result");
             let body_r = match body_r {
                 Ok(r) => r,
@@ -8985,12 +9754,24 @@ fn build_type(
                 node,
             }));
         }
-        TypeBuildFrame::MatchAfterScrutinee { occ, branches, outer_env, body_expected, fuel } => {
-            let scr_r = results.pop().expect("MatchAfterScrutinee: missing scrutinee result");
+        TypeBuildFrame::MatchAfterScrutinee {
+            occ,
+            branches,
+            outer_env,
+            body_expected,
+            fuel,
+        } => {
+            let scr_r = results
+                .pop()
+                .expect("MatchAfterScrutinee: missing scrutinee result");
             // WI-342: carry the scrutinee's `ty` as a `Value` — the sort lookup
             // and pattern env binding read it carrier-agnostically (no re-ground).
             let scr_ty = scr_r.as_ref().ok().map(|r| r.ty.clone());
-            let mut scr_effects = scr_r.as_ref().ok().map(|r| r.effects.clone()).unwrap_or_default();
+            let mut scr_effects = scr_r
+                .as_ref()
+                .ok()
+                .map(|r| r.effects.clone())
+                .unwrap_or_default();
             // WI-283: the scrutinee's (possibly-rewritten) node for
             // reassembly — falling back to the original when it didn't type.
             let scr_node = scr_r
@@ -9046,7 +9827,8 @@ fn build_type(
                 .iter()
                 .map(|b| (Rc::clone(&b.pattern), b.guard.is_some()))
                 .collect();
-            let arm_facts = match_arm_gamma_facts(kb, &scrutinee_value, &arm_inputs, &scrutinee_ctors);
+            let arm_facts =
+                match_arm_gamma_facts(kb, &scrutinee_value, &arm_inputs, &scrutinee_ctors);
             for (branch, facts) in branches.iter().zip(arm_facts.into_iter()) {
                 // WI-511: coverage AND env-extension both read the Pattern
                 // occurrence directly — no `pattern_to_term` bridge.
@@ -9060,7 +9842,10 @@ fn build_type(
                 let mut branch_env = (*outer_env).clone();
                 let mut branch_binder_errors = Vec::new();
                 branch_patterns.push(bind_and_label_pattern(
-                    kb, &mut branch_env, &branch.pattern, scr_ty.clone(),
+                    kb,
+                    &mut branch_env,
+                    &branch.pattern,
+                    scr_ty.clone(),
                     &mut branch_binder_errors,
                 ));
                 if binder_error.is_none() {
@@ -9084,7 +9869,14 @@ fn build_type(
                 if let Some(g) = &branch.guard {
                     if scr_ty.is_some() && guard_error.is_none() {
                         // WI-657(9): reuse the gate build_type already holds.
-                        match type_check_node_gated(kb, &branch_env, g, None, simp_enabled, simp_rids) {
+                        match type_check_node_gated(
+                            kb,
+                            &branch_env,
+                            g,
+                            None,
+                            simp_enabled,
+                            simp_rids,
+                        ) {
                             Ok(r) => {
                                 merge_effects_into(kb, &mut guard_effects, &r.effects);
                             }
@@ -9093,7 +9885,10 @@ fn build_type(
                     }
                     arm_flow = arm_flow.assume(kb, Value::Node(Rc::clone(g)));
                 }
-                branch_envs.push(Env { types: Rc::new(branch_env), flow: arm_flow });
+                branch_envs.push(Env {
+                    types: Rc::new(branch_env),
+                    flow: arm_flow,
+                });
             }
             // A guard that doesn't type-check fails the whole match (the
             // scrutinee result was already popped, so one Err is the match's
@@ -9112,8 +9907,7 @@ fn build_type(
             let branch_count = branches.len();
             // Materialize Visit envs first (clone from branch_envs),
             // then move branch_envs into the MatchFinal frame.
-            let visit_envs: Vec<Env> =
-                branch_envs.iter().cloned().collect();
+            let visit_envs: Vec<Env> = branch_envs.iter().cloned().collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::MatchFinal {
                 occ,
                 scr_node,
@@ -9128,7 +9922,13 @@ fn build_type(
                 body_expected: body_expected.clone(),
             }));
             for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
-                push_visit(work, Rc::clone(&branch.body), env, body_expected.clone(), fuel);
+                push_visit(
+                    work,
+                    Rc::clone(&branch.body),
+                    env,
+                    body_expected.clone(),
+                    fuel,
+                );
             }
         }
         TypeBuildFrame::MatchFinal {
@@ -9158,8 +9958,7 @@ fn build_type(
             let mut effects = scr_effects;
             // WI-342: branch types are carrier-agnostic `Value`s — a branch may be
             // a `Value::Node` lambda arrow; the join carries it (no re-grounding).
-            let mut branch_tys: Vec<(Value, Option<Span>)> =
-                Vec::with_capacity(branch_count);
+            let mut branch_tys: Vec<(Value, Option<Span>)> = Vec::with_capacity(branch_count);
             for (i, body_r) in branch_results.into_iter().enumerate() {
                 let body_r = body_r.expect("aggregator");
                 branch_tys.push((body_r.ty.clone(), Some(body_r.node.span.span)));
@@ -9176,13 +9975,14 @@ fn build_type(
             // result is the join (a common supertype) of the branch types,
             // and branches with no common supertype are a type error rather
             // than being silently typed as branch 0.
-            let result_ty: Value = match compute_branch_join_type(kb, &branch_tys, body_expected, "match") {
-                Ok(ty) => ty,
-                Err(e) => {
-                    results.push(Err(e));
-                    return;
-                }
-            };
+            let result_ty: Value =
+                match compute_branch_join_type(kb, &branch_tys, body_expected, "match") {
+                    Ok(ty) => ty,
+                    Err(e) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                };
 
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
@@ -9217,9 +10017,20 @@ fn build_type(
                     }
                 }
             }
-            results.push(Ok(TypeResult { ty: result_ty, env: result_env, effects, node }));
+            results.push(Ok(TypeResult {
+                ty: result_ty,
+                env: result_env,
+                effects,
+                node,
+            }));
         }
-        TypeBuildFrame::LambdaBody { occ, param_type, outer_env, binder_error, param } => {
+        TypeBuildFrame::LambdaBody {
+            occ,
+            param_type,
+            outer_env,
+            binder_error,
+            param,
+        } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
             // WI-794: a contradicting binder annotation is reported ahead of any body
             // error. The body was typed with the binder bound to the CONTEXT type, so
@@ -9235,10 +10046,14 @@ fn build_type(
             // is the exact type the param was bound to in the body env
             // (see the `Expr::Lambda` visit case), so the arrow's param
             // slot and the body's view of the param agree.
-            let body_ty: Value = body_r.as_ref().ok().map(|r| r.ty.clone()).unwrap_or_else(|| {
-                let fresh = kb.intern("?result");
-                Value::term(kb.make_type_var(fresh))
-            });
+            let body_ty: Value = body_r
+                .as_ref()
+                .ok()
+                .map(|r| r.ty.clone())
+                .unwrap_or_else(|| {
+                    let fresh = kb.intern("?result");
+                    Value::term(kb.make_type_var(fresh))
+                });
             let body_effects = body_r
                 .as_ref()
                 .ok()
@@ -9254,8 +10069,15 @@ fn build_type(
             // is a fresh type var, and a tuple-typed one is indistinguishable from a
             // binder list). See `lambda_written_arity`.
             let arity = lambda_written_arity(&occ);
-            let fn_ty =
-                make_arrow_value(kb, &param_type, &body_ty, &body_effects, arity, occ.span, occ.owner);
+            let fn_ty = make_arrow_value(
+                kb,
+                &param_type,
+                &body_ty,
+                &body_effects,
+                arity,
+                occ.span,
+                occ.owner,
+            );
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -9317,9 +10139,18 @@ fn build_type(
                     return;
                 }
             };
-            results.push(Ok(TypeResult { ty, env: unwrap_types(env), effects, node }));
+            results.push(Ok(TypeResult {
+                ty,
+                env: unwrap_types(env),
+                effects,
+                node,
+            }));
         }
-        TypeBuildFrame::ProofStmt { occ, env, has_conclude } => {
+        TypeBuildFrame::ProofStmt {
+            occ,
+            env,
+            has_conclude,
+        } => {
             // WI-538: children drained in [conclude?, body] order.
             let n = if has_conclude { 2 } else { 1 };
             let drain_start = results.len() - n;
@@ -9347,9 +10178,19 @@ fn build_type(
             // The proof is transparent to types: its type is the
             // continuation's.
             let ty = body_r.ty.clone();
-            results.push(Ok(TypeResult { ty, env: unwrap_types(env), effects, node }));
+            results.push(Ok(TypeResult {
+                ty,
+                env: unwrap_types(env),
+                effects,
+                node,
+            }));
         }
-        TypeBuildFrame::ListLit { occ, env, element_hint, count } => {
+        TypeBuildFrame::ListLit {
+            occ,
+            env,
+            element_hint,
+            count,
+        } => {
             let drain_start = results.len() - count;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
             if let Err(e) = collect_arg_errors(group.iter()) {
@@ -9383,9 +10224,19 @@ fn build_type(
             let list_base = kb.make_sort_ref_by_name("anthill.prelude.List");
             let t_sym = kb.intern("T");
             let list_type = parameterized_value(kb, list_base, &[(t_sym, t_val)], span, owner);
-            results.push(Ok(TypeResult { ty: list_type, env: unwrap_types(env), effects, node }));
+            results.push(Ok(TypeResult {
+                ty: list_type,
+                env: unwrap_types(env),
+                effects,
+                node,
+            }));
         }
-        TypeBuildFrame::SetLit { occ, env, element_hint, count } => {
+        TypeBuildFrame::SetLit {
+            occ,
+            env,
+            element_hint,
+            count,
+        } => {
             let drain_start = results.len() - count;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
             if let Err(e) = collect_arg_errors(group.iter()) {
@@ -9416,9 +10267,19 @@ fn build_type(
             let set_base = kb.make_sort_ref_by_name("anthill.prelude.Set");
             let t_sym = kb.intern("T");
             let set_type = parameterized_value(kb, set_base, &[(t_sym, t_val)], span, owner);
-            results.push(Ok(TypeResult { ty: set_type, env: unwrap_types(env), effects, node }));
+            results.push(Ok(TypeResult {
+                ty: set_type,
+                env: unwrap_types(env),
+                effects,
+                node,
+            }));
         }
-        TypeBuildFrame::TupleLit { occ, env, pos_count, named_names } => {
+        TypeBuildFrame::TupleLit {
+            occ,
+            env,
+            pos_count,
+            named_names,
+        } => {
             let total = pos_count + named_names.len();
             let drain_start = results.len() - total;
             let group: Vec<Result<TypeResult, TypeError>> = results.drain(drain_start..).collect();
@@ -9454,7 +10315,12 @@ fn build_type(
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
             let tuple_type = named_tuple_value(kb, &field_types, span, owner);
-            results.push(Ok(TypeResult { ty: tuple_type, env: unwrap_types(env), effects, node }));
+            results.push(Ok(TypeResult {
+                ty: tuple_type,
+                env: unwrap_types(env),
+                effects,
+                node,
+            }));
         }
     }
 }
@@ -9489,7 +10355,9 @@ pub(crate) fn classify_pin_or_apply_within(
     resolved_tree: Option<ResolvedRequiresNode>,
 ) {
     let impl_sort = impl_parent_of_op(kb, impl_op);
-    let needs_reqs = impl_sort.map(|s| sort_reads_requirement_slots(kb, s)).unwrap_or(false);
+    let needs_reqs = impl_sort
+        .map(|s| sort_reads_requirement_slots(kb, s))
+        .unwrap_or(false);
     let class = if needs_reqs {
         // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
         // requirement dictionary (a `resolved_tree` with a `FromScope` — the
@@ -9537,7 +10405,10 @@ pub(crate) fn classify_pin_or_apply_within(
             dispatch_dict,
         }
     } else {
-        CallClass::PinNow { spec_op_sym: fn_sym, impl_op_sym: impl_op }
+        CallClass::PinNow {
+            spec_op_sym: fn_sym,
+            impl_op_sym: impl_op,
+        }
     };
     classify(kb, occ, class);
 }
@@ -9798,7 +10669,9 @@ fn internal_field_hidden_from(kb: &mut KnowledgeBase, scope: Option<Symbol>, cto
         // `alloc(Fn{s}).raw()`, which for a sort with an eponymous constructor
         // canonicalizes to `Term::Ref` (WI-511) and so keyed a scope that holds
         // nothing — every `internal` field of such a sort read as visible.
-        Some(s) => !kb.symbols.internal_visible_from(ctor, kb.symbols.scope_id(s)),
+        Some(s) => !kb
+            .symbols
+            .internal_visible_from(ctor, kb.symbols.scope_id(s)),
         None => false,
     }
 }
@@ -9859,7 +10732,10 @@ fn normalize_variadic_capture(
     // Already-normalized / explicit-record guard: a named argument that names the capture
     // parameter directly (a re-typed rewrite, or a caller passing the record explicitly)
     // is left to ordinary typing. Without this the fold would re-fire every re-type.
-    if named_args.iter().any(|(label, _)| same_label(kb, capture_sym, *label)) {
+    if named_args
+        .iter()
+        .any(|(label, _)| same_label(kb, capture_sym, *label))
+    {
         return Ok(None);
     }
     // Partition the named arguments: those matching a DECLARED, NON-capture parameter are
@@ -9926,12 +10802,18 @@ fn normalize_variadic_capture(
         // So this is retained as defence-in-depth against a FUTURE occurrence synthesizer,
         // with no reachable path today — stated plainly, because a rationale that sounds
         // reachable is worse than none: it is what stops the next reader from re-checking.
-        if captured_fields.iter().any(|(prev, _)| same_label(kb, *prev, *label)) {
+        if captured_fields
+            .iter()
+            .any(|(prev, _)| same_label(kb, *prev, *label))
+        {
             let name = short_name_of(kb.local_name_of(*label)).to_string();
             return Err(TypeError::Other {
                 site: std::panic::Location::caller(),
                 span: Some(occ.span.span),
-                context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: *label },
+                context: TypeErrorContext::OperationArgument {
+                    op_name: fn_sym,
+                    param: *label,
+                },
                 expected: "distinct labels among the captured named arguments".to_string(),
                 actual: format!(
                     "named argument '{name}' is captured twice into the `...` record; a named \
@@ -9985,7 +10867,11 @@ fn normalize_variadic_capture(
         pass,
         occ.owner,
     );
-    Ok(Some(CaptureRewrite { occ: new_occ, named_args: kept_args, named_results: kept_results }))
+    Ok(Some(CaptureRewrite {
+        occ: new_occ,
+        named_args: kept_args,
+        named_results: kept_results,
+    }))
 }
 
 fn check_apply_iter(
@@ -10022,7 +10908,10 @@ fn check_apply_iter(
     // exactly "will not reach Path 1". The occurrence read comes first so a call
     // without a bracket — every call in practice — pays only a match, not a lookup.
     if call_type_args_of(occ).is_some() && lookup_operation_info_full(kb, fn_sym).is_none() {
-        return Err(TypeError::TypeArgsOnNonOperation { span, callee: fn_sym });
+        return Err(TypeError::TypeArgsOnNonOperation {
+            span,
+            callee: fn_sym,
+        });
     }
 
     // Materializer fallback: bare-functor constructor invocations land
@@ -10058,8 +10947,17 @@ fn check_apply_iter(
     // (free-standing). Both are programs that load and run today.
     if kb.is_entity_constructor(fn_sym) {
         return check_constructor_iter(
-            kb, env, flow, fn_sym, pos_args, named_args, pos_results, named_results, span,
-            expected, occ,
+            kb,
+            env,
+            flow,
+            fn_sym,
+            pos_args,
+            named_args,
+            pos_results,
+            named_results,
+            span,
+            expected,
+            occ,
         );
     }
 
@@ -10104,13 +11002,25 @@ fn check_apply_iter(
     // falls through, preserving the pre-WI-714 behavior there.
     if !env.in_rule_body() && kb.cites_a_relation(fn_sym) {
         let ty = relation_reference_type_applied(
-            kb, fn_sym, pos_args, named_args, pos_results, named_results, span, occ,
+            kb,
+            fn_sym,
+            pos_args,
+            named_args,
+            pos_results,
+            named_results,
+            span,
+            occ,
         )?;
         let mut effects: Vec<Value> = Vec::new();
         for r in pos_results.iter().chain(named_results.iter()).flatten() {
             merge_effects_into(kb, &mut effects, &r.effects);
         }
-        return Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) });
+        return Ok(TypeResult {
+            ty,
+            env: env.clone(),
+            effects,
+            node: Rc::clone(occ),
+        });
     }
 
     // WI-898 — an EQUATION-INTRODUCED functor applied, which the arm above declined
@@ -10126,7 +11036,11 @@ fn check_apply_iter(
     // in a goal, not a citation in functional code.
     if !env.in_rule_body() && kb.has_kind(fn_sym, crate::intern::SymbolKind::EquationFunctor) {
         let census = super::simp_rewrite::equation_clause_census(kb, fn_sym);
-        return Err(TypeError::UnreducedEquationFunctor { span, functor: fn_sym, census });
+        return Err(TypeError::UnreducedEquationFunctor {
+            span,
+            functor: fn_sym,
+            census,
+        });
     }
 
     // WI-1056 — the same question ASKED IN A RULE BODY, where the answer is the same
@@ -10162,7 +11076,11 @@ fn check_apply_iter(
         && lookup_operation_info_full(kb, fn_sym).is_none()
     {
         let census = super::simp_rewrite::equation_clause_census(kb, fn_sym);
-        return Err(TypeError::UnreducedEquationFunctor { span, functor: fn_sym, census });
+        return Err(TypeError::UnreducedEquationFunctor {
+            span,
+            functor: fn_sym,
+            census,
+        });
     }
 
     // Path 1: known operation — unify args with params to instantiate type params
@@ -10215,7 +11133,14 @@ fn check_apply_iter(
         // stays consistent. `None` (no capture parameter, or an already-normalized call)
         // keeps the original borrows — the zero-cost common path.
         let capture_rewrite = normalize_variadic_capture(
-            kb, env, fn_sym, &op.params, occ, pos_args, named_args, named_results,
+            kb,
+            env,
+            fn_sym,
+            &op.params,
+            occ,
+            pos_args,
+            named_args,
+            named_results,
         )?;
         let (occ, named_args, named_results): (
             &Rc<NodeOccurrence>,
@@ -10283,7 +11208,15 @@ fn check_apply_iter(
         let carrier_param_info = if self_recv_spec.is_some() {
             None
         } else {
-            carrier_param_receiver(kb, &op, fn_sym, pos_args, named_args, pos_results, named_results)
+            carrier_param_receiver(
+                kb,
+                &op,
+                fn_sym,
+                pos_args,
+                named_args,
+                pos_results,
+                named_results,
+            )
         };
         // WI-1027 — the ONE projection of that 7-tuple's carrier field, read by three
         // sites (the WI-496/598 abstract-spec deferral and both `statically_pinned_carrier`
@@ -10291,25 +11224,44 @@ fn check_apply_iter(
         // compiling with the WRONG element if a field is ever inserted before the carrier.
         let carrier_param_sym: Option<Symbol> = carrier_param_info.as_ref().map(|(_, c, ..)| *c);
         let carrier_bound = match self_recv_spec {
-            Some(spec_sort) => match receiver_carrier(
-                kb, &op, spec_sort, named_args, pos_results, named_results,
-            ) {
-                ReceiverCarrier::Concrete(carrier_sym) => bind_spec_params_from_carrier(
-                    kb, &mut subst, &op, spec_sort, carrier_sym,
-                    named_args, pos_results, named_results,
-                ),
-                _ => false,
-            },
+            Some(spec_sort) => {
+                match receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results) {
+                    ReceiverCarrier::Concrete(carrier_sym) => bind_spec_params_from_carrier(
+                        kb,
+                        &mut subst,
+                        &op,
+                        spec_sort,
+                        carrier_sym,
+                        named_args,
+                        pos_results,
+                        named_results,
+                    ),
+                    _ => false,
+                }
+            }
             // WI-424: no spec-sort-typed receiver — try the CARRIER-PARAM shape
             // (`Iterable.find(c: C, …)`): ground the spec's params (`Element`,
             // the written `E` row) from the concrete carrier's provision, with
             // the same bind-before-expected-seeding rationale as the arm above.
             None => match &carrier_param_info {
-                Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, _transitive, recv_arg_sym)) => {
-                    bind_spec_params_from_carrier_param(
-                        kb, &mut subst, *spec_sort, *carrier_sym, *carrier_pvid, recv_ty, view.clone(), *recv_arg_sym,
-                    )
-                }
+                Some((
+                    spec_sort,
+                    carrier_sym,
+                    recv_ty,
+                    view,
+                    carrier_pvid,
+                    _transitive,
+                    recv_arg_sym,
+                )) => bind_spec_params_from_carrier_param(
+                    kb,
+                    &mut subst,
+                    *spec_sort,
+                    *carrier_sym,
+                    *carrier_pvid,
+                    recv_ty,
+                    view.clone(),
+                    *recv_arg_sym,
+                ),
                 None => false,
             },
         };
@@ -10333,8 +11285,10 @@ fn check_apply_iter(
         // per-call elimination — the >99% that don't skip the param_to_arg_type clones
         // and the rewrite walk entirely. WI-398 adds the PARAMETER positions: a param
         // whose type projects another param (`check(s: State, k: s.provider.K)`).
-        let params_have_projection =
-            op.params.iter().any(|(_, t)| value_contains_projection(kb, t));
+        let params_have_projection = op
+            .params
+            .iter()
+            .any(|(_, t)| value_contains_projection(kb, t));
         let op_has_projection = params_have_projection
             || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
@@ -10357,7 +11311,9 @@ fn check_apply_iter(
             } else if let Some((param_sym, _)) = op.params.get(i) {
                 // WI-506: a field-projection argument (`s.rep`) — record param → head
                 // for the effects-only re-key (see `param_to_arg_head`).
-                if let Some(head) = stable_receiver_path(kb, arg_occ).and_then(|p| p.into_iter().next()) {
+                if let Some(head) =
+                    stable_receiver_path(kb, arg_occ).and_then(|p| p.into_iter().next())
+                {
                     param_to_arg_head.insert(*param_sym, head);
                 }
             }
@@ -10387,15 +11343,17 @@ fn check_apply_iter(
             // maps by the PARAM symbol (not the use-site label symbol) so the
             // positional loop above, the projection eliminator, and param_to_arg_sym
             // all agree on one key.
-            let matched = match_named_arg_param(kb, &op.params, *arg_name)
-                .map(|(s, t)| (*s, t.clone()));
+            let matched =
+                match_named_arg_param(kb, &op.params, *arg_name).map(|(s, t)| (*s, t.clone()));
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 if let Some((param_sym, _)) = &matched {
                     param_to_arg_sym.insert(*param_sym, arg_var_sym);
                 }
             } else if let Some((param_sym, _)) = &matched {
                 // WI-506: a field-projection named argument — effects-only head re-key.
-                if let Some(head) = stable_receiver_path(kb, arg_occ).and_then(|p| p.into_iter().next()) {
+                if let Some(head) =
+                    stable_receiver_path(kb, arg_occ).and_then(|p| p.into_iter().next())
+                {
                     param_to_arg_head.insert(*param_sym, head);
                 }
             }
@@ -10438,8 +11396,12 @@ fn check_apply_iter(
                     continue;
                 }
                 let eff = eliminate_type_projections(
-                    kb, param_type, &param_to_arg_type, arg_syms,
-                    &TypeErrorContext::OperationReturn { op_name: fn_sym }, span,
+                    kb,
+                    param_type,
+                    &param_to_arg_type,
+                    arg_syms,
+                    &TypeErrorContext::OperationReturn { op_name: fn_sym },
+                    span,
                 )?;
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
@@ -10495,14 +11457,27 @@ fn check_apply_iter(
                     // the offending effect label, where the generic mismatch
                     // prints two identically-displayed arrow types.
                     if let Some(err) = validate_callback_effect_row(
-                        kb, &subst, fn_sym, *param_sym, param_type,
-                        &pos_args[i], &arg_result.ty, span,
+                        kb,
+                        &subst,
+                        fn_sym,
+                        *param_sym,
+                        param_type,
+                        &pos_args[i],
+                        &arg_result.ty,
+                        span,
                     ) {
                         arg_type_errors.push(err);
                     } else {
                         match validate_arg_against_param(
-                            kb, &mut subst, &arg_result.ty, param_type, span,
-                            TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
+                            kb,
+                            &mut subst,
+                            &arg_result.ty,
+                            param_type,
+                            span,
+                            TypeErrorContext::OperationArgument {
+                                op_name: fn_sym,
+                                param: *param_sym,
+                            },
                         ) {
                             ArgValidation::Ok => {}
                             ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
@@ -10523,14 +11498,27 @@ fn check_apply_iter(
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
                     // WI-440: callback row check first — see the positional loop.
                     if let Some(err) = validate_callback_effect_row(
-                        kb, &subst, fn_sym, *param_sym, param_type,
-                        arg_occ, &arg_result.ty, span,
+                        kb,
+                        &subst,
+                        fn_sym,
+                        *param_sym,
+                        param_type,
+                        arg_occ,
+                        &arg_result.ty,
+                        span,
                     ) {
                         arg_type_errors.push(err);
                     } else {
                         match validate_arg_against_param(
-                            kb, &mut subst, &arg_result.ty, param_type, span,
-                            TypeErrorContext::OperationArgument { op_name: fn_sym, param: *param_sym },
+                            kb,
+                            &mut subst,
+                            &arg_result.ty,
+                            param_type,
+                            span,
+                            TypeErrorContext::OperationArgument {
+                                op_name: fn_sym,
+                                param: *param_sym,
+                            },
                         ) {
                             ArgValidation::Ok => {}
                             ArgValidation::WrapSome { declared } => {
@@ -10545,7 +11533,13 @@ fn check_apply_iter(
         // WI-426: named-argument COVERAGE (see `named_arg_coverage_errors`, which
         // WI-783 shares with the function-VALUE call path so the two cannot drift).
         arg_type_errors.extend(named_arg_coverage_errors(
-            kb, &op.params, pos_args.len(), named_args, fn_sym, "this operation", span,
+            kb,
+            &op.params,
+            pos_args.len(),
+            named_args,
+            fn_sym,
+            "this operation",
+            span,
         ));
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
@@ -10580,7 +11574,11 @@ fn check_apply_iter(
         let op_parent_sort = impl_parent_sort_of_op(kb, fn_sym);
         if let Some(parent) = op_parent_sort {
             enforce_member_tie(
-                kb, &subst, parent, fn_sym, span,
+                kb,
+                &subst,
+                parent,
+                fn_sym,
+                span,
                 env.enclosing_instance_param_rigids(),
             )?;
         }
@@ -10599,8 +11597,13 @@ fn check_apply_iter(
         let rebuilt_occ;
         let occ = if !named_args.is_empty() {
             match reorder_named_args_in_apply(
-                kb, occ, &written_params, pos_args.len(), &some_wraps,
-                pos_results, named_results,
+                kb,
+                occ,
+                &written_params,
+                pos_args.len(),
+                &some_wraps,
+                pos_results,
+                named_results,
             ) {
                 Some(r) => {
                     rebuilt_occ = r;
@@ -10608,7 +11611,8 @@ fn check_apply_iter(
                 }
                 None if some_wraps.is_empty() => occ,
                 None => {
-                    rebuilt_occ = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
+                    rebuilt_occ =
+                        wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
                     &rebuilt_occ
                 }
             }
@@ -10660,24 +11664,36 @@ fn check_apply_iter(
             // direct member) is unchanged; a genuine projection failure with no concrete
             // override stays the loud error.
             match eliminate_type_projections(
-                kb, &op.return_type, &param_to_arg_type, arg_syms, &ret_ctx, span,
+                kb,
+                &op.return_type,
+                &param_to_arg_type,
+                arg_syms,
+                &ret_ctx,
+                span,
             ) {
                 Ok(rt) => {
                     let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
                     for e in &op.effects {
                         effs.push(eliminate_type_projections(
-                            kb, e, &param_to_arg_type, arg_syms, &ret_ctx, span,
+                            kb,
+                            e,
+                            &param_to_arg_type,
+                            arg_syms,
+                            &ret_ctx,
+                            span,
                         )?);
                     }
                     (rt, effs)
                 }
-                Err(e) => match concrete_override_threaded(kb, &op, fn_sym, self_recv_spec, pos_results) {
-                    Some((rt, effs, impl_op)) => {
-                        return_owner = impl_op;
-                        (rt, effs)
+                Err(e) => {
+                    match concrete_override_threaded(kb, &op, fn_sym, self_recv_spec, pos_results) {
+                        Some((rt, effs, impl_op)) => {
+                            return_owner = impl_op;
+                            (rt, effs)
+                        }
+                        None => return Err(e),
                     }
-                    None => return Err(e),
-                },
+                }
             }
         } else {
             (op.return_type.clone(), op.effects.clone())
@@ -10759,7 +11775,16 @@ fn check_apply_iter(
         // Modify model names). The REF-shaped binding (`V ↦ Cell.V`) is already threaded
         // by `bind_spec_params_from_carrier_param` above; this closes only the
         // GROUND-valued case it skips.
-        if let Some((spec_sort, _carrier_sym, _recv_ty, view, _carrier_pvid, _transitive, _recv_arg_sym)) = &carrier_param_info {
+        if let Some((
+            spec_sort,
+            _carrier_sym,
+            _recv_ty,
+            view,
+            _carrier_pvid,
+            _transitive,
+            _recv_arg_sym,
+        )) = &carrier_param_info
+        {
             bind_ground_value_params_from_provider(kb, &mut subst, *spec_sort, view);
         }
 
@@ -10986,7 +12011,14 @@ fn check_apply_iter(
                 // present (WI-478); discharge removes only the proven-dropped ones.
                 let mut present = effect_row_present_values(kb, &walked);
                 if op_has_guarded {
-                    drop_refuted_guarded_labels(kb, flow, &subst, &guard_sigma, &walked, &mut present);
+                    drop_refuted_guarded_labels(
+                        kb,
+                        flow,
+                        &subst,
+                        &guard_sigma,
+                        &walked,
+                        &mut present,
+                    );
                 }
                 substituted_op_effects.extend(present);
             } else if op_has_guarded && resolved_functor_name(kb, &walked) == Some("guarded") {
@@ -11075,8 +12107,7 @@ fn check_apply_iter(
         // says which as plainly as a bracket does. Read here, where `subst` is
         // complete, and BEFORE the validation below, so a type-carried pin is judged
         // by exactly the check a written one is.
-        let selections =
-            selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
+        let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
 
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has
@@ -11112,12 +12143,18 @@ fn check_apply_iter(
         // still closes `E` even when the element bound separately.)
         if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
             if let Some(spec_sort) = self_receiver_spec_sort(kb, &op, fn_sym) {
-                if let ReceiverCarrier::Concrete(carrier_sym) = receiver_carrier(
-                    kb, &op, spec_sort, named_args, pos_results, named_results,
-                ) {
+                if let ReceiverCarrier::Concrete(carrier_sym) =
+                    receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results)
+                {
                     if bind_spec_params_from_carrier(
-                        kb, &mut subst, &op, spec_sort, carrier_sym,
-                        named_args, pos_results, named_results,
+                        kb,
+                        &mut subst,
+                        &op,
+                        spec_sort,
+                        carrier_sym,
+                        named_args,
+                        pos_results,
+                        named_results,
                     ) {
                         resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
                     }
@@ -11190,9 +12227,8 @@ fn check_apply_iter(
                 // not just the carrier's own member — a WI-431 instance fact's
                 // op-valued binding fills the same gap and must win over the
                 // default for the same reason. See [`carrier_override_suppliers`].
-                let cands = carrier_override_suppliers(
-                    kb, spec_sort, carrier_sym, fn_sym, op_short_sym,
-                );
+                let cands =
+                    carrier_override_suppliers(kb, spec_sort, carrier_sym, fn_sym, op_short_sym);
                 // WI-1012 — a TIE on a STATICALLY CONCRETE carrier is refused HERE, at
                 // load. WI-1010 left it to eval, which costs three things: `anthill check`
                 // passes on a program the interpreter will refuse; a tie in a branch that
@@ -11236,12 +12272,23 @@ fn check_apply_iter(
                 if let [only] = cands.as_slice() {
                     let impl_op = only.target;
                     let derived = dispatched_impl_effects(
-                        kb, impl_op, &op.params, &subst, pos_args, named_args,
-                        pos_results, named_results,
+                        kb,
+                        impl_op,
+                        &op.params,
+                        &subst,
+                        pos_args,
+                        named_args,
+                        pos_results,
+                        named_results,
                     );
                     merge_effects_into(kb, &mut effects, &derived);
                     classify_pin_or_apply_within(
-                        kb, occ, fn_sym, impl_op, env.enclosing_sort(), None,
+                        kb,
+                        occ,
+                        fn_sym,
+                        impl_op,
+                        env.enclosing_sort(),
+                        None,
                     );
                     return Ok(TypeResult {
                         ty: resolved_ret,
@@ -11292,11 +12339,13 @@ fn check_apply_iter(
             // return or a param. A bare first-order op (`combine(x:T, y:T) -> T`) skips
             // the probe entirely, so the common case never pays the `type_params_of_sort`
             // / `sort_type_params_as_pairs` scans below.
-            let op_has_parameterized_sig =
-                matches!(type_head(kb, &op.return_type), TypeHead::Parameterized { .. })
-                    || op.params.iter().any(|(_, t)| {
-                        matches!(type_head(kb, t), TypeHead::Parameterized { .. })
-                    });
+            let op_has_parameterized_sig = matches!(
+                type_head(kb, &op.return_type),
+                TypeHead::Parameterized { .. }
+            ) || op
+                .params
+                .iter()
+                .any(|(_, t)| matches!(type_head(kb, t), TypeHead::Parameterized { .. }));
             let hk_carrier = op_has_parameterized_sig
                 .then(|| {
                     sort_type_params_as_pairs(kb, spec_sort)
@@ -11329,7 +12378,11 @@ fn check_apply_iter(
                         // WI-869: no search ran here — the obligation is discharged
                         // by the ABSENCE of a provision fact — so there is no unmet
                         // goal to name.
-                        return Err(TypeError::DispatchNoMatch { span, op: fn_sym, unmet: None });
+                        return Err(TypeError::DispatchNoMatch {
+                            span,
+                            op: fn_sym,
+                            unmet: None,
+                        });
                     }
                     return Ok(TypeResult {
                         ty: resolved_ret.clone(),
@@ -11344,15 +12397,23 @@ fn check_apply_iter(
                 // arg-carrier shares it. A spec-DEFAULT op (not bound in the fact) keeps
                 // its body. `dispatch_spec_op_cached`'s SLD does not read instance-fact
                 // op-bindings (WI-431 inc 2), so the impl is read straight from the fact.
-                if let Some(impl_op) = instance_fact_op_binding(kb, c, spec_sort, short_name_of(&op_qn)) {
+                if let Some(impl_op) =
+                    instance_fact_op_binding(kb, c, spec_sort, short_name_of(&op_qn))
+                {
                     // WI-453 effect soundness (the WI-365 dual): surface the impl's real
                     // effects — the instance signature validator checks arity/param/return
                     // but NOT effects, so an effectful impl bound to a pure-declared spec
                     // op would otherwise mask its effect at the consumption site.
                     if impl_op != fn_sym {
                         let derived = dispatched_impl_effects(
-                            kb, impl_op, &op.params, &subst, pos_args, named_args,
-                            pos_results, named_results,
+                            kb,
+                            impl_op,
+                            &op.params,
+                            &subst,
+                            pos_args,
+                            named_args,
+                            pos_results,
+                            named_results,
                         );
                         merge_effects_into(kb, &mut effects, &derived);
                     }
@@ -11360,7 +12421,14 @@ fn check_apply_iter(
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
                     // a runnable impl is rewritten (a body-less one stays the spec op).
                     if op_has_runnable_body(kb, impl_op) {
-                        classify_pin_or_apply_within(kb, occ, fn_sym, impl_op, enclosing_sort, None);
+                        classify_pin_or_apply_within(
+                            kb,
+                            occ,
+                            fn_sym,
+                            impl_op,
+                            enclosing_sort,
+                            None,
+                        );
                     }
                 }
                 return Ok(TypeResult {
@@ -11370,9 +12438,8 @@ fn check_apply_iter(
                     node: Rc::clone(occ),
                 });
             }
-            let carrier = receiver_carrier(
-                kb, &op, spec_sort, named_args, pos_results, named_results,
-            );
+            let carrier =
+                receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results);
 
             // WI-357: a concretely-dispatched self-receiver spec op (e.g.
             // `Stream.splitFirst` on a `List[Int]`) binds none of the spec's
@@ -11395,8 +12462,14 @@ fn check_apply_iter(
                 // two resolve the spec to different symbols. `late_bound` records
                 // whether it bound anything here.
                 let late_bound = bind_spec_params_from_carrier(
-                    kb, &mut subst, &op, spec_sort, carrier_sym,
-                    named_args, pos_results, named_results,
+                    kb,
+                    &mut subst,
+                    &op,
+                    spec_sort,
+                    carrier_sym,
+                    named_args,
+                    pos_results,
+                    named_results,
                 );
                 if late_bound {
                     resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
@@ -11584,8 +12657,14 @@ fn check_apply_iter(
                 param_rigids: env.param_rigids(),
             };
             let (outcome, resolved_tree) = dispatch_spec_op_cached(
-                kb, &subst, spec_sort, op_short_sym, enclosing_requires, carrier_sym,
-                Some(&dispatch_sigma), &selections,
+                kb,
+                &subst,
+                spec_sort,
+                op_short_sym,
+                enclosing_requires,
+                carrier_sym,
+                Some(&dispatch_sigma),
+                &selections,
             );
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
@@ -11599,10 +12678,8 @@ fn check_apply_iter(
             let outcome = if op.params.is_empty()
                 && matches!(outcome, DispatchOutcome::NoCandidates)
             {
-                resolve_nullary_result_carrier(
-                    kb, spec_sort, fn_sym, op_short_sym, &resolved_ret,
-                )
-                .unwrap_or(DispatchOutcome::NoCandidates)
+                resolve_nullary_result_carrier(kb, spec_sort, fn_sym, op_short_sym, &resolved_ret)
+                    .unwrap_or(DispatchOutcome::NoCandidates)
             } else {
                 outcome
             };
@@ -11653,7 +12730,12 @@ fn check_apply_iter(
             if !outcome_raises_on_its_own_account && !pinned_spec {
                 if let Some(pinned_carrier) = pinned_carrier {
                     refuse_unarbitrated_supplier_tie(
-                        kb, spec_sort, pinned_carrier, fn_sym, op_short_sym, span,
+                        kb,
+                        spec_sort,
+                        pinned_carrier,
+                        fn_sym,
+                        op_short_sym,
+                        span,
                     )?;
                 }
             }
@@ -11679,11 +12761,24 @@ fn check_apply_iter(
                         .and_then(|c| concrete_self_receiver_override(kb, c, fn_sym, op_short_sym))
                     {
                         let derived = dispatched_impl_effects(
-                            kb, impl_op, &op.params, &subst, pos_args, named_args,
-                            pos_results, named_results,
+                            kb,
+                            impl_op,
+                            &op.params,
+                            &subst,
+                            pos_args,
+                            named_args,
+                            pos_results,
+                            named_results,
                         );
                         merge_effects_into(kb, &mut effects, &derived);
-                        classify_pin_or_apply_within(kb, occ, fn_sym, impl_op, enclosing_sort, None);
+                        classify_pin_or_apply_within(
+                            kb,
+                            occ,
+                            fn_sym,
+                            impl_op,
+                            enclosing_sort,
+                            None,
+                        );
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
                             env: env.clone(),
@@ -11767,8 +12862,8 @@ fn check_apply_iter(
                         // concrete → COVERED, so skip it; a provider binding that
                         // mentions a type-param stays abstract (still demands a
                         // `requires`, e.g. a `C provides Iterable[Element = C.T]`).
-                        let provider_bindings = carrier_sym
-                            .and_then(|c| provider_spec_view_bindings(kb, c, spec_sort));
+                        let provider_bindings =
+                            carrier_sym.and_then(|c| provider_spec_view_bindings(kb, c, spec_sort));
                         let mut abstract_params: SmallVec<[Symbol; 2]> = SmallVec::new();
                         for short in kb.type_params_of_sort(spec_sort) {
                             if provider_bindings.as_ref().is_some_and(|binds| {
@@ -11870,8 +12965,14 @@ fn check_apply_iter(
                     // spec signature didn't.
                     if impl_op_sym != fn_sym {
                         let derived = dispatched_impl_effects(
-                            kb, impl_op_sym, &op.params, &subst, pos_args, named_args,
-                            pos_results, named_results,
+                            kb,
+                            impl_op_sym,
+                            &op.params,
+                            &subst,
+                            pos_args,
+                            named_args,
+                            pos_results,
+                            named_results,
                         );
                         // The spec op's polymorphic effect row is GROUNDED by
                         // this concrete dispatch. Drop the still-unresolved row
@@ -11918,15 +13019,18 @@ fn check_apply_iter(
                     // the wrong sibling op. Leaving the call as the spec
                     // op lets the runtime resolve it via its registered
                     // builtin or the spec's own derived rule.
-                    if impl_op_sym != fn_sym
-                        && op_has_runnable_body(kb, impl_op_sym)
-                    {
+                    if impl_op_sym != fn_sym && op_has_runnable_body(kb, impl_op_sym) {
                         // Pass the `resolved_tree` to the shared tail: a same-sort
                         // callee inherits the frame at eval; a CROSS-SORT one that
                         // constructs a dictionary has it emitted AS `dispatch_dict`
                         // there (WI-829), since eval threads the dict, not the tree.
                         classify_pin_or_apply_within(
-                            kb, occ, fn_sym, impl_op_sym, enclosing_sort, resolved_tree.clone(),
+                            kb,
+                            occ,
+                            fn_sym,
+                            impl_op_sym,
+                            enclosing_sort,
+                            resolved_tree.clone(),
                         );
                     }
                 }
@@ -11954,10 +13058,18 @@ fn check_apply_iter(
                             node: Rc::clone(occ),
                         });
                     }
-                    return Err(TypeError::DispatchNoMatch { span, op: fn_sym, unmet });
+                    return Err(TypeError::DispatchNoMatch {
+                        span,
+                        op: fn_sym,
+                        unmet,
+                    });
                 }
                 DispatchOutcome::Ambiguous(tie) => {
-                    return Err(TypeError::DispatchAmbiguous { span, op: fn_sym, tie });
+                    return Err(TypeError::DispatchAmbiguous {
+                        span,
+                        op: fn_sym,
+                        tie,
+                    });
                 }
                 DispatchOutcome::Deferred => {
                     // Fallback: the WI-239 pre-check above already caught
@@ -11971,7 +13083,11 @@ fn check_apply_iter(
                         param_rigids: env.param_rigids(),
                     };
                     if let Some(slot) = find_requires_slot(
-                        kb, &subst, spec_sort, enclosing_requires, Some(&sigma_ctx),
+                        kb,
+                        &subst,
+                        spec_sort,
+                        enclosing_requires,
+                        Some(&sigma_ctx),
                     ) {
                         // WI-232: capture the matched entry so
                         // req_insertion::run can read it directly,
@@ -12010,21 +13126,30 @@ fn check_apply_iter(
                     // cross-sort abstract call has no covering requirement at
                     // all (a pre-existing gap WI-415 does not address).
                     let enclosing_sort = env.enclosing_sort();
-                    let caller_requires =
-                        env.enclosing_dict_chain().cloned().unwrap_or_else(DictChain::empty);
+                    let caller_requires = env
+                        .enclosing_dict_chain()
+                        .cloned()
+                        .unwrap_or_else(DictChain::empty);
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
                     // died at eval reading the unbound `__req_*`.
                     let dispatch_dict = build_concrete_dispatch_dict(
-                        kb, &subst, parent_sym, enclosing_sort, &caller_requires,
-                        env.param_rigids(), &selections,
+                        kb,
+                        &subst,
+                        parent_sym,
+                        enclosing_sort,
+                        &caller_requires,
+                        env.param_rigids(),
+                        &selections,
                     )
-                    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
-                        span,
-                        op: fn_sym,
-                        callee_sort: parent_sym,
-                        eta: false,
-                        refusal,
+                    .map_err(|refusal| {
+                        TypeError::UnsatisfiableRequirement {
+                            span,
+                            op: fn_sym,
+                            callee_sort: parent_sym,
+                            eta: false,
+                            refusal,
+                        }
                     })?;
                     classify(
                         kb,
@@ -12042,7 +13167,12 @@ fn check_apply_iter(
             }
         }
 
-        return Ok(TypeResult { ty: resolved_ret, env: env.clone(), effects, node: Rc::clone(occ) });
+        return Ok(TypeResult {
+            ty: resolved_ret,
+            env: env.clone(),
+            effects,
+            node: Rc::clone(occ),
+        });
     }
 
     // Path 2: variable with arrow type. WI-341 Stage A: the env carries `Value`.
@@ -12165,7 +13295,11 @@ fn check_apply_iter(
                             (&pos_results[i], slots.get(i))
                         {
                             match validate_arg_against_param(
-                                kb, &mut subst, &arg_result.ty, slot_type, span,
+                                kb,
+                                &mut subst,
+                                &arg_result.ty,
+                                slot_type,
+                                span,
                                 TypeErrorContext::OperationArgument {
                                     op_name: fn_sym,
                                     param: *param_sym,
@@ -12234,8 +13368,13 @@ fn check_apply_iter(
                 // The same WI-426 coverage rule the named-operation path applies,
                 // via the shared checker so the two cannot drift.
                 arg_errors.extend(named_arg_coverage_errors(
-                    kb, &params, pos_args.len(), named_args, fn_sym,
-                    "this function value's type", span,
+                    kb,
+                    &params,
+                    pos_args.len(),
+                    named_args,
+                    fn_sym,
+                    "this function value's type",
+                    span,
                 ));
                 // WI-792: and the same per-argument conformance the positional
                 // loop applies, at the slot each label resolved to. An UNKNOWN
@@ -12247,7 +13386,9 @@ fn check_apply_iter(
                 // errors say different true things about the argument, and
                 // suppressing one here would make the two paths diverge.
                 for (i, (arg_name, _)) in named_args.iter().enumerate() {
-                    let Ok(arg_result) = &named_results[i] else { continue };
+                    let Ok(arg_result) = &named_results[i] else {
+                        continue;
+                    };
                     let Some((param_sym, param_type)) =
                         match_named_arg_param(kb, &params, *arg_name)
                     else {
@@ -12255,8 +13396,15 @@ fn check_apply_iter(
                     };
                     let (param_sym, param_type) = (*param_sym, param_type.clone());
                     match validate_arg_against_param(
-                        kb, &mut subst, &arg_result.ty, &param_type, span,
-                        TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+                        kb,
+                        &mut subst,
+                        &arg_result.ty,
+                        &param_type,
+                        span,
+                        TypeErrorContext::OperationArgument {
+                            op_name: fn_sym,
+                            param: param_sym,
+                        },
                     ) {
                         ArgValidation::Ok => {}
                         ArgValidation::WrapSome { declared } => {
@@ -12280,7 +13428,13 @@ fn check_apply_iter(
             let named_node;
             let occ = if !named_args.is_empty() {
                 match reorder_named_args_in_apply(
-                    kb, occ, &params, pos_args.len(), &some_wraps, pos_results, named_results,
+                    kb,
+                    occ,
+                    &params,
+                    pos_args.len(),
+                    &some_wraps,
+                    pos_results,
+                    named_results,
                 ) {
                     Some(r) => {
                         named_node = r;
@@ -12324,7 +13478,12 @@ fn check_apply_iter(
                 // AFTER the some-wraps, which index the ORIGINAL children: a
                 // coerced argument must be wrapped before it becomes a component.
                 named_node = gather_spread_args_into_tuple(
-                    kb, occ, a_type, &labels, &some_wraps, pos_results,
+                    kb,
+                    occ,
+                    a_type,
+                    &labels,
+                    &some_wraps,
+                    pos_results,
                 )
                 .ok_or_else(|| {
                     // TWO causes, both unreachable, both loud rather than falling
@@ -12359,7 +13518,12 @@ fn check_apply_iter(
                 named_node = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
                 &named_node
             };
-            return Ok(TypeResult { ty: ret_ty, env: env.clone(), effects, node: Rc::clone(occ) });
+            return Ok(TypeResult {
+                ty: ret_ty,
+                env: env.clone(),
+                effects,
+                node: Rc::clone(occ),
+            });
         }
     }
 
@@ -12381,10 +13545,19 @@ fn check_apply_iter(
         .map(|ty| {
             let ret = Value::term(ty);
             let ret = open_existential_return(
-                kb, impl_parent_sort_of_op(kb, fn_sym), &ret, occ.span, occ.owner,
+                kb,
+                impl_parent_sort_of_op(kb, fn_sym),
+                &ret,
+                occ.span,
+                occ.owner,
             )
             .unwrap_or(ret);
-            TypeResult { ty: ret, env: env.clone(), effects, node: Rc::clone(occ) }
+            TypeResult {
+                ty: ret,
+                env: env.clone(),
+                effects,
+                node: Rc::clone(occ),
+            }
         })
         .ok_or_else(|| {
             // WI-565: refine the terse "unknown functor" when the bare name IS a
@@ -12437,7 +13610,13 @@ pub(crate) fn record_apply_rewrite(
     let new_fn_ref = kb.alloc(Term::Ref(impl_op_sym));
     let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
         .iter()
-        .map(|(s, t)| if *s == fn_arg { (*s, new_fn_ref) } else { (*s, *t) })
+        .map(|(s, t)| {
+            if *s == fn_arg {
+                (*s, new_fn_ref)
+            } else {
+                (*s, *t)
+            }
+        })
         .collect();
     let rewritten_apply = kb.alloc(Term::Fn {
         functor: apply_functor,
@@ -12540,8 +13719,7 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
 /// requirement slot or a `requires` chain, so 0 of the 373 operations has such a
 /// parent. It takes the re-declaration above to build one.
 pub(crate) fn impl_parent_sort_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
-    impl_parent_of_op(kb, op_sym)
-        .filter(|p| kb.has_kind(*p, crate::intern::SymbolKind::Sort))
+    impl_parent_of_op(kb, op_sym).filter(|p| kb.has_kind(*p, crate::intern::SymbolKind::Sort))
 }
 
 /// WI-565: the sorts that declare a MEMBER operation whose SHORT name equals that
@@ -12605,7 +13783,10 @@ fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> BareMembe
         dot_dispatchable &= is_op;
         by_qn.entry(parent_qn.to_string()).or_insert(parent_sym);
     }
-    BareMemberCandidates { sorts: by_qn.into_values().collect(), dot_dispatchable }
+    BareMemberCandidates {
+        sorts: by_qn.into_values().collect(),
+        dot_dispatchable,
+    }
 }
 
 /// [`member_owning_sorts_for_bare`]'s answer: the owning sorts, plus whether the
@@ -12629,11 +13810,7 @@ pub(crate) fn bare_member_call_message(
 ) -> String {
     let (noun, sorts, exemplar) = match owning_sorts {
         [one] => ("sort".to_string(), one.clone(), one.clone()),
-        many => (
-            "sorts".to_string(),
-            many.join(", "),
-            "<Sort>".to_string(),
-        ),
+        many => ("sorts".to_string(), many.join(", "), "<Sort>".to_string()),
     };
     // WI-898: the receiver spelling is offered only where a member OPERATION answers
     // it. An equation functor (`Bool.ite`) is reached by its qualified name alone, so
@@ -12939,7 +14116,9 @@ pub(crate) fn supplier_tie_repair(
     candidates: &[SpecOpSupplier],
 ) -> SupplierTieRepair {
     let bracket_dispatchable = lookup_spec_op_dispatch(kb, spec_op).is_some();
-    let has_witness = candidates.iter().any(|c| matches!(c.route, SupplyRoute::Witness(_)));
+    let has_witness = candidates
+        .iter()
+        .any(|c| matches!(c.route, SupplyRoute::Witness(_)));
     if bracket_dispatchable && has_witness {
         SupplierTieRepair::NameableWitness
     } else {
@@ -13071,7 +14250,9 @@ fn refuse_unarbitrated_supplier_tie(
     // Count first: the route scan is skipped for the 0- and 1-supplier case, which the
     // blast-radius scan measured as every call in the tree.
     if cands.len() >= 2
-        && cands.iter().any(|c| !c.route.weighed_by_provision_arbitration())
+        && cands
+            .iter()
+            .any(|c| !c.route.weighed_by_provision_arbitration())
     {
         return Err(supplier_tie_error(kb, spec_op, carrier, &cands, span));
     }
@@ -13314,7 +14495,11 @@ fn dot_member_dispatch_decision(
         // the disagreeing shape has a decided answer.
         let backs = carrier_own_op(kb, carrier, spec_op, op_short_sym)
             .is_some_and(|o| kb.canonical_sym(o) == kb.canonical_sym(own_member));
-        return Ok(if backs { DotMember::DispatchByValue(spec_op) } else { DotMember::Take });
+        return Ok(if backs {
+            DotMember::DispatchByValue(spec_op)
+        } else {
+            DotMember::Take
+        });
     }
     // WI-1042 — WHICH HALF, asked through the gate the other two sites ask
     // ([`defaulted_spec_op_parent`]) rather than through a local `operation_has_no_body`.
@@ -13340,9 +14525,7 @@ fn dot_member_dispatch_decision(
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
         // BODY-LESS — a different question with a different condition; see
         // [`refuse_unarbitrated_supplier_tie`].
-        refuse_unarbitrated_supplier_tie(
-            kb, spec_sort, carrier, spec_op, op_short_sym, span,
-        )?;
+        refuse_unarbitrated_supplier_tie(kb, spec_sort, carrier, spec_op, op_short_sym, span)?;
         return Ok(DotMember::Take);
     }
     // DEFAULTED.
@@ -13587,7 +14770,12 @@ fn build_dispatching_dict_direct(
     // would be short of what `synth_req_names` names.
     let callee_chain = provider_dict_entries(kb, callee_spec_sort);
     build_dispatching_dict_from_chain(
-        kb, callee_spec_sort, &callee_chain, caller_requires, syms, false,
+        kb,
+        callee_spec_sort,
+        &callee_chain,
+        caller_requires,
+        syms,
+        false,
         // WI-419: req-insertion diagnostic path — the call-site subst is gone
         // here, so Strategy 1 keeps its first-match behavior.
         None,
@@ -13666,8 +14854,11 @@ impl RequirementRefusal {
             ));
         }
         if !self.refused_covers.is_empty() {
-            let list: Vec<String> =
-                self.refused_covers.iter().map(|e| format!("`requires {e}`")).collect();
+            let list: Vec<String> = self
+                .refused_covers
+                .iter()
+                .map(|e| format!("`requires {e}`"))
+                .collect();
             msg.push_str(&format!(
                 "; the enclosing scope's {} covers only as a wildcard and is not forwarded — its element is a different type parameter under this call (WI-821)",
                 list.join(", "),
@@ -13789,8 +14980,10 @@ fn explain_dep_refusal(
             }
         }
     }
-    let refused_covers: Vec<String> =
-        refused_entries.iter().map(|e| render_requires_entry(kb, e)).collect();
+    let refused_covers: Vec<String> = refused_entries
+        .iter()
+        .map(|e| render_requires_entry(kb, e))
+        .collect();
     // WI-841: this explainer is the σ-signature one; a PIN refusal is built by the
     // caller, which is the only place that knows a pin was in force.
     Some(RequirementRefusal {
@@ -13871,8 +15064,14 @@ fn build_dispatching_dict_from_chain(
         let s3_slot = (require_complete && (disambig.is_some() || pinned_witness.is_some()))
             .then_some(&mut s3_failure);
         match build_dep_projection(
-            kb, dep, caller_requires, &caller_sub_chains, syms, disambig,
-            s3_slot, selected,
+            kb,
+            dep,
+            caller_requires,
+            &caller_sub_chains,
+            syms,
+            disambig,
+            s3_slot,
+            selected,
         ) {
             Some(t) => proj_terms.push(t),
             None if require_complete => {
@@ -13898,7 +15097,12 @@ fn build_dispatching_dict_from_chain(
                 // no-dict classification that dies at eval.
                 if let Some(refusal) = disambig.and_then(|ctx| {
                     explain_dep_refusal(
-                        kb, dep, caller_requires, &caller_sub_chains, ctx, s3_failure,
+                        kb,
+                        dep,
+                        caller_requires,
+                        &caller_sub_chains,
+                        ctx,
+                        s3_failure,
                     )
                 }) {
                     return Err(Box::new(refusal));
@@ -13908,7 +15112,12 @@ fn build_dispatching_dict_from_chain(
             None => {}
         }
     }
-    Ok(Some(build_dictionary_term(kb, syms, callee_spec_sort, &proj_terms)))
+    Ok(Some(build_dictionary_term(
+        kb,
+        syms,
+        callee_spec_sort,
+        &proj_terms,
+    )))
 }
 
 /// WI-415/WI-418: build, at COMPILE stage, the parent-bundle dispatching dict a
@@ -14000,10 +15209,19 @@ fn build_concrete_dispatch_dict(
     // WI-419: pass the call-site context so Strategy 1 can disambiguate a caller
     // that declares two+ `requires` of the same spec over distinct element
     // params (forward the dict for the element this call actually uses).
-    let disambig = SigmaCtx { subst, param_rigids };
+    let disambig = SigmaCtx {
+        subst,
+        param_rigids,
+    };
     build_dispatching_dict_from_chain(
-        kb, callee_spec_sort, &concrete_chain, caller_requires, &syms, true,
-        Some(&disambig), selected,
+        kb,
+        callee_spec_sort,
+        &concrete_chain,
+        caller_requires,
+        &syms,
+        true,
+        Some(&disambig),
+        selected,
     )
 }
 
@@ -14017,11 +15235,7 @@ fn build_concrete_dispatch_dict(
 /// `resolve_sort_alias` + the live `subst` (no precomputed qualified-name
 /// map, so it makes no assumption about how the param symbol is spelled). A
 /// param left abstract (`is_type_param_value`) or unbound is preserved.
-fn substitute_spec_via_subst(
-    kb: &mut KnowledgeBase,
-    spec: &Value,
-    subst: &Substitution,
-) -> Value {
+fn substitute_spec_via_subst(kb: &mut KnowledgeBase, spec: &Value, subst: &Substitution) -> Value {
     match spec {
         Value::Term { id, .. } => Value::term(substitute_spec_via_subst_term(kb, *id, subst)),
         // WI-662: carrier-faithful walk of a denoted spec. Substitute the
@@ -14030,9 +15244,15 @@ fn substitute_spec_via_subst(
         // concrete call type reaches the `SortGoal` — and preserve a denoted
         // `Value::Node` child verbatim (its Expr-occurrence σ is the deferred
         // parametric-effect handling, mirroring the op-level `substitute_clause`).
-        Value::Entity { functor, pos, named } => {
-            let new_pos: Vec<Value> =
-                pos.iter().map(|v| substitute_spec_via_subst(kb, v, subst)).collect();
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => {
+            let new_pos: Vec<Value> = pos
+                .iter()
+                .map(|v| substitute_spec_via_subst(kb, v, subst))
+                .collect();
             let new_named: Vec<(Symbol, Value)> = named
                 .iter()
                 .map(|(k, v)| (*k, substitute_spec_via_subst(kb, v, subst)))
@@ -14055,15 +15275,17 @@ fn substitute_spec_via_subst_term(
 ) -> TermId {
     match kb.get_term(spec).clone() {
         Term::Ref(s) => resolve_param_value_via_subst(kb, s, subst).unwrap_or(spec),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
             // Nullary Fn — the loader's alternative encoding for a bare name.
             resolve_param_value_via_subst(kb, functor, subst).unwrap_or(spec)
         }
-        Term::Fn { .. } => {
-            kb.map_fn_children(spec, |kb, child| substitute_spec_via_subst_term(kb, child, subst))
-        }
+        Term::Fn { .. } => kb.map_fn_children(spec, |kb, child| {
+            substitute_spec_via_subst_term(kb, child, subst)
+        }),
         _ => spec,
     }
 }
@@ -14280,7 +15502,9 @@ pub fn build_dep_projection(
         selected,
     };
     match resolve(kb, &goal, &scope) {
-        ResolutionResult::Resolved(tree) => emit_tree_as_projection(kb, caller_requires, &tree, syms),
+        ResolutionResult::Resolved(tree) => {
+            emit_tree_as_projection(kb, caller_requires, &tree, syms)
+        }
         failure => {
             if let Some(out) = s3_failure_out {
                 *out = Some(failure);
@@ -14577,11 +15801,20 @@ fn sigma_pair_precise(kb: &mut KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: Term
 fn parameterized_parts(
     kb: &KnowledgeBase,
     t: TermId,
-) -> Option<(Symbol, SmallVec<[TermId; 4]>, SmallVec<[(Symbol, TermId); 2]>)> {
+) -> Option<(
+    Symbol,
+    SmallVec<[TermId; 4]>,
+    SmallVec<[(Symbol, TermId); 2]>,
+)> {
     // Shape-filter first: only a `Fn` with named args can classify
     // `TypeHead::Parameterized`, and a bare-sort `Ref` (the common element)
     // fails here before `type_head`'s meta-ctor qualified-name ladder runs.
-    let Term::Fn { pos_args, named_args, .. } = kb.get_term(t) else {
+    let Term::Fn {
+        pos_args,
+        named_args,
+        ..
+    } = kb.get_term(t)
+    else {
         return None;
     };
     if named_args.is_empty() {
@@ -14659,11 +15892,11 @@ fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, bool)> {
         Term::Ref(sym) | Term::Ident(sym) if is_sort_param_symbol(kb, *sym) => {
             type_param_global_var(kb, *sym).map(|g| (g, false))
         }
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty()
-                && named_args.is_empty()
-                && is_sort_param_symbol(kb, *functor) =>
-        {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() && is_sort_param_symbol(kb, *functor) => {
             type_param_global_var(kb, *functor).map(|g| (g, false))
         }
         _ => None,
@@ -14674,11 +15907,7 @@ fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, bool)> {
 /// rigidification minted for it, or return it unchanged when it is not a param in
 /// scope (no rigid mapping). WI-942: "in scope" is the enclosing sort's params AND
 /// the operation's own — pass `TypingEnv::param_rigids`, never the sort prefix.
-fn canonical_global_var(
-    kb: &KnowledgeBase,
-    g: VarId,
-    param_rigids: &[(VarId, TermId)],
-) -> VarId {
+fn canonical_global_var(kb: &KnowledgeBase, g: VarId, param_rigids: &[(VarId, TermId)]) -> VarId {
     for (canonical, rigid_term) in param_rigids {
         if *canonical == g {
             if let Term::Var(Var::Rigid(rv)) = kb.get_term(*rigid_term) {
@@ -14800,7 +16029,11 @@ fn emit_tree_as_projection(
             let marker = no_provider_sym(kb);
             Some(build_empty_bundle(kb, syms, marker))
         }
-        ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => {
+        ResolvedRequiresNode::Conditional {
+            impl_sort,
+            sub_resolutions,
+            ..
+        } => {
             let mut sub_terms: SmallVec<[TermId; 4]> = SmallVec::new();
             for sub in sub_resolutions {
                 sub_terms.push(emit_tree_as_projection(kb, caller, sub, syms)?);
@@ -14825,7 +16058,6 @@ fn build_req_var_ref(kb: &mut KnowledgeBase, syms: &ProjectionSyms, name_sym: Sy
     })
 }
 
-
 /// Build `requirement_at_sort(chain = <inner>, slot = <k>)`.
 fn build_req_at_sort(
     kb: &mut KnowledgeBase,
@@ -14845,11 +16077,7 @@ fn build_req_at_sort(
 /// THREE producers need it: a `Leaf` resolution, WI-857's `Unavailable` marker slot,
 /// and `build_dep_projection`'s synthetic `EffectsRuntime` anchor. One owner, so the
 /// spelling of a childless dictionary has one definition.
-fn build_empty_bundle(
-    kb: &mut KnowledgeBase,
-    syms: &ProjectionSyms,
-    functor: Symbol,
-) -> TermId {
+fn build_empty_bundle(kb: &mut KnowledgeBase, syms: &ProjectionSyms, functor: Symbol) -> TermId {
     build_dictionary_term(kb, syms, functor, &[])
 }
 
@@ -14947,7 +16175,10 @@ pub(crate) enum BridgeRequirements {
     /// raises it and the bridge suspends on it, so the two need the same facts under
     /// different framing — the SENTENCE has one owner,
     /// [`crate::eval::EvalError::AmbiguousRequirement`]'s `Display`.
-    Ambiguous { requirement: String, candidates: Vec<String> },
+    Ambiguous {
+        requirement: String,
+        candidates: Vec<String>,
+    },
 }
 
 /// Resolve the requirement dictionaries for a bridged op call over GROUND args (see
@@ -15019,7 +16250,10 @@ pub(crate) fn resolve_bridge_requirements(
     let mut trees: Vec<(Symbol, ResolvedRequiresNode)> = Vec::with_capacity(chain.len());
     for (entry, name) in chain.iter().zip(names.iter()) {
         let concrete_spec = substitute_spec_via_subst(kb, &entry.spec, &subst);
-        let concrete = RequiresEntry { required_sort: entry.required_sort, spec: concrete_spec };
+        let concrete = RequiresEntry {
+            required_sort: entry.required_sort,
+            spec: concrete_spec,
+        };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
             return BridgeRequirements::Unresolvable {
                 detail: format!(
@@ -15069,8 +16303,11 @@ pub(crate) fn resolve_bridge_requirements(
         // CONSTRUCTION (`Leaf`/`Conditional`), never `FromScope`.
         // WI-841: and no SELECTION — this runs at eval, from a value-directed
         // dispatch or the SLD bridge, where there is no call-site bracket to read.
-        let scope =
-            ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
+        let scope = ResolutionScope {
+            available_requires: &[],
+            sigma: None,
+            selected: &[],
+        };
         match resolve(kb, &goal, &scope) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             // WI-855: a TIE is a coherence verdict, kept apart from the causes that
@@ -15164,9 +16401,7 @@ pub(crate) fn record_apply_within_concrete(
             Some(t) => t,
             None => return false,
         },
-        None => match build_dispatching_dict_direct(
-            kb, callee_spec_sort, caller_requires, &syms,
-        ) {
+        None => match build_dispatching_dict_direct(kb, callee_spec_sort, caller_requires, &syms) {
             Some(t) => t,
             None => return false,
         },
@@ -15270,8 +16505,8 @@ pub(crate) fn record_apply_within_rewrite(
 
 /// Full operation info for type checking: params with types, return type, effects.
 struct OperationInfoFull {
-    params: Vec<(Symbol, Value)>,  // (param_name, param_type); WI-341 carrier-agnostic
-    return_type: Value,            // WI-341 carrier-agnostic
+    params: Vec<(Symbol, Value)>, // (param_name, param_type); WI-341 carrier-agnostic
+    return_type: Value,           // WI-341 carrier-agnostic
     effects: Vec<Value>,
     /// Operation-level type parameters in declaration order, as
     /// `(name, the parameter's own logical variable)` pairs. WI-849 — a `Var`,
@@ -15413,14 +16648,22 @@ fn seed_op_type_args(
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<Vec<InstanceSelection>, TypeError> {
-    let Some(type_args) = call_type_args_of(occ) else { return Ok(Vec::new()) };
+    let Some(type_args) = call_type_args_of(occ) else {
+        return Ok(Vec::new());
+    };
     let declared = call_bracket_scopes(kb, op, fn_sym);
     // POSITIONALS reach the operation's OWN parameters only — `declared`'s first
     // segment. See `resolve_call_type_arg_targets`.
     let positional_limit = op.type_params.len();
     let slots = callee_requirement_slots(kb, fn_sym);
     let targets = resolve_call_type_arg_targets(
-        kb, type_args, &declared, positional_limit, &slots, fn_sym, span,
+        kb,
+        type_args,
+        &declared,
+        positional_limit,
+        &slots,
+        fn_sym,
+        span,
     )?;
     // One target per binding, in order — nothing is skipped now, which is what lets
     // this be a plain `zip` rather than an index carried back out of the resolver.
@@ -15434,17 +16677,22 @@ fn seed_op_type_args(
             // cross-carrier through the typer's view dispatch, no re-ground.
             unify_types(kb, subst, &TermIdView(param), value);
         }
-        let Some(spec_sort) = target.slot_spec() else { continue };
+        let Some(spec_sort) = target.slot_spec() else {
+            continue;
+        };
         // A slot binding's VALUE names a witness SORT, so it must be readable as one.
         // A binding that is not (a literal, an arrow) has no provider to check and no
         // impl to pin — refuse it rather than drop it into the type-parameter half
         // and call the slot bound.
-        let witness = selection_witness_sym(kb, value)
-            .ok_or(TypeError::SelectionValueNotASort { span, op: fn_sym, spec: spec_sort })?;
+        let witness =
+            selection_witness_sym(kb, value).ok_or(TypeError::SelectionValueNotASort {
+                span,
+                op: fn_sym,
+                spec: spec_sort,
+            })?;
         // Built at the FIRST slot binding, not per binding: the §1.1 set is a scan of
         // every `SortInfo` fact, and a bracket may bind several slots.
-        let concrete = concrete
-            .get_or_insert_with(|| super::load::sorts_with_constructors(kb));
+        let concrete = concrete.get_or_insert_with(|| super::load::sorts_with_constructors(kb));
         validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
         // WI-870: and what the value's OWN bracket bound on that witness (§3.3).
         let slots = witness_value_slot_selections(kb, fn_sym, witness, value, span)?;
@@ -15509,9 +16757,13 @@ fn witness_value_slot_selections(
         // so `LexFst[Int64, Int64, Descending]` reaches this loop as named `A`, `B`,
         // `OA`. One reader for both spellings, which is what keeps the positional form
         // from being a second silent drop.
-        let Some(slot) = named_requirement_slot_of(kb, witness, key) else { continue };
+        let Some(slot) = named_requirement_slot_of(kb, witness, key) else {
+            continue;
+        };
         let Some(spec) = slot.spec_base else { continue };
-        let Some(bound) = named_child_value(kb, value, key) else { continue };
+        let Some(bound) = named_child_value(kb, value, key) else {
+            continue;
+        };
         // An ABSTRACT binding derives nothing — the same rule [`is_type_param_value`]
         // states for the outer channel, and for the same reason: inside `report[T, O](s:
         // SortedSet[T = T, O = O])` the slot names the caller's parameter, and pinning
@@ -15522,7 +16774,11 @@ fn witness_value_slot_selections(
             continue;
         }
         let Some(sub_witness) = selection_witness_sym(kb, &bound) else {
-            return Err(TypeError::SelectionValueNotASort { span, op: fn_sym, spec });
+            return Err(TypeError::SelectionValueNotASort {
+                span,
+                op: fn_sym,
+                spec,
+            });
         };
         let chain_index = dict_chain_index_of_named_slot(kb, witness, &slot, fn_sym, span)?;
         // Check 1 only — see this function's doc for why check 3 is not a sub-slot's.
@@ -15660,7 +16916,11 @@ fn push_selection(
         }
         return Ok(());
     }
-    selections.push(InstanceSelection { spec_sort, witness, slots });
+    selections.push(InstanceSelection {
+        spec_sort,
+        witness,
+        slots,
+    });
     Ok(())
 }
 
@@ -15722,7 +16982,9 @@ fn selections_from_slot_bindings(
     // reachable by a bracket key and a slot readable from σ are one list, so a scope
     // added there cannot be forgotten here.
     for (name, var) in call_bracket_scopes(kb, op, fn_sym) {
-        let Some(spec_sort) = named_slot_spec(kb, fn_sym, name) else { continue };
+        let Some(spec_sort) = named_slot_spec(kb, fn_sym, name) else {
+            continue;
+        };
         let var_term = type_param_var_term(kb, var);
         // WALKED THEN SURFACED, the pairing `check_apply_iter`'s sibling σ-read of these
         // very vars uses (`set_resolved_type_args`, WI-394): the deep walk STOPS at a
@@ -15741,15 +17003,16 @@ fn selections_from_slot_bindings(
         // `None` here is a slot bound to something with no sort head at all (an arrow,
         // a tuple) — no witness to name, and `check_selection_bindings` has no goal to
         // judge it against; the requirement's own route reports it.
-        let Some(witness) = sort_functor_of(kb, bound) else { continue };
+        let Some(witness) = sort_functor_of(kb, bound) else {
+            continue;
+        };
         // WI-870: and the witness's OWN slot bindings, read out of the same type. A
         // named slot IS a type parameter (§4.7), so `SortedSet[T = List[P], O =
         // ListOrd[OE = LexFst]]` carries the nested selection in the ARGUMENT exactly
         // as the bracket carries it — reading only the base here would drop it on
         // every call after the construction site, which is the very asymmetry WI-844
         // built this producer to close.
-        let slots =
-            witness_value_slot_selections(kb, fn_sym, witness, &Value::term(bound), span)?;
+        let slots = witness_value_slot_selections(kb, fn_sym, witness, &Value::term(bound), span)?;
         push_selection(kb, &mut selected, spec_sort, witness, slots, fn_sym, span)?;
     }
     Ok(selected)
@@ -15803,7 +17066,9 @@ fn pinned_selection_for<'a>(
     selected: &'a [InstanceSelection],
     spec: Symbol,
 ) -> Option<&'a InstanceSelection> {
-    selected.iter().find(|s| same_sort_canonical(kb, s.spec_sort, spec))
+    selected
+        .iter()
+        .find(|s| same_sort_canonical(kb, s.spec_sort, spec))
 }
 
 /// WI-870 — the slot binding, if any, that `pin` wrote for dictionary sub-goal `i`.
@@ -15919,7 +17184,9 @@ fn call_bracket_scopes(
     let mut declared = op.type_params.clone();
     // WI-956: the kind gate is `impl_parent_sort_of_op`'s — under `kind_of` a sort
     // whose Entity role registered first lost its params here, silently.
-    let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) else { return declared };
+    let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) else {
+        return declared;
+    };
     // Read out of the memo first: `kb.intern` below needs `&mut kb`, and the pairs are
     // an owned `Rc` snapshot, so nothing borrows `kb` across the loop.
     let pairs: Vec<(String, Var)> = sort_type_params_as_pairs(kb, parent)
@@ -15988,7 +17255,13 @@ fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -> Vec<Calle
         .into_iter()
         .filter(|e| !is_value_precondition_clause(kb, &e.spec))
         .collect();
-    push_slots(kb, fn_sym, op_entries, CalleeSlotSource::OpRequires, &mut out);
+    push_slots(
+        kb,
+        fn_sym,
+        op_entries,
+        CalleeSlotSource::OpRequires,
+        &mut out,
+    );
     // Same kind gate as `call_bracket_scopes`: a FREE operation's "parent" is its
     // NAMESPACE. Its requires/named-slot indexes happen to be empty today, so the gate
     // changes nothing — but two functions written against the SAME call disagreeing
@@ -16004,11 +17277,21 @@ fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -> Vec<Calle
         // here cannot shift a slot. Pinning a provider for a provision's condition from
         // a call site is a further increment, not a silent omission.
         let sort_entries = direct_requires_chain(kb, parent);
-        push_slots(kb, parent, sort_entries, CalleeSlotSource::SortRequires, &mut out);
+        push_slots(
+            kb,
+            parent,
+            sort_entries,
+            CalleeSlotSource::SortRequires,
+            &mut out,
+        );
         // The spec-op's own dispatch target. Only for a BODY-LESS spec op: a member
         // with a body is called directly and dispatches nothing.
         if lookup_spec_op_dispatch(kb, fn_sym).is_some() {
-            out.push(CalleeSlot { spec: parent, named: false, source: CalleeSlotSource::Dispatch });
+            out.push(CalleeSlot {
+                spec: parent,
+                named: false,
+                source: CalleeSlotSource::Dispatch,
+            });
         }
     }
     out
@@ -16038,7 +17321,9 @@ fn push_slots(
     // prevent, silently, twice. The converter already refuses a binder whose type is
     // no spec, so this is an internal inconsistency rather than a user error.
     debug_assert!(
-        kb.named_requirement_slots(owner).iter().all(|s| s.spec_base.is_some()),
+        kb.named_requirement_slots(owner)
+            .iter()
+            .all(|s| s.spec_base.is_some()),
         "WI-841: a named requirement slot of {} has no decoded spec base",
         kb.qualified_name_of(owner),
     );
@@ -16061,7 +17346,11 @@ fn push_slots(
             }
             None => false,
         };
-        out.push(CalleeSlot { spec, named: is_named, source: wrap(entry) });
+        out.push(CalleeSlot {
+            spec,
+            named: is_named,
+            source: wrap(entry),
+        });
     }
 }
 
@@ -16165,9 +17454,10 @@ fn call_type_args_of(
     occ: &Rc<NodeOccurrence>,
 ) -> Option<&[(Option<Symbol>, crate::eval::value::Value)]> {
     match &occ.kind {
-        NodeKind::Expr { expr: Expr::Apply { type_args, .. }, .. } if !type_args.is_empty() => {
-            Some(type_args)
-        }
+        NodeKind::Expr {
+            expr: Expr::Apply { type_args, .. },
+            ..
+        } if !type_args.is_empty() => Some(type_args),
         _ => None,
     }
 }
@@ -16271,7 +17561,11 @@ fn resolve_call_type_arg_targets(
         let Some(name_sym) = name_opt else { continue };
         if let Some(idx) = declared.iter().position(|(n, _)| n == name_sym) {
             if std::mem::replace(&mut taken[idx], true) {
-                return Err(TypeError::DuplicateCallTypeArg { span, op: fn_sym, name: *name_sym });
+                return Err(TypeError::DuplicateCallTypeArg {
+                    span,
+                    op: fn_sym,
+                    name: *name_sym,
+                });
             }
             let var = declared[idx].1;
             // A parameter that IS a named slot's binder selects as well as pins. Read
@@ -16298,11 +17592,19 @@ fn resolve_call_type_arg_targets(
                 .collect()
         };
         match matched.len() {
-            0 => return Err(TypeError::NoSuchTypeParam { span, op: fn_sym, name: *name_sym }),
+            0 => {
+                return Err(TypeError::NoSuchTypeParam {
+                    span,
+                    op: fn_sym,
+                    name: *name_sym,
+                })
+            }
             1 => {
                 if named_targets.iter().any(|(n, _)| n == name_sym) {
                     return Err(TypeError::DuplicateCallTypeArg {
-                        span, op: fn_sym, name: *name_sym,
+                        span,
+                        op: fn_sym,
+                        name: *name_sym,
                     });
                 }
                 named_targets.push((*name_sym, CallTypeArgTarget::AnonSlot(matched[0])));
@@ -16312,7 +17614,10 @@ fn resolve_call_type_arg_targets(
                     span,
                     op: fn_sym,
                     name: *name_sym,
-                    slots: matched.iter().map(|s| kb.qualified_name_of(*s).to_string()).collect(),
+                    slots: matched
+                        .iter()
+                        .map(|s| kb.qualified_name_of(*s).to_string())
+                        .collect(),
                 })
             }
         }
@@ -16327,7 +17632,8 @@ fn resolve_call_type_arg_targets(
             // Re-found rather than carried over as an index: the pass above records
             // slot OCCUPANCY, and threading indices out of it would be a second list to
             // keep aligned with this one for no gain — a bracket is a handful of keys.
-            Some(name_sym) => named_targets.iter()
+            Some(name_sym) => named_targets
+                .iter()
                 .find(|(n, _)| n == name_sym)
                 .map(|(_, t)| *t)
                 .expect("named key resolved in the pass above"),
@@ -16335,18 +17641,22 @@ fn resolve_call_type_arg_targets(
                 while next_free < positional_limit && taken[next_free] {
                     next_free += 1;
                 }
-                match declared.get(next_free).filter(|_| next_free < positional_limit) {
+                match declared
+                    .get(next_free)
+                    .filter(|_| next_free < positional_limit)
+                {
                     Some((_, v)) => {
                         taken[next_free] = true;
                         CallTypeArgTarget::Param(*v)
                     }
-                    None => return Err(TypeError::ExcessCallTypeArgs {
-                        span,
-                        op: fn_sym,
-                        given: type_args.iter().filter(|(n, _)| n.is_none()).count(),
-                        free,
-                    }),
-                    // (`free` counts the operation's own free slots — see below.)
+                    None => {
+                        return Err(TypeError::ExcessCallTypeArgs {
+                            span,
+                            op: fn_sym,
+                            given: type_args.iter().filter(|(n, _)| n.is_none()).count(),
+                            free,
+                        })
+                    } // (`free` counts the operation's own free slots — see below.)
                 }
             }
         };
@@ -16429,7 +17739,10 @@ fn check_selection_bindings(
                         .collect(),
                 });
             }
-            if !candidates.iter().any(|c| same_sort_canonical(kb, c.impl_sort, sel.witness)) {
+            if !candidates
+                .iter()
+                .any(|c| same_sort_canonical(kb, c.impl_sort, sel.witness))
+            {
                 return Err(TypeError::WitnessDoesNotProvide {
                     span,
                     op: fn_sym,
@@ -16587,7 +17900,11 @@ fn goal_from_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
             bindings.push((key, val));
         }
     }
-    Some(SortGoal { spec_sort: entry.required_sort, bindings, carrier: None })
+    Some(SortGoal {
+        spec_sort: entry.required_sort,
+        bindings,
+        carrier: None,
+    })
 }
 
 /// WI-841 — the SPEC of the requirement slot named `binder` on `fn_sym` or on its
@@ -16615,7 +17932,6 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     // `TypeExtractor.Denoted does not provide Monoid`.
     sort_functor_of_view(kb, value)
 }
-
 
 /// WI-270 — after seeding from `[bindings]`, expected, and arg
 /// unification, every declared type-param must resolve to a non-Var
@@ -16910,11 +18226,13 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
     if !is_no_provider(kb, functor) {
         return Ok(());
     }
-    Err("the requirement it reads pins no provider — nothing provides that spec at \
+    Err(
+        "the requirement it reads pins no provider — nothing provides that spec at \
          those bindings, or more than one does, or this frame was entered from a host \
          entry point that supplied no dictionary. Declare a provider, select one at \
          the call site, or enter through `call_with_requirements`."
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// Resolve `spec_op` against a dispatching impl sort to its concrete target op —
@@ -16945,7 +18263,9 @@ pub fn resolve_op_target(kb: &KnowledgeBase, impl_sym: Symbol, spec_op: Symbol) 
     // body-less placeholder with no impl. Filter that placeholder so it doesn't
     // mask the instance-fact binding below; a genuine default still rides the
     // `spec_op` fall-through (its rewrite rule / builtin runs).
-    let own = kb.sort_ops_lookup(impl_sym, op_short_sym).filter(|&op| op != spec_op);
+    let own = kb
+        .sort_ops_lookup(impl_sym, op_short_sym)
+        .filter(|&op| op != spec_op);
     own.or_else(|| {
         let spec = lookup_spec_op_dispatch(kb, spec_op)?;
         instance_fact_op_binding(kb, impl_sym, spec, op_short)
@@ -17014,8 +18334,7 @@ pub(crate) fn carrier_override_op(
     spec_op: Symbol,
     op_short_sym: Symbol,
 ) -> Option<Symbol> {
-    carrier_own_op(kb, carrier, spec_op, op_short_sym)
-        .filter(|&o| op_is_interpretable(kb, o))
+    carrier_own_op(kb, carrier, spec_op, op_short_sym).filter(|&o| op_is_interpretable(kb, o))
 }
 
 /// WI-1010 — every RUNNABLE implementation of a DEFAULTED spec op that reaches
@@ -17244,9 +18563,7 @@ pub enum CallClass {
     /// call" at eval — an arity-≥1 bare ref is unambiguously a function value, but
     /// a bare `poke` is not, so `None` here is the load-bearing "this occurrence
     /// is an eta, not a call" signal.
-    EtaOpRef {
-        dict: Option<TermId>,
-    },
+    EtaOpRef { dict: Option<TermId> },
 }
 
 /// WI-210 — dispatch result for a spec-op call.
@@ -17379,7 +18696,11 @@ fn entry_type_param_bindings(
     let bindings: SmallVec<[(Symbol, TermId); 2]> = match &entry.spec {
         // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
         Value::Term { id, .. } => match kb.get_term(*id) {
-            Term::Fn { functor, named_args, pos_args } => {
+            Term::Fn {
+                functor,
+                named_args,
+                pos_args,
+            } => {
                 let f_qn = kb.qualified_name_of(*functor);
                 if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
                     named_args.clone()
@@ -17405,8 +18726,12 @@ fn entry_type_param_bindings(
     for (binding_short_sym, entry_value) in &bindings {
         let binding_short = kb.local_name_of(*binding_short_sym);
         let param_qn = format!("{spec_qn}.{binding_short}");
-        let Some(param_qn_sym) = kb.try_resolve_symbol(&param_qn) else { continue };
-        let Some(alias_target) = resolve_sort_alias(kb, param_qn_sym) else { continue };
+        let Some(param_qn_sym) = kb.try_resolve_symbol(&param_qn) else {
+            continue;
+        };
+        let Some(alias_target) = resolve_sort_alias(kb, param_qn_sym) else {
+            continue;
+        };
         let vid = match kb.get_term(alias_target) {
             Term::Var(Var::Global(v)) => *v,
             _ => continue,
@@ -17520,7 +18845,10 @@ fn entry_sigma_verdict(
     if pairs.is_empty() {
         return SigmaVerdict::Vacuous;
     }
-    if pairs.iter().all(|(pc, ev)| sigma_pair_precise(kb, ctx, *pc, *ev)) {
+    if pairs
+        .iter()
+        .all(|(pc, ev)| sigma_pair_precise(kb, ctx, *pc, *ev))
+    {
         SigmaVerdict::Precise
     } else {
         SigmaVerdict::Refutes
@@ -17562,7 +18890,14 @@ pub fn find_requires_location(
     // Each coarse cover paired with its σ verdict (`Vacuous` with no σ context).
     let mut matches: Vec<(SmallVec<[usize; 2]>, SigmaVerdict)> = Vec::new();
     collect_requires_matches(
-        kb, subst, disambig, spec_sort, &spec_qn, &tree, &mut path, &mut matches,
+        kb,
+        subst,
+        disambig,
+        spec_sort,
+        &spec_qn,
+        &tree,
+        &mut path,
+        &mut matches,
     );
     // WI-829: drop `Refutes` covers (a shallow-vs-deep compound the head fallback
     // coarse-accepted is NO cover), then pick among the survivors — the same
@@ -17608,7 +18943,14 @@ fn collect_requires_matches(
             out.push((path.clone(), verdict));
         } else {
             collect_requires_matches(
-                kb, subst, disambig, spec_sort, spec_qn, &node.sub_requires, path, out,
+                kb,
+                subst,
+                disambig,
+                spec_sort,
+                spec_qn,
+                &node.sub_requires,
+                path,
+                out,
             );
         }
         path.pop();
@@ -17753,9 +19095,7 @@ pub enum ResolvedRequiresNode {
     /// refuses to dispatch through the marker functor
     /// ([`no_provider_sym`]). A slot nobody reads costs nothing; a slot
     /// somebody reads names the requirement that has no provider.
-    Unavailable {
-        spec_sort: Symbol,
-    },
+    Unavailable { spec_sort: Symbol },
 }
 
 impl ResolvedRequiresNode {
@@ -17777,8 +19117,9 @@ impl ResolvedRequiresNode {
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => Some(*impl_sort),
             // Neither pins an impl: `FromScope` reads the caller's slot, and
             // `Unavailable` has none to pin (WI-857).
-            ResolvedRequiresNode::FromScope { .. }
-            | ResolvedRequiresNode::Unavailable { .. } => None,
+            ResolvedRequiresNode::FromScope { .. } | ResolvedRequiresNode::Unavailable { .. } => {
+                None
+            }
         }
     }
 }
@@ -17789,15 +19130,23 @@ impl ResolvedRequiresNode {
 pub enum ResolutionResult {
     Resolved(ResolvedRequiresNode),
     /// No candidate's head unifies with the goal.
-    NoMatch { goal_text: String, hint: String },
+    NoMatch {
+        goal_text: String,
+        hint: String,
+    },
     /// Multiple candidates match and specificity coherence couldn't
     /// pick a unique winner. WI-843: the colliding carriers ride as an
     /// [`InstanceTie`] — by SYMBOL, and stamped with the spec of THIS level's
     /// goal, because a sub-goal's tie is propagated verbatim to the caller.
-    Ambiguous { goal_text: String, tie: InstanceTie },
+    Ambiguous {
+        goal_text: String,
+        tie: InstanceTie,
+    },
     /// Detected a cycle in conditional-instance resolution. `path` is
     /// the goal stack at the point the cycle was detected.
-    Cyclic { path: Vec<String> },
+    Cyclic {
+        path: Vec<String>,
+    },
 }
 
 /// Public entry point — instance synthesis for `goal` in `scope`.
@@ -17860,8 +19209,11 @@ fn resolve_inner<'a>(
     // `FromScope` here would hand back the caller's dictionary and lose the pin.
     // WI-841: a pinned goal consults NO scope entry, so the invariant is expressed by
     // what is iterated rather than by a test inside the loop.
-    let scope_entries: &[RequiresEntry] =
-        if pinned.is_some() { &[] } else { scope.available_requires };
+    let scope_entries: &[RequiresEntry] = if pinned.is_some() {
+        &[]
+    } else {
+        scope.available_requires
+    };
     for (i, ar) in scope_entries.iter().enumerate() {
         if ar.required_sort != goal.spec_sort {
             continue;
@@ -17925,7 +19277,10 @@ fn resolve_inner<'a>(
                     kb.qualified_name_of(goal.spec_sort),
                 ),
             };
-            return ResolutionResult::NoMatch { goal_text: format_goal(kb, goal), hint };
+            return ResolutionResult::NoMatch {
+                goal_text: format_goal(kb, goal),
+                hint,
+            };
         }
     }
 
@@ -17938,9 +19293,8 @@ fn resolve_inner<'a>(
     if let Some(w) = local_provider {
         // Canonicalize `w` ONCE, not once per candidate per pass.
         let w_canon = kb.canonical_sort_sym(w);
-        let is_w = |c: &Candidate| {
-            c.impl_sort == w || kb.canonical_sort_sym(c.impl_sort) == w_canon
-        };
+        let is_w =
+            |c: &Candidate| c.impl_sort == w || kb.canonical_sort_sym(c.impl_sort) == w_canon;
         if candidates.iter().any(&is_w) {
             candidates.retain(&is_w);
         }
@@ -17984,7 +19338,11 @@ fn resolve_inner<'a>(
     drop(candidates);
 
     let (sub_goals, spec_half_len, provider_strict) = dict_sub_goals(
-        kb, goal, chosen_impl_sort, &chosen_impl_subst, &chosen_bindings,
+        kb,
+        goal,
+        chosen_impl_sort,
+        &chosen_impl_subst,
+        &chosen_bindings,
     );
     // WI-857 — the producer/consumer contract, asserted at the producer: this list IS
     // what `dict_layout` counts, so eval's arity cross-check cannot fire on a
@@ -18033,7 +19391,9 @@ fn resolve_inner<'a>(
         // which any one dispatch is strict on 2, so six full sub-resolutions per dispatch
         // were computed and then kept or discarded by accident.
         if !provider_slot_is_ours(i, spec_half_len, &provider_strict) {
-            sub_resolutions.push(ResolvedRequiresNode::Unavailable { spec_sort: sg.spec_sort });
+            sub_resolutions.push(ResolvedRequiresNode::Unavailable {
+                spec_sort: sg.spec_sort,
+            });
             continue;
         }
         // WI-857, the LOCALITY rule (058 §3.8): the sub-goals of `chosen_impl_sort`'s
@@ -18301,7 +19661,10 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
                 // enclosing sort, cf. WI-449), so this cannot arise today; assert it so a
                 // future producer that regresses is LOUD, not a silent drop (repo rule).
                 debug_assert!(
-                    !matches!(kb.symbols.get(carrier), crate::intern::SymbolDef::Unresolved { .. }),
+                    !matches!(
+                        kb.symbols.get(carrier),
+                        crate::intern::SymbolDef::Unresolved { .. }
+                    ),
                     "WI-672: SortProvidesInfo carrier `{}` is unresolved — canonical re-key \
                      would misbucket it; resolve the `provides` carrier at its producer",
                     kb.qualified_name_of(carrier),
@@ -18310,7 +19673,10 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
             }
         }
     }
-    kb.provides_index = Some(ProvidesIndex { by_spec_base, by_carrier });
+    kb.provides_index = Some(ProvidesIndex {
+        by_spec_base,
+        by_carrier,
+    });
 }
 
 /// WI-671/WI-672 — the SortInfo-fact rids for a sort-keyed lookup: the canonical-sort
@@ -18319,7 +19685,10 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
 /// (the pre-build / no-index fallback the load-time consumers hit). Collapses the
 /// identical fast-path/fallback selection the four keyed consumers share; each keeps its
 /// own per-fact `name` read over the returned rids.
-pub(crate) fn sort_info_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
+pub(crate) fn sort_info_rids_by_sort(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+) -> Vec<crate::kb::RuleId> {
     SymbolKeyedFactIndex::rids_or_scan(
         kb,
         kb.sort_info_index.as_ref(),
@@ -18399,11 +19768,15 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
         return false;
     };
     for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped here;
         // occurrence-based provider lookup is gated effect-expressions-as-types
         // work (avoid the term-only `rule_head` panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(head_named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
         let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
             Some(t) => t,
             None => continue,
@@ -18453,10 +19826,18 @@ pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sort_ref_tid) = get_named_arg(kb, &head_named, "sort_ref") else { continue };
-        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else { continue };
-        let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) else { continue };
+        let Some(head_named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sort_ref_tid) = get_named_arg(kb, &head_named, "sort_ref") else {
+            continue;
+        };
+        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else {
+            continue;
+        };
+        let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) else {
+            continue;
+        };
         if kb.canonical_sort_sym(view_base_sym) != spec_canon {
             continue;
         }
@@ -18516,10 +19897,8 @@ fn resolve_nullary_result_carrier(
     let providers = impl_sorts_providing_spec(kb, spec_sort);
     match providers.as_slice() {
         [] => None,
-        [one] => {
-            nullary_carrier_impl_op(kb, *one, spec_op_sym, op_short_sym)
-                .map(DispatchOutcome::Unique)
-        }
+        [one] => nullary_carrier_impl_op(kb, *one, spec_op_sym, op_short_sym)
+            .map(DispatchOutcome::Unique),
         // WI-843: the SECOND `Ambiguous` producer, and it names its own candidates
         // — these are the providers THIS path counted (`impl_sorts_providing_spec`,
         // no goal to match against), so reusing `resolve_inner`'s list here would
@@ -18612,7 +19991,9 @@ fn collect_provides_candidates(
         // dispatch-candidate collection; occurrence-based dispatch is gated
         // effect-expressions-as-types work (avoid the term-only `rule_head`
         // panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(head_named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
         let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
             Some(t) => t,
             None => continue,
@@ -18819,7 +20200,6 @@ fn collect_provides_candidates(
     out
 }
 
-
 /// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,
 /// named_bindings)`. Accepts a bare functor (no SortView wrap) as the
 /// no-bindings case. Returns `None` for shapes that don't fit either
@@ -18829,15 +20209,22 @@ fn unwrap_spec_view(
     spec_view_tid: TermId,
 ) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
     match kb.get_term(spec_view_tid) {
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let f_qn = kb.qualified_name_of(*functor);
             if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
-                let base_sym = pos_args.first().copied().and_then(|t| match kb.get_term(t) {
-                    Term::Fn { functor, .. }
-                    | Term::Ref(functor)
-                    | Term::Ident(functor) => Some(*functor),
-                    _ => None,
-                })?;
+                let base_sym = pos_args
+                    .first()
+                    .copied()
+                    .and_then(|t| match kb.get_term(t) {
+                        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+                            Some(*functor)
+                        }
+                        _ => None,
+                    })?;
                 Some((base_sym, named_args.clone()))
             } else {
                 Some((*functor, SmallVec::new()))
@@ -18865,11 +20252,15 @@ fn unwrap_spec_view_value(
         return unwrap_spec_view(kb, *id);
     }
     match spec.head(kb) {
-        ViewHead::Functor { functor: Some(f), .. } => {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => {
             let f_qn = kb.qualified_name_of(f);
             if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
                 let base_sym = spec.pos_arg(kb, 0).and_then(|p| match p.head(kb) {
-                    ViewHead::Functor { functor: Some(s), .. }
+                    ViewHead::Functor {
+                        functor: Some(s), ..
+                    }
                     | ViewHead::Ref(s)
                     | ViewHead::Ident(s) => Some(s),
                     _ => None,
@@ -18897,7 +20288,12 @@ fn unwrap_spec_view_value(
 /// candidate-side loader vs. the goal-construction call below) — but
 /// they always render to the same short name (e.g. "T").
 fn goal_binding_value(kb: &KnowledgeBase, goal: &SortGoal, short: Symbol) -> Option<TermId> {
-    if let Some(v) = goal.bindings.iter().find(|(k, _)| *k == short).map(|(_, v)| *v) {
+    if let Some(v) = goal
+        .bindings
+        .iter()
+        .find(|(k, _)| *k == short)
+        .map(|(_, v)| *v)
+    {
         return Some(v);
     }
     let name = kb.local_name_of(short);
@@ -19279,7 +20675,11 @@ fn parametric_value_parts(
     value: TermId,
 ) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
     match kb.get_term(value) {
-        Term::Fn { functor, named_args, pos_args } => {
+        Term::Fn {
+            functor,
+            named_args,
+            pos_args,
+        } => {
             let f_qn = kb.qualified_name_of(*functor);
             // SortView is the candidate-side parametric encoding —
             // unwrap into (base, bindings).
@@ -19288,9 +20688,9 @@ fn parametric_value_parts(
                     .first()
                     .copied()
                     .and_then(|t| match kb.get_term(t) {
-                        Term::Fn { functor, .. }
-                        | Term::Ref(functor)
-                        | Term::Ident(functor) => Some(*functor),
+                        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+                            Some(*functor)
+                        }
                         _ => None,
                     });
                 return base.map(|b| (b, named_args.clone()));
@@ -19431,7 +20831,12 @@ fn op_requires_entry_carrier_map(
     match &entry.spec {
         // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
         Value::Term { id, .. } => {
-            let Term::Fn { pos_args, named_args, .. } = kb.get_term(*id).clone() else {
+            let Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } = kb.get_term(*id).clone()
+            else {
                 return out; // a bare `Ref`/`Ident` spec carries no bindings
             };
             for (short, v) in params.iter().zip(pos_args.iter()) {
@@ -19500,7 +20905,9 @@ fn compose_reached_carrier_map(
     };
     let base_qn = kb.qualified_name_of(base).to_string();
     for (k, v) in &bindings {
-        let Some(reached_param) = type_param_sym_of_binding(kb, *k, &base_qn) else { continue };
+        let Some(reached_param) = type_param_sym_of_binding(kb, *k, &base_qn) else {
+            continue;
+        };
         let composed = substitute_impl_params_alloc(kb, *v, parent_map);
         out.push((reached_param, composed));
     }
@@ -19532,9 +20939,15 @@ fn call_carriers_from_subst(
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     for short in kb.type_params_of_sort(spec_sort) {
-        let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else { continue };
-        let Some(alias_target) = resolve_sort_alias(kb, param) else { continue };
-        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else { continue };
+        let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
+            continue;
+        };
+        let Some(alias_target) = resolve_sort_alias(kb, param) else {
+            continue;
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
+            continue;
+        };
         match subst.resolve_as_value(*vid) {
             // Unbound spec param — the call did not pin this carrier; a wildcard.
             None => {}
@@ -19568,7 +20981,11 @@ fn reached_carrier_matches_call(
 ) -> bool {
     let mut aligned = false;
     for (cp, cc) in call_carriers {
-        let Some(rc) = reached_map.iter().find(|(rp, _)| *rp == *cp).map(|(_, v)| *v) else {
+        let Some(rc) = reached_map
+            .iter()
+            .find(|(rp, _)| *rp == *cp)
+            .map(|(_, v)| *v)
+        else {
             continue;
         };
         if !sigma_pair_precise(kb, ctx, rc, *cc) {
@@ -19623,7 +21040,12 @@ fn op_requires_covers(
     type State = (Symbol, SmallVec<[(Symbol, TermId); 2]>);
     let mut stack: Vec<State> = op_requires
         .iter()
-        .map(|e| (kb.canonical_sort_sym(e.required_sort), op_requires_entry_carrier_map(kb, e)))
+        .map(|e| {
+            (
+                kb.canonical_sort_sym(e.required_sort),
+                op_requires_entry_carrier_map(kb, e),
+            )
+        })
         .collect();
     let mut visited: Vec<State> = Vec::new();
     while let Some(state) = stack.pop() {
@@ -19767,7 +21189,11 @@ fn candidate_provider_sub_goals(
                  for it is a bindings-free guess",
                 kb.qualified_name_of(required_sort),
             );
-            out.push(SortGoal { spec_sort: required_sort, bindings: SmallVec::new(), carrier: None });
+            out.push(SortGoal {
+                spec_sort: required_sort,
+                bindings: SmallVec::new(),
+                carrier: None,
+            });
             continue;
         };
         let spec_qn = kb.qualified_name_of(required_sort).to_string();
@@ -19835,9 +21261,7 @@ fn candidate_provider_sub_goals(
 /// load-blocking error. Valid outcomes (`Grounded` / `Neutral`) pass; the
 /// sweep validates formation only and stores nothing, so a projection in an
 /// eliminated position is at worst validated twice with the same verdict.
-pub fn validate_rigid_projection_formations(
-    kb: &mut KnowledgeBase,
-) -> Vec<super::load::LoadError> {
+pub fn validate_rigid_projection_formations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     let formations = std::mem::take(&mut kb.rigid_projection_formations);
     let mut errors = Vec::new();
     let mut seen: HashSet<TermId> = HashSet::new();
@@ -19847,15 +21271,21 @@ pub fn validate_rigid_projection_formations(
         if !seen.insert(tid) {
             continue;
         }
-        let TypeExtractor::RigidTypeProjection { sort, subject, member } =
-            extract_type(kb, &TermIdView(tid))
+        let TypeExtractor::RigidTypeProjection {
+            sort,
+            subject,
+            member,
+        } = extract_type(kb, &TermIdView(tid))
         else {
             unreachable!(
                 "rigid_projection_formations holds a non-RigidTypeProjection term \
                  — loader recording bug"
             );
         };
-        let ctx = TypeErrorContext::EntityField { entity: sort, field: member };
+        let ctx = TypeErrorContext::EntityField {
+            entity: sort,
+            field: member,
+        };
         let span = Some(Span::new(source_span.start(), source_span.end()));
         if let Err(te) = resolve_rigid_projection(kb, sort, &subject, member, &ctx, span) {
             errors.push(te.to_load_error(kb));
@@ -19909,8 +21339,10 @@ fn conditions_entail(
     }
     let sort_level = direct_requires_chain(kb, carrier);
     let entry_of = |kb: &KnowledgeBase, spec: &Value| {
-        spec_base_functor(kb, spec)
-            .map(|required_sort| RequiresEntry { required_sort, spec: spec.clone() })
+        spec_base_functor(kb, spec).map(|required_sort| RequiresEntry {
+            required_sort,
+            spec: spec.clone(),
+        })
     };
     let mut unentailed: Option<String> = None;
     for o in &outer_clauses {
@@ -19920,8 +21352,13 @@ fn conditions_entail(
         for i in &inner_clauses {
             let mut all = true;
             for q_spec in i {
-                let Some(q) = entry_of(kb, q_spec) else { continue };
-                if !available.iter().any(|pc| condition_entails(kb, &pc.clone(), &q)) {
+                let Some(q) = entry_of(kb, q_spec) else {
+                    continue;
+                };
+                if !available
+                    .iter()
+                    .any(|pc| condition_entails(kb, &pc.clone(), &q))
+                {
                     all = false;
                     if unentailed.is_none() {
                         unentailed = Some(render_requires_entry(kb, &q));
@@ -20028,15 +21465,30 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
         // ops-coverage checking; occurrence-based coverage is gated effect-
         // expressions-as-types work (avoid the term-only `rule_head` panic).
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else {
+            continue;
+        };
 
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: SmallVec<[(String, TermId); 2]> = SmallVec::new();
-        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(spec_view).clone() {
+        if let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = kb.get_term(spec_view).clone()
+        {
             let is_sortview = kb.qualified_name_of(functor).ends_with("SortView");
             // Named bindings (`F = Float`, `C = List[T]`).
             for (k, v) in &named_args {
@@ -20052,7 +21504,8 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             // `Spec[V = Vec3, Float]` assigns the positional to the next free param.
             let skip = if is_sortview { 1 } else { 0 };
             if pos_args.len() > skip {
-                let unbound: Vec<String> = kb.type_params_of_sort(spec_base)
+                let unbound: Vec<String> = kb
+                    .type_params_of_sort(spec_base)
                     .into_iter()
                     .filter(|p| !sigma.iter().any(|(n, _)| n == p))
                     .collect();
@@ -20061,7 +21514,11 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
                 }
             }
         }
-        provisions.push(Provision { carrier, spec: spec_base, sigma });
+        provisions.push(Provision {
+            carrier,
+            spec: spec_base,
+            sigma,
+        });
     }
 
     let mut errors = Vec::new();
@@ -20080,7 +21537,10 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             // `T`), and an unbound value can't match a ground fact
             // (`dispatch_values_match`) — fall back to v0's base-level
             // existence check (some sort named in the provision provides R).
-            let concrete = goal.bindings.iter().all(|(_, v)| !contains_type_param(kb, *v));
+            let concrete = goal
+                .bindings
+                .iter()
+                .all(|(_, v)| !contains_type_param(kb, *v));
             // WI-644: SELF-CARRIER provision — every required binding is the CARRIER
             // itself (`Set provides Eq[T = Set]` ⇒ required `PartialEq[T = Set]`). The
             // strict `spec_resolves_at_bindings` can't discharge the carrier's OWN
@@ -20119,12 +21579,18 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             // provider is not refused for a weaker one it also has.
             let mut unentailed: Option<String> = None;
             let self_provides_required = !goal.bindings.is_empty()
-                && goal.bindings.iter().all(|(_, v)| head_is(kb, *v, carrier_canon))
+                && goal
+                    .bindings
+                    .iter()
+                    .all(|(_, v)| head_is(kb, *v, carrier_canon))
                 && provisions.iter().any(|q| {
                     if q.carrier != p.carrier
                         || kb.canonical_sort_sym(q.spec) != required_canon
                         || q.sigma.is_empty()
-                        || !q.sigma.iter().all(|(_, qv)| head_is(kb, *qv, carrier_canon))
+                        || !q
+                            .sigma
+                            .iter()
+                            .all(|(_, qv)| head_is(kb, *qv, carrier_canon))
                     {
                         return false;
                     }
@@ -20218,18 +21684,31 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
     let noneq_canon = kb.canonical_sort_sym(noneq_sym);
 
     // canonical carrier symbol → (provides Eq, provides NonEq)
-    let mut seen: std::collections::HashMap<Symbol, (bool, bool)> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<Symbol, (bool, bool)> =
+        std::collections::HashMap::new();
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else {
+            continue;
+        };
         let spec_canon = kb.canonical_sort_sym(spec_base);
-        let entry = seen.entry(kb.canonical_sort_sym(carrier)).or_insert((false, false));
+        let entry = seen
+            .entry(kb.canonical_sort_sym(carrier))
+            .or_insert((false, false));
         if spec_canon == eq_canon {
             entry.0 = true;
         } else if spec_canon == noneq_canon {
@@ -20389,7 +21868,9 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
                     continue; // abstract binding: defer (not a concrete carrier)
                 }
                 let carrier = match kb.get_term(*val) {
-                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
+                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+                        *functor
+                    }
                     _ => continue,
                 };
                 if !sort_provides(kb, carrier, noneq_sym) {
@@ -20498,9 +21979,15 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let mut host_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(impl_sym) = kb.try_resolve_symbol("anthill.realization.Implementation") {
         for rid in kb.rules_by_functor(impl_sym) {
-            if !kb.is_fact(rid) { continue; }
-            let Some(named) = kb.fact_head_named_args(rid) else { continue };
-            let Some(target) = get_named_arg(kb, &named, "target") else { continue };
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let Some(named) = kb.fact_head_named_args(rid) else {
+                continue;
+            };
+            let Some(target) = get_named_arg(kb, &named, "target") else {
+                continue;
+            };
             if let Some(qn) = impl_target_qn(kb, target) {
                 host_targets.insert(qn);
             }
@@ -20523,18 +22010,29 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 
     let mut errors = Vec::new();
     for p in &provisions {
-        if Some(p.spec) == effects_runtime { continue; }
+        if Some(p.spec) == effects_runtime {
+            continue;
+        }
         // Abstract carrier (no constructors) → sub-interface, ops may stay
         // primitives. Only concrete carriers are checked.
-        if !concrete.contains(&p.carrier) { continue; }
+        if !concrete.contains(&p.carrier) {
+            continue;
+        }
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
-        if host_targets.contains(&carrier_qn) { continue; }
-        let Some(spec_ops) = own_ops.get(&p.spec) else { continue };
+        if host_targets.contains(&carrier_qn) {
+            continue;
+        }
+        let Some(spec_ops) = own_ops.get(&p.spec) else {
+            continue;
+        };
         for &spec_op in spec_ops {
-            let op_short = kb.qualified_name_of(spec_op)
-                .rsplit('.').next().unwrap_or("").to_string();
-            if op_backed(kb, p.carrier, &carrier_qn, spec_op, &op_short)
-            {
+            let op_short = kb
+                .qualified_name_of(spec_op)
+                .rsplit('.')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if op_backed(kb, p.carrier, &carrier_qn, spec_op, &op_short) {
                 continue;
             }
             // WI-431: a retroactive INSTANCE FACT (`fact CpsMonad[F = Option,
@@ -20559,7 +22057,12 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     // WI-859 the self-provider) — the VERDICT half; what is SEEN is
     // [`provider_coherence_groups_with`], whose doc owns why the two are separate.
     let groups = provider_coherence_groups_with(kb, &provisions, &own_ops, &concrete);
-    for ProviderGroup { spec, carrier, candidates } in &groups {
+    for ProviderGroup {
+        spec,
+        carrier,
+        candidates,
+    } in &groups
+    {
         // A group of one candidate is the ordinary single-provider case; skipping it
         // keeps the name allocations below to the erroring groups only (every load has
         // many groups and almost never an erroring one).
@@ -20626,7 +22129,10 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         // rather than the count.
         let spec_qn = kb.qualified_name_of(*spec).to_string();
         let carrier_qn = kb.qualified_name_of(*carrier).to_string();
-        let facts = candidates.iter().filter(|c| matches!(c, Provider::Fact(_))).count();
+        let facts = candidates
+            .iter()
+            .filter(|c| matches!(c, Provider::Fact(_)))
+            .count();
         let witnesses: Vec<String> = candidates
             .iter()
             .filter_map(|c| match c {
@@ -20669,13 +22175,29 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 fn collect_provisions(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<Provision> {
     let mut provisions: Vec<Provision> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some(spec) = super::load::provides_spec_base_sym(kb, spec_view) else { continue };
-        provisions.push(Provision { carrier, spec, spec_view });
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some(spec) = super::load::provides_spec_base_sym(kb, spec_view) else {
+            continue;
+        };
+        provisions.push(Provision {
+            carrier,
+            spec,
+            spec_view,
+        });
     }
     provisions
 }
@@ -20724,8 +22246,12 @@ pub fn provider_coherence_candidates(
     let own_ops: HashMap<Symbol, Vec<Symbol>> =
         super::load::sorts_and_own_ops(kb).into_iter().collect();
     let concrete = super::load::sorts_with_constructors(kb);
-    let groups =
-        provider_coherence_groups_with(kb, &collect_provisions(kb, provides_sym), &own_ops, &concrete);
+    let groups = provider_coherence_groups_with(
+        kb,
+        &collect_provisions(kb, provides_sym),
+        &own_ops,
+        &concrete,
+    );
     groups
         .iter()
         .find(|g| {
@@ -20784,19 +22310,20 @@ fn provider_coherence_groups_with(
     // an idempotent re-record (a repeated identical fact, a witness recorded twice,
     // a carrier's two self-provisions at two applications) shares its `Provider` and
     // collapses.
-    let mut record = |spec: Symbol, carrier: Symbol, cand: Provider| {
-        match groups.iter_mut().find(|g| g.spec == spec && g.carrier == carrier) {
-            Some(g) => {
-                if !g.candidates.contains(&cand) {
-                    g.candidates.push(cand);
-                }
+    let mut record = |spec: Symbol, carrier: Symbol, cand: Provider| match groups
+        .iter_mut()
+        .find(|g| g.spec == spec && g.carrier == carrier)
+    {
+        Some(g) => {
+            if !g.candidates.contains(&cand) {
+                g.candidates.push(cand);
             }
-            None => groups.push(ProviderGroup {
-                spec,
-                carrier,
-                candidates: SmallVec::from_elem(cand, 1),
-            }),
         }
+        None => groups.push(ProviderGroup {
+            spec,
+            carrier,
+            candidates: SmallVec::from_elem(cand, 1),
+        }),
     };
     for p in provisions {
         let spec_canon = kb.canonical_sort_sym(p.spec);
@@ -20810,7 +22337,11 @@ fn provider_coherence_groups_with(
         // namespace-level `fact Spec[T = Carrier, …]`'s `sort_ref` from the carrier
         // binding, so `sort_ref` already IS the carrier.
         if binds_op {
-            record(spec_canon, kb.canonical_sort_sym(p.carrier), Provider::Fact(p.spec_view));
+            record(
+                spec_canon,
+                kb.canonical_sort_sym(p.carrier),
+                Provider::Fact(p.spec_view),
+            );
         }
         // The OP-LESS SPEC exemption, shared by kinds 2 and 3: a spec that declares
         // no ops has no dictionary to be ambiguous about — a bare carrier spec
@@ -20849,9 +22380,11 @@ fn provider_coherence_groups_with(
             // `concrete_witness_beside_a_fact_stays_exempt`; WI-838's scope was the
             // cross-kind BLIND SPOT, not the exemption's criterion, and widening it is
             // a design increment of its own.
-            Some(carrier_canon) if !concrete.contains(&p.carrier) => {
-                record(spec_canon, carrier_canon, Provider::Witness(kb.canonical_sort_sym(p.carrier)))
-            }
+            Some(carrier_canon) if !concrete.contains(&p.carrier) => record(
+                spec_canon,
+                carrier_canon,
+                Provider::Witness(kb.canonical_sort_sym(p.carrier)),
+            ),
             Some(_) => {}
             // KIND 3 — SELF-PROVIDER (WI-859, the prerequisite of 058 §3.6's
             // `one_default`): the provision's dispatch carrier IS the provider, so the
@@ -20876,7 +22409,11 @@ fn provider_coherence_groups_with(
             // WI-855's `Leaf` is concrete.
             None if !binds_op => {
                 let carrier_canon = kb.canonical_sort_sym(p.carrier);
-                record(spec_canon, carrier_canon, Provider::SelfProvider(carrier_canon))
+                record(
+                    spec_canon,
+                    carrier_canon,
+                    Provider::SelfProvider(carrier_canon),
+                )
             }
             // A carrier-keyed provision that BINDS an op is kind 1, recorded above.
             None => {}
@@ -20933,7 +22470,8 @@ fn provider_coherence_groups_with(
 fn fact_beside_self_provider_is_one_carrier(candidates: &[Provider]) -> bool {
     matches!(
         candidates,
-        [Provider::Fact(_), Provider::SelfProvider(_)] | [Provider::SelfProvider(_), Provider::Fact(_)]
+        [Provider::Fact(_), Provider::SelfProvider(_)]
+            | [Provider::SelfProvider(_), Provider::Fact(_)]
     )
 }
 
@@ -20974,11 +22512,18 @@ fn check_provision_binding_agreement(
 ) -> Vec<LoadError> {
     // (carrier, spec base) → the provisions' bindings, in source order so the
     // diagnostic lists the conflicting types the way the author wrote them.
-    let mut groups: Vec<((Symbol, Symbol), SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]>)> =
-        Vec::new();
+    let mut groups: Vec<(
+        (Symbol, Symbol),
+        SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]>,
+    )> = Vec::new();
     for p in provisions {
-        let Some((base, bindings)) = unwrap_spec_view(kb, p.spec_view) else { continue };
-        let key = (kb.canonical_sort_sym(p.carrier), kb.canonical_sort_sym(base));
+        let Some((base, bindings)) = unwrap_spec_view(kb, p.spec_view) else {
+            continue;
+        };
+        let key = (
+            kb.canonical_sort_sym(p.carrier),
+            kb.canonical_sort_sym(base),
+        );
         match groups.iter_mut().find(|(k, _)| *k == key) {
             Some((_, views)) => views.push(bindings),
             None => groups.push((key, SmallVec::from_elem(bindings, 1))),
@@ -21002,8 +22547,10 @@ fn check_provision_binding_agreement(
                 .map(|(_, v)| *v)
         };
         // Bucket by the carrier-param binding: one bucket per APPLICATION.
-        let mut buckets: Vec<(Option<TermId>, SmallVec<[&SmallVec<[(Symbol, TermId); 2]>; 2]>)> =
-            Vec::new();
+        let mut buckets: Vec<(
+            Option<TermId>,
+            SmallVec<[&SmallVec<[(Symbol, TermId); 2]>; 2]>,
+        )> = Vec::new();
         for view in views {
             let app = carrier_param.and_then(|c| binding_of(view, c));
             let slot = buckets.iter_mut().find(|(a, _)| match (a, app) {
@@ -21029,7 +22576,10 @@ fn check_provision_binding_agreement(
                     let short = short_name_of(kb.local_name_of(*param));
                     match seen.iter_mut().find(|(s, _)| *s == short) {
                         Some((_, vals)) => {
-                            if !vals.iter().any(|v| provision_bindings_agree(kb, *v, *value)) {
+                            if !vals
+                                .iter()
+                                .any(|v| provision_bindings_agree(kb, *v, *value))
+                            {
                                 vals.push(*value);
                             }
                         }
@@ -21062,7 +22612,10 @@ fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
     if a == b {
         return true;
     }
-    match (sort_functor_of_view(kb, &Value::term(a)), sort_functor_of_view(kb, &Value::term(b))) {
+    match (
+        sort_functor_of_view(kb, &Value::term(a)),
+        sort_functor_of_view(kb, &Value::term(b)),
+    ) {
         (Some(x), Some(y)) => same_sort_canonical(kb, x, y),
         _ => false,
     }
@@ -21076,7 +22629,11 @@ fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
 /// `SortView` term, kept so the op-coverage check can read an INSTANCE FACT's
 /// op-valued bindings (`pure = optionPure`) — the dictionary entries that back a
 /// spec op without the carrier owning it (WI-431).
-struct Provision { carrier: Symbol, spec: Symbol, spec_view: TermId }
+struct Provision {
+    carrier: Symbol,
+    spec: Symbol,
+    spec_view: TermId,
+}
 
 /// WI-838 / WI-859 — what supplies the dictionary for one `(spec, carrier)`. The
 /// three kinds are compared by DIFFERENT identities, which is why the coherence
@@ -21315,12 +22872,12 @@ pub(crate) fn carrier_views_overlap(kb: &KnowledgeBase, a: TermId, b: TermId) ->
     if !matches!(key_match, BindingKeyMatch::Label) {
         return false;
     }
-    args_a.iter().all(|(param, va)| {
-        match binding_for_param(kb, &args_b, *param, key_match) {
+    args_a.iter().all(
+        |(param, va)| match binding_for_param(kb, &args_b, *param, key_match) {
             Some(vb) => carrier_views_overlap(kb, *va, *vb),
             None => true,
-        }
-    })
+        },
+    )
 }
 
 /// A carrier view as `(base sort, named bindings)` — [`parameterized_parts`] widened by
@@ -21336,11 +22893,11 @@ fn carrier_view_parts(
     }
     match kb.get_term(t) {
         Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new())),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            Some((*functor, SmallVec::new()))
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some((*functor, SmallVec::new())),
         _ => None,
     }
 }
@@ -21355,7 +22912,11 @@ pub(crate) fn all_provisions(kb: &KnowledgeBase) -> Vec<ProvisionRow> {
     };
     collect_provisions(kb, provides_sym)
         .into_iter()
-        .map(|p| ProvisionRow { provider: p.carrier, spec: p.spec, spec_view: p.spec_view })
+        .map(|p| ProvisionRow {
+            provider: p.carrier,
+            spec: p.spec,
+            spec_view: p.spec_view,
+        })
         .collect()
 }
 
@@ -21551,20 +23112,22 @@ fn provisions_of_spec(
     spec_sort: Symbol,
 ) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    provides_rids_by_spec(kb, spec_canon).into_iter().filter_map(move |rid| {
-        if !kb.is_fact(rid) {
-            return None;
-        }
-        // A value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped:
-        // occurrence-based provides lookup is gated effect-expressions-as-types
-        // work, and `fact_head_named_args` is `None` rather than panicking on it.
-        let named = kb.fact_head_named_args(rid)?;
-        let sr = get_named_arg(kb, &named, "sort_ref")?;
-        let provider = super::load::sort_ref_functor(kb, sr)?;
-        let spec_t = get_named_arg(kb, &named, "spec")?;
-        let (base, bindings) = unwrap_spec_view(kb, spec_t)?;
-        (kb.canonical_sort_sym(base) == spec_canon).then_some((provider, spec_t, bindings))
-    })
+    provides_rids_by_spec(kb, spec_canon)
+        .into_iter()
+        .filter_map(move |rid| {
+            if !kb.is_fact(rid) {
+                return None;
+            }
+            // A value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped:
+            // occurrence-based provides lookup is gated effect-expressions-as-types
+            // work, and `fact_head_named_args` is `None` rather than panicking on it.
+            let named = kb.fact_head_named_args(rid)?;
+            let sr = get_named_arg(kb, &named, "sort_ref")?;
+            let provider = super::load::sort_ref_functor(kb, sr)?;
+            let spec_t = get_named_arg(kb, &named, "spec")?;
+            let (base, bindings) = unwrap_spec_view(kb, spec_t)?;
+            (kb.canonical_sort_sym(base) == spec_canon).then_some((provider, spec_t, bindings))
+        })
 }
 
 /// WI-837 — how a spec op's impl reaches a carrier. The three routes are written in
@@ -21684,9 +23247,15 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
     out: &mut std::collections::HashMap<Symbol, SmallVec<[SpecOpSupplier; 2]>>,
 ) {
     for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
-        let Some((carrier_canon, supplier)) =
-            provision_supplier(kb, spec_sort, spec_op, op_short_sym, provider, spec_t, &bindings)
-        else {
+        let Some((carrier_canon, supplier)) = provision_supplier(
+            kb,
+            spec_sort,
+            spec_op,
+            op_short_sym,
+            provider,
+            spec_t,
+            &bindings,
+        ) else {
             continue;
         };
         push_supplier_deduped(kb, out.entry(carrier_canon).or_default(), supplier);
@@ -21731,14 +23300,28 @@ fn provision_supplier(
         // answered structurally with no diagnostic from anywhere.
         Some(c) => carrier_own_op(kb, provider, spec_op, op_short_sym)
             .or_else(|| instance_fact_op_in_bindings(kb, bindings, op_short))
-            .map(|target| (c, SpecOpSupplier { target, route: SupplyRoute::Witness(provider) })),
+            .map(|target| {
+                (
+                    c,
+                    SpecOpSupplier {
+                        target,
+                        route: SupplyRoute::Witness(provider),
+                    },
+                )
+            }),
         // A carrier-keyed provision supplies only what it BINDS. Its
         // `carrier_own_op` is the CARRIER's own member — route 1's business, and
         // attributing it to the provision here would let a `provides Spec[T = C]`
         // block shadow a sibling `fact Spec[T = C, op = f]`'s binding, hiding the
         // very second candidate this walk exists to surface.
         None => instance_fact_op_in_bindings(kb, bindings, op_short).map(|target| {
-            (kb.canonical_sort_sym(provider), SpecOpSupplier { target, route: SupplyRoute::Fact })
+            (
+                kb.canonical_sort_sym(provider),
+                SpecOpSupplier {
+                    target,
+                    route: SupplyRoute::Fact,
+                },
+            )
         }),
     }
 }
@@ -21755,7 +23338,10 @@ pub(crate) fn push_supplier_deduped(
     cand: SpecOpSupplier,
 ) {
     let target_canon = kb.canonical_sym(cand.target);
-    if !bucket.iter().any(|e| kb.canonical_sym(e.target) == target_canon) {
+    if !bucket
+        .iter()
+        .any(|e| kb.canonical_sym(e.target) == target_canon)
+    {
         bucket.push(cand);
     }
 }
@@ -21794,13 +23380,22 @@ pub(crate) fn spec_op_suppliers_for_carrier(
     let mut out: SmallVec<[SpecOpSupplier; 2]> = SmallVec::new();
     // ROUTE 1 — the carrier's OWN member, the genuine override (WI-616).
     if let Some(target) = carrier_own_op(kb, carrier, spec_op, op_short_sym) {
-        out.push(SpecOpSupplier { target, route: SupplyRoute::Own });
+        out.push(SpecOpSupplier {
+            target,
+            route: SupplyRoute::Own,
+        });
     }
     // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
     for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
-        let Some((c, supplier)) =
-            provision_supplier(kb, spec_sort, spec_op, op_short_sym, provider, spec_t, &bindings)
-        else {
+        let Some((c, supplier)) = provision_supplier(
+            kb,
+            spec_sort,
+            spec_op,
+            op_short_sym,
+            provider,
+            spec_t,
+            &bindings,
+        ) else {
             continue;
         };
         if c == carrier_canon {
@@ -21822,8 +23417,12 @@ pub(crate) fn spec_op_suppliers_for_carrier(
 fn collect_eq_defined_ops(kb: &KnowledgeBase) -> std::collections::HashSet<Symbol> {
     let mut eq_defined: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     for rid in kb.live_rule_ids() {
-        let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else { continue };
-        if !super::load::is_equational_head(kb, head) { continue; }
+        let Value::Term { id: head, .. } = *kb.rule_head_value(rid) else {
+            continue;
+        };
+        if !super::load::is_equational_head(kb, head) {
+            continue;
+        }
         if let Term::Fn { pos_args, .. } = kb.get_term(head) {
             if let Some(&lhs) = pos_args.first() {
                 if let Some(op) = head_functor_sym(kb, lhs) {
@@ -22039,7 +23638,11 @@ fn provider_requires_subgoals(
                  for it is a bindings-free guess",
                 kb.qualified_name_of(required),
             );
-            out.push(SortGoal { spec_sort: required, bindings: SmallVec::new(), carrier: None });
+            out.push(SortGoal {
+                spec_sort: required,
+                bindings: SmallVec::new(),
+                carrier: None,
+            });
             continue;
         };
         let r_qn = kb.qualified_name_of(required).to_string();
@@ -22051,7 +23654,11 @@ fn provider_requires_subgoals(
             let nv = subst_requires_value(kb, *v, sigma);
             bindings.push((*k, nv));
         }
-        out.push(SortGoal { spec_sort: required, bindings, carrier: None });
+        out.push(SortGoal {
+            spec_sort: required,
+            bindings,
+            carrier: None,
+        });
     }
     out
 }
@@ -22074,11 +23681,11 @@ fn provider_requires_subgoals(
 fn requires_bare_name_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
     match kb.get_term(v) {
         Term::Ref(s) | Term::Ident(s) => Some(*s),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            Some(*functor)
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
         _ => None,
     }
 }
@@ -22086,29 +23693,45 @@ fn requires_bare_name_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
 /// Substitute σ into one `requires`-clause binding value (by short name);
 /// leave anything σ doesn't ground unchanged. Recurses through `Fn`
 /// children (`List[T]`, `Pair[A, B]`).
-fn subst_requires_value(
-    kb: &mut KnowledgeBase,
-    v: TermId,
-    sigma: &[(String, TermId)],
-) -> TermId {
+fn subst_requires_value(kb: &mut KnowledgeBase, v: TermId, sigma: &[(String, TermId)]) -> TermId {
     if let Some(s) = requires_bare_name_sym(kb, v) {
         return map_requires_name(kb, s, v, sigma);
     }
     match kb.get_term(v).clone() {
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let mut changed = false;
-            let new_pos: SmallVec<[TermId; 4]> = pos_args.iter().map(|t| {
-                let nt = subst_requires_value(kb, *t, sigma);
-                if nt != *t { changed = true; }
-                nt
-            }).collect();
-            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args.iter().map(|(k, t)| {
-                let nt = subst_requires_value(kb, *t, sigma);
-                if nt != *t { changed = true; }
-                (*k, nt)
-            }).collect();
-            if !changed { return v; }
-            kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named })
+            let new_pos: SmallVec<[TermId; 4]> = pos_args
+                .iter()
+                .map(|t| {
+                    let nt = subst_requires_value(kb, *t, sigma);
+                    if nt != *t {
+                        changed = true;
+                    }
+                    nt
+                })
+                .collect();
+            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                .iter()
+                .map(|(k, t)| {
+                    let nt = subst_requires_value(kb, *t, sigma);
+                    if nt != *t {
+                        changed = true;
+                    }
+                    (*k, nt)
+                })
+                .collect();
+            if !changed {
+                return v;
+            }
+            kb.alloc(Term::Fn {
+                functor,
+                pos_args: new_pos,
+                named_args: new_named,
+            })
         }
         _ => v,
     }
@@ -22123,7 +23746,10 @@ fn map_requires_name(
     sigma: &[(String, TermId)],
 ) -> TermId {
     let short = kb.local_name_of(s);
-    sigma.iter().find(|(n, _)| n == short).map_or(orig, |(_, val)| *val)
+    sigma
+        .iter()
+        .find(|(n, _)| n == short)
+        .map_or(orig, |(_, val)| *val)
 }
 
 /// True iff `value` mentions any abstract type-parameter anywhere in its
@@ -22138,7 +23764,11 @@ fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
         return true;
     }
     match kb.get_term(value) {
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             // A `Fn` functor that is itself a param (`Fn{Effect}` nullary, or a
             // param used as a head) makes the value abstract.
             if is_sort_param_symbol(kb, *functor) {
@@ -22203,23 +23833,43 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let own: std::collections::HashMap<Symbol, Vec<Symbol>> =
         super::load::sorts_and_own_ops(kb).into_iter().collect();
     let short = |kb: &KnowledgeBase, s: Symbol| -> String {
-        kb.qualified_name_of(s).rsplit('.').next().unwrap_or("").to_string()
+        kb.qualified_name_of(s)
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_string()
     };
 
     // Snapshot provisions before the (mutating) refinement walk:
     // (carrier, spec base, σ = spec type-param symbol → provision binding value).
-    struct Prov { carrier: Symbol, spec: Symbol, sigma: Vec<(Symbol, TermId)> }
+    struct Prov {
+        carrier: Symbol,
+        spec: Symbol,
+        sigma: Vec<(Symbol, TermId)>,
+    }
     let mut provs: Vec<Prov> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
         // override-refinement coverage; occurrence-based coverage is gated
         // effect-expressions-as-types work (avoid the term-only `rule_head` panic).
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else {
+            continue;
+        };
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
         if let Term::Fn { named_args, .. } = kb.get_term(spec_view).clone() {
@@ -22229,20 +23879,30 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 }
             }
         }
-        provs.push(Prov { carrier, spec: spec_base, sigma });
+        provs.push(Prov {
+            carrier,
+            spec: spec_base,
+            sigma,
+        });
     }
 
     let mut errors = Vec::new();
     for p in &provs {
-        let (Some(spec_ops), Some(carrier_ops)) = (own.get(&p.spec), own.get(&p.carrier))
-        else { continue };
+        let (Some(spec_ops), Some(carrier_ops)) = (own.get(&p.spec), own.get(&p.carrier)) else {
+            continue;
+        };
         for &spec_op in spec_ops {
             let sn = short(kb, spec_op);
             // The carrier's own op of the same short name is its override/impl.
-            let Some(&impl_op) = carrier_ops.iter().find(|&&o| short(kb, o) == sn)
-            else { continue };
-            let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else { continue };
-            let Some(impl_info) = super::op_info::lookup_operation_info(kb, impl_op) else { continue };
+            let Some(&impl_op) = carrier_ops.iter().find(|&&o| short(kb, o) == sn) else {
+                continue;
+            };
+            let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else {
+                continue;
+            };
+            let Some(impl_info) = super::op_info::lookup_operation_info(kb, impl_op) else {
+                continue;
+            };
 
             // Impl-param → spec-param alignment, shared by the effects leg and
             // the contract leg below. A GUARDED effect atom's guard is a
@@ -22263,11 +23923,12 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             };
 
             // ── effects-⊆ (confident-ground only; fail-open otherwise) ──────
-            let spec_effs: Vec<Value> = spec_info.effects.iter()
+            let spec_effs: Vec<Value> = spec_info
+                .effects
+                .iter()
                 .map(|se| sigma_subst_effect(kb, se, &p.sigma))
                 .collect();
-            let ground = |kb: &KnowledgeBase, e: &Value|
-                matches!(e, Value::Term { id: t, .. } if !contains_type_param(kb, *t));
+            let ground = |kb: &KnowledgeBase, e: &Value| matches!(e, Value::Term { id: t, .. } if !contains_type_param(kb, *t));
             let confident = impl_info.effects.iter().all(|e| ground(kb, e))
                 && spec_effs.iter().all(|e| ground(kb, e));
             if confident {
@@ -22289,7 +23950,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                             reason: format!(
                                 "the override declares effect `{}`, which is not covered by \
                                  any effect the spec operation declares (effects must not widen)",
-                                type_display_name_value(kb, ie)),
+                                type_display_name_value(kb, ie)
+                            ),
                         });
                     }
                 }
@@ -22311,29 +23973,39 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
             for ic in user_precondition_clauses(kb, &impl_info.requires) {
                 let ic = substitute_clause(kb, &ic, &align);
-                if !spec_pre.iter().any(|sp| views_structurally_equal(kb, sp, &ic)) {
+                if !spec_pre
+                    .iter()
+                    .any(|sp| views_structurally_equal(kb, sp, &ic))
+                {
                     errors.push(LoadError::IncompatibleOverride {
                         carrier: kb.qualified_name_of(p.carrier).to_string(),
                         spec: kb.qualified_name_of(p.spec).to_string(),
                         op: sn.clone(),
                         reason: "it strengthens the precondition — the override `requires` a \
-                                 condition the spec operation does not".to_string(),
+                                 condition the spec operation does not"
+                            .to_string(),
                     });
                 }
             }
             // postcondition no-weaker: every spec postcondition must be one the
             // impl also ensures (the override promises no less than the spec).
-            let impl_post: Vec<Value> = impl_info.ensures.iter()
+            let impl_post: Vec<Value> = impl_info
+                .ensures
+                .iter()
                 .map(|c| substitute_clause(kb, c, &align))
                 .collect();
             for sc in &spec_info.ensures {
-                if !impl_post.iter().any(|ip| views_structurally_equal(kb, ip, sc)) {
+                if !impl_post
+                    .iter()
+                    .any(|ip| views_structurally_equal(kb, ip, sc))
+                {
                     errors.push(LoadError::IncompatibleOverride {
                         carrier: kb.qualified_name_of(p.carrier).to_string(),
                         spec: kb.qualified_name_of(p.spec).to_string(),
                         op: sn.clone(),
                         reason: "it weakens the postcondition — the override does not `ensure` a \
-                                 condition the spec operation promises".to_string(),
+                                 condition the spec operation promises"
+                            .to_string(),
                     });
                 }
             }
@@ -22381,11 +24053,21 @@ pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::l
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some((spec_base, bindings)) = unwrap_spec_view(kb, spec_view) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some((spec_base, bindings)) = unwrap_spec_view(kb, spec_view) else {
+            continue;
+        };
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
         let mut ops: Vec<(String, Symbol)> = Vec::new();
@@ -22396,18 +24078,28 @@ pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::l
             if let Some(param_sym) = type_param_sym_of_binding(kb, *k, &spec_qn) {
                 sigma.push((param_sym, *v));
             } else if let Some(bound_op) = binding_op_symbol(kb, *v) {
-                ops.push((short_name_of(kb.qualified_name_of(*k)).to_string(), bound_op));
+                ops.push((
+                    short_name_of(kb.qualified_name_of(*k)).to_string(),
+                    bound_op,
+                ));
             }
         }
         if ops.is_empty() {
             continue;
         }
-        provs.push(Prov { carrier, spec: spec_base, sigma, ops });
+        provs.push(Prov {
+            carrier,
+            spec: spec_base,
+            sigma,
+            ops,
+        });
     }
 
     let mut errors = Vec::new();
     for p in &provs {
-        let Some(spec_ops) = own.get(&p.spec) else { continue };
+        let Some(spec_ops) = own.get(&p.spec) else {
+            continue;
+        };
         // Per-provision invariants — hoisted out of the per-binding loop.
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
         let spec_qn = kb.qualified_name_of(p.spec).to_string();
@@ -22420,8 +24112,12 @@ pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::l
             else {
                 continue;
             };
-            let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else { continue };
-            let Some(bound_info) = super::op_info::lookup_operation_info(kb, *bound_op) else { continue };
+            let Some(spec_info) = super::op_info::lookup_operation_info(kb, spec_op) else {
+                continue;
+            };
+            let Some(bound_info) = super::op_info::lookup_operation_info(kb, *bound_op) else {
+                continue;
+            };
             let bound_qn = kb.qualified_name_of(*bound_op).to_string();
 
             // ── arity (always checkable) ────────────────────────────────────
@@ -22444,7 +24140,8 @@ pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::l
                 .zip(bound_info.params.iter())
                 .enumerate()
             {
-                if instance_binding_type_ok(kb, spec_pty, bound_pty, &p.sigma, false) == Some(false) {
+                if instance_binding_type_ok(kb, spec_pty, bound_pty, &p.sigma, false) == Some(false)
+                {
                     let bound_disp = type_display_name_value(kb, bound_pty);
                     let spec_disp = type_display_name_value(kb, spec_pty);
                     errors.push(LoadError::IncompatibleInstanceBinding {
@@ -22459,8 +24156,13 @@ pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::l
             }
 
             // ── return type (covariant: bound_ret <: σ(spec_ret)) ───────────
-            if instance_binding_type_ok(kb, &spec_info.return_type, &bound_info.return_type, &p.sigma, true)
-                == Some(false)
+            if instance_binding_type_ok(
+                kb,
+                &spec_info.return_type,
+                &bound_info.return_type,
+                &p.sigma,
+                true,
+            ) == Some(false)
             {
                 let bound_disp = type_display_name_value(kb, &bound_info.return_type);
                 let spec_disp = type_display_name_value(kb, &spec_info.return_type);
@@ -22491,8 +24193,12 @@ fn instance_binding_type_ok(
     sigma: &[(Symbol, TermId)],
     bound_is_subtype: bool,
 ) -> Option<bool> {
-    let Value::Term { id: spec_t, .. } = spec_ty else { return None };
-    let Value::Term { id: bound_t, .. } = bound_ty else { return None };
+    let Value::Term { id: spec_t, .. } = spec_ty else {
+        return None;
+    };
+    let Value::Term { id: bound_t, .. } = bound_ty else {
+        return None;
+    };
     let spec_sub = if sigma.is_empty() {
         *spec_t
     } else {
@@ -22609,7 +24315,8 @@ pub(crate) fn requires_shadow_is_confusable(
         .map(|(s, l)| (s.clone(), l.clone()))
         .collect();
     for (spec_ty, local_ty) in pairs {
-        let (Value::Term { id: spec_t, .. }, Value::Term { id: local_t, .. }) = (&spec_ty, &local_ty)
+        let (Value::Term { id: spec_t, .. }, Value::Term { id: local_t, .. }) =
+            (&spec_ty, &local_ty)
         else {
             continue; // a denoted carrier — undecidable, falls open to "confusable"
         };
@@ -22674,8 +24381,7 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
     if is_type_param_value(kb, a) || is_type_param_value(kb, b) {
         return false;
     }
-    let (Some((fa, pa, na)), Some((fb, pb, nb))) =
-        (type_ctor_view(kb, a), type_ctor_view(kb, b))
+    let (Some((fa, pa, na)), Some((fb, pb, nb))) = (type_ctor_view(kb, a), type_ctor_view(kb, b))
     else {
         return false; // not constructor-headed on both sides — undecided
     };
@@ -22683,7 +24389,11 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
         return true; // a different constructor, which no instantiation reconciles
     }
     // Shared positions only. A position one side elides is unstated, not other.
-    if pa.iter().zip(pb.iter()).any(|(x, y)| types_definitely_differ(kb, *x, *y)) {
+    if pa
+        .iter()
+        .zip(pb.iter())
+        .any(|(x, y)| types_definitely_differ(kb, *x, *y))
+    {
         return true;
     }
     na.iter().any(|(k, x)| {
@@ -22726,14 +24436,19 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
 fn type_ctor_view(
     kb: &KnowledgeBase,
     t: TermId,
-) -> Option<(Symbol, SmallVec<[TermId; 4]>, SmallVec<[(Symbol, TermId); 2]>)> {
+) -> Option<(
+    Symbol,
+    SmallVec<[TermId; 4]>,
+    SmallVec<[(Symbol, TermId); 2]>,
+)> {
     let mut t = t;
     for _ in 0..ALIAS_EXPANSION_LIMIT {
         let (sym, view) = match kb.get_term(t) {
-            Term::Fn { functor, pos_args, named_args } => (
-                *functor,
-                (*functor, pos_args.clone(), named_args.clone()),
-            ),
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => (*functor, (*functor, pos_args.clone(), named_args.clone())),
             Term::Ref(s) | Term::Ident(s) => (*s, (*s, SmallVec::new(), SmallVec::new())),
             _ => return None, // not constructor-headed — undecided
         };
@@ -22764,7 +24479,11 @@ const ALIAS_EXPANSION_LIMIT: usize = 16;
 /// track the effect row, not a caller-facing precondition. WI-347. WI-366 B2:
 /// carrier-agnostic `Value` clauses (read through `TermView`).
 fn user_precondition_clauses(kb: &KnowledgeBase, clauses: &[Value]) -> Vec<Value> {
-    clauses.iter().filter(|c| !is_effects_runtime_clause(kb, c)).cloned().collect()
+    clauses
+        .iter()
+        .filter(|c| !is_effects_runtime_clause(kb, c))
+        .cloned()
+        .collect()
 }
 
 /// Is `clause` an auto-inferred `EffectsRuntime[Effects=…]` requires clause?
@@ -22806,7 +24525,9 @@ fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, T
 /// any op whose effects stay non-ground.
 fn sigma_subst_effect(kb: &mut KnowledgeBase, eff: &Value, sigma: &[(Symbol, TermId)]) -> Value {
     match eff {
-        Value::Term { id: t, .. } if !sigma.is_empty() => Value::term(substitute_impl_params_alloc(kb, *t, sigma)),
+        Value::Term { id: t, .. } if !sigma.is_empty() => {
+            Value::term(substitute_impl_params_alloc(kb, *t, sigma))
+        }
         other => other.clone(),
     }
 }
@@ -22831,28 +24552,46 @@ fn substitute_impl_params_alloc(
                 term
             }
         }
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
             // Nullary Fn — treat as a name reference.
             if let Some((_, v)) = impl_subst.iter().find(|(k, _)| *k == functor) {
                 return *v;
             }
             term
         }
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let mut changed = false;
-            let new_pos: SmallVec<[TermId; 4]> = pos_args.iter().map(|t| {
-                let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
-                if nt != *t { changed = true; }
-                nt
-            }).collect();
-            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args.iter().map(|(k, t)| {
-                let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
-                if nt != *t { changed = true; }
-                (*k, nt)
-            }).collect();
-            if !changed { return term; }
+            let new_pos: SmallVec<[TermId; 4]> = pos_args
+                .iter()
+                .map(|t| {
+                    let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
+                    if nt != *t {
+                        changed = true;
+                    }
+                    nt
+                })
+                .collect();
+            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                .iter()
+                .map(|(k, t)| {
+                    let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
+                    if nt != *t {
+                        changed = true;
+                    }
+                    (*k, nt)
+                })
+                .collect();
+            if !changed {
+                return term;
+            }
             kb.alloc(Term::Fn {
                 functor,
                 pos_args: new_pos,
@@ -23026,7 +24765,11 @@ fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
         // bare `Ref` is named above via `extract_sort_ref_sym` (WI-361); a still-
         // unresolved `Ident` falls here.
         Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             let base = kb.qualified_name_of(*functor).to_string();
             if pos_args.is_empty() && named_args.is_empty() {
                 base
@@ -23035,7 +24778,9 @@ fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
                 s.push('[');
                 let mut first = true;
                 for (k, v) in named_args.iter() {
-                    if !first { s.push_str(", "); }
+                    if !first {
+                        s.push_str(", ");
+                    }
                     first = false;
                     s.push_str(kb.local_name_of(*k));
                     s.push_str(" = ");
@@ -23106,7 +24851,6 @@ pub fn sort_goal_from_subst(
     }
 }
 
-
 /// WI-350 — classify a spec op's receiver at a call site to drive
 /// carrier-aware dispatch. Finds the op's *self-receiver* parameter — the
 /// first one declared with the spec sort itself (`head(s: Stream)`; vs
@@ -23169,8 +24913,7 @@ fn receiver_carrier(
         // — they HAVE constructors, so `carrier_is_abstract_spec` is false) stay
         // `Concrete` and dispatch as before.
         Some(base)
-            if kb.canonical_sort_sym(base) != spec_canon
-                && !carrier_is_abstract_spec(kb, base) =>
+            if kb.canonical_sort_sym(base) != spec_canon && !carrier_is_abstract_spec(kb, base) =>
         {
             ReceiverCarrier::Concrete(kb.canonical_sort_sym(base))
         }
@@ -23300,9 +25043,15 @@ fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
         // WI-672: canonical sort identity, not `same_symbol`. A provider's carrier is the
         // enclosing sort's resolved functor (`build_provides_index` `debug_assert`s it is
         // not an unresolved bare reference), so this no longer conflates a top-level
@@ -23310,8 +25059,12 @@ fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<
         if !same_sort_canonical(kb, carrier, carrier_sym) {
             continue;
         }
-        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
-        let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else { continue };
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
+        let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) else {
+            continue;
+        };
         if !out.iter().any(|&s| same_sort_canonical(kb, s, spec_sym)) {
             out.push(spec_sym);
         }
@@ -23442,7 +25195,10 @@ fn transitive_provision_view(
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
-    if visited.iter().any(|&v| same_sort_canonical(kb, v, carrier_sym)) {
+    if visited
+        .iter()
+        .any(|&v| same_sort_canonical(kb, v, carrier_sym))
+    {
         return None;
     }
     visited.push(carrier_sym);
@@ -23461,7 +25217,10 @@ fn transitive_provision_view(
         let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
             continue;
         };
-        return Some((compose_provision_views(kb, intermediate, &outer_view, &inner_view), true));
+        return Some((
+            compose_provision_views(kb, intermediate, &outer_view, &inner_view),
+            true,
+        ));
     }
     None
 }
@@ -23520,21 +25279,24 @@ pub(crate) fn carrier_param_receiver_for_values(
         return None;
     }
     for (i, (_, pty)) in params.iter().enumerate() {
-        let Some(pvid) = declared_type_param_vid(kb, pty) else { continue };
-        if !spec_params.iter().any(|(_, t)| {
-            matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid)
-        }) {
+        let Some(pvid) = declared_type_param_vid(kb, pty) else {
+            continue;
+        };
+        if !spec_params
+            .iter()
+            .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
+        {
             continue;
         }
-        let Some(carrier_sym) = carrier_of(i) else { continue };
+        let Some(carrier_sym) = carrier_of(i) else {
+            continue;
+        };
         // WI-492: a value whose sort provides `spec_sort` only TRANSITIVELY
         // (a `MappedStream` value of `Iterable`, via `MappedStream provides
         // Stream provides Iterable`) dispatches through the intermediate
         // spec that owns the impl — `transitive_carrier_for_param` returns
         // `carrier_sym` unchanged for a direct provider.
-        if let Some(eff_carrier) =
-            transitive_carrier_for_param(kb, spec_sort, pvid, carrier_sym)
-        {
+        if let Some(eff_carrier) = transitive_carrier_for_param(kb, spec_sort, pvid, carrier_sym) {
             return Some((i, eff_carrier));
         }
     }
@@ -23713,7 +25475,8 @@ fn bind_spec_params_from_carrier(
         //     resolves anyway.
         if ref_shape {
             if let Some(spec_vid) = spec_vid {
-                if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete) {
+                if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete)
+                {
                     subst.bind_term(kb, spec_vid, concrete);
                     any = true;
                 }
@@ -23770,17 +25533,28 @@ fn carrier_param_receiver(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<(Symbol, Symbol, Value, SmallVec<[(Symbol, TermId); 2]>, VarId, bool, Option<Symbol>)> {
+) -> Option<(
+    Symbol,
+    Symbol,
+    Value,
+    SmallVec<[(Symbol, TermId); 2]>,
+    VarId,
+    bool,
+    Option<Symbol>,
+)> {
     let spec_sort = impl_parent_of_op(kb, fn_sym)?;
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
         return None;
     }
     for (i, (pname, pty)) in op.params.iter().enumerate() {
-        let Some(pvid) = declared_type_param_vid(kb, pty) else { continue };
-        if !spec_params.iter().any(|(_, t)| {
-            matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid)
-        }) {
+        let Some(pvid) = declared_type_param_vid(kb, pty) else {
+            continue;
+        };
+        if !spec_params
+            .iter()
+            .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
+        {
             continue;
         }
         // WI-477: read the receiver's inferred type as a carrier-agnostic `Value`
@@ -23803,38 +25577,41 @@ fn carrier_param_receiver(
                     .map(|r| r.ty.clone())
             });
         let Some(recv_ty) = recv_ty else { continue };
-        let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else { continue };
+        let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else {
+            continue;
+        };
         // WI-495: DIRECT provision (the explicit `provides Iterable` hot path) or a
         // view COMPOSED through transitive provision (a `List` carrier whose
         // Iterable-ness rides through `Stream`), so `Element`/`E` still ground.
         let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-        let Some((view, transitive)) = transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
-            // WI-608: the receiver's carrier is ITSELF an abstract spec — a field
-            // typed `FiniteCollection[C = SrcC, …]` fed to `Iterable.iterator(c: C)`
-            // (spec_sort = Iterable). `FiniteCollection` *requires* Iterable rather
-            // than *providing* it, so the `provides`-only scan above finds nothing
-            // and the produced `Stream`'s `Element`/`E` would leak `??_`. Build the
-            // view from that `requires` relationship instead (same view shape), and
-            // mark it `transitive` so the call defers to eval's value-directed
-            // dispatch — the carrier-param twin of the WI-598/601 self-receiver
-            // abstract-spec deferral (both keyed on `carrier_is_abstract_spec`).
-            .or_else(|| {
-                if !carrier_is_abstract_spec(kb, carrier_sym) {
-                    return None;
-                }
-                // WI-609: REFLEXIVE — the receiver's carrier IS the op's own spec
-                // (`collect(c: C)` on `c : FiniteCollection`, spec_sort == carrier_sym).
-                // A spec doesn't provide itself, so there is no view to build; the spec's
-                // params are read DIRECTLY off the receiver's type-args in
-                // `bind_spec_params_from_carrier_param`'s reflexive branch. Return an
-                // EMPTY view (marked transitive → defer to eval) to engage that path and
-                // the abstract-spec deferral gate.
-                if kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort) {
-                    return Some((SmallVec::new(), true));
-                }
-                // WI-608: REQUIRES — the carrier `requires` the op's spec.
-                abstract_spec_required_view(kb, spec_sort, carrier_sym).map(|v| (v, true))
-            })
+        let Some((view, transitive)) =
+            transitive_provision_view(kb, spec_sort, pvid, carrier_sym, &mut visited)
+                // WI-608: the receiver's carrier is ITSELF an abstract spec — a field
+                // typed `FiniteCollection[C = SrcC, …]` fed to `Iterable.iterator(c: C)`
+                // (spec_sort = Iterable). `FiniteCollection` *requires* Iterable rather
+                // than *providing* it, so the `provides`-only scan above finds nothing
+                // and the produced `Stream`'s `Element`/`E` would leak `??_`. Build the
+                // view from that `requires` relationship instead (same view shape), and
+                // mark it `transitive` so the call defers to eval's value-directed
+                // dispatch — the carrier-param twin of the WI-598/601 self-receiver
+                // abstract-spec deferral (both keyed on `carrier_is_abstract_spec`).
+                .or_else(|| {
+                    if !carrier_is_abstract_spec(kb, carrier_sym) {
+                        return None;
+                    }
+                    // WI-609: REFLEXIVE — the receiver's carrier IS the op's own spec
+                    // (`collect(c: C)` on `c : FiniteCollection`, spec_sort == carrier_sym).
+                    // A spec doesn't provide itself, so there is no view to build; the spec's
+                    // params are read DIRECTLY off the receiver's type-args in
+                    // `bind_spec_params_from_carrier_param`'s reflexive branch. Return an
+                    // EMPTY view (marked transitive → defer to eval) to engage that path and
+                    // the abstract-spec deferral gate.
+                    if kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort) {
+                        return Some((SmallVec::new(), true));
+                    }
+                    // WI-608: REQUIRES — the carrier `requires` the op's spec.
+                    abstract_spec_required_view(kb, spec_sort, carrier_sym).map(|v| (v, true))
+                })
         else {
             continue;
         };
@@ -23853,7 +25630,15 @@ fn carrier_param_receiver(
                     .find(|(n, _)| same_label(kb, *n, *pname))
                     .and_then(|(_, occ)| extract_var_ref_sym_node(occ))
             });
-        return Some((spec_sort, carrier_sym, recv_ty, view, pvid, transitive, recv_arg_sym));
+        return Some((
+            spec_sort,
+            carrier_sym,
+            recv_ty,
+            view,
+            pvid,
+            transitive,
+            recv_arg_sym,
+        ));
     }
     None
 }
@@ -23929,7 +25714,10 @@ fn bind_spec_params_from_carrier_param(
             match typaram_ref_vid(kb, carrier_value, carrier_sym) {
                 // A genuine carrier param (`Stream.T` / `Stream.E`): read the receiver's
                 // written type-arg.
-                Some(vid) => recv_bindings.iter().find(|e| e.0 == vid).map(|e| e.1)
+                Some(vid) => recv_bindings
+                    .iter()
+                    .find(|e| e.0 == vid)
+                    .map(|e| e.1)
                     // WI-612: the receiver left this carrier param ABSTRACT (unwritten —
                     // `s : Stream[T = Int64]` writes no `E`), so there is no type-arg to
                     // read and the param would leak `?_`. For an EFFECT-ROW param (the only
@@ -23977,7 +25765,8 @@ fn bind_spec_params_from_carrier_param(
             // bind only if that grounds it FULLY; a carrier param left unresolved means
             // the receiver did not pin it, so skip (the spec param stays unbound → a
             // LOUD `unconstrained`, never a silently-wrong carrier-relative `?_`).
-            let grounded = substitute_carrier_params(kb, carrier_value, carrier_sym, &recv_bindings);
+            let grounded =
+                substitute_carrier_params(kb, carrier_value, carrier_sym, &recv_bindings);
             type_value_is_ground(kb, grounded).then_some(grounded)
         };
         let Some(concrete) = concrete else { continue };
@@ -24026,7 +25815,9 @@ fn substitute_carrier_params(
     // (2) Any other compound: recurse into children, preserving the functor. The
     //     `matches!` discriminant drops the immutable borrow before the `&mut` rebuild.
     if matches!(kb.get_term(tid), Term::Fn { .. }) {
-        kb.map_fn_children(tid, |kb, child| substitute_carrier_params(kb, child, carrier_sym, recv_bindings))
+        kb.map_fn_children(tid, |kb, child| {
+            substitute_carrier_params(kb, child, carrier_sym, recv_bindings)
+        })
     } else {
         tid
     }
@@ -24162,7 +25953,10 @@ fn transitive_provider_spec_view_bindings(
     if let Some(view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
         return Some(view);
     }
-    if visited.iter().any(|&v| same_sort_canonical(kb, v, carrier_sym)) {
+    if visited
+        .iter()
+        .any(|&v| same_sort_canonical(kb, v, carrier_sym))
+    {
         return None;
     }
     visited.push(carrier_sym);
@@ -24176,7 +25970,12 @@ fn transitive_provider_spec_view_bindings(
         let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
             continue;
         };
-        return Some(compose_provision_views(kb, intermediate, &outer_view, &inner_view));
+        return Some(compose_provision_views(
+            kb,
+            intermediate,
+            &outer_view,
+            &inner_view,
+        ));
     }
     None
 }
@@ -24229,7 +26028,9 @@ fn provider_spec_view_bindings(
         // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped;
         // occurrence-based provides lookup is gated effect-expressions-as-types
         // work (avoid the term-only `rule_head` panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(head_named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
         let Some(sr) = get_named_arg(kb, &head_named, "sort_ref") else {
             continue;
         };
@@ -24267,7 +26068,10 @@ fn provider_spec_view_bindings(
             Some(view) => {
                 for (param, value) in bindings {
                     let short = short_name_of(kb.local_name_of(param));
-                    if !view.iter().any(|(p, _)| short_name_of(kb.local_name_of(*p)) == short) {
+                    if !view
+                        .iter()
+                        .any(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
+                    {
                         view.push((param, value));
                     }
                 }
@@ -24344,7 +26148,10 @@ fn dispatched_impl_effects(
         // Positional arg at this index, else the named arg carrying the spec
         // op's param[i] name (the caller names spec-op params, not impl params).
         let mut arg_sym = pos_args.get(i).and_then(extract_var_ref_sym_node);
-        let mut arg_ty = pos_results.get(i).and_then(|r| r.as_ref().ok()).map(|r| r.ty.clone());
+        let mut arg_ty = pos_results
+            .get(i)
+            .and_then(|r| r.as_ref().ok())
+            .map(|r| r.ty.clone());
         if arg_sym.is_none() || arg_ty.is_none() {
             if let Some((spec_name, _)) = spec_params.get(i) {
                 for (j, (n, occ)) in named_args.iter().enumerate() {
@@ -24354,7 +26161,10 @@ fn dispatched_impl_effects(
                             arg_sym = extract_var_ref_sym_node(occ);
                         }
                         if arg_ty.is_none() {
-                            arg_ty = named_results.get(j).and_then(|r| r.as_ref().ok()).map(|r| r.ty.clone());
+                            arg_ty = named_results
+                                .get(j)
+                                .and_then(|r| r.as_ref().ok())
+                                .map(|r| r.ty.clone());
                         }
                         break;
                     }
@@ -24369,7 +26179,9 @@ fn dispatched_impl_effects(
         }
     }
     let arg_syms = (!param_to_arg.is_empty()).then_some(&param_to_arg);
-    let ctx = TypeErrorContext::OperationReturn { op_name: impl_op_sym };
+    let ctx = TypeErrorContext::OperationReturn {
+        op_name: impl_op_sym,
+    };
     let mut out: Vec<Value> = Vec::new();
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
@@ -24427,11 +26239,11 @@ fn typaram_occurrence_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     match kb.get_term(tid) {
         // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
         Term::Ident(s) => Some(*s),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            Some(*functor)
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
         Term::Var(Var::Global(v)) | Term::Var(Var::Rigid(v)) => Some(v.name()),
         _ => None,
     }
@@ -24493,7 +26305,14 @@ pub fn dispatch_spec_op_with_tree(
     // call-site σ context (WI-829 gate off — keeps the coarse defer trigger), and no
     // call-site bracket, hence no selection (WI-841).
     dispatch_spec_op_cached(
-        kb, subst, spec_sort, op_short_sym, enclosing_requires, None, None, &[],
+        kb,
+        subst,
+        spec_sort,
+        op_short_sym,
+        enclosing_requires,
+        None,
+        None,
+        &[],
     )
 }
 
@@ -24602,7 +26421,10 @@ pub fn dispatch_spec_op_cached(
     // that does not — must not share an entry. Whole list, not `is_some()`: unlike
     // `disambig`, its CONTENT decides the answer.
     let cacheable = disambig.is_none()
-        || goal.bindings.iter().all(|(_, v)| type_value_is_ground(kb, *v));
+        || goal
+            .bindings
+            .iter()
+            .all(|(_, v)| type_value_is_ground(kb, *v));
     let key = (
         op_short_sym,
         goal.clone(),
@@ -24615,8 +26437,14 @@ pub fn dispatch_spec_op_cached(
             return cached.clone();
         }
     }
-    let result =
-        resolve_at_goal(kb, &goal, op_short_sym, enclosing_requires, disambig, selected);
+    let result = resolve_at_goal(
+        kb,
+        &goal,
+        op_short_sym,
+        enclosing_requires,
+        disambig,
+        selected,
+    );
     if cacheable {
         kb.resolve_cache.borrow_mut().insert(key, result.clone());
     }
@@ -24695,7 +26523,9 @@ fn resolve_at_goal(
             // itself at the top level and only substitutes the marker when placing a
             // sub-goal. Reaching here would mean a dispatch pinned no impl at all,
             // which `NoMatch` is the answer to.
-            ResolvedRequiresNode::Unavailable { .. } => (DispatchOutcome::NoMatch { unmet: None }, None),
+            ResolvedRequiresNode::Unavailable { .. } => {
+                (DispatchOutcome::NoMatch { unmet: None }, None)
+            }
         },
         // WI-869: the failure rides out with the verdict — for a conditional provision
         // the goal it names is the unmet CONDITION, which is the only thing that
@@ -24782,11 +26612,11 @@ pub(crate) fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
         // captured into a `requires` SortView). Treat `Fn{param}` like
         // `Ref(param)` so defer-to-requirement matching and candidate
         // leniency see it as the wildcard it is.
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            is_sort_param_symbol(kb, *functor)
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => is_sort_param_symbol(kb, *functor),
         _ => false,
     }
 }
@@ -24832,10 +26662,18 @@ fn type_value_is_ground_g(kb: &KnowledgeBase, tid: TermId, rigid_ok: bool) -> bo
         Term::Var(Var::Rigid(_)) => rigid_ok,
         Term::Var(_) => false,
         Term::Ref(sym) | Term::Ident(sym) => !is_sort_param_symbol(kb, *sym),
-        Term::Fn { functor, pos_args, named_args } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
             !is_sort_param_symbol(kb, *functor)
-                && pos_args.iter().all(|a| type_value_is_ground_g(kb, *a, rigid_ok))
-                && named_args.iter().all(|(_, a)| type_value_is_ground_g(kb, *a, rigid_ok))
+                && pos_args
+                    .iter()
+                    .all(|a| type_value_is_ground_g(kb, *a, rigid_ok))
+                && named_args
+                    .iter()
+                    .all(|(_, a)| type_value_is_ground_g(kb, *a, rigid_ok))
         }
         Term::Const(_) | Term::Bottom => true,
         Term::ParseAux(_) => false,
@@ -24913,7 +26751,12 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
             // WI-791: `arity` is a ground `Const(Int)` by construction and so cannot
             // change this verdict; it is checked anyway so the walk stays total over
             // the node's children.
-            TypeNode::Arrow { param, result, effects, arity } => {
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
                 child_ground(param)
                     && child_ground(result)
                     && child_ground(effects)
@@ -24987,7 +26830,11 @@ fn denoted_value_is_closed(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bo
             // construction bug — surface it (loud) and conservatively defer, rather than
             // silently judging it closed.
             None => {
-                debug_assert!(false, "denoted value occurrence is not an Expr: {:?}", occ.kind);
+                debug_assert!(
+                    false,
+                    "denoted value occurrence is not an Expr: {:?}",
+                    occ.kind
+                );
                 return false;
             }
         }
@@ -25051,7 +26898,9 @@ pub(crate) fn is_occurrence_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> boo
 /// separating a macro from a compile-time guard reader (`min_sort(occ) -> Sort`:
 /// expr in, value out).
 pub fn is_macro(kb: &KnowledgeBase, op: Symbol) -> bool {
-    let Some(info) = lookup_operation_info_full(kb, op) else { return false };
+    let Some(info) = lookup_operation_info_full(kb, op) else {
+        return false;
+    };
     // At least one parameter: a macro is FED the matched pattern-var occurrences
     // (043 §4.2's argument-domain rule assumes ≥1 occurrence arg), so a nullary
     // occurrence-returning op is a constructor-like value, not a macro — it is not
@@ -25223,9 +27072,16 @@ fn validate_arg_against_param(
         match extract_type_param(kb, &declared_g, "T") {
             Some(inner) => {
                 return match validate_arg_against_param(
-                    kb, subst, &actual_g, &inner, span, context.clone(),
+                    kb,
+                    subst,
+                    &actual_g,
+                    &inner,
+                    span,
+                    context.clone(),
                 ) {
-                    ArgValidation::Ok => ArgValidation::WrapSome { declared: declared_g },
+                    ArgValidation::Ok => ArgValidation::WrapSome {
+                        declared: declared_g,
+                    },
                     // WrapSome: the value is bare at BOTH depths of a nested
                     // Option — a single wrap cannot repair it; demand the
                     // explicit inner `some(...)` rather than silently
@@ -25245,7 +27101,11 @@ fn validate_arg_against_param(
             }
             // A bare `Option` (unconstrained element) has no element to
             // re-check — any value is its `some` payload.
-            None => return ArgValidation::WrapSome { declared: declared_g },
+            None => {
+                return ArgValidation::WrapSome {
+                    declared: declared_g,
+                }
+            }
         }
     }
     // WI-385: a concrete carrier conforms to a BARE spec it PROVIDES — e.g.
@@ -25256,9 +27116,10 @@ fn validate_arg_against_param(
     // (no bindings to drop), so an admissible provider is sound to accept —
     // restoring the pre-WI-385 behavior (no arg/field check rejected it) for the
     // concrete-provider→bare-spec case.
-    if let (Some(actual_base), Some(declared_sort)) =
-        (type_base_sort_view(kb, &actual_g), extract_sort_ref_sym(kb, &declared_g))
-    {
+    if let (Some(actual_base), Some(declared_sort)) = (
+        type_base_sort_view(kb, &actual_g),
+        extract_sort_ref_sym(kb, &declared_g),
+    ) {
         if sort_provides_admissibly(kb, actual_base, declared_sort) {
             return ArgValidation::Ok;
         }
@@ -25329,9 +27190,10 @@ fn validate_arrow_param_result(
     // convention is reachable through `Function[A, B]` for operations AND lambdas
     // in both application forms, so nothing is lost by refusing it here.
     let arity_key = kb.intern("arity");
-    if let (Some(d_arity), Some(a_arity)) =
-        (arrow_arity(kb, declared, arity_key), arrow_arity(kb, actual, arity_key))
-    {
+    if let (Some(d_arity), Some(a_arity)) = (
+        arrow_arity(kb, declared, arity_key),
+        arrow_arity(kb, actual, arity_key),
+    ) {
         if d_arity != a_arity {
             return Some(mismatch());
         }
@@ -25518,7 +27380,10 @@ fn gather_spread_args_into_tuple(
     wraps: &[(usize, Value)],
     pos_results: &[Result<TypeResult, TypeError>],
 ) -> Option<Rc<NodeOccurrence>> {
-    let Some(Expr::Apply { functor, type_args, .. }) = occ.as_expr() else {
+    let Some(Expr::Apply {
+        functor, type_args, ..
+    }) = occ.as_expr()
+    else {
         return None;
     };
     let (functor, type_args) = (*functor, type_args.clone());
@@ -25592,7 +27457,10 @@ fn named_arg_coverage_errors(
     }
     let mut errors = Vec::new();
     for (arg_name, _) in named_args.iter() {
-        let reason = match params.iter().position(|(s, _)| same_label(kb, *s, *arg_name)) {
+        let reason = match params
+            .iter()
+            .position(|(s, _)| same_label(kb, *s, *arg_name))
+        {
             None => Some(format!("names no parameter of {subject}")),
             Some(idx) if covered[idx] => Some("binds a parameter already given".to_string()),
             Some(idx) => {
@@ -25604,7 +27472,10 @@ fn named_arg_coverage_errors(
             errors.push(TypeError::Other {
                 site,
                 span,
-                context: TypeErrorContext::OperationArgument { op_name: callee, param: *arg_name },
+                context: TypeErrorContext::OperationArgument {
+                    op_name: callee,
+                    param: *arg_name,
+                },
                 expected: "a named argument matching a distinct unbound parameter".to_string(),
                 actual: format!(
                     "named argument '{}' {}",
@@ -25638,7 +27509,12 @@ fn reorder_named_args_in_apply(
     named_results: &[Result<TypeResult, TypeError>],
 ) -> Option<Rc<NodeOccurrence>> {
     let (functor, labels, type_args) = match occ.as_expr()? {
-        Expr::Apply { functor, named_args, type_args, .. } => (
+        Expr::Apply {
+            functor,
+            named_args,
+            type_args,
+            ..
+        } => (
             *functor,
             named_args.iter().map(|(s, _)| *s).collect::<Vec<Symbol>>(),
             type_args.clone(),
@@ -25672,7 +27548,12 @@ fn reorder_named_args_in_apply(
         triples.into_iter().map(|(_, l, c)| (l, c)).collect();
     let pass = super::simp_rewrite::simp_pass(kb);
     Some(NodeOccurrence::synthesized_expr(
-        Expr::Apply { functor, pos_args: pos_children, named_args: named_pairs, type_args },
+        Expr::Apply {
+            functor,
+            pos_args: pos_children,
+            named_args: named_pairs,
+            type_args,
+        },
         Rc::clone(occ),
         pass,
         occ.owner,
@@ -25696,7 +27577,8 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
     // as row-shaped (not leaked as an undeclared `empty_row` effect label).
     let head_is_row_expr = effect.head(kb).functor_sym().is_some_and(|sym| {
         matches!(
-            kb.qualified_name_of(sym).strip_prefix("anthill.prelude.EffectExpression."),
+            kb.qualified_name_of(sym)
+                .strip_prefix("anthill.prelude.EffectExpression."),
             // WI-478: a bare `guarded(…)` atom is row-shaped (it explodes via
             // `decompose_effect_row`'s guarded arm → its label, conservatively
             // present) — without it, a guarded incurred effect surfaces whole.
@@ -25757,7 +27639,10 @@ fn labels_match_aligned(
     if a_base != e_base {
         return false;
     }
-    match (extract_effect_resource_sym(kb, a), extract_effect_resource_sym(kb, e)) {
+    match (
+        extract_effect_resource_sym(kb, a),
+        extract_effect_resource_sym(kb, e),
+    ) {
         (Some(ar), Some(er)) => ar == er || place_map.get(&ar) == Some(&er),
         _ => false,
     }
@@ -25821,9 +27706,16 @@ fn check_signature_self_contradiction(
             absent.extend(a);
         }
     }
-    if let Some(err) =
-        uninhabitable_row_error(kb, subst, &present, &absent, &op.effects, fn_sym, None, span)
-    {
+    if let Some(err) = uninhabitable_row_error(
+        kb,
+        subst,
+        &present,
+        &absent,
+        &op.effects,
+        fn_sym,
+        None,
+        span,
+    ) {
         return Err(err);
     }
 
@@ -25839,7 +27731,14 @@ fn check_signature_self_contradiction(
             continue;
         };
         if let Some(err) = uninhabitable_row_error(
-            kb, subst, &p, &a, std::slice::from_ref(&row), fn_sym, Some(*param_sym), span,
+            kb,
+            subst,
+            &p,
+            &a,
+            std::slice::from_ref(&row),
+            fn_sym,
+            Some(*param_sym),
+            span,
         ) {
             return Err(err);
         }
@@ -25884,12 +27783,16 @@ fn uninhabitable_row_error(
         }
     }
     let count = |hay: &[Value], needle: &Value| {
-        hay.iter().filter(|h| resolved_labels_equal(kb, subst, h, needle)).count()
+        hay.iter()
+            .filter(|h| resolved_labels_equal(kb, subst, h, needle))
+            .count()
     };
     let clash = absent
         .iter()
         .find(|a| count(present, a) > count(&guarded, a))?;
-    Some(signature_self_contradiction_error(kb, fn_sym, param, clash, span))
+    Some(signature_self_contradiction_error(
+        kb, fn_sym, param, clash, span,
+    ))
 }
 
 /// The WI-705 diagnostic: an instantiation (explicit `[E = {…}]` or inferred) made a
@@ -25910,7 +27813,10 @@ fn signature_self_contradiction_error(
         Some(param_sym) => TypeError::Other {
             site: TypeError::here(),
             span,
-            context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+            context: TypeErrorContext::OperationArgument {
+                op_name: fn_sym,
+                param: param_sym,
+            },
             expected: format!(
                 "callback parameter `{}` of `{}` to have a consistent effect row",
                 kb.local_name_of(param_sym),
@@ -26030,9 +27936,12 @@ fn validate_callback_effect_row(
     // position, which occupies a slot so arity stays aligned but names nothing an
     // effect place could reference).
     let actual_places: Vec<Option<Symbol>> = match &actual_src {
-        CallbackActual::Op(op_sym) => {
-            kb.symbols.arg_places(*op_sym).iter().map(|s| Some(*s)).collect()
-        }
+        CallbackActual::Op(op_sym) => kb
+            .symbols
+            .arg_places(*op_sym)
+            .iter()
+            .map(|s| Some(*s))
+            .collect(),
         CallbackActual::Lambda(slots) => slots.clone(),
     };
     let declared_places = kb.symbols.arg_places(param_sym);
@@ -26048,16 +27957,23 @@ fn validate_callback_effect_row(
         .filter_map(|(a, e)| a.map(|a| (a, e)))
         .collect();
     for la in &a_present {
-        if e_present.iter().any(|le| labels_match_aligned(kb, subst, &place_map, la, le)) {
+        if e_present
+            .iter()
+            .any(|le| labels_match_aligned(kb, subst, &place_map, la, le))
+        {
             continue;
         }
-        if let Some(viol) =
-            e_absent.iter().find(|le| labels_match_aligned(kb, subst, &place_map, la, le))
+        if let Some(viol) = e_absent
+            .iter()
+            .find(|le| labels_match_aligned(kb, subst, &place_map, la, le))
         {
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+                context: TypeErrorContext::OperationArgument {
+                    op_name: fn_sym,
+                    param: param_sym,
+                },
                 expected: format!(
                     "callback for parameter `{}` of `{}` to lack `{}` (its `-…` lacks-constraint)",
                     kb.local_name_of(param_sym),
@@ -26078,7 +27994,10 @@ fn validate_callback_effect_row(
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::OperationArgument { op_name: fn_sym, param: param_sym },
+                context: TypeErrorContext::OperationArgument {
+                    op_name: fn_sym,
+                    param: param_sym,
+                },
                 expected: format!(
                     "callback effects admitted by parameter `{}` of `{}` (a closed row)",
                     kb.local_name_of(param_sym),
@@ -26121,7 +28040,11 @@ fn callback_actual_source(occ: &Rc<NodeOccurrence>) -> Option<CallbackActual> {
     if let Some(op_sym) = extract_var_ref_sym_node(occ) {
         return Some(CallbackActual::Op(op_sym));
     }
-    if let NodeKind::Expr { expr: Expr::Lambda { param, .. }, .. } = &occ.kind {
+    if let NodeKind::Expr {
+        expr: Expr::Lambda { param, .. },
+        ..
+    } = &occ.kind
+    {
         return lambda_binder_slots(param).map(CallbackActual::Lambda);
     }
     None
@@ -26245,9 +28168,15 @@ fn check_tuple_literal_constructor(
     // same aggregation before routing here, so every result is already `Ok` on entry (which
     // is what lets the recognizer treat a missing typed field as impossible rather than as a
     // case to retreat from). Kept as the local restatement of that invariant.
-    if let Some(r) =
-        try_relation_projection_tuple(kb, env, flow, pos_results.len(), named_args, named_results, occ)
-    {
+    if let Some(r) = try_relation_projection_tuple(
+        kb,
+        env,
+        flow,
+        pos_results.len(),
+        named_args,
+        named_results,
+        occ,
+    ) {
         return r;
     }
 
@@ -26260,7 +28189,10 @@ fn check_tuple_literal_constructor(
     // value's type unifies (by name) against a tuple-typed / arrow param.
     let mut labeled: Vec<(Symbol, &TypeResult)> = Vec::new();
     for (i, r) in pos_results.iter().enumerate() {
-        labeled.push((kb.intern(&positional_label(i)), r.as_ref().expect("aggregator")));
+        labeled.push((
+            kb.intern(&positional_label(i)),
+            r.as_ref().expect("aggregator"),
+        ));
     }
     for ((name, _), r) in named_args.iter().zip(named_results.iter()) {
         labeled.push((*name, r.as_ref().expect("aggregator")));
@@ -26285,8 +28217,10 @@ fn check_tuple_literal_constructor(
     // WI-342: carrier-agnostic field types (carry a `Value::Node` field). This IS the list
     // the tuple type is built from, so threading writes through it rather than into a
     // parallel copy — and it is the same list conformance reads back off that type.
-    let mut tuple_fields: Vec<(Symbol, Value)> =
-        labeled.iter().map(|(label, r)| (*label, r.ty.clone())).collect();
+    let mut tuple_fields: Vec<(Symbol, Value)> = labeled
+        .iter()
+        .map(|(label, r)| (*label, r.ty.clone()))
+        .collect();
     let mut tsubst = Substitution::new();
     thread_expected_tuple_fields(kb, &mut tsubst, &mut tuple_fields, &exp_fields);
     // Effects merge in a SECOND pass. They used to interleave with the threading, one
@@ -26299,7 +28233,12 @@ fn check_tuple_literal_constructor(
         merge_effects_into(kb, &mut effects, &r.effects);
     }
     let tuple_ty = named_tuple_value(kb, &tuple_fields, occ.span, occ.owner);
-    Ok(TypeResult { ty: tuple_ty, env: env.clone(), effects, node: Rc::clone(occ) })
+    Ok(TypeResult {
+        ty: tuple_ty,
+        env: env.clone(),
+        effects,
+        node: Rc::clone(occ),
+    })
 }
 
 /// Type a `ListLiteral` / `SetLiteral` that reached the constructor checker
@@ -26320,8 +28259,7 @@ fn check_seq_literal_constructor(
     collect_arg_errors(pos_results.iter())?;
     // WI-342: carrier-agnostic element type — a `Value::Node` element (an
     // effectful lambda) is carried into the `List`/`Set` parameterization.
-    let mut element_type: Option<Value> =
-        expected.and_then(|e| extract_type_param(kb, &e, "T"));
+    let mut element_type: Option<Value> = expected.and_then(|e| extract_type_param(kb, &e, "T"));
     let mut effects: Vec<Value> = Vec::new();
     for r in pos_results {
         let r = r.as_ref().expect("aggregator");
@@ -26337,7 +28275,12 @@ fn check_seq_literal_constructor(
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
     let seq_type = parameterized_value(kb, base, &[(t_sym, t_val)], occ.span, occ.owner);
-    Ok(TypeResult { ty: seq_type, env: env.clone(), effects, node: Rc::clone(occ) })
+    Ok(TypeResult {
+        ty: seq_type,
+        env: env.clone(),
+        effects,
+        node: Rc::clone(occ),
+    })
 }
 
 /// WI-594: is `member` (a short type-parameter name of `sort`) an EFFECT-ROW
@@ -26406,8 +28349,10 @@ fn bare_spec_arg_self_projection(
 ) -> Option<Value> {
     // The field must APPLY a spec (`Stream[Src, ES]`); a bare-sort field has no
     // params to thread, and a structural field (arrow / row) is not a receiver slot.
-    let TypeExtractor::Parameterized { base: field_base, bindings } =
-        extract_type(kb, declared_field_type)
+    let TypeExtractor::Parameterized {
+        base: field_base,
+        bindings,
+    } = extract_type(kb, declared_field_type)
     else {
         return None;
     };
@@ -26440,10 +28385,15 @@ fn bare_spec_arg_self_projection(
     // ordinary arm.
     let arg_is_receiver = extract_sort_ref_sym(kb, &arg.ty) == Some(field_base)
         || match extract_type(kb, &arg.ty) {
-            TypeExtractor::Parameterized { base, bindings: abs } => {
+            TypeExtractor::Parameterized {
+                base,
+                bindings: abs,
+            } => {
                 base == field_base
                     && !abs.is_empty()
-                    && abs.iter().all(|(k, v)| is_self_projection_of(kb, v, recv, *k))
+                    && abs
+                        .iter()
+                        .all(|(k, v)| is_self_projection_of(kb, v, recv, *k))
             }
             _ => false,
         };
@@ -26476,14 +28426,22 @@ fn bare_spec_arg_self_projection(
         // by-symbol param match threads it.
         proj_bindings.push((*field_key, proj_val));
     }
-    Some(parameterized_value(kb, base_ref, &proj_bindings, span, owner))
+    Some(parameterized_value(
+        kb,
+        base_ref,
+        &proj_bindings,
+        span,
+        owner,
+    ))
 }
 
 /// WI-1059 — is `v` exactly `⟨recv⟩.<key>`, the projection [`rigidify_unwritten_sort_params`]
 /// fills an unwritten slot with? The SHAPE test that lets a materialized receiver be
 /// recognized as the bare one it spells out — see [`bare_spec_arg_self_projection`].
 fn is_self_projection_of(kb: &KnowledgeBase, v: &Value, recv: Symbol, key: Symbol) -> bool {
-    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, v) else { return false };
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, v) else {
+        return false;
+    };
     extract_sort_ref_sym(kb, &value) == Some(recv)
         && short_name_of(kb.local_name_of(member)) == short_name_of(kb.local_name_of(key))
 }
@@ -26547,7 +28505,10 @@ fn carrier_provision_short_bindings(
                         .unwrap_or(*t),
                     _ => *t,
                 };
-                (short_name_of(kb.local_name_of(*p)).to_owned(), Value::term(val))
+                (
+                    short_name_of(kb.local_name_of(*p)).to_owned(),
+                    Value::term(val),
+                )
             })
             .collect(),
     )
@@ -26595,10 +28556,12 @@ fn validate_field_arg(
     ctor_sym: Symbol,
     field_sym: Symbol,
 ) -> ArgValidation {
-    let ctx = TypeErrorContext::EntityField { entity: ctor_sym, field: field_sym };
+    let ctx = TypeErrorContext::EntityField {
+        entity: ctor_sym,
+        field: field_sym,
+    };
     let mut probe = subst.clone();
-    let first =
-        validate_arg_against_param(kb, &mut probe, &r.ty, declared_type, span, ctx.clone());
+    let first = validate_arg_against_param(kb, &mut probe, &r.ty, declared_type, span, ctx.clone());
     if !matches!(first, ArgValidation::Fail(_)) {
         *subst = probe;
         return first;
@@ -26644,8 +28607,10 @@ fn carrier_arg_provision_projection(
     arg: &TypeResult,
 ) -> Option<Value> {
     // The field must APPLY a spec (`FiniteCollection[C = …, …]`).
-    let TypeExtractor::Parameterized { base: field_base, bindings } =
-        extract_type(kb, declared_field_type)
+    let TypeExtractor::Parameterized {
+        base: field_base,
+        bindings,
+    } = extract_type(kb, declared_field_type)
     else {
         return None;
     };
@@ -26656,7 +28621,9 @@ fn carrier_arg_provision_projection(
     // rigidified) or a bare sort ref — naming a sort OTHER than the field's spec
     // base. (An already-applied `s : Stream[…]` threads through the ordinary arm;
     // a bare `field_base` receiver is WI-594's self-projection job.)
-    let Value::Term { id: arg_id, .. } = &arg.ty else { return None };
+    let Value::Term { id: arg_id, .. } = &arg.ty else {
+        return None;
+    };
     let arg_carrier = typaram_ref_short_name(kb, *arg_id)?;
     if arg_carrier == short_name_of(kb.qualified_name_of(field_base)) {
         return None;
@@ -26669,7 +28636,10 @@ fn carrier_arg_provision_projection(
     let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
     for (field_key, _) in &bindings {
         let member_short = short_name_of(kb.local_name_of(*field_key)).to_owned();
-        let val = provision.iter().find(|(s, _)| *s == member_short).map(|(_, v)| v.clone())?;
+        let val = provision
+            .iter()
+            .find(|(s, _)| *s == member_short)
+            .map(|(_, v)| v.clone())?;
         // An EFFECT-ROW param threads as a single-label row (`{c.E}`), matching the
         // source-written provision; a SORT param threads the bare value. A value
         // that is already a row is kept as-is (the requires/provider source may
@@ -26686,7 +28656,13 @@ fn carrier_arg_provision_projection(
         };
         proj_bindings.push((*field_key, proj_val));
     }
-    Some(parameterized_value(kb, base_ref, &proj_bindings, span, owner))
+    Some(parameterized_value(
+        kb,
+        base_ref,
+        &proj_bindings,
+        span,
+        owner,
+    ))
 }
 
 /// Non-recursive Constructor checker — peer of `check_apply_iter`.
@@ -26723,7 +28699,14 @@ fn check_constructor_iter(
     // tuple semantics instead.
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
         return check_tuple_literal_constructor(
-            kb, env, flow, named_args, pos_results, named_results, expected, occ,
+            kb,
+            env,
+            flow,
+            named_args,
+            pos_results,
+            named_results,
+            expected,
+            occ,
         );
     }
     // WI-289: `[...]` / `{...}` that wasn't desugared to cons/nil (no
@@ -26740,10 +28723,24 @@ fn check_constructor_iter(
     // the prelude sort, so a literal consumed as a Stream (`collect([1,2,3])`)
     // missed the carrier provider lookup. See the `ListLit` build frame.
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.ListLiteral" {
-        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "anthill.prelude.List");
+        return check_seq_literal_constructor(
+            kb,
+            env,
+            pos_results,
+            expected,
+            occ,
+            "anthill.prelude.List",
+        );
     }
     if kb.qualified_name_of(ctor_sym) == "anthill.reflect.SetLiteral" {
-        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, "anthill.prelude.Set");
+        return check_seq_literal_constructor(
+            kb,
+            env,
+            pos_results,
+            expected,
+            occ,
+            "anthill.prelude.Set",
+        );
     }
 
     // Free-standing entities (declared at namespace level, not nested in a
@@ -26764,7 +28761,12 @@ fn check_constructor_iter(
 
     let field_types = match kb.entity_field_types(ctor_sym) {
         Some(ft) => ft.to_vec(),
-        None => return Err(TypeError::NoConstructor { span, name: ctor_sym }),
+        None => {
+            return Err(TypeError::NoConstructor {
+                span,
+                name: ctor_sym,
+            })
+        }
     };
 
     let mut subst = Substitution::new();
@@ -26785,7 +28787,11 @@ fn check_constructor_iter(
     // WI-342: `declared_type` is a carrier-agnostic `Value` (a value-in-type
     // field rides as `Value::Node`); pass it directly to `unify_types`.
     for (field_sym, declared_type) in &field_types {
-        if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
+        if let Some((idx, _)) = named_args
+            .iter()
+            .enumerate()
+            .find(|(_, (s, _))| s == field_sym)
+        {
             if let Ok(ref r) = named_results[idx] {
                 let arg_ty = field_arg_type(kb, env, declared_type, r);
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
@@ -26829,10 +28835,21 @@ fn check_constructor_iter(
     let mut field_type_errors: Vec<TypeError> = Vec::new();
     let mut some_wraps: Vec<(usize, Value)> = Vec::new();
     for (field_sym, declared_type) in &field_types {
-        if let Some((idx, _)) = named_args.iter().enumerate().find(|(_, (s, _))| s == field_sym) {
+        if let Some((idx, _)) = named_args
+            .iter()
+            .enumerate()
+            .find(|(_, (s, _))| s == field_sym)
+        {
             if let Ok(ref r) = named_results[idx] {
                 match validate_field_arg(
-                    kb, env, &mut subst, r, declared_type, span, ctor_sym, *field_sym,
+                    kb,
+                    env,
+                    &mut subst,
+                    r,
+                    declared_type,
+                    span,
+                    ctor_sym,
+                    *field_sym,
                 ) {
                     ArgValidation::Ok => {}
                     ArgValidation::WrapSome { declared } => {
@@ -26847,7 +28864,14 @@ fn check_constructor_iter(
         if let Some((field_sym, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
                 match validate_field_arg(
-                    kb, env, &mut subst, r, declared_type, span, ctor_sym, *field_sym,
+                    kb,
+                    env,
+                    &mut subst,
+                    r,
+                    declared_type,
+                    span,
+                    ctor_sym,
+                    *field_sym,
                 ) {
                     ArgValidation::Ok => {}
                     ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
@@ -26896,7 +28920,12 @@ fn check_constructor_iter(
     // occurrence-typer and the value-typer ([`constructor_value_type`]) produce the SAME
     // type from one source (no drift). The field-unified `subst` pinned the params above.
     let ty = finish_constructor_type(kb, parent_sort, parent_type, &subst);
-    Ok(TypeResult { ty, env: env.clone(), effects, node: Rc::clone(occ) })
+    Ok(TypeResult {
+        ty,
+        env: env.clone(),
+        effects,
+        node: Rc::clone(occ),
+    })
 }
 
 /// The qualified name of the stdlib sort that spells a function type at the
@@ -26991,7 +29020,11 @@ fn term_contains_callable(kb: &KnowledgeBase, tid: TermId) -> bool {
         return true;
     }
     match kb.get_term(tid) {
-        Term::Fn { pos_args, named_args, .. } => {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
             let pos: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
             let named: SmallVec<[TermId; 4]> = named_args.iter().map(|(_, a)| *a).collect();
             pos.iter().any(|a| term_contains_callable(kb, *a))
@@ -27074,7 +29107,10 @@ fn function_spec_parts<'b>(
         return None;
     }
     let find = |name: &str| {
-        bindings.iter().find(|(p, _)| kb.local_name_of(*p) == name).map(|(_, v)| v)
+        bindings
+            .iter()
+            .find(|(p, _)| kb.local_name_of(*p) == name)
+            .map(|(_, v)| v)
     };
     let result = find("B")?;
     Some((find("A"), result, find("E")))
@@ -27141,9 +29177,12 @@ fn arrow_parts_extracted(
         // needs one is asking a question only an `arrow` can answer and must ask it
         // separately via [`arrow_arity`]. Folding it into this tuple would hand
         // every `Function` consumer an absence to invent a default for.
-        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
-            Some((Some(param.clone()), result.clone(), Some(effects.clone())))
-        }
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => Some((Some(param.clone()), result.clone(), Some(effects.clone()))),
         TypeExtractor::Parameterized { base, bindings } => {
             let (param, result, effects) = function_spec_parts(kb, *base, bindings)?;
             Some((param.cloned(), result.clone(), effects.cloned()))
@@ -27390,9 +29429,10 @@ fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec
         // Ground carrier: the established flat-list walk (exact pre-WI-361
         // behavior; its non-wrapper fallback also handles a legacy `List[Type]`
         // Function.E binding pre-WI-331).
-        BindValue::Term(t) => {
-            effects_rows_to_flat_list(kb, t).into_iter().map(Value::term).collect()
-        }
+        BindValue::Term(t) => effects_rows_to_flat_list(kb, t)
+            .into_iter()
+            .map(Value::term)
+            .collect(),
         // `Value::Node` carrier: decompose the occurrence row into its present
         // labels (plus an open-row tail), the occurrence never re-grounded
         // (WI-341) — matching the former `extract_function_type_parts_value`.
@@ -27469,7 +29509,11 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
             // as if wrapped in `open(tail = ?expr)` — pushing it to `out`
             // keeps the row-tail visible to downstream readers.
             Term::Var(_) => out.push(node),
-            Term::Fn { functor, named_args, .. } => {
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => {
                 let name = kb.local_name_of(*functor);
                 match name {
                     "empty_row" => {}
@@ -27527,10 +29571,7 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
             // Term::Ref / Const / Ident / Bottom inside an EffectExpression
             // are ill-typed — surface in dev, ignore in release.
             _ => {
-                debug_assert!(
-                    false,
-                    "unexpected term shape in EffectExpression walk"
-                );
+                debug_assert!(false, "unexpected term shape in EffectExpression walk");
             }
         }
     }
@@ -27555,7 +29596,9 @@ fn extract_function_type_parts(
     fn_type: &TypeExtractor,
 ) -> Option<(Value, Vec<Value>)> {
     let (_, result, eff) = arrow_parts_extracted(kb, fn_type)?;
-    let effects = eff.map(|row| effect_row_present_values(kb, &row)).unwrap_or_default();
+    let effects = eff
+        .map(|row| effect_row_present_values(kb, &row))
+        .unwrap_or_default();
     Some((result, effects))
 }
 
@@ -27644,7 +29687,10 @@ enum ArgExpectations {
     /// own keys, taken by the consumer. Carrying them here too would store the
     /// same extraction twice — and re-deriving them from `A` downstream is the
     /// `extract_type`-per-application this file's WI-798 notes exist to prevent.
-    Slots { slots: Vec<(Symbol, Value)>, gather: Option<Value> },
+    Slots {
+        slots: Vec<(Symbol, Value)>,
+        gather: Option<Value>,
+    },
     /// The supplied count cannot be right. `expected` describes what would be.
     CountMismatch { expected: String },
     /// The callee's argument type is not known well enough to state anything.
@@ -27690,7 +29736,10 @@ fn positional_arg_expectations(
                 ),
             };
         }
-        return ArgExpectations::Slots { slots, gather: None };
+        return ArgExpectations::Slots {
+            slots,
+            gather: None,
+        };
     }
     let Some(param_ty) = function_spec_param_type(kb, fn_type) else {
         // Neither spelling — a type variable, a projection, a malformed callee.
@@ -27735,7 +29784,10 @@ fn positional_arg_expectations(
             // `Function[A = (), B]` reaches a 1-binder callback as a Gather of
             // zero arguments and trapped exactly as `f(1, 2)` did. Arity one is
             // the sole count that is already whole, and it returned above.
-            ArgExpectations::Slots { slots: fields, gather: Some(param_ty) }
+            ArgExpectations::Slots {
+                slots: fields,
+                gather: Some(param_ty),
+            }
         }
         TypeExtractor::NamedTuple(fields) => ArgExpectations::CountMismatch {
             // At component count ONE the two readings coincide — the lone
@@ -27826,9 +29878,9 @@ fn arrow_positional_param_slots(
         // the binder name, so the position stands in for it. `declared` is `None`
         // here BY DESIGN — this is the one place the two readers diverge — so it
         // is deliberately not consulted.
-        TypeExtractor::Arrow { param, arity: 1, .. } => {
-            Some(vec![(kb.intern(&positional_label(0)), param.clone())])
-        }
+        TypeExtractor::Arrow {
+            param, arity: 1, ..
+        } => Some(vec![(kb.intern(&positional_label(0)), param.clone())]),
         // Every other arity: the parameter list IS the slot list, which is exactly
         // what [`arrow_declared_param_list`] already read for the caller.
         TypeExtractor::Arrow { .. } => {
@@ -27900,16 +29952,20 @@ fn extract_pattern_var_name(pattern: &Rc<NodeOccurrence>) -> Option<Symbol> {
     }
 }
 
-
 /// Extract a named type parameter from a parameterized type, carrier-agnostically
 /// (WI-342 S3a): reads via [`extract_type`] so a `Value::Node` parameterized (a
 /// denoted-bearing binding) is handled too, and returns the binding as a
 /// carrier-agnostic [`Value`]. WI-361: a parameterized type is `Fn{S, named}`
 /// (base sort = functor, bindings = named args), so the lookup is over those
 /// bindings — `extract_type_param(List[T = Int], "T") → Some(Value::Term(Int))`.
-pub(crate) fn extract_type_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param: &str) -> Option<Value> {
+pub(crate) fn extract_type_param<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    param: &str,
+) -> Option<Value> {
     if let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) {
-        bindings.into_iter()
+        bindings
+            .into_iter()
             .find(|(s, _)| kb.local_name_of(*s) == param)
             .map(|(_, v)| v)
     } else {
@@ -27941,7 +29997,12 @@ fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
         TypeExtractor::Parameterized { bindings, .. } => {
             bindings.iter().any(|(_, v)| value_contains_rigid(kb, v))
         }
-        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => {
             value_contains_rigid(kb, &param)
                 || value_contains_rigid(kb, &result)
                 || value_contains_rigid(kb, &effects)
@@ -27970,10 +30031,15 @@ fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
 fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
     match extract_type(kb, ty) {
         TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
-        TypeExtractor::Parameterized { bindings, .. } => {
-            bindings.iter().any(|(_, v)| value_contains_projection(kb, v))
-        }
-        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
+        TypeExtractor::Parameterized { bindings, .. } => bindings
+            .iter()
+            .any(|(_, v)| value_contains_projection(kb, v)),
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => {
             value_contains_projection(kb, &param)
                 || value_contains_projection(kb, &result)
                 || value_contains_projection(kb, &effects)
@@ -28000,7 +30066,13 @@ fn receiver_path_head_sym(kb: &KnowledgeBase, receiver: &Value) -> Option<Symbol
         return Some(head);
     }
     if let Value::Node(occ) = receiver {
-        if let Some(Expr::DotApply { receiver: base, pos_args, named_args, .. }) = occ.as_expr() {
+        if let Some(Expr::DotApply {
+            receiver: base,
+            pos_args,
+            named_args,
+            ..
+        }) = occ.as_expr()
+        {
             if pos_args.is_empty() && named_args.is_empty() {
                 return receiver_path_head_sym(kb, &Value::Node(std::rc::Rc::clone(base)));
             }
@@ -28019,10 +30091,15 @@ fn receiver_path_segs(kb: &KnowledgeBase, receiver: &Value) -> Option<Vec<Symbol
         return Some(vec![head]);
     }
     if let Value::Node(occ) = receiver {
-        if let Some(Expr::DotApply { receiver: base, name, pos_args, named_args }) = occ.as_expr() {
+        if let Some(Expr::DotApply {
+            receiver: base,
+            name,
+            pos_args,
+            named_args,
+        }) = occ.as_expr()
+        {
             if pos_args.is_empty() && named_args.is_empty() {
-                let mut segs =
-                    receiver_path_segs(kb, &Value::Node(std::rc::Rc::clone(base)))?;
+                let mut segs = receiver_path_segs(kb, &Value::Node(std::rc::Rc::clone(base)))?;
                 segs.push(*name);
                 return Some(segs);
             }
@@ -28043,9 +30120,12 @@ fn stable_receiver_path(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opt
         // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name.
         Expr::VarRef { name } => Some(vec![*name]),
         Expr::Ref(s) | Expr::Ident(s) => Some(vec![*s]),
-        Expr::DotApply { receiver, name, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
             let name = *name;
             let mut segs = stable_receiver_path(kb, receiver)?;
             segs.push(name);
@@ -28058,10 +30138,14 @@ fn stable_receiver_path(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opt
         // map `Modify[c]` → `Modify[arg]`) loses the head once a field-projection
         // op body is re-typed from its already-rewritten form, surfacing a
         // spurious undeclared `Modify`.
-        Expr::Apply { functor, pos_args, named_args, .. }
-            if named_args.is_empty()
-                && pos_args.len() == 2
-                && kb.try_resolve_symbol("anthill.reflect.field_access") == Some(*functor) =>
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } if named_args.is_empty()
+            && pos_args.len() == 2
+            && kb.try_resolve_symbol("anthill.reflect.field_access") == Some(*functor) =>
         {
             let field_name = match pos_args[1].as_expr() {
                 Some(Expr::Const(Literal::String(s))) => s.clone(),
@@ -28129,7 +30213,12 @@ fn build_projection_from_segs(
     let mut receiver = NodeOccurrence::new_expr(Expr::Ref(segs[0]), span, None);
     for &field in &segs[1..] {
         receiver = NodeOccurrence::new_expr(
-            Expr::DotApply { receiver, name: field, pos_args: Vec::new(), named_args: Vec::new() },
+            Expr::DotApply {
+                receiver,
+                name: field,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+            },
             span,
             None,
         );
@@ -28155,7 +30244,12 @@ fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Sy
                 collect_projection_receivers(kb, v, out);
             }
         }
-        TypeExtractor::Arrow { param, result, effects, arity: _ } => {
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => {
             collect_projection_receivers(kb, &param, out);
             collect_projection_receivers(kb, &result, out);
             collect_projection_receivers(kb, &effects, out);
@@ -28190,8 +30284,11 @@ fn param_projection_cycle(kb: &KnowledgeBase, params: &[(Symbol, Value)]) -> Opt
     if !params.iter().any(|(_, t)| value_contains_projection(kb, t)) {
         return None;
     }
-    let sym_to_idx: HashMap<Symbol, usize> =
-        params.iter().enumerate().map(|(i, (s, _))| (*s, i)).collect();
+    let sym_to_idx: HashMap<Symbol, usize> = params
+        .iter()
+        .enumerate()
+        .map(|(i, (s, _))| (*s, i))
+        .collect();
     // prereqs[q] = the param indices q's type projects (its receivers that are params).
     let mut prereqs: Vec<Vec<usize>> = vec![Vec::new(); params.len()];
     for (q, (_, ty)) in params.iter().enumerate() {
@@ -28232,7 +30329,10 @@ fn dfs_projection_cycle(
         if color[v] == 1 {
             // Back-edge to a node on the current path: the cycle is the stack suffix
             // from v's first occurrence onward.
-            let pos = stack.iter().position(|&x| x == v).expect("on-path node is on the stack");
+            let pos = stack
+                .iter()
+                .position(|&x| x == v)
+                .expect("on-path node is on the stack");
             return Some(stack[pos..].to_vec());
         }
         if color[v] == 0 {
@@ -28275,7 +30375,9 @@ fn eliminate_type_projections(
             if matches!(type_head(kb, &TermIdView(*t)), TypeHead::ExprCarried) {
                 return eliminate_expr_carried_projection(kb, *t, arg_types, arg_syms, ctx, span);
             }
-            Ok(Value::term(rewrite_term_projections(kb, *t, arg_types, arg_syms, ctx, span)?))
+            Ok(Value::term(rewrite_term_projections(
+                kb, *t, arg_types, arg_syms, ctx, span,
+            )?))
         }
         Value::Node(occ) => {
             // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
@@ -28283,7 +30385,8 @@ fn eliminate_type_projections(
             // occurrence). Resolve the receiver path's static type and project the
             // member — the Node twin of the `Value::Term` path above.
             if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
-                return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
+                return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)?
+                {
                     ProjResult::Grounded(v) => Ok(v),
                     // WI-400: abstract receiver, member declared — keep the original
                     // compound `ExprCarried` Node as the rigid neutral. WI-459 NOTE: unlike
@@ -28361,7 +30464,12 @@ fn eliminate_node_projections(
     let owner = occ.owner;
     match &occ.kind {
         NodeKind::Type(node) => match node {
-            TypeNode::Arrow { param, result, effects, arity } => {
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
                 let p = elim_child(kb, param, arg_types, arg_syms, ctx, span)?;
                 let r = elim_child(kb, result, arg_types, arg_syms, ctx, span)?;
                 let e = elim_child(kb, effects, arg_types, arg_syms, ctx, span)?;
@@ -28372,7 +30480,9 @@ fn eliminate_node_projections(
                 // non-event now — eliminating a projection rewrites the param TYPE
                 // and never the parameter COUNT.
                 let arity = arity.clone();
-                Ok(Value::Node(kb.make_arrow_occ_child(p, r, e, arity, sp, owner)))
+                Ok(Value::Node(
+                    kb.make_arrow_occ_child(p, r, e, arity, sp, owner),
+                ))
             }
             TypeNode::Parameterized { base, bindings } => {
                 let b = elim_child(kb, base, arg_types, arg_syms, ctx, span)?;
@@ -28466,7 +30576,12 @@ fn eliminate_node_projections(
                 // substitution in the effect label); the guard is carried through
                 // unchanged (conservatively-present metadata, no discharge in phase 1).
                 let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_guarded_occ(l, guard.clone(), sp, owner)))
+                Ok(Value::Node(kb.make_guarded_occ(
+                    l,
+                    guard.clone(),
+                    sp,
+                    owner,
+                )))
             }
             EffectExprNode::Absent { label } => {
                 let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
@@ -28496,8 +30611,7 @@ fn resolve_compound_projection(
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
-    let (recv_ty, recv_decl_sort) =
-        resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
+    let (recv_ty, recv_decl_sort) = resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
     let member_str = kb.local_name_of(member).to_owned();
     project_type_member(kb, &recv_ty, &member_str, recv_decl_sort, ctx, span)
 }
@@ -28523,10 +30637,14 @@ fn resolve_receiver_path_type(
     // field projection, so no declaring sort is attached here.
     if let Some(head) = extract_sort_ref_sym(kb, receiver) {
         let ty = arg_types.get(&head).cloned().ok_or_else(|| {
-            projection_type_error(ctx, span, &format!(
-                "type projection receiver '{}' is not an argument-bound parameter of this call",
-                kb.local_name_of(head),
-            ))
+            projection_type_error(
+                ctx,
+                span,
+                &format!(
+                    "type projection receiver '{}' is not an argument-bound parameter of this call",
+                    kb.local_name_of(head),
+                ),
+            )
         })?;
         return Ok((ty, None));
     }
@@ -28568,15 +30686,20 @@ fn resolve_receiver_path_type(
                 ),
             };
             let base = receiver.named_arg(kb, k_receiver).map(|b| b.to_value());
-            let field = receiver.named_arg(kb, k_name).and_then(|n| extract_sort_ref_sym(kb, &n));
+            let field = receiver
+                .named_arg(kb, k_name)
+                .and_then(|n| extract_sort_ref_sym(kb, &n));
             if let (true, Some(base), Some(field)) = (args_empty, base, field) {
                 let (base_ty, _) = resolve_receiver_path_type(kb, &base, arg_types, ctx, span)?;
                 return resolve_field_type(kb, &base_ty, field, ctx, span);
             }
         }
     }
-    Err(projection_type_error(ctx, span,
-        "type projection receiver is not a value-reference field path (`s.field…`)"))
+    Err(projection_type_error(
+        ctx,
+        span,
+        "type projection receiver is not a value-reference field path (`s.field…`)",
+    ))
 }
 
 /// Resolve field `field_sym`'s type given a receiver's sort type (WI-397): find the
@@ -28597,10 +30720,14 @@ fn resolve_field_type(
     span: Option<Span>,
 ) -> Result<(Value, Option<Symbol>), TypeError> {
     let sort_sym = sort_functor_of_view(kb, recv_ty).ok_or_else(|| {
-        projection_type_error(ctx, span, &format!(
-            "cannot access field '{}' on a receiver with no concrete sort",
-            kb.local_name_of(field_sym),
-        ))
+        projection_type_error(
+            ctx,
+            span,
+            &format!(
+                "cannot access field '{}' on a receiver with no concrete sort",
+                kb.local_name_of(field_sym),
+            ),
+        )
     })?;
     // The receiver's type-arg substitution is the same for every constructor.
     let subst = build_pattern_subst(kb, recv_ty, sort_sym);
@@ -28616,7 +30743,9 @@ fn resolve_field_type(
         // Scope the `entity_field_types` borrow so the `&mut kb` subst call below is
         // free; `continue` to the next constructor if this one lacks the field.
         let declared = {
-            let Some(fields) = kb.entity_field_types(ctor) else { continue };
+            let Some(fields) = kb.entity_field_types(ctor) else {
+                continue;
+            };
             match fields.iter().find(|(f, _)| *f == field_sym) {
                 Some((_, d)) => d.clone(),
                 None => continue,
@@ -28630,20 +30759,30 @@ fn resolve_field_type(
             None => resolved = Some(this),
             Some(prev) if views_structurally_equal(kb, prev, &this) => {}
             Some(_) => {
-                return Err(projection_type_error(ctx, span, &format!(
-                    "field '{}' is declared with differing types across the constructors of \
+                return Err(projection_type_error(
+                    ctx,
+                    span,
+                    &format!(
+                        "field '{}' is declared with differing types across the constructors of \
                      '{}'; a compound projection off it is ambiguous",
-                    kb.local_name_of(field_sym),
-                    kb.qualified_name_of(sort_sym).to_owned(),
-                )));
+                        kb.local_name_of(field_sym),
+                        kb.qualified_name_of(sort_sym).to_owned(),
+                    ),
+                ));
             }
         }
     }
-    let resolved = resolved.ok_or_else(|| projection_type_error(ctx, span, &format!(
-        "type '{}' has no field '{}'",
-        kb.qualified_name_of(sort_sym).to_owned(),
-        kb.local_name_of(field_sym),
-    )))?;
+    let resolved = resolved.ok_or_else(|| {
+        projection_type_error(
+            ctx,
+            span,
+            &format!(
+                "type '{}' has no field '{}'",
+                kb.qualified_name_of(sort_sym).to_owned(),
+                kb.local_name_of(field_sym),
+            ),
+        )
+    })?;
     // The field's resolved type is an ABSTRACT type-parameter of `sort_sym` (an unbound
     // `sort P = ?` left as a logic var, not a concrete sort / arrow / tuple) iff it is a
     // bare type-param value. Then `sort_sym`'s `requires` chain is what lends it an
@@ -28713,10 +30852,14 @@ fn eliminate_expr_carried_projection(
     let arg_ty = match arg_types.get(&receiver) {
         Some(v) => v.clone(),
         None => {
-            return Err(projection_type_error(ctx, span, &format!(
-                "type projection receiver '{}' is not an argument-bound parameter of this call",
-                kb.local_name_of(receiver),
-            )));
+            return Err(projection_type_error(
+                ctx,
+                span,
+                &format!(
+                    "type projection receiver '{}' is not an argument-bound parameter of this call",
+                    kb.local_name_of(receiver),
+                ),
+            ));
         }
     };
     let member_str = kb.local_name_of(member).to_owned();
@@ -28766,15 +30909,21 @@ fn rewrite_term_projections(
     // `requires` chain / the subject's own manifest bindings; no `arg_types` receiver
     // lookup (the subject is a TYPE, not a value parameter).
     if matches!(type_head(kb, &TermIdView(t)), TypeHead::RigidProjection) {
-        let TypeExtractor::RigidTypeProjection { sort, subject, member } =
-            extract_type(kb, &TermIdView(t))
+        let TypeExtractor::RigidTypeProjection {
+            sort,
+            subject,
+            member,
+        } = extract_type(kb, &TermIdView(t))
         else {
             return Ok(t);
         };
         return match resolve_rigid_projection(kb, sort, &subject, member, ctx, span)? {
             ProjResult::Grounded(Value::Term { id: pt, .. }) => Ok(pt),
-            ProjResult::Grounded(_) => Err(projection_type_error(ctx, span,
-                "type projection resolved to a non-term carrier, which is not yet supported")),
+            ProjResult::Grounded(_) => Err(projection_type_error(
+                ctx,
+                span,
+                "type projection resolved to a non-term carrier, which is not yet supported",
+            )),
             ProjResult::Neutral => Ok(t),
         };
     }
@@ -28787,14 +30936,22 @@ fn rewrite_term_projections(
         // there is the genuine follow-on (loud, never silently dropped).
         return match eliminate_expr_carried_projection(kb, t, arg_types, arg_syms, ctx, span)? {
             Value::Term { id: pt, .. } => Ok(pt),
-            _ => Err(projection_type_error(ctx, span,
-                "type projection resolved to a non-term carrier, which is not yet supported")),
+            _ => Err(projection_type_error(
+                ctx,
+                span,
+                "type projection resolved to a non-term carrier, which is not yet supported",
+            )),
         };
     }
     // Recurse into `Fn` children, rebuilding only if a child changed. Index-based so
     // each child is read (a `Copy` `TermId`) before the `&mut kb` recursive call and
     // written after — no borrow of the owned (cloned) arg vectors across the call.
-    if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t).clone() {
+    if let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(t).clone()
+    {
         let mut changed = false;
         let mut new_pos = pos_args;
         for i in 0..new_pos.len() {
@@ -28813,7 +30970,11 @@ fn rewrite_term_projections(
             }
         }
         if changed {
-            return Ok(kb.alloc(Term::Fn { functor, pos_args: new_pos, named_args: new_named }));
+            return Ok(kb.alloc(Term::Fn {
+                functor,
+                pos_args: new_pos,
+                named_args: new_named,
+            }));
         }
     }
     Ok(t)
@@ -28893,7 +31054,11 @@ fn project_type_member(
     // would absorb any demand downstream (`peek(l)` usable as both `Int64` and `String`);
     // the neutral cannot, since the ζ arm only equates it with an IDENTICAL neutral.
     if let Some(s) = sort_functor_of_view(kb, arg_ty) {
-        if kb.type_params_of_sort(s).iter().any(|d| d.as_str() == member) {
+        if kb
+            .type_params_of_sort(s)
+            .iter()
+            .any(|d| d.as_str() == member)
+        {
             return Ok(ProjResult::Neutral);
         }
         // WI-376 (cross-sort provider DIVERGENT member name): the receiver's sort does not
@@ -28906,10 +31071,14 @@ fn project_type_member(
         if let Some(r) = project_via_provided_spec(kb, arg_ty, s, member) {
             return r;
         }
-        return Err(projection_type_error(ctx, span, &format!(
-            "type '{}' has no member '{member}'",
-            kb.qualified_name_of(s).to_owned(),
-        )));
+        return Err(projection_type_error(
+            ctx,
+            span,
+            &format!(
+                "type '{}' has no member '{member}'",
+                kb.qualified_name_of(s).to_owned(),
+            ),
+        ));
     }
     // No concrete sort: an abstract type-variable receiver (a sort type-parameter, e.g.
     // `s.provider : P` — opened to a logic var whose source identity is erased). Neutral
@@ -28950,15 +31119,21 @@ fn project_type_member(
                 return Ok(ProjResult::Neutral);
             }
         }
-        return Err(projection_type_error(ctx, span, &format!(
-            "no `requires` bound on '{}' whose carrier is this abstract type parameter \
+        return Err(projection_type_error(
+            ctx,
+            span,
+            &format!(
+                "no `requires` bound on '{}' whose carrier is this abstract type parameter \
              declares a member '{member}'; cannot project '{member}'",
-            kb.qualified_name_of(decl_sort).to_owned(),
-        )));
+                kb.qualified_name_of(decl_sort).to_owned(),
+            ),
+        ));
     }
-    Err(projection_type_error(ctx, span, &format!(
-        "cannot project '{member}' off an abstract receiver with no concrete sort",
-    )))
+    Err(projection_type_error(
+        ctx,
+        span,
+        &format!("cannot project '{member}' off an abstract receiver with no concrete sort",),
+    ))
 }
 
 /// WI-400/430: does ANY `requires Spec[…]` bound on `decl_sort` lend the abstract type
@@ -29031,19 +31206,27 @@ fn project_via_provided_spec(
     member: &str,
 ) -> Option<Result<ProjResult, TypeError>> {
     for spec in provided_spec_base_syms(kb, recv_sort) {
-        if !kb.type_params_of_sort(spec).iter().any(|d| d.as_str() == member) {
+        if !kb
+            .type_params_of_sort(spec)
+            .iter()
+            .any(|d| d.as_str() == member)
+        {
             continue;
         }
         let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) else {
             continue;
         };
-        let Some((_, carrier_val)) =
-            bindings.iter().find(|(p, _)| kb.local_name_of(*p) == member).copied()
+        let Some((_, carrier_val)) = bindings
+            .iter()
+            .find(|(p, _)| kb.local_name_of(*p) == member)
+            .copied()
         else {
             continue;
         };
-        let is_effect_member =
-            matches!(type_head(kb, &Value::term(carrier_val)), TypeHead::EffectsRows);
+        let is_effect_member = matches!(
+            type_head(kb, &Value::term(carrier_val)),
+            TypeHead::EffectsRows
+        );
         // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
         // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
         // it an unbound `T` ⟹ neutral.
@@ -29116,9 +31299,11 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
         return;
     }
     match clause.head(kb) {
-        ViewHead::Functor { functor: Some(f), pos_arity, .. }
-            if kb.local_name_of(f) == "conjunction" =>
-        {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } if kb.local_name_of(f) == "conjunction" => {
             for i in 0..pos_arity {
                 if let Some(child) = clause.pos_arg(kb, i) {
                     push_op_requires_clause(kb, &child.to_value(), out);
@@ -29127,8 +31312,14 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
         }
         // Match the ground `push_op_requires_clause_term` exactly: `Fn`/`Ref` heads
         // become an entry; an `Ident` (or functor-less) head is skipped (WI-662).
-        ViewHead::Functor { functor: Some(f), .. } | ViewHead::Ref(f) => {
-            out.push(RequiresEntry { required_sort: f, spec: clause.clone() });
+        ViewHead::Functor {
+            functor: Some(f), ..
+        }
+        | ViewHead::Ref(f) => {
+            out.push(RequiresEntry {
+                required_sort: f,
+                spec: clause.clone(),
+            });
         }
         _ => {}
     }
@@ -29137,14 +31328,19 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
 /// WI-662: the ground `TermId` walk under [`push_op_requires_clause`].
 fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<RequiresEntry>) {
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } if kb.local_name_of(*functor) == "conjunction" => {
+        Term::Fn {
+            functor, pos_args, ..
+        } if kb.local_name_of(*functor) == "conjunction" => {
             let conjuncts: Vec<TermId> = pos_args.iter().copied().collect();
             for c in conjuncts {
                 push_op_requires_clause_term(kb, c, out);
             }
         }
         Term::Fn { functor, .. } | Term::Ref(functor) => {
-            out.push(RequiresEntry { required_sort: *functor, spec: Value::term(tid) });
+            out.push(RequiresEntry {
+                required_sort: *functor,
+                spec: Value::term(tid),
+            });
         }
         _ => {}
     }
@@ -29178,13 +31374,22 @@ fn resolve_rigid_projection(
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
     let member_str = kb.local_name_of(member).to_owned();
-    let Value::Term { id: subject_term, .. } = subject else {
-        return Err(projection_type_error(ctx, span,
-            "rigid type projection subject is not a sort / type-parameter reference"));
+    let Value::Term {
+        id: subject_term, ..
+    } = subject
+    else {
+        return Err(projection_type_error(
+            ctx,
+            span,
+            "rigid type projection subject is not a sort / type-parameter reference",
+        ));
     };
     let key = subject_key_of_term(kb, *subject_term).ok_or_else(|| {
-        projection_type_error(ctx, span,
-            "rigid type projection subject is not a sort / type-parameter reference")
+        projection_type_error(
+            ctx,
+            span,
+            "rigid type projection subject is not a sort / type-parameter reference",
+        )
     })?;
     // Concrete / bare sort subject: keyed by the declaring-sort symbol itself (the
     // loader's `sort slot == var slot` discriminator).
@@ -29198,13 +31403,17 @@ fn resolve_rigid_projection(
                 ProjResult::Neutral => {
                     let sort_name = kb.qualified_name_of(subject_sym).to_owned();
                     let short = kb.local_name_of(subject_sym).to_owned();
-                    Err(projection_type_error(ctx, span, &format!(
-                        "'{short}.{member_str}' is not manifest: '{sort_name}' declares \
+                    Err(projection_type_error(
+                        ctx,
+                        span,
+                        &format!(
+                            "'{short}.{member_str}' is not manifest: '{sort_name}' declares \
                          '{member_str}' but does not bind it — a projection off the spec sort \
                          itself would conflate distinct carriers; project off a value \
                          (`s.{member_str}`) or a `requires`-bounded type parameter \
                          (`P.{member_str}`)",
-                    )))
+                        ),
+                    ))
                 }
             };
         }
@@ -29242,13 +31451,17 @@ fn resolve_rigid_projection(
             if is_op && !mentions_subject {
                 Ok(ProjResult::Neutral)
             } else {
-                Err(projection_type_error(ctx, span, &format!(
+                Err(projection_type_error(
+                    ctx,
+                    span,
+                    &format!(
                     "no `requires` bound on '{}' mentioning '{}' declares a member '{member_str}'; \
                      cannot project '{}.{member_str}'",
                     kb.qualified_name_of(decl_sort).to_owned(),
                     type_display_name_value(kb, subject),
                     type_display_name_value(kb, subject),
-                )))
+                ),
+                ))
             }
         }
         [entry] => match spec_binding_value(kb, &entry.spec, &member_str) {
@@ -29261,8 +31474,7 @@ fn resolve_rigid_projection(
             // resolved by the ordinary alias machinery downstream).
             Some(v) => {
                 let binding_key = subject_key_of_term(kb, v);
-                let placeholder_key =
-                    spec_member_param_key(kb, entry.required_sort, &member_str);
+                let placeholder_key = spec_member_param_key(kb, entry.required_sort, &member_str);
                 let is_placeholder = match (binding_key, placeholder_key) {
                     (Some(b), Some(p)) => subject_keys_equal(kb, b, p),
                     // The spec's own param symbol is not identifiable: conservatively
@@ -29287,25 +31499,33 @@ fn resolve_rigid_projection(
                 } else {
                     match normalize_spec_binding_type(kb, v) {
                         Some(ty) => Ok(ProjResult::Grounded(Value::term(ty))),
-                        None => Err(projection_type_error(ctx, span, &format!(
-                            "'{}.{member_str}' is bound by its `requires` application to \
+                        None => Err(projection_type_error(
+                            ctx,
+                            span,
+                            &format!(
+                                "'{}.{member_str}' is bound by its `requires` application to \
                              a structured type; δ through a structured bound binding is \
                              not yet supported",
-                            type_display_name_value(kb, subject),
-                        ))),
+                                type_display_name_value(kb, subject),
+                            ),
+                        )),
                     }
                 }
             }
             // No binding slot at all: the projection is the rigid neutral.
             None => Ok(ProjResult::Neutral),
         },
-        _ => Err(projection_type_error(ctx, span, &format!(
-            "ambiguous projection '{}.{member_str}': several `requires` bounds on '{}' \
+        _ => Err(projection_type_error(
+            ctx,
+            span,
+            &format!(
+                "ambiguous projection '{}.{member_str}': several `requires` bounds on '{}' \
              mentioning it declare '{member_str}'; multi-bound projection is not yet \
              supported",
-            type_display_name_value(kb, subject),
-            kb.qualified_name_of(decl_sort).to_owned(),
-        ))),
+                type_display_name_value(kb, subject),
+                kb.qualified_name_of(decl_sort).to_owned(),
+            ),
+        )),
     }
 }
 
@@ -29354,7 +31574,9 @@ fn projected_param_of_sort(
     sort_sym: Option<Symbol>,
 ) -> Option<Symbol> {
     let sort_sym = sort_sym?;
-    let TypeExtractor::ExprCarried { member, .. } = extract_type(kb, ty) else { return None };
+    let TypeExtractor::ExprCarried { member, .. } = extract_type(kb, ty) else {
+        return None;
+    };
     // WI-954: "is `M` a declared parameter of `sort_sym`" and "which symbol is it" were
     // two questions asked of two different tables; the owner's own declaration list
     // answers both at once.
@@ -29392,7 +31614,9 @@ fn subject_keys_equal(kb: &KnowledgeBase, a: SubjectKey, b: SubjectKey) -> bool 
 fn spec_mentions_key(kb: &KnowledgeBase, spec: &Value, key: SubjectKey) -> bool {
     // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
     if let Value::Term { id, .. } = spec {
-        let Term::Fn { named_args, .. } = kb.get_term(*id) else { return false };
+        let Term::Fn { named_args, .. } = kb.get_term(*id) else {
+            return false;
+        };
         return named_args.iter().any(|(_, v)| {
             subject_key_of_term(kb, *v).is_some_and(|k| subject_keys_equal(kb, k, key))
         });
@@ -29417,11 +31641,11 @@ fn spec_mentions_key(kb: &KnowledgeBase, spec: &Value, key: SubjectKey) -> bool 
 fn spec_binding_head_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
     match kb.get_term(v) {
         Term::Ref(s) => Some(*s),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
-            Some(*functor)
-        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
         _ => extract_sort_ref_sym(kb, &TermIdView(v)),
     }
 }
@@ -29431,13 +31655,21 @@ fn spec_binding_head_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
 fn spec_binding_value(kb: &KnowledgeBase, spec: &Value, member: &str) -> Option<TermId> {
     // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
     if let Value::Term { id, .. } = spec {
-        let Term::Fn { named_args, .. } = kb.get_term(*id) else { return None };
-        return named_args.iter().find(|(p, _)| kb.local_name_of(*p) == member).map(|(_, v)| *v);
+        let Term::Fn { named_args, .. } = kb.get_term(*id) else {
+            return None;
+        };
+        return named_args
+            .iter()
+            .find(|(p, _)| kb.local_name_of(*p) == member)
+            .map(|(_, v)| *v);
     }
     // Denoted spec — the member's binding via TermView, when it is a ground term.
     // A denoted binding value has no `TermId`; callers treat `None` as "not a
     // projectable member" (the deferred parametric-effect boundary).
-    let key = spec.named_keys(kb).into_iter().find(|k| kb.local_name_of(*k) == member)?;
+    let key = spec
+        .named_keys(kb)
+        .into_iter()
+        .find(|k| kb.local_name_of(*k) == member)?;
     spec.named_arg(kb, key).and_then(|it| it.as_term_id())
 }
 
@@ -29464,13 +31696,21 @@ fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol>
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
         if !same_sort_canonical(kb, carrier, recv_sort) {
             continue;
         }
-        let Some(spec_t) = get_named_arg(kb, &named, "spec") else { continue };
+        let Some(spec_t) = get_named_arg(kb, &named, "spec") else {
+            continue;
+        };
         if let Some(spec_sym) = super::load::provides_spec_base_sym(kb, spec_t) {
             if !specs.contains(&spec_sym) {
                 specs.push(spec_sym);
@@ -29519,9 +31759,7 @@ fn build_pattern_subst(
     // bindings)` or term-backed `Fn{S, named}`. A non-parameterized scrutinee
     // (bare sort, arrow, …) yields no pattern subst. WI-342: carrier-agnostic
     // over [`TermView`] so a `Value::Node` scrutinee builds the subst too.
-    let TypeExtractor::Parameterized { bindings, .. } =
-        extract_type(kb, scrutinee_type)
-    else {
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, scrutinee_type) else {
         return None;
     };
 
@@ -29539,7 +31777,11 @@ fn build_pattern_subst(
             any = true;
         }
     }
-    if any { Some(subst) } else { None }
+    if any {
+        Some(subst)
+    } else {
+        None
+    }
 }
 
 /// WI-424 — a parametric sort's declared type parameters as `(param symbol,
@@ -29576,7 +31818,9 @@ fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Sy
         .filter_map(|&param| Some((param, published_param_var(kb, sort_sym, param)?)))
         .collect();
     let rc = Rc::new(pairs);
-    kb.sort_param_pairs_cache.borrow_mut().insert(sort_sym, rc.clone());
+    kb.sort_param_pairs_cache
+        .borrow_mut()
+        .insert(sort_sym, rc.clone());
     rc
 }
 
@@ -29601,11 +31845,7 @@ fn sort_type_params_as_pairs(kb: &KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<(Sy
 /// (measured — 29 binaries, 4441 tests), so no corpus program writes that shape. It is
 /// here because the divergence is reachable in principle and its symptom — a built type
 /// with fewer named args than the sort declares — is silent by nature.
-fn published_param_var(
-    kb: &KnowledgeBase,
-    owner: Symbol,
-    param: Symbol,
-) -> Option<TermId> {
+fn published_param_var(kb: &KnowledgeBase, owner: Symbol, param: Symbol) -> Option<TermId> {
     let published = kb.canonical_type_param_var(param);
     debug_assert!(
         published.is_some(),
@@ -29667,7 +31907,9 @@ fn bind_and_label_pattern(
     // `UnresolvedName`s that hide the real diagnostic.
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
-    let Some(pat) = pattern.as_pattern() else { return Rc::clone(pattern); };
+    let Some(pat) = pattern.as_pattern() else {
+        return Rc::clone(pattern);
+    };
     // WI-819: the binder's own annotation hangs on the pattern OCCURRENCE, not
     // on `Pattern::Var` — so it is read the same way for every variant.
     let type_ann = pattern.pattern_type_ann();
@@ -29758,8 +32000,15 @@ fn bind_and_label_pattern(
                 let v = pattern_annotation_value(kb, ann);
                 let v = if value_contains_projection(kb, &v) {
                     let ctx = TypeErrorContext::LetBinding { var: *name };
-                    eliminate_type_projections(kb, &v, &env.var_bindings, None, &ctx, Some(ann.span.span))
-                        .unwrap_or(v)
+                    eliminate_type_projections(
+                        kb,
+                        &v,
+                        &env.var_bindings,
+                        None,
+                        &ctx,
+                        Some(ann.span.span),
+                    )
+                    .unwrap_or(v)
                 } else {
                     v
                 };
@@ -29790,7 +32039,11 @@ fn bind_and_label_pattern(
             // child the typer does not rewrite here.
             Rc::clone(pattern)
         }
-        Pattern::Constructor { name, pos_args, named_args } => {
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => {
             let ctor_sym = *name;
             let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
             // Substitute the scrutinee's type args into the constructor's
@@ -29854,7 +32107,10 @@ fn bind_and_label_pattern(
             // sub-patterns and never the annotation.
             crate::kb::node_occurrence::reassemble_pattern_subpatterns(pattern, &rebuilt)
         }
-        Pattern::Tuple { positional, labels: old_labels } => {
+        Pattern::Tuple {
+            positional,
+            labels: old_labels,
+        } => {
             // When the scrutinee is a tuple type, bind each sub-pattern to its
             // component type — so `lambda (a, b) -> a + b` checked against
             // `Function[(Int, Int), Int]` types a/b as Int and `+` dispatches
@@ -29865,8 +32121,9 @@ fn bind_and_label_pattern(
             // is typed FROM, and recording them on the pattern is what lets the
             // matcher fetch that same component at run time instead of trusting
             // slot `i` of whatever value arrives — the WI-788 disagreement.
-            let fields: Option<Vec<(Symbol, Value)>> =
-                scrutinee_type.as_ref().and_then(|t| named_tuple_field_pairs(kb, t));
+            let fields: Option<Vec<(Symbol, Value)>> = scrutinee_type
+                .as_ref()
+                .and_then(|t| named_tuple_field_pairs(kb, t));
             // WI-794: the index zip pairs binder `i` with component `i`, which is a
             // TRUSTWORTHY correspondence only at EQUAL arity — the rule
             // `validate_callback_effect_row` already follows for its place map. At
@@ -29886,7 +32143,10 @@ fn bind_and_label_pattern(
             let aligned = fields.as_ref().is_none_or(|f| f.len() == positional.len());
             let mut rebuilt: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(positional.len());
             for (i, sub_pat) in positional.iter().enumerate() {
-                let comp = fields.as_ref().and_then(|f| f.get(i)).map(|(_, v)| v.clone());
+                let comp = fields
+                    .as_ref()
+                    .and_then(|f| f.get(i))
+                    .map(|(_, v)| v.clone());
                 rebuilt.push(if aligned {
                     bind_and_label_pattern(kb, env, sub_pat, comp, errors)
                 } else {
@@ -29929,7 +32189,10 @@ fn bind_and_label_pattern(
                 // annotation is read straight off the occurrence, not recovered
                 // from `rebuilt`, which holds sub-patterns only.
                 NodeOccurrence::new_pattern_annotated(
-                    Pattern::Tuple { positional: rebuilt, labels },
+                    Pattern::Tuple {
+                        positional: rebuilt,
+                        labels,
+                    },
                     type_ann.map(Rc::clone),
                     pattern.span,
                     pattern.owner,
@@ -30043,7 +32306,6 @@ fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<T
     lookup_operation_field(kb, functor, "return_type")
 }
 
-
 fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> Option<TermId> {
     // WI-348: carrier-agnostic — the OperationInfo head may be a value fact
     // (Node-carrying) for ops with a `denoted` effect. Read fields through the
@@ -30051,7 +32313,9 @@ fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> O
     // `lookup_operation_return_type`, whose `field` is always ground.
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     for rid in kb.rules_by_functor(op_info_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         let head = kb.rule_head_value(rid);
         if super::op_info::head_name_ref(kb, head) == Some(functor) {
             return super::op_info::head_field_term(kb, head, field);
@@ -30114,22 +32378,42 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
     // KINDS never equal each other (an expression-keyed and a type-keyed neutral have
     // no conversion in the base scope — δ-normalization across kinds is the recorded
     // §5.3 convergence).
-    let a_neutral = matches!(type_head(kb, a), TypeHead::ExprCarried | TypeHead::RigidProjection);
-    let b_neutral = matches!(type_head(kb, b), TypeHead::ExprCarried | TypeHead::RigidProjection);
+    let a_neutral = matches!(
+        type_head(kb, a),
+        TypeHead::ExprCarried | TypeHead::RigidProjection
+    );
+    let b_neutral = matches!(
+        type_head(kb, b),
+        TypeHead::ExprCarried | TypeHead::RigidProjection
+    );
     if !a_neutral && !b_neutral {
         return None;
     }
     if a_neutral && b_neutral {
         match (extract_type(kb, a), extract_type(kb, b)) {
             (
-                TypeExtractor::ExprCarried { value: va, member: ma },
-                TypeExtractor::ExprCarried { value: vb, member: mb },
+                TypeExtractor::ExprCarried {
+                    value: va,
+                    member: ma,
+                },
+                TypeExtractor::ExprCarried {
+                    value: vb,
+                    member: mb,
+                },
             ) => {
                 return Some(same_qname(kb, ma, mb) && views_structurally_equal(kb, &va, &vb));
             }
             (
-                TypeExtractor::RigidTypeProjection { sort: sa, subject: va, member: ma },
-                TypeExtractor::RigidTypeProjection { sort: sb, subject: vb, member: mb },
+                TypeExtractor::RigidTypeProjection {
+                    sort: sa,
+                    subject: va,
+                    member: ma,
+                },
+                TypeExtractor::RigidTypeProjection {
+                    sort: sb,
+                    subject: vb,
+                    member: mb,
+                },
             ) => {
                 // Subject identity via [`SubjectKey`] (the param's alias-var id), NOT
                 // raw term identity: two occurrences of one projection may carry Refs
@@ -30213,7 +32497,9 @@ pub fn unify_types<A: TermView, B: TermView>(
         // equal ones share a TermId (→ the identity fast-path above), so the
         // `denoted` Ref-compare is only needed when hash-cons identity is lost
         // (a `Value` carrier on at least one side).
-        (Value::Term { id: x, .. }, Value::Term { id: y, .. }) => unify_term_dispatch(kb, subst, *x, *y),
+        (Value::Term { id: x, .. }, Value::Term { id: y, .. }) => {
+            unify_term_dispatch(kb, subst, *x, *y)
+        }
         // At least one `Value` carrier (hash-cons identity is lost). Dispatch
         // structurally through the carrier-agnostic [`TermView`] arms (WI-342
         // P4): a `Value`-carried `denoted` / `parameterized` unifies against its
@@ -30248,11 +32534,12 @@ fn unify_view_structural<A: TermView, B: TermView>(
     // so the dispatch is wired natively for both carriers with no re-ground bridge.
     // The arms below mirror `unify_term_dispatch`'s exactly (same functor pairs,
     // same helpers); the final `_` mirrors its `_ => types_compatible` fallback.
-    match (type_dispatch_name_view(kb, a), type_dispatch_name_view(kb, b)) {
+    match (
+        type_dispatch_name_view(kb, a),
+        type_dispatch_name_view(kb, b),
+    ) {
         (Some("denoted"), Some("denoted")) => unify_denoted_view(kb, a, b),
-        (Some("parameterized"), Some("parameterized")) => {
-            unify_parameterized_view(kb, subst, a, b)
-        }
+        (Some("parameterized"), Some("parameterized")) => unify_parameterized_view(kb, subst, a, b),
         (Some("parameterized"), Some("sort_ref")) => {
             unify_parameterized_with_sort_ref(kb, subst, a, b)
         }
@@ -30265,9 +32552,7 @@ fn unify_view_structural<A: TermView, B: TermView>(
         // pair takes the FULL row algorithm — the structural inner-unify was
         // order-sensitive over `merge`, rejecting equal rows written in
         // different binding orders (the two-row carriers' `{ES, EF}`).
-        (Some("effects_rows"), Some("effects_rows")) => {
-            unify_effect_rows(kb, subst, a, b)
-        }
+        (Some("effects_rows"), Some("effects_rows")) => unify_effect_rows(kb, subst, a, b),
         // Mirrors `unify_term_dispatch`'s `_ => types_compatible(...)` — a unify of
         // any other (form-mismatched) pair falls back to the subtype check, which is
         // itself carrier-agnostic (no re-ground). WI-441: a pair with ONE
@@ -30490,7 +32775,10 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     let (a_base_ty, b_base_ty) = if a_base == b_base {
         (kb.alloc(Term::Ref(a_base)), kb.alloc(Term::Ref(b_base)))
     } else {
-        (parameterized_base_term(kb, a_base), parameterized_base_term(kb, b_base))
+        (
+            parameterized_base_term(kb, a_base),
+            parameterized_base_term(kb, b_base),
+        )
     };
     if !unify_types(kb, subst, &TermIdView(a_base_ty), &TermIdView(b_base_ty)) {
         return false;
@@ -30530,9 +32818,14 @@ fn unify_arrow_view<A: TermView, B: TermView>(
 
     // WI-791: two arrows relate only if they take the SAME NUMBER of parameters,
     // and the count also says how to read the param slot below.
-    let Some(arity) = agreed_arrow_arity(kb, a, b) else { return false };
+    let Some(arity) = agreed_arrow_arity(kb, a, b) else {
+        return false;
+    };
 
-    match (named_child_value(kb, a, param_sym), named_child_value(kb, b, param_sym)) {
+    match (
+        named_child_value(kb, a, param_sym),
+        named_child_value(kb, b, param_sym),
+    ) {
         (Some(x), Some(y)) => {
             // WI-775: a PARAMETER LIST, not a data tuple — positional alignment
             // is admissible here (and only here).
@@ -30542,7 +32835,10 @@ fn unify_arrow_view<A: TermView, B: TermView>(
         }
         _ => return false,
     }
-    match (named_child_value(kb, a, result_sym), named_child_value(kb, b, result_sym)) {
+    match (
+        named_child_value(kb, a, result_sym),
+        named_child_value(kb, b, result_sym),
+    ) {
         (Some(x), Some(y)) => {
             if !unify_types(kb, subst, &x, &y) {
                 return false;
@@ -30551,7 +32847,10 @@ fn unify_arrow_view<A: TermView, B: TermView>(
         _ => return false,
     }
 
-    match (named_child_value(kb, a, effects_sym), named_child_value(kb, b, effects_sym)) {
+    match (
+        named_child_value(kb, a, effects_sym),
+        named_child_value(kb, b, effects_sym),
+    ) {
         (Some(x), Some(y)) => unify_effect_rows(kb, subst, &x, &y),
         (None, None) => true,
         (Some(x), None) => match kb.try_make_empty_effects_rows() {
@@ -30604,14 +32903,16 @@ fn decode_cons_cell<V: TermView>(
     out: &mut Vec<(Symbol, Value)>,
 ) -> Option<Value> {
     match cell.head(kb) {
-        ViewHead::Functor { functor: Some(f), .. }
-            if kb.qualified_name_of(f) == "anthill.prelude.List.cons" => {}
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } if kb.qualified_name_of(f) == "anthill.prelude.List.cons" => {}
         _ => return None,
     }
     if let Some(rec) = named_child_value(kb, cell, head_key) {
-        if let (Some(s), Some(v)) =
-            (view_child_sym(kb, &rec, sym_key), view_child_value(kb, &rec, val_key))
-        {
+        if let (Some(s), Some(v)) = (
+            view_child_sym(kb, &rec, sym_key),
+            view_child_value(kb, &rec, val_key),
+        ) {
             out.push((s, v));
         }
     }
@@ -30749,7 +33050,12 @@ fn resolved_var(kb: &KnowledgeBase, r: &Value) -> Option<VarId> {
 
 /// Bind `vid` to a resolved type by its carrier (WI-342 P3): `bind_term` for a
 /// hash-consed `TermId`, `bind_value` for any other `Value` carrier.
-fn bind_resolved(kb: &mut KnowledgeBase, subst: &mut Substitution, vid: VarId, other: Value) -> bool {
+fn bind_resolved(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    vid: VarId,
+    other: Value,
+) -> bool {
     match other {
         Value::Term { id: t, .. } => {
             if occurs_in(kb, vid, t) {
@@ -30809,7 +33115,10 @@ fn unify_denoted_view<A: TermView, B: TermView>(kb: &mut KnowledgeBase, a: &A, b
             // are corresponding binders, so equal position ⇒ same binder. A
             // future caller comparing two binders NOT through aligned-arrow
             // unify would break this — keep callback-Modify labels arrow-local.
-            match (callback_binder_position(kb, sa), callback_binder_position(kb, sb)) {
+            match (
+                callback_binder_position(kb, sa),
+                callback_binder_position(kb, sb),
+            ) {
                 (Some(pa), Some(pb)) => pa == pb,
                 _ => false,
             }
@@ -30847,7 +33156,10 @@ fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
     let qn = kb.qualified_name_of(sym);
     let parent_qn = qn.rsplit_once('.').map(|(p, _)| p)?;
     let callback = kb.try_resolve_symbol(parent_qn)?;
-    kb.symbols.arg_places(callback).iter().position(|&p| p == sym)
+    kb.symbols
+        .arg_places(callback)
+        .iter()
+        .position(|&p| p == sym)
 }
 
 /// The symbol a `denoted`'s `value` child refers to, if it is a `Ref`-shaped
@@ -30924,9 +33236,12 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             TypeNode::EffectsRows { effects_expr } => child(kb, effects_expr),
             // WI-791: a ground `Const(Int)` `arity` can hold no var; walked for
             // totality over the node's children.
-            TypeNode::Arrow { param, result, effects, arity } => {
-                child(kb, param) || child(kb, result) || child(kb, effects) || child(kb, arity)
-            }
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => child(kb, param) || child(kb, result) || child(kb, effects) || child(kb, arity),
             // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
             // view-walking `occurs_in_view` descends its cons cells + records and
             // into any poisoned (`Value::Node`) field type via `occ_contains_var`.
@@ -30937,7 +33252,9 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
     }
     if let Some(en) = occ.as_effect_expr() {
         return match en {
-            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => child(kb, label),
+            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
+                child(kb, label)
+            }
             // WI-478: the var may occur in the label (a `TypeChild`) or inside the
             // guard's `Value`-carried goal list (`occurs_in_view`, as NamedTuple).
             EffectExprNode::Guarded { label, guard } => {
@@ -30984,12 +33301,18 @@ fn unify_term_dispatch(
         (Some("parameterized"), Some("parameterized")) => {
             unify_parameterized_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
-        (Some("parameterized"), Some("sort_ref")) => {
-            unify_parameterized_with_sort_ref(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
-        }
-        (Some("sort_ref"), Some("parameterized")) => {
-            unify_parameterized_with_sort_ref(kb, subst, &TermIdView(b_resolved), &TermIdView(a_resolved))
-        }
+        (Some("parameterized"), Some("sort_ref")) => unify_parameterized_with_sort_ref(
+            kb,
+            subst,
+            &TermIdView(a_resolved),
+            &TermIdView(b_resolved),
+        ),
+        (Some("sort_ref"), Some("parameterized")) => unify_parameterized_with_sort_ref(
+            kb,
+            subst,
+            &TermIdView(b_resolved),
+            &TermIdView(a_resolved),
+        ),
         (Some("arrow"), Some("arrow")) => {
             unify_arrow_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
@@ -31037,8 +33360,10 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     // bindings)` OR term-backed `Fn{S, named}`. A non-parameterized side, a base
     // mismatch, or a non-`sort_ref` falls back to the plain compat relation.
     // WI-342: carrier-agnostic over [`TermView`] (both sides may be a `Value::Node`).
-    let TypeExtractor::Parameterized { base: pbase_sym, bindings } =
-        extract_type(kb, parameterized)
+    let TypeExtractor::Parameterized {
+        base: pbase_sym,
+        bindings,
+    } = extract_type(kb, parameterized)
     else {
         return types_compatible(kb, subst, parameterized, sort_ref);
     };
@@ -31080,9 +33405,15 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
             kb.qualified_name_of(pbase_sym),
             kb.local_name_of(*psym),
         );
-        let Some(qualified_sym) = kb.try_resolve_symbol(&qualified) else { continue };
-        let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) else { continue };
-        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else { continue };
+        let Some(qualified_sym) = kb.try_resolve_symbol(&qualified) else {
+            continue;
+        };
+        let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) else {
+            continue;
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
+            continue;
+        };
         let vid = *vid;
         match value {
             // Ground (term-carried): bind after the occurs-check guards a cycle.
@@ -31106,7 +33437,11 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
 fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
     match kb.get_term(term) {
         Term::Var(Var::Global(v)) => *v == vid,
-        Term::Fn { pos_args, named_args, .. } => {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
             pos_args.iter().any(|t| occurs_in(kb, vid, *t))
                 || named_args.iter().any(|(_, t)| occurs_in(kb, vid, *t))
         }
@@ -31131,7 +33466,11 @@ fn walk_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty: TermId) -> T
 /// var resolves to itself, a rigid skolem, or another sort-param — yields `None`, so the
 /// application keeps its symbol functor (def-site decomposition unaffected; the
 /// undischarged fill surfaces as a loud no-instance error at dispatch, not here).
-fn filled_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, functor: Symbol) -> Option<Symbol> {
+fn filled_carrier_sort(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    functor: Symbol,
+) -> Option<Symbol> {
     let var_t = resolve_sort_alias(kb, functor)
         .filter(|t| matches!(kb.get_term(*t), Term::Var(Var::Global(_))))?;
     // WI-394: walk to a `Value` so a non-`Term` (`Value::Node`) fill is seen
@@ -31235,7 +33574,9 @@ fn walk_type_deep_g(
                     return kb.make_parameterized_type(base, &walked);
                 }
             }
-            kb.map_fn_children(resolved, |kb, child| walk_type_deep_g(kb, subst, child, ground))
+            kb.map_fn_children(resolved, |kb, child| {
+                walk_type_deep_g(kb, subst, child, ground)
+            })
         }
         _ => resolved,
     }
@@ -31255,8 +33596,11 @@ fn ground_rigid_projection_if_concrete(
     subst: &Substitution,
     proj: TermId,
 ) -> Option<TermId> {
-    let TypeExtractor::RigidTypeProjection { sort, subject, member } =
-        extract_type(kb, &TermIdView(proj))
+    let TypeExtractor::RigidTypeProjection {
+        sort,
+        subject,
+        member,
+    } = extract_type(kb, &TermIdView(proj))
     else {
         return None;
     };
@@ -31298,7 +33642,9 @@ fn ground_rigid_projection_if_concrete(
     // `sort T = ?` from the operation's `[T]`; nor would it answer `None` for WI-402's
     // existential carrier, which is op-scoped but is not a bracket parameter. See
     // [`op_info::declared_type_param_var`](crate::kb::op_info::declared_type_param_var).
-    let Value::Term { id: subj_t, .. } = subject else { return None };
+    let Value::Term { id: subj_t, .. } = subject else {
+        return None;
+    };
     let subj_sym = extract_sort_ref_sym(kb, &TermIdView(subj_t))?;
     let subj_name = kb.local_name_of(subj_sym).to_owned();
     let tp_var = super::op_info::declared_type_param_var(kb, sort, &subj_name)?;
@@ -31328,7 +33674,11 @@ fn ground_rigid_projection_if_concrete(
             continue;
         }
         mentions_subject = true;
-        if !kb.type_params_of_sort(e.required_sort).iter().any(|d| d.as_str() == member_str) {
+        if !kb
+            .type_params_of_sort(e.required_sort)
+            .iter()
+            .any(|d| d.as_str() == member_str)
+        {
             continue;
         }
         let Some(bindings) = provider_spec_view_bindings(kb, s, e.required_sort) else {
@@ -31361,7 +33711,7 @@ fn ground_rigid_projection_if_concrete(
             // NOT consulted here — it would return an UNRELATED sort's same-named member when
             // this child is an entity/operation/body-sort that merely shares the name (a
             // soundness hole); WI-956 deleted the one that existed, so [`resolve_sort_alias`]
-                // now matches only this symbol for every caller.
+            // now matches only this symbol for every caller.
             if kb.kind_of(member_sym) == Some(crate::intern::SymbolKind::Sort) {
                 if let Some(target) = resolve_sort_alias(kb, member_sym) {
                     let g = walk_type_deep(kb, subst, target);
@@ -31537,7 +33887,9 @@ pub(crate) fn scan_sort_aliases(
         // decoding rule here is exactly the two-readers-two-rules divergence the
         // ticket removed one map over. A denoted-bearing target carries no ground
         // `TermId` and is skipped, as callers want a ground `Var`/alias term.
-        let Some((functor, target)) = sort_alias_head_slots(kb, rid) else { continue };
+        let Some((functor, target)) = sort_alias_head_slots(kb, rid) else {
+            continue;
+        };
         if matches(functor) {
             return Some(target);
         }
@@ -31594,7 +33946,10 @@ fn sort_alias_head_slots(kb: &KnowledgeBase, rid: RuleId) -> Option<(Symbol, Ter
     }
     let head = kb.rule_head_value(rid);
     let src_functor = match head.pos_arg(kb, 0)?.head(kb) {
-        ViewHead::Ref(s) | ViewHead::Functor { functor: Some(s), .. } => s,
+        ViewHead::Ref(s)
+        | ViewHead::Functor {
+            functor: Some(s), ..
+        } => s,
         _ => return None,
     };
     let target = head.pos_arg(kb, 1)?.as_term_id()?;
@@ -31748,7 +34103,9 @@ fn enforce_member_tie(
         return Err(TypeError::Other {
             site: TypeError::here(),
             span,
-            context: TypeErrorContext::OperationTypeParams { op_name: error_name },
+            context: TypeErrorContext::OperationTypeParams {
+                op_name: error_name,
+            },
             expected: format!(
                 "consistent bindings for the sort's shared type parameter (first bound to {})",
                 type_display_name_value(kb, &prior_w),
@@ -31818,9 +34175,17 @@ fn alias_shape_well_founded(kb: &KnowledgeBase, tid: TermId, path: &mut Vec<Symb
     // and child `TermId`s (cheap, `Copy`) so the immutable `kb` borrow from
     // `get_term` is released before the recursive calls re-borrow `kb`.
     let (functor, children): (Option<Symbol>, Vec<TermId>) = match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, named_args } => (
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => (
             Some(*functor),
-            pos_args.iter().copied().chain(named_args.iter().map(|(_, a)| *a)).collect(),
+            pos_args
+                .iter()
+                .copied()
+                .chain(named_args.iter().map(|(_, a)| *a))
+                .collect(),
         ),
         _ => return true,
     };
@@ -31829,7 +34194,9 @@ fn alias_shape_well_founded(kb: &KnowledgeBase, tid: TermId, path: &mut Vec<Symb
             return false;
         }
     }
-    children.iter().all(|c| alias_shape_well_founded(kb, *c, path))
+    children
+        .iter()
+        .all(|c| alias_shape_well_founded(kb, *c, path))
 }
 
 /// Expand a single sort symbol for [`alias_shape_well_founded`]: a non-alias name
@@ -31894,9 +34261,9 @@ fn resolve_alias_shape_chain(
 fn effects_rows_inner<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Value> {
     let er = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")?;
     match v.head(kb) {
-        ViewHead::Functor { functor: Some(f), .. } if f == er => {
-            view_child_value(kb, v, "effects_expr")
-        }
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } if f == er => view_child_value(kb, v, "effects_expr"),
         _ => None,
     }
 }
@@ -32075,9 +34442,11 @@ fn row_self_contradiction<'a>(
     present: &'a [Value],
     absent: &[Value],
 ) -> Option<&'a Value> {
-    present
-        .iter()
-        .find(|p| absent.iter().any(|a| resolved_labels_equal(kb, subst, p, a)))
+    present.iter().find(|p| {
+        absent
+            .iter()
+            .any(|a| resolved_labels_equal(kb, subst, p, a))
+    })
 }
 
 /// The self-contradiction-filtering decomposition used by the row subtype / unify
@@ -32237,9 +34606,14 @@ fn substitute_ref_terms_value_rec(
         // `s ∈ σ` (WI-552 variable substitution — never recurse into the `name`
         // child, which would corrupt the wrapper). An unmapped `var_ref` stays
         // intact: the open-world parameter the resolver flounders on.
-        ViewHead::Functor { functor: Some(f), .. } if f == var_ref_sym => {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } if f == var_ref_sym => {
             match view_var_ref_name(kb, v) {
-                Some(s) => map.get(&s).map(|&t| Value::term(t)).unwrap_or_else(|| v.clone()),
+                Some(s) => map
+                    .get(&s)
+                    .map(|&t| Value::term(t))
+                    .unwrap_or_else(|| v.clone()),
                 // A `var_ref`'s `name` child is always `Ref(sym)` by construction
                 // (`occ_head` exposes `Expr::Ref`); a `None` here means a malformed
                 // binder reached σ — surface it loudly, mirroring the term-side
@@ -32255,9 +34629,10 @@ fn substitute_ref_terms_value_rec(
             }
         }
         // A bare global / parameter reference: substitute if mapped, else keep.
-        ViewHead::Ref(s) | ViewHead::Ident(s) => {
-            map.get(&s).map(|&t| Value::term(t)).unwrap_or_else(|| v.clone())
-        }
+        ViewHead::Ref(s) | ViewHead::Ident(s) => map
+            .get(&s)
+            .map(|&t| Value::term(t))
+            .unwrap_or_else(|| v.clone()),
         // A functor application on a non-Term carrier (a denoted `Value::Node` goal,
         // or a value-carried `Value::Entity`): rebuild carrier-neutrally as a
         // `Value::Entity`, substituting each child read through the View layer, so a
@@ -32265,7 +34640,11 @@ fn substitute_ref_terms_value_rec(
         // re-canonicalized (`canonicalize_record_named_args`) — the invariant the order-
         // sensitive discrimination tree matches against, which a non-entity-functor
         // Node goal's source-order named children would otherwise violate.
-        ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } => {
             let pos = subst_view_pos(kb, v, pos_arity, map, var_ref_sym);
             let mut named = subst_view_named(kb, v, map, var_ref_sym);
             kb.canonicalize_record_named_args(f, &mut named);
@@ -32280,7 +34659,11 @@ fn substitute_ref_terms_value_rec(
         // operand grounds exactly as the term-side walk recurses through a tuple
         // `Term::Fn`. A childless `Functor{None}` (`Value::Unit` / empty tuple) has no
         // parameter to ground and rides the verbatim `_` arm below.
-        ViewHead::Functor { functor: None, pos_arity, named_arity } if pos_arity + named_arity > 0 => {
+        ViewHead::Functor {
+            functor: None,
+            pos_arity,
+            named_arity,
+        } if pos_arity + named_arity > 0 => {
             let pos = subst_view_pos(kb, v, pos_arity, map, var_ref_sym);
             let named = subst_view_named(kb, v, map, var_ref_sym);
             Value::Tuple {
@@ -32325,7 +34708,10 @@ fn subst_view_named(
     let mut named = Vec::with_capacity(keys.len());
     for k in keys {
         let child = v.named_arg(kb, k).expect("named key present").to_value();
-        named.push((k, substitute_ref_terms_value_rec(kb, &child, map, var_ref_sym)));
+        named.push((
+            k,
+            substitute_ref_terms_value_rec(kb, &child, map, var_ref_sym),
+        ));
     }
     named
 }
@@ -32353,7 +34739,11 @@ fn substitute_ref_terms_rec(
 ) -> TermId {
     match kb.get_term(term).clone() {
         Term::Ref(s) | Term::Ident(s) => map.get(&s).copied().unwrap_or(term),
-        Term::Fn { functor, named_args, .. } if functor == var_ref_sym => {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } if functor == var_ref_sym => {
             match var_ref_name_symbol(kb, &named_args) {
                 Some(s) => map.get(&s).copied().unwrap_or(term),
                 // A `var_ref`'s `name` child is always `Ref(sym)` by construction
@@ -32370,9 +34760,9 @@ fn substitute_ref_terms_rec(
                 }
             }
         }
-        Term::Fn { .. } => {
-            kb.map_fn_children(term, |kb, child| substitute_ref_terms_rec(kb, child, map, var_ref_sym))
-        }
+        Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
+            substitute_ref_terms_rec(kb, child, map, var_ref_sym)
+        }),
         _ => term,
     }
 }
@@ -32382,7 +34772,10 @@ fn substitute_ref_terms_rec(
 /// `var_ref` intact rather than substituting).
 fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> Option<Symbol> {
     let name_key = kb.lookup_symbol("name")?;
-    let child = named_args.iter().find(|(k, _)| *k == name_key).map(|(_, v)| *v)?;
+    let child = named_args
+        .iter()
+        .find(|(k, _)| *k == name_key)
+        .map(|(_, v)| *v)?;
     match kb.get_term(child) {
         Term::Ref(s) | Term::Ident(s) => Some(*s),
         _ => None,
@@ -32458,7 +34851,9 @@ fn guarded_atom_refuted(
     // never NAF). The empty guard (`:- true`) has no conjunct — irrefutable, kept.
     // Each list element is a single conjunct goal `Value`; ground + refute it via
     // the shared per-conjunct core carrier-neutrally (WI-621 — no reification).
-    goals.iter().any(|g| conjunct_refuted(kb, flow, subst, sigma, g))
+    goals
+        .iter()
+        .any(|g| conjunct_refuted(kb, flow, subst, sigma, g))
 }
 
 /// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.PartialEq.{eq,neq}` —
@@ -32468,7 +34863,10 @@ fn guarded_atom_refuted(
 /// exactly which goals the structural builtin decides — can never silently diverge
 /// on how `neq` is qualified.
 fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>) {
-    (kb.eq_functor(), kb.try_resolve_symbol("anthill.prelude.PartialEq.neq"))
+    (
+        kb.eq_functor(),
+        kb.try_resolve_symbol("anthill.prelude.PartialEq.neq"),
+    )
 }
 
 /// Is `f` the `eq` or `neq` spec op — the equality family the structural
@@ -32588,7 +34986,11 @@ fn guard_conjunct_overrides_structural_eq(
     goal: &Value,
 ) -> bool {
     let (functor, pos_arity) = match goal.head(kb) {
-        ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } => (f, pos_arity),
         _ => return false,
     };
     if !is_eq_family_functor(kb, functor) || pos_arity == 0 {
@@ -32699,9 +35101,9 @@ fn drop_refuted_guarded_labels(
 /// NOT treated as a value precondition (left to the other checks).
 pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause.head(kb) {
-        ViewHead::Functor { functor: Some(f), .. } => {
-            kb.kind_of(f) != Some(crate::intern::SymbolKind::Sort)
-        }
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => kb.kind_of(f) != Some(crate::intern::SymbolKind::Sort),
         _ => false,
     }
 }
@@ -32718,14 +35120,24 @@ pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, clause: &Value) -> Vec<Value>
     // Carrier-neutral (WI-621): read the head through the View layer, so a `Term`,
     // `Node`, or `Entity` `conjunction(g1, …, gn)` decomposes identically into its
     // goal `Value`s (each carrier-faithful — a `Node` conjunct stays an occurrence).
-    if let ViewHead::Functor { functor: Some(f), pos_arity, .. } = clause.head(kb) {
+    if let ViewHead::Functor {
+        functor: Some(f),
+        pos_arity,
+        ..
+    } = clause.head(kb)
+    {
         if kb.local_name_of(f) == "conjunction" {
             // Every slot `i < pos_arity` is present by the View's own arity report;
             // `.expect` (never `filter_map`) so a hole surfaces loudly rather than
             // silently dropping a conjunct — a dropped `requires`/guard conjunct would
             // weaken the obligation with no diagnostic (repo: loud over silent).
             return (0..pos_arity)
-                .map(|i| clause.pos_arg(kb, i).expect("pos_arg within arity").to_value())
+                .map(|i| {
+                    clause
+                        .pos_arg(kb, i)
+                        .expect("pos_arg within arity")
+                        .to_value()
+                })
                 .collect();
         }
     }
@@ -32750,12 +35162,13 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
     match view.head(kb) {
         ViewHead::Ref(s) | ViewHead::Ident(s) => syms.contains(&s),
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity)
-                .any(|i| view.pos_arg(kb, i).is_some_and(|c| view_references_any(kb, &c, syms)))
-                || view
-                    .named_keys(kb)
-                    .iter()
-                    .any(|&k| view.named_arg(kb, k).is_some_and(|c| view_references_any(kb, &c, syms)))
+            (0..pos_arity).any(|i| {
+                view.pos_arg(kb, i)
+                    .is_some_and(|c| view_references_any(kb, &c, syms))
+            }) || view.named_keys(kb).iter().any(|&k| {
+                view.named_arg(kb, k)
+                    .is_some_and(|c| view_references_any(kb, &c, syms))
+            })
         }
         _ => false,
     }
@@ -32847,9 +35260,16 @@ fn assume_call_ensures(
     binder: Symbol,
 ) -> FlowEnv {
     let (functor, pos_args, named_args) = match &value_node.kind {
-        NodeKind::Expr { expr: Expr::Apply { functor, pos_args, named_args, .. }, .. } => {
-            (*functor, pos_args.clone(), named_args.clone())
-        }
+        NodeKind::Expr {
+            expr:
+                Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                },
+            ..
+        } => (*functor, pos_args.clone(), named_args.clone()),
         _ => return flow,
     };
     let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
@@ -32933,10 +35353,15 @@ fn multi_tail_rows_compat(
             return false;
         };
         let vid = *vid;
-        if other_tails.iter().any(|t| walk_type(kb, subst, *t) == bare_tail) {
+        if other_tails
+            .iter()
+            .any(|t| walk_type(kb, subst, *t) == bare_tail)
+        {
             return false; // occurs guard
         }
-        let Some(inner) = other_inner else { return false };
+        let Some(inner) = other_inner else {
+            return false;
+        };
         let lacks = subst.lacks_of(vid);
         if !lacks.is_empty() {
             for l in other_present {
@@ -32976,7 +35401,8 @@ fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
     // as a bare EffectExpression node.
     v.head(kb).functor_sym().is_some_and(|sym| {
         matches!(
-            kb.qualified_name_of(sym).strip_prefix("anthill.prelude.EffectExpression."),
+            kb.qualified_name_of(sym)
+                .strip_prefix("anthill.prelude.EffectExpression."),
             // WI-478: a bare `guarded(…)` atom is a complete EffectExpression node
             // (kept in step with the same list in `explode_incurred_effect_row`), so
             // a top-level bare guarded atom is row-shaped and decomposes via the row
@@ -33269,10 +35695,18 @@ fn bind_row_tail(
     // call panic-on-miss `resolve_symbol`. Probe the symbols first;
     // if any are missing, reject the binding (sound — we can't
     // synthesize the inner term, so we can't claim the bind holds).
-    if kb.try_resolve_symbol("anthill.prelude.EffectExpression.empty_row").is_none()
-        || kb.try_resolve_symbol("anthill.prelude.EffectExpression.open").is_none()
-        || kb.try_resolve_symbol("anthill.prelude.EffectExpression.present").is_none()
-        || kb.try_resolve_symbol("anthill.prelude.EffectExpression.merge").is_none()
+    if kb
+        .try_resolve_symbol("anthill.prelude.EffectExpression.empty_row")
+        .is_none()
+        || kb
+            .try_resolve_symbol("anthill.prelude.EffectExpression.open")
+            .is_none()
+        || kb
+            .try_resolve_symbol("anthill.prelude.EffectExpression.present")
+            .is_none()
+        || kb
+            .try_resolve_symbol("anthill.prelude.EffectExpression.merge")
+            .is_none()
     {
         return false;
     }
@@ -33463,10 +35897,15 @@ fn unify_effect_rows<EA: TermView, EB: TermView>(
         let a_inner = row_inner_value(kb, subst, a_effects);
         let b_inner = row_inner_value(kb, subst, b_effects);
         return multi_tail_rows_compat(
-            kb, subst, a_inner, b_inner,
+            kb,
+            subst,
+            a_inner,
+            b_inner,
             (&a_present, &a_tails, &a_absent),
             (&b_present, &b_tails, &b_absent),
-            &only_a, &only_b, false,
+            &only_a,
+            &only_b,
+            false,
         );
     }
     let a_tail = a_tails.first().copied();
@@ -33502,8 +35941,7 @@ fn unify_effect_rows<EA: TermView, EB: TermView>(
                     return true;
                 }
                 let fresh_var = fresh_row_tail_var(kb);
-                let mut all_extras: Vec<Value> =
-                    Vec::with_capacity(only_a.len() + only_b.len());
+                let mut all_extras: Vec<Value> = Vec::with_capacity(only_a.len() + only_b.len());
                 all_extras.extend(only_a.iter().cloned());
                 all_extras.extend(only_b.iter().cloned());
                 return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
@@ -33576,9 +36014,10 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 ) -> bool {
     // Fast path: identical hash-consed `TermId` carriers (hash-cons identity).
     // `Value::Node` carriers have no O(1) identity → structural decompose.
-    if let (BindValue::Term(x), BindValue::Term(y)) =
-        (actual_effects.as_bind_value(), expected_effects.as_bind_value())
-    {
+    if let (BindValue::Term(x), BindValue::Term(y)) = (
+        actual_effects.as_bind_value(),
+        expected_effects.as_bind_value(),
+    ) {
         if x == y {
             return true;
         }
@@ -33586,16 +36025,14 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
 
     // WI-339 F13: decompose returns None on malformed input — propagate
     // as a sub rejection.
-    let (a_present, a_tails, a_absent) =
-        match decompose_effect_row(kb, subst, actual_effects) {
-            Some(p) => p,
-            None => return false,
-        };
-    let (e_present, e_tails, e_absent) =
-        match decompose_effect_row(kb, subst, expected_effects) {
-            Some(p) => p,
-            None => return false,
-        };
+    let (a_present, a_tails, a_absent) = match decompose_effect_row(kb, subst, actual_effects) {
+        Some(p) => p,
+        None => return false,
+    };
+    let (e_present, e_tails, e_absent) = match decompose_effect_row(kb, subst, expected_effects) {
+        Some(p) => p,
+        None => return false,
+    };
 
     // WI-328: register `- e` absents as `lacks` on each side's tail before
     // the tail-binding step (same as the unify path). Directional subtyping
@@ -33628,10 +36065,15 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
         let a_inner = row_inner_value(kb, subst, actual_effects);
         let e_inner = row_inner_value(kb, subst, expected_effects);
         return multi_tail_rows_compat(
-            kb, subst, a_inner, e_inner,
+            kb,
+            subst,
+            a_inner,
+            e_inner,
             (&a_present, &a_tails, &a_absent),
             (&e_present, &e_tails, &e_absent),
-            &only_a, &only_e, true,
+            &only_a,
+            &only_e,
+            true,
         );
     }
     let a_tail = a_tails.first().copied();
@@ -33676,8 +36118,7 @@ fn subtype_effect_rows<EA: TermView, EB: TermView>(
                     return true;
                 }
                 let fresh_var = fresh_row_tail_var(kb);
-                let mut all_extras: Vec<Value> =
-                    Vec::with_capacity(only_a.len() + only_e.len());
+                let mut all_extras: Vec<Value> = Vec::with_capacity(only_a.len() + only_e.len());
                 all_extras.extend(only_a.iter().cloned());
                 all_extras.extend(only_e.iter().cloned());
                 return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
@@ -33786,213 +36227,216 @@ fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> 
 /// in the [`GateSpec`](crate::kb::resolve) style — here they are the type's
 /// constructors, not merely named values of it.
 mod tuple_align {
-/// WI-799: how many of `a`'s components `b` must account for — one of the two
-/// axes of [`TupleAlign`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum TupleWidth {
-    /// WIDTH SUBTYPING. `b`'s components need only be a name-keyed SUBSET of
-    /// `a`'s, dropped from ANYWHERE (WI-804) — a consumer of a `(a, c)`-typed
-    /// value asks for `.a` and `.c`, and an `(a, b, c)` value answers both
-    /// wherever they sit. Correct for a `<:` between DATA tuples, and for nothing
-    /// else here: it is a SUBTYPING allowance, so a relation that means EQUALITY
-    /// must not take it (that was the [`TupleAlign::EQUALITY`] defect).
-    Subset,
-    /// EQUAL ARITY. Forced for a parameter list — eval passes exactly as many
-    /// arguments as the call site's type says, so a narrower list is not a
-    /// supertype (WI-782) — and correct for an equality relation, where admitting
-    /// a subset in one argument position makes the relation ASYMMETRIC.
-    Exact,
-}
-
-/// WI-803: may the correspondence REORDER, or must each match come after the
-/// previous one — the third axis of [`TupleAlign`].
-///
-/// This axis did not exist until WI-803 because it had exactly one live value:
-/// every discipline preserved order, so naming it would have bought surface area
-/// and no type-safety. WI-804 wrote the DATA arm's order requirement down as an
-/// explicit INTERIM for precisely this moment.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum TupleOrder {
-    /// POSITION IS LOAD-BEARING: each `b` name must occur in `a` AFTER the
-    /// previous one. A component may be dropped from anywhere (that preserves the
-    /// order of those that remain), but a PERMUTATION is refused. Forced for a
-    /// parameter list, which is applied positionally, and for an equality, whose
-    /// operands are two tuple IDENTITIES and where order is part of identity.
-    Preserved,
-    /// NAME-KEYED, order immaterial: each `b` name is looked up in `a` from the
-    /// start. Correct for a data tuple under `<:` — the consumer of an
-    /// `(a: TA, c: TC)`-typed value asks for `.a` and `.c`, and the value answers
-    /// both wherever the components sit. Order belongs to a tuple's IDENTITY;
-    /// `<:` is a different relation and carrying the rule across is the mistake
-    /// WI-788 made and WI-804 named.
-    ///
-    /// FIRST match, not any match: that is what makes this walk agree with the
-    /// READER it licenses. `TupleComponents::by_label` (eval/value.rs) scans a
-    /// value's components and returns the FIRST with the wanted name, so under a
-    /// resume-after-previous scan the two picked DIFFERENT components on a
-    /// duplicate label — the tuple conformed on the second `a` while `t.a` read
-    /// the first (WI-805). Looking up from the start is the reader's own rule.
-    ///
-    /// WI-805 has since refused a duplicate label at every producer that keys a tuple
-    /// on labels the author WROTE — the literal and the tuple type at parse
-    /// (`check_label_unique`), and a `...rest: R` capture's leftover named
-    /// arguments in `normalize_variadic_capture` — so no such tuple can put the two
-    /// walks in that position again. The discipline is still load-bearing, not
-    /// vestigial: labels reaching here may be DERIVED rather than written (a `Concat`
-    /// / `Project` schema), and the reader compares SHORT names, so two distinct
-    /// qualified symbols sharing a last segment collide for it whether or not they
-    /// collide here.
-    ///
-    /// A variadic capture is NOT one of the derived cases, and an earlier draft of
-    /// this comment listing it as one is what let that producer ship unguarded: its
-    /// labels are written in source, as a call's named arguments, and only become a
-    /// tuple in the typer.
-    ///
-    /// What is shared is the FIRST-MATCH discipline, not the whole rule: this walk
-    /// compares names by `Symbol` IDENTITY while the reader compares SHORT names
-    /// (a value's component symbol may carry a qualified path). That difference
-    /// predates WI-803 and is not introduced here, but it does bound the claim —
-    /// the two agree on WHICH occurrence of a repeated name to take, not
-    /// necessarily on whether two spellings name the same component.
-    Free,
-}
-
-/// WI-799: what the two lists' NAMES must satisfy for the alignment to be
-/// admissible at all — the second axis of [`TupleAlign`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum TupleNames {
-    /// The names must agree at each slot they are aligned at. This is what keeps
-    /// `(a: Int64)` and `(_1: Int64)` apart: a component's name IS its access path
-    /// — `t.x` reads `Value::Tuple.named`, `t._N` reads `.pos`, and a tuple has
-    /// exactly one of those populated — so relating them would license a read with
-    /// no value behind it (WI-775), and proposal 004 rule 4 makes them different
-    /// types.
-    Exact,
-    /// As `Exact`, OR one side carries the synthetic `_1.._n` convention, which
-    /// makes no claim about which slot is which (WI-442). That escape is what lets
-    /// a named-binder callback `(acc: Acc, x: Elem)` accept a multi-param op's
-    /// eta arrow `(_1, _2)`.
-    ///
-    /// Legitimate ONLY for a parameter list. Granting it to a data tuple would
-    /// relate `(a: Int64, b: String)` to `(Int64, String)`, which proposal 004
-    /// rule 4 makes a different type. This is the axis that is easy to miss —
-    /// see [`TupleAlign`] on the miscount that cost.
-    ExactOrSynthetic,
-}
-
-/// WI-775/WI-799: the alignment discipline [`align_named_tuple_slots`] applies
-/// between two named-tuple field lists. The two positions look identical as TYPES
-/// — WI-766 made an arrow's parameter list and a tuple type literally the same
-/// surface — but they are not interchangeable, so the caller states which one it
-/// is.
-///
-/// WI-799 made this a POLICY over two independent axes rather than an enum over
-/// two SITES. The enum named where it was called from (`ByName` / `ParamList`),
-/// which had gone wrong in three ways:
-///
-///  * `ByName` no longer aligned by name — WI-788 made it a slot-wise walk, and
-///    its own doc conceded the name was "about names PARTICIPATING, not about the
-///    correspondence being built from them". A reader reaching for "align by name"
-///    got positional alignment.
-///  * With the axes fused, how many there were was a matter of OPINION: WI-788
-///    shipped a comment asserting the modes differed in EXACTLY ONE way (width),
-///    missing the synthetic escape entirely. As data, the axes are countable.
-///  * A site enum can only express the disciplines that have a SITE. "Exact width,
-///    names exact" is a real third discipline that no site was named for, so the
-///    equality relation took the width-subtyping mode and was silently asymmetric
-///    — see [`TupleAlign::EQUALITY`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct TupleAlign {
-    width: TupleWidth,
-    names: TupleNames,
-    order: TupleOrder,
-}
-
-impl TupleAlign {
-    /// A DATA tuple under `<:`. FULLY NAME-KEYED: width from anywhere, names
-    /// exact, order immaterial.
-    ///
-    /// WI-788 made the correspondence POSITIONAL, because the order-insensitive
-    /// lookup it replaced admitted a PERMUTATION that the value representation
-    /// never performs: the carrier keeps SOURCE order (WI-786) and a destructuring
-    /// binder list read it POSITIONALLY (WI-785), so binder `i` received the
-    /// value's `i`-th component while the typer had given it the type of the
-    /// DECLARED `i`-th field — an operation declared `-> Int64` returned a
-    /// `String` on a clean load.
-    ///
-    /// WI-803 restored the name-keying by fixing THE READER instead. The typer
-    /// now resolves each binder's LABEL from the expected type and the matcher
-    /// fetches that component by name (`Pattern::Tuple.labels`,
-    /// `match_tuple_pattern`), so a permuted value hands each binder the
-    /// component the typer typed it from. Order is a tuple's IDENTITY, never a
-    /// term of `<:` — see [`TupleOrder`].
-    pub(super) const DATA: Self =
-        Self { width: TupleWidth::Subset, names: TupleNames::Exact, order: TupleOrder::Free };
-
-    /// An ARROW'S PARAMETER LIST. Equal arity, with the synthetic escape.
-    ///
-    /// Sound here and only here, and forced here: a parameter list is APPLIED
-    /// positionally, so slot `i` is slot `i` and there are exactly as many slots
-    /// as the call site passes arguments.
-    ///
-    /// WI-791: selected by the arrow's own `arity` child, never by the param
-    /// slot's shape, so it is reached ONLY for a real parameter list (arity ≠ 1).
-    /// A lone tuple-typed parameter is a DATA tuple and takes the [`Self::DATA`]
-    /// road with everything else at arity one.
-    ///
-    /// WI-782: no by-name rung, which is why a permutation is not admitted by
-    /// matching names up — the runtime performs no such reordering, so
-    /// `(y: Bool, x: Int64)` is compared slot-for-slot against
-    /// `(x: Int64, y: Bool)`, where matching by name accepted it and let an
-    /// operation declared `-> Int64` evaluate to `Bool(true)` with no trap.
-    ///
-    /// WI-803: order [`TupleOrder::Preserved`], and here it is not an interim but
-    /// the rule — a parameter list is applied by POSITION, so slot `i` is slot `i`
-    /// and no by-label reader can be substituted for the one eval performs.
-    pub(super) const PARAM_LIST: Self = Self {
-        width: TupleWidth::Exact,
-        names: TupleNames::ExactOrSynthetic,
-        order: TupleOrder::Preserved,
-    };
-
-    /// EQUALITY between two data tuples — [`unify_named_tuple`]'s discipline, and
-    /// the one the two-variant enum could not express (WI-799).
-    ///
-    /// Unification is SYMMETRIC by nature and is driven bidirectionally by the
-    /// resolver, but it was taking the width-SUBTYPING mode, so it inherited a
-    /// direction: `unify((x: A, y: B), (x: A))` succeeded while the same two
-    /// arguments swapped failed. Width is an allowance for a consumer that reads
-    /// only what it asked for; an equality has no consumer to be lenient toward,
-    /// and answering differently depending on which side a caller happened to pass
-    /// first is a defect however the relation is spelled.
-    ///
-    /// Identical to [`Self::PARAM_LIST`] on width and to [`Self::DATA`] on names —
-    /// which is exactly why the axes have to be data rather than a site enum. It
-    /// is neither site.
-    ///
-    /// WI-803: order [`TupleOrder::Preserved`], and this is the axis on which it
-    /// now parts company with [`Self::DATA`]. Unification asks whether two tuples
-    /// are the SAME TYPE, and §4.5 makes component order part of a tuple's
-    /// identity — so `(a: Int64, b: String)` and `(b: String, a: Int64)` must not
-    /// unify, even though each conforms to the other under `<:`.
-    pub(super) const EQUALITY: Self = Self {
-        width: TupleWidth::Exact,
-        names: TupleNames::Exact,
-        order: TupleOrder::Preserved,
-    };
-
-    pub(super) fn width(self) -> TupleWidth {
-        self.width
+    /// WI-799: how many of `a`'s components `b` must account for — one of the two
+    /// axes of [`TupleAlign`].
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) enum TupleWidth {
+        /// WIDTH SUBTYPING. `b`'s components need only be a name-keyed SUBSET of
+        /// `a`'s, dropped from ANYWHERE (WI-804) — a consumer of a `(a, c)`-typed
+        /// value asks for `.a` and `.c`, and an `(a, b, c)` value answers both
+        /// wherever they sit. Correct for a `<:` between DATA tuples, and for nothing
+        /// else here: it is a SUBTYPING allowance, so a relation that means EQUALITY
+        /// must not take it (that was the [`TupleAlign::EQUALITY`] defect).
+        Subset,
+        /// EQUAL ARITY. Forced for a parameter list — eval passes exactly as many
+        /// arguments as the call site's type says, so a narrower list is not a
+        /// supertype (WI-782) — and correct for an equality relation, where admitting
+        /// a subset in one argument position makes the relation ASYMMETRIC.
+        Exact,
     }
 
-    pub(super) fn names(self) -> TupleNames {
-        self.names
+    /// WI-803: may the correspondence REORDER, or must each match come after the
+    /// previous one — the third axis of [`TupleAlign`].
+    ///
+    /// This axis did not exist until WI-803 because it had exactly one live value:
+    /// every discipline preserved order, so naming it would have bought surface area
+    /// and no type-safety. WI-804 wrote the DATA arm's order requirement down as an
+    /// explicit INTERIM for precisely this moment.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) enum TupleOrder {
+        /// POSITION IS LOAD-BEARING: each `b` name must occur in `a` AFTER the
+        /// previous one. A component may be dropped from anywhere (that preserves the
+        /// order of those that remain), but a PERMUTATION is refused. Forced for a
+        /// parameter list, which is applied positionally, and for an equality, whose
+        /// operands are two tuple IDENTITIES and where order is part of identity.
+        Preserved,
+        /// NAME-KEYED, order immaterial: each `b` name is looked up in `a` from the
+        /// start. Correct for a data tuple under `<:` — the consumer of an
+        /// `(a: TA, c: TC)`-typed value asks for `.a` and `.c`, and the value answers
+        /// both wherever the components sit. Order belongs to a tuple's IDENTITY;
+        /// `<:` is a different relation and carrying the rule across is the mistake
+        /// WI-788 made and WI-804 named.
+        ///
+        /// FIRST match, not any match: that is what makes this walk agree with the
+        /// READER it licenses. `TupleComponents::by_label` (eval/value.rs) scans a
+        /// value's components and returns the FIRST with the wanted name, so under a
+        /// resume-after-previous scan the two picked DIFFERENT components on a
+        /// duplicate label — the tuple conformed on the second `a` while `t.a` read
+        /// the first (WI-805). Looking up from the start is the reader's own rule.
+        ///
+        /// WI-805 has since refused a duplicate label at every producer that keys a tuple
+        /// on labels the author WROTE — the literal and the tuple type at parse
+        /// (`check_label_unique`), and a `...rest: R` capture's leftover named
+        /// arguments in `normalize_variadic_capture` — so no such tuple can put the two
+        /// walks in that position again. The discipline is still load-bearing, not
+        /// vestigial: labels reaching here may be DERIVED rather than written (a `Concat`
+        /// / `Project` schema), and the reader compares SHORT names, so two distinct
+        /// qualified symbols sharing a last segment collide for it whether or not they
+        /// collide here.
+        ///
+        /// A variadic capture is NOT one of the derived cases, and an earlier draft of
+        /// this comment listing it as one is what let that producer ship unguarded: its
+        /// labels are written in source, as a call's named arguments, and only become a
+        /// tuple in the typer.
+        ///
+        /// What is shared is the FIRST-MATCH discipline, not the whole rule: this walk
+        /// compares names by `Symbol` IDENTITY while the reader compares SHORT names
+        /// (a value's component symbol may carry a qualified path). That difference
+        /// predates WI-803 and is not introduced here, but it does bound the claim —
+        /// the two agree on WHICH occurrence of a repeated name to take, not
+        /// necessarily on whether two spellings name the same component.
+        Free,
     }
 
-    pub(super) fn order(self) -> TupleOrder {
-        self.order
+    /// WI-799: what the two lists' NAMES must satisfy for the alignment to be
+    /// admissible at all — the second axis of [`TupleAlign`].
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) enum TupleNames {
+        /// The names must agree at each slot they are aligned at. This is what keeps
+        /// `(a: Int64)` and `(_1: Int64)` apart: a component's name IS its access path
+        /// — `t.x` reads `Value::Tuple.named`, `t._N` reads `.pos`, and a tuple has
+        /// exactly one of those populated — so relating them would license a read with
+        /// no value behind it (WI-775), and proposal 004 rule 4 makes them different
+        /// types.
+        Exact,
+        /// As `Exact`, OR one side carries the synthetic `_1.._n` convention, which
+        /// makes no claim about which slot is which (WI-442). That escape is what lets
+        /// a named-binder callback `(acc: Acc, x: Elem)` accept a multi-param op's
+        /// eta arrow `(_1, _2)`.
+        ///
+        /// Legitimate ONLY for a parameter list. Granting it to a data tuple would
+        /// relate `(a: Int64, b: String)` to `(Int64, String)`, which proposal 004
+        /// rule 4 makes a different type. This is the axis that is easy to miss —
+        /// see [`TupleAlign`] on the miscount that cost.
+        ExactOrSynthetic,
     }
-}
+
+    /// WI-775/WI-799: the alignment discipline [`align_named_tuple_slots`] applies
+    /// between two named-tuple field lists. The two positions look identical as TYPES
+    /// — WI-766 made an arrow's parameter list and a tuple type literally the same
+    /// surface — but they are not interchangeable, so the caller states which one it
+    /// is.
+    ///
+    /// WI-799 made this a POLICY over two independent axes rather than an enum over
+    /// two SITES. The enum named where it was called from (`ByName` / `ParamList`),
+    /// which had gone wrong in three ways:
+    ///
+    ///  * `ByName` no longer aligned by name — WI-788 made it a slot-wise walk, and
+    ///    its own doc conceded the name was "about names PARTICIPATING, not about the
+    ///    correspondence being built from them". A reader reaching for "align by name"
+    ///    got positional alignment.
+    ///  * With the axes fused, how many there were was a matter of OPINION: WI-788
+    ///    shipped a comment asserting the modes differed in EXACTLY ONE way (width),
+    ///    missing the synthetic escape entirely. As data, the axes are countable.
+    ///  * A site enum can only express the disciplines that have a SITE. "Exact width,
+    ///    names exact" is a real third discipline that no site was named for, so the
+    ///    equality relation took the width-subtyping mode and was silently asymmetric
+    ///    — see [`TupleAlign::EQUALITY`].
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(super) struct TupleAlign {
+        width: TupleWidth,
+        names: TupleNames,
+        order: TupleOrder,
+    }
+
+    impl TupleAlign {
+        /// A DATA tuple under `<:`. FULLY NAME-KEYED: width from anywhere, names
+        /// exact, order immaterial.
+        ///
+        /// WI-788 made the correspondence POSITIONAL, because the order-insensitive
+        /// lookup it replaced admitted a PERMUTATION that the value representation
+        /// never performs: the carrier keeps SOURCE order (WI-786) and a destructuring
+        /// binder list read it POSITIONALLY (WI-785), so binder `i` received the
+        /// value's `i`-th component while the typer had given it the type of the
+        /// DECLARED `i`-th field — an operation declared `-> Int64` returned a
+        /// `String` on a clean load.
+        ///
+        /// WI-803 restored the name-keying by fixing THE READER instead. The typer
+        /// now resolves each binder's LABEL from the expected type and the matcher
+        /// fetches that component by name (`Pattern::Tuple.labels`,
+        /// `match_tuple_pattern`), so a permuted value hands each binder the
+        /// component the typer typed it from. Order is a tuple's IDENTITY, never a
+        /// term of `<:` — see [`TupleOrder`].
+        pub(super) const DATA: Self = Self {
+            width: TupleWidth::Subset,
+            names: TupleNames::Exact,
+            order: TupleOrder::Free,
+        };
+
+        /// An ARROW'S PARAMETER LIST. Equal arity, with the synthetic escape.
+        ///
+        /// Sound here and only here, and forced here: a parameter list is APPLIED
+        /// positionally, so slot `i` is slot `i` and there are exactly as many slots
+        /// as the call site passes arguments.
+        ///
+        /// WI-791: selected by the arrow's own `arity` child, never by the param
+        /// slot's shape, so it is reached ONLY for a real parameter list (arity ≠ 1).
+        /// A lone tuple-typed parameter is a DATA tuple and takes the [`Self::DATA`]
+        /// road with everything else at arity one.
+        ///
+        /// WI-782: no by-name rung, which is why a permutation is not admitted by
+        /// matching names up — the runtime performs no such reordering, so
+        /// `(y: Bool, x: Int64)` is compared slot-for-slot against
+        /// `(x: Int64, y: Bool)`, where matching by name accepted it and let an
+        /// operation declared `-> Int64` evaluate to `Bool(true)` with no trap.
+        ///
+        /// WI-803: order [`TupleOrder::Preserved`], and here it is not an interim but
+        /// the rule — a parameter list is applied by POSITION, so slot `i` is slot `i`
+        /// and no by-label reader can be substituted for the one eval performs.
+        pub(super) const PARAM_LIST: Self = Self {
+            width: TupleWidth::Exact,
+            names: TupleNames::ExactOrSynthetic,
+            order: TupleOrder::Preserved,
+        };
+
+        /// EQUALITY between two data tuples — [`unify_named_tuple`]'s discipline, and
+        /// the one the two-variant enum could not express (WI-799).
+        ///
+        /// Unification is SYMMETRIC by nature and is driven bidirectionally by the
+        /// resolver, but it was taking the width-SUBTYPING mode, so it inherited a
+        /// direction: `unify((x: A, y: B), (x: A))` succeeded while the same two
+        /// arguments swapped failed. Width is an allowance for a consumer that reads
+        /// only what it asked for; an equality has no consumer to be lenient toward,
+        /// and answering differently depending on which side a caller happened to pass
+        /// first is a defect however the relation is spelled.
+        ///
+        /// Identical to [`Self::PARAM_LIST`] on width and to [`Self::DATA`] on names —
+        /// which is exactly why the axes have to be data rather than a site enum. It
+        /// is neither site.
+        ///
+        /// WI-803: order [`TupleOrder::Preserved`], and this is the axis on which it
+        /// now parts company with [`Self::DATA`]. Unification asks whether two tuples
+        /// are the SAME TYPE, and §4.5 makes component order part of a tuple's
+        /// identity — so `(a: Int64, b: String)` and `(b: String, a: Int64)` must not
+        /// unify, even though each conforms to the other under `<:`.
+        pub(super) const EQUALITY: Self = Self {
+            width: TupleWidth::Exact,
+            names: TupleNames::Exact,
+            order: TupleOrder::Preserved,
+        };
+
+        pub(super) fn width(self) -> TupleWidth {
+            self.width
+        }
+
+        pub(super) fn names(self) -> TupleNames {
+            self.names
+        }
+
+        pub(super) fn order(self) -> TupleOrder {
+            self.order
+        }
+    }
 }
 
 use tuple_align::{TupleAlign, TupleNames, TupleOrder, TupleWidth};
@@ -34176,7 +36620,10 @@ fn aligned_pairs<'a>(
         "WI-800: an alignment has one slot per `b` component; a shorter `slots` would \
          zip-truncate and relate only a PREFIX, passing the rest vacuously",
     );
-    slots.iter().zip(b_fields.iter()).map(|(&slot, (_, b_ty))| (&a_fields[slot].1, b_ty))
+    slots
+        .iter()
+        .zip(b_fields.iter())
+        .map(|(&slot, (_, b_ty))| (&a_fields[slot].1, b_ty))
 }
 
 /// WI-342: the sole `named_tuple` unification, carrier-agnostic over [`TermView`]
@@ -34302,7 +36749,10 @@ fn unify_arrow_params<A: TermView, B: TermView>(
 /// the two param-list entry points cannot drift apart.
 fn both_named_tuples<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B) -> bool {
     matches!(
-        (type_dispatch_name_view(kb, a), type_dispatch_name_view(kb, b)),
+        (
+            type_dispatch_name_view(kb, a),
+            type_dispatch_name_view(kb, b)
+        ),
         (Some("named_tuple"), Some("named_tuple"))
     )
 }
@@ -34344,7 +36794,12 @@ fn both_named_tuples<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
 /// substitution (or snapshot before the call). Threading-through
 /// callers in this module rely on the early-return-on-false discipline
 /// and never re-use a failed subst.
-pub fn types_lesseq(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
+pub fn types_lesseq(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: TermId,
+    expected: TermId,
+) -> bool {
     types_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
 }
 
@@ -34363,16 +36818,19 @@ pub fn types_compatible<A: TermView, B: TermView>(
     expected: &B,
 ) -> bool {
     match (actual.as_bind_value(), expected.as_bind_value()) {
-        (BindValue::Term(a), BindValue::Term(e)) => {
-            types_compatible_term_dispatch(kb, subst, a, e)
-        }
+        (BindValue::Term(a), BindValue::Term(e)) => types_compatible_term_dispatch(kb, subst, a, e),
         _ => types_compatible_view_structural(kb, subst, actual, expected),
     }
 }
 
 /// The `TermId`-only subtype dispatch — byte-identical to the pre-P4-B2
 /// `types_compatible` body. Reached when both sides are hash-consed carriers.
-fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substitution, actual: TermId, expected: TermId) -> bool {
+fn types_compatible_term_dispatch(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: TermId,
+    expected: TermId,
+) -> bool {
     if actual == expected {
         return true;
     }
@@ -34431,12 +36889,11 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // ground-vs-ground, so a success commits no new bindings anyway. Termination:
             // `resolve_alias_shape` is `None` for a non-alias AND (WI-405) for a
             // non-well-founded recursive alias, so the recursion bottoms out.
-            for (shape_side, other, shape_is_actual) in [
-                (actual, expected, true),
-                (expected, actual, false),
-            ] {
-                if let Some(shape) =
-                    extract_sort_ref_sym(kb, &TermIdView(shape_side)).and_then(|s| resolve_alias_shape(kb, s))
+            for (shape_side, other, shape_is_actual) in
+                [(actual, expected, true), (expected, actual, false)]
+            {
+                if let Some(shape) = extract_sort_ref_sym(kb, &TermIdView(shape_side))
+                    .and_then(|s| resolve_alias_shape(kb, s))
                 {
                     let mut probe = subst.clone();
                     let ok = if shape_is_actual {
@@ -34474,8 +36931,8 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // `IntList` value conforms to its own definition. Without this, the
             // bare↔param arm below checks base-sort nominal compat ONLY, dropping the
             // alias's fixed bindings.
-            if let Some(shape) =
-                extract_sort_ref_sym(kb, &TermIdView(actual)).and_then(|s| resolve_alias_shape(kb, s))
+            if let Some(shape) = extract_sort_ref_sym(kb, &TermIdView(actual))
+                .and_then(|s| resolve_alias_shape(kb, s))
             {
                 return types_compatible(kb, subst, &TermIdView(shape), &TermIdView(expected));
             }
@@ -34486,7 +36943,10 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
             // hazard that confines the bare-spec accept to the bare↔bare arm
             // above). WI-361: `parameterized_base_sym` reads the base sort
             // form-agnostically (deep `base` field or the term-backed functor).
-            match (extract_sort_ref_sym(kb, &TermIdView(actual)), parameterized_base_sym(kb, expected)) {
+            match (
+                extract_sort_ref_sym(kb, &TermIdView(actual)),
+                parameterized_base_sym(kb, expected),
+            ) {
                 (Some(a), Some(eb)) => {
                     sort_sym_compatible(kb, a, eb)
                         || bare_provider_binding_precise(kb, subst, a, &TermIdView(expected))
@@ -34496,12 +36956,15 @@ fn types_compatible_term_dispatch(kb: &mut KnowledgeBase, subst: &mut Substituti
         }
         (Some("parameterized"), Some("sort_ref")) => {
             // WI-381: mirror — resolve a structured alias on the bare (expected) side.
-            if let Some(shape) =
-                extract_sort_ref_sym(kb, &TermIdView(expected)).and_then(|s| resolve_alias_shape(kb, s))
+            if let Some(shape) = extract_sort_ref_sym(kb, &TermIdView(expected))
+                .and_then(|s| resolve_alias_shape(kb, s))
             {
                 return types_compatible(kb, subst, &TermIdView(actual), &TermIdView(shape));
             }
-            match (extract_sort_ref_sym(kb, &TermIdView(expected)), parameterized_base_sym(kb, actual)) {
+            match (
+                extract_sort_ref_sym(kb, &TermIdView(expected)),
+                parameterized_base_sym(kb, actual),
+            ) {
                 // WI-405 FACET A: a parameterized carrier `S[bindings]` — including a
                 // PARTIAL form such as a constructor result `S[A = ?_]` — conforms to a
                 // BARE provider spec it provides. `sort_provides_admissibly` is base-only,
@@ -34619,9 +37082,7 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         // computes, so the two directions agree.
         (Some("denoted"), Some("denoted")) => unify_denoted_view(kb, &a, &e),
         (Some("arrow"), Some("arrow")) => arrow_compatible_view(kb, subst, &a, &e),
-        (Some("effects_rows"), Some("effects_rows")) => {
-            subtype_effect_rows(kb, subst, &a, &e)
-        }
+        (Some("effects_rows"), Some("effects_rows")) => subtype_effect_rows(kb, subst, &a, &e),
         (Some("parameterized"), Some("parameterized")) => {
             parameterized_compatible_view(kb, subst, &a, &e)
         }
@@ -34645,7 +37106,9 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
             // relation stays carrier-symmetric (the Node-carrier path must resolve
             // aliases just as the term path does, or an alias compared against a
             // denoted-bearing parameterized type would drop its fixed bindings).
-            if let Some(shape) = sort_functor_of_view(kb, &a).and_then(|s| resolve_alias_shape(kb, s)) {
+            if let Some(shape) =
+                sort_functor_of_view(kb, &a).and_then(|s| resolve_alias_shape(kb, s))
+            {
                 return types_compatible(kb, subst, &TermIdView(shape), &e);
             }
             match (sort_functor_of_view(kb, &a), sort_functor_of_view(kb, &e)) {
@@ -34660,7 +37123,9 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         }
         (Some("parameterized"), Some("sort_ref")) => {
             // WI-381: mirror — resolve a structured alias on the bare (expected) side.
-            if let Some(shape) = sort_functor_of_view(kb, &e).and_then(|s| resolve_alias_shape(kb, s)) {
+            if let Some(shape) =
+                sort_functor_of_view(kb, &e).and_then(|s| resolve_alias_shape(kb, s))
+            {
                 return types_compatible(kb, subst, &a, &TermIdView(shape));
             }
             match (sort_functor_of_view(kb, &e), sort_functor_of_view(kb, &a)) {
@@ -34709,7 +37174,9 @@ fn arrow_compatible_view<A: TermView, B: TermView>(
     // neither a subtype nor a supertype, it is uncallable in the other's place.
     // (Width subtyping over a parameter list was already refused by WI-782; this
     // is the same statement made where the count is actually recorded.)
-    let Some(arity) = agreed_arrow_arity(kb, actual, expected) else { return false };
+    let Some(arity) = agreed_arrow_arity(kb, actual, expected) else {
+        return false;
+    };
 
     // Contravariant param: expected.param <: actual.param.
     match (
@@ -34792,9 +37259,13 @@ fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Varianc
 /// declaration also shows up under this functor, but its arg values are the field
 /// metadata type (`Symbol`), so it never matches a real `(sort, param)` lookup.
 fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param: Symbol) -> bool {
-    let Some(functor) = kb.try_resolve_symbol(fact_qn) else { return false };
+    let Some(functor) = kb.try_resolve_symbol(fact_qn) else {
+        return false;
+    };
     kb.rules_by_functor_iter(functor).any(|rid| {
-        let Some(named) = kb.fact_head_named_args(rid) else { return false };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            return false;
+        };
         let sort_ok = get_named_arg(kb, &named, "sort")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
             .is_some_and(|s| same_sort_canonical(kb, s, sort));
@@ -34837,7 +37308,8 @@ fn check_binding_by_variance<A: TermView, E: TermView>(
         Variance::Contravariant => types_compatible(kb, subst, ev, av),
         Variance::Invariant => {
             let mut probe = subst.clone();
-            if types_compatible(kb, &mut probe, av, ev) && types_compatible(kb, &mut probe, ev, av) {
+            if types_compatible(kb, &mut probe, av, ev) && types_compatible(kb, &mut probe, ev, av)
+            {
                 *subst = probe;
                 true
             } else {
@@ -34889,7 +37361,12 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     };
     let actual_base_ty = kb.alloc(Term::Ref(actual_base));
     let expected_base_ty = kb.alloc(Term::Ref(expected_base));
-    if !types_compatible(kb, subst, &TermIdView(actual_base_ty), &TermIdView(expected_base_ty)) {
+    if !types_compatible(
+        kb,
+        subst,
+        &TermIdView(actual_base_ty),
+        &TermIdView(expected_base_ty),
+    ) {
         return false;
     }
 
@@ -34925,9 +37402,15 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                 kb.qualified_name_of(actual_base),
                 kb.local_name_of(*ap)
             );
-            let Some(qsym) = kb.try_resolve_symbol(&q) else { continue };
-            let Some(target) = resolve_sort_alias(kb, qsym) else { continue };
-            let Term::Var(Var::Global(vid)) = kb.get_term(target) else { continue };
+            let Some(qsym) = kb.try_resolve_symbol(&q) else {
+                continue;
+            };
+            let Some(target) = resolve_sort_alias(kb, qsym) else {
+                continue;
+            };
+            let Term::Var(Var::Global(vid)) = kb.get_term(target) else {
+                continue;
+            };
             let vid = *vid;
             if subst.resolve_as_value(vid).is_none() {
                 subst.bind_value(kb, vid, av.clone());
@@ -35025,7 +37508,14 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                         // strictly additive: the resolved form is a fallback that can only
                         // ACCEPT more, never reject what the raw value already accepted.
                         let mut probe = subst.clone();
-                        if check_binding_by_variance(kb, &mut probe, expected_base, *param, &TermIdView(pv), ev) {
+                        if check_binding_by_variance(
+                            kb,
+                            &mut probe,
+                            expected_base,
+                            *param,
+                            &TermIdView(pv),
+                            ev,
+                        ) {
                             *subst = probe;
                             true
                         } else {
@@ -35037,7 +37527,14 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                             // spuriously fail the binding).
                             let pvr = surface_node_binding_to_term(kb, subst, pvr);
                             pvr != pv
-                                && check_binding_by_variance(kb, subst, expected_base, *param, &TermIdView(pvr), ev)
+                                && check_binding_by_variance(
+                                    kb,
+                                    subst,
+                                    expected_base,
+                                    *param,
+                                    &TermIdView(pvr),
+                                    ev,
+                                )
                         }
                     }
                     None => false,
@@ -35248,7 +37745,10 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
         // checking `a <: b` doesn't influence the `b <: a` check.
         let mut subst_ab = Substitution::new();
         let mut subst_ba = Substitution::new();
-        match (types_compatible(kb, &mut subst_ab, &a, &b), types_compatible(kb, &mut subst_ba, &b, &a)) {
+        match (
+            types_compatible(kb, &mut subst_ab, &a, &b),
+            types_compatible(kb, &mut subst_ba, &b, &a),
+        ) {
             // `a <: b` only: `b` is the supertype.
             (true, false) => return Some(b),
             // `b <: a` only: `a` is the supertype.
@@ -35708,15 +38208,13 @@ fn compute_branch_join_type(
         }
         // No expected type and no common supertype — the top-less lattice
         // has no join, so the branch types genuinely clash.
-        (Some((bt, span)), None) => {
-            Err(TypeError::TypeMismatch {
-                site: TypeError::here(),
-                span,
-                context: branch_ctx,
-                expected: acc.clone(),
-                actual: bt.clone(),
-            })
-        }
+        (Some((bt, span)), None) => Err(TypeError::TypeMismatch {
+            site: TypeError::here(),
+            span,
+            context: branch_ctx,
+            expected: acc.clone(),
+            actual: bt.clone(),
+        }),
     }
 }
 
@@ -35834,8 +38332,10 @@ fn bare_provider_binding_precise<E: TermView>(
     actual_sym: Symbol,
     expected: &E,
 ) -> bool {
-    let TypeExtractor::Parameterized { base: expected_base, bindings: expected_bindings } =
-        extract_type(kb, expected)
+    let TypeExtractor::Parameterized {
+        base: expected_base,
+        bindings: expected_bindings,
+    } = extract_type(kb, expected)
     else {
         return false;
     };
@@ -35846,7 +38346,9 @@ fn bare_provider_binding_precise<E: TermView>(
         }
         // Entity → parent sort. The chain is acyclic: `strict_parent_sort` is
         // the STRICT parent, so §6.3's eponymous self-edge never appears here.
-        let Some(parent_sym) = kb.strict_parent_sort(carrier) else { return false };
+        let Some(parent_sym) = kb.strict_parent_sort(carrier) else {
+            return false;
+        };
         carrier = parent_sym;
     };
     let mut probe = subst.clone();
@@ -35941,11 +38443,12 @@ fn abstracting_return_error(
         let body_fields = named_tuple_fields(kb, body_ty);
         let ret_fields = named_tuple_fields(kb, ret_ty);
         // WI-775: a RETURN type is a data tuple — align by NAME.
-        return align_named_tuple_slots(kb, &body_fields, &ret_fields, TupleAlign::DATA)
-            .and_then(|slots| {
+        return align_named_tuple_slots(kb, &body_fields, &ret_fields, TupleAlign::DATA).and_then(
+            |slots| {
                 aligned_pairs(&slots, &body_fields, &ret_fields)
                     .find_map(|(bc, rc)| abstracting_return_error(kb, bc, rc, op_sym))
-            });
+            },
+        );
     }
 
     let body_sort = sort_functor_of_view(kb, body_ty)?;
@@ -35979,7 +38482,11 @@ fn abstracting_return_error(
         return None;
     }
     let ret_name = kb.qualified_name_of(ret_sort).to_owned();
-    let members = unbound.iter().map(|m| format!("'{m}'")).collect::<Vec<_>>().join(", ");
+    let members = unbound
+        .iter()
+        .map(|m| format!("'{m}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     Some(TypeError::Other {
         site: TypeError::here(),
         span: None,
@@ -36086,7 +38593,11 @@ fn branch_leaf_abstracting_return_error(
     const MAX_LEAF_HOPS: usize = 100_000;
     while let Some((node, scope, path)) = stack.pop() {
         match node.as_expr() {
-            Some(Expr::If { then_branch, else_branch, .. }) => {
+            Some(Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            }) => {
                 stack.push((Rc::clone(then_branch), Rc::clone(&scope), path.clone()));
                 stack.push((Rc::clone(else_branch), Rc::clone(&scope), path));
             }
@@ -36095,7 +38606,12 @@ fn branch_leaf_abstracting_return_error(
                     stack.push((Rc::clone(&b.body), Rc::clone(&scope), path.clone()));
                 }
             }
-            Some(Expr::Let { pattern, value, body, .. }) => {
+            Some(Expr::Let {
+                pattern,
+                value,
+                body,
+                ..
+            }) => {
                 // Record each binding the pattern introduces (the value resolves in
                 // the scope BEFORE this let), then descend into the BODY only — a let
                 // value is not itself a tail position; it escapes solely via a
@@ -36118,9 +38634,9 @@ fn branch_leaf_abstracting_return_error(
             // component node STRUCTURALLY and chase it (so `(concreteProvider, …)`
             // sees the element's own stamped type, and an input-rooted element
             // `(param, …)` short-circuits on `same_sort_canonical`).
-            Some(Expr::TupleLit { .. } | Expr::Constructor { .. } | Expr::ConstructorWithin { .. })
-                if !path.is_empty() =>
-            {
+            Some(
+                Expr::TupleLit { .. } | Expr::Constructor { .. } | Expr::ConstructorWithin { .. },
+            ) if !path.is_empty() => {
                 if let Some(child) = project_node_component(kb, &node, &path[0]) {
                     stack.push((child, scope, path[1..].to_vec()));
                 } else if let Some(e) = gate_component_type(kb, &node, &path, ret_ty, op_sym) {
@@ -36218,7 +38734,12 @@ impl LeafScope {
         loop {
             match cur.as_ref() {
                 LeafScope::Empty => return None,
-                LeafScope::Bind { name: n, base, path, parent } => {
+                LeafScope::Bind {
+                    name: n,
+                    base,
+                    path,
+                    parent,
+                } => {
                     if same_label(kb, *n, name) {
                         return Some((Rc::clone(base), path.clone(), Rc::clone(parent)));
                     }
@@ -36261,7 +38782,11 @@ fn destructure_bindings(
                 destructure_bindings(sub, &p, out);
             }
         }
-        Some(Pattern::Constructor { pos_args, named_args, .. }) => {
+        Some(Pattern::Constructor {
+            pos_args,
+            named_args,
+            ..
+        }) => {
             for (i, sub) in pos_args.iter().enumerate() {
                 let mut p = prefix.to_vec();
                 p.push(LeafSelector::Pos(i));
@@ -36295,10 +38820,18 @@ fn project_node_component(
                 .find(|(k, _)| same_label(kb, *k, *s))
                 .map(|(_, v)| Rc::clone(v)),
         },
-        Expr::Constructor { name, pos_args, named_args, .. }
-        | Expr::ConstructorWithin { name, pos_args, named_args, .. } => {
-            project_constructor_arg(kb, *name, pos_args, named_args, sel)
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
         }
+        | Expr::ConstructorWithin {
+            name,
+            pos_args,
+            named_args,
+            ..
+        } => project_constructor_arg(kb, *name, pos_args, named_args, sel),
         _ => None,
     }
 }
@@ -36548,7 +39081,10 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// `Rc` bump. Shares the `requires_tree` cache's lifetime exactly — both are cleared
 /// together by `invalidate_requires_chain_cache` whenever `SortRequiresInfo` changes,
 /// so the flattened chain can never outlive the tree it was flattened from.
-pub fn direct_requires_chain_rc(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<RequiresEntry>> {
+pub fn direct_requires_chain_rc(
+    kb: &mut KnowledgeBase,
+    sort_sym: Symbol,
+) -> Rc<Vec<RequiresEntry>> {
     if let Some(cached) = kb.requires_chain_cache.borrow().get(&sort_sym) {
         return cached.clone();
     }
@@ -36621,7 +39157,9 @@ impl ProviderDictChain {
             .iter()
             .map(|owners| {
                 owners.is_empty()
-                    || owners.iter().any(|s| kb.canonical_sort_sym(*s) == goal_canon)
+                    || owners
+                        .iter()
+                        .any(|s| kb.canonical_sort_sym(*s) == goal_canon)
             })
             .collect()
     }
@@ -36663,7 +39201,9 @@ fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionCo
         // applies the WI-511 canon and yields a `Ref` for a constructor owner, which a
         // shape test would silently drop. The sibling reader `check_provider_requires`
         // decodes the same field the same way.
-        let Some(owner) = super::load::sort_ref_functor(kb, sort_ref) else { continue };
+        let Some(owner) = super::load::sort_ref_functor(kb, sort_ref) else {
+            continue;
+        };
         if !same_sort_canonical(kb, owner, sort_sym) {
             continue;
         }
@@ -36673,7 +39213,9 @@ fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionCo
         ) else {
             continue;
         };
-        let Some(provided_base) = spec_base_functor(kb, &provided) else { continue };
+        let Some(provided_base) = spec_base_functor(kb, &provided) else {
+            continue;
+        };
         // The clause index is what separates two provisions of one spec at one
         // application; without it they merge and their conditions read as a conjunction.
         let clause = super::op_info::head_field_term(kb, head, "clause")
@@ -36722,11 +39264,13 @@ fn provider_dict_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<ProviderD
     let built = if conditional.is_empty() {
         // The overwhelmingly common carrier: the SAME `Rc`, so nothing is copied and
         // nothing downstream can observe that this function ran at all.
-        ProviderDictChain { entries: base, conditions_for: Vec::new() }
+        ProviderDictChain {
+            entries: base,
+            conditions_for: Vec::new(),
+        }
     } else {
         let mut entries: Vec<RequiresEntry> = (*base).clone();
-        let mut conditions_for: Vec<SmallVec<[Symbol; 2]>> =
-            vec![SmallVec::new(); entries.len()];
+        let mut conditions_for: Vec<SmallVec<[Symbol; 2]>> = vec![SmallVec::new(); entries.len()];
         for prov in &conditional {
             for spec in &prov.conditions {
                 // Loud, not a skip: the loader refuses a condition whose spec has no
@@ -36742,7 +39286,10 @@ fn provider_dict_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<ProviderD
                     );
                     continue;
                 };
-                let entry = RequiresEntry { required_sort, spec: spec.clone() };
+                let entry = RequiresEntry {
+                    required_sort,
+                    spec: spec.clone(),
+                };
                 // Dedup against everything already placed — a sort-level `requires` AND
                 // a sibling provision's identical condition are both the same slot.
                 // STRUCTURALLY (`views_structurally_equal`, WI-486's single owner), NOT
@@ -36773,7 +39320,10 @@ fn provider_dict_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<ProviderD
                 }
             }
         }
-        ProviderDictChain { entries: Rc::new(entries), conditions_for }
+        ProviderDictChain {
+            entries: Rc::new(entries),
+            conditions_for,
+        }
     };
     let rc = Rc::new(built);
     kb.provider_dict_chain_cache
@@ -36846,7 +39396,10 @@ impl DictChain {
     /// other list; `emit_tree_as_projection` takes the chain now, which is what closed
     /// the last of the three naming paths.
     pub fn unnamed(entries: Vec<RequiresEntry>) -> Self {
-        DictChain { owner: None, entries: Rc::new(entries) }
+        DictChain {
+            owner: None,
+            entries: Rc::new(entries),
+        }
     }
 
     pub fn entries(&self) -> &[RequiresEntry] {
@@ -36955,7 +39508,9 @@ fn synth_req_names_of(kb: &mut KnowledgeBase, parent_sort: Symbol) -> Rc<Vec<Sym
         out.push(kb.intern(&name));
     }
     let rc = Rc::new(out);
-    kb.synth_req_names_cache.borrow_mut().insert(parent_sort, rc.clone());
+    kb.synth_req_names_cache
+        .borrow_mut()
+        .insert(parent_sort, rc.clone());
     rc
 }
 
@@ -37054,11 +39609,21 @@ pub fn dict_layout(kb: &mut KnowledgeBase, spec: Symbol, provider: Symbol) -> Di
     // be short by the provision conditions that half produces.
     if same_sort_canonical(kb, spec, provider) {
         let n = provider_dict_entries(kb, provider).len();
-        return DictLayout { spec, provider, spec_len: n, provider_len: 0 };
+        return DictLayout {
+            spec,
+            provider,
+            spec_len: n,
+            provider_len: 0,
+        };
     }
     let spec_len = direct_requires_chain_rc(kb, spec).len();
     let provider_len = provider_dict_entries(kb, provider).len();
-    DictLayout { spec, provider, spec_len, provider_len }
+    DictLayout {
+        spec,
+        provider,
+        spec_len,
+        provider_len,
+    }
 }
 
 impl DictLayout {
@@ -37166,7 +39731,9 @@ fn collect_requires_unsubstituted(
     result: &mut Vec<RequiresEntry>,
     visited: &mut Vec<Symbol>,
 ) {
-    if visited.contains(&sort_sym) { return; }
+    if visited.contains(&sort_sym) {
+        return;
+    }
     visited.push(sort_sym);
     for entry in direct_requires(kb, sort_sym) {
         result.push(entry.clone());
@@ -37218,7 +39785,10 @@ fn build_requires_tree(
         };
         let child_subst = build_child_subst_map(kb, &entry);
         let sub_requires = build_requires_tree(kb, raw.required_sort, &child_subst, visited);
-        nodes.push(RequiresNode { entry, sub_requires });
+        nodes.push(RequiresNode {
+            entry,
+            sub_requires,
+        });
     }
 
     visited.pop();
@@ -37242,7 +39812,11 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
                 _ => None,
             }
         }
-        ViewHead::Functor { functor, pos_arity: 0, named_arity: 0 } => functor,
+        ViewHead::Functor {
+            functor,
+            pos_arity: 0,
+            named_arity: 0,
+        } => functor,
         _ => None,
     }
 }
@@ -37254,7 +39828,9 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     };
 
     for rid in kb.rules_by_functor(requires_sym) {
-        if !kb.is_fact(rid) { continue; }
+        if !kb.is_fact(rid) {
+            continue;
+        }
         // WI-662: read the head carrier-agnostically. A value-fact SortRequiresInfo
         // (denoted-bearing spec, e.g. `requires Foo[E = Modify[c]]`) now flows
         // through — the spec rides as a `Value::Node` on `RequiresEntry.spec`
@@ -37270,7 +39846,11 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
         let Some(sort_ref_tid) = super::op_info::head_field_term(kb, head, "sort_ref") else {
             continue;
         };
-        let Term::Fn { functor: sr_functor, .. } = kb.get_term(sort_ref_tid) else {
+        let Term::Fn {
+            functor: sr_functor,
+            ..
+        } = kb.get_term(sort_ref_tid)
+        else {
             continue;
         };
         if !same_sort_canonical(kb, *sr_functor, sort_sym) {
@@ -37283,9 +39863,14 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
         let Some(spec_value) = super::op_info::head_field_value(kb, head, "spec") else {
             continue;
         };
-        let Some(base_functor) = spec_base_functor(kb, &spec_value) else { continue };
+        let Some(base_functor) = spec_base_functor(kb, &spec_value) else {
+            continue;
+        };
 
-        out.push(RequiresEntry { required_sort: base_functor, spec: spec_value });
+        out.push(RequiresEntry {
+            required_sort: base_functor,
+            spec: spec_value,
+        });
     }
     out
 }
@@ -37312,9 +39897,12 @@ fn substitute_in_spec(
         // `T = ParentT` type binding is re-scoped top-down) and preserve a denoted
         // `Value::Node` child verbatim (deferred parametric-effect handling). See
         // `substitute_spec_via_subst` for the per-call-subst twin.
-        Value::Entity { functor, pos, named } => {
-            let new_pos: Vec<Value> =
-                pos.iter().map(|v| substitute_in_spec(kb, v, map)).collect();
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => {
+            let new_pos: Vec<Value> = pos.iter().map(|v| substitute_in_spec(kb, v, map)).collect();
             let new_named: Vec<(Symbol, Value)> = named
                 .iter()
                 .map(|(k, v)| (*k, substitute_in_spec(kb, v, map)))
@@ -37340,15 +39928,17 @@ fn substitute_in_spec_term(
     }
     match kb.get_term(spec).clone() {
         Term::Ref(s) => map.get(&s).copied().unwrap_or(spec),
-        Term::Fn { functor, pos_args, named_args }
-            if pos_args.is_empty() && named_args.is_empty() =>
-        {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => {
             // Nullary Fn — treat as a name reference.
             map.get(&functor).copied().unwrap_or(spec)
         }
-        Term::Fn { .. } => kb.map_fn_children(spec, |kb, child| {
-            substitute_in_spec_term(kb, child, map)
-        }),
+        Term::Fn { .. } => {
+            kb.map_fn_children(spec, |kb, child| substitute_in_spec_term(kb, child, map))
+        }
         _ => spec,
     }
 }
@@ -37359,10 +39949,7 @@ fn substitute_in_spec_term(
 /// *qualified* param symbol (e.g. `anthill.prelude.Eq.T`) to its
 /// substituted value, so the child's raw spec (which uses qualified
 /// `Ref(Eq.T)`) translates one more level toward root scope.
-fn build_child_subst_map(
-    kb: &KnowledgeBase,
-    entry: &RequiresEntry,
-) -> HashMap<Symbol, TermId> {
+fn build_child_subst_map(kb: &KnowledgeBase, entry: &RequiresEntry) -> HashMap<Symbol, TermId> {
     let mut map = HashMap::new();
     let Some((base_sort, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
         return map;
@@ -37381,7 +39968,9 @@ fn build_child_subst_map(
 /// Check if sort A refines sort B via `requires` chain.
 fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
     let chain = requires_chain_flat(kb, a_sym);
-    chain.iter().any(|entry| same_sort_canonical(kb, entry.required_sort, b_sym))
+    chain
+        .iter()
+        .any(|entry| same_sort_canonical(kb, entry.required_sort, b_sym))
 }
 
 // ── Obligation checking ────────────────────────────────────────
@@ -37431,15 +40020,20 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
     // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index); the
     // re-filter below compares by `canonical_sort_sym` (WI-672, was `same_symbol`).
     for rid in sort_info_rids_by_sort(kb, sort_sym) {
-        if !kb.is_fact(rid) { continue; }
-        let Some(head) = kb.fact_head_term(rid) else { continue };
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
         };
 
         // Match sort by name field (may be Ref(sym) or Fn { functor: sym })
-        let name_tid = match named_args.iter()
+        let name_tid = match named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "name")
             .map(|(_, v)| *v)
         {
@@ -37456,7 +40050,8 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
         }
 
         // Extract operations list
-        let ops_tid = match named_args.iter()
+        let ops_tid = match named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| *v)
         {
@@ -37464,13 +40059,14 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
             None => return Vec::new(),
         };
 
-        return list_to_vec(kb, ops_tid).iter().filter_map(|op_ref| {
-            match kb.get_term(*op_ref) {
+        return list_to_vec(kb, ops_tid)
+            .iter()
+            .filter_map(|op_ref| match kb.get_term(*op_ref) {
                 Term::Ref(s) => Some(kb.local_name_of(*s).to_string()),
                 Term::Fn { functor, .. } => Some(kb.local_name_of(*functor).to_string()),
                 _ => None,
-            }
-        }).collect();
+            })
+            .collect();
     }
 
     Vec::new()
@@ -37518,7 +40114,10 @@ pub enum TypeExtractor {
     TypeVar(Symbol),
     /// A type application `S[p = v, …]` — term-backed `Fn{S, named}` or deep
     /// `parameterized(base, bindings)`. `bindings` are `(param, value-type)`.
-    Parameterized { base: Symbol, bindings: Vec<(Symbol, Value)> },
+    Parameterized {
+        base: Symbol,
+        bindings: Vec<(Symbol, Value)>,
+    },
     /// An arrow type — `arrow(param, result, effects, arity)`. WI-791: `arity` is
     /// the parameter-list LENGTH as written, and is what says how to read `param`
     /// (arity 1 ⇒ the sole parameter's type; otherwise ⇒ the parameter list, a
@@ -37529,7 +40128,12 @@ pub enum TypeExtractor {
     /// into Rust values, and leaving arity undecoded made every consumer write its
     /// own `Const(Int)` reader. An arrow whose child is missing or unreadable is
     /// [`TypeExtractor::Error`], not an arrow with a guessed count.
-    Arrow { param: Value, result: Value, effects: Value, arity: usize },
+    Arrow {
+        param: Value,
+        result: Value,
+        effects: Value,
+        arity: usize,
+    },
     /// A value standing in a type-argument position (`Modify[c]`) —
     /// `denoted(value)`; carries the value occurrence.
     Denoted(Value),
@@ -37545,7 +40149,11 @@ pub enum TypeExtractor {
     /// `Ref(S)` for a concrete sort); `sort` is the sort whose `requires` chain lends
     /// the subject its members (= the subject's own symbol for a concrete-sort
     /// subject); `member` the projected member name.
-    RigidTypeProjection { sort: Symbol, subject: Value, member: Symbol },
+    RigidTypeProjection {
+        sort: Symbol,
+        subject: Value,
+        member: Symbol,
+    },
     /// An effect row in type position — `effects_rows(expr: EffectExpression)`.
     EffectsRows(Value),
     /// A named tuple type — `named_tuple(fields)`; `(name, field-type)` pairs.
@@ -37575,7 +40183,9 @@ enum TypeHead {
     /// `base` is the base sort symbol. WI-361: a parameterized type is the term
     /// backing `Fn{S, named}` (the base sort IS the functor, bindings ARE the named
     /// args) on both carriers — there is no `parameterized(base, bindings)` wrapper.
-    Parameterized { base: Symbol },
+    Parameterized {
+        base: Symbol,
+    },
     Arrow,
     Denoted,
     ExprCarried,
@@ -37711,9 +40321,11 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
             view_child_value(kb, ty, "var"),
             view_child_sym(kb, ty, "member"),
         ) {
-            (Some(sort), Some(subject), Some(member)) => {
-                TypeExtractor::RigidTypeProjection { sort, subject, member }
-            }
+            (Some(sort), Some(subject), Some(member)) => TypeExtractor::RigidTypeProjection {
+                sort,
+                subject,
+                member,
+            },
             _ => TypeExtractor::Error,
         },
         TypeHead::EffectsRows => match view_child_value(kb, ty, "effects_expr") {
@@ -37729,15 +40341,21 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
                 _ => None,
             }),
         ) {
-            (Some(param), Some(result), Some(effects), Some(arity)) => {
-                TypeExtractor::Arrow { param, result, effects, arity }
-            }
+            (Some(param), Some(result), Some(effects), Some(arity)) => TypeExtractor::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            },
             _ => TypeExtractor::Error,
         },
         TypeHead::NamedTuple => TypeExtractor::NamedTuple(named_tuple_fields(kb, ty)),
         TypeHead::Parameterized { base } => {
             // The named args ARE the bindings on both carriers (WI-361).
-            TypeExtractor::Parameterized { base, bindings: term_backed_bindings(kb, ty) }
+            TypeExtractor::Parameterized {
+                base,
+                bindings: term_backed_bindings(kb, ty),
+            }
         }
     }
 }
@@ -37857,13 +40475,17 @@ fn reconstruct_sort_params(
     let declared: Vec<(String, VarId)> = kb
         .type_param_syms_of(parent_sym)
         .iter()
-        .filter_map(|&p| match kb.get_term(published_param_var(kb, parent_sym, p)?) {
-            Term::Var(Var::Global(v)) => Some((kb.local_name_of(p).to_string(), *v)),
-            _ => None,
-        })
+        .filter_map(
+            |&p| match kb.get_term(published_param_var(kb, parent_sym, p)?) {
+                Term::Var(Var::Global(v)) => Some((kb.local_name_of(p).to_string(), *v)),
+                _ => None,
+            },
+        )
         .collect();
-    let params: Vec<(Symbol, VarId)> =
-        declared.into_iter().map(|(short, vid)| (kb.intern(&short), vid)).collect();
+    let params: Vec<(Symbol, VarId)> = declared
+        .into_iter()
+        .map(|(short, vid)| (kb.intern(&short), vid))
+        .collect();
     let mut param_bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(params.len());
     for (param_sym, vid) in params {
         // WI-384: an unbound param becomes a `type_var` WILDCARD (not a bare logic
@@ -38110,8 +40732,15 @@ fn tuple_value_type(
 /// value path has no checking-direction `expected`, so it reads the elements only — else
 /// a fresh `?_` for an empty literal. [`parameterized_value`] carries a `Value::Node`
 /// element type (a denoted-poisoned element) losslessly.
-fn seq_literal_value_type(kb: &mut KnowledgeBase, base_name: &str, pos_child_types: &[Value]) -> Value {
-    let t_val = pos_child_types.first().cloned().unwrap_or_else(|| fresh_type_var(kb));
+fn seq_literal_value_type(
+    kb: &mut KnowledgeBase,
+    base_name: &str,
+    pos_child_types: &[Value],
+) -> Value {
+    let t_val = pos_child_types
+        .first()
+        .cloned()
+        .unwrap_or_else(|| fresh_type_var(kb));
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
     let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
@@ -38240,7 +40869,10 @@ fn child_types_pos(
         match child {
             Some(c) => out.push(value_type_term_d(kb, subst, &c, depth)),
             None => {
-                debug_assert!(false, "value_type_term: pos_arity {pos_arity} but pos_arg({i}) is None");
+                debug_assert!(
+                    false,
+                    "value_type_term: pos_arity {pos_arity} but pos_arg({i}) is None"
+                );
                 out.push(fresh_type_var(kb));
             }
         }
@@ -38264,7 +40896,10 @@ fn child_types_named(
         match child {
             Some(c) => out.push((k, value_type_term_d(kb, subst, &c, depth))),
             None => {
-                debug_assert!(false, "value_type_term: named_keys lists a key with no named_arg");
+                debug_assert!(
+                    false,
+                    "value_type_term: named_keys lists a key with no named_arg"
+                );
                 out.push((k, fresh_type_var(kb)));
             }
         }
@@ -38283,7 +40918,12 @@ pub fn value_type_term(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value) 
     value_type_term_d(kb, subst, v, 0)
 }
 
-fn value_type_term_d(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value, depth: usize) -> Value {
+fn value_type_term_d(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    v: &Value,
+    depth: usize,
+) -> Value {
     // A typed source occurrence carries its type in `inferred_type`; honor it before
     // a structural recompute.
     if let Value::Node(occ) = v {
@@ -38302,13 +40942,21 @@ fn value_type_term_d(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value, de
         ViewHead::Var(_) => fresh_type_var(kb),
         // A bare 0-ary constructor (`nil` ≡ `Ref(c)`, WI-436): type as its sort.
         ViewHead::Ref(s) => constructor_value_type(kb, s, &[], &[]),
-        ViewHead::Functor { functor: Some(functor), pos_arity, .. } => {
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
+        } => {
             let pos_types = child_types_pos(kb, subst, v, pos_arity, depth + 1);
             let named_types = child_types_named(kb, subst, v, depth + 1);
             constructor_value_type(kb, functor, &pos_types, &named_types)
         }
         // An anonymous aggregate: `Unit` (0-ary) or a tuple → named_tuple type.
-        ViewHead::Functor { functor: None, pos_arity, .. } => {
+        ViewHead::Functor {
+            functor: None,
+            pos_arity,
+            ..
+        } => {
             let pos_types = child_types_pos(kb, subst, v, pos_arity, depth + 1);
             let named_types = child_types_named(kb, subst, v, depth + 1);
             tuple_value_type(kb, pos_types, named_types)
@@ -38355,7 +41003,9 @@ fn value_type_term_d(kb: &mut KnowledgeBase, subst: &Substitution, v: &Value, de
 /// a silent divergence, since both paths still return the same `bool`.
 pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool {
     let (functor, pos_args) = match redex.as_expr() {
-        Some(Expr::Apply { functor, pos_args, .. }) => (*functor, pos_args),
+        Some(Expr::Apply {
+            functor, pos_args, ..
+        }) => (*functor, pos_args),
         Some(Expr::Constructor { name, pos_args, .. }) => (*name, pos_args),
         _ => return true,
     };
@@ -38419,10 +41069,14 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// carrier arguments are the sort-typed ones and its type-parameters are content.
 /// Shared by [`simp_guard_holds_core`] and [`op_has_spec_carrier_param`] so they
 /// classify carriers identically.
-fn spec_self_represented_by(kb: &KnowledgeBase, params: &[(Symbol, Value)], spec_sort: Symbol) -> bool {
-    params
-        .iter()
-        .any(|(_n, pty)| carrier_sort_of_value(kb, pty).is_some_and(|s| same_sort_canonical(kb, s, spec_sort)))
+fn spec_self_represented_by(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    spec_sort: Symbol,
+) -> bool {
+    params.iter().any(|(_n, pty)| {
+        carrier_sort_of_value(kb, pty).is_some_and(|s| same_sort_canonical(kb, s, spec_sort))
+    })
 }
 
 /// WI-596 — does parameter type `param_type` CARRY spec `spec_sort` (so that its
@@ -38441,7 +41095,9 @@ fn param_is_spec_carrier(
 ) -> bool {
     match carrier_sort_of_value(kb, param_type) {
         Some(s) if self_representing => same_sort_canonical(kb, s, spec_sort),
-        Some(s) => type_params.iter().any(|tp| tp.as_str() == kb.local_name_of(s)),
+        Some(s) => type_params
+            .iter()
+            .any(|tp| tp.as_str() == kb.local_name_of(s)),
         None => false,
     }
 }
@@ -38555,7 +41211,11 @@ pub(crate) fn simp_requires_guard_holds(
     subst: &Substitution,
 ) -> bool {
     let (functor, pos_arity) = match redex.head(kb) {
-        ViewHead::Functor { functor: Some(f), pos_arity, .. } => (f, pos_arity),
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } => (f, pos_arity),
         // A non-`Fn` redex (a bare const / var / nullary ref / anonymous
         // aggregate) is not a spec-op application the type dispatch can decide —
         // keep a requires-guarded rule with such an LHS skipped (don't fire).
@@ -38592,7 +41252,10 @@ pub(crate) fn simp_requires_guard_holds(
         arg_sorts.push(sort);
     }
     matches!(
-        simp_guard_holds_core(kb, functor, spec_sort, |i| arg_sorts.get(i).copied().flatten()),
+        simp_guard_holds_core(kb, functor, spec_sort, |i| arg_sorts
+            .get(i)
+            .copied()
+            .flatten()),
         FindDictOutcome::Fire
     )
 }
@@ -38659,8 +41322,15 @@ pub(crate) fn find_dictionary_guard(
 /// what a sub-dictionary fetch needs, so collapsing to the head here would throw
 /// away half of what [`fetch_dictionary`] must pass on. Needs `&mut kb` (it may
 /// intern sort refs), so it runs before any immutable-`kb` walk.
-fn witness_arg_types(kb: &mut KnowledgeBase, subst: &Substitution, arg_vals: &[Value]) -> Vec<Value> {
-    arg_vals.iter().map(|v| value_type_term(kb, subst, v)).collect()
+fn witness_arg_types(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    arg_vals: &[Value],
+) -> Vec<Value> {
+    arg_vals
+        .iter()
+        .map(|v| value_type_term(kb, subst, v))
+        .collect()
 }
 
 /// The WI-300 guard decision over already-read carried types. A headless argument
@@ -38672,9 +41342,13 @@ fn guard_over_arg_types(
     op_functor: Symbol,
     arg_types: &[Value],
 ) -> FindDictOutcome {
-    let arg_sorts: Vec<Option<Symbol>> =
-        arg_types.iter().map(|t| sort_functor_of_view(kb, t)).collect();
-    simp_guard_holds_core(kb, op_functor, spec_sort, |i| arg_sorts.get(i).copied().flatten())
+    let arg_sorts: Vec<Option<Symbol>> = arg_types
+        .iter()
+        .map(|t| sort_functor_of_view(kb, t))
+        .collect();
+    simp_guard_holds_core(kb, op_functor, spec_sort, |i| {
+        arg_sorts.get(i).copied().flatten()
+    })
 }
 
 /// WI-1040 — the outcome of READING a rule-body requirement for its VALUE, the
@@ -38752,7 +41426,11 @@ pub(crate) fn fetch_dictionary(
             ),
         };
     };
-    let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: None,
+        selected: &[],
+    };
     match resolve(kb, &goal, &scope) {
         ResolutionResult::Resolved(tree) => match dictionary_of_tree(kb, &tree) {
             Some(d) => FindDictFetch::Fetched(d.into_value()),
@@ -38790,7 +41468,10 @@ pub(crate) fn fetch_dictionary(
             detail: format!("no provider answers `{goal_text}` ({hint})"),
         },
         ResolutionResult::Cyclic { path } => FindDictFetch::Undecided {
-            detail: format!("the provider chain re-enters its own goal: {}", path.join(" → ")),
+            detail: format!(
+                "the provider chain re-enters its own goal: {}",
+                path.join(" → ")
+            ),
         },
     }
 }
@@ -38826,26 +41507,38 @@ fn witness_sort_goal(
         if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
             continue;
         }
-        let Some(arg_ty) = arg_types.get(i).cloned() else { continue };
+        let Some(arg_ty) = arg_types.get(i).cloned() else {
+            continue;
+        };
         if self_representing {
             carrier = carrier.or_else(|| sort_functor_of_view(kb, &arg_ty));
             continue;
         }
         // The parameter's declared type IS one of the spec's type-parameters
         // (`param_is_spec_carrier` just said so); its short name is the binding key.
-        let Some(param_sym) = carrier_sort_of_value(kb, pty) else { continue };
+        let Some(param_sym) = carrier_sort_of_value(kb, pty) else {
+            continue;
+        };
         let short = kb.local_name_of(param_sym).to_string();
         // The key spelling `resolve` matches provider heads against — the same
         // preference `sort_goal_from_subst` applies: the bare short-name symbol when
         // one is registered, else the spec-qualified parameter symbol.
-        let qualified = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")).unwrap_or(param_sym);
+        let qualified = kb
+            .try_resolve_symbol(&format!("{spec_qn}.{short}"))
+            .unwrap_or(param_sym);
         let key = kb.try_resolve_symbol(&short).unwrap_or(qualified);
-        let Some(tid) = type_value_as_term(kb, &arg_ty) else { continue };
+        let Some(tid) = type_value_as_term(kb, &arg_ty) else {
+            continue;
+        };
         if bindings.iter().all(|(k, _)| *k != key) {
             bindings.push((key, tid));
         }
     }
-    Some(SortGoal { spec_sort, bindings, carrier })
+    Some(SortGoal {
+        spec_sort,
+        bindings,
+        carrier,
+    })
 }
 
 /// WI-1040 — a resolved provider tree as the dictionary.
@@ -38881,7 +41574,11 @@ pub(crate) fn dictionary_of_tree(
         let (impl_sort, subs): (Symbol, Vec<Dictionary>) = match tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. } => (*impl_sort, Vec::new()),
             ResolvedRequiresNode::Unavailable { .. } => (marker, Vec::new()),
-            ResolvedRequiresNode::Conditional { impl_sort, sub_resolutions, .. } => (
+            ResolvedRequiresNode::Conditional {
+                impl_sort,
+                sub_resolutions,
+                ..
+            } => (
                 *impl_sort,
                 sub_resolutions
                     .iter()
@@ -39260,7 +41957,6 @@ fn type_check_sorts_collect(
     // would slip the functor walk (mirrors `record_find_dictionary_grounding` below).
     errors.extend(check_simp_effectful_ops(kb));
 
-
     // WI-300: rewrite every rule body's `find_dictionary(X)` guard (the converter's
     // desugaring of a rule-body `requires(X)`) into the resolver-ready
     // `find_dictionary(spec_base, op_functor, op_arg…)` form, recording which body
@@ -39317,19 +42013,24 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
             continue; // already reported this op (multiple OperationInfo facts)
         }
         if let Some(cycle_syms) = param_projection_cycle(kb, &params) {
-            let mut names: Vec<String> =
-                cycle_syms.iter().map(|s| kb.local_name_of(*s).to_owned()).collect();
+            let mut names: Vec<String> = cycle_syms
+                .iter()
+                .map(|s| kb.local_name_of(*s).to_owned())
+                .collect();
             // Close the cycle visually (`a -> b -> a`) so the diagnostic reads as one.
             if let Some(first) = names.first().cloned() {
                 names.push(first);
             }
             let span = kb.functor_span(op_sym).map(|s| s.span);
             errors.push(projection_type_error(
-                &TypeErrorContext::OperationReturn { op_name: op_sym }, span, &format!(
-                "cyclic cross-parameter type projection among parameters: {} — a \
+                &TypeErrorContext::OperationReturn { op_name: op_sym },
+                span,
+                &format!(
+                    "cyclic cross-parameter type projection among parameters: {} — a \
                  parameter's type may project an EARLIER parameter, not form a cycle",
-                names.join(" -> "),
-            )));
+                    names.join(" -> "),
+                ),
+            ));
         }
     }
     errors
@@ -39417,8 +42118,12 @@ fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
     };
     let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
-        let has_branch = effects.iter().any(|e| effect_label_names_sort(kb, e, branch_sym));
-        let has_external = effects.iter().any(|e| effect_label_names_sort(kb, e, external_sym));
+        let has_branch = effects
+            .iter()
+            .any(|e| effect_label_names_sort(kb, e, branch_sym));
+        let has_external = effects
+            .iter()
+            .any(|e| effect_label_names_sort(kb, e, external_sym));
         if has_branch && has_external && reported.insert(op_sym) {
             let span = kb.functor_span(op_sym).map(|s| s.span);
             errors.push(TypeError::Other {
@@ -39429,12 +42134,11 @@ fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
                     "operation `{}` to declare at most one of `Branch` / `External`",
                     kb.qualified_name_of(op_sym),
                 ),
-                actual:
-                    "effect row carries BOTH `Branch` and `External` — a Branch region \
+                actual: "effect row carries BOTH `Branch` and `External` — a Branch region \
                      may not perform External: External state has no register_undo (above \
                      Branch is impossible) and is re-run once per solution (below Branch is \
                      unsound). Proposal 054 §\"Branch and External\"."
-                        .to_string(),
+                    .to_string(),
             });
         }
     }
@@ -39448,7 +42152,12 @@ fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
 fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Symbol>) {
     let mut stack = vec![id];
     while let Some(t) = stack.pop() {
-        if let Term::Fn { functor, pos_args, named_args } = kb.get_term(t) {
+        if let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = kb.get_term(t)
+        {
             out.push(*functor);
             for a in pos_args.iter() {
                 stack.push(*a);
@@ -39634,14 +42343,19 @@ fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbo
     // was `same_symbol`) — no last-segment matching, so a top-level `sort Ring` no longer
     // reads `anthill.prelude.algebra.Ring`'s constructors/operations.
     for rid in sort_info_rids_by_sort(kb, sort_functor) {
-        if !kb.is_fact(rid) { continue; }
-        let Some(head) = kb.fact_head_term(rid) else { continue };
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
         let named_args = match kb.get_term(head) {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
         };
 
-        let name_tid = match named_args.iter()
+        let name_tid = match named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "name")
             .map(|(_, v)| *v)
         {
@@ -39657,12 +42371,14 @@ fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbo
             continue;
         }
 
-        let ctors = named_args.iter()
+        let ctors = named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "constructors")
             .map(|(_, v)| extract_sym_list(kb, *v))
             .unwrap_or_default();
 
-        let ops = named_args.iter()
+        let ops = named_args
+            .iter()
             .find(|(s, _)| kb.local_name_of(*s) == "operations")
             .map(|(_, v)| extract_sym_list(kb, *v))
             .unwrap_or_default();
@@ -39674,13 +42390,14 @@ fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbo
 
 /// Extract a list of Symbols from a cons-list of Ref terms.
 fn extract_sym_list(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Symbol> {
-    list_to_vec(kb, list_tid).iter().filter_map(|tid| {
-        match kb.get_term(*tid) {
+    list_to_vec(kb, list_tid)
+        .iter()
+        .filter_map(|tid| match kb.get_term(*tid) {
             Term::Ref(s) => Some(*s),
             Term::Fn { functor, .. } => Some(*functor),
             _ => None,
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Check a value against a declared type. Returns Some(TypeError) on mismatch.
@@ -39718,7 +42435,15 @@ fn check_value_against_type(
     match type_functor {
         Some("sort_ref") => {
             let declared_sym = extract_sort_ref_sym(kb, declared_type)?;
-            check_value_against_sort_ref(kb, value, declared_sym, declared_type, entity_sym, field_sym, span)
+            check_value_against_sort_ref(
+                kb,
+                value,
+                declared_sym,
+                declared_type,
+                entity_sym,
+                field_sym,
+                span,
+            )
         }
         Some("parameterized") => {
             check_value_against_parameterized(kb, value, declared_type, entity_sym, field_sym, span)
@@ -39767,7 +42492,10 @@ fn check_value_against_sort_ref(
                 Some(TypeError::Other {
                     site: TypeError::here(),
                     span,
-                    context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+                    context: TypeErrorContext::EntityField {
+                        entity: entity_sym,
+                        field: field_sym,
+                    },
                     expected: type_display_name_value(kb, declared_type),
                     actual: actual.to_string(),
                 })
@@ -39778,18 +42506,27 @@ fn check_value_against_sort_ref(
         // and `check_value_sort_membership`'s `parent?` turned that into a SILENT
         // ACCEPT: `fact Holder(c: Vec3(x: 1.0))` on a field declared `Colour` loaded
         // clean, while the same fact with a sort-NESTED carrier was refused.
-        Term::Fn { functor: val_functor, .. } => {
-            check_value_sort_membership(
-                kb, kb.sort_of_constructor(*val_functor),
-                declared_sym, declared_type, entity_sym, field_sym, span,
-            )
-        }
-        Term::Ref(val_sym) if kb.is_constructor_symbol(*val_sym) => {
-            check_value_sort_membership(
-                kb, kb.sort_of_constructor(*val_sym),
-                declared_sym, declared_type, entity_sym, field_sym, span,
-            )
-        }
+        Term::Fn {
+            functor: val_functor,
+            ..
+        } => check_value_sort_membership(
+            kb,
+            kb.sort_of_constructor(*val_functor),
+            declared_sym,
+            declared_type,
+            entity_sym,
+            field_sym,
+            span,
+        ),
+        Term::Ref(val_sym) if kb.is_constructor_symbol(*val_sym) => check_value_sort_membership(
+            kb,
+            kb.sort_of_constructor(*val_sym),
+            declared_sym,
+            declared_type,
+            entity_sym,
+            field_sym,
+            span,
+        ),
         _ => None,
     }
 }
@@ -39823,7 +42560,10 @@ fn check_value_sort_membership(
     Some(TypeError::Other {
         site: TypeError::here(),
         span,
-        context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+        context: TypeErrorContext::EntityField {
+            entity: entity_sym,
+            field: field_sym,
+        },
         expected: type_display_name_value(kb, declared_type),
         actual: kb.local_name_of(parent).to_string(),
     })
@@ -39844,8 +42584,10 @@ fn check_value_against_parameterized(
     // WI-361: read base + bindings form-agnostically — deep
     // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`.
     // WI-342: carrier-agnostic over [`TermView`] (the declared type is a `Value`).
-    let TypeExtractor::Parameterized { base: base_sym, bindings } =
-        extract_type(kb, declared_type)
+    let TypeExtractor::Parameterized {
+        base: base_sym,
+        bindings,
+    } = extract_type(kb, declared_type)
     else {
         return None;
     };
@@ -39892,7 +42634,10 @@ fn check_value_against_parameterized(
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::EntityField { entity: entity_sym, field: field_sym },
+                context: TypeErrorContext::EntityField {
+                    entity: entity_sym,
+                    field: field_sym,
+                },
                 expected: type_display_name_value(kb, declared_type),
                 actual: kb.local_name_of(parent).to_string(),
             });
@@ -39930,13 +42675,17 @@ fn check_value_against_parameterized(
             Some((_, v)) => *v,
             None => continue,
         };
-        if matches!(kb.get_term(fval), Term::Var(_)) { continue; }
+        if matches!(kb.get_term(fval), Term::Var(_)) {
+            continue;
+        }
 
         // Walk the field type through the substitution to resolve type params,
         // carrier-agnostically (WI-342) — a `Value::Node` field type is carried.
         let instantiated_type = walk_type_value(kb, &subst, declared_field_type);
 
-        if let Some(err) = check_value_against_type(kb, fval, &instantiated_type, entity_sym, *fsym, span) {
+        if let Some(err) =
+            check_value_against_type(kb, fval, &instantiated_type, entity_sym, *fsym, span)
+        {
             return Some(err);
         }
     }
@@ -39994,9 +42743,17 @@ fn spec_resolves_at_bindings(
 ) -> bool {
     // Field validation resolves a spec at declared bindings — no call-site
     // receiver, so no carrier discrimination (WI-350).
-    let goal = SortGoal { spec_sort, bindings, carrier: None };
+    let goal = SortGoal {
+        spec_sort,
+        bindings,
+        carrier: None,
+    };
     // WI-841: no call site, hence no selection — a DECLARATION is being validated.
-    let scope = ResolutionScope { available_requires: &[], sigma: None, selected: &[] };
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: None,
+        selected: &[],
+    };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }
 
@@ -40048,10 +42805,14 @@ fn check_entity_facts(
             Some(ft) => ft.to_vec(),
             None => continue,
         };
-        if field_types.is_empty() { continue; }
+        if field_types.is_empty() {
+            continue;
+        }
 
         for rid in kb.rules_by_functor(ctor_sym) {
-            if !kb.is_fact(rid) { continue; }
+            if !kb.is_fact(rid) {
+                continue;
+            }
 
             // WI-515: no skip-list needed. It existed to exempt the loader's
             // same-functor `Entity` schema fact (field TYPES in the data
@@ -40061,7 +42822,9 @@ fn check_entity_facts(
             // own reflect functors, so they never reach a user constructor's
             // rules_by_functor bucket anyway.
 
-            let Some(head) = kb.fact_head_term(rid) else { continue };
+            let Some(head) = kb.fact_head_term(rid) else {
+                continue;
+            };
             let named_args = match kb.get_term(head) {
                 Term::Fn { named_args, .. } => named_args.clone(),
                 _ => continue,
@@ -40095,13 +42858,23 @@ fn check_entity_facts(
                     None => continue,
                 };
 
-                if matches!(kb.get_term(field_value), Term::Var(Var::Global(_) | Var::DeBruijn(_))) {
+                if matches!(
+                    kb.get_term(field_value),
+                    Term::Var(Var::Global(_) | Var::DeBruijn(_))
+                ) {
                     continue;
                 }
 
                 // WI-342: the field type is a carrier-agnostic `Value` — checked in
                 // place, no re-ground.
-                if let Some(err) = check_value_against_type(kb, field_value, declared_type, ctor_sym, field_sym, span) {
+                if let Some(err) = check_value_against_type(
+                    kb,
+                    field_value,
+                    declared_type,
+                    ctor_sym,
+                    field_sym,
+                    span,
+                ) {
                     errors.push(err);
                 }
             }
@@ -40153,7 +42926,9 @@ fn provides_out_edges(kb: &KnowledgeBase, node: Symbol) -> SmallVec<[Symbol; 4]>
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
         let Some(c) = get_named_arg(kb, &named, "sort_ref")
             .and_then(|t| super::load::sort_ref_functor(kb, t))
         else {
@@ -40200,12 +42975,20 @@ fn sort_provides_reach(
 }
 
 /// Check if a constructor's parent sort matches the declared type symbol.
-fn constructor_matches_declared(kb: &KnowledgeBase, parent: Symbol, declared_type_sym: Symbol) -> bool {
+fn constructor_matches_declared(
+    kb: &KnowledgeBase,
+    parent: Symbol,
+    declared_type_sym: Symbol,
+) -> bool {
     let declared_name = kb.local_name_of(declared_type_sym);
     let pn = kb.local_name_of(parent);
     pn == declared_name
-        || pn.strip_suffix(declared_name).is_some_and(|p| p.ends_with('.'))
-        || declared_name.strip_suffix(pn).is_some_and(|p| p.ends_with('.'))
+        || pn
+            .strip_suffix(declared_name)
+            .is_some_and(|p| p.ends_with('.'))
+        || declared_name
+            .strip_suffix(pn)
+            .is_some_and(|p| p.ends_with('.'))
 }
 
 /// WI-392: build a substitution that Skolemizes an operation's own declared type
@@ -40329,7 +43112,12 @@ fn rigidify_unwritten_sort_params(
         // The `_` arm below is what let them through, which is why these two are written out
         // rather than folded into it: a carrier this walk does not know is a slot it silently
         // leaves flexible, and the whole function exists to stop silent leaks.
-        TypeExtractor::Arrow { param, result, effects, arity } => {
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
             // THE RESULT ONLY. The two other children are each left alone for their own
             // reason, and neither is a hedge:
             //
@@ -40565,7 +43353,10 @@ fn open_existential_return(
 enum SlotPosition<'a> {
     /// The operation's own BODY (WI-1059/WI-1061). `sort` is the enclosing sort and
     /// `rigidify` the WI-424 substitution that skolemized its parameters.
-    Body { sort: Option<Symbol>, rigidify: &'a Substitution },
+    Body {
+        sort: Option<Symbol>,
+        rigidify: &'a Substitution,
+    },
     /// One CALL's result (WI-1063). `callee_sort` is the CALLEE's own sort.
     CallResult { callee_sort: Option<Symbol> },
 }
@@ -40785,10 +43576,7 @@ fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool {
     matches!(kb.local_name_of(name), "_" | "?" | "?_")
 }
 
-fn rigidify_op_type_params(
-    kb: &mut KnowledgeBase,
-    type_params: &[(Symbol, Var)],
-) -> Substitution {
+fn rigidify_op_type_params(kb: &mut KnowledgeBase, type_params: &[(Symbol, Var)]) -> Substitution {
     let mut rigidify = Substitution::new();
     for (param_sym, var) in type_params {
         if let Var::Global(vid) = var {
@@ -40870,7 +43658,7 @@ fn check_operation_bodies(
 ) {
     struct OpInfo {
         op_sym: Symbol,
-        return_type: Value,  // WI-341 carrier-agnostic
+        return_type: Value, // WI-341 carrier-agnostic
         declared_effects: Vec<Value>,
         body_node: Rc<NodeOccurrence>,
         params: Vec<(Symbol, Value)>,
@@ -40956,66 +43744,69 @@ fn check_operation_bodies(
         let mut param_rigids: Vec<(VarId, TermId)> = Vec::new();
         let mut sort_rigid_len = 0usize;
         let mut rigidify_subst = Substitution::new();
-        let (params, return_type, declared_effects) = if rec.type_params.is_empty()
-            && parent_sort_params.is_empty()
-        {
-            (rec.params, rec.return_type, rec.effects)
-        } else {
-            let mut all_params = rec.type_params.clone();
-            // WI-849: the op table is `Var`-typed; the sort table is still TermId-typed
-            // (its other consumers want the param as a TERM, under `&KnowledgeBase`
-            // where they could not re-alloc). Convert here — total, because
-            // `sort_type_params_as_pairs` admits an entry only when it IS a
-            // `Term::Var(Global)`. A non-var would mean that filter changed under us.
-            all_params.extend(parent_sort_params.iter().map(|(n, t)| match kb.get_term(*t) {
-                Term::Var(v) => (*n, *v),
-                other => unreachable!(
+        let (params, return_type, declared_effects) =
+            if rec.type_params.is_empty() && parent_sort_params.is_empty() {
+                (rec.params, rec.return_type, rec.effects)
+            } else {
+                let mut all_params = rec.type_params.clone();
+                // WI-849: the op table is `Var`-typed; the sort table is still TermId-typed
+                // (its other consumers want the param as a TERM, under `&KnowledgeBase`
+                // where they could not re-alloc). Convert here — total, because
+                // `sort_type_params_as_pairs` admits an entry only when it IS a
+                // `Term::Var(Global)`. A non-var would mean that filter changed under us.
+                all_params.extend(
+                    parent_sort_params
+                        .iter()
+                        .map(|(n, t)| match kb.get_term(*t) {
+                            Term::Var(v) => (*n, *v),
+                            other => unreachable!(
                     "sort_type_params_as_pairs admits only `Term::Var(Global)`, got {other:?}"
                 ),
-            }));
-            let rigidify = rigidify_op_type_params(kb, &all_params);
-            // EVERY param the rigidifier was given gets its bridge — reading back from
-            // the list it was actually handed is what keeps the two from coming apart
-            // (WI-942: the sort half used to be collected on its own, leaving an
-            // op-declared param with no Global→Rigid entry at all). ONE entry per param,
-            // because a param has ONE canonical var: what the record holds is what a
-            // written occurrence resolves to ([`type_param_global_var`], WI-943).
-            let to_rigids = |params: &[(Symbol, Var)]| -> Vec<(VarId, TermId)> {
-                params
+                        }),
+                );
+                let rigidify = rigidify_op_type_params(kb, &all_params);
+                // EVERY param the rigidifier was given gets its bridge — reading back from
+                // the list it was actually handed is what keeps the two from coming apart
+                // (WI-942: the sort half used to be collected on its own, leaving an
+                // op-declared param with no Global→Rigid entry at all). ONE entry per param,
+                // because a param has ONE canonical var: what the record holds is what a
+                // written occurrence resolves to ([`type_param_global_var`], WI-943).
+                let to_rigids = |params: &[(Symbol, Var)]| -> Vec<(VarId, TermId)> {
+                    params
+                        .iter()
+                        .filter_map(|(_, var)| {
+                            let Var::Global(vid) = var else { return None };
+                            // `rigidify` binds each param to its fresh `Rigid` term — always
+                            // a `Value::Term`; a non-`Term` binding would not be a rigid.
+                            match rigidify.resolve_as_value(*vid) {
+                                Some(Value::Term { id: rigid, .. }) => Some((*vid, *rigid)),
+                                _ => None,
+                            }
+                        })
+                        .collect()
+                };
+                // `all_params` is `rec.type_params ++ parent_sort_params`; `param_rigids` is
+                // the other order — enclosing SORT params first, so `sort_rigid_len` is where
+                // the op's own begin. Split and reverse explicitly rather than partitioning
+                // in-place: the length must be read BETWEEN the two halves.
+                let (op_half, sort_half) = all_params.split_at(rec.type_params.len());
+                param_rigids = to_rigids(sort_half);
+                sort_rigid_len = param_rigids.len();
+                param_rigids.extend(to_rigids(op_half));
+                let params = rec
+                    .params
                     .iter()
-                    .filter_map(|(_, var)| {
-                        let Var::Global(vid) = var else { return None };
-                        // `rigidify` binds each param to its fresh `Rigid` term — always
-                        // a `Value::Term`; a non-`Term` binding would not be a rigid.
-                        match rigidify.resolve_as_value(*vid) {
-                            Some(Value::Term { id: rigid, .. }) => Some((*vid, *rigid)),
-                            _ => None,
-                        }
-                    })
-                    .collect()
+                    .map(|(n, t)| (*n, walk_type_deep_value(kb, &rigidify, t)))
+                    .collect();
+                let return_type = walk_type_deep_value(kb, &rigidify, &rec.return_type);
+                let declared_effects = rec
+                    .effects
+                    .iter()
+                    .map(|e| walk_type_deep_value(kb, &rigidify, e))
+                    .collect();
+                rigidify_subst = rigidify;
+                (params, return_type, declared_effects)
             };
-            // `all_params` is `rec.type_params ++ parent_sort_params`; `param_rigids` is
-            // the other order — enclosing SORT params first, so `sort_rigid_len` is where
-            // the op's own begin. Split and reverse explicitly rather than partitioning
-            // in-place: the length must be read BETWEEN the two halves.
-            let (op_half, sort_half) = all_params.split_at(rec.type_params.len());
-            param_rigids = to_rigids(sort_half);
-            sort_rigid_len = param_rigids.len();
-            param_rigids.extend(to_rigids(op_half));
-            let params = rec
-                .params
-                .iter()
-                .map(|(n, t)| (*n, walk_type_deep_value(kb, &rigidify, t)))
-                .collect();
-            let return_type = walk_type_deep_value(kb, &rigidify, &rec.return_type);
-            let declared_effects = rec
-                .effects
-                .iter()
-                .map(|e| walk_type_deep_value(kb, &rigidify, e))
-                .collect();
-            rigidify_subst = rigidify;
-            (params, return_type, declared_effects)
-        };
         // WI-1059/WI-1061: the THIRD family of rigids — a parameter of ANOTHER sort left
         // unwritten in a parameter's TYPE, at its top level (WI-1059) or nested inside
         // one of its bindings (WI-1061). Runs for EVERY op, including one that
@@ -41103,8 +43894,11 @@ fn check_operation_bodies(
     // instead of `type_check_node` recomputing `has_simp_equations` + two
     // `simp_equation_rids` bucket scans per operation.
     let simp_enabled = super::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
-    let simp_rids: Vec<RuleId> =
-        if simp_enabled { kb.simp_equation_rids() } else { Vec::new() };
+    let simp_rids: Vec<RuleId> = if simp_enabled {
+        kb.simp_equation_rids()
+    } else {
+        Vec::new()
+    };
 
     // WI-745: the file whose occurrences the CURRENT op's errors come from. Tag
     // lazily — errors pushed during op K are stamped at the top of iteration K+1
@@ -41140,7 +43934,11 @@ fn check_operation_bodies(
         // body then path-identity-matches via the ζ arm of `unify_types`. Only a member NO
         // interface declares stays a loud error. Only ops whose params carry a projection
         // pay for the map + walk.
-        if op.params.iter().any(|(_, t)| value_contains_projection(kb, t)) {
+        if op
+            .params
+            .iter()
+            .any(|(_, t)| value_contains_projection(kb, t))
+        {
             // Order-INDEPENDENT elimination (matching the call-site, which discharges over
             // a fully-populated `param_to_arg_type`): iterate to a FIXPOINT — each pass
             // re-discharges every still-projection param against the current `decl` and
@@ -41163,7 +43961,10 @@ fn check_operation_bodies(
                             &cur,
                             &decl,
                             None,
-                            &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
+                            &TypeErrorContext::OperationArgument {
+                                op_name: op.op_sym,
+                                param: *name,
+                            },
                             op.span,
                         ) {
                             if !views_structurally_equal(kb, &elim, &cur) {
@@ -41191,7 +43992,10 @@ fn check_operation_bodies(
                         &cur,
                         &decl,
                         None,
-                        &TypeErrorContext::OperationArgument { op_name: op.op_sym, param: *name },
+                        &TypeErrorContext::OperationArgument {
+                            op_name: op.op_sym,
+                            param: *name,
+                        },
                         op.span,
                     ) {
                         errors.push(e);
@@ -41441,10 +44245,12 @@ fn check_operation_bodies(
                 // beside a resolved incurred effect is what made the pre-WI-441 version
                 // report `expected [E], got ?_` for a row that matched.
                 let canon_subst = (*op.rigidify).clone();
-                let declared_canon: Vec<Value> = effective_effects.iter()
+                let declared_canon: Vec<Value> = effective_effects
+                    .iter()
                     .map(|e| walk_type_deep_value(kb, &canon_subst, e))
                     .collect();
-                let declared_display: Vec<String> = effective_effects.iter()
+                let declared_display: Vec<String> = effective_effects
+                    .iter()
                     .map(|e| type_display_name_value(kb, e))
                     .collect();
                 for effect in &ext_effects {
@@ -41460,11 +44266,10 @@ fn check_operation_bodies(
                     // component is canon-walked AFTER the explode: a
                     // Node-carried row's tail extracts as the raw Global var,
                     // which only the per-component walk maps to its Rigid.
-                    let components: Vec<Value> =
-                        match explode_incurred_effect_row(kb, effect) {
-                            Some(atoms) => atoms,
-                            None => vec![effect.clone()],
-                        };
+                    let components: Vec<Value> = match explode_incurred_effect_row(kb, effect) {
+                        Some(atoms) => atoms,
+                        None => vec![effect.clone()],
+                    };
                     for comp in &components {
                         let comp_canon = walk_type_deep_value(kb, &canon_subst, comp);
                         // WI-818: a declared GUARDED atom `L :- g` conservatively
@@ -41487,7 +44292,10 @@ fn check_operation_bodies(
                                 span: op.span,
                                 context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
                                 expected: format!("declared: [{}]", declared_display.join(", ")),
-                                actual: format!("undeclared effect: {}", type_display_name_value(kb, &comp_canon)),
+                                actual: format!(
+                                    "undeclared effect: {}",
+                                    type_display_name_value(kb, &comp_canon)
+                                ),
                             });
                         }
                     }
@@ -41501,7 +44309,7 @@ fn check_operation_bodies(
                         context: TypeErrorContext::OperationMatch { op_name: op.op_sym },
                         expected: "exhaustive".to_string(),
                         actual: diag.clone(),
-                        });
+                    });
                 }
             }
             Err(err) => {
@@ -41522,7 +44330,6 @@ fn check_operation_bodies(
     }
 }
 
-
 /// Collect which entity constructors a pattern covers.
 ///
 /// WI-511 (WI-348): reads the `Pattern` occurrence DIRECTLY — its constructor
@@ -41536,9 +44343,13 @@ fn collect_covered_entities(
     covered: &mut Vec<Symbol>,
     has_wildcard: &mut bool,
 ) {
-    let NodeKind::Pattern { pattern: pat, .. } = &pattern.kind else { return; };
+    let NodeKind::Pattern { pattern: pat, .. } = &pattern.kind else {
+        return;
+    };
     match pat {
-        Pattern::Wildcard => { *has_wildcard = true; }
+        Pattern::Wildcard => {
+            *has_wildcard = true;
+        }
         Pattern::Var { name, .. } => {
             // A var pattern is either a nullary constructor (`case red`) or a
             // binding (`case x`) — resolved by the shared `pattern_var_ctor_sym`
@@ -41560,7 +44371,9 @@ fn collect_covered_entities(
         Pattern::Literal { .. } => {}
         // A tuple pattern matches a tuple, not an enum constructor — conservative
         // (mirrors the old term-reader's unknown-form fallthrough).
-        Pattern::Tuple { .. } => { *has_wildcard = true; }
+        Pattern::Tuple { .. } => {
+            *has_wildcard = true;
+        }
     }
 }
 
@@ -41575,7 +44388,9 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_name: Symbol, errors: &mut Ve
     };
 
     for rid in kb.by_domain(sort_name) {
-        if kb.is_fact(rid) { continue; } // skip facts — only check rules
+        if kb.is_fact(rid) {
+            continue;
+        } // skip facts — only check rules
 
         // Head stays a hash-consed term (it is searched in the discrim tree),
         // so the head checks remain term-based.
@@ -41598,7 +44413,10 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_name: Symbol, errors: &mut Ve
             errors.push(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Head },
+                context: TypeErrorContext::Rule {
+                    name: head_sym,
+                    field: RuleField::Head,
+                },
                 expected: "no predicate variables in rule head".to_string(),
                 actual: "ho_apply in head position".to_string(),
             });
@@ -41650,7 +44468,9 @@ fn check_ho_apply_pattern_occ(
     // `ho_apply` materializes to `Expr::Apply`, but match all three for parity
     // with the term-walker's functor check.
     let ho_pos_args = match expr {
-        Expr::Apply { functor, pos_args, .. } if *functor == ho_apply_sym => Some(pos_args),
+        Expr::Apply {
+            functor, pos_args, ..
+        } if *functor == ho_apply_sym => Some(pos_args),
         Expr::Constructor { name, pos_args, .. } if *name == ho_apply_sym => Some(pos_args),
         Expr::Instantiation { name, pos_args, .. } if *name == ho_apply_sym => Some(pos_args),
         _ => None,
@@ -41658,52 +44478,64 @@ fn check_ho_apply_pattern_occ(
 
     if let Some(pos_args) = ho_pos_args {
         if !pos_args.is_empty() {
-        // This is an ho_apply — check pattern fragment rules.
+            // This is an ho_apply — check pattern fragment rules.
 
-        // Rule 2: first arg (predicate) must be a variable. If it's instead a
-        // nested ho_apply (predicate applied to predicate), flag it.
-        let pred = &pos_args[0];
-        if !matches!(pred.as_expr(), Some(Expr::Var(_))) {
-            if let Some(Expr::Apply { functor: inner_f, .. }) = pred.as_expr() {
-                if *inner_f == ho_apply_sym {
+            // Rule 2: first arg (predicate) must be a variable. If it's instead a
+            // nested ho_apply (predicate applied to predicate), flag it.
+            let pred = &pos_args[0];
+            if !matches!(pred.as_expr(), Some(Expr::Var(_))) {
+                if let Some(Expr::Apply {
+                    functor: inner_f, ..
+                }) = pred.as_expr()
+                {
+                    if *inner_f == ho_apply_sym {
+                        errors.push(TypeError::Other {
+                            site: TypeError::here(),
+                            span,
+                            context: TypeErrorContext::Rule {
+                                name: rule_sym,
+                                field: RuleField::Body,
+                            },
+                            expected: "variable as predicate in ho_apply".to_string(),
+                            actual: "nested ho_apply (predicate applied to predicate)".to_string(),
+                        });
+                    }
+                }
+            }
+
+            // Rule 3: remaining args must be distinct (no duplicate variables).
+            let mut seen_vars: Vec<u32> = Vec::new();
+            for arg in &pos_args[1..] {
+                if let Some(Expr::Var(Var::DeBruijn(idx))) = arg.as_expr() {
+                    if seen_vars.contains(idx) {
+                        errors.push(TypeError::Other {
+                            site: TypeError::here(),
+                            span,
+                            context: TypeErrorContext::Rule {
+                                name: rule_sym,
+                                field: RuleField::Body,
+                            },
+                            expected: "distinct variables in ho_apply args".to_string(),
+                            actual: format!("duplicate variable ?{} in predicate application", idx),
+                        });
+                    }
+                    seen_vars.push(*idx);
+                }
+
+                // Rule 3b: args must not contain ho_apply (no predicate variable as argument).
+                if occurrence_contains_functor(arg, ho_apply_sym) {
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
                         span,
-                        context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
-                        expected: "variable as predicate in ho_apply".to_string(),
-                        actual: "nested ho_apply (predicate applied to predicate)".to_string(),
+                        context: TypeErrorContext::Rule {
+                            name: rule_sym,
+                            field: RuleField::Body,
+                        },
+                        expected: "first-order args in ho_apply".to_string(),
+                        actual: "predicate variable as argument to predicate".to_string(),
                     });
                 }
             }
-        }
-
-        // Rule 3: remaining args must be distinct (no duplicate variables).
-        let mut seen_vars: Vec<u32> = Vec::new();
-        for arg in &pos_args[1..] {
-            if let Some(Expr::Var(Var::DeBruijn(idx))) = arg.as_expr() {
-                if seen_vars.contains(idx) {
-                    errors.push(TypeError::Other {
-                        site: TypeError::here(),
-                        span,
-                        context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
-                        expected: "distinct variables in ho_apply args".to_string(),
-                        actual: format!("duplicate variable ?{} in predicate application", idx),
-                    });
-                }
-                seen_vars.push(*idx);
-            }
-
-            // Rule 3b: args must not contain ho_apply (no predicate variable as argument).
-            if occurrence_contains_functor(arg, ho_apply_sym) {
-                errors.push(TypeError::Other {
-                    site: TypeError::here(),
-                    span,
-                    context: TypeErrorContext::Rule { name: rule_sym, field: RuleField::Body },
-                    expected: "first-order args in ho_apply".to_string(),
-                    actual: "predicate variable as argument to predicate".to_string(),
-                });
-            }
-        }
         }
     }
 
@@ -41761,10 +44593,21 @@ fn occurrence_contains_functor(occ: &Rc<NodeOccurrence>, target: Symbol) -> bool
 /// the rule HEAD (a hash-consed term); the body uses [`occurrence_contains_functor`].
 fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbol) -> bool {
     match kb.get_term(term) {
-        Term::Fn { functor, pos_args, named_args, .. } => {
-            if *functor == target_functor { return true; }
-            pos_args.iter().any(|a| term_contains_functor(kb, *a, target_functor))
-                || named_args.iter().any(|(_, a)| term_contains_functor(kb, *a, target_functor))
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => {
+            if *functor == target_functor {
+                return true;
+            }
+            pos_args
+                .iter()
+                .any(|a| term_contains_functor(kb, *a, target_functor))
+                || named_args
+                    .iter()
+                    .any(|(_, a)| term_contains_functor(kb, *a, target_functor))
         }
         _ => false,
     }
@@ -41784,9 +44627,7 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 /// occurrences, so a rule head / pattern node is unaffected.
 fn stamp_rule_body_var_types(occ: &Rc<NodeOccurrence>, var_types: &HashMap<u32, Value>) {
     if occ.as_pattern().is_some() {
-        for_each_pattern_child(occ, |c| {
-            stamp_rule_body_var_types(c, var_types)
-        });
+        for_each_pattern_child(occ, |c| stamp_rule_body_var_types(c, var_types));
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
@@ -41867,7 +44708,10 @@ fn type_rule_bodies(
             // and stamping. Report only for the sort-scoped rules `check_rule_typing`
             // walked; a free rule's contradiction stays unreported, as before.
             if reportable.contains(&rid) {
-                if let Term::Fn { functor: head_sym, .. } = kb.get_term(head) {
+                if let Term::Fn {
+                    functor: head_sym, ..
+                } = kb.get_term(head)
+                {
                     let head_sym = *head_sym;
                     // WI-458: the rule's own head span, keyed by RuleId — no
                     // `term_span` fallback (see `check_pattern_fragment`).
@@ -41875,7 +44719,10 @@ fn type_rule_bodies(
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
                         span: head_span.map(|s| s.span),
-                        context: TypeErrorContext::Rule { name: head_sym, field: RuleField::Whole },
+                        context: TypeErrorContext::Rule {
+                            name: head_sym,
+                            field: RuleField::Whole,
+                        },
                         expected: "consistent variable types".to_string(),
                         actual: "contradictory variable types".to_string(),
                     });
@@ -41929,7 +44776,12 @@ fn type_rule_bodies(
                     // WI-1058: a rule's top-level body atoms ARE its goals — the seed of
                     // the position walk.
                     let rewritten = dispatch_calls_in_occ(
-                        kb, &env, n, BodyPos::Goal(GoalCommit::Top), rule_sym, errors,
+                        kb,
+                        &env,
+                        n,
+                        BodyPos::Goal(GoalCommit::Top),
+                        rule_sym,
+                        errors,
                     );
                     debug_assert_eq!(
                         sources.len(),
@@ -42250,13 +45102,24 @@ fn check_goal_atom_op(
             continue; // a var / literal goal head — not an operation call
         };
         let (f, provided) = match expr {
-            Expr::Apply { functor, pos_args, named_args, .. } => {
-                (*functor, pos_args.len() + named_args.len())
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => (*functor, pos_args.len() + named_args.len()),
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
             }
-            Expr::Constructor { name, pos_args, named_args, .. }
-            | Expr::Instantiation { name, pos_args, named_args, .. } => {
-                (*name, pos_args.len() + named_args.len())
-            }
+            | Expr::Instantiation {
+                name,
+                pos_args,
+                named_args,
+                ..
+            } => (*name, pos_args.len() + named_args.len()),
             Expr::Ref(s) | Expr::Ident(s) => (*s, 0), // a nullary reference
             _ => continue,
         };
@@ -42335,7 +45198,10 @@ fn collect_find_dictionary_bases(
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         let Some(expr) = o.as_expr() else { continue };
-        if let Expr::Apply { functor, pos_args, .. } = expr {
+        if let Expr::Apply {
+            functor, pos_args, ..
+        } = expr
+        {
             if *functor == fd_sym {
                 if let Some(base) = pos_args.first().and_then(|a| occ_head_symbol(a)) {
                     let canon = kb.canonical_sort_sym(base);
@@ -42369,11 +45235,24 @@ fn check_occ_spec_op_requirements(
         // `find_dictionary` is itself a builtin goal (its args carry the witness
         // `Ref(op)` and carrier vars, not a call) — never a spec op, so skip it.
         let call = match expr {
-            Expr::Apply { functor, pos_args, named_args, .. } => Some((*functor, pos_args, named_args)),
-            Expr::Constructor { name, pos_args, named_args, .. }
-            | Expr::Instantiation { name, pos_args, named_args, .. } => {
-                Some((*name, pos_args, named_args))
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => Some((*functor, pos_args, named_args)),
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
             }
+            | Expr::Instantiation {
+                name,
+                pos_args,
+                named_args,
+                ..
+            } => Some((*name, pos_args, named_args)),
             _ => None,
         };
         if let Some((functor, pos_args, named_args)) = call {
@@ -42644,7 +45523,8 @@ fn requirement_ranges_over_owner_tparams(
     }
     !bound_type_args.is_empty()
         && bound_type_args.iter().all(|&tid| {
-            spec_arg_head_name(kb, tid).is_some_and(|n| owner_tparams.iter().any(|tp| tp.as_str() == n))
+            spec_arg_head_name(kb, tid)
+                .is_some_and(|n| owner_tparams.iter().any(|tp| tp.as_str() == n))
         })
 }
 
@@ -42852,13 +45732,29 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             continue;
         }
         for node in kb.rule_body_nodes(rid) {
-            check_occ_eq_override_backing(kb, node, &is_eq_call, &syms, &eq_defined, &mut memo, &mut errors);
+            check_occ_eq_override_backing(
+                kb,
+                node,
+                &is_eq_call,
+                &syms,
+                &eq_defined,
+                &mut memo,
+                &mut errors,
+            );
         }
     }
     // Operation bodies — free namespace-level ops and sort ops alike (every op
     // with a body is type-checked and its occurrences stamped).
     for (_, body) in kb.op_bodies_iter() {
-        check_occ_eq_override_backing(kb, body, &is_eq_call, &syms, &eq_defined, &mut memo, &mut errors);
+        check_occ_eq_override_backing(
+            kb,
+            body,
+            &is_eq_call,
+            &syms,
+            &eq_defined,
+            &mut memo,
+            &mut errors,
+        );
     }
     // WI-652 — constraint/guard bodies. A guard stores an untyped `LogicalQuery`
     // Value (no `NodeOccurrence`, no stamped `inferred_type`), never visited by
@@ -42866,7 +45762,15 @@ fn check_eq_override_backing(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // the compound-operand and dot-form/own-op channels (a bare-var operand there
     // has no type to read — documented open above).
     for query in kb.guard_queries() {
-        check_value_eq_override_backing(kb, &query, &is_eq_call, &syms, &eq_defined, &mut memo, &mut errors);
+        check_value_eq_override_backing(
+            kb,
+            &query,
+            &is_eq_call,
+            &syms,
+            &eq_defined,
+            &mut memo,
+            &mut errors,
+        );
     }
     errors
 }
@@ -42897,11 +45801,24 @@ fn check_occ_eq_override_backing(
         // recognizes (Apply, plus a Constructor/Instantiation that materialized a
         // spec-op head).
         let call = match expr {
-            Expr::Apply { functor, pos_args, named_args, .. } => Some((*functor, pos_args, named_args)),
-            Expr::Constructor { name, pos_args, named_args, .. }
-            | Expr::Instantiation { name, pos_args, named_args, .. } => {
-                Some((*name, pos_args, named_args))
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => Some((*functor, pos_args, named_args)),
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
             }
+            | Expr::Instantiation {
+                name,
+                pos_args,
+                named_args,
+                ..
+            } => Some((*name, pos_args, named_args)),
             _ => None,
         };
         if let Some((functor, pos_args, named_args)) = call {
@@ -42914,7 +45831,9 @@ fn check_occ_eq_override_backing(
             } else if is_eq_call(functor) {
                 // (A) semantic eq/neq call: probe operands.
                 for operand in pos_args.iter().chain(named_args.iter().map(|(_, a)| a)) {
-                    if let Some(carrier) = operand_unbacked_eq_carrier(kb, operand, syms, eq_defined, memo) {
+                    if let Some(carrier) =
+                        operand_unbacked_eq_carrier(kb, operand, syms, eq_defined, memo)
+                    {
                         errors.push(TypeError::EqOverrideUnbacked {
                             span: Some(o.span.span),
                             carrier_sort: carrier,
@@ -43039,7 +45958,12 @@ fn check_value_eq_override_backing(
 ) {
     let mut stack: Vec<Value> = vec![query.clone()];
     while let Some(v) = stack.pop() {
-        let ViewHead::Functor { functor: Some(functor), pos_arity, .. } = v.head(kb) else {
+        let ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
+        } = v.head(kb)
+        else {
             continue;
         };
         // (B) dot-form / own-op call: carrier read off the functor. Else (A2) a
@@ -43047,7 +45971,10 @@ fn check_value_eq_override_backing(
         // (Values carry no stamped var-leaf type, so channel A1 does not apply).
         let mut probe_operands = false;
         if let Some(carrier) = own_eq_op_carrier(kb, functor, syms, eq_defined, memo) {
-            errors.push(TypeError::EqOverrideUnbacked { span: None, carrier_sort: carrier });
+            errors.push(TypeError::EqOverrideUnbacked {
+                span: None,
+                carrier_sort: carrier,
+            });
         } else if is_eq_call(functor) {
             probe_operands = true;
         }
@@ -43055,7 +45982,9 @@ fn check_value_eq_override_backing(
         // one per-call-site diagnostic fires) AND push it for recursion.
         let mut flagged_operand = false;
         for i in 0..pos_arity {
-            let Some(operand) = v.pos_arg(kb, i).map(|it| it.to_value()) else { continue };
+            let Some(operand) = v.pos_arg(kb, i).map(|it| it.to_value()) else {
+                continue;
+            };
             if probe_operands && !flagged_operand {
                 if let Some(carrier) = operand
                     .head(kb)
@@ -43063,7 +45992,10 @@ fn check_value_eq_override_backing(
                     .and_then(|h| head_result_carrier(kb, h))
                     .and_then(|c| unbacked_eq_carrier(kb, c, syms, eq_defined, memo))
                 {
-                    errors.push(TypeError::EqOverrideUnbacked { span: None, carrier_sort: carrier });
+                    errors.push(TypeError::EqOverrideUnbacked {
+                        span: None,
+                        carrier_sort: carrier,
+                    });
                     flagged_operand = true;
                 }
             }
@@ -43162,7 +46094,9 @@ fn carrier_has_unbacked_eq_override(
 /// `provides` edges, so a carrier providing `Eq[carrier]` satisfies the `Eq` leg.
 fn carrier_self_provides_eq(kb: &KnowledgeBase, carrier: Symbol, syms: &EqFamilySyms) -> bool {
     syms.eq_sort.is_some_and(|e| sort_provides(kb, carrier, e))
-        || syms.partial_eq_sort.is_some_and(|pe| sort_provides(kb, carrier, pe))
+        || syms
+            .partial_eq_sort
+            .is_some_and(|pe| sort_provides(kb, carrier, pe))
 }
 
 /// WI-650 — is rule `r` a GENERAL clause defining `own`'s equality — head
@@ -43179,12 +46113,17 @@ fn rule_is_general_eq_clause(kb: &KnowledgeBase, r: crate::kb::RuleId, own: Symb
     let Value::Term { id, .. } = kb.rule_head_value(r) else {
         return false;
     };
-    let Term::Fn { functor, pos_args, .. } = kb.get_term(*id) else {
+    let Term::Fn {
+        functor, pos_args, ..
+    } = kb.get_term(*id)
+    else {
         return false;
     };
     *functor == own
         && !pos_args.is_empty()
-        && pos_args.iter().all(|&a| matches!(kb.get_term(a), Term::Var(_)))
+        && pos_args
+            .iter()
+            .all(|&a| matches!(kb.get_term(a), Term::Var(_)))
 }
 
 /// WI-1040 — the `out:` occurrence of an un-rewritten `find_dictionary(X, out: ?d)`
@@ -43196,7 +46135,11 @@ fn out_var_of_goal(
     fd_sym: Symbol,
 ) -> Option<Rc<NodeOccurrence>> {
     match goal.as_expr() {
-        Some(Expr::Apply { functor, named_args, .. }) if *functor == fd_sym => named_args
+        Some(Expr::Apply {
+            functor,
+            named_args,
+            ..
+        }) if *functor == fd_sym => named_args
             .iter()
             .find(|(n, _)| kb.local_name_of(*n) == REQUIREMENT_OUT_LABEL)
             .map(|(_, v)| Rc::clone(v)),
@@ -43230,7 +46173,13 @@ fn weave_covered_call(
     wove: &mut bool,
 ) -> Rc<NodeOccurrence> {
     if Rc::ptr_eq(node, target) {
-        if let Some(Expr::Apply { pos_args, named_args, type_args, .. }) = node.as_expr() {
+        if let Some(Expr::Apply {
+            pos_args,
+            named_args,
+            type_args,
+            ..
+        }) = node.as_expr()
+        {
             *wove = true;
             return node.rebuilt_expr(Expr::ApplyWithin {
                 functor: call_fn,
@@ -43241,7 +46190,9 @@ fn weave_covered_call(
             });
         }
     }
-    let Some(expr) = node.as_expr() else { return Rc::clone(node) };
+    let Some(expr) = node.as_expr() else {
+        return Rc::clone(node);
+    };
     let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
     for_each_child(expr, |c| children.push(Rc::clone(c)));
     if children.is_empty() {
@@ -43293,9 +46244,10 @@ fn collect_covered_calls(
     while let Some(cand) = stack.pop() {
         let Some(expr) = cand.as_expr() else { continue };
         for_each_child(expr, |c| stack.push(Rc::clone(c)));
-        let Expr::Apply { functor, .. } = expr else { continue };
-        if spec_op_parent_sort(kb, *functor)
-            .is_none_or(|p| kb.canonical_sort_sym(p) != spec_canon)
+        let Expr::Apply { functor, .. } = expr else {
+            continue;
+        };
+        if spec_op_parent_sort(kb, *functor).is_none_or(|p| kb.canonical_sort_sym(p) != spec_canon)
         {
             continue;
         }
@@ -43378,14 +46330,23 @@ fn rewrite_find_dictionary_goal(
     // iff the author wrote `require[X]` (the converter mints or takes the variable);
     // absent for `requires(X)`, which is the same relation read check-only.
     let (spec_arg, out_arg) = match goal.as_expr() {
-        Some(Expr::Apply { pos_args, named_args, .. }) if pos_args.len() == 1 => (
+        Some(Expr::Apply {
+            pos_args,
+            named_args,
+            ..
+        }) if pos_args.len() == 1 => (
             &pos_args[0],
             named_args
                 .iter()
                 .find(|(n, _)| kb.local_name_of(*n) == REQUIREMENT_OUT_LABEL)
                 .map(|(n, v)| (*n, Rc::clone(v))),
         ),
-        _ => return Err(err("find_dictionary(SpecInstance)".into(), "malformed guard goal".into())),
+        _ => {
+            return Err(err(
+                "find_dictionary(SpecInstance)".into(),
+                "malformed guard goal".into(),
+            ))
+        }
     };
     let Some(spec_base) = occ_head_symbol(spec_arg) else {
         return Err(err(
@@ -43442,7 +46403,13 @@ fn rewrite_find_dictionary_goal(
         while let Some(cand) = stack.pop() {
             let Some(expr) = cand.as_expr() else { continue };
             for_each_child(expr, |c| stack.push(Rc::clone(c)));
-            let Expr::Apply { functor, pos_args, named_args, .. } = expr else {
+            let Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } = expr
+            else {
                 continue;
             };
             if *functor == fd_sym {
@@ -43472,7 +46439,13 @@ fn rewrite_find_dictionary_goal(
     // carrier arguments (in the op's parameter order) decide the instance at fire
     // time.
     for cand in body_nodes {
-        let Some(Expr::Apply { functor, pos_args, named_args, .. }) = cand.as_expr() else {
+        let Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) = cand.as_expr()
+        else {
             continue;
         };
         if *functor == fd_sym {
@@ -43809,7 +46782,11 @@ fn dispatch_calls_in_occ(
                 // Owns its whole subtree and does not recurse, so `mark` is its own
                 // start and there is nothing beneath it to have reported already.
                 CallDispatch::Checked => {
-                    debug_assert_eq!(mark, errors.len(), "a non-recursing shape reported nothing yet");
+                    debug_assert_eq!(
+                        mark,
+                        errors.len(),
+                        "a non-recursing shape reported nothing yet"
+                    );
                     if !undecidable_by_this_typer(&e) {
                         errors.push(e);
                     }
@@ -43982,8 +46959,12 @@ fn child_body_positions(
             *p = BodyPos::Untyped;
         }
     }
-    let (Expr::Apply { functor, pos_args, .. }, BodyPos::Goal(commit) | BodyPos::GoalTuple(commit)) =
-        (expr, pos)
+    let (
+        Expr::Apply {
+            functor, pos_args, ..
+        },
+        BodyPos::Goal(commit) | BodyPos::GoalTuple(commit),
+    ) = (expr, pos)
     else {
         return out;
     };
@@ -44003,7 +46984,9 @@ fn child_body_positions(
     );
     // `for_each_child` yields `pos_args` first, so a slot index is a child index.
     for slot in kb.goal_slot_readings(*functor, pos_args.len()) {
-        let Some(p) = out.get_mut(slot.index) else { continue };
+        let Some(p) = out.get_mut(slot.index) else {
+            continue;
+        };
         *p = match (slot.reading, slot.tuple_wrapped) {
             (crate::kb::SlotReading::Binders, _) => BodyPos::Untyped,
             (_, true) => BodyPos::GoalTuple(child_commit),
@@ -44063,7 +47046,9 @@ fn pattern_child_indices(expr: &Expr) -> SmallVec<[usize; 4]> {
 /// a subgoal), and a sort-headed term in a data slot is an ordinary
 /// [`CallDispatch::DataTerm`] whose functor resolves.
 fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
-    let Expr::Apply { functor, .. } = expr else { return false };
+    let Expr::Apply { functor, .. } = expr else {
+        return false;
+    };
     crate::parse::pratt::is_arrow_functor(kb.local_name_of(*functor))
 }
 
@@ -44126,8 +47111,10 @@ fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
 fn undecidable_by_this_typer(e: &TypeError) -> bool {
     matches!(
         e,
-        TypeError::DotDispatchNoMatch { receiver_sort: None, .. }
-            | TypeError::UnreducedEquationFunctor { .. }
+        TypeError::DotDispatchNoMatch {
+            receiver_sort: None,
+            ..
+        } | TypeError::UnreducedEquationFunctor { .. }
     )
 }
 
@@ -44160,7 +47147,10 @@ fn undecidable_by_this_typer(e: &TypeError) -> bool {
 fn already_reported(kb: &KnowledgeBase, reported_beneath: &[TypeError], leaf: &TypeError) -> bool {
     let key = (leaf.span(kb), leaf.format(kb));
     reported_beneath.iter().any(|e| {
-        e.clone().flatten().iter().any(|l| (l.span(kb), l.format(kb)) == key)
+        e.clone()
+            .flatten()
+            .iter()
+            .any(|l| (l.span(kb), l.format(kb)) == key)
     })
 }
 
@@ -44339,7 +47329,9 @@ fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> Option<
         // the parametric leg — so it returns early for exactly the population this arm
         // added, and pays the leg twice only for the handful of DEFAULTED spec-op call
         // sites (WI-1036 counted 4–5 of those).
-        Expr::Apply { functor, pos_args, .. } => {
+        Expr::Apply {
+            functor, pos_args, ..
+        } => {
             let spec_op = || {
                 spec_op_call_parent(kb, *functor).map(|_| {
                     if defaulted_spec_op_parent(kb, *functor).is_some() {
@@ -44434,15 +47426,19 @@ fn subgoal_shape_error(
     occ: &Rc<NodeOccurrence>,
     rule_sym: Option<Symbol>,
 ) -> Option<TypeError> {
-    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return None };
+    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else {
+        return None;
+    };
     let mut shapes: Vec<(usize, Vec<Symbol>)> = Vec::new();
     for rid in kb.rules_by_functor_iter(*functor) {
         // No readable shape ⇒ no proof; say nothing at all.
         let head = kb.fact_head_term(rid)?;
         let shape = match kb.get_term(head) {
-            Term::Fn { pos_args, named_args, .. } => {
-                (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect())
-            }
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect()),
             // `Ref(c) ≡ Fn{c}` at arity 0 (WI-436) — the canonical spelling of a
             // 0-ary application, and how a bare proposition is stored.
             Term::Ref(_) | Term::Ident(_) => (0, Vec::new()),
@@ -44468,14 +47464,23 @@ fn unmatchable_shape_error(
     subject: &str,
     rule_sym: Option<Symbol>,
 ) -> Option<TypeError> {
-    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = occ.as_expr() else {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        ..
+    }) = occ.as_expr()
+    else {
         return None;
     };
     if shapes.is_empty() {
         return None;
     }
     let canon = |n: usize, labels: &[Symbol]| (n, sorted_labels(labels.iter().copied()));
-    let here = canon(pos_args.len(), &named_args.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+    let here = canon(
+        pos_args.len(),
+        &named_args.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+    );
     let mut distinct: Vec<(usize, Vec<Symbol>)> = Vec::new();
     for (n, labels) in shapes {
         let s = canon(*n, labels);
@@ -44558,7 +47563,9 @@ fn data_functor_error(
     // logic constant, and refusing those is a different, wider claim than this one
     // (WI-1034's goal walk makes it at goal position, with the discrimination-tree
     // backstop an arity-0 proposition needs).
-    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else { return None };
+    let Some(Expr::Apply { functor, .. }) = occ.as_expr() else {
+        return None;
+    };
     // WI-1058 — the ONE thing that IS checkable about an EQUATION-introduced functor's
     // redex, and the hole `undecidable_by_this_typer` handed here by name: a `[simp]`
     // rewrite fires by MATCHING a stored LHS, so a call at an arity no LHS has can never
@@ -44581,7 +47588,10 @@ fn data_functor_error(
     // arrow-typed variable" — advice about a CALL SITE, which a data slot is not. The
     // consequence here is that nothing can unify with the term and no `[simp]` rule can
     // rewrite it; `UndefinedDataFunctor` says that, in the goal twin's voice.
-    Some(TypeError::UndefinedDataFunctor { span: Some(occ.span.span), name: sym })
+    Some(TypeError::UndefinedDataFunctor {
+        span: Some(occ.span.span),
+        name: sym,
+    })
 }
 
 /// The argument labels of a call / head, deduplicated and ordered, so two spellings of
@@ -44664,7 +47674,12 @@ fn collect_term_type_constraints(
     subst: &mut Substitution,
 ) {
     match kb.get_term(term) {
-        Term::Fn { functor, pos_args, named_args, .. } => {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => {
             let functor = *functor;
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
@@ -44771,11 +47786,25 @@ fn collect_occurrence_type_constraints(
     }
     let Some(expr) = occ.as_expr() else { return };
     match expr {
-        Expr::Apply { functor, pos_args, named_args, .. } => {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => {
             constrain_application(kb, *functor, pos_args, named_args, var_types, subst);
         }
-        Expr::Constructor { name, pos_args, named_args, .. }
-        | Expr::Instantiation { name, pos_args, named_args } => {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } => {
             constrain_application(kb, *name, pos_args, named_args, var_types, subst);
         }
         // WI-819: `Expr::Let` no longer has a type-positional field. Its
@@ -44790,7 +47819,9 @@ fn collect_occurrence_type_constraints(
         // no explicit term-level call needed here.
         _ => {}
     }
-    for_each_child(expr, |c| collect_occurrence_type_constraints(kb, c, var_types, subst));
+    for_each_child(expr, |c| {
+        collect_occurrence_type_constraints(kb, c, var_types, subst)
+    });
 }
 
 /// Constrain the op-arg (positional) / entity-field (named) var positions of one
@@ -44854,7 +47885,9 @@ mod wi323_pattern_type_ann_walker_tests {
     //! `load_pattern_var` → None), so the defect is latent — these tests build
     //! the occurrence DIRECTLY (the level at which the gap is reproducible) and
     //! assert both walkers now descend into a pattern's type-annotation child.
-    use super::{check_ho_apply_pattern_occ, occurrence_contains_functor, Expr, NodeOccurrence, Pattern};
+    use super::{
+        check_ho_apply_pattern_occ, occurrence_contains_functor, Expr, NodeOccurrence, Pattern,
+    };
     use crate::intern::Symbol;
     use crate::kb::term::{Literal, Var};
     use crate::kb::KnowledgeBase;
@@ -44906,13 +47939,24 @@ mod wi323_pattern_type_ann_walker_tests {
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let { pattern, value, body },
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            },
             span,
             None,
         );
 
         let mut errors = Vec::new();
-        check_ho_apply_pattern_occ(&kb, &let_occ, ho_apply_sym, rule_sym, Some(span.span), &mut errors);
+        check_ho_apply_pattern_occ(
+            &kb,
+            &let_occ,
+            ho_apply_sym,
+            rule_sym,
+            Some(span.span),
+            &mut errors,
+        );
         assert!(
             !errors.is_empty(),
             "ho_apply in a pattern's type_ann must trigger the rule-fragment violation (WI-323)"
@@ -44941,11 +47985,7 @@ mod wi323_pattern_type_ann_walker_tests {
         );
 
         // A pattern with no type_ann must still report false (no spurious match).
-        let plain = NodeOccurrence::new_pattern(
-            Pattern::Var { name: pat_name },
-            span,
-            None,
-        );
+        let plain = NodeOccurrence::new_pattern(Pattern::Var { name: pat_name }, span, None);
         assert!(
             !occurrence_contains_functor(&plain, ho_apply_sym),
             "a pattern with no nested functor must not spuriously match"
@@ -44973,7 +48013,11 @@ mod wi323_pattern_type_ann_walker_tests {
         let value = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
         let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let let_occ = NodeOccurrence::new_expr(
-            Expr::Let { pattern, value, body },
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            },
             span,
             None,
         );
@@ -44995,16 +48039,28 @@ mod wi323_pattern_type_ann_walker_tests {
 
         let leaf = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
         let inner = NodeOccurrence::new_pattern(
-            Pattern::Constructor { name: c, pos_args: vec![leaf], named_args: Vec::new() },
-            span, None,
+            Pattern::Constructor {
+                name: c,
+                pos_args: vec![leaf],
+                named_args: Vec::new(),
+            },
+            span,
+            None,
         );
         let outer = NodeOccurrence::new_pattern(
-            Pattern::Constructor { name: c, pos_args: vec![inner], named_args: Vec::new() },
-            span, None,
+            Pattern::Constructor {
+                name: c,
+                pos_args: vec![inner],
+                named_args: Vec::new(),
+            },
+            span,
+            None,
         );
-        assert!(!occurrence_contains_functor(&outer, ho_apply_sym), "must terminate and report false");
+        assert!(
+            !occurrence_contains_functor(&outer, ho_apply_sym),
+            "must terminate and report false"
+        );
     }
-
 }
 
 #[cfg(test)]
@@ -45018,7 +48074,7 @@ mod wi417_cycle_tests {
     //! rather than recursing to a crash. Before WI-417 these recursed forever
     //! and aborted the test binary (an uncatchable stack overflow), so a
     //! regression here is a loud failure.
-    use super::{walk_type, walk_type_value, walk_value_to_resolved, walk_pattern_field_type_deep};
+    use super::{walk_pattern_field_type_deep, walk_type, walk_type_value, walk_value_to_resolved};
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, TermId, Var, VarId};
@@ -45119,7 +48175,9 @@ mod wi394_surface_node_binding_tests {
         let mut kb = KnowledgeBase::new();
         let (var, var_t) = fresh_var_term(&mut kb, "V");
         let var_term = kb.alloc(var_t);
-        let Var::Global(vid) = var else { unreachable!() };
+        let Var::Global(vid) = var else {
+            unreachable!()
+        };
         let mut subst = Substitution::new();
         subst.bind_value(&kb, vid, Value::Int(42));
         let out = surface_node_binding_to_term(&mut kb, &subst, var_term);
@@ -45161,7 +48219,9 @@ mod wi394_surface_node_binding_tests {
         let mut kb = KnowledgeBase::new();
         let (var, var_t) = fresh_var_term(&mut kb, "V");
         let var_term = kb.alloc(var_t);
-        let Var::Global(vid) = var else { unreachable!() };
+        let Var::Global(vid) = var else {
+            unreachable!()
+        };
         let concrete = kb.alloc(Term::Const(Literal::Int(7)));
         let mut subst = Substitution::new();
         subst.bind_value(&kb, vid, Value::term(concrete));
@@ -45173,7 +48233,6 @@ mod wi394_surface_node_binding_tests {
 #[cfg(test)]
 mod p3_tests {
     //! WI-342 P3 — carrier-agnostic `unify_types` over `TermView`.
-    use crate::kb::ClauseKind;
     use super::unify_types;
     use crate::eval::value::Value;
     use crate::kb::load::register_prelude;
@@ -45181,6 +48240,7 @@ mod p3_tests {
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, Var};
     use crate::kb::term_view::TermIdView;
+    use crate::kb::ClauseKind;
     use crate::kb::KnowledgeBase;
     use crate::span::{SourceId, SourceSpan};
     use std::rc::Rc;
@@ -45212,11 +48272,19 @@ mod p3_tests {
         let var_t = kb.alloc(Term::Var(Var::Global(vid)));
 
         let mut subst = Substitution::new();
-        assert!(unify_types(&mut kb, &mut subst, &TermIdView(var_t), &denoted_occ));
+        assert!(unify_types(
+            &mut kb,
+            &mut subst,
+            &TermIdView(var_t),
+            &denoted_occ
+        ));
 
         match subst.resolve_as_value(vid) {
             Some(Value::Node(occ)) => {
-                assert!(Rc::ptr_eq(occ, &denoted_occ), "binding preserves occurrence identity");
+                assert!(
+                    Rc::ptr_eq(occ, &denoted_occ),
+                    "binding preserves occurrence identity"
+                );
                 assert!(matches!(occ.as_type(), Some(TypeNode::Denoted { .. })));
             }
             other => panic!("expected ?T → Value::Node(denoted), got {other:?}"),
@@ -45246,9 +48314,15 @@ mod p3_tests {
         let mut s = Substitution::new();
         s.bind_value(&kb, vid, Value::Node(occ_c1));
         s.bind_value(&kb, vid, Value::Node(occ_c2));
-        assert!(!s.is_contradiction(), "equal Value-carried types must not contradict");
+        assert!(
+            !s.is_contradiction(),
+            "equal Value-carried types must not contradict"
+        );
         s.bind_value(&kb, vid, Value::Node(occ_d));
-        assert!(s.is_contradiction(), "a distinct Value-carried type contradicts");
+        assert!(
+            s.is_contradiction(),
+            "a distinct Value-carried type contradicts"
+        );
     }
 }
 
@@ -45261,12 +48335,12 @@ mod wi361_reader_tests {
     //! form today, so the test manually constructs the term backing to exercise
     //! the migrated path. (The deep-form path stays covered by the wider suite;
     //! the carrier-agnostic classifier itself by `type_extract_test`.)
-    use crate::kb::ClauseKind;
     use super::{extract_sort_ref_sym, sort_functor_of};
-    use crate::kb::term_view::TermIdView;
     use crate::intern::Symbol;
     use crate::kb::load::register_prelude;
     use crate::kb::term::{Term, TermId};
+    use crate::kb::term_view::TermIdView;
+    use crate::kb::ClauseKind;
     use crate::kb::KnowledgeBase;
     use smallvec::SmallVec;
 
@@ -45278,11 +48352,20 @@ mod wi361_reader_tests {
 
     /// Term backing `Fn{base, named:[(param, Ref(arg))]}` — a parameterized type
     /// whose base sort IS the functor (no deep `parameterized` wrapper).
-    fn term_backed_param(kb: &mut KnowledgeBase, base: Symbol, param: Symbol, arg: Symbol) -> TermId {
+    fn term_backed_param(
+        kb: &mut KnowledgeBase,
+        base: Symbol,
+        param: Symbol,
+        arg: Symbol,
+    ) -> TermId {
         let arg_ref = kb.alloc(Term::Ref(arg));
         let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named.push((param, arg_ref));
-        kb.alloc(Term::Fn { functor: base, pos_args: SmallVec::new(), named_args: named })
+        kb.alloc(Term::Fn {
+            functor: base,
+            pos_args: SmallVec::new(),
+            named_args: named,
+        })
     }
 
     #[test]
@@ -45295,17 +48378,29 @@ mod wi361_reader_tests {
         // Term-backed `List[T = Int]` == `Fn{List, named:[(T, Ref(Int))]}` — the
         // functor IS the base sort; pre-migration this returned None.
         let tb = term_backed_param(&mut kb, list, t, int);
-        assert_eq!(sort_functor_of(&kb, tb), Some(list), "term-backed Fn{{List,..}} -> List");
+        assert_eq!(
+            sort_functor_of(&kb, tb),
+            Some(list),
+            "term-backed Fn{{List,..}} -> List"
+        );
 
         // The same via the real builder `make_parameterized_type` (also term-backed).
         let int_ref = kb.make_sort_ref(int);
         let base = kb.make_sort_ref(list);
         let built = kb.make_parameterized_type(base, &[(t, int_ref)]);
-        assert_eq!(sort_functor_of(&kb, built), Some(list), "make_parameterized_type -> List");
+        assert_eq!(
+            sort_functor_of(&kb, built),
+            Some(list),
+            "make_parameterized_type -> List"
+        );
 
         // Term-backed bare sort `Ref(Int)`.
         let bare = kb.alloc(Term::Ref(int));
-        assert_eq!(sort_functor_of(&kb, bare), Some(int), "bare Ref(Int64) -> Int64");
+        assert_eq!(
+            sort_functor_of(&kb, bare),
+            Some(int),
+            "bare Ref(Int64) -> Int64"
+        );
 
         // A structural variant (arrow) has no sort head.
         let unit = kb.intern("Unit");
@@ -45323,15 +48418,27 @@ mod wi361_reader_tests {
 
         // Term-backed bare sort `Ref(Int)` — pre-migration this returned None.
         let bare = kb.alloc(Term::Ref(int));
-        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(bare)), Some(int), "bare Ref(Int64) -> Int64");
+        assert_eq!(
+            extract_sort_ref_sym(&kb, &TermIdView(bare)),
+            Some(int),
+            "bare Ref(Int64) -> Int64"
+        );
 
         // The same via the real builder `make_sort_ref` (also `Ref(Int)`).
         let built = kb.make_sort_ref(int);
-        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(built)), Some(int), "make_sort_ref(Int64) -> Int64");
+        assert_eq!(
+            extract_sort_ref_sym(&kb, &TermIdView(built)),
+            Some(int),
+            "make_sort_ref(Int64) -> Int64"
+        );
 
         // A parameterized type is NOT a bare sort ref.
         let tb = term_backed_param(&mut kb, list, t, int);
-        assert_eq!(extract_sort_ref_sym(&kb, &TermIdView(tb)), None, "Fn{{List,..}} is not a bare sort ref");
+        assert_eq!(
+            extract_sort_ref_sym(&kb, &TermIdView(tb)),
+            None,
+            "Fn{{List,..}} is not a bare sort ref"
+        );
     }
 
     /// The unify/subtype STRUCTURAL dispatch reads a term-backed `Fn{S, named}` as
@@ -45393,8 +48500,11 @@ mod wi361_reader_tests {
 
         // make_sort_ref(Int) -> the bare term `Ref(Int)`, NOT `sort_ref(name: …)`.
         let sr = kb.make_sort_ref(int);
-        assert!(matches!(kb.get_term(sr), Term::Ref(s) if *s == int),
-            "make_sort_ref flips to Ref(S); got {:?}", kb.get_term(sr));
+        assert!(
+            matches!(kb.get_term(sr), Term::Ref(s) if *s == int),
+            "make_sort_ref flips to Ref(S); got {:?}",
+            kb.get_term(sr)
+        );
 
         // make_parameterized_type(make_sort_ref(List), [T = Ref(Int)]) ->
         // `Fn{List, named:[(T, Ref(Int))]}` — the base sort IS the functor.
@@ -45402,7 +48512,11 @@ mod wi361_reader_tests {
         let int_ref = kb.make_sort_ref(int);
         let p = kb.make_parameterized_type(base, &[(t, int_ref)]);
         match kb.get_term(p).clone() {
-            Term::Fn { functor, named_args, pos_args } => {
+            Term::Fn {
+                functor,
+                named_args,
+                pos_args,
+            } => {
                 assert_eq!(functor, list, "functor IS the base sort (List)");
                 assert!(pos_args.is_empty());
                 assert_eq!(named_args.len(), 1);
@@ -45416,13 +48530,24 @@ mod wi361_reader_tests {
         // degenerate no-arg `Fn{S}` (which would classify as `Error`).
         let empty_base = kb.make_sort_ref(list);
         let empty_param = kb.make_parameterized_type(empty_base, &[]);
-        assert!(matches!(kb.get_term(empty_param), Term::Ref(s) if *s == list),
-            "empty-bindings parameterized collapses to bare Ref(S); got {:?}", kb.get_term(empty_param));
+        assert!(
+            matches!(kb.get_term(empty_param), Term::Ref(s) if *s == list),
+            "empty-bindings parameterized collapses to bare Ref(S); got {:?}",
+            kb.get_term(empty_param)
+        );
 
         // Readers classify the flipped producers' output.
-        assert!(matches!(extract_type(&kb, &TermIdView(sr)), TypeExtractor::SortRef(s) if s == int));
-        assert!(matches!(extract_type(&kb, &TermIdView(p)), TypeExtractor::Parameterized { base, .. } if base == list));
-        assert_eq!(sort_functor_of(&kb, p), Some(list), "term-backed Fn{{List,..}} -> List");
+        assert!(
+            matches!(extract_type(&kb, &TermIdView(sr)), TypeExtractor::SortRef(s) if s == int)
+        );
+        assert!(
+            matches!(extract_type(&kb, &TermIdView(p)), TypeExtractor::Parameterized { base, .. } if base == list)
+        );
+        assert_eq!(
+            sort_functor_of(&kb, p),
+            Some(list),
+            "term-backed Fn{{List,..}} -> List"
+        );
     }
 }
 
@@ -45431,13 +48556,13 @@ mod p4_tests {
     //! WI-342 P4-A — carrier-agnostic structural unification of a
     //! `Value`-carried `parameterized` (the denoted-bearing effect label),
     //! standalone (not yet inside a row — that's P4-B).
-    use crate::kb::ClauseKind;
     use super::unify_types;
     use crate::kb::load::register_prelude;
     use crate::kb::node_occurrence::{NodeOccurrence, TypeChild};
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, TermId};
     use crate::kb::term_view::TermIdView;
+    use crate::kb::ClauseKind;
     use crate::kb::KnowledgeBase;
     use crate::span::{SourceId, SourceSpan};
     use std::rc::Rc;
@@ -45454,7 +48579,12 @@ mod p4_tests {
 
     /// `Value`-carried `parameterized(sort_ref(Modify), [p = denoted(Ref sym)])`
     /// — a ground `sort_ref` base, a poisoned (denoted-bearing) binding value.
-    fn occ_param(kb: &mut KnowledgeBase, modify: crate::intern::Symbol, p: crate::intern::Symbol, sym: crate::intern::Symbol) -> Rc<NodeOccurrence> {
+    fn occ_param(
+        kb: &mut KnowledgeBase,
+        modify: crate::intern::Symbol,
+        p: crate::intern::Symbol,
+        sym: crate::intern::Symbol,
+    ) -> Rc<NodeOccurrence> {
         let base = kb.make_sort_ref(modify);
         let denoted_occ = kb.make_denoted_occ_ref(sym, span(), None);
         kb.make_parameterized_occ(
@@ -45484,7 +48614,10 @@ mod p4_tests {
         let rho = kb.intern("rho");
         let vid = kb.fresh_var(rho);
         let tail_t = kb.alloc(Term::Var(Var::Global(vid)));
-        assert!(kb.row_tail_var_of(tail_t).is_some(), "sanity: bare Global is a row tail");
+        assert!(
+            kb.row_tail_var_of(tail_t).is_some(),
+            "sanity: bare Global is a row tail"
+        );
 
         // Inferred arrow `Int64 -> Int64 @ {Bool, ?rho}` — one present label + an
         // open tail. WI-470: occurrence-primary (`Value::Node`).
@@ -45497,17 +48630,29 @@ mod p4_tests {
             span(),
             None,
         );
-        assert!(matches!(arrow, Value::Node(_)), "WI-470: inferred arrow is occurrence-primary");
+        assert!(
+            matches!(arrow, Value::Node(_)),
+            "WI-470: inferred arrow is occurrence-primary"
+        );
 
         let (_, _, effects) = arrow_parts(&mut kb, &arrow).expect("arrow has effects parts");
         let effects = effects.expect("arrow synthesizes an effects child");
         let subst = Substitution::new();
         let (present, tails, _absent) =
             decompose_effect_row(&mut kb, &subst, &effects).expect("effects row decomposes");
-        assert!(tails.contains(&tail_t), "row-tail var folds as open(tail); tails={tails:?}");
-        assert_eq!(present.len(), 1, "exactly the real label is present (NOT the tail); present={present:?}");
         assert!(
-            present.iter().any(|p| matches!(p, Value::Term { id: t, .. } if *t == label_t)),
+            tails.contains(&tail_t),
+            "row-tail var folds as open(tail); tails={tails:?}"
+        );
+        assert_eq!(
+            present.len(),
+            1,
+            "exactly the real label is present (NOT the tail); present={present:?}"
+        );
+        assert!(
+            present
+                .iter()
+                .any(|p| matches!(p, Value::Term { id: t, .. } if *t == label_t)),
             "the present label is Bool; present={present:?}",
         );
     }
@@ -45527,13 +48672,19 @@ mod p4_tests {
 
         // Closed: a literal value-in-type (the `3` of `Vector[Int64, 3]`).
         let lit = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span(), None);
-        assert!(denoted_value_is_closed(&kb, &lit), "a literal value is closed");
+        assert!(
+            denoted_value_is_closed(&kb, &lit),
+            "a literal value is closed"
+        );
 
         // Not closed: a free logical var (the `?n` of `Vector[Int64, ?n]`) — inference.
         let n = kb.intern("n");
         let vid = kb.fresh_var(n);
         let var = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span(), None);
-        assert!(!denoted_value_is_closed(&kb, &var), "a free var is not closed");
+        assert!(
+            !denoted_value_is_closed(&kb, &var),
+            "a free var is not closed"
+        );
 
         // Not closed: each value-PLACE kind is binder-relative (deferred to the
         // alignment-aware checker). Crucially `CallbackParam` — the `a` of a declared
@@ -45551,7 +48702,9 @@ mod p4_tests {
         .enumerate()
         {
             let scope = kb.global_scope();
-            let s = kb.symbols.define(&format!("p{i}"), &format!("wi470.test.p{i}"), kind, scope);
+            let s = kb
+                .symbols
+                .define(&format!("p{i}"), &format!("wi470.test.p{i}"), kind, scope);
             let r = NodeOccurrence::new_expr(Expr::Ref(s), span(), None);
             assert!(
                 !denoted_value_is_closed(&kb, &r),
@@ -45562,9 +48715,14 @@ mod p4_tests {
         // Closed: a ref to a GLOBAL identity (Sort/Entity/Operation) — the `store` of
         // `Modify[store]` (a global resource), compared by symbol identity, not alignment.
         let scope = kb.global_scope();
-        let store = kb.symbols.define("store", "wi470.test.store", SymbolKind::Entity, scope);
+        let store = kb
+            .symbols
+            .define("store", "wi470.test.store", SymbolKind::Entity, scope);
         let global_ref = NodeOccurrence::new_expr(Expr::Ref(store), span(), None);
-        assert!(denoted_value_is_closed(&kb, &global_ref), "a global (non-place) ref is closed");
+        assert!(
+            denoted_value_is_closed(&kb, &global_ref),
+            "a global (non-place) ref is closed"
+        );
     }
 
     /// WI-470/WI-600: a parameterized type's binding is READ identically whether the
@@ -45597,10 +48755,12 @@ mod p4_tests {
         // sort. `assert_sort_alias` does all three for a loaded program.
         let global_scope = kb.global_scope();
         let global_domain = global_scope.owner();
-        kb.symbols.define_qualified_only("Box", "Box", SymbolKind::Sort, global_scope);
+        kb.symbols
+            .define_qualified_only("Box", "Box", SymbolKind::Sort, global_scope);
         let box_sym = kb.resolve_symbol("Box");
         let box_scope = kb.symbols.scope_id(box_sym);
-        kb.symbols.define_qualified_only("T", "Box.T", SymbolKind::Sort, box_scope);
+        kb.symbols
+            .define_qualified_only("T", "Box.T", SymbolKind::Sort, box_scope);
         let box_t = kb.resolve_symbol("Box.T");
         kb.symbols.add_type_param(box_scope, "T", box_t);
         // SortAlias(Fn{Box.T}, Var::Global(vid)) — pos[0] is the nullary `Fn` head
@@ -45639,8 +48799,15 @@ mod p4_tests {
         );
         let from_node = parameterized_vid_bindings(&kb, &Value::Node(node), box_sym);
 
-        assert_eq!(from_term, vec![(vid, int_ref)], "binding read from the TermId carrier, keyed by Box.T's canonical VarId");
-        assert_eq!(from_node, from_term, "Node carrier yields the SAME binding (never erased)");
+        assert_eq!(
+            from_term,
+            vec![(vid, int_ref)],
+            "binding read from the TermId carrier, keyed by Box.T's canonical VarId"
+        );
+        assert_eq!(
+            from_node, from_term,
+            "Node carrier yields the SAME binding (never erased)"
+        );
     }
 
     /// WI-361 regression: `more_general_type`'s bare-vs-parameterized join
@@ -45688,11 +48855,17 @@ mod p4_tests {
         let occ_c1 = occ_param(&mut kb, modify, p, c);
         let occ_c2 = occ_param(&mut kb, modify, p, c);
         let mut s = Substitution::new();
-        assert!(unify_types(&mut kb, &mut s, &occ_c1, &occ_c2), "Value Modify[c] vs Value Modify[c]");
+        assert!(
+            unify_types(&mut kb, &mut s, &occ_c1, &occ_c2),
+            "Value Modify[c] vs Value Modify[c]"
+        );
 
         let occ_d = occ_param(&mut kb, modify, p, d);
         let mut s2 = Substitution::new();
-        assert!(!unify_types(&mut kb, &mut s2, &occ_c1, &occ_d), "Value Modify[c] vs Value Modify[d]");
+        assert!(
+            !unify_types(&mut kb, &mut s2, &occ_c1, &occ_d),
+            "Value Modify[c] vs Value Modify[d]"
+        );
     }
 
     /// `Value`-carried arrow `Unit -> Unit` with a single present effect label
@@ -45742,7 +48915,10 @@ mod p4_tests {
         // `(f: Unit -> Unit {Modify[c]}, n: Int)` as a `Value::Node` (poisoned `f`).
         let value_arrow_c = value_modify_arrow(&mut kb, modify, p, unit_ref, c);
         let tuple = Value::Node(kb.make_named_tuple_occ(
-            vec![(f, TypeChild::Node(value_arrow_c)), (n, TypeChild::Ground(int_ref))],
+            vec![
+                (f, TypeChild::Node(value_arrow_c)),
+                (n, TypeChild::Ground(int_ref)),
+            ],
             span(),
             None,
         ));
@@ -45753,14 +48929,23 @@ mod p4_tests {
             "Node named tuple exposes one `fields` child, got {:?}",
             tuple.head(&kb),
         );
-        assert!(tuple.named_arg(&kb, fields_key).is_some(), "the `fields` child is exposed");
+        assert!(
+            tuple.named_arg(&kb, fields_key).is_some(),
+            "the `fields` child is exposed"
+        );
 
         // The closed gap: `named_tuple_fields` decodes BOTH fields for a Node tuple.
         let by: std::collections::HashMap<_, _> =
             super::named_tuple_fields(&kb, &tuple).into_iter().collect();
         assert_eq!(by.len(), 2, "two fields decoded, got {by:?}");
-        assert!(matches!(by.get(&n), Some(Value::Term { .. })), "`n: Int64` rides as Value::Term");
-        assert!(matches!(by.get(&f), Some(Value::Node(_))), "poisoned `f` rides as Value::Node");
+        assert!(
+            matches!(by.get(&n), Some(Value::Term { .. })),
+            "`n: Int64` rides as Value::Term"
+        );
+        assert!(
+            matches!(by.get(&f), Some(Value::Node(_))),
+            "poisoned `f` rides as Value::Node"
+        );
     }
 
     /// WI-342 occurs-check over a `Value::Node` Rep-A type: binding `?v` to a Node
@@ -45803,7 +48988,6 @@ mod p4_tests {
             "occurs-check must reject binding ?v to a Node tuple whose field mentions ?v"
         );
     }
-
 }
 
 /// WI-341 Stage B — alpha-equivalence of callback-arrow binders. A callback's
@@ -45811,13 +48995,15 @@ mod p4_tests {
 /// POSITION; two callbacks' i-th params are the same up to renaming.
 #[cfg(test)]
 mod wi341_alpha_tests {
-    use crate::kb::test_support::load_stdlib;
     use crate::kb::subst::Substitution;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::KnowledgeBase;
 
     /// The (`Value`) type of an op's first parameter — a callback arrow.
     fn first_param_type(kb: &KnowledgeBase, op_qn: &str) -> crate::eval::value::Value {
-        let op = kb.try_resolve_symbol(op_qn).unwrap_or_else(|| panic!("resolve {op_qn}"));
+        let op = kb
+            .try_resolve_symbol(op_qn)
+            .unwrap_or_else(|| panic!("resolve {op_qn}"));
         let rec = crate::kb::op_info::lookup_operation_info(kb, op)
             .unwrap_or_else(|| panic!("opinfo {op_qn}"));
         rec.params.into_iter().next().expect("a param").1
@@ -45836,8 +49022,14 @@ end
         let f_arrow = first_param_type(&kb, "anthill.test.wi341alpha.op1");
         let g_arrow = first_param_type(&kb, "anthill.test.wi341alpha.op2");
         // The denoted-bearing callback arrows are `Value::Node` (Stage A).
-        assert!(matches!(f_arrow, crate::eval::value::Value::Node(_)), "op1.f must be Value::Node");
-        assert!(matches!(g_arrow, crate::eval::value::Value::Node(_)), "op2.g must be Value::Node");
+        assert!(
+            matches!(f_arrow, crate::eval::value::Value::Node(_)),
+            "op1.f must be Value::Node"
+        );
+        assert!(
+            matches!(g_arrow, crate::eval::value::Value::Node(_)),
+            "op2.g must be Value::Node"
+        );
         let mut subst = Substitution::new();
         assert!(
             super::unify_types(&mut kb, &mut subst, &f_arrow, &g_arrow),
@@ -45865,8 +49057,6 @@ end
     }
 }
 
-
-
 /// WI-464 — variance-aware parameterized join (LUB) / meet (GLB). The join now
 /// CONSTRUCTS a parameterized type per-binding by declared variance instead of only
 /// widening the nominal side, and `meet_types` is its lattice dual (GLB down to the
@@ -45875,11 +49065,14 @@ end
 /// fixture, then drives the private lattice ops directly.
 #[cfg(test)]
 mod wi464_variance_join_meet_tests {
-    use crate::kb::test_support::load_stdlib;
-    use super::{extract_sort_ref_sym, extract_type, join_types, meet_types, type_dispatch_name_view, TypeExtractor};
+    use super::{
+        extract_sort_ref_sym, extract_type, join_types, meet_types, type_dispatch_name_view,
+        TypeExtractor,
+    };
     use crate::eval::value::Value;
     use crate::intern::Symbol;
     use crate::kb::term::TermId;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::KnowledgeBase;
 
     const SRC: &str = r#"namespace test.wi464
@@ -45903,7 +49096,8 @@ end
     }
 
     fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
     }
 
     /// A bare `sort_ref` Value for the sort named `qn`.
@@ -45969,13 +49163,27 @@ end
     #[test]
     fn covariant_join_builds_parameterized_lub() {
         let mut kb = load_kb();
-        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
-        let a = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.cat")]);
-        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let (animal, option) = (
+            sym(&kb, "test.wi464.Animal"),
+            sym(&kb, "anthill.prelude.Option"),
+        );
+        let a = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.cat")],
+        );
+        let b = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.dog")],
+        );
         let j = join_types(&mut kb, a, b).expect("Option[cat] and Option[dog] have a join");
         let (base, binds) = as_param(&kb, &j);
         assert_eq!(base, option, "join base sort is Option");
-        assert!(is_sort(&kb, binding(&kb, &binds, "T"), animal), "T binding joins cat/dog to Animal");
+        assert!(
+            is_sort(&kb, binding(&kb, &binds, "T"), animal),
+            "T binding joins cat/dog to Animal"
+        );
     }
 
     /// INVARIANT: `Box` has no variance fact, so its `T` is invariant. The two
@@ -45988,7 +49196,10 @@ end
         let a = param(&mut kb, "test.wi464.Box", &[("T", "test.wi464.Animal.cat")]);
         let b = param(&mut kb, "test.wi464.Box", &[("T", "test.wi464.Animal.dog")]);
         let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
-        assert!(is_sort(&kb, &j, box_sym), "an unequal invariant binding widens to bare Box, got {j:?}");
+        assert!(
+            is_sort(&kb, &j, box_sym),
+            "an unequal invariant binding widens to bare Box, got {j:?}"
+        );
     }
 
     /// CONTRAVARIANT: `Function.A` is contravariant, so its arm of the join takes the
@@ -45998,16 +49209,37 @@ end
     #[test]
     fn contravariant_join_uses_meet() {
         let mut kb = load_kb();
-        let (function, int) = (sym(&kb, "anthill.prelude.Function"), sym(&kb, "anthill.prelude.Int64"));
-        let a = param(&mut kb, "anthill.prelude.Function",
-            &[("A", "test.wi464.Animal.cat"), ("B", "anthill.prelude.Int64")]);
-        let b = param(&mut kb, "anthill.prelude.Function",
-            &[("A", "test.wi464.Animal.dog"), ("B", "anthill.prelude.Int64")]);
+        let (function, int) = (
+            sym(&kb, "anthill.prelude.Function"),
+            sym(&kb, "anthill.prelude.Int64"),
+        );
+        let a = param(
+            &mut kb,
+            "anthill.prelude.Function",
+            &[
+                ("A", "test.wi464.Animal.cat"),
+                ("B", "anthill.prelude.Int64"),
+            ],
+        );
+        let b = param(
+            &mut kb,
+            "anthill.prelude.Function",
+            &[
+                ("A", "test.wi464.Animal.dog"),
+                ("B", "anthill.prelude.Int64"),
+            ],
+        );
         let j = join_types(&mut kb, a, b).expect("two Function types have a join");
         let (base, binds) = as_param(&kb, &j);
         assert_eq!(base, function, "join base sort is Function");
-        assert!(is_nothing(&kb, binding(&kb, &binds, "A")), "contravariant A meets cat/dog to nothing");
-        assert!(is_sort(&kb, binding(&kb, &binds, "B"), int), "covariant B joins Int/Int to Int");
+        assert!(
+            is_nothing(&kb, binding(&kb, &binds, "A")),
+            "contravariant A meets cat/dog to nothing"
+        );
+        assert!(
+            is_sort(&kb, binding(&kb, &binds, "B"), int),
+            "covariant B joins Int/Int to Int"
+        );
     }
 
     /// GLB basics — `meet_types` is total (the lattice has a `nothing` bottom):
@@ -46017,24 +49249,44 @@ end
     #[test]
     fn meet_glb_basics() {
         let mut kb = load_kb();
-        let (cat, option) = (sym(&kb, "test.wi464.Animal.cat"), sym(&kb, "anthill.prelude.Option"));
+        let (cat, option) = (
+            sym(&kb, "test.wi464.Animal.cat"),
+            sym(&kb, "anthill.prelude.Option"),
+        );
 
         let animal_v = bare(&mut kb, "test.wi464.Animal");
         let cat_v = bare(&mut kb, "test.wi464.Animal.cat");
         let m1 = meet_types(&mut kb, animal_v, cat_v);
-        assert!(is_sort(&kb, &m1, cat), "meet(Animal, cat) is the subtype cat, got {m1:?}");
+        assert!(
+            is_sort(&kb, &m1, cat),
+            "meet(Animal, cat) is the subtype cat, got {m1:?}"
+        );
 
         let cat_v = bare(&mut kb, "test.wi464.Animal.cat");
         let dog_v = bare(&mut kb, "test.wi464.Animal.dog");
         let m2 = meet_types(&mut kb, cat_v, dog_v);
-        assert!(is_nothing(&kb, &m2), "meet(cat, dog) is the bottom type nothing, got {m2:?}");
+        assert!(
+            is_nothing(&kb, &m2),
+            "meet(cat, dog) is the bottom type nothing, got {m2:?}"
+        );
 
-        let oa = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.cat")]);
-        let ob = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let oa = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.cat")],
+        );
+        let ob = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.dog")],
+        );
         let m3 = meet_types(&mut kb, oa, ob);
         let (base, binds) = as_param(&kb, &m3);
         assert_eq!(base, option, "meet base sort is Option");
-        assert!(is_nothing(&kb, binding(&kb, &binds, "T")), "covariant T meets cat/dog to nothing");
+        assert!(
+            is_nothing(&kb, binding(&kb, &binds, "T")),
+            "covariant T meets cat/dog to nothing"
+        );
     }
 
     /// WI-769 — the binding-key rule ([`binding_for_param`]) in the LUB. One side keys
@@ -46050,11 +49302,22 @@ end
     #[test]
     fn wi769_join_bridges_canonical_vs_bare_param_keys() {
         let mut kb = load_kb();
-        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let (animal, option) = (
+            sym(&kb, "test.wi464.Animal"),
+            sym(&kb, "anthill.prelude.Option"),
+        );
         let canon_t = sym(&kb, "anthill.prelude.Option.T");
-        assert_ne!(canon_t, kb.intern("T"), "the two key spellings must be distinct symbols");
+        assert_ne!(
+            canon_t,
+            kb.intern("T"),
+            "the two key spellings must be distinct symbols"
+        );
         let a = param_keyed(&mut kb, option, &[(canon_t, "test.wi464.Animal.cat")]);
-        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let b = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.dog")],
+        );
         for (x, y) in [(a.clone(), b.clone()), (b, a)] {
             let j = join_types(&mut kb, x, y)
                 .expect("cross-spelled Option[cat] / Option[dog] must still join");
@@ -46082,9 +49345,17 @@ end
         let mut kb = load_kb();
         let option = sym(&kb, "anthill.prelude.Option");
         let canon_t = sym(&kb, "anthill.prelude.Option.T");
-        assert_ne!(canon_t, kb.intern("T"), "the two key spellings must be distinct symbols");
+        assert_ne!(
+            canon_t,
+            kb.intern("T"),
+            "the two key spellings must be distinct symbols"
+        );
         let a = param_keyed(&mut kb, option, &[(canon_t, "test.wi464.Animal.cat")]);
-        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let b = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.dog")],
+        );
         for (x, y) in [(a.clone(), b.clone()), (b, a)] {
             let m = meet_types(&mut kb, x, y);
             let (base, binds) = as_param(&kb, &m);
@@ -46110,20 +49381,34 @@ end
     #[test]
     fn wi769_join_matches_base_sorts_canonically() {
         let mut kb = load_kb();
-        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let (animal, option) = (
+            sym(&kb, "test.wi464.Animal"),
+            sym(&kb, "anthill.prelude.Option"),
+        );
         let canon_t = sym(&kb, "anthill.prelude.Option.T");
         let twin = kb.intern("anthill.prelude.Option");
         assert_ne!(twin, option, "the twin must be a distinct Symbol copy");
-        assert_eq!(kb.canonical_sort_sym(twin), option, "…that canonicalizes to Option");
+        assert_eq!(
+            kb.canonical_sort_sym(twin),
+            option,
+            "…that canonicalizes to Option"
+        );
         let bare_t = kb.intern("T");
         let a = param_keyed(&mut kb, twin, &[(bare_t, "test.wi464.Animal.cat")]);
-        let b = param(&mut kb, "anthill.prelude.Option", &[("T", "test.wi464.Animal.dog")]);
+        let b = param(
+            &mut kb,
+            "anthill.prelude.Option",
+            &[("T", "test.wi464.Animal.dog")],
+        );
         for (x, y) in [(a.clone(), b.clone()), (b, a)] {
             let j = join_types(&mut kb, x, y)
                 .expect("Option under a twin base Symbol must still join with Option");
             let (base, binds) = as_param(&kb, &j);
             assert_eq!(base, option, "the combine constructs on the CANONICAL base");
-            assert!(is_sort(&kb, binding(&kb, &binds, "T"), animal), "T joins cat/dog to Animal");
+            assert!(
+                is_sort(&kb, binding(&kb, &binds, "T"), animal),
+                "T joins cat/dog to Animal"
+            );
             assert_eq!(binds[0].0, canon_t, "…and on the canonical param key");
         }
     }
@@ -46146,12 +49431,18 @@ end
         let a = param_keyed(
             &mut kb,
             function,
-            &[(canon_a, "test.wi464.Animal.cat"), (canon_a, "test.wi464.Animal.cat")],
+            &[
+                (canon_a, "test.wi464.Animal.cat"),
+                (canon_a, "test.wi464.Animal.cat"),
+            ],
         );
         let b = param(
             &mut kb,
             "anthill.prelude.Function",
-            &[("A", "test.wi464.Animal.dog"), ("B", "anthill.prelude.Int64")],
+            &[
+                ("A", "test.wi464.Animal.dog"),
+                ("B", "anthill.prelude.Int64"),
+            ],
         );
         let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
         assert!(
@@ -46176,12 +49467,18 @@ end
         let a = param_keyed(
             &mut kb,
             option,
-            &[(canon_t, "test.wi464.Animal.cat"), (bare_t, "anthill.prelude.Int64")],
+            &[
+                (canon_t, "test.wi464.Animal.cat"),
+                (bare_t, "anthill.prelude.Int64"),
+            ],
         );
         let b = param_keyed(
             &mut kb,
             option,
-            &[(canon_t, "test.wi464.Animal.dog"), (bare_t, "anthill.prelude.Int64")],
+            &[
+                (canon_t, "test.wi464.Animal.dog"),
+                (bare_t, "anthill.prelude.Int64"),
+            ],
         );
         let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
         assert!(
@@ -46199,14 +49496,20 @@ end
     #[test]
     fn wi769_foreign_dotted_key_keeps_its_spelling() {
         let mut kb = load_kb();
-        let (animal, option) = (sym(&kb, "test.wi464.Animal"), sym(&kb, "anthill.prelude.Option"));
+        let (animal, option) = (
+            sym(&kb, "test.wi464.Animal"),
+            sym(&kb, "anthill.prelude.Option"),
+        );
         let box_t = sym(&kb, "test.wi464.Box.T");
         let a = param_keyed(&mut kb, option, &[(box_t, "test.wi464.Animal.cat")]);
         let b = param_keyed(&mut kb, option, &[(box_t, "test.wi464.Animal.dog")]);
         let j = join_types(&mut kb, a, b).expect("same-keyed Option[cat]/Option[dog] joins");
         let (base, binds) = as_param(&kb, &j);
         assert_eq!(base, option, "join base sort is Option");
-        assert!(is_sort(&kb, binding(&kb, &binds, "T"), animal), "T joins cat/dog to Animal");
+        assert!(
+            is_sort(&kb, binding(&kb, &binds, "T"), animal),
+            "T joins cat/dog to Animal"
+        );
         assert_eq!(
             binds[0].0, box_t,
             "a foreign dotted key keeps its spelling — no short-name re-key hijack",
@@ -46229,10 +49532,10 @@ mod wi617_canonical_provider_match_tests {
     //! The load pipeline canonicalizes at the producer (WI-581), so this divergent
     //! interning is not reproducible through a source-level load — the test injects
     //! it directly, which is the level at which the gap is observable.
-    use crate::kb::ClauseKind;
     use super::{carrier_is_abstract_spec, spec_has_any_providers};
     use crate::intern::SymbolKind;
     use crate::kb::term::Term;
+    use crate::kb::ClauseKind;
     use crate::kb::KnowledgeBase;
     use smallvec::SmallVec;
 
@@ -46266,7 +49569,10 @@ mod wi617_canonical_provider_match_tests {
 
         // Precondition that makes the test discriminate raw `==` from canonical:
         // the two internings are distinct symbols yet canonicalize equal.
-        assert_ne!(s_alt, s_canon, "the two internings must be distinct symbols");
+        assert_ne!(
+            s_alt, s_canon,
+            "the two internings must be distinct symbols"
+        );
         assert_eq!(
             kb.canonical_sort_sym(s_alt),
             s_canon,
@@ -46395,10 +49701,17 @@ mod wi621_carrier_neutral_goal_subst {
 
         // A transient goal is legitimately a non-hash-consed `Value::Entity` — never
         // reified whole to an opaque `Value::Term`.
-        assert!(matches!(grounded, Value::Entity { .. }), "expected Entity, got {grounded:?}");
+        assert!(
+            matches!(grounded, Value::Entity { .. }),
+            "expected Entity, got {grounded:?}"
+        );
         // Structurally `eq(5, 0)`.
         match grounded.head(&kb) {
-            ViewHead::Functor { functor: Some(f), pos_arity, .. } => {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                ..
+            } => {
                 assert_eq!(f, eq);
                 assert_eq!(pos_arity, 2);
             }
@@ -46434,8 +49747,13 @@ mod wi621_carrier_neutral_goal_subst {
         sigma.insert(kb.intern("other"), kb.alloc(Term::Const(Literal::Int(9))));
         let out = substitute_ref_terms(&mut kb, &goal, &sigma);
         match out.pos_arg(&kb, 0).expect("operand 0").head(&kb) {
-            ViewHead::Functor { functor: Some(f), .. } => {
-                assert_eq!(f, var_ref_sym, "an unmapped var_ref must survive, not ground")
+            ViewHead::Functor {
+                functor: Some(f), ..
+            } => {
+                assert_eq!(
+                    f, var_ref_sym,
+                    "an unmapped var_ref must survive, not ground"
+                )
             }
             other => panic!("expected surviving var_ref, got {other:?}"),
         }
@@ -46452,7 +49770,10 @@ mod wi621_carrier_neutral_goal_subst {
         let goal = |n: i64| {
             e(Expr::Apply {
                 functor: eq,
-                pos_args: vec![e(Expr::Const(Literal::Int(n))), e(Expr::Const(Literal::Int(0)))],
+                pos_args: vec![
+                    e(Expr::Const(Literal::Int(n))),
+                    e(Expr::Const(Literal::Int(0))),
+                ],
                 named_args: vec![],
                 type_args: vec![],
             })
@@ -46465,7 +49786,11 @@ mod wi621_carrier_neutral_goal_subst {
         }));
 
         let parts = clause_conjuncts(&kb, &conj);
-        assert_eq!(parts.len(), 2, "conjunction(g1, g2) must split into 2 conjuncts");
+        assert_eq!(
+            parts.len(),
+            2,
+            "conjunction(g1, g2) must split into 2 conjuncts"
+        );
         assert!(
             parts.iter().all(|p| matches!(p, Value::Node(_))),
             "conjuncts stay carrier-faithful (Node), not reified",
@@ -46501,7 +49826,11 @@ mod wi621_carrier_neutral_goal_subst {
             ],
             type_args: vec![],
         }));
-        assert_eq!(goal.named_keys(&kb), vec![z, a], "source order is non-canonical (z, a)");
+        assert_eq!(
+            goal.named_keys(&kb),
+            vec![z, a],
+            "source order is non-canonical (z, a)"
+        );
 
         let mut sigma: HashMap<Symbol, _> = HashMap::new();
         sigma.insert(b, kb.alloc(Term::Const(Literal::Int(5))));
@@ -46511,7 +49840,11 @@ mod wi621_carrier_neutral_goal_subst {
         let mut expected = vec![(z, ()), (a, ())];
         kb.canonicalize_record_named_args(pred, &mut expected);
         let expected_keys: Vec<Symbol> = expected.iter().map(|(k, _)| *k).collect();
-        assert_ne!(expected_keys, vec![z, a], "canonical order must differ from source");
+        assert_ne!(
+            expected_keys,
+            vec![z, a],
+            "canonical order must differ from source"
+        );
         assert_eq!(
             grounded.named_keys(&kb),
             expected_keys,
@@ -46624,7 +49957,13 @@ mod wi799_tuple_align_policy {
         // slots report where each component actually sits, which is the whole
         // content of the correspondence for a reader that fetches by name.
         assert_eq!(
-            slots(&mut kb, &["a", "b", "c"], &["c", "a"].as_slice(), TupleAlign::DATA).as_deref(),
+            slots(
+                &mut kb,
+                &["a", "b", "c"],
+                &["c", "a"].as_slice(),
+                TupleAlign::DATA
+            )
+            .as_deref(),
             Some([2usize, 0].as_slice()),
             "a permuted b-list reports each component's own slot in `a`",
         );
@@ -46689,7 +50028,12 @@ mod wi799_tuple_align_policy {
     #[test]
     fn data_width_drops_from_the_middle() {
         let mut kb = kb_with_prelude();
-        assert!(aligns(&mut kb, &["a", "b", "c"], &["a", "c"], TupleAlign::DATA));
+        assert!(aligns(
+            &mut kb,
+            &["a", "b", "c"],
+            &["a", "c"],
+            TupleAlign::DATA
+        ));
     }
 
     /// The SECOND axis, which WI-788 shipped a comment denying existed. Granting
@@ -46772,11 +50116,10 @@ mod wi799_tuple_align_policy {
 /// it; the workspace figure is higher).
 #[cfg(test)]
 mod wi802_function_spec_owner_tests {
-    use crate::kb::test_support::load_stdlib;
     use super::{extract_sort_ref_sym, function_spec_parts, is_function_spec, FUNCTION_SPEC_QNAME};
     use crate::eval::value::Value;
     use crate::intern::SymbolKind;
-
+    use crate::kb::test_support::load_stdlib;
 
     /// THE guard the ticket asks for: the constant must name a sort the stdlib
     /// actually DECLARES. Rename or move `anthill.prelude.Function` and this
@@ -46784,13 +50127,20 @@ mod wi802_function_spec_owner_tests {
     #[test]
     fn the_recognizer_names_a_sort_the_stdlib_declares() {
         let kb = load_stdlib(None);
-        let f = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).unwrap_or_else(|| {
-            panic!("the stdlib declares no `{FUNCTION_SPEC_QNAME}` — if the sort was \
+        let f = kb
+            .try_resolve_symbol(FUNCTION_SPEC_QNAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the stdlib declares no `{FUNCTION_SPEC_QNAME}` — if the sort was \
                     renamed or moved, update FUNCTION_SPEC_QNAME, which is the ONE \
-                    place kb/typing.rs spells it")
-        });
+                    place kb/typing.rs spells it"
+                )
+            });
         assert_eq!(kb.kind_of(f), Some(SymbolKind::Sort), "it must be a SORT");
-        assert!(is_function_spec(&kb, f), "the owner recognizes its own referent");
+        assert!(
+            is_function_spec(&kb, f),
+            "the owner recognizes its own referent"
+        );
     }
 
     /// Identity is by QUALIFIED name, never by last segment (spec §8.6, the
@@ -46809,8 +50159,16 @@ mod wi802_function_spec_owner_tests {
     fn an_unresolved_function_name_is_not_the_stdlib_sort() {
         let mut kb = load_stdlib(None);
         let unresolved = kb.intern("Function");
-        assert_eq!(kb.kind_of(unresolved), None, "no such declaration ⇒ unresolved");
-        assert_eq!(kb.qualified_name_of(unresolved), "Function", "falls back to short name");
+        assert_eq!(
+            kb.kind_of(unresolved),
+            None,
+            "no such declaration ⇒ unresolved"
+        );
+        assert_eq!(
+            kb.qualified_name_of(unresolved),
+            "Function",
+            "falls back to short name"
+        );
         assert!(!is_function_spec(&kb, unresolved));
     }
 
@@ -46821,13 +50179,24 @@ mod wi802_function_spec_owner_tests {
     fn a_user_declared_top_level_function_sort_is_not_the_stdlib_sort() {
         let kb = load_stdlib(Some("sort Function\n  sort A = ?\n  sort B = ?\nend\n"));
 
-        let declared = kb.try_resolve_symbol("Function").expect("top-level `sort Function`");
+        let declared = kb
+            .try_resolve_symbol("Function")
+            .expect("top-level `sort Function`");
         assert_eq!(kb.kind_of(declared), Some(SymbolKind::Sort));
-        assert_eq!(kb.qualified_name_of(declared), "Function", "resolved, bare QN");
-        assert!(!is_function_spec(&kb, declared), "a user's own sort is NOT the stdlib spec");
+        assert_eq!(
+            kb.qualified_name_of(declared),
+            "Function",
+            "resolved, bare QN"
+        );
+        assert!(
+            !is_function_spec(&kb, declared),
+            "a user's own sort is NOT the stdlib spec"
+        );
 
         // ... and the stdlib one still is, in the very same KB.
-        let stdlib = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).expect("stdlib Function");
+        let stdlib = kb
+            .try_resolve_symbol(FUNCTION_SPEC_QNAME)
+            .expect("stdlib Function");
         assert!(is_function_spec(&kb, stdlib));
         assert_ne!(declared, stdlib, "two distinct symbols");
     }
@@ -46839,18 +50208,27 @@ mod wi802_function_spec_owner_tests {
     #[test]
     fn a_result_binding_is_required_but_an_effect_row_is_not() {
         let mut kb = load_stdlib(None);
-        let f = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).expect("Function");
-        let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let f = kb
+            .try_resolve_symbol(FUNCTION_SPEC_QNAME)
+            .expect("Function");
+        let int_sym = kb
+            .try_resolve_symbol("anthill.prelude.Int64")
+            .expect("Int64");
         let int = Value::term(kb.make_sort_ref(int_sym));
         let (a, b, e) = (kb.intern("A"), kb.intern("B"), kb.intern("E"));
 
-        assert!(function_spec_parts(&kb, f, &[(a, int.clone())]).is_none(),
-            "no B ⇒ not a callable");
+        assert!(
+            function_spec_parts(&kb, f, &[(a, int.clone())]).is_none(),
+            "no B ⇒ not a callable"
+        );
         let bindings = [(a, int.clone()), (b, int.clone())];
         let (param, _result, effects) =
             function_spec_parts(&kb, f, &bindings).expect("A + B is a callable");
         assert!(param.is_some(), "A is read");
-        assert!(effects.is_none(), "a Function without E is effect-polymorphic");
+        assert!(
+            effects.is_none(),
+            "a Function without E is effect-polymorphic"
+        );
 
         // E PRESENT — the positive half. Without this, a reader that always
         // returned `None` for E would satisfy the assertion above, and E is what
@@ -46866,7 +50244,9 @@ mod wi802_function_spec_owner_tests {
 
         // Same bindings under a NON-Function base: the recognizer, not the
         // binding names, is what admits this shape.
-        let opt = kb.try_resolve_symbol("anthill.prelude.Option").expect("Option");
+        let opt = kb
+            .try_resolve_symbol("anthill.prelude.Option")
+            .expect("Option");
         assert!(function_spec_parts(&kb, opt, &[(a, int.clone()), (b, int)]).is_none());
     }
 
@@ -46885,8 +50265,12 @@ mod wi802_function_spec_owner_tests {
     #[test]
     fn a_canonically_spelled_binding_key_reaches_the_same_slot() {
         let mut kb = load_stdlib(None);
-        let f = kb.try_resolve_symbol(FUNCTION_SPEC_QNAME).expect("Function");
-        let int_sym = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let f = kb
+            .try_resolve_symbol(FUNCTION_SPEC_QNAME)
+            .expect("Function");
+        let int_sym = kb
+            .try_resolve_symbol("anthill.prelude.Int64")
+            .expect("Int64");
         let int = Value::term(kb.make_sort_ref(int_sym));
 
         let canon_a = kb
@@ -46895,12 +50279,16 @@ mod wi802_function_spec_owner_tests {
         let canon_b = kb
             .try_resolve_symbol("anthill.prelude.Function.B")
             .expect("canonical `B` param symbol");
-        assert_ne!(canon_a, kb.intern("A"), "canonical and bare are distinct symbols");
+        assert_ne!(
+            canon_a,
+            kb.intern("A"),
+            "canonical and bare are distinct symbols"
+        );
         assert_eq!(kb.qualified_name_of(canon_a), "anthill.prelude.Function.A");
 
         let bindings = [(canon_a, int.clone()), (canon_b, int.clone())];
-        let (param, result, _) = function_spec_parts(&kb, f, &bindings)
-            .expect("canonically-keyed bindings are read");
+        let (param, result, _) =
+            function_spec_parts(&kb, f, &bindings).expect("canonically-keyed bindings are read");
         assert_eq!(
             param.and_then(|v| extract_sort_ref_sym(&kb, v)),
             Some(int_sym),
@@ -46963,7 +50351,10 @@ end
             panic!(
                 "the two-provider program must LOAD — it is the only way to put two \
                  providers in front of a bracket-less read before phase 3b:\n{}",
-                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")
+                errs.iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
         }
         kb
@@ -47003,8 +50394,10 @@ end
              `describe` for `Leaf`; a length of 1 is the `or_else` chain this ticket \
              replaced, which stopped at its first hit"
         );
-        let names: Vec<String> =
-            cands.iter().map(|c| kb.qualified_name_of(c.target).to_string()).collect();
+        let names: Vec<String> = cands
+            .iter()
+            .map(|c| kb.qualified_name_of(c.target).to_string())
+            .collect();
         assert!(
             names.iter().any(|n| n.ends_with("Leaf.describe"))
                 && names.iter().any(|n| n.ends_with("Rival.describe")),
@@ -47032,11 +50425,11 @@ end
 /// through a rule shared between two decoders.
 #[cfg(test)]
 mod wi955_one_alias_keying_tests {
-    use crate::kb::test_support::load_stdlib;
     use super::{reconstruct_sort_params, value_type_term};
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
     use crate::kb::term::Term;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::KnowledgeBase;
     use crate::kb::Symbol;
 
@@ -47062,7 +50455,10 @@ end
     /// `kb.sort_alias_index` currently selects.
     fn param_names(kb: &mut KnowledgeBase, sort: Symbol) -> Vec<String> {
         let params = reconstruct_sort_params(kb, sort, &Substitution::new());
-        params.iter().map(|(s, _)| kb.local_name_of(*s).to_string()).collect()
+        params
+            .iter()
+            .map(|(s, _)| kb.local_name_of(*s).to_string())
+            .collect()
     }
 
     /// The reconstruction reports the DECLARED params, exactly, with the index present
@@ -47079,9 +50475,16 @@ end
         let mut kb = load_stdlib(Some(SRC));
         let holder = kb.try_resolve_symbol("test.wi955.Holder").expect("Holder");
         let declared = kb.type_params_of_sort(holder);
-        assert_eq!(declared, vec!["T".to_string()], "the sort declares exactly `T`");
+        assert_eq!(
+            declared,
+            vec!["T".to_string()],
+            "the sort declares exactly `T`"
+        );
 
-        assert!(kb.sort_alias_index.is_some(), "the type-check built the index");
+        assert!(
+            kb.sort_alias_index.is_some(),
+            "the type-check built the index"
+        );
         let indexed = param_names(&mut kb, holder);
 
         // The load-time window, where `load_phase_inner` has reset the index. Before
@@ -47089,7 +50492,10 @@ end
         kb.sort_alias_index = None;
         let scanned = param_names(&mut kb, holder);
 
-        assert_eq!(indexed, declared, "with the index built: the declared params, exactly");
+        assert_eq!(
+            indexed, declared,
+            "with the index built: the declared params, exactly"
+        );
         assert_eq!(
             scanned, declared,
             "with the index cleared: the same — and `mk.C` is the OPERATION's \
@@ -47108,7 +50514,9 @@ end
     #[test]
     fn the_constructor_type_is_identical_before_and_after_the_index() {
         let mut kb = load_stdlib(Some(SRC));
-        let ctor = kb.try_resolve_symbol("test.wi955.Holder.holder").expect("holder ctor");
+        let ctor = kb
+            .try_resolve_symbol("test.wi955.Holder.holder")
+            .expect("holder ctor");
         let item = kb.intern("item");
         let value = Value::Entity {
             functor: ctor,
@@ -47143,7 +50551,11 @@ end
     /// failure message says what the type actually was.
     fn render_type(kb: &KnowledgeBase, tid: crate::kb::term::TermId) -> String {
         match kb.get_term(tid) {
-            Term::Fn { functor, named_args, .. } => format!(
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => format!(
                 "{}[{}]",
                 kb.qualified_name_of(*functor),
                 named_args
@@ -47170,11 +50582,11 @@ end
 /// The question was asked twice about this code. A prose answer rots; these drive it.
 #[cfg(test)]
 mod wi963_type_var_representation_tests {
-    use crate::kb::test_support::load_stdlib;
     use super::{type_head, unify_types, TypeHead};
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, TermId, Var};
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::KnowledgeBase;
 
     fn sort_ty(kb: &mut KnowledgeBase, qn: &str) -> TermId {
@@ -47240,8 +50652,16 @@ mod wi963_type_var_representation_tests {
         let tv = kb.make_type_var(name);
 
         let mut s = Substitution::new();
-        assert!(unify_types(&mut kb, &mut s, &Value::term(tv), &Value::term(int_ty)));
-        assert!(s.bindings.is_empty(), "a type_var matches without binding anything");
+        assert!(unify_types(
+            &mut kb,
+            &mut s,
+            &Value::term(tv),
+            &Value::term(int_ty)
+        ));
+        assert!(
+            s.bindings.is_empty(),
+            "a type_var matches without binding anything"
+        );
         assert!(
             unify_types(&mut kb, &mut s, &Value::term(tv), &Value::term(str_ty)),
             "and still matches an INCOMPATIBLE second type — it never committed to Int64",
@@ -47251,10 +50671,24 @@ mod wi963_type_var_representation_tests {
         let vid = kb.fresh_var(name);
         let var_term = kb.alloc(Term::Var(Var::Global(vid)));
         let mut s2 = Substitution::new();
-        assert!(unify_types(&mut kb, &mut s2, &Value::term(var_term), &Value::term(int_ty)));
-        assert_eq!(s2.bindings.len(), 1, "a logic var unifies by BINDING itself");
+        assert!(unify_types(
+            &mut kb,
+            &mut s2,
+            &Value::term(var_term),
+            &Value::term(int_ty)
+        ));
+        assert_eq!(
+            s2.bindings.len(),
+            1,
+            "a logic var unifies by BINDING itself"
+        );
         assert!(
-            !unify_types(&mut kb, &mut s2, &Value::term(var_term), &Value::term(str_ty)),
+            !unify_types(
+                &mut kb,
+                &mut s2,
+                &Value::term(var_term),
+                &Value::term(str_ty)
+            ),
             "and is then committed: the same var now REFUSES String — which is why an \
              under-determined type must not be carried as a logic var",
         );
@@ -47312,8 +50746,7 @@ mod wi963_type_var_representation_tests {
 #[cfg(test)]
 mod wi958_one_op_parent_tests {
     use super::{
-        impl_parent_of_op, lookup_operation_info_full, self_receiver_spec_sort,
-        spec_op_parent_sort,
+        impl_parent_of_op, lookup_operation_info_full, self_receiver_spec_sort, spec_op_parent_sort,
     };
     use crate::intern::SymbolKind;
     use crate::kb::test_support::load_stdlib_and_stl;
@@ -47340,7 +50773,8 @@ end
 "#;
 
     fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
     }
 
     /// All three readers on one op, as qualified names — `None` renders as `-`.
@@ -47349,7 +50783,8 @@ end
         let info = lookup_operation_info_full(kb, op_sym)
             .unwrap_or_else(|| panic!("{op_qn} has no OperationInfo"));
         let name = |s: Option<Symbol>| {
-            s.map(|s| kb.qualified_name_of(s).to_string()).unwrap_or_else(|| "-".into())
+            s.map(|s| kb.qualified_name_of(s).to_string())
+                .unwrap_or_else(|| "-".into())
         };
         (
             name(impl_parent_of_op(kb, op_sym)),
@@ -47441,7 +50876,9 @@ end
         // parent at all, the scope link sees `_global`.
         let mut dotless_global: Vec<String> = Vec::new();
         for (qn, sym) in &names {
-            let split = qn.rsplit_once('.').and_then(|(p, _)| kb.try_resolve_symbol(p));
+            let split = qn
+                .rsplit_once('.')
+                .and_then(|(p, _)| kb.try_resolve_symbol(p));
             let scope = kb.declaring_scope_symbol(*sym);
             if kb.has_kind(*sym, SymbolKind::Operation) {
                 ops += 1;
@@ -47458,7 +50895,10 @@ end
             }
         }
 
-        assert!(ops > 300, "the stdlib fixture must actually carry operations; got {ops}");
+        assert!(
+            ops > 300,
+            "the stdlib fixture must actually carry operations; got {ops}"
+        );
         assert_eq!(
             disagreeing_ops,
             Vec::<String>::new(),
@@ -47478,7 +50918,8 @@ end
                 None,
                 "`{qn}` has no parent to strip; `declaring_scope_symbol` answers \
                  {:?} instead, which a carrier-sort caller would take at face value",
-                kb.declaring_scope_symbol(s).map(|p| kb.qualified_name_of(p).to_string()),
+                kb.declaring_scope_symbol(s)
+                    .map(|p| kb.qualified_name_of(p).to_string()),
             );
         }
     }
@@ -47498,8 +50939,8 @@ end
 #[cfg(test)]
 mod wi956_kind_gate_tests {
     use super::{
-        call_bracket_scopes, impl_parent_of_op, impl_parent_sort_of_op,
-        lookup_operation_info_full, sort_type_params_as_pairs,
+        call_bracket_scopes, impl_parent_of_op, impl_parent_sort_of_op, lookup_operation_info_full,
+        sort_type_params_as_pairs,
     };
     use crate::intern::SymbolKind;
     use crate::kb::test_support::load_stdlib_and_stl;
@@ -47553,7 +50994,8 @@ end
 "#;
 
     fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
     }
 
     /// The premise the rest of the module rests on: this fixture really does build a
@@ -47570,7 +51012,10 @@ end
             "the secondary entry registers Namespace first; `sort Rec` adds Sort \
              through the reuse arm, and its eponymous constructor adds Entity",
         );
-        assert!(kb.has_kind(rec, SymbolKind::Sort), "`Rec` PLAYS the sort role");
+        assert!(
+            kb.has_kind(rec, SymbolKind::Sort),
+            "`Rec` PLAYS the sort role"
+        );
         assert_ne!(
             kb.kind_of(rec),
             Some(SymbolKind::Sort),
@@ -47637,7 +51082,10 @@ end
         let row = |op_qn: &str| -> (Option<String>, Option<String>) {
             let op = sym(&kb, op_qn);
             let name = |s: Option<Symbol>| s.map(|s| kb.qualified_name_of(s).to_string());
-            (name(impl_parent_of_op(&kb, op)), name(impl_parent_sort_of_op(&kb, op)))
+            (
+                name(impl_parent_of_op(&kb, op)),
+                name(impl_parent_sort_of_op(&kb, op)),
+            )
         };
         assert_eq!(
             row("test.wi956.Rec.peek"),
@@ -47652,8 +51100,10 @@ end
         // A FREE operation: the split answers its NAMESPACE, and the gate must drop it.
         let free = sym(&kb, "test.wi956.loose");
         assert!(
-            kb.has_kind(impl_parent_of_op(&kb, free).expect("a namespace parent"),
-                        SymbolKind::Namespace),
+            kb.has_kind(
+                impl_parent_of_op(&kb, free).expect("a namespace parent"),
+                SymbolKind::Namespace
+            ),
             "the fixture for this row must really be a free op",
         );
         assert_eq!(
@@ -47663,7 +51113,6 @@ end
              letting it through is what the gate exists to stop",
         );
     }
-
 
     /// The measurement `impl_parent_sort_of_op`'s doc rests on, re-run rather than
     /// re-argued: on the LIBRARIES the two spellings agree, so the fix is inert there
@@ -47685,7 +51134,9 @@ end
         let hidden: Vec<Symbol> = syms
             .iter()
             .copied()
-            .filter(|&s| kb.has_kind(s, SymbolKind::Sort) && kb.kind_of(s) != Some(SymbolKind::Sort))
+            .filter(|&s| {
+                kb.has_kind(s, SymbolKind::Sort) && kb.kind_of(s) != Some(SymbolKind::Sort)
+            })
             .collect();
         assert!(
             hidden.len() > 40,
@@ -47709,9 +51160,16 @@ end
              a sort desugars to a body of exactly one entity. That is why the fix needed \
              a hand-written re-declaration to drive, and why it was inert for two tickets.",
         );
-        let ops: Vec<Symbol> =
-            syms.iter().copied().filter(|&s| kb.has_kind(s, SymbolKind::Operation)).collect();
-        assert!(ops.len() > 300, "the library fixture must carry operations; got {}", ops.len());
+        let ops: Vec<Symbol> = syms
+            .iter()
+            .copied()
+            .filter(|&s| kb.has_kind(s, SymbolKind::Operation))
+            .collect();
+        assert!(
+            ops.len() > 300,
+            "the library fixture must carry operations; got {}",
+            ops.len()
+        );
         for &op in &ops {
             assert_eq!(
                 impl_parent_of_op(&kb, op).filter(|p| kb.kind_of(*p) == Some(SymbolKind::Sort)),
@@ -47780,16 +51238,25 @@ end
     #[test]
     fn an_alias_is_found_only_by_its_own_symbol() {
         let kb = load_stdlib_and_stl(Some(SRC));
-        let sym = |qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"));
+        let sym = |qn: &str| {
+            kb.try_resolve_symbol(qn)
+                .unwrap_or_else(|| panic!("resolve {qn}"))
+        };
 
         let fixed = resolve_sort_alias(&kb, sym("test.wi956.alias.Wi956Fixed.Wi956T"))
             .expect("`sort Wi956T = Int64` asserts an alias");
-        assert!(!is_var(&kb, fixed), "an alias to a concrete sort targets a sort_ref");
+        assert!(
+            !is_var(&kb, fixed),
+            "an alias to a concrete sort targets a sort_ref"
+        );
 
         let param = resolve_sort_alias(&kb, sym("test.wi956.alias.Wi956Param.Wi956T"))
             .expect("`sort Wi956T = ?` asserts an alias");
         assert!(is_var(&kb, param), "a type param targets its backing Var");
-        assert_ne!(fixed, param, "two declarations, two answers — not one name, one answer");
+        assert_ne!(
+            fixed, param,
+            "two declarations, two answers — not one name, one answer"
+        );
 
         // THE POINT. Same local name, no alias of its own: the only truthful answer is
         // `None`. The deleted pass answered `fixed` here.
@@ -47814,7 +51281,10 @@ end
     #[test]
     fn a_type_param_reader_answers_nothing_rather_than_someone_elses_var() {
         let kb = load_stdlib_and_stl(Some(SRC));
-        let sym = |qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"));
+        let sym = |qn: &str| {
+            kb.try_resolve_symbol(qn)
+                .unwrap_or_else(|| panic!("resolve {qn}"))
+        };
         assert!(
             type_param_global_var(&kb, sym("test.wi956.alias.Wi956Param.Wi956T")).is_some(),
             "a declared type param still resolves to its own var",
@@ -47827,4 +51297,3 @@ end
         );
     }
 }
-

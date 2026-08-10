@@ -99,7 +99,11 @@ fn top_level_by_derivation_is_discharged_with_real_witness() {
         .iter()
         .find(|r| r.rule_qn.ends_with("shines"))
         .expect("a report entry for `shines`");
-    assert_eq!(entry.verdict, ProofVerdict::Discharged, "shines should discharge");
+    assert_eq!(
+        entry.verdict,
+        ProofVerdict::Discharged,
+        "shines should discharge"
+    );
 
     // Post-pass: result flipped to Discharged with an SldDerivation witness.
     assert_eq!(

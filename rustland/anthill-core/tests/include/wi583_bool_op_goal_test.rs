@@ -101,7 +101,8 @@ end
         .err()
         .expect("a non-Bool op in goal position must be a LOUD load error");
     assert!(
-        errs.iter().any(|e| e.contains("ident") && e.contains("goal position")),
+        errs.iter()
+            .any(|e| e.contains("ident") && e.contains("goal position")),
         "the error must name the offending op and the goal-position category; got: {errs:?}",
     );
 }
@@ -122,7 +123,8 @@ end
         .err()
         .expect("a non-Bool op nested under `not` in goal position must be a load error");
     assert!(
-        errs.iter().any(|e| e.contains("ident") && e.contains("goal position")),
+        errs.iter()
+            .any(|e| e.contains("ident") && e.contains("goal position")),
         "a non-Bool op under `not` must be flagged; got: {errs:?}",
     );
 }
@@ -185,7 +187,8 @@ end
         .err()
         .expect("a dot-dispatched sort-scoped non-Bool op in goal position must be a load error");
     assert!(
-        errs.iter().any(|e| e.contains("unwrap") && e.contains("goal position")),
+        errs.iter()
+            .any(|e| e.contains("unwrap") && e.contains("goal position")),
         "the error must name the resolved sort-scoped op; got: {errs:?}",
     );
 }
@@ -202,7 +205,9 @@ namespace test.wi583gen
   rule ok() :- pick(5)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         !errs.iter().any(|e| e.contains("goal position")),
         "a generic-return op (return may be Bool) must NOT be flagged as non-Bool; got: {errs:?}",

@@ -10,8 +10,8 @@
 //! component, then walk) — the tuple-literal twin of the constructor's expected-seed. A
 //! CONCRETE element that genuinely mismatches the declared component is still rejected.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -20,8 +20,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -37,7 +37,10 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 }
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -93,7 +96,10 @@ namespace test.wi462.tupleform
       case cons(h, t) -> some((h, t))
 end
 "#;
-    assert!(load_errors(&[pair_form]).is_empty(), "pair form must load (baseline)");
+    assert!(
+        load_errors(&[pair_form]).is_empty(),
+        "pair form must load (baseline)"
+    );
     assert!(
         load_errors(&[tuple_form]).is_empty(),
         "tuple form must reach parity with the pair form; got: {:?}",
@@ -145,7 +151,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("String")),
         "a concrete Int64 head declared as String must be rejected; got: {errs:?}",
     );
 }

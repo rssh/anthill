@@ -20,7 +20,8 @@
 use anthill_core::eval::Value;
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const EVAL_SRC: &str = r#"
@@ -83,7 +84,9 @@ fn non_stream_iterable_size_evaluates() {
 fn non_stream_iterable_is_empty_evaluates() {
     let mut interp = crate::common::interp_for(EVAL_SRC);
     let full = interp.call("wi495.nonstream.mk", &[]).expect("build bag");
-    let empty = interp.call("wi495.nonstream.mk_empty", &[]).expect("build empty bag");
+    let empty = interp
+        .call("wi495.nonstream.mk_empty", &[])
+        .expect("build empty bag");
     let got_full = interp
         .call("wi495.nonstream.bag_is_empty", &[full])
         .unwrap_or_else(|e| panic!("call bag_is_empty(full): {e:?}"));
@@ -106,21 +109,26 @@ fn non_stream_iterable_find_evaluates() {
 
 // ── Map: the stdlib non-Stream Iterable, pinned at the type level ────────
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 fn load_errs(extra: &str) -> Vec<LoadError> {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).err().unwrap_or_default()
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .err()
+        .unwrap_or_default()
 }
 
 #[test]
@@ -141,6 +149,9 @@ end
     assert!(
         errs.is_empty(),
         "FiniteCollection.size on a Map (non-Stream finite Iterable) must type-check; got: {}",
-        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
+        errs.iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }

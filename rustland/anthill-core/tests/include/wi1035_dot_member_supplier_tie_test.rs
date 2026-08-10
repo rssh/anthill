@@ -327,8 +327,14 @@ fn the_dot_refusal_is_located_and_shares_the_qualified_spellings_body() {
         "Desc.describe(leaf())",
     );
 
-    assert_eq!(dot_op_body, qual_body, "one refusal, one message body — the spelling must not drift it");
-    assert_eq!(dot_rule_body, qual_body, "and the rule-body face must not drift either");
+    assert_eq!(
+        dot_op_body, qual_body,
+        "one refusal, one message body — the spelling must not drift it"
+    );
+    assert_eq!(
+        dot_rule_body, qual_body,
+        "and the rule-body face must not drift either"
+    );
     assert_ne!(
         dot_op_loc, dot_rule_loc,
         "fixture guard: the two dot fixtures must not sit at the same offset, or the \
@@ -361,7 +367,10 @@ fn a_nested_rule_body_dot_is_located_at_the_nested_dot() {
         "  rule answer(?r) :- leaf().combine(leaf().describe(), ?r)\n",
     );
     let msg = refusal(&src);
-    assert!(msg.contains("ambiguous dispatch"), "the nested dot must still refuse: {msg}");
+    assert!(
+        msg.contains("ambiguous dispatch"),
+        "the nested dot must still refuse: {msg}"
+    );
     let inner = call_site(&src, "leaf().describe()");
     assert_ne!(
         inner,
@@ -369,7 +378,11 @@ fn a_nested_rule_body_dot_is_located_at_the_nested_dot() {
         "fixture guard: the inner dot must NOT sit at the atom's own offset, or this test \
          would pass on root-only stamping",
     );
-    assert_eq!(located(&msg).0, inner, "the refusal must name the NESTED dot: {msg}");
+    assert_eq!(
+        located(&msg).0,
+        inner,
+        "the refusal must name the NESTED dot: {msg}"
+    );
 }
 
 /// WI-1039, the OTHER arm of the same fallback. `build_body_atom_occurrence_inner`
@@ -388,14 +401,21 @@ fn a_dot_under_an_entity_constructor_is_located_too() {
          rule answer(?r) :- unify(?r, wrap(v: leaf().describe()))\n",
     );
     let msg = refusal(&src);
-    assert!(msg.contains("ambiguous dispatch"), "the dot under a constructor must refuse: {msg}");
+    assert!(
+        msg.contains("ambiguous dispatch"),
+        "the dot under a constructor must refuse: {msg}"
+    );
     let inner = call_site(&src, "leaf().describe()");
     assert_ne!(
         inner,
         call_site(&src, "unify(?r,"),
         "fixture guard: the dot must NOT sit at the atom's own offset",
     );
-    assert_eq!(located(&msg).0, inner, "the refusal must name the DOT, not the atom: {msg}");
+    assert_eq!(
+        located(&msg).0,
+        inner,
+        "the refusal must name the DOT, not the atom: {msg}"
+    );
 }
 
 /// THE STATED DIVERGENCE, PINNED SO IT IS A DECISION AND NOT A DRIFT. Add the carrier's
@@ -498,10 +518,18 @@ fn an_abstract_spec_receiver_refuses_at_the_call_not_at_load() {
         let err = crate::common::interp_for(&abstract_receiver(ns, call, ABSTRACT_RIVAL))
             .call(&format!("{ns}.probe"), &[])
             .expect_err("two suppliers behind an abstract receiver must refuse at the call");
-        let EvalError::AmbiguousSpecOpDispatch { carrier, candidates, .. } = &err else {
+        let EvalError::AmbiguousSpecOpDispatch {
+            carrier,
+            candidates,
+            ..
+        } = &err
+        else {
             panic!("`{call}`: expected AmbiguousSpecOpDispatch, got {err:?}");
         };
-        assert!(carrier.ends_with(".Coll"), "`{call}`: the tie is per CARRIER: {carrier}");
+        assert!(
+            carrier.ends_with(".Coll"),
+            "`{call}`: the tie is per CARRIER: {carrier}"
+        );
         assert_eq!(candidates.len(), 2, "`{call}`: both routes: {candidates:?}");
     }
 }
@@ -529,8 +557,10 @@ fn an_abstract_spec_receiver_with_one_supplier_still_reaches_it() {
         );
         // The bound above, driven: strip the member's body and the program stops loading,
         // identically for both spellings. Without this the narrowing is a claim, not a fact.
-        let unrunnable = abstract_receiver(ns, call, "")
-            .replace("operation describe(x: Coll) -> Int64 = 7", "operation describe(x: Coll) -> Int64");
+        let unrunnable = abstract_receiver(ns, call, "").replace(
+            "operation describe(x: Coll) -> Int64 = 7",
+            "operation describe(x: Coll) -> Int64",
+        );
         let msg = refusal(&unrunnable);
         assert!(
             msg.contains("backs no operation"),
@@ -545,7 +575,11 @@ fn an_abstract_spec_receiver_with_one_supplier_still_reaches_it() {
 #[test]
 fn one_supplier_through_a_dot_still_reaches_the_own_member() {
     let ns = "test.wi1035.ownonly";
-    assert_eq!(probe(ns, &defaulted(ns, OWN, "", DOT_OP)), 7, "one supplier, the own member");
+    assert_eq!(
+        probe(ns, &defaulted(ns, OWN, "", DOT_OP)),
+        7,
+        "one supplier, the own member"
+    );
     assert_eq!(
         answer(ns, &defaulted(ns, OWN, "", DOT_RULE)),
         7,

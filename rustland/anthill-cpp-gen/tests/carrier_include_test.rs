@@ -38,8 +38,7 @@ fn carrier_artifact_becomes_include_directive() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let header = emit_namespace_header(&mut kb, "test.car_inc")
-        .expect("emit Sensors namespace");
+    let header = emit_namespace_header(&mut kb, "test.car_inc").expect("emit Sensors namespace");
 
     assert!(
         header.contains("vendor::GPS *"),

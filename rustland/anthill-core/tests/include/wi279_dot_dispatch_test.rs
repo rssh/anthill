@@ -11,8 +11,8 @@
 //! match) — the typer runs with the lexical env in hand — so a method on the
 //! binding's sort is found with no import.
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 /// Load stdlib + `extra` source; return the KB plus any load errors
@@ -20,11 +20,14 @@ use anthill_core::parse;
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -36,7 +39,10 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── Acceptance item 1: `?x.method(args)` dispatch via receiver sort ─────
@@ -55,9 +61,11 @@ fn dot_method_zero_arg_dispatches_via_param_receiver() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected ?b.peek() to dispatch to peek(b) and type-check; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -74,9 +82,11 @@ fn dot_method_with_args_dispatches() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected ?b.add_to(1) to dispatch to add_to(b, 1); got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -99,9 +109,11 @@ fn dot_method_dispatches_with_no_import_across_sorts() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected match-bound ?inner.peek() to dispatch to Box.peek with no import; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -119,9 +131,11 @@ fn dot_method_chaining_dispatches_each_level() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected chained ?b.bump().bump() to dispatch at each level; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -139,9 +153,11 @@ fn dot_method_generic_type_param_infers_through_dispatch() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected ?b.idfn(42) to dispatch and infer U = Int64; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── Acceptance item 3: receivers referencing let/match-bound locals ─────
@@ -161,9 +177,11 @@ fn dot_let_bound_receiver_dispatches() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected let-bound ?x.peek() to dispatch; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── Acceptance item 4: clear no-match error at the dot span ─────────────
@@ -183,10 +201,14 @@ fn dot_no_match_reports_clear_error_at_span() {
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
     assert!(!errs.is_empty(), "expected a no-match error for ?b.nope()");
-    assert!(text.contains("no such member (dot dispatch)") && text.contains("nope"),
-        "expected a dot-dispatch no-match diagnostic naming 'nope'; got:\n{text}");
-    assert!(text.contains("Box"),
-        "expected the no-match diagnostic to name the receiver's sort Box; got:\n{text}");
+    assert!(
+        text.contains("no such member (dot dispatch)") && text.contains("nope"),
+        "expected a dot-dispatch no-match diagnostic naming 'nope'; got:\n{text}"
+    );
+    assert!(
+        text.contains("Box"),
+        "expected the no-match diagnostic to name the receiver's sort Box; got:\n{text}"
+    );
 }
 
 // ── Acceptance item 2: sort-specific dot rule overrides the default ──────
@@ -207,10 +229,12 @@ fn dot_rule_override_enables_dispatch() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
+    assert!(
+        errs.is_empty(),
         "expected the [simp] dot rule to rewrite ?b.special(7) -> regular(b, 7) \
          (no `special` op exists, so the body type-checks only if the rule fired); got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -236,8 +260,10 @@ fn dot_rule_override_is_sort_scoped() {
     let text = errors_text(&errs);
     assert!(!errs.is_empty(),
         "expected a no-match for ?o.special(7): the Box dot rule must not fire for an Other receiver");
-    assert!(text.contains("no such member (dot dispatch)") && text.contains("special"),
-        "expected a dot-dispatch no-match naming 'special' for the Other receiver; got:\n{text}");
+    assert!(
+        text.contains("no such member (dot dispatch)") && text.contains("special"),
+        "expected a dot-dispatch no-match naming 'special' for the Other receiver; got:\n{text}"
+    );
 }
 
 #[test]
@@ -259,17 +285,24 @@ fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!errs.is_empty(),
-        "expected a no-match: the non-linear rule must not fire when receiver != arg");
-    assert!(text.contains("no such member (dot dispatch)") && text.contains("special"),
-        "expected a dot-dispatch no-match naming 'special'; got:\n{text}");
+    assert!(
+        !errs.is_empty(),
+        "expected a no-match: the non-linear rule must not fire when receiver != arg"
+    );
+    assert!(
+        text.contains("no such member (dot dispatch)") && text.contains("special"),
+        "expected a dot-dispatch no-match naming 'special'; got:\n{text}"
+    );
 }
 
 // ── Acceptance: `?x.field` constructor-field access (INC 1b) ────────────
 
 /// Call a nullary op and expect an Int64 result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -292,8 +325,11 @@ namespace wi279.field
 end
 "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
-        "expected ?b.value to dispatch to the field; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected ?b.value to dispatch to the field; got:\n{}",
+        errors_text(&errs)
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi279.field.t"), 42);
 }
@@ -313,8 +349,11 @@ namespace wi279.genfield
 end
 "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
-        "expected ?o.value to dispatch with T = Int64; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected ?o.value to dispatch with T = Int64; got:\n{}",
+        errors_text(&errs)
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi279.genfield.t"), 42);
 }
@@ -334,8 +373,10 @@ fn dot_field_unknown_member_reports_no_match() {
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
     assert!(!errs.is_empty(), "expected a no-match error for ?b.nope");
-    assert!(text.contains("no such member (dot dispatch)") && text.contains("nope"),
-        "expected a dot-dispatch no-match naming 'nope'; got:\n{text}");
+    assert!(
+        text.contains("no such member (dot dispatch)") && text.contains("nope"),
+        "expected a dot-dispatch no-match naming 'nope'; got:\n{text}"
+    );
 }
 
 #[test]
@@ -356,8 +397,11 @@ namespace wi279.e2e
 end
 "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(errs.is_empty(),
-        "expected ?b.total(10) + ?b.value to dispatch; got:\n{}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "expected ?b.total(10) + ?b.value to dispatch; got:\n{}",
+        errors_text(&errs)
+    );
     let mut interp = crate::common::interp_for(src);
     assert_eq!(run_int(&mut interp, "wi279.e2e.t"), 15);
 }

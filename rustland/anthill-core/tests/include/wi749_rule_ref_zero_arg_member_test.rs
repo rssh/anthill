@@ -79,7 +79,10 @@ fn wi749_zero_arg_member_on_rule_ref_matches_let_bound() {
     let bare = call_bool(&mut interp, "letBoundBare");
     let qualified = call_bool(&mut interp, "letBoundQualified");
     assert!(!bare, "`person_row` matches alice, so it is NOT empty");
-    assert!(qualified, "`Person.rows` filters on age 999, so it IS empty");
+    assert!(
+        qualified,
+        "`Person.rows` filters on age 999, so it IS empty"
+    );
     assert_eq!(
         call_bool(&mut interp, "inlineBare"),
         bare,
@@ -203,7 +206,10 @@ end
             .unwrap_or_else(|| panic!("`{op}` must answer a Bool"))
     };
     let inline = call(&mut interp, "inlineCrossFile");
-    assert!(!inline, "the cross-file relation matches alice, so it is NOT empty");
+    assert!(
+        !inline,
+        "the cross-file relation matches alice, so it is NOT empty"
+    );
     assert_eq!(
         inline,
         call(&mut interp, "letBoundCrossFile"),
@@ -343,7 +349,8 @@ end
             .err()
             .expect("a receiver naming neither a local nor a rule must NOT load");
         assert!(
-            errs.iter().any(|e| e.contains("isEmpty") && e.contains("unresolved")),
+            errs.iter()
+                .any(|e| e.contains("isEmpty") && e.contains("unresolved")),
             "the miss must stay the loud unresolved-name error, got: {errs:?}"
         );
     }

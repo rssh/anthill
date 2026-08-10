@@ -2,16 +2,15 @@
 ///
 /// One function per grammar node kind. Uses child iteration to walk
 /// the CST and build typed IR nodes.
-
 use std::collections::HashMap;
 
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-use crate::intern::{positional_label, SymbolTable, Symbol};
+use crate::intern::{positional_label, Symbol, SymbolTable};
+use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::span::Span;
-use crate::kb::term::{Term, TermId, Literal, Var, VarId};
 
 /// Join name segments into a single dot-separated string for interning.
 fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol]) -> String {
@@ -344,7 +343,10 @@ impl<'a> Converter<'a> {
         let start = node.start_byte();
         let line_start = self.source[..start].rfind('\n').map_or(0, |i| i + 1);
         let prefix = &self.source[line_start..start];
-        prefix.bytes().all(|b| b == b' ' || b == b'\t').then_some(prefix)
+        prefix
+            .bytes()
+            .all(|b| b == b' ' || b == b'\t')
+            .then_some(prefix)
     }
 
     /// Allocate a fresh VarId or reuse one from the current scope.
@@ -406,8 +408,7 @@ impl<'a> Converter<'a> {
     /// Find the first named child of a given kind.
     fn child_by_kind<'t>(&self, node: Node<'t>, kind: &str) -> Option<Node<'t>> {
         let mut cursor = node.walk();
-        let result = node.named_children(&mut cursor)
-            .find(|c| c.kind() == kind);
+        let result = node.named_children(&mut cursor).find(|c| c.kind() == kind);
         result
     }
 
@@ -510,9 +511,13 @@ impl<'a> Converter<'a> {
         match node.kind() {
             "namespace_declaration" => self.convert_namespace(node).map(Item::Namespace),
             "abstract_sort" => self.convert_abstract_sort(node).map(Item::AbstractSort),
-            "sort_with_body" => self.convert_sort_like(node, SortDeclKind::Sort).map(Item::SortWithBody),
+            "sort_with_body" => self
+                .convert_sort_like(node, SortDeclKind::Sort)
+                .map(Item::SortWithBody),
             "sort_var_binder" | "sort_bracket_binder" => self.convert_sort_binder(node),
-            "enum_declaration" => self.convert_sort_like(node, SortDeclKind::Enum).map(Item::SortWithBody),
+            "enum_declaration" => self
+                .convert_sort_like(node, SortDeclKind::Enum)
+                .map(Item::SortWithBody),
             "rule_declaration" => self.convert_rule(node).map(Item::Rule),
             "operation_declaration" => self.convert_operation(node).map(Item::Operation),
             "const_declaration" => self.convert_const(node).map(Item::Const),
@@ -570,11 +575,7 @@ impl<'a> Converter<'a> {
         Name { segments, span }
     }
 
-    fn collect_field_access_segments(
-        &mut self,
-        node: Node,
-        segments: &mut SmallVec<[Symbol; 2]>,
-    ) {
+    fn collect_field_access_segments(&mut self, node: Node, segments: &mut SmallVec<[Symbol; 2]>) {
         let object = self.field(node, "object");
         let field = self.field(node, "field");
         if let Some(o) = object {
@@ -611,8 +612,7 @@ impl<'a> Converter<'a> {
     fn convert_type(&mut self, node: Node) -> TypeExpr {
         match node.kind() {
             "simple_type" => {
-                let name_node = self.child_by_kind(node, "name")
-                    .unwrap_or(node);
+                let name_node = self.child_by_kind(node, "name").unwrap_or(node);
                 TypeExpr::Simple(self.convert_name(name_node))
             }
             "application" => {
@@ -620,7 +620,8 @@ impl<'a> Converter<'a> {
                 // `identifier` field, not a `name` child node.
                 let name_node = self.field(node, "name").unwrap_or(node);
                 let name = self.convert_name(name_node);
-                let bindings = self.children_by_kind(node, "sort_binding")
+                let bindings = self
+                    .children_by_kind(node, "sort_binding")
                     .into_iter()
                     .map(|b| self.convert_sort_binding(b))
                     .collect();
@@ -629,22 +630,25 @@ impl<'a> Converter<'a> {
             "variable_term" => {
                 let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
                 let term_id = self.convert_variable_node(var_node);
-                let descriptions = self.fields_by_name(node, "description")
+                let descriptions = self
+                    .fields_by_name(node, "description")
                     .into_iter()
                     .map(|d| strip_description_delimiters(self.text(d)))
                     .collect();
-                TypeExpr::Variable { term_id, descriptions }
+                TypeExpr::Variable {
+                    term_id,
+                    descriptions,
+                }
             }
             "variable" => {
                 let term_id = self.convert_variable_node(node);
-                TypeExpr::Variable { term_id, descriptions: Vec::new() }
+                TypeExpr::Variable {
+                    term_id,
+                    descriptions: Vec::new(),
+                }
             }
-            "tuple_type" => {
-                self.convert_tuple_type(node)
-            }
-            "arrow_type" => {
-                self.convert_arrow_type(node)
-            }
+            "tuple_type" => self.convert_tuple_type(node),
+            "arrow_type" => self.convert_arrow_type(node),
             // WI-375 (proposal 045 §2): a WRITTEN effect-row in a type-argument
             // value slot (`Stream[E = {}]` / `Stream[E = {Modify[c]}]`). Lower
             // each listed effect through `convert_effect_into` — identical to
@@ -668,7 +672,8 @@ impl<'a> Converter<'a> {
             // WI-327: `+E` — explicit presence sugar. Presence is the
             // default for bare labels, so unwrap to the inner.
             "effect_presence" => {
-                let inner = self.field(node, "effect")
+                let inner = self
+                    .field(node, "effect")
                     .map(|n| self.convert_type(n))
                     .unwrap_or_else(|| {
                         self.err("effect_presence missing inner effect", node);
@@ -681,7 +686,8 @@ impl<'a> Converter<'a> {
             // EffectAbsent; the loader lowers to make_effect_expression_
             // absent(...).
             "effect_absence" => {
-                let inner = self.field(node, "effect")
+                let inner = self
+                    .field(node, "effect")
                     .map(|n| self.convert_type(n))
                     .unwrap_or_else(|| {
                         self.err("effect_absence missing inner effect", node);
@@ -706,13 +712,15 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_sort_binding(&mut self, node: Node) -> SortBinding {
-        let param = self.field(node, "param")
-            .map(|n| self.convert_name(n));
+        let param = self.field(node, "param").map(|n| self.convert_name(n));
         let type_field = self.field(node, "type");
 
         match (param, type_field) {
             // Named: Eq[T = Int] — param and type both present
-            (Some(p), Some(t)) => SortBinding { param: Some(p), bound: self.convert_type(t) },
+            (Some(p), Some(t)) => SortBinding {
+                param: Some(p),
+                bound: self.convert_type(t),
+            },
             // Positional: List[Int] or List[T] — no `=`, value binds to next param
             (Some(p), None) => {
                 let bound = TypeExpr::Simple(p);
@@ -727,7 +735,10 @@ impl<'a> Converter<'a> {
             (None, None) => {
                 let sym = self.intern("?");
                 let name = Name::simple(sym, self.span(node));
-                SortBinding { param: None, bound: TypeExpr::Simple(name) }
+                SortBinding {
+                    param: None,
+                    bound: TypeExpr::Simple(name),
+                }
             }
         }
     }
@@ -761,7 +772,11 @@ impl<'a> Converter<'a> {
                 WorkOp::Yield(tid) => results.push(tid),
             }
         }
-        debug_assert_eq!(results.len(), 1, "iterative parse: expected exactly one result");
+        debug_assert_eq!(
+            results.len(),
+            1,
+            "iterative parse: expected exactly one result"
+        );
         results.pop().expect("iterative parse: empty result stack")
     }
 
@@ -794,10 +809,13 @@ impl<'a> Converter<'a> {
             "float_literal" => {
                 let text = self.text(node);
                 let tid = match text.parse::<f64>() {
-                    Ok(f) => self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(f))), span),
+                    Ok(f) => self
+                        .terms
+                        .alloc(Term::Const(Literal::Float(OrderedFloat(f))), span),
                     Err(_) => {
                         self.err(format!("invalid float: {text}"), node);
-                        self.terms.alloc(Term::Const(Literal::Float(OrderedFloat(0.0))), span)
+                        self.terms
+                            .alloc(Term::Const(Literal::Float(OrderedFloat(0.0))), span)
                     }
                 };
                 results.push(tid);
@@ -813,7 +831,8 @@ impl<'a> Converter<'a> {
             "variable_term" => {
                 let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
                 let tid = self.convert_variable_node(var_node);
-                let descs: Vec<String> = self.fields_by_name(node, "description")
+                let descs: Vec<String> = self
+                    .fields_by_name(node, "description")
                     .into_iter()
                     .map(|d| strip_description_delimiters(self.text(d)))
                     .collect();
@@ -942,11 +961,14 @@ impl<'a> Converter<'a> {
                     let field_access_sym = self.intern("field_access");
                     for seg in &segs[1..] {
                         let field_tid = self.terms.alloc(Term::Ident(*seg), span);
-                        acc = self.terms.alloc(Term::Fn {
-                            functor: field_access_sym,
-                            pos_args: SmallVec::from_slice(&[acc, field_tid]),
-                            named_args: SmallVec::new(),
-                        }, span);
+                        acc = self.terms.alloc(
+                            Term::Fn {
+                                functor: field_access_sym,
+                                pos_args: SmallVec::from_slice(&[acc, field_tid]),
+                                named_args: SmallVec::new(),
+                            },
+                            span,
+                        );
                         // WI-618: accessor provenance, as for
                         // BuildFrame::FieldAccess — the segments of a dotted
                         // name are not scope-resolvable leaves.
@@ -1044,7 +1066,13 @@ impl<'a> Converter<'a> {
             }
         }
 
-        work.push(WorkOp::Build(BuildFrame::FnTerm { node, is_ho, functor, slots, type_args }));
+        work.push(WorkOp::Build(BuildFrame::FnTerm {
+            node,
+            is_ho,
+            functor,
+            slots,
+            type_args,
+        }));
         for child in child_nodes.iter().rev() {
             work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
         }
@@ -1101,7 +1129,12 @@ impl<'a> Converter<'a> {
                 _ => {}
             }
         }
-        work.push(WorkOp::Build(BuildFrame::DotApply { node, name_sym, name_span, slots }));
+        work.push(WorkOp::Build(BuildFrame::DotApply {
+            node,
+            name_sym,
+            name_span,
+            slots,
+        }));
         // Args pushed reversed, then the receiver last so it pops (and lands
         // on the result stack) first — matching the DotApply build's drain.
         // A lambda arg (`xs.fold(0, lambda (a, x) -> a + x)`) visits as an
@@ -1207,7 +1240,11 @@ impl<'a> Converter<'a> {
                 slots: SmallVec::new(),
             }));
         } else {
-            work.push(WorkOp::Build(BuildFrame::FieldAccess { node, field_sym, field_span }));
+            work.push(WorkOp::Build(BuildFrame::FieldAccess {
+                node,
+                field_sym,
+                field_span,
+            }));
         }
         work.push(WorkOp::Visit(WorkKind::Term, object_node));
     }
@@ -1240,7 +1277,11 @@ impl<'a> Converter<'a> {
                 Some(l) => self.intern(self.text(l)),
                 None => member,
             };
-            entries.push(ProjEntry { label, member, member_span });
+            entries.push(ProjEntry {
+                label,
+                member,
+                member_span,
+            });
         }
         // A multi-member projection builds a NAMED tuple keyed by the labels;
         // validate those keys are well-formed BEFORE building (a single member
@@ -1419,7 +1460,10 @@ impl<'a> Converter<'a> {
             }
         }
         let elem_count = elements.len();
-        work.push(WorkOp::Build(BuildFrame::CollectionLiteral { node, elem_count }));
+        work.push(WorkOp::Build(BuildFrame::CollectionLiteral {
+            node,
+            elem_count,
+        }));
         for child in elements.iter().rev() {
             work.push(WorkOp::Visit(WorkKind::Term, *child));
         }
@@ -1481,8 +1525,10 @@ impl<'a> Converter<'a> {
         match node.kind() {
             "match_expr" => {
                 let scrutinee = self.field(node, "scrutinee");
-                let branches: SmallVec<[Node<'t>; 4]> =
-                    self.children_by_kind(node, "match_branch").into_iter().collect();
+                let branches: SmallVec<[Node<'t>; 4]> = self
+                    .children_by_kind(node, "match_branch")
+                    .into_iter()
+                    .collect();
                 self.check_dangling_case(&branches);
                 let branch_count = branches.len();
                 work.push(WorkOp::Build(BuildFrame::MatchExpr { node, branch_count }));
@@ -1545,8 +1591,8 @@ impl<'a> Converter<'a> {
                 // `conclude <goal>` (`_term`) — lowered as ordinary
                 // occurrences so the goal's names (the local `b` in
                 // `neq(b, 0)`, the `neq` rule) resolve in scope.
-                let target = self.convert_name(
-                    self.field(node, "target").expect("proof_statement: target"));
+                let target =
+                    self.convert_name(self.field(node, "target").expect("proof_statement: target"));
                 let strategy_name = self
                     .field(node, "strategy")
                     .map(|s| self.convert_proof_strategy(s).name);
@@ -1599,29 +1645,25 @@ impl<'a> Converter<'a> {
             // `typed_binder` in a named node (so the lambda's `param` field
             // resolves cleanly). Unwrap to the inner binder — it lowers to a
             // single typed `pattern_var`, NOT a 1-tuple.
-            "pattern_typed" => {
-                match self.child_by_kind(node, "typed_binder") {
-                    Some(binder) => self.visit_pattern(binder, work, results),
-                    None => {
-                        self.err("pattern_typed: missing typed_binder".to_string(), node);
-                        results.push(self.alloc_bottom(span));
-                    }
+            "pattern_typed" => match self.child_by_kind(node, "typed_binder") {
+                Some(binder) => self.visit_pattern(binder, work, results),
+                None => {
+                    self.err("pattern_typed: missing typed_binder".to_string(), node);
+                    results.push(self.alloc_bottom(span));
                 }
-            }
+            },
             // WI-620: `(p)` is pure grouping — `lambda (x) -> body` binds the
             // same single pattern as the bare spelling. Unwrap to the inner
             // pattern; a single parenthesized element is NOT a 1-tuple. Pushed
             // as a work op (not direct recursion) so nesting depth can't grow
             // the host stack.
-            "pattern_paren" => {
-                match self.field(node, "pattern") {
-                    Some(p) => work.push(WorkOp::Visit(WorkKind::Pattern, p)),
-                    None => {
-                        self.err("pattern_paren: missing inner pattern".to_string(), node);
-                        results.push(self.alloc_bottom(span));
-                    }
+            "pattern_paren" => match self.field(node, "pattern") {
+                Some(p) => work.push(WorkOp::Visit(WorkKind::Pattern, p)),
+                None => {
+                    self.err("pattern_paren: missing inner pattern".to_string(), node);
+                    results.push(self.alloc_bottom(span));
                 }
-            }
+            },
             // WI-517: a type-annotated lambda binder (`(x: T)` or a tuple
             // element `(a: A, b: B)`). Lowers to the SAME `pattern_var`
             // functor as a bare binder — so name-collection and the pattern
@@ -1764,7 +1806,13 @@ impl<'a> Converter<'a> {
     /// Assemble a parent TermId from its already-converted children.
     fn build_parse<'t>(&mut self, frame: BuildFrame<'t>, results: &mut Vec<TermId>) {
         match frame {
-            BuildFrame::FnTerm { node, is_ho, functor, slots, type_args } => {
+            BuildFrame::FnTerm {
+                node,
+                is_ho,
+                functor,
+                slots,
+                type_args,
+            } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -1785,23 +1833,29 @@ impl<'a> Converter<'a> {
                 // `SimpleTermStore::call_type_args` HashMap. The loader
                 // unwraps and lowers it via the existing build path.
                 if !type_args.is_empty() {
-                    let aux = Term::ParseAux(Box::new(
-                        super::ir::ParseAux::SortBindings(type_args),
-                    ));
+                    let aux =
+                        Term::ParseAux(Box::new(super::ir::ParseAux::SortBindings(type_args)));
                     let aux_tid = self.terms.alloc(aux, span);
                     let type_args_key = self.intern("type_args");
                     named_args.push((type_args_key, aux_tid));
                 }
                 let tid = self.terms.alloc(
-                    Term::Fn { functor, pos_args, named_args },
+                    Term::Fn {
+                        functor,
+                        pos_args,
+                        named_args,
+                    },
                     span,
                 );
                 results.push(tid);
             }
             BuildFrame::Infix { node, slots } => {
-                use super::pratt::{InfixElement, desugar_infix_chain};
+                use super::pratt::{desugar_infix_chain, InfixElement};
                 let span = self.span(node);
-                let operand_count = slots.iter().filter(|s| matches!(s, InfixSlot::Operand)).count();
+                let operand_count = slots
+                    .iter()
+                    .filter(|s| matches!(s, InfixSlot::Operand))
+                    .count();
                 let drain_start = results.len() - operand_count;
                 let mut elements: Vec<InfixElement<'_>> = Vec::with_capacity(slots.len());
                 let mut op_idx = 0;
@@ -1829,7 +1883,9 @@ impl<'a> Converter<'a> {
             BuildFrame::Prefix { node, op_text } => {
                 use super::pratt::{mint_op_node, prefix_entry};
                 let span = self.span(node);
-                let operand = results.pop().expect("prefix: missing operand on result stack");
+                let operand = results
+                    .pop()
+                    .expect("prefix: missing operand on result stack");
                 let functor_name = match prefix_entry(&op_text) {
                     Some(entry) => entry.functor,
                     None => {
@@ -1845,7 +1901,11 @@ impl<'a> Converter<'a> {
                     span,
                 ));
             }
-            BuildFrame::FieldAccess { node, field_sym, field_span } => {
+            BuildFrame::FieldAccess {
+                node,
+                field_sym,
+                field_span,
+            } => {
                 let span = self.span(node);
                 let object = results.pop().expect("field_access: missing object");
                 let field_tid = self.terms.alloc(Term::Ident(field_sym), field_span);
@@ -1864,7 +1924,12 @@ impl<'a> Converter<'a> {
                 self.terms.mark_minted(tid);
                 results.push(tid);
             }
-            BuildFrame::DotApply { node, name_sym, name_span, slots } => {
+            BuildFrame::DotApply {
+                node,
+                name_sym,
+                name_span,
+                slots,
+            } => {
                 // Result layout (drain_start..): receiver, then one entry per
                 // slot in source order. Parse shape:
                 // `dot_apply(receiver, Ident(name), ...positional, named...)`.
@@ -1885,7 +1950,14 @@ impl<'a> Converter<'a> {
                 }
                 results.truncate(drain_start);
                 let functor = self.intern("dot_apply");
-                let tid = self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span);
+                let tid = self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args,
+                        named_args,
+                    },
+                    span,
+                );
                 // WI-618: accessor provenance, as for FieldAccess above.
                 self.terms.mark_minted(tid);
                 results.push(tid);
@@ -1922,7 +1994,10 @@ impl<'a> Converter<'a> {
 
                 // All-or-nothing: error if mixing positional and named.
                 if !positional.is_empty() && !named.is_empty() {
-                    self.err("tuple literal cannot mix positional and named arguments", node);
+                    self.err(
+                        "tuple literal cannot mix positional and named arguments",
+                        node,
+                    );
                 }
                 if !positional.is_empty() {
                     for (i, tid) in positional.into_iter().enumerate() {
@@ -1940,7 +2015,11 @@ impl<'a> Converter<'a> {
                     span,
                 ));
             }
-            BuildFrame::DistributiveProjection { node, entries, is_value_recv } => {
+            BuildFrame::DistributiveProjection {
+                node,
+                entries,
+                is_value_recv,
+            } => {
                 // WI-639: `x.(m1, …, mn)` ⇒ the ordered/named tuple
                 // `(m1: x.m1, …, mn: x.mn)`. Distribute the SINGLE converted
                 // receiver (a shared TermId) over each member, building the
@@ -1951,13 +2030,19 @@ impl<'a> Converter<'a> {
                 // eval handle everything downstream — no new typer/eval arm.
                 use super::pratt::mint_op_node;
                 let span = self.span(node);
-                let object = results.pop().expect("distributive_projection: missing object");
-                let functor =
-                    self.intern(if is_value_recv { "dot_apply" } else { "field_access" });
+                let object = results
+                    .pop()
+                    .expect("distributive_projection: missing object");
+                let functor = self.intern(if is_value_recv {
+                    "dot_apply"
+                } else {
+                    "field_access"
+                });
                 let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 for entry in &entries {
-                    let member_tid =
-                        self.terms.alloc(Term::Ident(entry.member), entry.member_span);
+                    let member_tid = self
+                        .terms
+                        .alloc(Term::Ident(entry.member), entry.member_span);
                     // Same accessor shape `push_field_access` builds for `x.m`,
                     // via the sanctioned minted-alloc path (WI-618 provenance):
                     // `mint_op_node` allocs `functor(object, Ident(member))` and
@@ -2081,16 +2166,19 @@ impl<'a> Converter<'a> {
                 let param = results[drain_start];
                 let body = results[drain_start + 1];
                 results.truncate(drain_start);
-                let tid = self.alloc_fn_term(
-                    "lambda_expr",
-                    SmallVec::from_slice(&[param, body]),
-                    span,
-                );
+                let tid =
+                    self.alloc_fn_term("lambda_expr", SmallVec::from_slice(&[param, body]), span);
                 // WI-618: binder-form provenance, as for MatchBranch.
                 self.terms.mark_minted(tid);
                 results.push(tid);
             }
-            BuildFrame::ProofStmt { node, target, strategy_name, using, has_conclude } => {
+            BuildFrame::ProofStmt {
+                node,
+                target,
+                strategy_name,
+                using,
+                has_conclude,
+            } => {
                 // WI-538: `proof_stmt(body [, conclude]) { proof_meta }`.
                 // Results order is [body, conclude?]; the target/strategy/
                 // using clauses ride as a `ParseAux::ProofStmt` named
@@ -2099,7 +2187,11 @@ impl<'a> Converter<'a> {
                 let n = if has_conclude { 2 } else { 1 };
                 let drain_start = results.len() - n;
                 let body = results[drain_start];
-                let conclude = if has_conclude { Some(results[drain_start + 1]) } else { None };
+                let conclude = if has_conclude {
+                    Some(results[drain_start + 1])
+                } else {
+                    None
+                };
                 results.truncate(drain_start);
                 let meta = Term::ParseAux(Box::new(ParseAux::ProofStmt(super::ir::ProofStmtIr {
                     target,
@@ -2116,7 +2208,11 @@ impl<'a> Converter<'a> {
                 let meta_key = self.intern("proof_meta");
                 let functor = self.intern("proof_stmt");
                 results.push(self.terms.alloc(
-                    Term::Fn { functor, pos_args, named_args: SmallVec::from_slice(&[(meta_key, meta_tid)]) },
+                    Term::Fn {
+                        functor,
+                        pos_args,
+                        named_args: SmallVec::from_slice(&[(meta_key, meta_tid)]),
+                    },
                     span,
                 ));
             }
@@ -2129,7 +2225,11 @@ impl<'a> Converter<'a> {
                     span,
                 ));
             }
-            BuildFrame::PatternConstructor { node, name_tid, slots } => {
+            BuildFrame::PatternConstructor {
+                node,
+                name_tid,
+                slots,
+            } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
                 let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
@@ -2148,7 +2248,11 @@ impl<'a> Converter<'a> {
                 } else {
                     let functor = self.intern("pattern_constructor");
                     results.push(self.terms.alloc(
-                        Term::Fn { functor, pos_args, named_args },
+                        Term::Fn {
+                            functor,
+                            pos_args,
+                            named_args,
+                        },
                         span,
                     ));
                 }
@@ -2188,10 +2292,12 @@ impl<'a> Converter<'a> {
         for n in self.fields_by_name(node, "binder") {
             binders.push(self.convert_variable_node(n));
         }
-        let antecedents: SmallVec<[TermId; 4]> = self.field(node, "antecedents")
+        let antecedents: SmallVec<[TermId; 4]> = self
+            .field(node, "antecedents")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
-        let consequent: SmallVec<[TermId; 4]> = self.field(node, "consequent")
+        let consequent: SmallVec<[TermId; 4]> = self
+            .field(node, "consequent")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
 
@@ -2216,7 +2322,9 @@ impl<'a> Converter<'a> {
         // The `quantifier` field is an anonymous `forall` / `some` token; read its
         // source text. Own it as a `String` first so the error arm may borrow
         // `self` mutably.
-        let q = self.field(node, "quantifier").map(|n| self.text(n).to_string());
+        let q = self
+            .field(node, "quantifier")
+            .map(|n| self.text(n).to_string());
         let functor = match q.as_deref() {
             Some("forall") => "forall_in",
             Some("some") => "some_in",
@@ -2251,7 +2359,8 @@ impl<'a> Converter<'a> {
                 self.alloc_bottom(span)
             }
         };
-        let body: SmallVec<[TermId; 4]> = self.field(node, "body")
+        let body: SmallVec<[TermId; 4]> = self
+            .field(node, "body")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
         let body_tuple = self.alloc_fn_term("tuple", body, span);
@@ -2324,7 +2433,14 @@ impl<'a> Converter<'a> {
         // (`sort Leaf { entity Leaf(name: String) }`, where the bare `Leaf` resolves to
         // the sort and `Leaf(name: x)` is a CONSTRUCTOR, not a type). Both lower to
         // `Term::Fn` with the same functor symbol; only the surface tells them apart.
-        let tid = self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span);
+        let tid = self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            },
+            span,
+        );
         self.terms.mark_type_application(tid);
         tid
     }
@@ -2379,7 +2495,14 @@ impl<'a> Converter<'a> {
                 // WI-710: a bracketed type application as a binding VALUE
                 // (`fact Modifiable[T = Cell[V = Int64]]`) — same provenance mark as
                 // `convert_instantiation_term`'s.
-                let tid = self.terms.alloc(Term::Fn { functor, pos_args, named_args }, span);
+                let tid = self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args,
+                        named_args,
+                    },
+                    span,
+                );
                 self.terms.mark_type_application(tid);
                 tid
             }
@@ -2398,7 +2521,8 @@ impl<'a> Converter<'a> {
             // row, and any ground row).
             "effect_row" => {
                 let te = self.convert_type(node);
-                self.terms.alloc(Term::ParseAux(Box::new(ParseAux::TypeExpr(te))), span)
+                self.terms
+                    .alloc(Term::ParseAux(Box::new(ParseAux::TypeExpr(te))), span)
             }
             // Other non-type term shapes (function calls, tuples, arrows)
             // appearing in binding-value position collapse to `Ref(Name)`
@@ -2415,7 +2539,8 @@ impl<'a> Converter<'a> {
     fn convert_type_to_name(&mut self, node: Node) -> Name {
         // WI-311: `application` carries its base as an `identifier` field;
         // `simple_type` carries a `name` child. Prefer the field.
-        let name_node = self.field(node, "name")
+        let name_node = self
+            .field(node, "name")
             .or_else(|| self.child_by_kind(node, "name"))
             .unwrap_or(node);
         self.convert_name(name_node)
@@ -2570,7 +2695,8 @@ impl<'a> Converter<'a> {
             Vec::new()
         };
 
-        let return_type = self.field(node, "return_type")
+        let return_type = self
+            .field(node, "return_type")
             .map(|n| Box::new(self.convert_type(n)))
             .unwrap_or_else(|| {
                 self.err("arrow type missing return type", node);
@@ -2594,10 +2720,13 @@ impl<'a> Converter<'a> {
             }
             self.convert_effect_into(n, &mut effect_items);
         }
-        let effects: Vec<TypeExpr> =
-            effect_items.into_iter().map(|e| e.type_expr).collect();
+        let effects: Vec<TypeExpr> = effect_items.into_iter().map(|e| e.type_expr).collect();
 
-        TypeExpr::Arrow { params, return_type, effects }
+        TypeExpr::Arrow {
+            params,
+            return_type,
+            effects,
+        }
     }
 
     /// WI-327: lower one effect-position CST node into one or more
@@ -2614,17 +2743,18 @@ impl<'a> Converter<'a> {
                 }
             }
             // Single-entry forms — direct convert_type covers each.
-            "simple_type"
-            | "application"
-            | "variable_term"
-            | "effect_presence"
+            "simple_type" | "application" | "variable_term" | "effect_presence"
             | "effect_absence" => {
-                out.push(Effect { type_expr: self.convert_type(node) });
+                out.push(Effect {
+                    type_expr: self.convert_type(node),
+                });
             }
             // WI-478 (proposal 048): a guarded effect `E :- guard` (bare or
             // parenthesized) → one `EffectGuarded` entry.
             "guarded_effect" | "paren_guarded_effect" => {
-                out.push(Effect { type_expr: self.convert_guarded_effect(node) });
+                out.push(Effect {
+                    type_expr: self.convert_guarded_effect(node),
+                });
             }
             _ => {
                 // Unknown node — skip silently (mirrors prior behavior
@@ -2639,7 +2769,8 @@ impl<'a> Converter<'a> {
     /// `_term` (bare) or a `rule_body` (paren) — both collected to a `Vec<TermId>`
     /// of goal terms.
     fn convert_guarded_effect(&mut self, node: Node) -> TypeExpr {
-        let label = self.field(node, "effect")
+        let label = self
+            .field(node, "effect")
             .map(|n| self.convert_type(n))
             .unwrap_or_else(|| {
                 self.err("guarded effect missing label", node);
@@ -2654,29 +2785,32 @@ impl<'a> Converter<'a> {
                 Vec::new()
             }
         };
-        TypeExpr::EffectGuarded { label: Box::new(label), guard }
+        TypeExpr::EffectGuarded {
+            label: Box::new(label),
+            guard,
+        }
     }
 
     // ── Visibility ──────────────────────────────────────────────
 
     fn convert_visibility(&mut self, node: Node) -> Option<Visibility> {
-        self.child_by_kind(node, "visibility").map(|v| {
-            match self.text(v) {
+        self.child_by_kind(node, "visibility")
+            .map(|v| match self.text(v) {
                 "internal" => Visibility::Internal,
                 "public" => Visibility::Public,
                 other => {
                     self.err(format!("unknown visibility: {other}"), v);
                     Visibility::Internal
                 }
-            }
-        })
+            })
     }
 
     // ── Meta ────────────────────────────────────────────────────
 
     fn convert_meta_block(&mut self, node: Node) -> Option<MetaBlock> {
         self.child_by_kind(node, "meta_block").map(|mb| {
-            let entries = self.children_by_kind(mb, "meta_entry")
+            let entries = self
+                .children_by_kind(mb, "meta_entry")
                 .into_iter()
                 .map(|e| self.convert_meta_entry(e))
                 .collect();
@@ -2686,10 +2820,12 @@ impl<'a> Converter<'a> {
 
     fn convert_meta_entry(&mut self, node: Node) -> MetaEntry {
         let span = self.span(node);
-        let key = self.field(node, "key")
+        let key = self
+            .field(node, "key")
             .map(|n| self.convert_name(n))
             .unwrap_or_else(|| Name::simple(self.intern("?"), span));
-        let value = self.field(node, "value")
+        let value = self
+            .field(node, "value")
             .map(|n| self.convert_term(n))
             .unwrap_or_else(|| self.terms.alloc(Term::Bottom, span));
         MetaEntry { key, value }
@@ -2709,7 +2845,10 @@ impl<'a> Converter<'a> {
         // HERE and not inside `convert_requires_body` — that walk is shared with an
         // operation's `requires` clause list, where the spelling would mean nothing
         // (a clause DECLARES a slot; there is no body to bring a dictionary into).
-        goals.into_iter().map(|g| self.rewrite_require_goal(g)).collect()
+        goals
+            .into_iter()
+            .map(|g| self.rewrite_require_goal(g))
+            .collect()
     }
 
     /// WI-1040 (proposal 060 §1) — interpret a rule-body `require[X]`.
@@ -2751,7 +2890,12 @@ impl<'a> Converter<'a> {
         // Spelling 2: `?d = require[X]` — the author names the output. `=` desugars
         // to `eq(lhs, rhs)` (pratt `EQ_FUNCTOR`), and only this exact shape is a
         // requirement denotation: variable on the left, `require[…]` on the right.
-        if let Term::Fn { functor, pos_args, named_args } = self.terms.get(tid) {
+        if let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.terms.get(tid)
+        {
             if self.symbols.local_name(*functor) == super::pratt::EQ_FUNCTOR
                 && pos_args.len() == 2
                 && named_args.is_empty()
@@ -2795,11 +2939,14 @@ impl<'a> Converter<'a> {
     /// with exactly one type argument.
     fn require_spec_arg(&self, tid: TermId) -> Option<TermId> {
         match self.terms.get(tid) {
-            Term::Fn { functor, pos_args, named_args }
-                if self.symbols.local_name(*functor) == "require"
-                    && pos_args.len() == 1
-                    && named_args.is_empty()
-                    && self.terms.is_type_application(tid) =>
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if self.symbols.local_name(*functor) == "require"
+                && pos_args.len() == 1
+                && named_args.is_empty()
+                && self.terms.is_type_application(tid) =>
             {
                 Some(pos_args[0])
             }
@@ -2836,7 +2983,12 @@ impl<'a> Converter<'a> {
                 offenders.push(self.terms.span(t));
                 continue;
             }
-            if let Term::Fn { pos_args, named_args, .. } = self.terms.get(t) {
+            if let Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } = self.terms.get(t)
+            {
                 stack.extend(pos_args.iter().copied());
                 stack.extend(named_args.iter().map(|(_, a)| *a));
             }
@@ -2966,10 +3118,13 @@ impl<'a> Converter<'a> {
     /// name, exactly as the loader's `unify`/`eq` special-cases match by name.
     fn rewrite_requires_goal(&mut self, tid: TermId) -> TermId {
         let (spec_arg, span) = match self.terms.get(tid) {
-            Term::Fn { functor, pos_args, named_args }
-                if self.symbols.local_name(*functor) == "requires"
-                    && pos_args.len() == 1
-                    && named_args.is_empty() =>
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if self.symbols.local_name(*functor) == "requires"
+                && pos_args.len() == 1
+                && named_args.is_empty() =>
             {
                 (pos_args[0], self.terms.span(tid))
             }
@@ -2995,9 +3150,11 @@ impl<'a> Converter<'a> {
     /// (already argument-free — `Ref`/`Ident`) is returned unchanged.
     fn strip_spec_type_args(&mut self, tid: TermId) -> TermId {
         match self.terms.get(tid) {
-            Term::Fn { functor, pos_args, named_args }
-                if !pos_args.is_empty() || !named_args.is_empty() =>
-            {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if !pos_args.is_empty() || !named_args.is_empty() => {
                 let functor = *functor;
                 let span = self.terms.span(tid);
                 self.terms.alloc(
@@ -3016,8 +3173,7 @@ impl<'a> Converter<'a> {
     // ── Namespace ───────────────────────────────────────────────
 
     fn convert_namespace(&mut self, node: Node) -> Option<Namespace> {
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
+        let name = self.field(node, "name").map(|n| self.convert_name(n))?;
         let span = self.span(node);
         let descriptions = self.declaration_descriptions(node);
 
@@ -3047,80 +3203,112 @@ impl<'a> Converter<'a> {
 
     fn convert_import(&mut self, node: Node) -> Import {
         // import_clause → import_path → identifier+ [selective_import | wildcard_import]
-        let import_path = self.child_by_kind(node, "import_path")
-            .unwrap_or(node);
+        let import_path = self.child_by_kind(node, "import_path").unwrap_or(node);
 
         let mut cursor = import_path.walk();
         let children: Vec<_> = import_path.named_children(&mut cursor).collect();
 
         // Check for wildcard or selective import (last segment)
         let has_wildcard = children.iter().any(|c| c.kind() == "wildcard_import");
-        let selective = children.iter()
-            .find(|c| c.kind() == "selective_import");
+        let selective = children.iter().find(|c| c.kind() == "selective_import");
 
         if has_wildcard {
             // import a.b.* → path = a.b, kind = Wildcard
-            let path_segments: SmallVec<_> = children.iter()
+            let path_segments: SmallVec<_> = children
+                .iter()
                 .filter(|c| c.kind() == "identifier")
                 .map(|c| self.intern(self.text(*c)))
                 .collect();
-            let path = Name { segments: path_segments, span: self.span(import_path) };
-            Import { path, kind: ImportKind::Wildcard }
+            let path = Name {
+                segments: path_segments,
+                span: self.span(import_path),
+            };
+            Import {
+                path,
+                kind: ImportKind::Wildcard,
+            }
         } else if let Some(sel_node) = selective {
             // import a.b.{X, Y} → path = a.b, kind = Selective([X, Y])
-            let path_segments: SmallVec<_> = children.iter()
+            let path_segments: SmallVec<_> = children
+                .iter()
                 .filter(|c| c.kind() == "identifier")
                 .map(|c| self.intern(self.text(*c)))
                 .collect();
-            let path = Name { segments: path_segments, span: self.span(import_path) };
+            let path = Name {
+                segments: path_segments,
+                span: self.span(import_path),
+            };
 
             let sel = *sel_node;
             let mut sel_cursor = sel.walk();
-            let selected: Vec<_> = sel.named_children(&mut sel_cursor)
+            let selected: Vec<_> = sel
+                .named_children(&mut sel_cursor)
                 .filter(|c| c.kind() == "identifier")
                 .map(|c| {
                     let sym = self.intern(self.text(c));
                     Name::simple(sym, self.span(c))
                 })
                 .collect();
-            Import { path, kind: ImportKind::Selective(selected) }
+            Import {
+                path,
+                kind: ImportKind::Selective(selected),
+            }
         } else {
             // import a.b.c → path = a.b.c, kind = Plain
-            let path_segments: SmallVec<_> = children.iter()
+            let path_segments: SmallVec<_> = children
+                .iter()
                 .filter(|c| c.kind() == "identifier")
                 .map(|c| self.intern(self.text(*c)))
                 .collect();
-            let path = Name { segments: path_segments, span: self.span(import_path) };
-            Import { path, kind: ImportKind::Plain }
+            let path = Name {
+                segments: path_segments,
+                span: self.span(import_path),
+            };
+            Import {
+                path,
+                kind: ImportKind::Plain,
+            }
         }
     }
 
     // ── Sort ────────────────────────────────────────────────────
 
     fn convert_abstract_sort(&mut self, node: Node) -> Option<AbstractSort> {
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
+        let name = self.field(node, "name").map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
 
-        let definition = self.field(node, "definition")
+        let definition = self
+            .field(node, "definition")
             .map(|def| self.convert_type(def))
             .unwrap_or_else(|| self.fresh_anon_type_var(span));
 
         // Descriptions: collect abstract_sort's own description fields first,
         // then hoist from variable_term's descriptions if empty.
-        let mut descriptions: Vec<String> = self.fields_by_name(node, "description")
+        let mut descriptions: Vec<String> = self
+            .fields_by_name(node, "description")
             .into_iter()
             .map(|d| strip_description_delimiters(self.text(d)))
             .collect();
         if descriptions.is_empty() {
-            if let TypeExpr::Variable { descriptions: ref var_descs, .. } = definition {
+            if let TypeExpr::Variable {
+                descriptions: ref var_descs,
+                ..
+            } = definition
+            {
                 descriptions = var_descs.clone();
             }
         }
 
-        Some(AbstractSort { visibility, name, definition, descriptions, meta, span })
+        Some(AbstractSort {
+            visibility,
+            name,
+            definition,
+            descriptions,
+            meta,
+            span,
+        })
     }
 
     /// WI-320 / proposal 045: desugar an `effects E = T` sort-item into the
@@ -3153,16 +3341,22 @@ impl<'a> Converter<'a> {
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
 
-        let definition = self.field(node, "definition")
+        let definition = self
+            .field(node, "definition")
             .map(|def| self.convert_type(def))
             .unwrap_or_else(|| self.fresh_anon_type_var(span));
 
-        let mut descriptions: Vec<String> = self.fields_by_name(node, "description")
+        let mut descriptions: Vec<String> = self
+            .fields_by_name(node, "description")
             .into_iter()
             .map(|d| strip_description_delimiters(self.text(d)))
             .collect();
         if descriptions.is_empty() {
-            if let TypeExpr::Variable { descriptions: ref var_descs, .. } = definition {
+            if let TypeExpr::Variable {
+                descriptions: ref var_descs,
+                ..
+            } = definition
+            {
                 descriptions = var_descs.clone();
             }
         }
@@ -3214,13 +3408,13 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_sort_like(&mut self, node: Node, kind: SortDeclKind) -> Option<SortWithBody> {
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
+        let name = self.field(node, "name").map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
         let meta = self.convert_meta_block(node);
         let span = self.span(node);
 
-        let descriptions: Vec<String> = self.fields_by_name(node, "description")
+        let descriptions: Vec<String> = self
+            .fields_by_name(node, "description")
             .into_iter()
             .map(|d| strip_description_delimiters(self.text(d)))
             .collect();
@@ -3238,8 +3432,12 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "name" | "visibility" | "import_clause" | "meta_block"
-                | "description_block" | "sort_type_param_list" => {}
+                "name"
+                | "visibility"
+                | "import_clause"
+                | "meta_block"
+                | "description_block"
+                | "sort_type_param_list" => {}
                 _ => {
                     let converted = self.convert_items_at(child, ItemOwner::Sort);
                     items.extend(converted);
@@ -3277,7 +3475,8 @@ impl<'a> Converter<'a> {
     /// marker to mint the carrier's backing var. A `= Default` keeps the default.
     fn desugar_sort_type_param(&mut self, node: Node) -> Item {
         let span = self.span(node);
-        let name_sym = self.field(node, "name")
+        let name_sym = self
+            .field(node, "name")
             .map(|n| self.intern(self.text(n)))
             .unwrap_or_else(|| self.intern("?"));
         let name = Name::simple(name_sym, span);
@@ -3391,7 +3590,10 @@ impl<'a> Converter<'a> {
         let vid = crate::kb::term::VarId::new(self.next_var, sym);
         self.next_var += 1;
         let tid = self.terms.alloc(Term::Var(Var::Global(vid)), span);
-        TypeExpr::Variable { term_id: tid, descriptions: Vec::new() }
+        TypeExpr::Variable {
+            term_id: tid,
+            descriptions: Vec::new(),
+        }
     }
 
     fn convert_field_decl(&mut self, node: Node) -> FieldDecl {
@@ -3400,7 +3602,8 @@ impl<'a> Converter<'a> {
             .map(|n| self.intern(self.text(n)))
             .unwrap_or_else(|| self.intern("?"));
 
-        let ty = self.field(node, "type")
+        let ty = self
+            .field(node, "type")
             .map(|t| self.convert_type(t))
             .unwrap_or_else(|| {
                 let sym = self.intern("?");
@@ -3416,8 +3619,7 @@ impl<'a> Converter<'a> {
         self.reset_var_scope();
         let span = self.span(node);
 
-        let label = self.field(node, "label")
-            .map(|n| self.convert_name(n));
+        let label = self.field(node, "label").map(|n| self.convert_name(n));
         let descriptions = if label.is_some() {
             self.declaration_descriptions(node)
         } else {
@@ -3425,17 +3627,24 @@ impl<'a> Converter<'a> {
             Vec::new()
         };
 
-        let heads = self.field(node, "heads")
+        let heads = self
+            .field(node, "heads")
             .map(|h| self.convert_rule_heads(h))
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
 
-        let body = self.field(node, "body")
-            .map(|b| self.convert_rule_body(b));
+        let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
 
         let meta = self.convert_meta_block(node);
 
         self.snapshot_rule_var_scope(&label);
-        Some(Rule { label, descriptions, heads, body, meta, span })
+        Some(Rule {
+            label,
+            descriptions,
+            heads,
+            body,
+            meta,
+            span,
+        })
     }
 
     /// Save the current `var_scope` keyed by the rule's label so a
@@ -3445,7 +3654,8 @@ impl<'a> Converter<'a> {
     fn snapshot_rule_var_scope(&mut self, label: &Option<Name>) {
         if let Some(label_name) = label {
             if label_name.segments.len() == 1 {
-                self.rule_var_scopes.insert(label_name.segments[0], self.var_scope.clone());
+                self.rule_var_scopes
+                    .insert(label_name.segments[0], self.var_scope.clone());
             }
         }
     }
@@ -3469,8 +3679,10 @@ impl<'a> Converter<'a> {
             return false;
         }
         self.err(
-            &format!("a {position} must be an atom, not a bare literal \
-                      (a value is not a proposition)"),
+            &format!(
+                "a {position} must be an atom, not a bare literal \
+                      (a value is not a proposition)"
+            ),
             node,
         );
         true
@@ -3546,12 +3758,14 @@ impl<'a> Converter<'a> {
         // too (WI-840 / 058 §4.7), appended by `convert_requires_body` below.
         let mut type_params = self.convert_operation_type_params(node, self.text(name_node));
 
-        let params = self.children_by_kind(node, "param")
+        let params = self
+            .children_by_kind(node, "param")
             .into_iter()
             .map(|p| self.convert_param(p))
             .collect();
 
-        let return_type = self.field(node, "return_type")
+        let return_type = self
+            .field(node, "return_type")
             .map(|t| self.convert_type(t))
             .unwrap_or_else(|| {
                 let sym = self.intern("Void");
@@ -3607,7 +3821,9 @@ impl<'a> Converter<'a> {
         let meta = if meta_entries.is_empty() {
             self.convert_meta_block(node)
         } else {
-            Some(MetaBlock { entries: meta_entries })
+            Some(MetaBlock {
+                entries: meta_entries,
+            })
         };
 
         Some(Operation {
@@ -3641,7 +3857,15 @@ impl<'a> Converter<'a> {
         // WI-1070 — the same read as `convert_operation`'s, for the same reason.
         let descriptions = self.declaration_descriptions(node);
         let meta = self.convert_meta_block(node);
-        Some(Const { visibility, name, ty, value, descriptions, meta, span })
+        Some(Const {
+            visibility,
+            name,
+            ty,
+            value,
+            descriptions,
+            meta,
+            span,
+        })
     }
 
     /// `op` is the enclosing operation's name as written — carried in for the WI-850
@@ -3678,7 +3902,10 @@ impl<'a> Converter<'a> {
     /// duplicate-named-argument rule.
     fn convert_operation_type_param(&mut self, node: Node, op: &str) -> TypeParam {
         let span = self.span(node);
-        let written_name = self.field(node, "name").map(|n| self.text(n)).unwrap_or("?");
+        let written_name = self
+            .field(node, "name")
+            .map(|n| self.text(n))
+            .unwrap_or("?");
         let name = self.intern(written_name);
         if let Some(default) = self.field(node, "default") {
             let written = self.text(default);
@@ -3696,15 +3923,21 @@ impl<'a> Converter<'a> {
         }
         // WI-840: a bracket-declared parameter names no requirement slot; only the
         // `requires <name>: Spec[…]` binder does (`convert_requires_body`).
-        TypeParam { name, span, requirement_slot: None }
+        TypeParam {
+            name,
+            span,
+            requirement_slot: None,
+        }
     }
 
     fn convert_param(&mut self, node: Node) -> Param {
-        let name = self.field(node, "name")
+        let name = self
+            .field(node, "name")
             .map(|n| self.intern(self.text(n)))
             .unwrap_or_else(|| self.intern("?"));
 
-        let ty = self.field(node, "type")
+        let ty = self
+            .field(node, "type")
             .map(|t| self.convert_type(t))
             .unwrap_or_else(|| {
                 let sym = self.intern("?");
@@ -3721,10 +3954,13 @@ impl<'a> Converter<'a> {
 
     fn convert_requires_decl(&mut self, node: Node) -> Option<RequiresDecl> {
         let span = self.span(node);
-        let type_expr = self.field(node, "type")
-            .map(|t| self.convert_type(t))?;
+        let type_expr = self.field(node, "type").map(|t| self.convert_type(t))?;
         let binder = self.field(node, "binder").map(|b| self.convert_name(b));
-        Some(RequiresDecl { binder, type_expr, span })
+        Some(RequiresDecl {
+            binder,
+            type_expr,
+            span,
+        })
     }
 
     /// WI-840 (proposal 058 §4.7): a sort/namespace-level `requires` item, desugared.
@@ -3789,8 +4025,7 @@ impl<'a> Converter<'a> {
     // ── Sugar: entity, fact, constraint ─────────────────────────
 
     fn convert_entity(&mut self, node: Node) -> Option<Entity> {
-        let name = self.field(node, "name")
-            .map(|n| self.convert_name(n))?;
+        let name = self.field(node, "name").map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
         let span = self.span(node);
         let descriptions = self.declaration_descriptions(node);
@@ -3818,7 +4053,14 @@ impl<'a> Converter<'a> {
 
         let meta = self.convert_meta_block(node);
 
-        Some(Entity { visibility, name, fields, descriptions, meta, span })
+        Some(Entity {
+            visibility,
+            name,
+            fields,
+            descriptions,
+            meta,
+            span,
+        })
     }
 
     fn convert_fact(&mut self, node: Node) -> Option<Fact> {
@@ -3837,8 +4079,7 @@ impl<'a> Converter<'a> {
     fn convert_constraint(&mut self, node: Node) -> Option<Constraint> {
         self.reset_var_scope();
         let span = self.span(node);
-        let label = self.field(node, "label")
-            .map(|n| self.convert_name(n));
+        let label = self.field(node, "label").map(|n| self.convert_name(n));
         let descriptions = if label.is_some() {
             self.declaration_descriptions(node)
         } else {
@@ -3854,8 +4095,7 @@ impl<'a> Converter<'a> {
             "aggregation_constraint" => self.convert_aggregation(head_node)?,
             _ => {
                 let head = self.convert_rule_body(head_node);
-                let guard = self.field(node, "guard")
-                    .map(|b| self.convert_rule_body(b));
+                let guard = self.field(node, "guard").map(|b| self.convert_rule_body(b));
                 // WI-023: the `head -: conclusion` implication form is parsed but
                 // not yet lowered/enforced — reject loudly rather than silently
                 // dropping the conclusion.
@@ -3870,7 +4110,13 @@ impl<'a> Converter<'a> {
             }
         };
         let meta = self.convert_meta_block(node);
-        Some(Constraint { label, descriptions, body, meta, span })
+        Some(Constraint {
+            label,
+            descriptions,
+            body,
+            meta,
+            span,
+        })
     }
 
     fn convert_quantified(&mut self, node: Node) -> Option<ConstraintBody> {
@@ -3886,10 +4132,12 @@ impl<'a> Converter<'a> {
         let (var, condition) = if let Some(tb) = self.field(node, "typed_binding") {
             self.convert_typed_binding(tb)
         } else {
-            let var = self.field(node, "var")
+            let var = self
+                .field(node, "var")
                 .map(|n| self.variable_name(n))
                 .unwrap_or_default();
-            let condition = self.field(node, "condition")
+            let condition = self
+                .field(node, "condition")
                 .map(|b| self.convert_rule_body(b))
                 .unwrap_or_default();
             (var, condition)
@@ -3905,7 +4153,12 @@ impl<'a> Converter<'a> {
             );
         }
         let body = Box::new(self.convert_constraint_inner_body(body_node));
-        Some(ConstraintBody::Quantified { quantifier, var, condition, body })
+        Some(ConstraintBody::Quantified {
+            quantifier,
+            var,
+            condition,
+            body,
+        })
     }
 
     /// Recursive `_constraint_body` in a quantifier's `-: body` slot: a nested
@@ -3946,7 +4199,11 @@ impl<'a> Converter<'a> {
             let named_args: SmallVec<[(Symbol, TermId); 2]> =
                 SmallVec::from_slice(&[(occ_field, occ_term), (type_field, type_term)]);
             condition.push(self.terms.alloc(
-                Term::Fn { functor, pos_args: SmallVec::new(), named_args },
+                Term::Fn {
+                    functor,
+                    pos_args: SmallVec::new(),
+                    named_args,
+                },
                 span,
             ));
         }
@@ -3961,13 +4218,16 @@ impl<'a> Converter<'a> {
             Some("max") => Aggregate::Max,
             _ => return None,
         };
-        let var = self.field(node, "var")
+        let var = self
+            .field(node, "var")
             .map(|n| self.variable_name(n))
             .unwrap_or_default();
-        let condition = self.field(node, "condition")
+        let condition = self
+            .field(node, "condition")
             .map(|b| self.convert_rule_body(b))
             .unwrap_or_default();
-        let body = self.field(node, "body")
+        let body = self
+            .field(node, "body")
             .map(|b| self.convert_rule_body(b))
             .unwrap_or_default();
         let op = match self.field(node, "op").map(|n| self.text(n)) {
@@ -3980,7 +4240,14 @@ impl<'a> Converter<'a> {
             _ => return None,
         };
         let bound = self.field(node, "bound").map(|n| self.convert_term(n))?;
-        Some(ConstraintBody::Aggregation { aggregate, var, condition, body, op, bound })
+        Some(ConstraintBody::Aggregation {
+            aggregate,
+            var,
+            condition,
+            body,
+            op,
+            bound,
+        })
     }
 
     /// Binder name: the variable's source text without its leading `?`.
@@ -3995,7 +4262,8 @@ impl<'a> Converter<'a> {
         // operation_entry shares operation_declaration's field/child
         // names (minus the literal `operation` keyword), so the same
         // converter handles both node kinds.
-        let entries = self.children_by_kind(node, "operation_entry")
+        let entries = self
+            .children_by_kind(node, "operation_entry")
             .into_iter()
             .filter_map(|e| self.convert_operation(e))
             .collect();
@@ -4004,7 +4272,8 @@ impl<'a> Converter<'a> {
 
     fn convert_rule_block(&mut self, node: Node) -> Option<RuleBlock> {
         let span = self.span(node);
-        let entries = self.children_by_kind(node, "rule_entry")
+        let entries = self
+            .children_by_kind(node, "rule_entry")
             .into_iter()
             .filter_map(|e| self.convert_rule_entry(e))
             .collect();
@@ -4014,16 +4283,22 @@ impl<'a> Converter<'a> {
     fn convert_rule_entry(&mut self, node: Node) -> Option<Rule> {
         self.reset_var_scope();
         let span = self.span(node);
-        let label = self.field(node, "label")
-            .map(|n| self.convert_name(n));
-        let heads = self.field(node, "heads")
+        let label = self.field(node, "label").map(|n| self.convert_name(n));
+        let heads = self
+            .field(node, "heads")
             .map(|h| self.convert_rule_heads(h))
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
-        let body = self.field(node, "body")
-            .map(|b| self.convert_rule_body(b));
+        let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
         self.snapshot_rule_var_scope(&label);
-        Some(Rule { label, descriptions: Vec::new(), heads, body, meta, span })
+        Some(Rule {
+            label,
+            descriptions: Vec::new(),
+            heads,
+            body,
+            meta,
+            span,
+        })
     }
 
     // ── Describe ────────────────────────────────────────────────
@@ -4045,13 +4320,22 @@ impl<'a> Converter<'a> {
                 self.var_scope = parent_scope;
             }
         }
-        let strategy = self.field(node, "strategy").map(|n| self.convert_proof_strategy(n));
+        let strategy = self
+            .field(node, "strategy")
+            .map(|n| self.convert_proof_strategy(n));
         let body = self.convert_proof_body(node);
-        let using = self.field(node, "using")
+        let using = self
+            .field(node, "using")
             .map(|n| self.convert_proof_using_list(n))
             .unwrap_or_default();
         let span = self.span(node);
-        Some(ProofDecl { target, strategy, body, using, span })
+        Some(ProofDecl {
+            target,
+            strategy,
+            body,
+            using,
+            span,
+        })
     }
 
     /// Pull each `name` child of a `proof_using_list` node into a
@@ -4085,7 +4369,14 @@ impl<'a> Converter<'a> {
             let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             named_args.push((self.intern("name"), key_str));
             named_args.push((self.intern("value"), val_tid));
-            self.terms.alloc(Term::Fn { functor, pos_args: SmallVec::new(), named_args }, span)
+            self.terms.alloc(
+                Term::Fn {
+                    functor,
+                    pos_args: SmallVec::new(),
+                    named_args,
+                },
+                span,
+            )
         } else {
             self.alloc_bottom(span)
         }
@@ -4093,7 +4384,8 @@ impl<'a> Converter<'a> {
 
     fn convert_proof_strategy(&mut self, node: Node) -> ProofStrategy {
         let span = self.span(node);
-        let name = self.field(node, "name")
+        let name = self
+            .field(node, "name")
             .map(|n| self.intern(self.text(n)))
             .unwrap_or_else(|| self.intern("derivation"));
         // Args are positional/named children of the proof_strategy node.
@@ -4150,14 +4442,17 @@ impl<'a> Converter<'a> {
         // Build the typed Tactic IR for z3 strategies. Backwards compat:
         // `by z3(logic: "LRA")` desugars to `by z3(tactic: smt(logic: "LRA"))`.
         let tactic = if self.symbol_text(name) == "z3" {
-            Some(explicit_tactic.unwrap_or_else(|| {
-                Tactic::App(self.intern("smt"), tactic_args)
-            }))
+            Some(explicit_tactic.unwrap_or_else(|| Tactic::App(self.intern("smt"), tactic_args)))
         } else {
             None
         };
 
-        ProofStrategy { name, args, tactic, span }
+        ProofStrategy {
+            name,
+            args,
+            tactic,
+            span,
+        }
     }
 
     /// Lift one parse-side `named_arg` into a `TacticArg`. Returns
@@ -4176,14 +4471,9 @@ impl<'a> Converter<'a> {
     /// literals, name references, and nested tactic applications.
     fn convert_tactic_term_node(&mut self, node: Node) -> Option<TacticArgValue> {
         match node.kind() {
-            "string_literal" => Some(TacticArgValue::String(
-                decode_string_lit(self.text(node))
-            )),
-            "integer_literal" => self.text(node).parse::<i64>().ok()
-                .map(TacticArgValue::Int),
-            "boolean_literal" => Some(TacticArgValue::Bool(
-                self.text(node) == "true"
-            )),
+            "string_literal" => Some(TacticArgValue::String(decode_string_lit(self.text(node)))),
+            "integer_literal" => self.text(node).parse::<i64>().ok().map(TacticArgValue::Int),
+            "boolean_literal" => Some(TacticArgValue::Bool(self.text(node) == "true")),
             "identifier" => {
                 // A bare identifier in tactic position — interpret as
                 // `Tactic::Bare`. (e.g. `then(smt, simplify)` — args are
@@ -4202,7 +4492,9 @@ impl<'a> Converter<'a> {
                 // name stays a qualified `Name`.
                 let n = self.convert_name(node);
                 if n.segments.len() == 1 {
-                    Some(TacticArgValue::Tactic(Box::new(Tactic::Bare(n.segments[0]))))
+                    Some(TacticArgValue::Tactic(Box::new(Tactic::Bare(
+                        n.segments[0],
+                    ))))
                 } else {
                     Some(TacticArgValue::Name(n))
                 }
@@ -4224,7 +4516,9 @@ impl<'a> Converter<'a> {
         if fn_name == "raw" {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                if child == name_node { continue; }
+                if child == name_node {
+                    continue;
+                }
                 if child.kind() == "string_literal" {
                     return Some(Tactic::Raw(decode_string_lit(self.text(child))));
                 }
@@ -4236,7 +4530,9 @@ impl<'a> Converter<'a> {
         let mut args: Vec<TacticArg> = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child == name_node { continue; }
+            if child == name_node {
+                continue;
+            }
             match child.kind() {
                 "named_arg" => {
                     if let Some(a) = self.convert_tactic_named_arg(child) {
@@ -4245,7 +4541,10 @@ impl<'a> Converter<'a> {
                 }
                 _ => {
                     if let Some(v) = self.convert_tactic_term_node(child) {
-                        args.push(TacticArg { name: None, value: v });
+                        args.push(TacticArg {
+                            name: None,
+                            value: v,
+                        });
                     }
                 }
             }
@@ -4278,19 +4577,22 @@ impl<'a> Converter<'a> {
         if let Some(q_node) = self.field(proof_node, "query") {
             let raw = self.text(q_node);
             let text = decode_string_lit(raw);
-            let mapping = self.field(proof_node, "mapping")
+            let mapping = self
+                .field(proof_node, "mapping")
                 .map(|n| self.convert_mapping_block(n));
             return Some(ProofBody::Query { text, mapping });
         }
         // Structured case (proposal 031): `proof_step` children plus an
         // optional `proof_concluding_clause`. Detect by presence of any
         // proof_step child; the concluding clause is optional.
-        let steps: Vec<ProofStep> = self.children_by_kind(proof_node, "proof_step")
+        let steps: Vec<ProofStep> = self
+            .children_by_kind(proof_node, "proof_step")
             .into_iter()
             .filter_map(|n| self.convert_proof_step(n))
             .collect();
         if !steps.is_empty() {
-            let conclude = self.child_by_kind(proof_node, "proof_concluding_clause")
+            let conclude = self
+                .child_by_kind(proof_node, "proof_concluding_clause")
                 .and_then(|n| self.convert_proof_concluding_clause(n));
             return Some(ProofBody::Structured { steps, conclude });
         }
@@ -4307,33 +4609,55 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
 
         let label = self.field(node, "label").map(|n| self.convert_name(n));
-        let heads = self.field(node, "heads")
+        let heads = self
+            .field(node, "heads")
             .map(|h| self.convert_rule_heads(h))
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
-        let using = self.field(node, "using")
+        let using = self
+            .field(node, "using")
             .map(|n| self.convert_proof_using_list(n))
             .unwrap_or_default();
-        let strategy = self.field(node, "tactic")
+        let strategy = self
+            .field(node, "tactic")
             .map(|n| self.convert_proof_strategy(n))?;
 
-        let rule = Rule { label, descriptions: Vec::new(), heads, body, meta, span };
-        Some(ProofStep { rule, using, strategy, span })
+        let rule = Rule {
+            label,
+            descriptions: Vec::new(),
+            heads,
+            body,
+            meta,
+            span,
+        };
+        Some(ProofStep {
+            rule,
+            using,
+            strategy,
+            span,
+        })
     }
 
     fn convert_proof_concluding_clause(&mut self, node: Node) -> Option<ConcludeClause> {
         let span = self.span(node);
-        let using = self.field(node, "using")
+        let using = self
+            .field(node, "using")
             .map(|n| self.convert_proof_using_list(n))
             .unwrap_or_default();
-        let strategy = self.field(node, "tactic")
+        let strategy = self
+            .field(node, "tactic")
             .map(|n| self.convert_proof_strategy(n))?;
-        Some(ConcludeClause { using, strategy, span })
+        Some(ConcludeClause {
+            using,
+            strategy,
+            span,
+        })
     }
 
     fn convert_mapping_block(&mut self, node: Node) -> MappingBlock {
-        let entries: Vec<MappingEntry> = self.children_by_kind(node, "mapping_entry")
+        let entries: Vec<MappingEntry> = self
+            .children_by_kind(node, "mapping_entry")
             .into_iter()
             .map(|e| self.convert_mapping_entry(e))
             .collect();
@@ -4341,10 +4665,12 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_mapping_entry(&mut self, node: Node) -> MappingEntry {
-        let source = self.field(node, "source")
+        let source = self
+            .field(node, "source")
             .map(|n| self.convert_name(n))
             .unwrap_or_else(|| Name::simple(self.intern("?"), self.span(node)));
-        let target = self.field(node, "target")
+        let target = self
+            .field(node, "target")
             .map(|n| match n.kind() {
                 "string_literal" => decode_string_lit(self.text(n)),
                 _ => self.text(n).to_string(),
@@ -4368,28 +4694,41 @@ impl<'a> Converter<'a> {
             })
             .unwrap_or_default();
         let span = self.span(node);
-        Some(ProvidesClause { spec, conditions, span })
+        Some(ProvidesClause {
+            spec,
+            conditions,
+            span,
+        })
     }
 
     fn convert_provides_block(&mut self, node: Node) -> Option<ProvidesBlock> {
         let spec = self.field(node, "spec").map(|n| self.convert_type(n))?;
-        let language = self.field(node, "language")
+        let language = self
+            .field(node, "language")
             .map(|n| self.intern(self.text(n)))?;
         let mut items: Vec<ProvidesItem> = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
                 "rule_declaration" => {
-                    if let Some(r) = self.convert_rule(child) { items.push(ProvidesItem::Rule(r)); }
+                    if let Some(r) = self.convert_rule(child) {
+                        items.push(ProvidesItem::Rule(r));
+                    }
                 }
                 "rule_block" => {
-                    if let Some(rb) = self.convert_rule_block(child) { items.push(ProvidesItem::RuleBlock(rb)); }
+                    if let Some(rb) = self.convert_rule_block(child) {
+                        items.push(ProvidesItem::RuleBlock(rb));
+                    }
                 }
                 "fact_declaration" => {
-                    if let Some(f) = self.convert_fact(child) { items.push(ProvidesItem::Fact(f)); }
+                    if let Some(f) = self.convert_fact(child) {
+                        items.push(ProvidesItem::Fact(f));
+                    }
                 }
                 "proof_declaration" => {
-                    if let Some(p) = self.convert_proof(child) { items.push(ProvidesItem::Proof(p)); }
+                    if let Some(p) = self.convert_proof(child) {
+                        items.push(ProvidesItem::Proof(p));
+                    }
                 }
                 "artifact_clause" => {
                     if let Some(p) = self.field(child, "path") {
@@ -4398,29 +4737,74 @@ impl<'a> Converter<'a> {
                 }
                 "carrier_clause" => {
                     items.push(ProvidesItem::Carrier(
-                        self.convert_provides_bindings(child, "`carrier` binding", "each abstract sort maps to ONE host type")
-                        .into_iter().map(|(s, t)| CarrierBinding { anthill_param: s, host_type: t }).collect()));
+                        self.convert_provides_bindings(
+                            child,
+                            "`carrier` binding",
+                            "each abstract sort maps to ONE host type",
+                        )
+                        .into_iter()
+                        .map(|(s, t)| CarrierBinding {
+                            anthill_param: s,
+                            host_type: t,
+                        })
+                        .collect(),
+                    ));
                 }
                 "namespace_map_clause" => {
                     items.push(ProvidesItem::NamespaceMap(
-                        self.convert_provides_bindings(child, "`namespace_map` binding", "each anthill namespace maps to ONE host module")
-                        .into_iter().map(|(s, t)| NamespaceMapEntry { anthill_namespace: s, host_module: t }).collect()));
+                        self.convert_provides_bindings(
+                            child,
+                            "`namespace_map` binding",
+                            "each anthill namespace maps to ONE host module",
+                        )
+                        .into_iter()
+                        .map(|(s, t)| NamespaceMapEntry {
+                            anthill_namespace: s,
+                            host_module: t,
+                        })
+                        .collect(),
+                    ));
                 }
                 "operation_map_clause" => {
                     items.push(ProvidesItem::OperationMap(
-                        self.convert_provides_bindings(child, "`operation_map` entry", "each operation is realized by ONE host function")
-                        .into_iter().map(|(s, t)| OperationMapEntry { operation: s, host_fn: t }).collect()));
+                        self.convert_provides_bindings(
+                            child,
+                            "`operation_map` entry",
+                            "each operation is realized by ONE host function",
+                        )
+                        .into_iter()
+                        .map(|(s, t)| OperationMapEntry {
+                            operation: s,
+                            host_fn: t,
+                        })
+                        .collect(),
+                    ));
                 }
                 "const_map_clause" => {
                     items.push(ProvidesItem::ConstMap(
-                        self.convert_provides_bindings(child, "`const_map` entry", "each const is realized by ONE host expression")
-                        .into_iter().map(|(s, t)| ConstMapEntry { const_name: s, host_fn: t }).collect()));
+                        self.convert_provides_bindings(
+                            child,
+                            "`const_map` entry",
+                            "each const is realized by ONE host expression",
+                        )
+                        .into_iter()
+                        .map(|(s, t)| ConstMapEntry {
+                            const_name: s,
+                            host_fn: t,
+                        })
+                        .collect(),
+                    ));
                 }
                 _ => {}
             }
         }
         let span = self.span(node);
-        Some(ProvidesBlock { spec, language, items, span })
+        Some(ProvidesBlock {
+            spec,
+            language,
+            items,
+            span,
+        })
     }
 
     /// The `{ key: value, … }` payload of a binding block's `carrier` /
@@ -4466,14 +4850,18 @@ impl<'a> Converter<'a> {
     }
 
     fn convert_describe(&mut self, node: Node) -> Option<Describe> {
-        let target = self.field(node, "target")
-            .map(|n| self.convert_name(n))?;
-        let contents: Vec<String> = self.fields_by_name(node, "content")
+        let target = self.field(node, "target").map(|n| self.convert_name(n))?;
+        let contents: Vec<String> = self
+            .fields_by_name(node, "content")
             .into_iter()
             .map(|d| strip_description_delimiters(self.text(d)))
             .collect();
         let span = self.span(node);
-        Some(Describe { target, contents, span })
+        Some(Describe {
+            target,
+            contents,
+            span,
+        })
     }
 
     // ── Expressions ──────────────────────────────────────────────
@@ -4484,7 +4872,6 @@ impl<'a> Converter<'a> {
     fn convert_expr_body(&mut self, node: Node) -> TermId {
         self.convert_expr_iter(node, WorkKind::ExprBody)
     }
-
 }
 
 /// WI-840: what owns the item list [`Converter::convert_items_at`] is walking — a SORT
@@ -4539,7 +4926,7 @@ fn is_term_kind(kind: &str) -> bool {
             // other `is_term_kind` call sites never receive one). Rejected in head
             // position by `convert_rule_heads`.
             | "cut"
-    )
+        )
 }
 
 /// The term kinds that denote a VALUE and nothing else — the scalars and the three
@@ -4625,11 +5012,11 @@ fn decode_string_escapes(inner: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
-                Some('"')  => decoded.push('"'),
+                Some('"') => decoded.push('"'),
                 Some('\\') => decoded.push('\\'),
-                Some('n')  => decoded.push('\n'),
-                Some('r')  => decoded.push('\r'),
-                Some('t')  => decoded.push('\t'),
+                Some('n') => decoded.push('\n'),
+                Some('r') => decoded.push('\r'),
+                Some('t') => decoded.push('\t'),
                 Some(other) => decoded.push(other),
                 None => decoded.push('\\'),
             }

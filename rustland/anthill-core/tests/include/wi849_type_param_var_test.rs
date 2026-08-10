@@ -35,9 +35,16 @@ end
     let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, op)
         .expect("a declared operation has an OperationInfo record");
 
-    let names: Vec<String> =
-        rec.type_params.iter().map(|(n, _)| kb.local_name_of(*n).to_string()).collect();
-    assert_eq!(names, vec!["A".to_string(), "B".to_string()], "declaration order, by name");
+    let names: Vec<String> = rec
+        .type_params
+        .iter()
+        .map(|(n, _)| kb.local_name_of(*n).to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["A".to_string(), "B".to_string()],
+        "declaration order, by name"
+    );
 
     // Every entry is a flex variable — the property `rigidify_op_type_params` (WI-392)
     // and `seed_op_type_args` both rely on, and which the TermId spelling only implied.
@@ -137,7 +144,8 @@ end
         "the offending entry must render as source text, not internal ids: {report:?}",
     );
     assert!(
-        errs.iter().any(|e| e.contains("'OperationInfo' has no field 'type_params'")),
+        errs.iter()
+            .any(|e| e.contains("'OperationInfo' has no field 'type_params'")),
         "WI-851 must also refuse the undeclared label that made this writable; got: {errs:?}",
     );
 }
@@ -167,7 +175,8 @@ end
     .err()
     .expect("a non-list type_params field must be refused");
     assert!(
-        errs.iter().any(|e| e.contains("type parameter that is not a variable")),
+        errs.iter()
+            .any(|e| e.contains("type parameter that is not a variable")),
         "a field that is not a list must report, not decode to zero entries: {errs:?}",
     );
 }

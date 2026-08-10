@@ -56,7 +56,9 @@ fn describe_program(tail: &str) -> String {
 /// `dispatch_origin` half of `record_apply_rewrite`, which is what the WI-218 tests
 /// observe and what the ticket expected widening to add 60 of.
 fn rewrites_naming(kb: &KnowledgeBase, qn: &str) -> usize {
-    let sym = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol `{qn}`"));
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("no symbol `{qn}`"));
     kb.dispatch_origin_iter().filter(|(_, s)| *s == sym).count()
 }
 
@@ -128,7 +130,9 @@ fn a_rule_body_classification_emits_no_dispatch_rewrite() {
 fn the_stdlib_family_is_builtin_on_both_sides_of_the_pin() {
     let kb = crate::common::load_kb_with("namespace wi1036.tags\nend\n");
     let builtin = |qn: &str| {
-        let s = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol `{qn}`"));
+        let s = kb
+            .try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("no symbol `{qn}`"));
         kb.is_builtin(s)
     };
     for short in ["gt", "gte", "lt", "lte"] {

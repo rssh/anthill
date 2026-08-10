@@ -17,7 +17,6 @@
 //! Reference: docs/design/operation-call-model.md §"Two primitives:
 //! requirement_at_current and requirement_at_sort", §"Construction site".
 
-
 use smallvec::SmallVec;
 
 use anthill_core::eval::value::Dictionary;
@@ -63,7 +62,8 @@ fn var_ref_yields_frame_requirement_handle() {
     let handle = crate::common::dict(&interp, probe_sym, []);
     let expected_impl = handle.impl_sort();
 
-    let var_ref_sym = interp.kb()
+    let var_ref_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("reflect.Expr.var_ref registered");
     let req_name = interp.kb_mut().intern("__req_probe");
@@ -71,12 +71,16 @@ fn var_ref_yields_frame_requirement_handle() {
 
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
     requirements.push((req_name, handle));
-    let value = interp.run_with_requirements(expr, requirements)
+    let value = interp
+        .run_with_requirements(expr, requirements)
         .expect("var_ref should reduce to the frame requirement");
 
     let read = expect_dict(&interp, &value);
-    assert_eq!(read.impl_sort(), expected_impl,
-        "the value delivered should carry the seeded dictionary's impl");
+    assert_eq!(
+        read.impl_sort(),
+        expected_impl,
+        "the value delivered should carry the seeded dictionary's impl"
+    );
 }
 
 /// The dictionary a reduction delivered, read back through the ONE boundary.
@@ -91,15 +95,18 @@ fn var_ref_unbound_requirement_errors() {
     // a value must dispatch_call-miss and surface a clear error rather
     // than panicking. Defensive case for the eval loud-failure discipline.
     let mut interp = fresh_interp();
-    let var_ref_sym = interp.kb()
+    let var_ref_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
     let req_name = interp.kb_mut().intern("__req_probe");
     let expr = build_req_var_ref(interp.kb_mut(), var_ref_sym, req_name);
 
     let result = interp.run_with_requirements(expr, SmallVec::new());
-    assert!(result.is_err(),
-        "unbound requirement name must error, not panic; got {result:?}");
+    assert!(
+        result.is_err(),
+        "unbound requirement name must error, not panic; got {result:?}"
+    );
 }
 
 #[test]
@@ -116,10 +123,12 @@ fn requirement_at_sort_projects_sub_handle() {
     bundle.push(child_handle);
     let parent_handle = crate::common::dict(&interp, parent_sym, bundle);
 
-    let var_ref_sym = interp.kb()
+    let var_ref_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
-    let raas_sym = interp.kb()
+    let raas_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.requirement_at_sort")
         .expect("requirement_at_sort registered");
 
@@ -138,12 +147,16 @@ fn requirement_at_sort_projects_sub_handle() {
 
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
     requirements.push((req_name, parent_handle));
-    let value = interp.run_with_requirements(expr, requirements)
+    let value = interp
+        .run_with_requirements(expr, requirements)
         .expect("requirement_at_sort should reduce successfully");
 
     let read = expect_dict(&interp, &value);
-    assert_eq!(read.impl_sort(), child_sym,
-        "the projected sub-dictionary should be the child's");
+    assert_eq!(
+        read.impl_sort(),
+        child_sym,
+        "the projected sub-dictionary should be the child's"
+    );
 }
 
 #[test]
@@ -158,12 +171,16 @@ fn dictionary_node_builds_a_childless_dictionary() {
     let foo_sym = interp.kb_mut().intern("test.wi223.Foo");
     let expr = crate::common::dict_term(interp.kb_mut(), foo_sym, &[]);
 
-    let value = interp.run_with_requirements(expr, SmallVec::new())
+    let value = interp
+        .run_with_requirements(expr, SmallVec::new())
         .expect("the Dictionary node should reduce successfully");
 
     let read = expect_dict(&interp, &value);
-    assert_eq!(read.impl_sort(), foo_sym,
-        "the built dictionary's impl should match the requested one");
+    assert_eq!(
+        read.impl_sort(),
+        foo_sym,
+        "the built dictionary's impl should match the requested one"
+    );
     assert_eq!(read.arity(), 0, "no sub-dictionaries expected");
 }
 
@@ -182,12 +199,16 @@ fn dictionary_node_bundles_sub_dictionaries() {
     let parent_construct =
         crate::common::dict_term(interp.kb_mut(), parent_sym, &[child_construct]);
 
-    let value = interp.run_with_requirements(parent_construct, SmallVec::new())
+    let value = interp
+        .run_with_requirements(parent_construct, SmallVec::new())
         .expect("the nested Dictionary chain should reduce");
 
     let read = expect_dict(&interp, &value);
     assert_eq!(read.impl_sort(), parent_sym, "parent impl preserved");
     assert_eq!(read.arity(), 1, "parent should bundle one sub-dictionary");
-    assert_eq!(read.sub(0).expect("slot 0").impl_sort(), child_sym,
-        "parent's 0-th sub-dictionary should be the child");
+    assert_eq!(
+        read.sub(0).expect("slot 0").impl_sort(),
+        child_sym,
+        "parent's 0-th sub-dictionary should be the child"
+    );
 }

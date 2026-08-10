@@ -1,5 +1,4 @@
 /// Shared test utilities for anthill-core integration tests.
-
 use std::path::PathBuf;
 
 /// WI-605/WI-618: the marker phrase of both bare-arrow lambda-typo
@@ -10,8 +9,8 @@ use std::path::PathBuf;
 pub const LAMBDA_HINT: &str = "needs the `lambda` keyword";
 
 use anthill_core::eval::{self, Interpreter};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Collect all .anthill files under a directory, recursively. WI-747: the walk
@@ -90,7 +89,8 @@ static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
     std::sync::LazyLock::new(|| {
         let files = collect_stdlib_and_rust_bindings();
         assert!(!files.is_empty(), "stdlib empty");
-        files.iter()
+        files
+            .iter()
             .map(|p| {
                 let src = std::fs::read_to_string(p)
                     .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
@@ -121,9 +121,14 @@ static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
 #[allow(dead_code)]
 pub fn expect_loaded<T, E: std::fmt::Display>(r: Result<T, Vec<E>>) -> T {
     r.unwrap_or_else(|errs| {
-        for e in &errs { eprintln!("{}", e); }
-        panic!("load failed with {} errors: {:?}", errs.len(),
-               errs.iter().map(|e| e.to_string()).collect::<Vec<_>>())
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!(
+            "load failed with {} errors: {:?}",
+            errs.len(),
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+        )
     })
 }
 
@@ -142,13 +147,22 @@ pub fn expect_load_errors<T, E: std::fmt::Display>(r: Result<T, Vec<E>>, expecte
     let errs = match r {
         Ok(_) => panic!(
             "fixture loaded CLEAN, but this call site declares it must fail with {expected:?} \
-             — route it through `expect_loaded` instead"),
+             — route it through `expect_loaded` instead"
+        ),
         Err(errs) => errs.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
     };
-    assert_eq!(errs.len(), expected.len(),
-        "expected {} load error(s), got {}: {errs:#?}", expected.len(), errs.len());
+    assert_eq!(
+        errs.len(),
+        expected.len(),
+        "expected {} load error(s), got {}: {errs:#?}",
+        expected.len(),
+        errs.len()
+    );
     for (got, want) in errs.iter().zip(expected) {
-        assert!(got.contains(want), "expected a load error containing {want:?}, got {got:?}");
+        assert!(
+            got.contains(want),
+            "expected a load error containing {want:?}, got {got:?}"
+        );
     }
 }
 
@@ -180,7 +194,8 @@ pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
 /// (two files whose entities reference each other's sorts must both load).
 #[allow(dead_code)]
 pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
-    let user: Vec<_> = sources.iter()
+    let user: Vec<_> = sources
+        .iter()
         .map(|s| parse::parse(s).expect("parse user source"))
         .collect();
 
@@ -251,12 +266,14 @@ pub fn buffered_console() -> (
 /// return `(queue, handler)`. The queue holds any lines the program
 /// didn't consume — useful for assertions.
 #[allow(dead_code)]
-pub fn scripted_console_input(lines: &[&str]) -> (
+pub fn scripted_console_input(
+    lines: &[&str],
+) -> (
     std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<String>>>,
     anthill_core::eval::effects::EffectHandler,
 ) {
     let queue = std::rc::Rc::new(std::cell::RefCell::new(
-        lines.iter().map(|s| s.to_string()).collect()
+        lines.iter().map(|s| s.to_string()).collect(),
     ));
     let handler = anthill_core::eval::effects::scripted_console_input_handler(queue.clone());
     (queue, handler)
@@ -267,8 +284,11 @@ pub fn scripted_console_input(lines: &[&str]) -> (
 /// stdio-binding side effects of `register_standard_effect_handlers`.
 #[allow(dead_code)]
 pub fn register_modify_handler(interp: &mut Interpreter) {
-    interp.register_effect_handler("anthill.prelude.Modify",
-        anthill_core::eval::effects::default_modify_handler())
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Modify",
+            anthill_core::eval::effects::default_modify_handler(),
+        )
         .expect("register Modify handler");
 }
 
@@ -309,7 +329,10 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
 /// and a change to the load sequence otherwise lands in one and not the others.
 #[allow(dead_code)]
 pub fn load_kb_bare(sources: &[&str]) -> KnowledgeBase {
-    let parsed: Vec<_> = sources.iter().map(|s| parse::parse(s).expect("parse source")).collect();
+    let parsed: Vec<_> = sources
+        .iter()
+        .map(|s| parse::parse(s).expect("parse source"))
+        .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
@@ -326,7 +349,9 @@ pub fn load_kb_bare(sources: &[&str]) -> KnowledgeBase {
 /// `type_check_sorts(&[])`). Parse and load failures panic: both are test-authoring bugs here,
 /// since a test asserting a LOAD error uses [`try_load_kb_with`] instead.
 #[allow(dead_code)]
-pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
+pub fn load_stdlib_kb_with_source(
+    source: &str,
+) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
     let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
@@ -367,8 +392,8 @@ pub fn load_stdlib_kb_with_source(source: &str) -> (KnowledgeBase, anthill_core:
 /// on one, and rendering is the caller's business.
 #[allow(dead_code)]
 pub fn query_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<(eval::Value, bool)> {
-    use anthill_core::kb::term::{Term, Var};
     use anthill_core::kb::resolve::ResolveConfig;
+    use anthill_core::kb::term::{Term, Var};
     use smallvec::SmallVec;
 
     let sym = kb
@@ -425,9 +450,18 @@ pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let get = |f: &str| named.iter().find(|(s, _)| kb.local_name_of(*s) == f).map(|(_, v)| *v);
-        let (Some(sr), Some(spec_view)) = (get("sort_ref"), get("spec")) else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let get = |f: &str| {
+            named
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == f)
+                .map(|(_, v)| *v)
+        };
+        let (Some(sr), Some(spec_view)) = (get("sort_ref"), get("spec")) else {
+            continue;
+        };
         // `SortView(Spec, …)` carries the spec as its first positional; a bare
         // reference is already the spec.
         let spec_term = match kb.get_term(spec_view) {
@@ -470,8 +504,12 @@ pub fn sort_alias_backing_var(
             // `fact_head_term`, matching the readers under test: a `Value::Node` head
             // carries a denoted-bearing target, which is never a logic `Var`.
             let head = kb.fact_head_term(rid)?;
-            let Term::Fn { pos_args, .. } = kb.get_term(head) else { return None };
-            let Term::Fn { functor, .. } = kb.get_term(*pos_args.first()?) else { return None };
+            let Term::Fn { pos_args, .. } = kb.get_term(head) else {
+                return None;
+            };
+            let Term::Fn { functor, .. } = kb.get_term(*pos_args.first()?) else {
+                return None;
+            };
             if *functor != sort_sym {
                 return None;
             }
@@ -651,7 +689,9 @@ pub fn assert_req_param_spec(
     };
     assert!(
         actual_s == expected_base
-            || actual_s.strip_prefix(expected_base).is_some_and(disambiguated),
+            || actual_s
+                .strip_prefix(expected_base)
+                .is_some_and(disambiguated),
         "{why}: expected the requirement-param name `{expected_base}` (or a \
          `{expected_base}_<n>` / `{expected_base}_d<n>` disambiguation of the SAME spec \
          — see `assert_req_param_spec`); got `{actual_s}`",
@@ -679,9 +719,12 @@ pub fn head_short(
 ) -> String {
     use anthill_core::kb::node_occurrence::Expr;
     match occ.as_expr() {
-        Some(Expr::Apply { functor, .. }) => {
-            kb.local_name_of(*functor).rsplit('.').next().unwrap_or("").to_string()
-        }
+        Some(Expr::Apply { functor, .. }) => kb
+            .local_name_of(*functor)
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_string(),
         other => panic!("expected a functor application, got {other:?}"),
     }
 }
@@ -700,7 +743,10 @@ pub fn head_short(
 /// Panics on a pattern that produces no `Term::Fn`: a caller reaching for this is
 /// asserting about a functor, so a var/literal pattern is a test-authoring bug.
 #[allow(dead_code)]
-pub fn query_pattern_functor(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::intern::Symbol {
+pub fn query_pattern_functor(
+    kb: &mut KnowledgeBase,
+    pattern: &str,
+) -> anthill_core::intern::Symbol {
     use anthill_core::kb::term::Term;
     let t = query_pattern_term(kb, pattern);
     match kb.get_term(t) {
@@ -714,24 +760,29 @@ pub fn query_pattern_functor(kb: &mut KnowledgeBase, pattern: &str) -> anthill_c
 /// asking about a NESTED position — a disjunction branch, a data slot — cannot ask it of
 /// the head symbol alone.
 #[allow(dead_code)]
-pub fn query_pattern_term(
-    kb: &mut KnowledgeBase,
-    pattern: &str,
-) -> anthill_core::kb::term::TermId {
+pub fn query_pattern_term(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::term::TermId {
     let src = format!("fact {pattern}");
     let parsed = parse::parse(&src).expect("parse query pattern");
     // WI-966: MEASURED empty for every pattern the suites pass here, so the
     // scan's verdict is asserted rather than dropped — a pattern that stops
     // scanning clean must not reach `convert_query_term` unnoticed.
     let errs = load::scan_definitions(kb, &[&parsed]);
-    assert!(errs.is_empty(), "query pattern `{pattern}` failed to scan: {:?}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+    assert!(
+        errs.is_empty(),
+        "query pattern `{pattern}` failed to scan: {:?}",
+        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+    );
     let global_scope = kb.global_scope();
     let mut var_map = std::collections::HashMap::new();
     for item in &parsed.items {
         if let anthill_core::parse::ir::Item::Fact(f) = item {
             return load::convert_query_term(
-                kb, &parsed.terms, &parsed.symbols, f.term, global_scope, &mut var_map,
+                kb,
+                &parsed.terms,
+                &parsed.symbols,
+                f.term,
+                global_scope,
+                &mut var_map,
             );
         }
     }
@@ -790,7 +841,11 @@ pub fn mount_extent(
 pub fn one_goal_carrier_fixture(
     functor_name: &str,
     build: impl FnOnce(&mut KnowledgeBase) -> Vec<Vec<eval::Value>>,
-) -> (KnowledgeBase, anthill_core::kb::term::TermId, anthill_core::kb::term::TermId) {
+) -> (
+    KnowledgeBase,
+    anthill_core::kb::term::TermId,
+    anthill_core::kb::term::TermId,
+) {
     use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
     use anthill_core::kb::term::{Term, Var};
     use anthill_core::kb::ClauseKind;
@@ -801,7 +856,10 @@ pub fn one_goal_carrier_fixture(
 
     let mut kb = load_kb_with("namespace test.wi1023_fixture\nend\n");
     let alternatives = build(&mut kb);
-    assert!(!alternatives.is_empty(), "a fixture with no alternative measures nothing");
+    assert!(
+        !alternatives.is_empty(),
+        "a fixture with no alternative measures nothing"
+    );
 
     let domain = kb.intern("test");
     let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);

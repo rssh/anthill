@@ -375,7 +375,11 @@ fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String,
     use anthill_core::kb::term_view::{TermView, ViewHead};
     // Read CARRIER-NEUTRALLY, through the same view an eval `RequirementHandle`
     // answers under. That is the assertion: one shape, whichever side built it.
-    let ViewHead::Functor { functor: Some(ctor), .. } = v.head(kb) else {
+    let ViewHead::Functor {
+        functor: Some(ctor),
+        ..
+    } = v.head(kb)
+    else {
         panic!("a dictionary must present a constructor head, got {v:?}")
     };
     let head = kb.qualified_name_of(ctor).to_string();
@@ -466,7 +470,10 @@ fn an_unbound_carrier_answers_nothing_rather_than_delaying() {
 #[test]
 fn a_require_with_no_anchor_is_refused_at_typing() {
     let ns = "test.wi1040.anchor";
-    let src = program(ns, "  rule answer(?r) :- ?d = require[Desc[T]], eq(?r, 1)\n");
+    let src = program(
+        ns,
+        "  rule answer(?r) :- ?d = require[Desc[T]], eq(?r, 1)\n",
+    );
     let msg = refusal(&src);
     assert!(
         msg.contains("to ground the requirement"),
@@ -546,9 +553,14 @@ end
     // (WI-1044) sees two suppliers for `Leaf` and declines to reduce the call, so the
     // WI-938 hook has nothing to `unify` the result column with. That `7` below is
     // therefore the dictionary's and no other path's.
-    let without = answers(&format!("{ns}.control"), &tie_program(&format!("{ns}.control"), ""));
+    let without = answers(
+        &format!("{ns}.control"),
+        &tie_program(&format!("{ns}.control"), ""),
+    );
     assert!(
-        !without.iter().any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
+        !without
+            .iter()
+            .any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
         "the un-woven twin must not answer: a two-supplier carrier has no single \
          reading, and the only Int a fold could produce is the spec's DEFAULT — got \
          {without:?}",

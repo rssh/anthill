@@ -116,31 +116,39 @@ fn qfnra_cfg() -> ProofConfig {
 #[test]
 fn cross_namespace_import_inlines_to_concrete_geometry() {
     let kb = load_kb_with(&source_with_import());
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
-        .expect("emit should succeed once position_distance is imported");
+    let smt =
+        emit_satisfiability_check_with(&kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
+            .expect("emit should succeed once position_distance is imported");
 
     // Inlining must have chased position_distance -> position_distance_sq
     // -> the concrete `real_pose_at(0, …)` facts: the follower's x = -4
     // reaches the document as a literal.
-    assert!(smt.contains("(- 4.0)") || smt.contains("-4.0"),
-        "cross-namespace inline must reach the literal geometry:\n{smt}");
+    assert!(
+        smt.contains("(- 4.0)") || smt.contains("-4.0"),
+        "cross-namespace inline must reach the literal geometry:\n{smt}"
+    );
     // The nonlinear `?d * ?d = ?d_sq` clause from the inner rule must lift
     // as a free assertion (QF_NRA), not a binding.
-    assert!(smt.contains("(assert (= (*"),
-        "expected the nonlinear square clause as an assertion:\n{smt}");
+    assert!(
+        smt.contains("(assert (= (*"),
+        "expected the nonlinear square clause as an assertion:\n{smt}"
+    );
 }
 
 #[test]
 fn cross_namespace_import_z3_says_unsat() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     let kb = load_kb_with(&source_with_import());
-    let smt = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
-        .expect("emit");
+    let smt =
+        emit_satisfiability_check_with(&kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
+            .expect("emit");
     let out = run_z3("cross_namespace_inline", &smt);
-    assert_eq!(out, "unsat",
-        "concrete |Δ| = 4 ≥ 1 = d_min — no violation. SMT was:\n{smt}");
+    assert_eq!(
+        out, "unsat",
+        "concrete |Δ| = 4 ≥ 1 = d_min — no violation. SMT was:\n{smt}"
+    );
 }
 
 #[test]
@@ -159,15 +167,21 @@ fn unresolved_functor_is_a_loud_error() {
     // NAMED rather than a discarded `Err`.
     let (kb, load_errs) = load_kb_with_lenient(&source_without_import());
     assert!(
-        load_errs.iter().any(|e| e.contains("position_distance") && e.contains("names nothing")),
+        load_errs
+            .iter()
+            .any(|e| e.contains("position_distance") && e.contains("names nothing")),
         "WI-1034: the LOADER must refuse the un-imported goal first, got: {load_errs:?}",
     );
-    let err = emit_satisfiability_check_with(
-        &kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
-        .expect_err("an unresolved body-goal functor must be a loud error");
+    let err =
+        emit_satisfiability_check_with(&kb, "test.smt_gen.gps.safety_min_distance", &qfnra_cfg())
+            .expect_err("an unresolved body-goal functor must be a loud error");
     let msg = err.message;
-    assert!(msg.contains("position_distance"),
-        "the error must name the offending functor, got: {msg}");
-    assert!(msg.contains("unhandled body goal functor"),
-        "expected the unhandled-functor diagnostic, got: {msg}");
+    assert!(
+        msg.contains("position_distance"),
+        "the error must name the offending functor, got: {msg}"
+    );
+    assert!(
+        msg.contains("unhandled body goal functor"),
+        "expected the unhandled-functor diagnostic, got: {msg}"
+    );
 }

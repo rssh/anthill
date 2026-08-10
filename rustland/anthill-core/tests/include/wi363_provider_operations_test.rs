@@ -11,18 +11,21 @@
 //! makes the satisfaction fact unsound, so the loader rejects it with a hard
 //! `UnbackedProviderOperation` error.
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -34,7 +37,10 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn unbacked(errs: &[LoadError]) -> Vec<&LoadError> {
@@ -64,11 +70,15 @@ fn provider_missing_op_backing_errors() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!unbacked(&errs).is_empty(),
+    assert!(
+        !unbacked(&errs).is_empty(),
         "expected an UnbackedProviderOperation error: Carrier provides Spec but \
-         backs no `needed` (no spec default, no own op); got:\n{text}");
-    assert!(text.contains("Carrier") && text.contains("Spec") && text.contains("needed"),
-        "expected the diagnostic to name Carrier, Spec, and needed; got:\n{text}");
+         backs no `needed` (no spec default, no own op); got:\n{text}"
+    );
+    assert!(
+        text.contains("Carrier") && text.contains("Spec") && text.contains("needed"),
+        "expected the diagnostic to name Carrier, Spec, and needed; got:\n{text}"
+    );
 }
 
 // ── A spec-level default RULE is a law, not backing (WI-818 reversal) ───
@@ -98,11 +108,15 @@ fn provider_with_spec_default_rule_is_rejected() {
     "#;
     let (_kb, errs) = load_capturing_errors(src);
     let text = errors_text(&errs);
-    assert!(!unbacked(&errs).is_empty(),
+    assert!(
+        !unbacked(&errs).is_empty(),
         "a rule-only spec default must NOT back Spec.needed (WI-818: a rule is \
-         not executable backing); the load passed clean instead");
-    assert!(text.contains("Carrier") && text.contains("needed"),
-        "expected the diagnostic to name Carrier and needed; got:\n{text}");
+         not executable backing); the load passed clean instead"
+    );
+    assert!(
+        text.contains("Carrier") && text.contains("needed"),
+        "expected the diagnostic to name Carrier and needed; got:\n{text}"
+    );
 }
 
 // ── A carrier supplying its own op backs it (carrier-refined) ──────────
@@ -126,9 +140,11 @@ fn provider_with_own_op_loads() {
         end
     "#;
     let (_kb, errs) = load_capturing_errors(src);
-    assert!(unbacked(&errs).is_empty(),
+    assert!(
+        unbacked(&errs).is_empty(),
         "Carrier supplies its own `needed`; provider should load clean; got:\n{}",
-        errors_text(&errs));
+        errors_text(&errs)
+    );
 }
 
 // ── The stdlib itself (post WI-362) is op-complete ─────────────────────
@@ -141,18 +157,23 @@ fn stdlib_with_bindings_is_op_complete() {
     // carriers (Int64/Float/…) are backed by their artifacts and skipped. Pins
     // that WI-363 does not regress the standard library.
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => vec![],
         Err(errs) => errs,
     };
-    assert!(unbacked(&errs).is_empty(),
+    assert!(
+        unbacked(&errs).is_empty(),
         "stdlib + Rust bindings should have no unbacked provider operations; got:\n{}",
-        errors_text(&unbacked(&errs).into_iter().cloned().collect::<Vec<_>>()));
+        errors_text(&unbacked(&errs).into_iter().cloned().collect::<Vec<_>>())
+    );
 }

@@ -170,7 +170,9 @@ fn drain_ints(v: Value) -> Vec<i64> {
 #[test]
 fn wi714_project_single_column() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.names", &[]).expect("names runs");
+    let r = interp
+        .call("test.wi714project.names", &[])
+        .expect("names runs");
     let mut got = drain_strings(r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "bob".to_string()]);
@@ -180,7 +182,9 @@ fn wi714_project_single_column() {
 #[test]
 fn wi714_project_distribute_dot_1collapse() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.ages", &[]).expect("ages runs");
+    let r = interp
+        .call("test.wi714project.ages", &[])
+        .expect("ages runs");
     let mut got = drain_ints(r);
     got.sort();
     assert_eq!(got, vec![25, 30]);
@@ -192,7 +196,9 @@ fn wi714_project_distribute_dot_1collapse() {
 #[test]
 fn wi714_project_multi_column() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.both", &[]).expect("both runs");
+    let r = interp
+        .call("test.wi714project.both", &[])
+        .expect("both runs");
     let mut rows = 0usize;
     let mut names: Vec<String> = Vec::new();
     let mut ages: Vec<i64> = Vec::new();
@@ -238,7 +244,9 @@ fn wi714_project_multi_column() {
 #[test]
 fn wi714_project_rename() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.renamed", &[]).expect("renamed runs");
+    let r = interp
+        .call("test.wi714project.renamed", &[])
+        .expect("renamed runs");
     let mut rows = 0usize;
     let mut cur = r;
     while let Value::Entity { named, .. } = &cur {
@@ -256,8 +264,10 @@ fn wi714_project_rename() {
         match (tuple, tail) {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
                 rows += 1;
-                let keys: Vec<String> =
-                    fields.iter().map(|(k, _)| interp.kb().local_name_of(*k).to_string()).collect();
+                let keys: Vec<String> = fields
+                    .iter()
+                    .map(|(k, _)| interp.kb().local_name_of(*k).to_string())
+                    .collect();
                 assert!(
                     keys.iter().any(|k| k.ends_with("person"))
                         && keys.iter().any(|k| k.ends_with("years")),
@@ -275,7 +285,9 @@ fn wi714_project_rename() {
 #[test]
 fn wi714_project_after_where() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.youngNames", &[]).expect("youngNames runs");
+    let r = interp
+        .call("test.wi714project.youngNames", &[])
+        .expect("youngNames runs");
     let got = drain_strings(r);
     assert_eq!(got, vec!["bob".to_string()], "only bob is 25");
 }
@@ -287,7 +299,9 @@ fn wi714_project_after_where() {
 #[test]
 fn wi714_project_multi_over_computed_receiver() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.youngRows", &[]).expect("youngRows runs");
+    let r = interp
+        .call("test.wi714project.youngRows", &[])
+        .expect("youngRows runs");
     let mut rows = 0usize;
     let mut cur = r;
     while let Value::Entity { named, .. } = &cur {
@@ -310,7 +324,10 @@ fn wi714_project_multi_over_computed_receiver() {
             _ => break,
         }
     }
-    assert_eq!(rows, 1, "only bob (age 25) survives the filter, then projects to (name, age)");
+    assert_eq!(
+        rows, 1,
+        "only bob (age 25) survives the filter, then projects to (name, age)"
+    );
 }
 
 /// Projection over a NAMED-ARG-head relation (`person_named(name: ?, age: ?)`): the columns
@@ -319,7 +336,9 @@ fn wi714_project_multi_over_computed_receiver() {
 #[test]
 fn wi714_project_named_arg_head() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.namedNames", &[]).expect("namedNames runs");
+    let r = interp
+        .call("test.wi714project.namedNames", &[])
+        .expect("namedNames runs");
     let mut got = drain_strings(r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "bob".to_string()]);
@@ -331,7 +350,9 @@ fn wi714_project_named_arg_head() {
 #[test]
 fn wi714_project_preserves_bag_multiplicity() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.owners", &[]).expect("owners runs");
+    let r = interp
+        .call("test.wi714project.owners", &[])
+        .expect("owners runs");
     let mut got = drain_strings(r);
     got.sort();
     assert_eq!(
@@ -355,7 +376,9 @@ fn wi714_project_preserves_bag_multiplicity() {
 #[test]
 fn wi714_project_inline_chain_computed_receiver() {
     let mut interp = interp_for(SRC);
-    let r = interp.call("test.wi714project.inlineYoung", &[]).expect("inlineYoung runs");
+    let r = interp
+        .call("test.wi714project.inlineYoung", &[])
+        .expect("inlineYoung runs");
     let mut rows = 0usize;
     let mut cur = r;
     while let Value::Entity { named, .. } = &cur {
@@ -378,7 +401,10 @@ fn wi714_project_inline_chain_computed_receiver() {
             _ => break,
         }
     }
-    assert_eq!(rows, 1, "only bob (age 25) survives the inline filter, then projects to (name, age)");
+    assert_eq!(
+        rows, 1,
+        "only bob (age 25) survives the inline filter, then projects to (name, age)"
+    );
 }
 
 /// WI-732 item (1), the NEGATIVE control that makes the test above non-vacuous: the inline

@@ -305,8 +305,10 @@ fn an_induction_principle_over_a_recursive_sort_loads_and_proves() {
         pos_args: smallvec::SmallVec::from_slice(&[pred_ref]),
         named_args: smallvec::SmallVec::new(),
     });
-    let solutions =
-        kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    let solutions = kb.resolve(
+        &[goal],
+        &anthill_core::kb::resolve::ResolveConfig::default(),
+    );
     assert!(
         !solutions.is_empty(),
         "the induction principle must PROVE `holds1058` — base case + IH-discharged step",

@@ -16,11 +16,11 @@
 //!     `EvalError::Suspended` rather than importing a membership-wrong structural
 //!     verdict into resolution (`bridge_mode_suspends_on_buried_override`).
 
+use crate::common;
 use anthill_core::eval::{EvalConfig, EvalError, Interpreter, Value};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use crate::common;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
@@ -85,7 +85,11 @@ fn host_bodied_match_op_decides_true_at_resolution() {
     let two = int_term(&mut kb, 2);
     let g = goal(&mut kb, "gap1.matchop.code_is", &[green, two]);
     let sols = kb.resolve(&[g], &ResolveConfig::default());
-    assert_eq!(sols.len(), 1, "code(green())=2 must decide TRUE via the bridge");
+    assert_eq!(
+        sols.len(),
+        1,
+        "code(green())=2 must decide TRUE via the bridge"
+    );
     assert!(
         sols[0].residual.is_empty(),
         "must be a DEFINITE solution — the op ran at resolution, not a residual",
@@ -100,7 +104,11 @@ fn host_bodied_match_op_decides_false_at_resolution() {
     let three = int_term(&mut kb, 3);
     let g = goal(&mut kb, "gap1.matchop.code_is", &[green, three]);
     let sols = kb.resolve(&[g], &ResolveConfig::default());
-    assert_eq!(sols.len(), 0, "code(green())=2 ≠ 3 ⇒ the bridge decides FALSE");
+    assert_eq!(
+        sols.len(),
+        0,
+        "code(green())=2 ≠ 3 ⇒ the bridge decides FALSE"
+    );
 }
 
 #[test]
@@ -165,11 +173,19 @@ const REC_SRC: &str = r#"
 "#;
 
 fn list_term(kb: &mut KnowledgeBase, elems: &[i64]) -> TermId {
-    let nil = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
-    let cons = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
+    let nil = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
+        .expect("List.nil");
+    let cons = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .expect("List.cons");
     let head = kb.intern("head");
     let tail = kb.intern("tail");
-    let mut list = kb.alloc(Term::Fn { functor: nil, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    let mut list = kb.alloc(Term::Fn {
+        functor: nil,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
     for &e in elems.iter().rev() {
         let et = int_term(kb, e);
         list = kb.alloc(Term::Fn {
@@ -189,14 +205,25 @@ fn recursive_host_bodied_op_runs_at_resolution() {
     let three = int_term(&mut kb, 3);
     let g = goal(&mut kb, "gap1.recop.last_is", &[xs, three]);
     let sols = kb.resolve(&[g], &ResolveConfig::default());
-    assert_eq!(sols.len(), 1, "last([1,2,3])=3 must decide TRUE via the recursive bridge");
-    assert!(sols[0].residual.is_empty(), "the recursion ran at resolution — a definite solution");
+    assert_eq!(
+        sols.len(),
+        1,
+        "last([1,2,3])=3 must decide TRUE via the recursive bridge"
+    );
+    assert!(
+        sols[0].residual.is_empty(),
+        "the recursion ran at resolution — a definite solution"
+    );
 
     // …and last([1,2,3]) ≠ 2 ⇒ no solution.
     let xs2 = list_term(&mut kb, &[1, 2, 3]);
     let two = int_term(&mut kb, 2);
     let g2 = goal(&mut kb, "gap1.recop.last_is", &[xs2, two]);
-    assert_eq!(kb.resolve(&[g2], &ResolveConfig::default()).len(), 0, "last([1,2,3])=3 ≠ 2");
+    assert_eq!(
+        kb.resolve(&[g2], &ResolveConfig::default()).len(),
+        0,
+        "last([1,2,3])=3 ≠ 2"
+    );
 }
 
 // ── The suspend channel (the user's soundness point) ─────────────────────────
@@ -204,9 +231,17 @@ fn recursive_host_bodied_op_runs_at_resolution() {
 const EQ: &str = "anthill.prelude.PartialEq.eq";
 
 fn set_term(kb: &mut KnowledgeBase, elems: &[i64]) -> TermId {
-    let empty = kb.try_resolve_symbol("anthill.prelude.Set.empty").expect("Set.empty");
-    let insert = kb.try_resolve_symbol("anthill.prelude.Set.insert").expect("Set.insert");
-    let mut s = kb.alloc(Term::Fn { functor: empty, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    let empty = kb
+        .try_resolve_symbol("anthill.prelude.Set.empty")
+        .expect("Set.empty");
+    let insert = kb
+        .try_resolve_symbol("anthill.prelude.Set.insert")
+        .expect("Set.insert");
+    let mut s = kb.alloc(Term::Fn {
+        functor: empty,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
     for &e in elems {
         let et = int_term(kb, e);
         s = kb.alloc(Term::Fn {
@@ -222,7 +257,9 @@ fn set_term(kb: &mut KnowledgeBase, elems: &[i64]) -> TermId {
 /// (whose own eq is structural), as a `Value`.
 fn some_of_set(kb: &mut KnowledgeBase, elems: &[i64]) -> Value {
     let set = set_term(kb, elems);
-    let some = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
+    let some = kb
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .expect("Option.some");
     Value::term(kb.alloc(Term::Fn {
         functor: some,
         pos_args: SmallVec::from_slice(&[set]),
@@ -240,7 +277,13 @@ fn plain_interp() -> Interpreter {
 
 fn bridge_interp() -> Interpreter {
     let kb = common::load_kb_with("namespace test.wi625.bridge\nend\n");
-    let mut i = Interpreter::with_config(kb, EvalConfig { bridge_mode: true, ..Default::default() });
+    let mut i = Interpreter::with_config(
+        kb,
+        EvalConfig {
+            bridge_mode: true,
+            ..Default::default()
+        },
+    );
     anthill_core::eval::builtins::register_standard_builtins(&mut i)
         .expect("register eval builtins");
     i
@@ -271,11 +314,19 @@ const CONTAINS_SRC: &str = r#"
 /// Build a `List` from a slice of already-built element terms (generalizes
 /// `list_term`, which is Int64-only).
 fn list_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
-    let nil = kb.try_resolve_symbol("anthill.prelude.List.nil").expect("List.nil");
-    let cons = kb.try_resolve_symbol("anthill.prelude.List.cons").expect("List.cons");
+    let nil = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
+        .expect("List.nil");
+    let cons = kb
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .expect("List.cons");
     let head = kb.intern("head");
     let tail = kb.intern("tail");
-    let mut list = kb.alloc(Term::Fn { functor: nil, pos_args: SmallVec::new(), named_args: SmallVec::new() });
+    let mut list = kb.alloc(Term::Fn {
+        functor: nil,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::new(),
+    });
     for &e in elems.iter().rev() {
         list = kb.alloc(Term::Fn {
             functor: cons,
@@ -288,7 +339,9 @@ fn list_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
 
 /// A `gap3.membertest.NoEq.nt(v: n)` entity term (a carrier with no `Eq`).
 fn nt_entity(kb: &mut KnowledgeBase, n: i64) -> TermId {
-    let f = kb.try_resolve_symbol("gap3.membertest.NoEq.nt").expect("NoEq.nt");
+    let f = kb
+        .try_resolve_symbol("gap3.membertest.NoEq.nt")
+        .expect("NoEq.nt");
     let v = kb.intern("v");
     let nv = int_term(kb, n);
     kb.alloc(Term::Fn {
@@ -318,8 +371,15 @@ fn transitive_requires_contains_decides_via_member() {
     let two = int_term(&mut kb, 2);
     let g = goal(&mut kb, "gap3.membertest.has_elem", &[xs, two]);
     let sols = kb.resolve(&[g], &ResolveConfig::default());
-    assert_eq!(sols.len(), 1, "contains([1,2,3], 2) must decide TRUE via the transitive witness");
-    assert!(sols[0].residual.is_empty(), "the member() operand ran at resolution — a definite solution");
+    assert_eq!(
+        sols.len(),
+        1,
+        "contains([1,2,3], 2) must decide TRUE via the transitive witness"
+    );
+    assert!(
+        sols[0].residual.is_empty(),
+        "the member() operand ran at resolution — a definite solution"
+    );
 
     // contains([1,2,3], 5): member(5,[1,2,3]) = false, eq(false, true) fails ⇒ none.
     let xs2 = list_term(&mut kb, &[1, 2, 3]);
@@ -362,7 +422,10 @@ fn bridge_mode_suspends_on_buried_override() {
     // must SUSPEND — the resolver then delays exactly as its own `builtin_sem_eq`
     // does on a buried override.
     let mut plain = plain_interp();
-    let (a, b) = (some_of_set(plain.kb_mut(), &[1, 2]), some_of_set(plain.kb_mut(), &[2, 1]));
+    let (a, b) = (
+        some_of_set(plain.kb_mut(), &[1, 2]),
+        some_of_set(plain.kb_mut(), &[2, 1]),
+    );
     let r = plain.call(EQ, &[a, b]);
     assert!(
         matches!(r, Ok(Value::Bool(false))),
@@ -370,7 +433,10 @@ fn bridge_mode_suspends_on_buried_override() {
     );
 
     let mut bridged = bridge_interp();
-    let (a, b) = (some_of_set(bridged.kb_mut(), &[1, 2]), some_of_set(bridged.kb_mut(), &[2, 1]));
+    let (a, b) = (
+        some_of_set(bridged.kb_mut(), &[1, 2]),
+        some_of_set(bridged.kb_mut(), &[2, 1]),
+    );
     let r = bridged.call(EQ, &[a, b]);
     assert!(
         matches!(r, Err(EvalError::Suspended { .. })),
@@ -466,17 +532,29 @@ const COMBINER_SRC: &str = r#"
 
 /// A `gap3b.combiner.Tag.tag(n: v)` entity term.
 fn tag_entity(kb: &mut KnowledgeBase, v: i64) -> TermId {
-    let f = kb.try_resolve_symbol("gap3b.combiner.Tag.tag").expect("Tag.tag");
+    let f = kb
+        .try_resolve_symbol("gap3b.combiner.Tag.tag")
+        .expect("Tag.tag");
     let n = kb.intern("n");
     let nv = int_term(kb, v);
-    kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(n, nv)]) })
+    kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(n, nv)]),
+    })
 }
 
 /// A `gap3b.combiner.Box.box(content: <content>)` entity term.
 fn box_of(kb: &mut KnowledgeBase, content: TermId) -> TermId {
-    let f = kb.try_resolve_symbol("gap3b.combiner.Box.box").expect("Box.box");
+    let f = kb
+        .try_resolve_symbol("gap3b.combiner.Box.box")
+        .expect("Box.box");
     let c = kb.intern("content");
-    kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(c, content)]) })
+    kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(c, content)]),
+    })
 }
 
 fn definite_count(kb: &mut KnowledgeBase, g: TermId) -> usize {
@@ -506,7 +584,11 @@ fn layerb_bridged_op_dispatches_user_spec_via_threaded_dict() {
     let b2 = box_of(&mut kb, tag5b);
     let tag5r = tag_entity(&mut kb, 5);
     let g2 = goal(&mut kb, "gap3b.combiner.combines_to", &[b2, tag5r]);
-    assert_eq!(definite_count(&mut kb, g2), 0, "combineBox = tag(99) ≠ tag(5)");
+    assert_eq!(
+        definite_count(&mut kb, g2),
+        0,
+        "combineBox = tag(99) ≠ tag(5)"
+    );
 }
 
 #[test]
@@ -515,10 +597,16 @@ fn layerb_unresolvable_provider_residualizes() {
     // resolve the dictionary — it SUSPENDS and the operand residualizes. The soundness
     // property: NO definite solution (never run combineBox with a wrong/missing dict).
     let mut kb = common::load_kb_with(COMBINER_SRC);
-    let otherf = kb.try_resolve_symbol("gap3b.combiner.Other.other").expect("Other.other");
+    let otherf = kb
+        .try_resolve_symbol("gap3b.combiner.Other.other")
+        .expect("Other.other");
     let k = kb.intern("k");
     let one = int_term(&mut kb, 1);
-    let other1 = kb.alloc(Term::Fn { functor: otherf, pos_args: SmallVec::new(), named_args: SmallVec::from_slice(&[(k, one)]) });
+    let other1 = kb.alloc(Term::Fn {
+        functor: otherf,
+        pos_args: SmallVec::new(),
+        named_args: SmallVec::from_slice(&[(k, one)]),
+    });
     let b = box_of(&mut kb, other1);
     let r = int_term(&mut kb, 0);
     let g = goal(&mut kb, "gap3b.combiner.combines_to", &[b, r]);
@@ -694,7 +782,8 @@ fn typed_op_body_eq_over_set_float_rejected() {
         .err()
         .expect("eq over Set[Float] must be a LOAD error — Float has no lawful Eq");
     assert!(
-        errs.iter().any(|e| e.contains("PartialEq.eq") && e.contains("dispatch")),
+        errs.iter()
+            .any(|e| e.contains("PartialEq.eq") && e.contains("dispatch")),
         "the rejection must be the PartialEq.eq dispatch failure, got: {errs:?}",
     );
 }
@@ -723,7 +812,10 @@ fn typed_op_body_eq_over_map_rejected_nested_set_loads() {
         common::try_load_kb_with(MAP_SRC).is_err(),
         "typed eq over Map is now rejected — relational eq dropped (WI-650), Map.eq unbacked",
     );
-    assert!(common::try_load_kb_with(NEST_SRC).is_ok(), "typed eq over nested Set[Set[Int64]] must load");
+    assert!(
+        common::try_load_kb_with(NEST_SRC).is_ok(),
+        "typed eq over nested Set[Set[Int64]] must load"
+    );
 }
 
 #[test]
@@ -744,7 +836,11 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
         .call("test.wi625.typedeq.setsEqual", &[a, b])
         .expect("setsEqual({1,2},{2,1})")
         .as_bool();
-    assert_eq!(eq, Some(true), "membership-equal sets must be EQUAL through the typed op");
+    assert_eq!(
+        eq,
+        Some(true),
+        "membership-equal sets must be EQUAL through the typed op"
+    );
 
     let c = Value::term(set_term(i.kb_mut(), &[1, 2]));
     let d = Value::term(set_term(i.kb_mut(), &[1, 3]));
@@ -752,7 +848,11 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
         .call("test.wi625.typedeq.setsEqual", &[c, d])
         .expect("setsEqual({1,2},{1,3})")
         .as_bool();
-    assert_eq!(neq, Some(false), "distinct-member sets must be UNEQUAL through the typed op");
+    assert_eq!(
+        neq,
+        Some(false),
+        "distinct-member sets must be UNEQUAL through the typed op"
+    );
 }
 
 // ── WI-653: carrier-aware transitive `requires` coverage ──────────────────────
@@ -917,7 +1017,9 @@ const INSTFACT_SRC: &str = r#"
 
 /// A `gap2.instfact.Tagged.tagged(key: k, note: n)` entity term.
 fn tagged_entity(kb: &mut KnowledgeBase, k: i64, n: i64) -> TermId {
-    let f = kb.try_resolve_symbol("gap2.instfact.Tagged.tagged").expect("Tagged.tagged");
+    let f = kb
+        .try_resolve_symbol("gap2.instfact.Tagged.tagged")
+        .expect("Tagged.tagged");
     let key = kb.intern("key");
     let note = kb.intern("note");
     let kt = int_term(kb, k);
@@ -944,7 +1046,10 @@ fn instance_fact_eq_dispatches_at_resolution() {
         1,
         "eq(tagged(1,9), tagged(1,8)) must dispatch to the instance-fact taggedEq ⇒ equal by key",
     );
-    assert!(sols[0].residual.is_empty(), "the instance-fact op ran at resolution — a definite solution");
+    assert!(
+        sols[0].residual.is_empty(),
+        "the instance-fact op ran at resolution — a definite solution"
+    );
 
     // tagged(1,9) vs tagged(2,9): keys differ ⇒ taggedEq false ⇒ NO solution
     // (so the op genuinely RAN — it is not a blanket "always equal").
@@ -967,11 +1072,21 @@ fn instance_fact_buried_override_delays_not_structural() {
     // membership-wrong structural verdict (false) — exactly like a buried `Set`.
     // Full recursive semantic descent into the buried carrier is a WI-625 follow-up.
     let mut kb = common::load_kb_with(INSTFACT_SRC);
-    let some = kb.try_resolve_symbol("anthill.prelude.Option.some").expect("Option.some");
+    let some = kb
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .expect("Option.some");
     let inner_a = tagged_entity(&mut kb, 1, 9);
     let inner_b = tagged_entity(&mut kb, 1, 8);
-    let sa = kb.alloc(Term::Fn { functor: some, pos_args: SmallVec::from_slice(&[inner_a]), named_args: SmallVec::new() });
-    let sb = kb.alloc(Term::Fn { functor: some, pos_args: SmallVec::from_slice(&[inner_b]), named_args: SmallVec::new() });
+    let sa = kb.alloc(Term::Fn {
+        functor: some,
+        pos_args: SmallVec::from_slice(&[inner_a]),
+        named_args: SmallVec::new(),
+    });
+    let sb = kb.alloc(Term::Fn {
+        functor: some,
+        pos_args: SmallVec::from_slice(&[inner_b]),
+        named_args: SmallVec::new(),
+    });
     let g = goal(&mut kb, EQ, &[sa, sb]);
     let sols = kb.resolve(&[g], &ResolveConfig::default());
     assert!(

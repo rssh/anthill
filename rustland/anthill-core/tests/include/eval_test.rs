@@ -4,20 +4,20 @@
 //! Consolidated to amortize stdlib-load and macOS test-binary-launch costs.
 //! Test names retain the `m1_` / `m2_` / ... prefixes for filtering.
 
-
-use anthill_core::eval::{EvalError, Interpreter, Value};
-use anthill_core::eval::stream::StreamSource;
 use crate::common::{
-    buffered_console, interp_for, load_kb_with, register_modify_handler,
-    scripted_console_input,
+    buffered_console, interp_for, load_kb_with, register_modify_handler, scripted_console_input,
 };
+use anthill_core::eval::stream::StreamSource;
+use anthill_core::eval::{EvalError, Interpreter, Value};
 
 fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 fn expect_bool(v: Value) -> bool {
-    v.as_bool().unwrap_or_else(|| panic!("expected Bool, got {v:?}"))
+    v.as_bool()
+        .unwrap_or_else(|| panic!("expected Bool, got {v:?}"))
 }
 
 fn expect_float(v: Value) -> f64 {
@@ -27,7 +27,6 @@ fn expect_float(v: Value) -> f64 {
         panic!("expected Float, got {v:?}")
     }
 }
-
 
 // ─── from eval_m1_test.rs ───
 #[test]
@@ -68,7 +67,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m1_if_false.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m1_if_false.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 2);
 }
 
@@ -208,9 +209,12 @@ namespace test.wi455.capture
 end
 "#;
     let mut interp = interp_for(src);
-    let v = interp.call("test.wi455.capture.main", &[]).expect("should evaluate");
+    let v = interp
+        .call("test.wi455.capture.main", &[])
+        .expect("should evaluate");
     assert_eq!(
-        expect_int(v), 2,
+        expect_int(v),
+        2,
         "`f` denotes op `double`; a caller-local merely NAMED `double` must not hijack it",
     );
 }
@@ -258,7 +262,11 @@ end
     let v = interp
         .call("test.wi455.cycle.main", &[])
         .expect("mutually-shadowing OpRef params must resolve, not cycle");
-    assert_eq!(expect_int(v), 101, "`a` denotes op `b`, so `a(1)` is `b(1)` == 101");
+    assert_eq!(
+        expect_int(v),
+        101,
+        "`a` denotes op `b`, so `a(1)` is `b(1)` == 101"
+    );
 }
 
 #[test]
@@ -405,7 +413,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m2_match_wild.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m2_match_wild.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 1);
 }
 
@@ -420,7 +430,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m2_match_var.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m2_match_var.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 42);
 }
 
@@ -438,7 +450,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m2_match_lit.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m2_match_lit.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 20);
 }
 
@@ -508,7 +522,9 @@ end
             "anthill.prelude.Error",
             Box::new(move |_i, _op, args| {
                 *seen_h.borrow_mut() = args.first().cloned();
-                Ok(HandlerAction::Throw(args.first().cloned().unwrap_or(Value::Unit)))
+                Ok(HandlerAction::Throw(
+                    args.first().cloned().unwrap_or(Value::Unit),
+                ))
             }),
         )
         .expect("register Error handler");
@@ -533,12 +549,19 @@ end
             let has_occurrence = named.iter().any(|(s, v)| {
                 interp.kb().local_name_of(*s) == "occurrence" && matches!(v, Value::Node(_))
             });
-            assert!(has_occurrence, "occurrence rides as Value::Node; got {payload:?}");
+            assert!(
+                has_occurrence,
+                "occurrence rides as Value::Node; got {payload:?}"
+            );
             let scrutinee = named
                 .iter()
                 .find(|(s, _)| interp.kb().local_name_of(*s) == "scrutinee")
                 .and_then(|(_, v)| v.as_int());
-            assert_eq!(scrutinee, Some(7), "handler saw the failing scrutinee; got {payload:?}");
+            assert_eq!(
+                scrutinee,
+                Some(7),
+                "handler saw the failing scrutinee; got {payload:?}"
+            );
         }
         other => panic!("expected a match_failed entity payload, got {other:?}"),
     }
@@ -613,7 +636,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m2_closure_gc.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m2_closure_gc.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 7);
     assert_eq!(
         interp.closure_arena_live_count(),
@@ -655,7 +680,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m2_empty_list.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m2_empty_list.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 1);
 }
 
@@ -790,7 +817,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run = |interp: &mut Interpreter, op: &str| {
-        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_int(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     // Ascending sort of [3,1,2] ⇒ [1,2,3] ⇒ 123, both lambda and named comparator.
     assert_eq!(run(&mut interp, "test.m2_hof_inf.main_lambda"), 123);
@@ -829,11 +860,19 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert!(
-        expect_bool(interp.call("test.wi420.lam.found", &[]).expect("found runs")),
+        expect_bool(
+            interp
+                .call("test.wi420.lam.found", &[])
+                .expect("found runs")
+        ),
         "lambda calling a requires-op (member) must eval true for a present element",
     );
     assert!(
-        !expect_bool(interp.call("test.wi420.lam.absent", &[]).expect("absent runs")),
+        !expect_bool(
+            interp
+                .call("test.wi420.lam.absent", &[])
+                .expect("absent runs")
+        ),
         "lambda calling a requires-op (member) must eval false for an absent element",
     );
 }
@@ -862,11 +901,19 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert!(
-        expect_bool(interp.call("test.wi420eta.present", &[]).expect("present runs")),
+        expect_bool(
+            interp
+                .call("test.wi420eta.present", &[])
+                .expect("present runs")
+        ),
         "2 IS a member of [1,2,3] — member eta'd as a HOF arg must eval true (WI-420)",
     );
     assert!(
-        !expect_bool(interp.call("test.wi420eta.absent", &[]).expect("absent runs")),
+        !expect_bool(
+            interp
+                .call("test.wi420eta.absent", &[])
+                .expect("absent runs")
+        ),
         "9 is NOT a member of [1,2,3] — member eta'd as a HOF arg must eval false (WI-420)",
     );
 }
@@ -940,7 +987,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert!(
-        expect_bool(interp.call("test.wi421.present", &[]).expect("present runs")),
+        expect_bool(
+            interp
+                .call("test.wi421.present", &[])
+                .expect("present runs")
+        ),
         "abstract cross-sort requires-op via lambda idiom: 2 IS in [1,2,3] (WI-421)",
     );
     assert!(
@@ -979,7 +1030,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     assert!(
-        expect_bool(interp.call("test.wi422.present", &[]).expect("present runs")),
+        expect_bool(
+            interp
+                .call("test.wi422.present", &[])
+                .expect("present runs")
+        ),
         "bare imported `member` in a requires-bearing sort: 2 IS in [1,2,3] (WI-422)",
     );
     assert!(
@@ -1066,11 +1121,19 @@ end
     let mut interp = crate::common::interp_for(src);
     // The whole point of WI-435: this no longer dies UnknownOperation { iterator }.
     assert!(
-        !expect_bool(interp.call("test.wi435.fullMap", &[]).expect("fullMap runs")),
+        !expect_bool(
+            interp
+                .call("test.wi435.fullMap", &[])
+                .expect("fullMap runs")
+        ),
         "isEmpty on a non-empty Map HANDLE value must dispatch and be false (WI-435)",
     );
     assert!(
-        !expect_bool(interp.call("test.wi435.fullList", &[]).expect("fullList runs")),
+        !expect_bool(
+            interp
+                .call("test.wi435.fullList", &[])
+                .expect("fullList runs")
+        ),
         "isEmpty on a non-empty List entity value is false (control)",
     );
 }
@@ -1130,7 +1193,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run = |interp: &mut Interpreter, op: &str| {
-        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_int(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     // foldLeft / foldRight sum: 1+2+3+4 = 10 (the reduce-to-sum acceptance).
     assert_eq!(run(&mut interp, "test.wi064.sum"), 10);
@@ -1171,7 +1238,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run = |interp: &mut Interpreter, op: &str| {
-        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_int(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     assert_eq!(run(&mut interp, "test.strpad.rep_len"), 6);
     assert_eq!(run(&mut interp, "test.strpad.rep_zero_len"), 0);
@@ -1226,7 +1297,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run = |interp: &mut Interpreter, op: &str| {
-        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_int(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     assert_eq!(run(&mut interp, "test.wi413filter.kept_collect"), 34);
     assert_eq!(run(&mut interp, "test.wi413filter.kept_sum"), 7);
@@ -1263,7 +1338,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run = |interp: &mut Interpreter, op: &str| {
-        expect_int(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_int(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     assert_eq!(run(&mut interp, "test.wi414.at0"), 10);
     assert_eq!(run(&mut interp, "test.wi414.at1"), 20);
@@ -1294,7 +1373,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run_b = |interp: &mut Interpreter, op: &str| {
-        expect_bool(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_bool(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     assert_eq!(run_b(&mut interp, "test.wi415.has2"), true);
     assert_eq!(run_b(&mut interp, "test.wi415.has9"), false);
@@ -1330,7 +1413,11 @@ end
 "#;
     let mut interp = crate::common::interp_for(src);
     let run_b = |interp: &mut Interpreter, op: &str| {
-        expect_bool(interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")))
+        expect_bool(
+            interp
+                .call(op, &[])
+                .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+        )
     };
     assert_eq!(run_b(&mut interp, "test.wi418.has2"), true);
     assert_eq!(run_b(&mut interp, "test.wi418.has9"), false);
@@ -1356,7 +1443,9 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.m2_set_dedup.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m2_set_dedup.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 3);
 }
 
@@ -1392,7 +1481,10 @@ namespace test.m3_arith
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_int(interp.call("test.m3_arith.main", &[]).unwrap()), 14);
+    assert_eq!(
+        expect_int(interp.call("test.m3_arith.main", &[]).unwrap()),
+        14
+    );
 }
 
 #[test]
@@ -1404,7 +1496,10 @@ namespace test.m3_nested
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_int(interp.call("test.m3_nested.main", &[]).unwrap()), 19);
+    assert_eq!(
+        expect_int(interp.call("test.m3_nested.main", &[]).unwrap()),
+        19
+    );
 }
 
 #[test]
@@ -1416,7 +1511,10 @@ namespace test.m3_cmp
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_bool(interp.call("test.m3_cmp.main", &[]).unwrap()), true);
+    assert_eq!(
+        expect_bool(interp.call("test.m3_cmp.main", &[]).unwrap()),
+        true
+    );
 }
 
 #[test]
@@ -1427,7 +1525,10 @@ namespace test.m3_lt
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_bool(interp.call("test.m3_lt.main", &[]).unwrap()), true);
+    assert_eq!(
+        expect_bool(interp.call("test.m3_lt.main", &[]).unwrap()),
+        true
+    );
 }
 
 #[test]
@@ -1440,7 +1541,10 @@ namespace test.m3_if_cmp
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_int(interp.call("test.m3_if_cmp.main", &[]).unwrap()), 7);
+    assert_eq!(
+        expect_int(interp.call("test.m3_if_cmp.main", &[]).unwrap()),
+        7
+    );
 }
 
 #[test]
@@ -1452,7 +1556,10 @@ namespace test.m3_bool
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_bool(interp.call("test.m3_bool.main", &[]).unwrap()), true);
+    assert_eq!(
+        expect_bool(interp.call("test.m3_bool.main", &[]).unwrap()),
+        true
+    );
 }
 
 #[test]
@@ -1464,7 +1571,10 @@ namespace test.m3_neg_abs
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_int(interp.call("test.m3_neg_abs.main", &[]).unwrap()), 42);
+    assert_eq!(
+        expect_int(interp.call("test.m3_neg_abs.main", &[]).unwrap()),
+        42
+    );
 }
 
 #[test]
@@ -1488,7 +1598,10 @@ namespace test.m3_eq
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_bool(interp.call("test.m3_eq.main", &[]).unwrap()), true);
+    assert_eq!(
+        expect_bool(interp.call("test.m3_eq.main", &[]).unwrap()),
+        true
+    );
 }
 
 #[test]
@@ -1513,7 +1626,9 @@ end
     // needs ~n frames.
     let mut interp = crate::common::interp_for(src);
     interp.set_stack_depth_cap(16);
-    let err = interp.call("test.m3_nontail.main", &[Value::Int(100)]).unwrap_err();
+    let err = interp
+        .call("test.m3_nontail.main", &[Value::Int(100)])
+        .unwrap_err();
     assert!(
         matches!(err, anthill_core::eval::EvalError::DepthExceeded { .. }),
         "expected DepthExceeded with tight cap; got {err:?}",
@@ -1523,7 +1638,9 @@ end
     // memory, not a fundamental runtime flaw.
     let mut interp = crate::common::interp_for(src);
     interp.set_stack_depth_cap(1000);
-    let result = interp.call("test.m3_nontail.main", &[Value::Int(100)]).expect("call main");
+    let result = interp
+        .call("test.m3_nontail.main", &[Value::Int(100)])
+        .expect("call main");
     assert_eq!(expect_int(result), 100);
 }
 
@@ -1563,7 +1680,11 @@ end
                 Value::Entity { named, .. } => named.iter().find_map(|(_, v)| v.as_str()),
                 _ => None,
             };
-            assert_eq!(op, Some("Int64.div"), "payload names the failing op; got {payload:?}");
+            assert_eq!(
+                op,
+                Some("Int64.div"),
+                "payload names the failing op; got {payload:?}"
+            );
         }
         other => panic!("expected Raised, got {other:?}"),
     }
@@ -1593,7 +1714,9 @@ end
             "anthill.prelude.Error",
             Box::new(move |_i, _op, args| {
                 *seen_h.borrow_mut() = args.first().cloned();
-                Ok(HandlerAction::Throw(args.first().cloned().unwrap_or(Value::Unit)))
+                Ok(HandlerAction::Throw(
+                    args.first().cloned().unwrap_or(Value::Unit),
+                ))
             }),
         )
         .expect("register Error handler");
@@ -1618,7 +1741,11 @@ end
                 "payload functor is the real sort constructor",
             );
             let op = named.iter().find_map(|(_, v)| v.as_str());
-            assert_eq!(op, Some("Int64.div"), "handler saw division_by_zero(op:); got {payload:?}");
+            assert_eq!(
+                op,
+                Some("Int64.div"),
+                "handler saw division_by_zero(op:); got {payload:?}"
+            );
         }
         other => panic!("expected a division_by_zero entity payload, got {other:?}"),
     }
@@ -1633,7 +1760,9 @@ namespace test.m3_float_arith
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_float_arith.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_float_arith.main", &[])
+        .expect("call main");
     let got = expect_float(result);
     assert!((got - 6.0).abs() < 1e-9, "expected ~6.0, got {got}");
 }
@@ -1647,7 +1776,9 @@ namespace test.m3_float_div
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_float_div.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_float_div.main", &[])
+        .expect("call main");
     assert!((expect_float(result) - 2.5).abs() < 1e-9);
 }
 
@@ -1669,7 +1800,9 @@ namespace test.m3_float_nan
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_float_nan.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_float_nan.main", &[])
+        .expect("call main");
     assert_eq!(result.as_bool(), Some(true));
 }
 
@@ -1685,7 +1818,9 @@ namespace test.m3_float_div0
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_float_div0.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_float_div0.main", &[])
+        .expect("call main");
     assert!(expect_float(result).is_infinite(), "expected infinity");
 }
 
@@ -1704,7 +1839,9 @@ namespace test.m3_float_precision
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_float_precision.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_float_precision.main", &[])
+        .expect("call main");
     assert_eq!(result.as_bool(), Some(true));
 }
 
@@ -1741,7 +1878,9 @@ namespace test.m3_bigint_cmp
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_bigint_cmp.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_bigint_cmp.main", &[])
+        .expect("call main");
     assert_eq!(result.as_bool(), Some(true));
 }
 
@@ -1760,7 +1899,9 @@ namespace test.m3_bigint_to_int
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_bigint_to_int.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_bigint_to_int.main", &[])
+        .expect("call main");
     assert_eq!(expect_int(result), 42);
 }
 
@@ -1777,7 +1918,9 @@ namespace test.m3_bigint_to_float
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.m3_bigint_to_float.main", &[]).expect("call main");
+    let result = interp
+        .call("test.m3_bigint_to_float.main", &[])
+        .expect("call main");
     // 42 + 1e20 ≈ 1e20 (the 42 is below mantissa precision); match floats
     // are approximate — assert it's at least 1e20 in magnitude.
     let f = expect_float(result);
@@ -1839,7 +1982,10 @@ end
 "#;
     let mut interp = interp_for(src);
     for (op, want) in [
-        ("bigger", true), ("smaller", false), ("atLeast", true), ("atMost", true),
+        ("bigger", true),
+        ("smaller", false),
+        ("atLeast", true),
+        ("atMost", true),
         // IEEE: a NaN operand is UNORDERED, so the comparison is false — `Float`'s
         // OWN host implementation, named in its binding's `operation_map`, rather
         // than a NaN branch inside a comparison shared with the total carriers.
@@ -1863,7 +2009,10 @@ end
     );
 
     let mut interp = interp_for(src);
-    match interp.call("test.m3_float_cmp.intMax", &[]).expect("call intMax") {
+    match interp
+        .call("test.m3_float_cmp.intMax", &[])
+        .expect("call intMax")
+    {
         Value::Int(n) => assert_eq!(n, 2, "`max` still works on a carrier that IS `Ord`"),
         other => panic!("intMax: {other:?}"),
     }
@@ -1918,7 +2067,10 @@ namespace test.m3_string
 end
 "#;
     let mut interp = interp_for(src);
-    assert_eq!(expect_int(interp.call("test.m3_string.main", &[]).unwrap()), 8);
+    assert_eq!(
+        expect_int(interp.call("test.m3_string.main", &[]).unwrap()),
+        8
+    );
 }
 
 // ─── from eval_m4_test.rs ───
@@ -1939,9 +2091,15 @@ fn m4_pure_stream_yields_once_then_empty() {
     let mut interp = interp_for("namespace test.m4_pure end\n");
     let payload = Value::Int(42);
     let h = interp.alloc_stream(StreamSource::Pure(Some(payload.clone())));
-    let (v, rest) = interp.stream_split_first(&h).unwrap().expect("first pump yields");
+    let (v, rest) = interp
+        .stream_split_first(&h)
+        .unwrap()
+        .expect("first pump yields");
     assert_eq!(v.as_int(), Some(42));
-    assert!(interp.stream_split_first(&rest).unwrap().is_none(), "second pump yields none");
+    assert!(
+        interp.stream_split_first(&rest).unwrap().is_none(),
+        "second pump yields none"
+    );
 }
 
 #[test]
@@ -1981,10 +2139,14 @@ end
     // Field names on an entity are scoped to the entity; resolve qualified
     // so the discrim tree sees the same Symbol the loader used.
     let kb = interp.kb_mut();
-    let ancestor_sym = kb.try_resolve_symbol("test.m4_ancestor.Family.ancestor")
+    let ancestor_sym = kb
+        .try_resolve_symbol("test.m4_ancestor.Family.ancestor")
         .expect("ancestor symbol");
-    let bob_sym = kb.try_resolve_symbol("test.m4_ancestor.Person.bob").unwrap();
-    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
+    let bob_sym = kb
+        .try_resolve_symbol("test.m4_ancestor.Person.bob")
+        .unwrap();
+    let pattern_query_sym = kb
+        .try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
         .expect("pattern_query");
     // The loader's `reintern` path (load.rs:1867) creates unqualified
     // short-name symbols for named-arg keys in a fact head, so the query
@@ -2012,7 +2174,8 @@ end
         named: vec![
             (parent_field, Value::term(var_p)),
             (child_field, Value::term(bob_term)),
-        ].into(),
+        ]
+        .into(),
     };
     let query = Value::Entity {
         functor: pattern_query_sym,
@@ -2022,13 +2185,21 @@ end
 
     // Lower + wrap as a Value::Stream on the Rust side (since we can't
     // construct a `KB` value from anthill code cleanly yet).
-    let search = interp.kb_mut().execute_logical_query(&query).expect("execute lowered");
+    let search = interp
+        .kb_mut()
+        .execute_logical_query(&query)
+        .expect("execute lowered");
     let stream_handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
     let stream_val = Value::Stream(stream_handle);
 
-    let count = interp.call("test.m4_ancestor.drain", &[stream_val])
+    let count = interp
+        .call("test.m4_ancestor.drain", &[stream_val])
         .expect("drain runs end-to-end");
-    assert_eq!(count.as_int(), Some(1), "drain count for single-match query");
+    assert_eq!(
+        count.as_int(),
+        Some(1),
+        "drain count for single-match query"
+    );
 }
 
 #[test]
@@ -2062,8 +2233,12 @@ end
     let mut interp = interp_for(source);
 
     let kb = interp.kb_mut();
-    let ancestor_sym = kb.try_resolve_symbol("test.m4_multi.Family.ancestor").unwrap();
-    let pattern_query_sym = kb.try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query").unwrap();
+    let ancestor_sym = kb
+        .try_resolve_symbol("test.m4_multi.Family.ancestor")
+        .unwrap();
+    let pattern_query_sym = kb
+        .try_resolve_symbol("anthill.reflect.LogicalQuery.pattern_query")
+        .unwrap();
     let parent_field = kb.intern("parent");
     let child_field = kb.intern("child");
     let term_field = kb.intern("term");
@@ -2081,7 +2256,8 @@ end
         named: vec![
             (parent_field, Value::term(var_p)),
             (child_field, Value::term(var_c)),
-        ].into(),
+        ]
+        .into(),
     };
     let query = Value::Entity {
         functor: pattern_query_sym,
@@ -2089,17 +2265,25 @@ end
         named: vec![(term_field, ancestor_pattern)].into(),
     };
 
-    let search = interp.kb_mut().execute_logical_query(&query).expect("execute lowered");
+    let search = interp
+        .kb_mut()
+        .execute_logical_query(&query)
+        .expect("execute lowered");
     let stream_handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
     let stream_val = Value::Stream(stream_handle);
 
-    let count = interp.call("test.m4_multi.drain", &[stream_val])
+    let count = interp
+        .call("test.m4_multi.drain", &[stream_val])
         .expect("drain runs");
     // Exactly the two user facts. WI-515: the loader used to also assert a
     // synthetic per-entity "declaration fact" (`ancestor(parent: <Person
     // type>, child: <Person type>)` under sort Entity) that a fully-unbound
     // query structurally matched, inflating this count to 3.
-    assert_eq!(count.as_int(), Some(2), "drain count for fully-unbound query");
+    assert_eq!(
+        count.as_int(),
+        Some(2),
+        "drain count for fully-unbound query"
+    );
 }
 
 #[test]
@@ -2140,10 +2324,12 @@ end
     let handle = interp.alloc_stream(StreamSource::Native(producer));
     assert_eq!(interp.stream_arena_live_count(), 1);
 
-    let count = interp.call("test.m4_take.takeN", &[
-        Value::Stream(handle),
-        Value::Int(5),
-    ]).expect("takeN runs");
+    let count = interp
+        .call(
+            "test.m4_take.takeN",
+            &[Value::Stream(handle), Value::Int(5)],
+        )
+        .expect("takeN runs");
     assert_eq!(count.as_int(), Some(5), "takeN returns 5");
 
     // Producer was pumped exactly 5 times — confirms laziness: we didn't
@@ -2152,7 +2338,11 @@ end
 
     // The handle we passed into takeN was moved — takeN's locals dropped
     // on return. Arena slot must be reclaimed.
-    assert_eq!(interp.stream_arena_live_count(), 0, "slot reclaimed after early termination");
+    assert_eq!(
+        interp.stream_arena_live_count(),
+        0,
+        "slot reclaimed after early termination"
+    );
 }
 
 #[test]
@@ -2190,11 +2380,23 @@ fn m4_mplus_finite_then_infinite() {
     }
 
     let ints: Vec<i64> = values.iter().filter_map(|v| v.as_int()).collect();
-    assert_eq!(ints, vec![99, 1, 2, 3], "left drains before right, in order");
-    assert_eq!(pulls.get(), 3, "infinite was pulled exactly (N - |finite|) times");
+    assert_eq!(
+        ints,
+        vec![99, 1, 2, 3],
+        "left drains before right, in order"
+    );
+    assert_eq!(
+        pulls.get(),
+        3,
+        "infinite was pulled exactly (N - |finite|) times"
+    );
 
     drop(stream);
-    assert_eq!(interp.stream_arena_live_count(), 0, "all arena slots reclaimed");
+    assert_eq!(
+        interp.stream_arena_live_count(),
+        0,
+        "all arena slots reclaimed"
+    );
 }
 
 #[test]
@@ -2207,9 +2409,15 @@ fn m4_mplus_finite_then_empty() {
     let right = interp.alloc_stream(StreamSource::Empty);
     let stream = interp.alloc_stream(StreamSource::MPlus { left, right });
 
-    let (v, rest) = interp.stream_split_first(&stream).unwrap().expect("first yields");
+    let (v, rest) = interp
+        .stream_split_first(&stream)
+        .unwrap()
+        .expect("first yields");
     assert_eq!(v.as_int(), Some(42));
-    assert!(interp.stream_split_first(&rest).unwrap().is_none(), "then exhausted");
+    assert!(
+        interp.stream_split_first(&rest).unwrap().is_none(),
+        "then exhausted"
+    );
 
     drop(rest);
     drop(stream);
@@ -2227,8 +2435,15 @@ fn m4_mplus_empty_then_finite() {
     let right = interp.alloc_stream(StreamSource::Pure(Some(Value::Int(7))));
     let stream = interp.alloc_stream(StreamSource::MPlus { left, right });
 
-    let (v, rest) = interp.stream_split_first(&stream).unwrap().expect("first yields");
-    assert_eq!(v.as_int(), Some(7), "right's element surfaces when left is empty");
+    let (v, rest) = interp
+        .stream_split_first(&stream)
+        .unwrap()
+        .expect("first yields");
+    assert_eq!(
+        v.as_int(),
+        Some(7),
+        "right's element surfaces when left is empty"
+    );
     assert!(interp.stream_split_first(&rest).unwrap().is_none());
 
     drop(rest);
@@ -2263,15 +2478,24 @@ end
 "#;
     let mut interp = interp_for(src);
     let (buf, handler) = buffered_console();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler)
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler)
         .expect("register output handler");
 
     // Pass the Console entity as the argument.
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console")
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
         .expect("Console.console symbol");
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
 
-    interp.call("test.m5_print.greet", &[console_val]).expect("greet runs");
+    interp
+        .call("test.m5_print.greet", &[console_val])
+        .expect("greet runs");
     assert_eq!(buf.borrow().as_str(), "hello\n");
 }
 
@@ -2287,10 +2511,21 @@ end
 "#;
     let mut interp = interp_for(src);
     let (buf, handler) = buffered_console();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler).unwrap();
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
-    interp.call("test.m5_print2.speak", &[console_val]).expect("speak runs");
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", handler)
+        .unwrap();
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
+        .unwrap();
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
+    interp
+        .call("test.m5_print2.speak", &[console_val])
+        .expect("speak runs");
     assert_eq!(buf.borrow().as_str(), "hi");
 }
 
@@ -2309,11 +2544,24 @@ end
     let mut interp = interp_for(src);
     let (out_buf, out_handler) = buffered_console();
     let (err_buf, err_handler) = buffered_console();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_handler).unwrap();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleError", err_handler).unwrap();
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
-    interp.call("test.m5_eprint.diag", &[console_val]).expect("diag runs");
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_handler)
+        .unwrap();
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleError", err_handler)
+        .unwrap();
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
+        .unwrap();
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
+    interp
+        .call("test.m5_eprint.diag", &[console_val])
+        .expect("diag runs");
     assert_eq!(out_buf.borrow().as_str(), "ok\n");
     assert_eq!(err_buf.borrow().as_str(), "oops\n");
 }
@@ -2330,11 +2578,22 @@ end
 "#;
     let mut interp = interp_for(src);
     let (queue, handler) = scripted_console_input(&["ruslan", "ignored_second_line"]);
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleInput", handler).unwrap();
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleInput", handler)
+        .unwrap();
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
+        .unwrap();
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
 
-    let got = interp.call("test.m5_read.ask", &[console_val]).expect("ask runs");
+    let got = interp
+        .call("test.m5_read.ask", &[console_val])
+        .expect("ask runs");
     assert_eq!(got.as_str(), Some("ruslan"));
     // One line remains in the queue — the second scripted line.
     assert_eq!(queue.borrow().len(), 1);
@@ -2355,11 +2614,24 @@ end
     let mut interp = interp_for(src);
     let (buf, out_h) = buffered_console();
     let (_q, in_h) = scripted_console_input(&["alice"]);
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_h).unwrap();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleInput", in_h).unwrap();
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
-    interp.call("test.m5_round.echo", &[console_val]).expect("echo runs");
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", out_h)
+        .unwrap();
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleInput", in_h)
+        .unwrap();
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
+        .unwrap();
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
+    interp
+        .call("test.m5_round.echo", &[console_val])
+        .expect("echo runs");
     assert_eq!(buf.borrow().as_str(), "alice\n");
 }
 
@@ -2378,9 +2650,18 @@ end
 "#;
     let mut interp = interp_for(src);
     // Deliberately no register_effect_handler call.
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
-    let err = interp.call("test.m5_unhandled.speak", &[console_val]).unwrap_err();
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
+        .unwrap();
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
+    let err = interp
+        .call("test.m5_unhandled.speak", &[console_val])
+        .unwrap_err();
     assert!(
         matches!(&err, anthill_core::eval::EvalError::Internal(msg)
             if msg.contains("no handler") && msg.contains("ConsoleOutput")),
@@ -2403,15 +2684,36 @@ end
 "#;
     let mut interp = interp_for(src);
     let (buf1, h1) = buffered_console();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", h1).unwrap();
-    let console_sym = interp.kb().try_resolve_symbol("anthill.prelude.Console.console").unwrap();
-    let console_val = Value::Entity { functor: console_sym, pos: Vec::new().into(), named: Vec::new().into() };
-    interp.call("test.m5_swap.speak", &[console_val.clone(), Value::Str("first".into())]).unwrap();
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", h1)
+        .unwrap();
+    let console_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Console.console")
+        .unwrap();
+    let console_val = Value::Entity {
+        functor: console_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
+    interp
+        .call(
+            "test.m5_swap.speak",
+            &[console_val.clone(), Value::Str("first".into())],
+        )
+        .unwrap();
     assert_eq!(buf1.borrow().as_str(), "first\n");
 
     let (buf2, h2) = buffered_console();
-    interp.register_effect_handler("anthill.prelude.Console.ConsoleOutput", h2).unwrap();
-    interp.call("test.m5_swap.speak", &[console_val, Value::Str("second".into())]).unwrap();
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", h2)
+        .unwrap();
+    interp
+        .call(
+            "test.m5_swap.speak",
+            &[console_val, Value::Str("second".into())],
+        )
+        .unwrap();
     assert_eq!(buf2.borrow().as_str(), "second\n", "new handler captured");
     // The original buffer is untouched by the second call.
     assert_eq!(buf1.borrow().as_str(), "first\n", "old buffer unchanged");
@@ -2436,12 +2738,18 @@ end
     let mut interp = interp_for(src);
     register_modify_handler(&mut interp);
 
-    interp.call("test.m5_counter.write", &[Value::Int(42)]).expect("write");
+    interp
+        .call("test.m5_counter.write", &[Value::Int(42)])
+        .expect("write");
     let got = interp.call("test.m5_counter.read", &[]).expect("read");
     assert_eq!(got.as_int(), Some(42), "read returns last-set value");
 
-    interp.call("test.m5_counter.write", &[Value::Int(7)]).expect("overwrite");
-    let got = interp.call("test.m5_counter.read", &[]).expect("read again");
+    interp
+        .call("test.m5_counter.write", &[Value::Int(7)])
+        .expect("overwrite");
+    let got = interp
+        .call("test.m5_counter.read", &[])
+        .expect("read again");
     assert_eq!(got.as_int(), Some(7), "subsequent read sees the overwrite");
 }
 
@@ -2490,8 +2798,12 @@ end
 "#;
     let mut interp = interp_for(src);
     register_modify_handler(&mut interp);
-    interp.call("test.m5_independent.put_a", &[Value::Int(1)]).unwrap();
-    interp.call("test.m5_independent.put_b", &[Value::Int(99)]).unwrap();
+    interp
+        .call("test.m5_independent.put_a", &[Value::Int(1)])
+        .unwrap();
+    interp
+        .call("test.m5_independent.put_b", &[Value::Int(99)])
+        .unwrap();
     let a = interp.call("test.m5_independent.get_a", &[]).unwrap();
     let b = interp.call("test.m5_independent.get_b", &[]).unwrap();
     assert_eq!(a.as_int(), Some(1));
@@ -2535,13 +2847,23 @@ fn m5_modify_rust_side_roundtrip() {
     // Minimal Entity-shaped target: a nullary constructor the anthill
     // side hasn't declared. We intern the symbol directly.
     let target_sym = interp.kb_mut().intern("rs_counter");
-    let target = Value::Entity { functor: target_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let target = Value::Entity {
+        functor: target_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
 
     let set_sym = interp.kb_mut().intern("set");
-    interp.invoke_effect_handler("anthill.prelude.Modify", set_sym, &[target.clone(), Value::Int(100)])
+    interp
+        .invoke_effect_handler(
+            "anthill.prelude.Modify",
+            set_sym,
+            &[target.clone(), Value::Int(100)],
+        )
         .expect("set ok");
     let get_sym = interp.kb_mut().intern("get");
-    let got = interp.invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
+    let got = interp
+        .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
         .expect("get ok");
     assert_eq!(got.as_int(), Some(100));
 }
@@ -2553,12 +2875,21 @@ fn m5_modify_handler_taken_is_none() {
     let mut interp = interp_for("namespace test.m5_take end\n");
     register_modify_handler(&mut interp);
     let taken = interp.take_effect_handler("anthill.prelude.Modify");
-    assert!(taken.is_some(), "take returns the previously-registered handler");
+    assert!(
+        taken.is_some(),
+        "take returns the previously-registered handler"
+    );
 
     let target_sym = interp.kb_mut().intern("x");
-    let target = Value::Entity { functor: target_sym, pos: Vec::new().into(), named: Vec::new().into() };
+    let target = Value::Entity {
+        functor: target_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
     let get_sym = interp.kb_mut().intern("get");
-    let err = interp.invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target]).unwrap_err();
+    let err = interp
+        .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
+        .unwrap_err();
     assert!(
         matches!(&err, EvalError::Internal(m) if m.contains("no handler")),
         "expected 'no handler' Internal, got {err:?}",
@@ -2577,12 +2908,14 @@ fn wi389_throw_action_surfaces_as_raised() {
 
     let payload = Value::Str("boom".into());
     let payload_for_handler = payload.clone();
-    interp.register_effect_handler(
-        "anthill.prelude.Modify",
-        Box::new(move |_interp, _op_sym, _args| {
-            Ok(HandlerAction::Throw(payload_for_handler.clone()))
-        }),
-    ).expect("register throwing handler");
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Modify",
+            Box::new(move |_interp, _op_sym, _args| {
+                Ok(HandlerAction::Throw(payload_for_handler.clone()))
+            }),
+        )
+        .expect("register throwing handler");
 
     let op_sym = interp.kb_mut().intern("raise");
     let err = interp
@@ -2590,7 +2923,11 @@ fn wi389_throw_action_surfaces_as_raised() {
         .unwrap_err();
     match err {
         EvalError::Raised { payload: got } => {
-            assert_eq!(got.as_str(), Some("boom"), "payload preserved through the channel");
+            assert_eq!(
+                got.as_str(),
+                Some("boom"),
+                "payload preserved through the channel"
+            );
         }
         other => panic!("expected EvalError::Raised, got {other:?}"),
     }
@@ -2604,12 +2941,16 @@ fn wi389_fail_action_surfaces_its_reason() {
     // UnsupportedHandlerAction whose rendered message includes that reason.
     use anthill_core::eval::effects::HandlerAction;
     let mut interp = interp_for("namespace test.wi389_fail end\n");
-    interp.register_effect_handler(
-        "anthill.prelude.Modify",
-        Box::new(|_interp, _op_sym, _args| {
-            Ok(HandlerAction::Fail(Value::Str("no candidate matched".into())))
-        }),
-    ).expect("register failing handler");
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Modify",
+            Box::new(|_interp, _op_sym, _args| {
+                Ok(HandlerAction::Fail(Value::Str(
+                    "no candidate matched".into(),
+                )))
+            }),
+        )
+        .expect("register failing handler");
 
     let op_sym = interp.kb_mut().intern("fail");
     let err = interp
@@ -2619,7 +2960,10 @@ fn wi389_fail_action_surfaces_its_reason() {
         EvalError::UnsupportedHandlerAction { action, detail, .. } => {
             assert_eq!(*action, "Fail");
             assert!(
-                detail.as_deref().unwrap_or("").contains("no candidate matched"),
+                detail
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("no candidate matched"),
                 "the Fail reason should be carried, got {detail:?}",
             );
         }
@@ -2627,7 +2971,10 @@ fn wi389_fail_action_surfaces_its_reason() {
     }
     // The rendered message says both the reason and which substrate is missing.
     let rendered = err.to_string();
-    assert!(rendered.contains("no candidate matched"), "rendered: {rendered}");
+    assert!(
+        rendered.contains("no candidate matched"),
+        "rendered: {rendered}"
+    );
     assert!(rendered.contains("WI-075"), "rendered: {rendered}");
 }
 
@@ -2639,14 +2986,23 @@ fn wi073_raise_surfaces_as_raised_with_payload() {
     // dispatch site surfaces it as EvalError::Raised carrying that payload
     // verbatim. Chain: raise -> builtin -> Error handler -> Throw -> Raised.
     let mut interp = interp_for("namespace test.wi073 end\n");
-    interp.register_standard_effect_handlers().expect("register standard effect handlers");
+    interp
+        .register_standard_effect_handlers()
+        .expect("register standard effect handlers");
 
     let err = interp
-        .call("anthill.prelude.Error.raise", &[Value::Str("kaboom".into())])
+        .call(
+            "anthill.prelude.Error.raise",
+            &[Value::Str("kaboom".into())],
+        )
         .unwrap_err();
     match err {
         EvalError::Raised { payload } => {
-            assert_eq!(payload.as_str(), Some("kaboom"), "payload preserved verbatim");
+            assert_eq!(
+                payload.as_str(),
+                Some("kaboom"),
+                "payload preserved verbatim"
+            );
         }
         other => panic!("expected EvalError::Raised, got {other:?}"),
     }
@@ -2682,7 +3038,8 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let result = interp.call("test.wi350_box.main", &[])
+    let result = interp
+        .call("test.wi350_box.main", &[])
         .expect("in-body Box.peek on a ListBox value resolves via the value's runtime sort");
     assert_eq!(expect_int(result), 7);
 }
@@ -2711,9 +3068,14 @@ end
 "#;
     let kb = load_kb_with(src);
     let mut interp = Interpreter::new(kb);
-    let nonempty = interp.call("test.wi343_list_stream.nonempty_via_splitfirst", &[])
+    let nonempty = interp
+        .call("test.wi343_list_stream.nonempty_via_splitfirst", &[])
         .expect("splitFirst on a non-empty List must dispatch to List's Stream impl");
-    assert_eq!(expect_bool(nonempty), true, "splitFirst([1,2]) must be some(...)");
+    assert_eq!(
+        expect_bool(nonempty),
+        true,
+        "splitFirst([1,2]) must be some(...)"
+    );
 }
 
 /// WI-365 / WI-362 trip-wire. `collect` is a `Stream` spec op whose DEFAULT BODY
@@ -2737,7 +3099,8 @@ end
     // `interp_for` registers the standard eval builtins (`length`'s `add`,
     // etc.); the bare `Interpreter::new` would leave them unregistered.
     let mut interp = interp_for(src);
-    let len = interp.call("test.wi362_collect.collect_len", &[])
+    let len = interp
+        .call("test.wi362_collect.collect_len", &[])
         .expect("collect over a List, dispatched through Stream's default body, must run");
     assert_eq!(expect_int(len), 3, "collect([1,2,3]) then length must be 3");
 }
@@ -2758,9 +3121,14 @@ end
     // `interp_for` registers the standard eval builtins (`gt`/`sub` in takeN,
     // `add` in length); the bare `Interpreter::new` would leave them unregistered.
     let mut interp = interp_for(src);
-    let len = interp.call("test.wi362_taken.taken_len", &[])
+    let len = interp
+        .call("test.wi362_taken.taken_len", &[])
         .expect("takeN over a List, dispatched through Stream's default body, must run");
-    assert_eq!(expect_int(len), 2, "takeN([1,2,3,4,5], 2) then length must be 2");
+    assert_eq!(
+        expect_int(len),
+        2,
+        "takeN([1,2,3,4,5], 2) then length must be 2"
+    );
 }
 
 /// WI-362 Part 1: `Stream` provides `Iterable` (`iterator(s) = s`, proposal

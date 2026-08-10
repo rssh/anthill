@@ -16,26 +16,34 @@
 //! The runtime half (an eta'd operation reference applied as a function
 //! value) is exercised in `eval_test::m2_hof_inference_sort_and_map`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra source → load errors (typer diagnostics among them).
 fn load_errs(extra: &str) -> Vec<load::LoadError> {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).err().unwrap_or_default()
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .err()
+        .unwrap_or_default()
 }
 
 fn fmt(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -57,7 +65,11 @@ namespace test.wi275.inline
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "inline lambda HOF arg should type-check:\n{}", fmt(&errs));
+    assert!(
+        errs.is_empty(),
+        "inline lambda HOF arg should type-check:\n{}",
+        fmt(&errs)
+    );
 }
 
 #[test]
@@ -78,7 +90,11 @@ namespace test.wi275.named
 end
 "#;
     let errs = load_errs(src);
-    assert!(errs.is_empty(), "bare named-op HOF arg should type-check:\n{}", fmt(&errs));
+    assert!(
+        errs.is_empty(),
+        "bare named-op HOF arg should type-check:\n{}",
+        fmt(&errs)
+    );
 }
 
 #[test]

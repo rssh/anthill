@@ -31,7 +31,6 @@ namespace wi458b
 end
 "#;
 
-
 #[test]
 fn head_span_keys_on_occurrence_not_hashconsed_termid() {
     let mut kb = load_kb(&[FILE_A, FILE_B]);
@@ -39,7 +38,8 @@ fn head_span_keys_on_occurrence_not_hashconsed_termid() {
     let enabled = kb.intern("enabled");
     let rids = kb.rules_by_functor(enabled);
     assert_eq!(
-        rids.len(), 2,
+        rids.len(),
+        2,
         "expected exactly two `enabled` facts (one per namespace), got {}: \
          the two facts must NOT dedup — they differ by domain",
         rids.len(),
@@ -65,10 +65,17 @@ fn head_span_keys_on_occurrence_not_hashconsed_termid() {
 
     // The fix: the per-occurrence head span keys on the RuleId, so each fact
     // resolves to its OWN source file.
-    let src_a = kb.rule_head_span(rid_a).expect("fact A recorded a head span").source;
-    let src_b = kb.rule_head_span(rid_b).expect("fact B recorded a head span").source;
+    let src_a = kb
+        .rule_head_span(rid_a)
+        .expect("fact A recorded a head span")
+        .source;
+    let src_b = kb
+        .rule_head_span(rid_b)
+        .expect("fact B recorded a head span")
+        .source;
     assert_ne!(
-        src_a, src_b,
+        src_a,
+        src_b,
         "WI-458: the two facts share a head TermId but live in different files; \
          their per-occurrence head spans must resolve to distinct sources \
          (got {} for both)",

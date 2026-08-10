@@ -8,7 +8,10 @@ const BUNDLE_SOURCES: &[(&str, &str)] = &[
     // Version-stamp entities (TemplateInfo/StoreFormat) load first — they
     // define the `anthill.stage0` symbols the prescan resolves and that a
     // project's scaffolded stamps refer to (WI-434).
-    ("anthill-todo/version", include_str!("../anthill/version.anthill")),
+    (
+        "anthill-todo/version",
+        include_str!("../anthill/version.anthill"),
+    ),
     // The canonical `anthill.stage0` domain (entity/enum defs) and the
     // `anthill.stage0.workflow` rules ship bundled so they are version-locked
     // with the logic that imports them (store/main below). Before WI-505 these
@@ -25,9 +28,18 @@ const BUNDLE_SOURCES: &[(&str, &str)] = &[
     // dir. Editing them rebuilds the binary — which is the point (version-
     // locking). The repo's own `anthill-todo/` tracker no longer carries a
     // domain/rules copy; it dogfoods the bundle like any other project.
-    ("anthill.stage0/domain", include_str!("../anthill/domain.anthill")),
-    ("anthill.stage0.workflow/rules", include_str!("../anthill/rules.anthill")),
-    ("anthill-todo/store", include_str!("../anthill/store.anthill")),
+    (
+        "anthill.stage0/domain",
+        include_str!("../anthill/domain.anthill"),
+    ),
+    (
+        "anthill.stage0.workflow/rules",
+        include_str!("../anthill/rules.anthill"),
+    ),
+    (
+        "anthill-todo/store",
+        include_str!("../anthill/store.anthill"),
+    ),
     ("anthill-todo/main", include_str!("../anthill/main.anthill")),
 ];
 

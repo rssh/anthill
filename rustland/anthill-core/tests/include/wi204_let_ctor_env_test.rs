@@ -16,42 +16,49 @@
 //!
 //! Shape mirrors the cmd_claim / cmd_add bodies that hit the bug.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::typing::CallClass;
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_bundle_context(driver_src: &str) -> KnowledgeBase {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files
+        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src)
-            .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(driver_src).expect("parse driver"));
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
     kb
 }
 
 /// Walk all op bodies and collect every spec-op call site whose
 /// classification names `commit_sym` as the spec op being called.
-fn commit_classifications(kb: &KnowledgeBase, commit_sym: anthill_core::intern::Symbol)
-    -> Vec<CallClass>
-{
+fn commit_classifications(
+    kb: &KnowledgeBase,
+    commit_sym: anthill_core::intern::Symbol,
+) -> Vec<CallClass> {
     let mut hits = Vec::new();
     for (_, body) in kb.op_bodies_iter() {
         anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {

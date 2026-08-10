@@ -17,7 +17,8 @@ fn bodied_referenced_entity_rule_is_refused_even_with_ground_fact() {
     // order, so without the pre-scan the fact written first would
     // deterministically win the harvest and the guarded mass=2.0 head
     // would be silently ignored (or shadow the fact if reordered).
-    let kb = load_kb_with(r#"
+    let kb = load_kb_with(
+        r#"
         namespace test.smt_gen.wi772
           import anthill.prelude.{Float}
           import anthill.prelude.Numeric.{mul}
@@ -36,11 +37,15 @@ fn bodied_referenced_entity_rule_is_refused_even_with_ground_fact() {
 
           rule LinkParameters(mass: 2.0) :- heavy_variant()
         end
-    "#);
-    let err = emit_obligation(&kb, &Obligation {
-        rule_qn: "test.smt_gen.wi772.payload_bound".to_string(),
-        upper_bound: 10.0,
-    })
+    "#,
+    );
+    let err = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.smt_gen.wi772.payload_bound".to_string(),
+            upper_bound: 10.0,
+        },
+    )
     .expect_err("a bodied LinkParameters rule must refuse emission");
     assert!(
         err.message.contains("bodied rule for referenced entity"),

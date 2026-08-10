@@ -21,12 +21,12 @@
 //!   - an operation with no `meta_block` reports `meta == None` (empty `meta()`);
 //!   - the `meta`-bearing `OperationInfo` fact stays SLD-queryable.
 
+use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{meta_has_flag, meta_value};
 use anthill_core::kb::op_info;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::intern::Symbol;
 use smallvec::SmallVec;
 
 use crate::common::load_kb_with;
@@ -58,7 +58,8 @@ const PLAIN_QN: &str = "test.wi087_meta.GPS.plain";
 const MERGED_QN: &str = "test.wi087_meta.GPS.merged";
 
 fn op_sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-    kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("op symbol `{qn}` after load"))
+    kb.try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("op symbol `{qn}` after load"))
 }
 
 /// A string-literal `meta_value` extracted as a Rust `String`.
@@ -74,10 +75,13 @@ fn operation_meta_block_surfaces_on_operation_info() {
     let kb = load_kb_with(SRC);
     let op = op_sym(&kb, GET_VALUES_QN);
 
-    let rec = op_info::lookup_operation_info(&kb, op)
-        .expect("lookup_operation_info for get_values");
+    let rec =
+        op_info::lookup_operation_info(&kb, op).expect("lookup_operation_info for get_values");
     let meta = rec.meta;
-    assert!(meta.is_some(), "an operation with a meta_block must carry a non-empty `meta`");
+    assert!(
+        meta.is_some(),
+        "an operation with a meta_block must carry a non-empty `meta`"
+    );
 
     // (1) Flag marker — presence only, value is `Bottom`.
     assert!(
@@ -110,8 +114,7 @@ fn operation_without_meta_block_reports_none() {
     let kb = load_kb_with(SRC);
     let op = op_sym(&kb, PLAIN_QN);
 
-    let rec = op_info::lookup_operation_info(&kb, op)
-        .expect("lookup_operation_info for plain");
+    let rec = op_info::lookup_operation_info(&kb, op).expect("lookup_operation_info for plain");
     assert!(
         rec.meta.is_none(),
         "an operation with no meta_block must report `meta == None` (empty meta()), got {:?}",
@@ -129,8 +132,7 @@ fn multiple_meta_clauses_merge() {
     let kb = load_kb_with(SRC);
     let op = op_sym(&kb, MERGED_QN);
 
-    let rec = op_info::lookup_operation_info(&kb, op)
-        .expect("lookup_operation_info for merged");
+    let rec = op_info::lookup_operation_info(&kb, op).expect("lookup_operation_info for merged");
     assert!(
         meta_has_flag(&kb, rec.meta, "MarkerA"),
         "the first `meta` clause's marker must survive a second `meta` clause",
@@ -155,10 +157,21 @@ fn meta_bearing_operation_info_is_sld_queryable() {
     let mut kb = load_kb_with(SRC);
     let op = op_sym(&kb, GET_VALUES_QN);
 
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
+    let op_info_sym = kb
+        .try_resolve_symbol("anthill.reflect.OperationInfo")
+        .unwrap();
     let name_ref = kb.alloc(Term::Ref(op));
 
-    let fields = ["name", "params", "return_type", "effects", "requires", "ensures", "type_params", "meta"];
+    let fields = [
+        "name",
+        "params",
+        "return_type",
+        "effects",
+        "requires",
+        "ensures",
+        "type_params",
+        "meta",
+    ];
     let named_args: SmallVec<[(Symbol, TermId); 2]> = fields
         .iter()
         .map(|field| {
@@ -178,7 +191,10 @@ fn meta_bearing_operation_info_is_sld_queryable() {
         named_args,
     });
 
-    let config = ResolveConfig { max_solutions: 16, ..ResolveConfig::default() };
+    let config = ResolveConfig {
+        max_solutions: 16,
+        ..ResolveConfig::default()
+    };
     let solutions = kb.resolve(&[goal], &config);
     assert!(
         !solutions.is_empty(),

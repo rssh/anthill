@@ -1,7 +1,7 @@
 #![allow(unused_imports)]
 
-use crate::prelude::{Pair};
 use crate::prelude::stream::Stream;
+use crate::prelude::Pair;
 
 pub trait LogicalStream<T>: Stream<T, ()> + Sized {
     fn empty() -> Self;

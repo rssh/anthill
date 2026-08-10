@@ -12,8 +12,8 @@
 //! full stdlib load path WI-352 will run on; the place→role contract
 //! (`PlaceRole`, `pub(crate)`) is unit-tested in `kb::load`.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load stdlib + a user source together (the path the effect check runs on).

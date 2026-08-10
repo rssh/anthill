@@ -51,7 +51,9 @@ end
 "#;
 
 fn box_sym(interp: &mut Interpreter) -> Symbol {
-    interp.kb_mut().resolve_qualified_name_sym("test.wi1024.Item.Box")
+    interp
+        .kb_mut()
+        .resolve_qualified_name_sym("test.wi1024.Item.Box")
 }
 
 fn span() -> SourceSpan {
@@ -96,10 +98,15 @@ fn applied_node(functor: Symbol, arg: Symbol) -> Value {
 fn value_functor_answers_by_what_the_head_denotes() {
     let mut interp = crate::common::interp_for(SRC);
     let sym = box_sym(&mut interp);
-    let dict_sym = interp.kb().resolve_symbol("anthill.realization.runtime.Dictionary");
+    let dict_sym = interp
+        .kb()
+        .resolve_symbol("anthill.realization.runtime.Dictionary");
     let ident_tid = interp.kb_mut().alloc(Term::Ident(sym));
-    let nullary_fn =
-        Value::term(interp.kb_mut().resolve_qualified_name_term("test.wi1024.Item.Box"));
+    let nullary_fn = Value::term(
+        interp
+            .kb_mut()
+            .resolve_qualified_name_term("test.wi1024.Item.Box"),
+    );
     let string_sym = interp.kb().resolve_symbol("anthill.prelude.String");
     let applied = {
         let id = interp.kb_mut().intern("id");
@@ -114,10 +121,13 @@ fn value_functor_answers_by_what_the_head_denotes() {
 
     let rows: Vec<(&str, Value, Option<Symbol>)> = vec![
         // Names, on all four carriers of a name — the WI-1016 rule.
-        ("term-ref", Value::term(interp.kb_mut().alloc(Term::Ref(sym))), Some(sym)),
+        (
+            "term-ref",
+            Value::term(interp.kb_mut().alloc(Term::Ref(sym))),
+            Some(sym),
+        ),
         ("term-nullary-fn", nullary_fn, Some(sym)),
         ("symbolref", Value::SymbolRef(sym), Some(sym)),
-
         // An APPLICATION on the term carrier still answers its functor: that is
         // pre-existing and load-bearing — `facts_of(kb, List[T = Int64])` (WI-707).
         ("term-app", applied, Some(sym)),
@@ -132,10 +142,14 @@ fn value_functor_answers_by_what_the_head_denotes() {
         ),
         // NOT names. `Ident` is unresolved; a tuple has no functor at all.
         ("term-ident", Value::term(ident_tid), None),
-        ("tuple", Value::Tuple {
-            pos: std::rc::Rc::from(Vec::<Value>::new()),
-            named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
-        }, None),
+        (
+            "tuple",
+            Value::Tuple {
+                pos: std::rc::Rc::from(Vec::<Value>::new()),
+                named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
+            },
+            None,
+        ),
         // An occurrence lowers, so it reads like the other naming carriers
         // (WI-1025) — a bare `Ref` names its symbol and an application its functor,
         // exactly as the `term-ref` / `term-app` rows above.
@@ -147,15 +161,31 @@ fn value_functor_answers_by_what_the_head_denotes() {
         // rule: the rule is "read the head when the carrier lowers", and this one
         // now does.
         ("dictionary", dict.clone(), Some(dict_sym)),
-        ("node-spliced-dict", node(Expr::Spliced(dict)), Some(dict_sym)),
+        (
+            "node-spliced-dict",
+            node(Expr::Spliced(dict)),
+            Some(dict_sym),
+        ),
         // No faithful term form: the WI-1019 head is a view-only presentation.
-        ("opref", Value::OpRef { op: sym, dict: None, named: None }, None),
+        (
+            "opref",
+            Value::OpRef {
+                op: sym,
+                dict: None,
+                named: None,
+            },
+            None,
+        ),
         // …and the one way an excluded carrier's head could still arrive: an
         // occurrence WRAPPING it. `occ_head` reads through a top-level `Spliced`,
         // so the reader cancels the double wrap the way `Value::node` would have.
         (
             "node-spliced-op",
-            node(Expr::Spliced(Value::OpRef { op: sym, dict: None, named: None })),
+            node(Expr::Spliced(Value::OpRef {
+                op: sym,
+                dict: None,
+                named: None,
+            })),
             None,
         ),
     ];
@@ -166,9 +196,19 @@ fn value_functor_answers_by_what_the_head_denotes() {
     // empty population.
     {
         use anthill_core::kb::term_view::{TermView, ViewHead};
-        let spliced = node(Expr::Spliced(Value::OpRef { op: sym, dict: None, named: None }));
+        let spliced = node(Expr::Spliced(Value::OpRef {
+            op: sym,
+            dict: None,
+            named: None,
+        }));
         assert!(
-            matches!(spliced.head(interp.kb()), ViewHead::Functor { functor: Some(_), .. }),
+            matches!(
+                spliced.head(interp.kb()),
+                ViewHead::Functor {
+                    functor: Some(_),
+                    ..
+                }
+            ),
             "premise: a spliced OpRef heads as the OpRef CONSTRUCTOR — the laundering route",
         );
         assert!(
@@ -178,7 +218,10 @@ fn value_functor_answers_by_what_the_head_denotes() {
         assert!(
             matches!(
                 applied_node(sym, string_sym).head(interp.kb()),
-                ViewHead::Functor { functor: Some(_), .. }
+                ViewHead::Functor {
+                    functor: Some(_),
+                    ..
+                }
             ),
             "premise: an ARG-BEARING applied occurrence heads as a functor \
              (a nullary one canonicalizes to Ref, so it would not exercise this)",
@@ -217,15 +260,34 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
     // Anything else with a naming head must be routed.
     const DELIBERATE: &[&str] = &["opref"];
     let samples: Vec<(&str, Value)> = vec![
-        ("dictionary", crate::common::dict(&interp, sym, []).into_value()),
-        ("opref", Value::OpRef { op: sym, dict: None, named: None }),
-        ("node-apply", applied_node(sym, interp.kb().resolve_symbol("anthill.prelude.String"))),
-        ("entity", Value::Entity {
-            functor: sym,
-            pos: std::rc::Rc::from(Vec::<Value>::new()),
-            named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
-        }),
-        ("term-ref", Value::term(interp.kb_mut().alloc(Term::Ref(sym)))),
+        (
+            "dictionary",
+            crate::common::dict(&interp, sym, []).into_value(),
+        ),
+        (
+            "opref",
+            Value::OpRef {
+                op: sym,
+                dict: None,
+                named: None,
+            },
+        ),
+        (
+            "node-apply",
+            applied_node(sym, interp.kb().resolve_symbol("anthill.prelude.String")),
+        ),
+        (
+            "entity",
+            Value::Entity {
+                functor: sym,
+                pos: std::rc::Rc::from(Vec::<Value>::new()),
+                named: std::rc::Rc::from(Vec::<(Symbol, Value)>::new()),
+            },
+        ),
+        (
+            "term-ref",
+            Value::term(interp.kb_mut().alloc(Term::Ref(sym))),
+        ),
         ("symbolref", Value::SymbolRef(sym)),
         ("node-ref", node(Expr::Ref(sym))),
     ];
@@ -234,7 +296,10 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
         .filter(|(name, v)| {
             let has_functor_head = matches!(
                 v.head(interp.kb()),
-                ViewHead::Functor { functor: Some(_), .. } | ViewHead::Ref(_)
+                ViewHead::Functor {
+                    functor: Some(_),
+                    ..
+                } | ViewHead::Ref(_)
             );
             has_functor_head
                 && value_functor(interp.kb(), v).is_none()
@@ -272,7 +337,14 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
     let mut interp = crate::common::interp_for(SRC);
     let sym = box_sym(&mut interp);
     let carriers: Vec<(&str, Value)> = vec![
-        ("term", Value::term(interp.kb_mut().resolve_qualified_name_term("test.wi1024.Item.Box"))),
+        (
+            "term",
+            Value::term(
+                interp
+                    .kb_mut()
+                    .resolve_qualified_name_term("test.wi1024.Item.Box"),
+            ),
+        ),
         ("symbolref", Value::SymbolRef(sym)),
     ];
     let mut answers: Vec<(&str, Vec<String>)> = Vec::new();
@@ -288,7 +360,11 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
     }
     // PREMISE: the fixture really has a fact, so "all agree" is not three empty
     // lists agreeing with each other.
-    assert_eq!(answers[0].1.len(), 1, "the fixture asserts exactly one Box fact");
+    assert_eq!(
+        answers[0].1.len(),
+        1,
+        "the fixture asserts exactly one Box fact"
+    );
     assert!(
         answers.iter().all(|(_, h)| *h == answers[0].1),
         "one sort, one fact list, whichever carrier named it: {answers:?}",
@@ -296,7 +372,11 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
 
     // And the handle: loud, with the message only `value_functor`'s `None` branch
     // mints — so this is coupled to THIS reader, not to any `TypeMismatch`.
-    let opref = Value::OpRef { op: sym, dict: None, named: None };
+    let opref = Value::OpRef {
+        op: sym,
+        dict: None,
+        named: None,
+    };
     let err = interp
         .call("anthill.reflect.KB.facts_of", &[Value::Unit, opref])
         .expect_err("an OpRef is a type error at a sort slot, not an empty answer");

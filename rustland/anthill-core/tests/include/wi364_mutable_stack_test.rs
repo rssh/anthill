@@ -13,8 +13,8 @@
 //!   - the stack API: push -> top -> pop (LIFO, read+mutate) -> empty pop;
 //!   - the collection view: size (walk via iterator) and clear.
 
-use anthill_core::eval::Value;
 use crate::common::{interp_for, register_modify_handler};
+use anthill_core::eval::Value;
 
 /// Helper ops wrapping the calls so the Rust side can thread a single handle.
 /// `popOr`/`peekOr` collapse the `Option[T]` result to an `Int64` (with a
@@ -72,10 +72,14 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
     let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
 
     let depth = |i: &mut anthill_core::eval::Interpreter, h: &Value| {
-        i.call("test.wi364.stack.depth", &[h.clone()]).expect("depth").as_int()
+        i.call("test.wi364.stack.depth", &[h.clone()])
+            .expect("depth")
+            .as_int()
     };
     let pop = |i: &mut anthill_core::eval::Interpreter, h: &Value| {
-        i.call("test.wi364.stack.popOr", &[h.clone(), Value::Int(-1)]).expect("pop").as_int()
+        i.call("test.wi364.stack.popOr", &[h.clone(), Value::Int(-1)])
+            .expect("pop")
+            .as_int()
     };
 
     // fresh stack is empty; popping it yields the sentinel
@@ -84,12 +88,16 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
 
     // push 10, 20, 30 (30 ends on top)
     for x in [10, 20, 30] {
-        interp.call("test.wi364.stack.pushN", &[s.clone(), Value::Int(x)]).expect("push");
+        interp
+            .call("test.wi364.stack.pushN", &[s.clone(), Value::Int(x)])
+            .expect("push");
     }
     assert_eq!(depth(&mut interp, &s), Some(3), "three pushes -> depth 3");
 
     // top peeks without removing
-    let peek = interp.call("test.wi364.stack.peekOr", &[s.clone(), Value::Int(-1)]).expect("peek");
+    let peek = interp
+        .call("test.wi364.stack.peekOr", &[s.clone(), Value::Int(-1)])
+        .expect("peek");
     assert_eq!(peek.as_int(), Some(30), "top is the last pushed (30)");
     assert_eq!(depth(&mut interp, &s), Some(3), "peek does not remove");
 
@@ -99,8 +107,14 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
     assert_eq!(depth(&mut interp, &s), Some(1), "one element left");
 
     // clear empties the rest
-    interp.call("test.wi364.stack.wipe", &[s.clone()]).expect("clear");
-    assert_eq!(depth(&mut interp, &s), Some(0), "clear empties the same handle");
+    interp
+        .call("test.wi364.stack.wipe", &[s.clone()])
+        .expect("clear");
+    assert_eq!(
+        depth(&mut interp, &s),
+        Some(0),
+        "clear empties the same handle"
+    );
     assert_eq!(pop(&mut interp, &s), Some(-1), "pop on cleared -> sentinel");
 }
 
@@ -114,7 +128,10 @@ fn mutable_stack_collection_view_insert_walk_clear() {
 
     let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
     assert_eq!(
-        interp.call("test.wi364.stack.depth", &[s.clone()]).unwrap().as_int(),
+        interp
+            .call("test.wi364.stack.depth", &[s.clone()])
+            .unwrap()
+            .as_int(),
         Some(0),
         "a fresh stack is empty",
     );
@@ -123,22 +140,34 @@ fn mutable_stack_collection_view_insert_walk_clear() {
     let w1 = interp
         .call("test.wi364.stack.addColl", &[s.clone(), Value::Int(10)])
         .expect("insert 10");
-    assert_eq!(w1.as_bool(), Some(true), "insert returns the 'was new' witness");
+    assert_eq!(
+        w1.as_bool(),
+        Some(true),
+        "insert returns the 'was new' witness"
+    );
     interp
         .call("test.wi364.stack.addColl", &[s.clone(), Value::Int(20)])
         .expect("insert 20");
 
     // walk via iterator
     assert_eq!(
-        interp.call("test.wi364.stack.depth", &[s.clone()]).unwrap().as_int(),
+        interp
+            .call("test.wi364.stack.depth", &[s.clone()])
+            .unwrap()
+            .as_int(),
         Some(2),
         "two inserts -> size 2 (walked via iterator)",
     );
 
     // clear empties
-    interp.call("test.wi364.stack.wipe", &[s.clone()]).expect("clear");
+    interp
+        .call("test.wi364.stack.wipe", &[s.clone()])
+        .expect("clear");
     assert_eq!(
-        interp.call("test.wi364.stack.depth", &[s]).unwrap().as_int(),
+        interp
+            .call("test.wi364.stack.depth", &[s])
+            .unwrap()
+            .as_int(),
         Some(0),
         "clear empties the same handle",
     );
@@ -154,10 +183,20 @@ fn mutable_stack_new_returns_distinct_handles() {
     let a = interp.call("test.wi364.stack.fresh", &[]).expect("fresh a");
     let b = interp.call("test.wi364.stack.fresh", &[]).expect("fresh b");
 
-    interp.call("test.wi364.stack.pushN", &[a.clone(), Value::Int(1)]).expect("push into a");
+    interp
+        .call("test.wi364.stack.pushN", &[a.clone(), Value::Int(1)])
+        .expect("push into a");
 
-    let depth_a = interp.call("test.wi364.stack.depth", &[a]).expect("depth a");
-    let depth_b = interp.call("test.wi364.stack.depth", &[b]).expect("depth b");
+    let depth_a = interp
+        .call("test.wi364.stack.depth", &[a])
+        .expect("depth a");
+    let depth_b = interp
+        .call("test.wi364.stack.depth", &[b])
+        .expect("depth b");
     assert_eq!(depth_a.as_int(), Some(1), "a got the push");
-    assert_eq!(depth_b.as_int(), Some(0), "b is a distinct, untouched stack");
+    assert_eq!(
+        depth_b.as_int(),
+        Some(0),
+        "b is a distinct, untouched stack"
+    );
 }

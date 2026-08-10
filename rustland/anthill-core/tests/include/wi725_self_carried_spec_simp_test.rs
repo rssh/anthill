@@ -55,7 +55,8 @@ end
 "#;
 
 fn sym(kb: &KnowledgeBase, qn: &str) -> anthill_core::intern::Symbol {
-    kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("resolve {qn}"))
+    kb.try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("resolve {qn}"))
 }
 
 /// `use_flip(w: Widget) = flip(w)` — `flip` is a body-less spec op on the abstract
@@ -73,7 +74,10 @@ fn macro_rhs_lowering_fires_on_abstract_self_carrier() {
     let noted = sym(&kb, "test.wi725.noted");
     match body.as_expr() {
         Some(Expr::Apply { functor, .. }) => {
-            assert_ne!(*functor, flip, "the flip redex must be lowered, not left dormant");
+            assert_ne!(
+                *functor, flip,
+                "the flip redex must be lowered, not left dormant"
+            );
             assert_eq!(
                 *functor, noted,
                 "the macro-RHS lowering must rewrite `flip(w)` to its output `noted(w)` (WI-725)",

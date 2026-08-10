@@ -7,7 +7,6 @@
 //! No `--anthill` on purpose — the IndexedFileStore retract path
 //! used by `--anthill` is span-based and not affected by this bug.
 
-
 use std::fs;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -58,7 +57,14 @@ fn claim_completes_when_description_has_unbalanced_paren() {
     let start = Instant::now();
 
     let mut child = Command::new(BIN)
-        .args(["-d", proj.to_str().unwrap(), "--agent", "claude", "claim", "WI-001"])
+        .args([
+            "-d",
+            proj.to_str().unwrap(),
+            "--agent",
+            "claude",
+            "claim",
+            "WI-001",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -66,8 +72,12 @@ fn claim_completes_when_description_has_unbalanced_paren() {
 
     loop {
         if let Some(status) = child.try_wait().expect("try_wait") {
-            assert!(status.success(),
-                "claim WI-001 exited {:?} after {:?}", status.code(), start.elapsed());
+            assert!(
+                status.success(),
+                "claim WI-001 exited {:?} after {:?}",
+                status.code(),
+                start.elapsed()
+            );
             break;
         }
         if start.elapsed() > hang_backstop {
@@ -91,7 +101,9 @@ fn claim_completes_when_description_has_unbalanced_paren() {
     let mut found_claimed = false;
     for entry in fs::read_dir(&inner).expect("read project") {
         let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("anthill") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("anthill") {
+            continue;
+        }
         let content = fs::read_to_string(&path).expect("read file");
         if content.contains("\"WI-001\"")
             && content.contains("Claimed")
@@ -101,7 +113,9 @@ fn claim_completes_when_description_has_unbalanced_paren() {
             break;
         }
     }
-    assert!(found_claimed,
+    assert!(
+        found_claimed,
         "Claimed WI-001 fact not found in any .anthill file under {}",
-        inner.display());
+        inner.display()
+    );
 }

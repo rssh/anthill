@@ -11,8 +11,8 @@
 //! A sort that *provides* the spec (`fact Spec[sort]`) is NOT flagged: there
 //! the own op IS the override (own-op-beats-inherited).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load the stdlib plus `extra`, expecting a clean load (warnings are
@@ -20,11 +20,14 @@ use anthill_core::parse;
 fn load_warnings(extra: &str) -> Vec<String> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -33,7 +36,11 @@ fn load_warnings(extra: &str) -> Vec<String> {
         Ok(result) => result.warnings.iter().map(|w| w.to_string()).collect(),
         Err(errs) => panic!(
             "expected a clean load (the shadow is advisory, not fatal); got errors:\n{}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")),
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
     }
 }
 
@@ -62,9 +69,11 @@ fn requires_shadow_emits_warning() {
     "#;
     let warnings = load_warnings(src);
     assert!(
-        warnings.iter().any(|w|
-            w.contains("wi346.shadow.Req") && w.contains("s_op") && w.contains("wi346.shadow.Sp")),
-        "expected a RequiresShadow warning naming Req, s_op, and Sp; got: {warnings:?}");
+        warnings.iter().any(|w| w.contains("wi346.shadow.Req")
+            && w.contains("s_op")
+            && w.contains("wi346.shadow.Sp")),
+        "expected a RequiresShadow warning naming Req, s_op, and Sp; got: {warnings:?}"
+    );
 }
 
 // ── requires + DIFFERENTLY-named op → no warning ────────────────────────
@@ -91,7 +100,8 @@ fn requires_disjoint_op_name_no_warning() {
     let warnings = load_warnings(src);
     assert!(
         !warnings.iter().any(|w| w.contains("wi346.disjoint")),
-        "a requires-user with a non-colliding op must NOT warn; got: {warnings:?}");
+        "a requires-user with a non-colliding op must NOT warn; got: {warnings:?}"
+    );
 }
 
 // ── provides + same-named op → no warning (legitimate override) ─────────
@@ -122,7 +132,8 @@ fn provider_override_no_warning() {
     let warnings = load_warnings(src);
     assert!(
         !warnings.iter().any(|w| w.contains("wi346.provides")),
-        "a provider's own same-named op is an override, not a shadow; got: {warnings:?}");
+        "a provider's own same-named op is an override, not a shadow; got: {warnings:?}"
+    );
 }
 
 // ── BOTH requires AND provides + same-named op → no warning (guard) ─────
@@ -150,5 +161,6 @@ fn requires_and_provides_no_warning() {
     assert!(
         !warnings.iter().any(|w| w.contains("wi346.both")),
         "a sort that both requires and provides the spec is overriding, not \
-         shadowing; got: {warnings:?}");
+         shadowing; got: {warnings:?}"
+    );
 }

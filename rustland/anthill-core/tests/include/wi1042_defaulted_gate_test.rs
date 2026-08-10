@@ -33,10 +33,12 @@
 //! which WI-1036 has since deleted from its one reader — is exactly such a clause,
 //! and it is the case `a_builtin_backed_defaulted_spec_op_is_in_the_shared_gate` pins.
 
-use anthill_core::kb::op_info::all_operation_params;
-use anthill_core::kb::typing::{defaulted_spec_op_parent, lookup_spec_op_dispatch, spec_op_parent_sort};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::intern::Symbol;
+use anthill_core::kb::op_info::all_operation_params;
+use anthill_core::kb::typing::{
+    defaulted_spec_op_parent, lookup_spec_op_dispatch, spec_op_parent_sort,
+};
+use anthill_core::kb::KnowledgeBase;
 
 /// The WI-444 gate as `check_apply_iter` spelled it before this ticket, kept here as the
 /// ORACLE — an independent construction out of the two named readers, so the assertion
@@ -244,4 +246,3 @@ end
          dispatch that does not exist",
     );
 }
-

@@ -38,8 +38,8 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -54,7 +54,10 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Does any body atom of any non-fact rule under `functor_qn` still carry an
@@ -62,7 +65,9 @@ fn errors_text(errs: &[LoadError]) -> String {
 /// the dot was NOT dispatched.)
 fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
     fn occ_has_dot(occ: &Rc<NodeOccurrence>) -> bool {
-        let Some(expr) = occ.as_expr() else { return false };
+        let Some(expr) = occ.as_expr() else {
+            return false;
+        };
         if matches!(expr, Expr::DotApply { .. }) {
             return true;
         }
@@ -70,7 +75,9 @@ fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
         for_each_child(expr, |c| found = found || occ_has_dot(c));
         found
     }
-    let Some(sym) = kb.try_resolve_symbol(functor_qn) else { return false };
+    let Some(sym) = kb.try_resolve_symbol(functor_qn) else {
+        return false;
+    };
     for rid in kb.rules_by_functor(sym) {
         if kb.is_fact(rid) {
             continue;

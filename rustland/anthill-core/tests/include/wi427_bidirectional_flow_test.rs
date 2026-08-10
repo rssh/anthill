@@ -19,8 +19,8 @@
 //! forcing a metavariable through a `<:` subtype constraint — the hard case WI-379's
 //! args-first order deliberately sidesteps (expansion-during-unification.md variance note).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -29,8 +29,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -96,7 +96,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("String") && e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("String") && e.contains("Int64")),
         "k : s.cell.T is String (via the pinned X), so 42 must be rejected as String/Int64; \
          got: {errs:?}",
     );

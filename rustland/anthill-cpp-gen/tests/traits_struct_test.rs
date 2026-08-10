@@ -6,7 +6,9 @@ use super::common;
 use std::process::Command;
 
 use anthill_cpp_gen::emit_traits_struct;
-use common::{collect_anthill_files, find_cxx, load_kb_with, load_kb_with_extras, rustland_root, scratch_dir};
+use common::{
+    collect_anthill_files, find_cxx, load_kb_with, load_kb_with_extras, rustland_root, scratch_dir,
+};
 
 #[test]
 fn simple_sort_with_two_operations() {
@@ -36,8 +38,7 @@ fn simple_sort_with_two_operations() {
     "#;
 
     let mut kb2 = load_kb_with(source_with_carrier);
-    let cpp2 = emit_traits_struct(&mut kb2, "test.simple.Greeter")
-        .expect("emit Greeter (carrier)");
+    let cpp2 = emit_traits_struct(&mut kb2, "test.simple.Greeter").expect("emit Greeter (carrier)");
 
     // Bodies are emitted because Greeter has a carrier AND every op
     // returns a primitive. Greeter is a value carrier (no `*`), so
@@ -90,8 +91,7 @@ fn emitted_bodies_actually_compile() {
     "#;
 
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.bodies.Counter")
-        .expect("emit Counter traits");
+    let traits = emit_traits_struct(&mut kb, "test.bodies.Counter").expect("emit Counter traits");
 
     // Bodies for all four ops (Counter is a pointer carrier, all
     // primitives). Verify the dispatch + naming.
@@ -121,10 +121,7 @@ fn emitted_bodies_actually_compile() {
         }
     };
 
-    let dir = std::env::temp_dir().join(format!(
-        "anthill-cpp-gen-bodies-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("anthill-cpp-gen-bodies-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
 
     // The traits header references `::demo::Counter`. Provide a stub
@@ -210,8 +207,8 @@ fn parameterized_return_bodies_compile() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let traits = emit_traits_struct(&mut kb, "test.params_compile.Sensor")
-        .expect("emit Sensor traits");
+    let traits =
+        emit_traits_struct(&mut kb, "test.params_compile.Sensor").expect("emit Sensor traits");
 
     let cxx = match find_cxx() {
         Some(c) => c,
@@ -304,8 +301,7 @@ fn parameterized_return_types_emit_bodies() {
     "#;
 
     let mut kb = load_kb_with(source);
-    let cpp = emit_traits_struct(&mut kb, "test.params_in_ops.Sensor")
-        .expect("emit Sensor traits");
+    let cpp = emit_traits_struct(&mut kb, "test.params_in_ops.Sensor").expect("emit Sensor traits");
 
     // Body emitted for List[T = Float] — base + binding both primitive.
     assert!(
@@ -355,7 +351,10 @@ fn lf1_gps_traits_struct_emits_correctly() {
     // carrier-bound types. This exercises the realization-fact path
     // end-to-end against real project sources.
     let lf1 = rustland_root().join("examples/webots-modelling/lf1/webots");
-    let mut kb = load_kb_with_extras("namespace test.lf1_traits end", &collect_anthill_files(&lf1));
+    let mut kb = load_kb_with_extras(
+        "namespace test.lf1_traits end",
+        &collect_anthill_files(&lf1),
+    );
 
     let cpp = emit_traits_struct(&mut kb, "anthill.examples.lf1.webots.GPS")
         .expect("emit GPS traits struct");
@@ -365,7 +364,10 @@ fn lf1_gps_traits_struct_emits_correctly() {
     // self → webots::GPS * (carrier); Int64 → int64_t; Float → double;
     // Vec3 → Vec3 short name (no carrier — a project-local entity);
     // Unit → void.
-    assert!(cpp.contains("struct GPS {"), "missing struct header:\n{cpp}");
+    assert!(
+        cpp.contains("struct GPS {"),
+        "missing struct header:\n{cpp}"
+    );
 
     // Pointer carrier → `->` dispatch; primitive-return ops get
     // bodies; Vec3-return ops stay as declarations (need WI-088

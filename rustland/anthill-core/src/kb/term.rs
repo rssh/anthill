@@ -4,7 +4,6 @@
 /// Reference counting cascades to subterms on release.
 ///
 /// See: docs/stage0/rust-term-store-design.md §3.3, §4
-
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -243,13 +242,18 @@ impl Term {
     /// Immediate child `TermId`s of this term.
     pub fn subterms(&self) -> SmallVec<[TermId; 4]> {
         match self {
-            Term::Fn { pos_args, named_args, .. } => {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
                 let mut out: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
                 out.extend(named_args.iter().map(|&(_, id)| id));
                 out
             }
-            Term::Const(_) | Term::Var(_) | Term::Ref(_)
-            | Term::Bottom | Term::Ident(_) => SmallVec::new(),
+            Term::Const(_) | Term::Var(_) | Term::Ref(_) | Term::Bottom | Term::Ident(_) => {
+                SmallVec::new()
+            }
             // Parse-only; never reachable in the KB-side hash-consed
             // store (the loader strips ParseAux before allocation).
             Term::ParseAux(_) => SmallVec::new(),
@@ -259,7 +263,11 @@ impl Term {
     /// Total arity (positional + named args). Only meaningful for `Fn` terms.
     pub fn arity(&self) -> usize {
         match self {
-            Term::Fn { pos_args, named_args, .. } => pos_args.len() + named_args.len(),
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => pos_args.len() + named_args.len(),
             _ => 0,
         }
     }

@@ -130,7 +130,10 @@ fn kb_in_order(sources: &[&str]) -> KnowledgeBase {
 
 /// The answers of a unary rule, as values.
 fn answers(kb: &mut KnowledgeBase, qn: &str) -> Vec<Value> {
-    crate::common::query_unary(kb, qn).into_iter().map(|(v, _)| v).collect()
+    crate::common::query_unary(kb, qn)
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect()
 }
 
 fn text_of(kb: &KnowledgeBase, v: &Value) -> String {
@@ -169,8 +172,15 @@ fn a_list_literal_desugars_in_either_file_order() {
         let second = answers(kb, "test.wi936.use.second_column_at_head").len();
         (head, second)
     });
-    assert_eq!(head, ["text"], "the spine's HEAD is the `account` column, and it carries its own field");
-    assert_eq!(second, 0, "the SECOND column must not match at the head — else the pattern is matching anywhere");
+    assert_eq!(
+        head,
+        ["text"],
+        "the spine's HEAD is the `account` column, and it carries its own field"
+    );
+    assert_eq!(
+        second, 0,
+        "the SECOND column must not match at the head — else the pattern is matching anywhere"
+    );
 }
 
 /// SUBJECT — a bare value written into an `Option`-typed field is wrapped in `some(…)`
@@ -184,7 +194,11 @@ fn a_bare_option_value_is_wrapped_in_either_file_order() {
             .map(|v| text_of(kb, v))
             .collect::<Vec<_>>()
     });
-    assert_eq!(notes, ["written bare"], "the bare `note` value is wrapped, so `some(?n)` reaches it");
+    assert_eq!(
+        notes,
+        ["written bare"],
+        "the bare `note` value is wrapped, so `some(?n)` reaches it"
+    );
 }
 
 /// SUBJECT — an OMITTED optional field is `none()`-filled either way (WI-716), so a
@@ -203,8 +217,15 @@ fn an_omitted_optional_is_none_filled_in_either_file_order() {
             .collect();
         (present, table)
     });
-    assert_eq!(present, 0, "an omitted `Option` field is `none()`, so `some(?)` must not match it");
-    assert_eq!(table, ["terse"], "…and the fact is there — the zero above is about the FILL, not a missing fact");
+    assert_eq!(
+        present, 0,
+        "an omitted `Option` field is `none()`, so `some(?)` must not match it"
+    );
+    assert_eq!(
+        table,
+        ["terse"],
+        "…and the fact is there — the zero above is about the FILL, not a missing fact"
+    );
 }
 
 /// SUBJECT — the intra-file twin: the entity declared TEXTUALLY AFTER the fact that
@@ -235,7 +256,11 @@ end
         .iter()
         .map(|v| text_of(&kb, v))
         .collect();
-    assert_eq!(labels, ["first"], "a forward-declared entity's List field still desugars");
+    assert_eq!(
+        labels,
+        ["first"],
+        "a forward-declared entity's List field still desugars"
+    );
     let marks: Vec<String> = answers(&mut kb, "test.wi936.forward.wrapped_mark")
         .iter()
         .map(|v| text_of(&kb, v))

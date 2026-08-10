@@ -1,18 +1,20 @@
 //! Logic.Minimal / Logic.Constructive / Logic.Classical land in the
 //! stdlib and form a `requires` chain.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_stdlib() -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
-    let parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap();
-        parse::parse(&src).unwrap()
-    }).collect();
+    let parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src = std::fs::read_to_string(p).unwrap();
+            parse::parse(&src).unwrap()
+        })
+        .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
     crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
@@ -27,8 +29,10 @@ fn logic_sorts_are_in_stdlib() {
         "anthill.logic.Constructive.Constructive",
         "anthill.logic.Classical.Classical",
     ] {
-        assert!(kb.try_resolve_symbol(qn).is_some(),
-            "expected stdlib sort `{qn}` to be defined");
+        assert!(
+            kb.try_resolve_symbol(qn).is_some(),
+            "expected stdlib sort `{qn}` to be defined"
+        );
     }
 }
 
@@ -40,8 +44,10 @@ fn classical_axioms_are_present() {
         "anthill.logic.Classical.Classical.contradiction",
         "anthill.logic.Classical.Classical.double_negation",
     ] {
-        assert!(kb.try_resolve_symbol(rule).is_some(),
-            "expected Classical rule `{rule}` to be defined");
+        assert!(
+            kb.try_resolve_symbol(rule).is_some(),
+            "expected Classical rule `{rule}` to be defined"
+        );
     }
 }
 
@@ -54,7 +60,9 @@ fn constructive_axioms_are_present() {
         "anthill.logic.Constructive.Constructive.conjunction_intro",
         "anthill.logic.Constructive.Constructive.ex_falso",
     ] {
-        assert!(kb.try_resolve_symbol(rule).is_some(),
-            "expected Constructive rule `{rule}` to be defined");
+        assert!(
+            kb.try_resolve_symbol(rule).is_some(),
+            "expected Constructive rule `{rule}` to be defined"
+        );
     }
 }

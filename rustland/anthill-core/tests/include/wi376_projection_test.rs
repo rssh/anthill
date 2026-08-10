@@ -14,8 +14,8 @@
 //! projections". The receiver is a single value reference (`Ref(s)`); compound
 //! receivers (`a.b.T`) and cross-parameter projections are the documented follow-on.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -24,8 +24,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -116,7 +116,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("Nonesuch") || e.contains("no member")),
+        errs.iter()
+            .any(|e| e.contains("Nonesuch") || e.contains("no member")),
         "projecting a member List does not declare must be a loud error; got: {errs:?}",
     );
 }
@@ -190,7 +191,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("l.T")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("l.T")),
         "the bare-receiver neutral l.T must NOT satisfy a concrete Int64 demand (ζ refuses a \
          neutral vs concrete); got: {errs:?}",
     );
@@ -215,7 +217,9 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        !errs.iter().any(|e| e.contains("argument-bound") || e.contains("projection")),
+        !errs
+            .iter()
+            .any(|e| e.contains("argument-bound") || e.contains("projection")),
         "Modify[result.a] is a value place, not a type projection; calling the op must \
          not raise a projection error; got: {errs:?}",
     );
@@ -307,7 +311,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("no member 'E'") || e.contains("has no member")),
+        errs.iter()
+            .any(|e| e.contains("no member 'E'") || e.contains("has no member")),
         "Foo writes no effect; projecting f.E must stay a loud error; got: {errs:?}",
     );
 }
@@ -379,7 +384,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("Int64") && e.contains("String")),
+        errs.iter()
+            .any(|e| e.contains("Int64") && e.contains("String")),
         "the threaded element is Int64, not String — the wrong declared return must be \
          rejected; got: {errs:?}",
     );
@@ -403,7 +409,9 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        !errs.iter().any(|e| e.contains("not yet supported") || e.contains("denoted-bearing")),
+        !errs
+            .iter()
+            .any(|e| e.contains("not yet supported") || e.contains("denoted-bearing")),
         "the projection l.T must no longer bail at formation inside the denoted carrier; \
          got: {errs:?}",
     );
@@ -434,16 +442,31 @@ namespace test.wi460.eval
   operation small_first() -> Int64 = if check_first([1, 3, 2], is_big) then 1 else 0
 end
 "#;
-    assert!(load_errors(&[src]).is_empty(), "eval fixture must typecheck; got: {:?}", load_errors(&[src]));
+    assert!(
+        load_errors(&[src]).is_empty(),
+        "eval fixture must typecheck; got: {:?}",
+        load_errors(&[src])
+    );
     let mut interp = crate::common::interp_for(src);
     let run = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> i64 {
-        match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+        match interp
+            .call(op, &[])
+            .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+        {
             anthill_core::eval::Value::Int(i) => i,
             other => panic!("call {op}: expected Int, got {other:?}"),
         }
     };
-    assert_eq!(run(&mut interp, "test.wi460.eval.big_first"), 1, "head 3 is_big → true");
-    assert_eq!(run(&mut interp, "test.wi460.eval.small_first"), 0, "head 1 not is_big → false");
+    assert_eq!(
+        run(&mut interp, "test.wi460.eval.big_first"),
+        1,
+        "head 3 is_big → true"
+    );
+    assert_eq!(
+        run(&mut interp, "test.wi460.eval.small_first"),
+        0,
+        "head 1 not is_big → false"
+    );
 }
 
 // ── WI-376 (final): cross-sort provider DIVERGENT member name (the retained acceptance) ──

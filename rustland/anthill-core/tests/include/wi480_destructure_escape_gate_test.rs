@@ -36,8 +36,8 @@
 //! same-sort / input-rooted destructure, a manifest destructure, and the bare
 //! interface-propagation case above.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -46,8 +46,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -86,7 +86,8 @@ const PRELUDE: &str = r#"
 "#;
 
 fn is_escape(errs: &[String]) -> bool {
-    errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape"))
+    errs.iter()
+        .any(|e| e.contains("abstracting return") || e.contains("escape"))
 }
 
 /// THE GAP (tuple-literal value): `let (s, _): (KVStore, Bool) = (m, true) ; s` —

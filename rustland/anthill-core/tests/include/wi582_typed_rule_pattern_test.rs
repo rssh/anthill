@@ -71,7 +71,10 @@ fn typed_pattern_bound_installed_on_rule() {
     // reversed (index = arity - 1 - position), so for the 2-var head keep(?x, ?y)
     // ?x's DeBruijn index is 1, not 0. (Storing the raw position 0 was the bug the
     // mixed-type firing test guards.)
-    assert_eq!(bounds[0].0, 1, "the bound must key ?x's DeBruijn index (arity-1-0 = 1)");
+    assert_eq!(
+        bounds[0].0, 1,
+        "the bound must key ?x's DeBruijn index (arity-1-0 = 1)"
+    );
 }
 
 #[test]

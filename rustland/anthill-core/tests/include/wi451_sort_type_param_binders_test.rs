@@ -12,8 +12,8 @@
 //! `sort F { … }` stays `is_type_param: false`.
 
 use anthill_core::intern::SymbolTable;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::{
     self,
     ir::{AbstractSort, Item, SortWithBody, TypeExpr},
@@ -24,7 +24,11 @@ fn find_sort<'a>(items: &'a [Item], syms: &SymbolTable, name: &str) -> Option<&'
     for item in items {
         match item {
             Item::SortWithBody(s) => {
-                if s.name.segments.last().is_some_and(|sym| syms.local_name(*sym) == name) {
+                if s.name
+                    .segments
+                    .last()
+                    .is_some_and(|sym| syms.local_name(*sym) == name)
+                {
                     return Some(s);
                 }
                 if let Some(f) = find_sort(&s.items, syms, name) {
@@ -49,7 +53,12 @@ fn abstract_named<'a>(
     name: &str,
 ) -> Option<&'a AbstractSort> {
     items.iter().find_map(|i| match i {
-        Item::AbstractSort(a) if a.name.segments.last().is_some_and(|s| syms.local_name(*s) == name) => {
+        Item::AbstractSort(a)
+            if a.name
+                .segments
+                .last()
+                .is_some_and(|s| syms.local_name(*s) == name) =>
+        {
             Some(a)
         }
         _ => None,
@@ -69,7 +78,10 @@ end
     let parsed = parse::parse(src).expect("parse");
     let cps = find_sort(&parsed.items, &parsed.symbols, "CpsMonad").expect("CpsMonad sort");
     let f = find_sort(&cps.items, &parsed.symbols, "F").expect("F param sort");
-    assert!(f.is_type_param, "the HK param F must be marked is_type_param");
+    assert!(
+        f.is_type_param,
+        "the HK param F must be marked is_type_param"
+    );
     let t = abstract_named(&f.items, &parsed.symbols, "T").expect("F's member T");
     assert!(
         matches!(t.definition, TypeExpr::Variable { .. }),
@@ -133,8 +145,8 @@ fn load_errors(extra: &str) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -159,7 +171,10 @@ fn enclosing_hk_form_loads_clean() {
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "enclosing-list CpsMonad should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "enclosing-list CpsMonad should load clean: {errs:?}"
+    );
 }
 
 /// Simple-param enclosing form `sort Duo[A, B]` with a real use loads clean.
@@ -174,5 +189,8 @@ fn enclosing_simple_form_loads_clean() {
 end
 "#;
     let errs = load_errors(src);
-    assert!(errs.is_empty(), "enclosing-list Duo should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "enclosing-list Duo should load clean: {errs:?}"
+    );
 }

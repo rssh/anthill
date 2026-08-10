@@ -59,7 +59,9 @@ fn map_eq_in_rule_body_goal_is_a_load_error() {
           rule same(?a, ?b) :- eq(?a, ?b)
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -77,7 +79,9 @@ fn map_neq_in_rule_body_goal_is_a_load_error() {
           rule differ(?a, ?b) :- neq(?a, ?b)
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -92,7 +96,9 @@ fn map_neq_in_op_body_is_a_load_error() {
             = neq(a, b)
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -107,7 +113,9 @@ fn map_eq_in_op_body_is_a_load_error() {
             = eq(a, b)
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -163,7 +171,9 @@ fn map_eq_compound_operand_in_rule_body_is_a_load_error() {
           rule same(?x) :- eq(build_map(?x), other())
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -178,7 +188,9 @@ fn map_eq_put_empty_compound_operand_is_a_load_error() {
           rule same() :- eq(Map.put(Map.empty(), 1, 2), Map.empty())
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -196,7 +208,9 @@ fn map_eq_dot_form_in_op_body_is_a_load_error() {
             = a.eq(b)
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -209,7 +223,9 @@ fn map_eq_dot_form_in_rule_body_is_a_load_error() {
           rule same(?a, ?b) :- ?a.eq(?b)
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 
@@ -233,7 +249,9 @@ fn map_eq_compound_in_quantifier_constraint_is_a_load_error() {
           constraint c: no ?x: num(?x) -: eq(build_map(?x), build_map(?x))
         end
     "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert_map_eq_unbacked(&errs);
 }
 

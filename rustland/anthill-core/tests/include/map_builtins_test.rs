@@ -15,13 +15,14 @@
 //! arena, refcounting, and value plumbing are exercised independently of the
 //! parser change.
 
-
 use anthill_core::eval::{Interpreter, Value};
 
 use crate::common::interp_for;
 
 fn empty_map(interp: &mut Interpreter) -> Value {
-    interp.call("anthill.prelude.Map.empty", &[]).expect("Map.empty")
+    interp
+        .call("anthill.prelude.Map.empty", &[])
+        .expect("Map.empty")
 }
 
 fn unwrap_some(interp: &Interpreter, v: Value) -> Value {
@@ -32,9 +33,16 @@ fn unwrap_some(interp: &Interpreter, v: Value) -> Value {
                 name == "some" || name == "anthill.prelude.Option.some",
                 "expected some, got {name}",
             );
-            named.iter().find_map(|(s, v)| {
-                if interp.kb().local_name_of(*s) == "value" { Some(v.clone()) } else { None }
-            }).expect("some has value field")
+            named
+                .iter()
+                .find_map(|(s, v)| {
+                    if interp.kb().local_name_of(*s) == "value" {
+                        Some(v.clone())
+                    } else {
+                        None
+                    }
+                })
+                .expect("some has value field")
         }
         other => panic!("expected some(...), got {:?}", other),
     }
@@ -76,23 +84,28 @@ end
 "#;
     let mut interp = interp_for(src);
     let m = empty_map(&mut interp);
-    let m = interp.call("anthill.prelude.Map.put", &[
-        m,
-        Value::Str("a".into()),
-        Value::Int(1),
-    ]).expect("put");
-    let v = interp.call("anthill.prelude.Map.get", &[
-        m.clone(),
-        Value::Str("a".into()),
-    ]).expect("get");
+    let m = interp
+        .call(
+            "anthill.prelude.Map.put",
+            &[m, Value::Str("a".into()), Value::Int(1)],
+        )
+        .expect("put");
+    let v = interp
+        .call(
+            "anthill.prelude.Map.get",
+            &[m.clone(), Value::Str("a".into())],
+        )
+        .expect("get");
     let inner = unwrap_some(&interp, v);
     assert_eq!(inner.as_int(), Some(1));
 
     // Missing key → none.
-    let v = interp.call("anthill.prelude.Map.get", &[
-        m,
-        Value::Str("missing".into()),
-    ]).expect("get missing");
+    let v = interp
+        .call(
+            "anthill.prelude.Map.get",
+            &[m, Value::Str("missing".into())],
+        )
+        .expect("get missing");
     assert!(is_none(&interp, &v));
 }
 
@@ -107,27 +120,43 @@ end
     let mut interp = interp_for(src);
     let m = empty_map(&mut interp);
     assert_eq!(
-        interp.call("anthill.prelude.Map.size", &[m.clone()]).unwrap().as_int(),
+        interp
+            .call("anthill.prelude.Map.size", &[m.clone()])
+            .unwrap()
+            .as_int(),
         Some(0),
     );
-    let m = interp.call("anthill.prelude.Map.put", &[
-        m, Value::Str("k".into()), Value::Int(7),
-    ]).unwrap();
+    let m = interp
+        .call(
+            "anthill.prelude.Map.put",
+            &[m, Value::Str("k".into()), Value::Int(7)],
+        )
+        .unwrap();
     assert_eq!(
-        interp.call("anthill.prelude.Map.size", &[m.clone()]).unwrap().as_int(),
+        interp
+            .call("anthill.prelude.Map.size", &[m.clone()])
+            .unwrap()
+            .as_int(),
         Some(1),
     );
     assert_eq!(
-        interp.call("anthill.prelude.Map.contains", &[
-            m.clone(), Value::Str("k".into()),
-        ]).unwrap().as_bool(),
+        interp
+            .call(
+                "anthill.prelude.Map.contains",
+                &[m.clone(), Value::Str("k".into()),]
+            )
+            .unwrap()
+            .as_bool(),
         Some(true),
     );
-    let m = interp.call("anthill.prelude.Map.remove", &[
-        m, Value::Str("k".into()),
-    ]).unwrap();
+    let m = interp
+        .call("anthill.prelude.Map.remove", &[m, Value::Str("k".into())])
+        .unwrap();
     assert_eq!(
-        interp.call("anthill.prelude.Map.size", &[m]).unwrap().as_int(),
+        interp
+            .call("anthill.prelude.Map.size", &[m])
+            .unwrap()
+            .as_int(),
         Some(0),
     );
 }
@@ -145,7 +174,9 @@ namespace test.map_form2
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.map_form2.build", &[]).expect("call build");
+    let result = interp
+        .call("test.map_form2.build", &[])
+        .expect("call build");
     assert_eq!(result.as_int(), Some(1));
 }
 
@@ -164,7 +195,9 @@ namespace test.map_dotted
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.map_dotted.build", &[]).expect("call build");
+    let result = interp
+        .call("test.map_dotted.build", &[])
+        .expect("call build");
     assert_eq!(result.as_int(), Some(1));
 }
 
@@ -184,7 +217,9 @@ namespace test.map_form3
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.map_form3.build", &[]).expect("call build");
+    let result = interp
+        .call("test.map_form3.build", &[])
+        .expect("call build");
     assert_eq!(result.as_int(), Some(1));
 }
 
@@ -210,7 +245,9 @@ namespace test.map_form1
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.map_form1.build", &[]).expect("call build");
+    let result = interp
+        .call("test.map_form1.build", &[])
+        .expect("call build");
     assert_eq!(result.as_int(), Some(1));
 }
 
@@ -226,7 +263,9 @@ namespace test.let_anno_int
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.let_anno_int.main", &[]).expect("call main");
+    let result = interp
+        .call("test.let_anno_int.main", &[])
+        .expect("call main");
     assert_eq!(result.as_int(), Some(7));
 }
 
@@ -249,7 +288,9 @@ namespace test.map_acceptance
 end
 "#;
     let mut interp = interp_for(src);
-    let result = interp.call("test.map_acceptance.lookup", &[]).expect("lookup");
+    let result = interp
+        .call("test.map_acceptance.lookup", &[])
+        .expect("lookup");
     let inner = unwrap_some(&interp, result);
     assert_eq!(inner.as_int(), Some(1));
 }
@@ -263,17 +304,28 @@ end
 "#;
     let mut interp = interp_for(src);
     let m = empty_map(&mut interp);
-    let m = interp.call("anthill.prelude.Map.put", &[
-        m, Value::Str("first".into()), Value::Int(1),
-    ]).unwrap();
-    let m = interp.call("anthill.prelude.Map.put", &[
-        m, Value::Str("second".into()), Value::Int(2),
-    ]).unwrap();
-    let m = interp.call("anthill.prelude.Map.put", &[
-        m, Value::Str("third".into()), Value::Int(3),
-    ]).unwrap();
+    let m = interp
+        .call(
+            "anthill.prelude.Map.put",
+            &[m, Value::Str("first".into()), Value::Int(1)],
+        )
+        .unwrap();
+    let m = interp
+        .call(
+            "anthill.prelude.Map.put",
+            &[m, Value::Str("second".into()), Value::Int(2)],
+        )
+        .unwrap();
+    let m = interp
+        .call(
+            "anthill.prelude.Map.put",
+            &[m, Value::Str("third".into()), Value::Int(3)],
+        )
+        .unwrap();
 
-    let keys = interp.call("anthill.prelude.Map.keys", &[m.clone()]).unwrap();
+    let keys = interp
+        .call("anthill.prelude.Map.keys", &[m.clone()])
+        .unwrap();
     let values = interp.call("anthill.prelude.Map.values", &[m]).unwrap();
 
     fn is_cons(interp: &Interpreter, sym: anthill_core::intern::Symbol) -> bool {
@@ -286,10 +338,16 @@ end
         loop {
             match cur {
                 Value::Entity { functor, named, .. } if is_cons(interp, functor) => {
-                    let head = named.iter().find(|(s, _)| interp.kb().local_name_of(*s) == "head")
-                        .map(|(_, v)| v.clone()).expect("head");
-                    let tail = named.iter().find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
-                        .map(|(_, v)| v.clone()).expect("tail");
+                    let head = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "head")
+                        .map(|(_, v)| v.clone())
+                        .expect("head");
+                    let tail = named
+                        .iter()
+                        .find(|(s, _)| interp.kb().local_name_of(*s) == "tail")
+                        .map(|(_, v)| v.clone())
+                        .expect("tail");
                     out.push(head);
                     cur = tail;
                 }
@@ -299,10 +357,12 @@ end
         out
     }
 
-    let key_strs: Vec<String> = collect_list(&interp, keys).into_iter()
+    let key_strs: Vec<String> = collect_list(&interp, keys)
+        .into_iter()
         .filter_map(|v| if let Value::Str(s) = v { Some(s) } else { None })
         .collect();
-    let value_ints: Vec<i64> = collect_list(&interp, values).into_iter()
+    let value_ints: Vec<i64> = collect_list(&interp, values)
+        .into_iter()
         .filter_map(|v| if let Value::Int(n) = v { Some(n) } else { None })
         .collect();
     assert_eq!(key_strs, vec!["first", "second", "third"]);

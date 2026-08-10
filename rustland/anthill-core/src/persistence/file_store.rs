@@ -13,15 +13,14 @@
 /// `fact …(…)` block — is preserved across rewrites. Comments inside a
 use crate::kb::ClauseKind;
 /// fact block are not preserved (the block is treated as a single unit).
-
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::intern::Symbol;
-use crate::kb::{RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
+use crate::kb::{KnowledgeBase, RuleId};
 use crate::parse;
 use crate::parse::error::ParseError;
 use crate::parse::ir::Item;
@@ -93,7 +92,15 @@ impl FileStore {
                 // Sanitize: replace dots with path separators, strip non-alphanum
                 let sanitized: String = domain_name
                     .chars()
-                    .map(|c| if c == '.' { '/' } else if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                    .map(|c| {
+                        if c == '.' {
+                            '/'
+                        } else if c.is_alphanumeric() || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
                     .collect();
                 self.root.join(format!("{sanitized}.anthill"))
             }
@@ -138,7 +145,10 @@ impl Store for FileStore {
         let domain = kb.rule_domain(id);
         let path = self.fact_path(kb, clause_kind, domain);
         let head_canonical = print::TermPrinter::new(kb).print_term(head);
-        self.pending_retracts.push(PendingRetract { path, head_canonical });
+        self.pending_retracts.push(PendingRetract {
+            path,
+            head_canonical,
+        });
         Ok(true)
     }
 
@@ -169,7 +179,10 @@ impl Store for FileStore {
         }
         let mut retracts_by_path: HashMap<PathBuf, HashSet<String>> = HashMap::new();
         for pr in self.pending_retracts.drain(..) {
-            retracts_by_path.entry(pr.path).or_default().insert(pr.head_canonical);
+            retracts_by_path
+                .entry(pr.path)
+                .or_default()
+                .insert(pr.head_canonical);
         }
 
         // Union of affected paths.
@@ -195,10 +208,7 @@ impl Store for FileStore {
 
             let existing = if path.exists() {
                 fs::read_to_string(&path).map_err(|e| {
-                    PersistenceError::Io(format!(
-                        "failed to read {}: {e}",
-                        path.display()
-                    ))
+                    PersistenceError::Io(format!("failed to read {}: {e}", path.display()))
                 })?
             } else {
                 String::new()

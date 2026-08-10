@@ -9,7 +9,6 @@
 //! 3. Without `req_insertion::run`, `dispatch_rewrites` stays empty —
 //!    proving the factor is real, not a shim.
 
-
 use anthill_core::kb::typing::CallClass;
 
 use crate::common::load_kb_with;
@@ -57,17 +56,32 @@ end
 
     // Find the Defer row and confirm its data.
     let defer_row = rows.iter().find_map(|c| match c {
-        CallClass::DeferToRequirement { spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort, .. } => {
-            Some((*spec_op_sym, *op_short_sym, resolved_spec.clone(), *slot, *enclosing_sort))
-        }
+        CallClass::DeferToRequirement {
+            spec_op_sym,
+            op_short_sym,
+            resolved_spec,
+            slot,
+            enclosing_sort,
+            ..
+        } => Some((
+            *spec_op_sym,
+            *op_short_sym,
+            resolved_spec.clone(),
+            *slot,
+            *enclosing_sort,
+        )),
         _ => None,
     });
-    let (spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort) = defer_row
-        .expect("typer must classify Wi231Defer.use_eq's eq() call as DeferToRequirement");
+    let (spec_op_sym, op_short_sym, resolved_spec, slot, enclosing_sort) =
+        defer_row.expect("typer must classify Wi231Defer.use_eq's eq() call as DeferToRequirement");
 
     // Sanity check the captured fields.
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
-    let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("Eq.eq");
+    let eq_sort = kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .expect("Eq sort");
     let outer = kb
         .try_resolve_symbol("test.wi231.classifications.Wi231Defer")
         .expect("Wi231Defer");
@@ -75,7 +89,10 @@ end
     assert_eq!(kb.local_name_of(op_short_sym), "eq");
     // WI-232: resolved_spec carries the matched RequiresEntry; its
     // required_sort replaces the previous parallel `spec_sort` field.
-    assert_eq!(resolved_spec.required_sort, eq_sort, "resolved_spec.required_sort must be Eq");
+    assert_eq!(
+        resolved_spec.required_sort, eq_sort,
+        "resolved_spec.required_sort must be Eq"
+    );
     assert_eq!(slot, 0, "Eq is at slot 0 of Wi231Defer's requires chain");
     assert_eq!(
         enclosing_sort,
@@ -104,7 +121,9 @@ end
 "#;
     let kb = load_kb_with(src);
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("Eq.eq");
 
     // Walk dispatch_origin to find the rewrite that originated from Eq.eq.
     let rewritten = kb
@@ -123,10 +142,10 @@ fn skipping_req_insertion_leaves_dispatch_rewrites_empty() {
     // req_insertion::run. dispatch_rewrites must stay empty — proving
     // the factor is real (rewrites flow only through the insertion
     // pass, not from the typer inline).
-    use anthill_core::kb::KnowledgeBase;
-    use anthill_core::kb::load::{self, NullResolver};
-    use anthill_core::parse;
     use crate::common::collect_stdlib_and_rust_bindings;
+    use anthill_core::kb::load::{self, NullResolver};
+    use anthill_core::kb::KnowledgeBase;
+    use anthill_core::parse;
 
     let src = r#"
 namespace test.wi231.skip_pass
@@ -163,8 +182,13 @@ end
     let refs: Vec<_> = parsed.iter().collect();
     load::load_all(&mut kb, &refs, &NullResolver).expect("load");
 
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
-    let eq_eq_count = kb.dispatch_origin_iter().filter(|(_, s)| *s == eq_sym).count();
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("Eq.eq");
+    let eq_eq_count = kb
+        .dispatch_origin_iter()
+        .filter(|(_, s)| *s == eq_sym)
+        .count();
 
     // After the standard pipeline, the Eq.eq rewrite must exist —
     // at minimum the test source's `use_eq` body produces one, plus
@@ -191,7 +215,10 @@ end
         snapshot2.len(),
         "req_insertion::run must be idempotent (whole-KB count)"
     );
-    let eq_eq_count_after = kb.dispatch_origin_iter().filter(|(_, s)| *s == eq_sym).count();
+    let eq_eq_count_after = kb
+        .dispatch_origin_iter()
+        .filter(|(_, s)| *s == eq_sym)
+        .count();
     assert_eq!(
         eq_eq_count_after, eq_eq_count,
         "re-running req_insertion::run must not change the Eq.eq rewrite count"
@@ -223,7 +250,9 @@ end
 "#;
     let kb = load_kb_with(src);
 
-    let eq_sort = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq sort");
+    let eq_sort = kb
+        .try_resolve_symbol("anthill.prelude.Eq")
+        .expect("Eq sort");
 
     // Every Defer row OF `Wi232Two` must point at the same matched entry —
     // `required_sort = Eq`, spec TermId is the SortView that the loader built for
@@ -239,7 +268,9 @@ end
     // claim was always about this fixture; the filter says so.
     // By SYMBOL IDENTITY (`impl_parent_of_op`), not a qualified-name prefix — this
     // file's whole subject is that a resolved spec is the matched ENTRY and not a name.
-    let owner = kb.try_resolve_symbol("test.wi232.resolved_spec.Wi232Two").expect("Wi232Two");
+    let owner = kb
+        .try_resolve_symbol("test.wi232.resolved_spec.Wi232Two")
+        .expect("Wi232Two");
     let mut defer_rows: Vec<anthill_core::kb::typing::RequiresEntry> = Vec::new();
     for (op, body) in kb.op_bodies_iter() {
         if anthill_core::kb::typing::impl_parent_of_op(&kb, op) != Some(owner) {
@@ -280,8 +311,12 @@ end
 
     // Both call sites end up rewritten — the chain-memoized pass walks
     // both Defer rows and emits both rewrites in one run.
-    let eq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq").expect("Eq.eq");
-    let neq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.neq").expect("Eq.neq");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("Eq.eq");
+    let neq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.neq")
+        .expect("Eq.neq");
     let eq_rewrites = kb
         .dispatch_origin_iter()
         .filter(|(_, s)| *s == eq_sym)

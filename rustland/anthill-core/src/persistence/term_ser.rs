@@ -5,15 +5,14 @@
 ///
 /// The core conversion is format-agnostic: `serde_json::Value` is the common
 /// intermediate. TOML is converted to/from `serde_json::Value` via serde.
-
 use std::collections::HashMap;
 
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-use crate::kb::ClauseKind;
 use crate::intern::{positional_label, Symbol};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
+use crate::kb::ClauseKind;
 use crate::kb::{KnowledgeBase, RuleId};
 
 // Qualified names of the prelude `Option`/`List` constructors. The (de)serializer
@@ -35,9 +34,18 @@ pub enum SerError {
     /// WI-926: `meta.entity` resolved to a symbol that declares no fields. The
     /// name is not an entity — typically a multi-constructor sort, which has no
     /// single row shape to deserialize against.
-    NoFieldSchema { entity: String, constructors: Vec<String> },
-    UnknownField { entity: String, field: String },
-    MissingField { entity: String, field: String },
+    NoFieldSchema {
+        entity: String,
+        constructors: Vec<String>,
+    },
+    UnknownField {
+        entity: String,
+        field: String,
+    },
+    MissingField {
+        entity: String,
+        field: String,
+    },
     InvalidValue(String),
 }
 
@@ -47,12 +55,22 @@ impl std::fmt::Display for SerError {
             SerError::Format(msg) => write!(f, "format error: {msg}"),
             SerError::MissingMeta(msg) => write!(f, "missing meta: {msg}"),
             SerError::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
-            SerError::NoFieldSchema { entity, constructors } => {
-                write!(f, "'{entity}' declares no fields, so a persisted row has no \
-                           schema to reconstruct against")?;
+            SerError::NoFieldSchema {
+                entity,
+                constructors,
+            } => {
+                write!(
+                    f,
+                    "'{entity}' declares no fields, so a persisted row has no \
+                           schema to reconstruct against"
+                )?;
                 if !constructors.is_empty() {
-                    write!(f, " (it is a sort with constructors {}; name one of them \
-                               in meta.entity)", constructors.join(", "))?;
+                    write!(
+                        f,
+                        " (it is a sort with constructors {}; name one of them \
+                               in meta.entity)",
+                        constructors.join(", ")
+                    )?;
                 }
                 Ok(())
             }
@@ -82,8 +100,8 @@ pub fn load_toml(
     source: &str,
     domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
-    let toml_val: toml::Value = toml::from_str(source)
-        .map_err(|e| vec![SerError::Format(e.to_string())])?;
+    let toml_val: toml::Value =
+        toml::from_str(source).map_err(|e| vec![SerError::Format(e.to_string())])?;
     let json_val = toml_to_json(toml_val);
     load_value(kb, json_val, domain)
 }
@@ -95,8 +113,8 @@ pub fn load_json(
     source: &str,
     domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
-    let json_val: serde_json::Value = serde_json::from_str(source)
-        .map_err(|e| vec![SerError::Format(e.to_string())])?;
+    let json_val: serde_json::Value =
+        serde_json::from_str(source).map_err(|e| vec![SerError::Format(e.to_string())])?;
     load_value(kb, json_val, domain)
 }
 
@@ -107,10 +125,9 @@ pub fn serialize_toml(
     rule_ids: &[RuleId],
 ) -> Result<String, SerError> {
     let json_val = facts_to_value(kb, entity_name, rule_ids)?;
-    let toml_val = json_to_toml(&json_val)
-        .map_err(|e| SerError::Format(format!("TOML conversion: {e}")))?;
-    toml::to_string_pretty(&toml_val)
-        .map_err(|e| SerError::Format(e.to_string()))
+    let toml_val =
+        json_to_toml(&json_val).map_err(|e| SerError::Format(format!("TOML conversion: {e}")))?;
+    toml::to_string_pretty(&toml_val).map_err(|e| SerError::Format(e.to_string()))
 }
 
 /// Serialize facts of a given entity type to JSON.
@@ -120,8 +137,7 @@ pub fn serialize_json(
     rule_ids: &[RuleId],
 ) -> Result<String, SerError> {
     let json_val = facts_to_value(kb, entity_name, rule_ids)?;
-    serde_json::to_string_pretty(&json_val)
-        .map_err(|e| SerError::Format(e.to_string()))
+    serde_json::to_string_pretty(&json_val).map_err(|e| SerError::Format(e.to_string()))
 }
 
 // ── TOML ↔ JSON conversion ────────────────────────────────────
@@ -130,11 +146,9 @@ fn toml_to_json(val: toml::Value) -> serde_json::Value {
     match val {
         toml::Value::String(s) => serde_json::Value::String(s),
         toml::Value::Integer(n) => serde_json::Value::Number(n.into()),
-        toml::Value::Float(f) => {
-            serde_json::Number::from_f64(f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        toml::Value::Float(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         toml::Value::Boolean(b) => serde_json::Value::Bool(b),
         toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
         toml::Value::Array(arr) => {
@@ -203,7 +217,11 @@ fn load_value(
 ) -> Result<usize, Vec<SerError>> {
     let obj = match value {
         serde_json::Value::Object(map) => map,
-        _ => return Err(vec![SerError::Format("top-level value must be an object".into())]),
+        _ => {
+            return Err(vec![SerError::Format(
+                "top-level value must be an object".into(),
+            )])
+        }
     };
 
     // Check for single-section (meta + data) vs multi-section layout
@@ -243,9 +261,9 @@ fn load_section(
     obj: &serde_json::Map<String, serde_json::Value>,
     domain: Symbol,
 ) -> Result<usize, Vec<SerError>> {
-    let meta = obj.get("meta").ok_or_else(|| {
-        vec![SerError::MissingMeta("section has no 'meta' key".into())]
-    })?;
+    let meta = obj
+        .get("meta")
+        .ok_or_else(|| vec![SerError::MissingMeta("section has no 'meta' key".into())])?;
 
     let entity_name = meta
         .get("entity")
@@ -286,9 +304,9 @@ fn load_section(
         }
     };
 
-    let data = obj.get("data").ok_or_else(|| {
-        vec![SerError::MissingMeta("section has no 'data' key".into())]
-    })?;
+    let data = obj
+        .get("data")
+        .ok_or_else(|| vec![SerError::MissingMeta("section has no 'data' key".into())])?;
 
     // WI-922: a persisted data row is a FACT, unconditionally. This used to
     // call `entity_sort`, which answered a DIFFERENT question — the functor's
@@ -348,8 +366,6 @@ fn resolve_entity_functor(kb: &mut KnowledgeBase, name: &str) -> Option<Symbol> 
     None
 }
 
-
-
 /// Load a single data entry into a KB term, reconstructing each field
 /// type-directedly (WI-501). The serializer is lossy without types — it strips
 /// `some(value: x)` to `x`, DROPS `none()` entirely (the field becomes absent),
@@ -367,9 +383,9 @@ fn load_entry(
     fields: &[Symbol],
     entity_name: &str,
 ) -> Result<TermId, SerError> {
-    let obj = entry.as_object().ok_or_else(|| {
-        SerError::InvalidValue("data entry must be an object".into())
-    })?;
+    let obj = entry
+        .as_object()
+        .ok_or_else(|| SerError::InvalidValue("data entry must be an object".into()))?;
 
     let field_types = entity_field_type_map(kb, functor);
     let mut var_map: HashMap<String, VarId> = HashMap::new();
@@ -424,7 +440,10 @@ fn entity_field_type_map(kb: &KnowledgeBase, functor: Symbol) -> Vec<(Symbol, Te
 }
 
 fn field_type_of(field_types: &[(Symbol, TermId)], field: Symbol) -> Option<TermId> {
-    field_types.iter().find(|(s, _)| *s == field).map(|(_, t)| *t)
+    field_types
+        .iter()
+        .find(|(s, _)| *s == field)
+        .map(|(_, t)| *t)
 }
 
 /// Backfill declared fields that are ABSENT from the persisted data: an Option
@@ -611,9 +630,11 @@ fn string_to_term_typed(
 /// `Ref(S)` returns `(S, None)`.
 fn type_head_and_inner(kb: &KnowledgeBase, ty: TermId) -> (Option<Symbol>, Option<TermId>) {
     match kb.get_term(ty) {
-        Term::Fn { functor, named_args, .. } => {
-            (Some(*functor), named_args.first().map(|(_, v)| *v))
-        }
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (Some(*functor), named_args.first().map(|(_, v)| *v)),
         Term::Ref(sym) => (Some(*sym), None),
         _ => (None, None),
     }
@@ -642,7 +663,6 @@ fn some_wrap(kb: &mut KnowledgeBase, inner: TermId) -> TermId {
     named.push((value_sym, inner));
     kb.make_entity_term(some_sym, SmallVec::new(), named)
 }
-
 
 /// Convert a single-key JSON object `{ Variant: payload }` to a constructor /
 /// enum-variant term (WI-501, type-directed). The variant name is resolved
@@ -694,7 +714,10 @@ fn build_constructor_term_typed(
     value: &serde_json::Value,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
-    let fields = kb.entity_field_names(ctor_sym).map(|f| f.to_vec()).unwrap_or_default();
+    let fields = kb
+        .entity_field_names(ctor_sym)
+        .map(|f| f.to_vec())
+        .unwrap_or_default();
     let field_types = entity_field_type_map(kb, ctor_sym);
     match value {
         serde_json::Value::Object(inner) => {
@@ -748,7 +771,8 @@ fn build_constructor_term_typed(
 
 /// Find a field Symbol by name, falling back to intern if not in the schema.
 fn find_field_sym(kb: &mut KnowledgeBase, fields: &[Symbol], key: &str) -> Symbol {
-    fields.iter()
+    fields
+        .iter()
         .find(|&&f| kb.local_name_of(f) == key)
         .copied()
         .unwrap_or_else(|| kb.intern(key))
@@ -756,7 +780,8 @@ fn find_field_sym(kb: &mut KnowledgeBase, fields: &[Symbol], key: &str) -> Symbo
 
 /// Resolve a name in KB, falling back to intern.
 fn resolve_or_intern(kb: &mut KnowledgeBase, name: &str) -> Symbol {
-    kb.try_resolve_symbol(name).unwrap_or_else(|| kb.intern(name))
+    kb.try_resolve_symbol(name)
+        .unwrap_or_else(|| kb.intern(name))
 }
 
 // ── Core serializer ────────────────────────────────────────────
@@ -786,7 +811,10 @@ fn facts_to_value(
 
     let mut result = serde_json::Map::new();
     let mut meta = serde_json::Map::new();
-    meta.insert("entity".into(), serde_json::Value::String(entity_name.into()));
+    meta.insert(
+        "entity".into(),
+        serde_json::Value::String(entity_name.into()),
+    );
     result.insert("meta".into(), serde_json::Value::Object(meta));
 
     if data.len() == 1 {
@@ -971,23 +999,26 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
 }
 
 /// Flatten a cons-list to a JSON array.
-fn cons_to_json_array(
-    kb: &KnowledgeBase,
-    mut term: TermId,
-) -> Result<serde_json::Value, SerError> {
+fn cons_to_json_array(kb: &KnowledgeBase, mut term: TermId) -> Result<serde_json::Value, SerError> {
     let mut items = Vec::new();
     loop {
         // Extract head/tail TermIds from the cons cell without holding the borrow
         let cell = match kb.get_term(term) {
-            Term::Fn { functor, named_args, .. } => {
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => {
                 if is_prelude(kb, *functor, LIST_NIL) {
                     break;
                 }
                 if is_prelude(kb, *functor, LIST_CONS) {
-                    let head = named_args.iter()
+                    let head = named_args
+                        .iter()
                         .find(|(s, _)| kb.local_name_of(*s) == "head")
                         .map(|(_, id)| *id);
-                    let tail = named_args.iter()
+                    let tail = named_args
+                        .iter()
                         .find(|(s, _)| kb.local_name_of(*s) == "tail")
                         .map(|(_, id)| *id);
                     Some((head, tail))
@@ -1031,11 +1062,9 @@ fn literal_to_json(lit: &Literal) -> Result<serde_json::Value, SerError> {
                 Ok(serde_json::Value::String(n.to_string()))
             }
         }
-        Literal::Float(f) => {
-            serde_json::Number::from_f64(f.into_inner())
-                .map(serde_json::Value::Number)
-                .ok_or_else(|| SerError::InvalidValue(format!("non-finite float: {f}")))
-        }
+        Literal::Float(f) => serde_json::Number::from_f64(f.into_inner())
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| SerError::InvalidValue(format!("non-finite float: {f}"))),
         Literal::Bool(b) => Ok(serde_json::Value::Bool(*b)),
     }
 }

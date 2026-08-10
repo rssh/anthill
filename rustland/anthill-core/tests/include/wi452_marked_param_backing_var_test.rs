@@ -9,9 +9,9 @@
 //! (WI-453). An UNMARKED `sort F { … }` stays a concrete nested sort — no param
 //! registration, no backing var.
 
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::intern::Symbol;
+use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_kb(extra: &str) -> (KnowledgeBase, Vec<String>) {
@@ -20,8 +20,8 @@ fn load_kb(extra: &str) -> (KnowledgeBase, Vec<String>) {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -56,7 +56,10 @@ fn marked_hk_param_is_var_backed_type_param() {
 end
 "#;
     let (kb, errs) = load_kb(src);
-    assert!(errs.is_empty(), "marked enclosing-list spec should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "marked enclosing-list spec should load clean: {errs:?}"
+    );
 
     let cps = kb
         .try_resolve_symbol("test.wi452.marked.CpsMonad")
@@ -98,7 +101,8 @@ end
 "#;
     let (_kb, errs) = load_kb(src);
     assert!(
-        errs.iter().any(|e| e.contains("bad") && e.contains("?A") && e.contains("?B")),
+        errs.iter()
+            .any(|e| e.contains("bad") && e.contains("?A") && e.contains("?B")),
         "marked F must skolemize at def-site so `bad` (F[T=A] vs F[T=B]) is rejected \
          with a binding-distinct diagnostic (?A vs ?B); got: {errs:?}"
     );
@@ -138,13 +142,18 @@ fn nested_marked_params_each_var_backed() {
 end
 "#;
     let (kb, errs) = load_kb(src);
-    assert!(errs.is_empty(), "nested marked params should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "nested marked params should load clean: {errs:?}"
+    );
     for (sort, param) in [
         ("test.wi452.nest.Outer", "F"),
         ("test.wi452.nest.Outer.F", "G"),
         ("test.wi452.nest.Outer.F.G", "H"),
     ] {
-        let sym = kb.try_resolve_symbol(sort).unwrap_or_else(|| panic!("{sort} symbol"));
+        let sym = kb
+            .try_resolve_symbol(sort)
+            .unwrap_or_else(|| panic!("{sort} symbol"));
         assert!(
             kb.type_params_of_sort(sym).iter().any(|p| p == param),
             "{param} must be a type param of {sort}; got {:?}",
@@ -153,8 +162,13 @@ end
     }
     // The two MARKED carriers (F, G) carry backing vars (H is `sort H = ?`, also).
     for sort in ["test.wi452.nest.Outer.F", "test.wi452.nest.Outer.F.G"] {
-        let sym = kb.try_resolve_symbol(sort).unwrap_or_else(|| panic!("{sort} symbol"));
-        assert!(has_backing_var(&kb, sym), "marked carrier {sort} must have a backing var");
+        let sym = kb
+            .try_resolve_symbol(sort)
+            .unwrap_or_else(|| panic!("{sort} symbol"));
+        assert!(
+            has_backing_var(&kb, sym),
+            "marked carrier {sort} must have a backing var"
+        );
     }
 }
 
@@ -203,7 +217,10 @@ fn unmarked_nested_sort_is_not_a_type_param() {
 end
 "#;
     let (kb, errs) = load_kb(src);
-    assert!(errs.is_empty(), "body-form spec should load clean: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "body-form spec should load clean: {errs:?}"
+    );
 
     let box_sym = kb
         .try_resolve_symbol("test.wi452.body.Box")

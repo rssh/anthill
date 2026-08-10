@@ -83,8 +83,14 @@ fn workspace_rust_sources() -> Vec<PathBuf> {
         files.len(),
         rustland.display()
     );
-    if let Some(leaked) = files.iter().find(|p| p.components().any(|c| c.as_os_str() == "target")) {
-        panic!("the `target` prune leaked: {} is generated code", leaked.display());
+    if let Some(leaked) = files
+        .iter()
+        .find(|p| p.components().any(|c| c.as_os_str() == "target"))
+    {
+        panic!(
+            "the `target` prune leaked: {} is generated code",
+            leaked.display()
+        );
     }
     files
 }
@@ -113,10 +119,14 @@ fn is_target(path: &std::path::Path) -> bool {
 /// added to THAT would be reported as a definition site. Left as-is — it errs
 /// toward a loud false alarm naming the exact line, never toward a silent pass.
 fn definition_sites(names: &[&str]) -> BTreeMap<String, Vec<String>> {
-    let needles: Vec<(String, String)> =
-        names.iter().map(|n| ((*n).to_string(), format!("fn {n}"))).collect();
-    let mut sites: BTreeMap<String, Vec<String>> =
-        names.iter().map(|n| ((*n).to_string(), Vec::new())).collect();
+    let needles: Vec<(String, String)> = names
+        .iter()
+        .map(|n| ((*n).to_string(), format!("fn {n}")))
+        .collect();
+    let mut sites: BTreeMap<String, Vec<String>> = names
+        .iter()
+        .map(|n| ((*n).to_string(), Vec::new()))
+        .collect();
     for path in workspace_rust_sources() {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
@@ -137,7 +147,11 @@ fn definition_sites(names: &[&str]) -> BTreeMap<String, Vec<String>> {
                     continue;
                 };
                 if after.starts_with('(') || after.starts_with('<') {
-                    sites.get_mut(name).expect("name is a key").push(format!("{}:{}", path.display(), i + 1));
+                    sites.get_mut(name).expect("name is a key").push(format!(
+                        "{}:{}",
+                        path.display(),
+                        i + 1
+                    ));
                 }
             }
         }

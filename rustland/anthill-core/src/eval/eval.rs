@@ -115,7 +115,9 @@ impl Interpreter {
     ///   (ready for the next `step()`) or empty (`Done`).
     pub fn step(&mut self) -> Result<StepOutcome, EvalError> {
         let occ = {
-            let top = self.stack.top()
+            let top = self
+                .stack
+                .top()
                 .ok_or_else(|| EvalError::Internal("step() on empty stack".into()))?;
             debug_assert!(top.awaiting.is_none(), "top frame should be fresh");
             top.expr.clone()
@@ -156,15 +158,21 @@ impl Interpreter {
             Expr::Spliced(v) => Ok(StepOutcome::Deliver(v.clone())),
             Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym, occ),
             Expr::VarRef { name } => self.reduce_var(*name, occ),
-            Expr::If { condition, then_branch, else_branch } => {
-                self.start_if(condition, then_branch, else_branch)
-            }
-            Expr::Let { pattern, value, body, .. } => {
-                self.start_let(Rc::clone(pattern), value, body)
-            }
-            Expr::Match { scrutinee, branches } => {
-                self.start_match(scrutinee, branches)
-            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => self.start_if(condition, then_branch, else_branch),
+            Expr::Let {
+                pattern,
+                value,
+                body,
+                ..
+            } => self.start_let(Rc::clone(pattern), value, body),
+            Expr::Match {
+                scrutinee,
+                branches,
+            } => self.start_match(scrutinee, branches),
             Expr::Lambda { param, body } => self.reduce_lambda(Rc::clone(param), body.clone()),
             Expr::Proof { body, .. } => {
                 // WI-538: an in-body proof is a static (type-level)
@@ -179,7 +187,12 @@ impl Interpreter {
                 top.expr = body;
                 Ok(StepOutcome::Continue)
             }
-            Expr::Apply { functor, pos_args, named_args, .. } => {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } => {
                 // WI-707: a SORT-headed application is a parameterized TYPE VALUE,
                 // not a call — `Cell[V = Int64]` in `is_modifiable(Cell[V = Int64])`.
                 // The eval twin of the typer's sort-application arm, and the
@@ -238,16 +251,34 @@ impl Interpreter {
                 use crate::kb::typing::CallClass;
                 match class.as_deref() {
                     Some(CallClass::DeferToRequirement {
-                        spec_op_sym, slot, proj_path, enclosing_sort, ..
+                        spec_op_sym,
+                        slot,
+                        proj_path,
+                        enclosing_sort,
+                        ..
                     }) => self.start_apply_deferred(
-                        *spec_op_sym, *slot, proj_path, *enclosing_sort,
-                        pos_args, named_args, type_args,
+                        *spec_op_sym,
+                        *slot,
+                        proj_path,
+                        *enclosing_sort,
+                        pos_args,
+                        named_args,
+                        type_args,
                     ),
                     Some(CallClass::ConcreteApplyWithin {
-                        fn_target_sym, spec_op_sym, enclosing_sort, dispatch_dict, ..
+                        fn_target_sym,
+                        spec_op_sym,
+                        enclosing_sort,
+                        dispatch_dict,
+                        ..
                     }) => self.start_apply_same_sort(
-                        *fn_target_sym, *spec_op_sym, *enclosing_sort, *dispatch_dict,
-                        pos_args, named_args, type_args,
+                        *fn_target_sym,
+                        *spec_op_sym,
+                        *enclosing_sort,
+                        *dispatch_dict,
+                        pos_args,
+                        named_args,
+                        type_args,
                     ),
                     // WI-1037 — EXHAUSTIVE, no `_` arm. The two classes above are
                     // routed to starts that install a requirements channel; every
@@ -272,7 +303,13 @@ impl Interpreter {
                     }
                 }
             }
-            Expr::ApplyWithin { functor, args, named_args, requirements, .. } => {
+            Expr::ApplyWithin {
+                functor,
+                args,
+                named_args,
+                requirements,
+                ..
+            } => {
                 let type_args = collect_resolved_type_args(occ);
                 // WI-857: `apply_within(fn = …)` has TWO producers with OPPOSITE
                 // conventions — `record_apply_within_rewrite` writes the SPEC op,
@@ -284,18 +321,24 @@ impl Interpreter {
                 // a concrete-form `fn` would make the layout measure a spec-instance
                 // dict against the provider's chain alone.
                 self.start_apply_within(
-                    *functor, *functor, args, named_args, requirements, type_args,
+                    *functor,
+                    *functor,
+                    args,
+                    named_args,
+                    requirements,
+                    type_args,
                 )
             }
-            Expr::Constructor { name, pos_args, named_args, .. } => {
-                self.start_constructor(*name, pos_args, named_args)
-            }
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
+            } => self.start_constructor(*name, pos_args, named_args),
             Expr::RequirementAtSort { chain, slot } => {
                 self.reduce_requirement_at_sort_node(chain, *slot)
             }
-            Expr::Dictionary { impl_sort, subs } => {
-                self.reduce_dictionary_node(*impl_sort, subs)
-            }
+            Expr::Dictionary { impl_sort, subs } => self.reduce_dictionary_node(*impl_sort, subs),
             // `DotApply` is a pre-dispatch form: the `[simp]` dot rules must
             // have rewritten it to `Apply`/field-access before eval (WI-278).
             // Reaching here means it survived unresolved.
@@ -327,25 +370,28 @@ impl Interpreter {
         }
     }
 
-    fn reduce_var(&mut self, sym: Symbol, occ: &Rc<NodeOccurrence>) -> Result<StepOutcome, EvalError> {
+    fn reduce_var(
+        &mut self,
+        sym: Symbol,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Result<StepOutcome, EvalError> {
         let target_name = self.kb.local_name_of(sym).to_string();
         // Local binding first, then a frame requirement (a body reading
         // a `__req_*` param by name — WI-237 names model), then a
         // frame type-arg (a body reading a declared `T` from
         // `operation foo[T](...)` per WI-272), then dispatch.
         let bound = {
-            let top = self.stack.top()
+            let top = self
+                .stack
+                .top()
                 .ok_or_else(|| EvalError::Internal("reduce_var on empty stack".into()))?;
             find_local(&self.kb, &top.locals, &target_name)
                 .cloned()
                 .or_else(|| {
                     // WI-1045: no conversion — the dictionary IS this value.
-                    find_requirement(&top.requirements, sym)
-                        .map(|d| d.as_value().clone())
+                    find_requirement(&top.requirements, sym).map(|d| d.as_value().clone())
                 })
-                .or_else(|| {
-                    find_type_arg(&top.type_args, sym).map(Value::term)
-                })
+                .or_else(|| find_type_arg(&top.type_args, sym).map(Value::term))
         };
         if let Some(v) = bound {
             return Ok(StepOutcome::Deliver(v));
@@ -395,7 +441,10 @@ impl Interpreter {
         // value position (the typer requires the application form), so gate on
         // nullary.
         if self.kb.is_constructor_symbol(sym)
-            && self.kb.entity_field_names(sym).map_or(true, |f| f.is_empty())
+            && self
+                .kb
+                .entity_field_names(sym)
+                .map_or(true, |f| f.is_empty())
         {
             return self.start_constructor(sym, &[], &[]);
         }
@@ -424,7 +473,9 @@ impl Interpreter {
                 // WI-857: an eta captures its OWN parent's bundle, so the named op
                 // and the target are the same — `named: None`.
                 return Ok(StepOutcome::Deliver(Value::OpRef {
-                    op: sym, dict: dict.map(std::rc::Rc::new), named: None,
+                    op: sym,
+                    dict: dict.map(std::rc::Rc::new),
+                    named: None,
                 }));
             }
         }
@@ -441,7 +492,11 @@ impl Interpreter {
         // twin, and same backstop (the typer refuses it; `UnknownOperation` catches a
         // typer-less KB).
         if self.kb.cites_a_relation(sym) {
-            return Ok(StepOutcome::Deliver(self.build_relation_value(sym, &[], &[])?));
+            return Ok(StepOutcome::Deliver(self.build_relation_value(
+                sym,
+                &[],
+                &[],
+            )?));
         }
         self.dispatch_call(sym, Vec::new(), SmallVec::new())
     }
@@ -487,9 +542,11 @@ impl Interpreter {
             }
         };
         let (functor, pos_args, named_args) = match self.kb.get_term(head_tid) {
-            Term::Fn { functor, pos_args, named_args } => {
-                (*functor, pos_args.clone(), named_args.clone())
-            }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => (*functor, pos_args.clone(), named_args.clone()),
             // A nullary head (`Ref(f)`) — a 0-column membership relation.
             Term::Ref(f) | Term::Ident(f) => (*f, SmallVec::new(), SmallVec::new()),
             other => {
@@ -503,8 +560,11 @@ impl Interpreter {
         // used) and the ordered dedup'd column names binding operates on.
         let var_slots = rule_head_var_slots(&self.kb, rid);
         let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-        let column_names: Vec<Symbol> =
-            var_slots.iter().map(|(_, n, _)| *n).filter(|n| seen.insert(*n)).collect();
+        let column_names: Vec<Symbol> = var_slots
+            .iter()
+            .map(|(_, n, _)| *n)
+            .filter(|n| seen.insert(*n))
+            .collect();
         let named_keys: Vec<Symbol> = supplied_named.iter().map(|(k, _)| *k).collect();
         let bound = resolve_relation_arg_columns(&column_names, supplied_pos.len(), &named_keys)
             .map_err(|e| EvalError::Internal(format!("WI-714: {}", e.message(&self.kb))))?;
@@ -522,7 +582,10 @@ impl Interpreter {
         // A head slot's column name if it is a free variable (looked up in the shared
         // enumeration), so var-ness and naming match the typer exactly.
         let slot_name = |slot: SlotKey| -> Option<Symbol> {
-            var_slots.iter().find(|(s, _, _)| *s == slot).map(|(_, n, _)| *n)
+            var_slots
+                .iter()
+                .find(|(s, _, _)| *s == slot)
+                .map(|(_, n, _)| *n)
         };
 
         let mut pos: Vec<Value> = Vec::with_capacity(pos_args.len());
@@ -577,11 +640,18 @@ impl Interpreter {
             columns.retain(|(name, _)| seen.insert(*name));
         }
 
-        let goal_atom = Value::Entity { functor, pos: pos.into(), named: named.into() };
+        let goal_atom = Value::Entity {
+            functor,
+            pos: pos.into(),
+            named: named.into(),
+        };
         // Wrap as `pattern_query(term: <goal atom>)` — the arbitrary-goal-atom
         // LogicalQuery constructor `execute_logical_query` lowers to one goal.
         let query = self.build_logical_query_value("pattern_query", vec![("term", goal_atom)])?;
-        Ok(Value::Relation { query: Rc::new(query), columns: columns.into() })
+        Ok(Value::Relation {
+            query: Rc::new(query),
+            columns: columns.into(),
+        })
     }
 
     /// Build a `LogicalQuery` constructor VALUE (WI-714 / proposal 052). This is the
@@ -613,7 +683,11 @@ impl Interpreter {
             let key = self.kb.intern(key);
             named.push((key, value));
         }
-        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
+        Ok(Value::Entity {
+            functor,
+            pos: Vec::new().into(),
+            named: named.into(),
+        })
     }
 
     /// WI-714 (proposal 052) — begin an APPLIED rule reference `ref_sym(args…)`
@@ -639,9 +713,11 @@ impl Interpreter {
         }
 
         if remaining.is_empty() {
-            return Ok(StepOutcome::Deliver(
-                self.build_relation_value(ref_sym, &[], &[])?,
-            ));
+            return Ok(StepOutcome::Deliver(self.build_relation_value(
+                ref_sym,
+                &[],
+                &[],
+            )?));
         }
 
         let (first_name, first_expr) = remaining.remove(0);
@@ -682,9 +758,11 @@ impl Interpreter {
         // precedence — a host const is constant by construction, so caching its
         // first fetch is trivially safe.
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            self.const_cache.insert(sym, super::ConstCacheEntry::Forcing);
+            self.const_cache
+                .insert(sym, super::ConstCacheEntry::Forcing);
             let v = (builtin)(self, &[])?;
-            self.const_cache.insert(sym, super::ConstCacheEntry::Cached(v.clone()));
+            self.const_cache
+                .insert(sym, super::ConstCacheEntry::Cached(v.clone()));
             return Ok(v);
         }
         // Anthill-bodied: fold the stored body lazily, under the shared step_cap.
@@ -698,13 +776,15 @@ impl Interpreter {
                 });
             }
         };
-        self.const_cache.insert(sym, super::ConstCacheEntry::Forcing);
+        self.const_cache
+            .insert(sym, super::ConstCacheEntry::Forcing);
         // On a fold error, drop the Forcing entry so the const isn't poisoned —
         // a later demand re-attempts (and re-reports) rather than masquerading as
         // an in-progress cycle.
         match self.eval_node_isolated(sym, &body) {
             Ok(v) => {
-                self.const_cache.insert(sym, super::ConstCacheEntry::Cached(v.clone()));
+                self.const_cache
+                    .insert(sym, super::ConstCacheEntry::Cached(v.clone()));
                 Ok(v)
             }
             Err(e) => {
@@ -805,7 +885,9 @@ impl Interpreter {
         // at call time. `lambda (a, b) -> body` is a tuple pattern against
         // a single tuple arg; `lambda _` ignores the arg; `lambda x` is
         // the common identifier case.
-        let env = self.stack.top()
+        let env = self
+            .stack
+            .top()
             .map(|f| f.locals.clone())
             .unwrap_or_default();
         // WI-223: snapshot the enclosing frame's requirements so the
@@ -813,14 +895,18 @@ impl Interpreter {
         // creation, not invocation site). Frame-side SmallVec is sized 2,
         // closure-side is sized 1 (most lambdas hold 0–1 reqs); collect
         // across the size boundary.
-        let requirements: SmallVec<[(Symbol, super::value::Dictionary); 1]> = self.stack.top()
+        let requirements: SmallVec<[(Symbol, super::value::Dictionary); 1]> = self
+            .stack
+            .top()
             .map(|f| f.requirements.iter().cloned().collect())
             .unwrap_or_default();
         // Snapshot the enclosing frame's type_args alongside (WI-272)
         // — same lexical-capture rule. Both channels share the
         // "lambda inherits its creation scope" convention from
         // §"Closures" of operation-call-model.md.
-        let type_args: ClosureTypeArgs = self.stack.top()
+        let type_args: ClosureTypeArgs = self
+            .stack
+            .top()
             .map(|f| f.type_args.iter().cloned().collect())
             .unwrap_or_default();
         let handle = self.closures.alloc(Closure {
@@ -860,10 +946,13 @@ impl Interpreter {
                 detail: format!("cannot read sub-requirement {k} of {what}: {msg}"),
             });
         }
-        parent.sub(k).ok_or_else(|| EvalError::Internal(format!(
-            "requirement_at_sort: index {k} out of range for {what} \
-             (it bundles {} sub-requirement(s))", parent.arity()
-        )))
+        parent.sub(k).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "requirement_at_sort: index {k} out of range for {what} \
+             (it bundles {} sub-requirement(s))",
+                parent.arity()
+            ))
+        })
     }
 
     fn reduce_requirement_at_sort_node(
@@ -885,7 +974,9 @@ impl Interpreter {
         for occ in sub_occs.iter() {
             subs.push(self.eval_requirement_chain_node(occ)?);
         }
-        Ok(StepOutcome::Deliver(self.build_dictionary(impl_sort, subs)?.into_value()))
+        Ok(StepOutcome::Deliver(
+            self.build_dictionary(impl_sort, subs)?.into_value(),
+        ))
     }
 
     /// Synchronously reduce a requirement-typed NodeOccurrence to a
@@ -900,16 +991,21 @@ impl Interpreter {
     ) -> Result<super::value::Dictionary, EvalError> {
         let expr = match &occ.kind {
             NodeKind::Expr { expr, .. } => expr,
-            _ => return Err(EvalError::Internal(
-                "requirement chain must be an Expr-kind occurrence".into(),
-            )),
+            _ => {
+                return Err(EvalError::Internal(
+                    "requirement chain must be an Expr-kind occurrence".into(),
+                ))
+            }
         };
         match expr {
             Expr::RequirementAtSort { chain, slot } => {
                 let parent = self.eval_requirement_chain_node(chain)?;
                 self.project_requirement(&parent, *slot as usize, "this chain")
             }
-            Expr::Dictionary { impl_sort, subs: sub_occs } => {
+            Expr::Dictionary {
+                impl_sort,
+                subs: sub_occs,
+            } => {
                 let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
                 for r in sub_occs.iter() {
                     subs.push(self.eval_requirement_chain_node(r)?);
@@ -920,12 +1016,14 @@ impl Interpreter {
                 let top = self.stack.top().ok_or_else(|| {
                     EvalError::Internal("requirement chain var_ref on empty stack".into())
                 })?;
-                find_requirement(&top.requirements, *name).cloned().ok_or_else(|| {
-                    EvalError::Internal(format!(
-                        "var_ref({}) unbound in requirement position",
-                        self.kb.local_name_of(*name)
-                    ))
-                })
+                find_requirement(&top.requirements, *name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        EvalError::Internal(format!(
+                            "var_ref({}) unbound in requirement position",
+                            self.kb.local_name_of(*name)
+                        ))
+                    })
             }
             other => Err(EvalError::Internal(format!(
                 "expected requirement-chain Expr, got {:?}",
@@ -953,10 +1051,8 @@ impl Interpreter {
         fn_sym: Symbol,
         dispatching_dict: &super::value::Dictionary,
     ) -> Result<Symbol, EvalError> {
-        crate::kb::typing::resolve_op_target_checked(
-            &self.kb, dispatching_dict.impl_sort(), fn_sym,
-        )
-        .map_err(|detail| EvalError::UnpinnedRequirement { detail })
+        crate::kb::typing::resolve_op_target_checked(&self.kb, dispatching_dict.impl_sort(), fn_sym)
+            .map_err(|detail| EvalError::UnpinnedRequirement { detail })
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer
@@ -1044,18 +1140,21 @@ impl Interpreter {
         match spec_op_dispatch_by_value(&self.kb, spec_op, arg_values, suppliers) {
             ValueDirectedDispatch::NoSupplier => Ok(None),
             ValueDirectedDispatch::Sole(target) => Ok(Some(target)),
-            ValueDirectedDispatch::Tie { carrier, candidates } => {
+            ValueDirectedDispatch::Tie {
+                carrier,
+                candidates,
+            } => {
                 let op_qn = self.kb.qualified_name_of(spec_op);
                 let op_short = crate::kb::typing::short_name_of(op_qn);
                 Err(EvalError::AmbiguousSpecOpDispatch {
                     op: op_qn.to_string(),
                     carrier: self.kb.qualified_name_of(carrier).to_string(),
                     candidates: crate::kb::typing::render_suppliers(
-                        &self.kb, &candidates, op_short,
+                        &self.kb,
+                        &candidates,
+                        op_short,
                     ),
-                    repair: crate::kb::typing::supplier_tie_repair(
-                        &self.kb, spec_op, &candidates,
-                    ),
+                    repair: crate::kb::typing::supplier_tie_repair(&self.kb, spec_op, &candidates),
                 })
             }
         }
@@ -1170,11 +1269,14 @@ impl Interpreter {
         // args. The eval currently evaluates all args by position; the
         // typer is responsible for ordering named args to align with
         // the callee's params.
-        let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(
-            pos_args.len() + named_args.len(),
-        );
-        for arg in pos_args.iter() { remaining.push(arg.clone()); }
-        for (_, arg) in named_args.iter() { remaining.push(arg.clone()); }
+        let mut remaining: Vec<Rc<NodeOccurrence>> =
+            Vec::with_capacity(pos_args.len() + named_args.len());
+        for arg in pos_args.iter() {
+            remaining.push(arg.clone());
+        }
+        for (_, arg) in named_args.iter() {
+            remaining.push(arg.clone());
+        }
         let first = remaining.remove(0);
         self.suspend_and_push(
             AwaitState::ApplyArgs {
@@ -1235,9 +1337,7 @@ impl Interpreter {
             Some(dict) => self.expand_dispatching_dict(spec_op, target, &dict)?,
             None => SmallVec::new(),
         };
-        self.dispatch_apply_with_requirements(
-            target, requirements, type_args, args, named_args,
-        )
+        self.dispatch_apply_with_requirements(target, requirements, type_args, args, named_args)
     }
 
     /// Dispatch a `CallClass::ConcreteApplyWithin` into a sort with
@@ -1284,22 +1384,33 @@ impl Interpreter {
                 (Some(c), Some(e)) if c == e,
             );
         if inherit {
-            let caller_reqs = self.stack.top()
-                .ok_or_else(|| EvalError::Internal(
-                    "start_apply_same_sort with no current frame".into()))?
-                .requirements.clone();
+            let caller_reqs = self
+                .stack
+                .top()
+                .ok_or_else(|| {
+                    EvalError::Internal("start_apply_same_sort with no current frame".into())
+                })?
+                .requirements
+                .clone();
             return self.dispatch_apply_with_requirements(
-                target, caller_reqs, type_args, pos_args, named_args,
+                target,
+                caller_reqs,
+                type_args,
+                pos_args,
+                named_args,
             );
         }
         // WI-415: cross-sort / no-enclosing-sort call — install the
         // compile-stage-built dispatching dict (if any) through the existing
         // apply_within machinery.
         if let Some(dict_tid) = dispatch_dict {
-            let dict_occ =
-                crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_tid);
+            let dict_occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_tid);
             return self.start_apply_within(
-                target, spec_op, pos_args, named_args, std::slice::from_ref(&dict_occ),
+                target,
+                spec_op,
+                pos_args,
+                named_args,
+                std::slice::from_ref(&dict_occ),
                 type_args,
             );
         }
@@ -1327,16 +1438,22 @@ impl Interpreter {
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
-        let encl = enclosing_sort.ok_or_else(|| EvalError::Internal(
-            "DeferToRequirement classification missing enclosing_sort".into()))?;
-        let caller_names = crate::kb::typing::provider_dict_entries(&mut self.kb, encl)
-            .names(&mut self.kb);
-        let name_sym = *caller_names.get(slot).ok_or_else(|| EvalError::Internal(format!(
-            "DeferToRequirement slot {slot} out of range for {} (chain len {})",
-            self.kb.local_name_of(encl), caller_names.len())))?;
+        let encl = enclosing_sort.ok_or_else(|| {
+            EvalError::Internal("DeferToRequirement classification missing enclosing_sort".into())
+        })?;
+        let caller_names =
+            crate::kb::typing::provider_dict_entries(&mut self.kb, encl).names(&mut self.kb);
+        let name_sym = *caller_names.get(slot).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "DeferToRequirement slot {slot} out of range for {} (chain len {})",
+                self.kb.local_name_of(encl),
+                caller_names.len()
+            ))
+        })?;
         let mut dispatching_dict = {
-            let top = self.stack.top().ok_or_else(|| EvalError::Internal(
-                "start_apply_deferred without a current frame".into()))?;
+            let top = self.stack.top().ok_or_else(|| {
+                EvalError::Internal("start_apply_deferred without a current frame".into())
+            })?;
             // WI-822: NAME THE FRAME. The unbound-slot message used to say only
             // which `__req_*` name was missing, so the failure could not be
             // attributed to a caller without re-deriving it by hand — WI-822's
@@ -1385,11 +1502,8 @@ impl Interpreter {
             dispatching_dict = self.project_requirement(&dispatching_dict, k, &what)?;
         }
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict)?;
-        let requirements =
-            self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
-        self.dispatch_apply_with_requirements(
-            target, requirements, type_args, pos_args, named_args,
-        )
+        let requirements = self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
+        self.dispatch_apply_with_requirements(target, requirements, type_args, pos_args, named_args)
     }
 
     /// Build the callee's `frame.requirements` from a resolved dispatching
@@ -1416,8 +1530,8 @@ impl Interpreter {
         let provider = dict.impl_sort();
         // A namespace-level `dispatched_from` names no spec (nothing to dispatch
         // through); the dictionary is then the provider's own bundle alone.
-        let spec = crate::kb::typing::impl_parent_of_op(&self.kb, dispatched_from)
-            .unwrap_or(provider);
+        let spec =
+            crate::kb::typing::impl_parent_of_op(&self.kb, dispatched_from).unwrap_or(provider);
         let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider);
         let arity = dict.arity();
         if arity != layout.arity() {
@@ -1436,8 +1550,8 @@ impl Interpreter {
             // `requires` chain to fill — `__req_self` alone.
             return Ok(reqs);
         };
-        let names = crate::kb::typing::provider_dict_entries(&mut self.kb, owner)
-            .names(&mut self.kb);
+        let names =
+            crate::kb::typing::provider_dict_entries(&mut self.kb, owner).names(&mut self.kb);
         let Some(slots) = layout.slots_for(&self.kb, owner) else {
             // `resolve_op_target` can land on a THIRD sort — a same-short-name
             // default the provider merely inherits, or an instance-fact binding
@@ -1477,10 +1591,15 @@ impl Interpreter {
         }
         for (k, name) in names.iter().enumerate() {
             let i = slots.start + k;
-            reqs.push((*name, dict.sub(i).ok_or_else(|| EvalError::Internal(format!(
-                "deferred dispatch frame-push: the dictionary for `{}` has no slot {i}",
-                self.kb.qualified_name_of(owner),
-            )))?));
+            reqs.push((
+                *name,
+                dict.sub(i).ok_or_else(|| {
+                    EvalError::Internal(format!(
+                        "deferred dispatch frame-push: the dictionary for `{}` has no slot {i}",
+                        self.kb.qualified_name_of(owner),
+                    ))
+                })?,
+            ));
         }
         Ok(reqs)
     }
@@ -1500,12 +1619,19 @@ impl Interpreter {
         let total_args = pos_args.len() + named_args.len();
         if total_args == 0 {
             return self.dispatch_call_with_requirements(
-                target, Vec::new(), requirements, type_args,
+                target,
+                Vec::new(),
+                requirements,
+                type_args,
             );
         }
         let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total_args);
-        for a in pos_args.iter() { remaining.push(a.clone()); }
-        for (_, a) in named_args.iter() { remaining.push(a.clone()); }
+        for a in pos_args.iter() {
+            remaining.push(a.clone());
+        }
+        for (_, a) in named_args.iter() {
+            remaining.push(a.clone());
+        }
         let first = remaining.remove(0);
         self.suspend_and_push(
             AwaitState::ApplyWithinArgs {
@@ -1541,9 +1667,10 @@ impl Interpreter {
 
         let (first_name, first_expr) = remaining.remove(0);
         let placeholder = first_expr.clone();
-        let top = self.stack.top_mut().ok_or_else(
-            || EvalError::Internal("start_constructor with no parent".into()),
-        )?;
+        let top = self
+            .stack
+            .top_mut()
+            .ok_or_else(|| EvalError::Internal("start_constructor with no parent".into()))?;
         top.awaiting = Some(AwaitState::ConstructorArgs {
             ctor_sym: name,
             is_tuple_literal,
@@ -1567,7 +1694,9 @@ impl Interpreter {
         state: AwaitState,
         child_expr: Rc<NodeOccurrence>,
     ) -> Result<StepOutcome, EvalError> {
-        let top = self.stack.top_mut()
+        let top = self
+            .stack
+            .top_mut()
             .ok_or_else(|| EvalError::Internal("suspend_and_push with no parent".into()))?;
         top.awaiting = Some(state);
         let ctx = self.stack.top().unwrap().child_context();
@@ -1583,9 +1712,7 @@ impl Interpreter {
         arg_values: Vec<Value>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
-        self.dispatch_call_with_requirements(
-            target, arg_values, SmallVec::new(), type_args,
-        )
+        self.dispatch_call_with_requirements(target, arg_values, SmallVec::new(), type_args)
     }
 
     /// Records each dispatch into the recent-dispatch ring (for the
@@ -1602,9 +1729,7 @@ impl Interpreter {
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         self.note_dispatch(target);
-        self.dispatch_call_with_requirements_inner(
-            target, arg_values, requirements, type_args,
-        )
+        self.dispatch_call_with_requirements_inner(target, arg_values, requirements, type_args)
     }
 
     /// Push `target` onto the bounded recent-dispatch ring (newest at the
@@ -1650,13 +1775,14 @@ impl Interpreter {
         //    copy) so the `self.stack` borrow is released before dispatch.
         let target_name = self.kb.local_name_of(target).to_string();
         let local_callable = {
-            let top = self.stack.top()
+            let top = self
+                .stack
+                .top()
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
-            find_local(&self.kb, &top.locals, &target_name)
-                .and_then(|v| match v {
-                    Value::Closure(_) | Value::OpRef { .. } => Some(v.clone()),
-                    _ => None,
-                })
+            find_local(&self.kb, &top.locals, &target_name).and_then(|v| match v {
+                Value::Closure(_) | Value::OpRef { .. } => Some(v.clone()),
+                _ => None,
+            })
         };
         match local_callable {
             Some(Value::Closure(handle)) => {
@@ -1774,7 +1900,9 @@ impl Interpreter {
             // another spec's same-short-name default. So a carrier that merely
             // inherits the default runs it, unchanged; a normal (non-spec) op
             // resolves `None` and runs its body directly.
-            if let Some(impl_target) = self.resolve_carrier_override_by_value(target, &arg_values)? {
+            if let Some(impl_target) =
+                self.resolve_carrier_override_by_value(target, &arg_values)?
+            {
                 if impl_target != target {
                     // WI-455: name the op we actually RUN. The ring was fed with
                     // `target` (the spec op) by the dispatch wrapper; the override
@@ -1789,19 +1917,32 @@ impl Interpreter {
                         let result = (builtin)(self, &arg_values)?;
                         return Ok(StepOutcome::Deliver(result));
                     }
-                    if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target) {
+                    if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target)
+                    {
                         self.note_dispatch(impl_target);
                         let requirements = self.requirements_for_value_directed_impl(
-                            impl_target, &arg_values, requirements,
+                            impl_target,
+                            &arg_values,
+                            requirements,
                         )?;
                         return self.enter_operation(
-                            impl_target, impl_body, &impl_params, arg_values, requirements, type_args,
+                            impl_target,
+                            impl_body,
+                            &impl_params,
+                            arg_values,
+                            requirements,
+                            type_args,
                         );
                     }
                 }
             }
             return self.enter_operation(
-                target, body_node, &params, arg_values, requirements, type_args,
+                target,
+                body_node,
+                &params,
+                arg_values,
+                requirements,
+                type_args,
             );
         }
 
@@ -1845,10 +1986,17 @@ impl Interpreter {
                 if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
                     self.note_dispatch(impl_target);
                     let requirements = self.requirements_for_value_directed_impl(
-                        impl_target, &arg_values, requirements,
+                        impl_target,
+                        &arg_values,
+                        requirements,
                     )?;
                     return self.enter_operation(
-                        impl_target, body_node, &params, arg_values, requirements, type_args,
+                        impl_target,
+                        body_node,
+                        &params,
+                        arg_values,
+                        requirements,
+                        type_args,
                     );
                 }
             }
@@ -1862,7 +2010,9 @@ impl Interpreter {
         // exact evaluator the resolver's semantic `eq` dispatches through, so
         // eval and SLD agree.
         if let Some(pred) = self.eq_bridge_target(target, &arg_values) {
-            return self.prove_rule_predicate_value(pred, &arg_values).map(StepOutcome::Deliver);
+            return self
+                .prove_rule_predicate_value(pred, &arg_values)
+                .map(StepOutcome::Deliver);
         }
 
         // WI-818: a DECLARED op reaching this fall-through has a signature but
@@ -1973,9 +2123,8 @@ impl Interpreter {
         if !incoming.is_empty() {
             return Ok(incoming);
         }
-        match crate::kb::typing::resolve_bridge_requirements(
-            &mut self.kb, impl_target, arg_values,
-        ) {
+        match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, impl_target, arg_values)
+        {
             // No chain to supply: the pre-WI-822 behaviour for every leaf impl,
             // which is the overwhelming majority of value-directed dispatches.
             BridgeRequirements::NoneNeeded => Ok(incoming),
@@ -1995,33 +2144,35 @@ impl Interpreter {
             }
             // WI-855 — a TIE is the one unresolvable cause that does NOT enter
             // unsupplied: see the doc comment's last paragraph.
-            BridgeRequirements::Ambiguous { requirement, candidates } => {
-                Err(EvalError::AmbiguousRequirement {
-                    op: self.kb.qualified_name_of(impl_target).to_string(),
-                    requirement,
-                    candidates,
-                })
-            }
+            BridgeRequirements::Ambiguous {
+                requirement,
+                candidates,
+            } => Err(EvalError::AmbiguousRequirement {
+                op: self.kb.qualified_name_of(impl_target).to_string(),
+                requirement,
+                candidates,
+            }),
             BridgeRequirements::Resolved(parent, trees) => {
-                self.frame_requirements_from_trees(parent, &trees).map_err(|f| {
-                    EvalError::Internal(match f {
-                        // `resolve_bridge_requirements` resolves with an EMPTY
-                        // scope, so `FromScope` cannot arise.
-                        super::FrameReqFailure::CallerScopeSlot(name) => format!(
-                            "value-directed dispatch to `{}`: requirement `{}` \
+                self.frame_requirements_from_trees(parent, &trees)
+                    .map_err(|f| {
+                        EvalError::Internal(match f {
+                            // `resolve_bridge_requirements` resolves with an EMPTY
+                            // scope, so `FromScope` cannot arise.
+                            super::FrameReqFailure::CallerScopeSlot(name) => format!(
+                                "value-directed dispatch to `{}`: requirement `{}` \
                              resolved to a caller-scope slot, but the resolution \
                              ran with no scope",
-                            self.kb.qualified_name_of(impl_target),
-                            self.kb.local_name_of(name),
-                        ),
-                        super::FrameReqFailure::NoDictionarySort => format!(
-                            "value-directed dispatch to `{}`: cannot build any \
+                                self.kb.qualified_name_of(impl_target),
+                                self.kb.local_name_of(name),
+                            ),
+                            super::FrameReqFailure::NoDictionarySort => format!(
+                                "value-directed dispatch to `{}`: cannot build any \
                              requirement dictionary — this KB never loaded \
                              `anthill.realization.runtime.Dictionary`",
-                            self.kb.qualified_name_of(impl_target),
-                        ),
+                                self.kb.qualified_name_of(impl_target),
+                            ),
+                        })
                     })
-                })
             }
         }
     }
@@ -2049,9 +2200,11 @@ impl Interpreter {
             Some((_, params)) => params.len(),
             None => match crate::kb::op_info::lookup_operation_info(&self.kb, op) {
                 Some(info) => info.params.len(),
-                None => return Err(EvalError::UnknownOperation {
-                    name: self.kb.local_name_of(op).to_string(),
-                }),
+                None => {
+                    return Err(EvalError::UnknownOperation {
+                        name: self.kb.local_name_of(op).to_string(),
+                    })
+                }
             },
         };
         // WI-801: the decision itself is `classify_application`'s, shared with the
@@ -2141,7 +2294,10 @@ impl Interpreter {
         // meta-var (WI-511). Reading it as one binder is not a silent skip: such
         // an occurrence names nothing bindable, so `match_pattern` refuses it
         // immediately after and the call raises through `raise_match_failed`.
-        let arity = param_pattern.as_pattern().map(Pattern::binder_arity).unwrap_or(1);
+        let arity = param_pattern
+            .as_pattern()
+            .map(Pattern::binder_arity)
+            .unwrap_or(1);
         // WI-801: on `classify_application`, the rule `spread_eta_args` and the
         // typer's conformance gate also read.
         match classify_application(arity, args.len()) {
@@ -2155,7 +2311,10 @@ impl Interpreter {
             CallForm::AsWritten | CallForm::Spread if args.len() == 1 => {
                 Ok(args.into_iter().next().unwrap())
             }
-            CallForm::AsWritten => Ok(Value::Tuple { pos: args.into(), named: Vec::new().into() }),
+            CallForm::AsWritten => Ok(Value::Tuple {
+                pos: args.into(),
+                named: Vec::new().into(),
+            }),
             // WI-801: see `spread_eta_args` on why a gather cannot be performed
             // here. The typer normalizes it away wherever `A` is known.
             CallForm::Spread | CallForm::Gather | CallForm::Mismatch => {
@@ -2220,7 +2379,9 @@ impl Interpreter {
             return None;
         }
         let empty = crate::kb::subst::Substitution::new();
-        if !self.kb.value_deep_ground(&args[0], &empty) || !self.kb.value_deep_ground(&args[1], &empty) {
+        if !self.kb.value_deep_ground(&args[0], &empty)
+            || !self.kb.value_deep_ground(&args[1], &empty)
+        {
             return None;
         }
         Some(dispatched)
@@ -2239,11 +2400,13 @@ impl Interpreter {
         match self.kb.prove_rule_predicate(pred, args.to_vec()) {
             crate::kb::resolve::PredicateProof::Proved => Ok(Value::Bool(true)),
             crate::kb::resolve::PredicateProof::Refuted => Ok(Value::Bool(false)),
-            crate::kb::resolve::PredicateProof::Undecided { .. } => Err(EvalError::Internal(format!(
-                "rule-backed predicate `{}` could not be decided at eval \
+            crate::kb::resolve::PredicateProof::Undecided { .. } => {
+                Err(EvalError::Internal(format!(
+                    "rule-backed predicate `{}` could not be decided at eval \
                  (proof truncated or floundered)",
-                self.kb.local_name_of(pred)
-            ))),
+                    self.kb.local_name_of(pred)
+                )))
+            }
         }
     }
 
@@ -2277,7 +2440,9 @@ impl Interpreter {
         // OperationResult. This is the standard CEK-machine TCO: drop the
         // trivial continuation frame. Preserves constant activation-stack
         // depth for tail-recursive programs.
-        let top = self.stack.top_mut()
+        let top = self
+            .stack
+            .top_mut()
             .ok_or_else(|| EvalError::Internal("enter_operation with no parent".into()))?;
         // WI-223 / WI-237: callee's frame.requirements come from
         // apply_within's expanded requirements channel. Plain `apply`
@@ -2315,8 +2480,7 @@ impl Interpreter {
         let (param_pattern, body, requirements, type_args) = self.closures.with(&handle, |c| {
             let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
-            let ta: FrameTypeArgs =
-                c.type_args.iter().cloned().collect();
+            let ta: FrameTypeArgs = c.type_args.iter().cloned().collect();
             (c.param_pattern.clone(), c.body.clone(), reqs, ta)
         });
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
@@ -2334,7 +2498,9 @@ impl Interpreter {
         // TCO: same rationale as enter_operation. A closure call in any
         // position is a tail call relative to its own apply frame. The
         // closure inherits its caller's `op` for error-reporting purposes.
-        let top = self.stack.top_mut()
+        let top = self
+            .stack
+            .top_mut()
             .ok_or_else(|| EvalError::Internal("enter_closure with no parent".into()))?;
         let op = top.op;
         *top = Frame {
@@ -2359,19 +2525,22 @@ impl Interpreter {
                 return Ok(StepOutcome::Done(v));
             };
             let state = top.awaiting.take().ok_or_else(|| {
-                EvalError::Internal(
-                    "deliver: parent frame had no awaiting state".into(),
-                )
+                EvalError::Internal("deliver: parent frame had no awaiting state".into())
             })?;
             match state {
-                AwaitState::ChooseBranch { then_branch, else_branch } => {
+                AwaitState::ChooseBranch {
+                    then_branch,
+                    else_branch,
+                } => {
                     let chosen = match v.as_bool() {
                         Some(true) => then_branch,
                         Some(false) => else_branch,
-                        None => return Err(EvalError::TypeMismatch {
-                            expected: "Bool",
-                            got: v.type_name().to_string(),
-                        }),
+                        None => {
+                            return Err(EvalError::TypeMismatch {
+                                expected: "Bool",
+                                got: v.type_name().to_string(),
+                            })
+                        }
                     };
                     top.expr = chosen;
                     return Ok(StepOutcome::Continue);
@@ -2392,7 +2561,10 @@ impl Interpreter {
                     top.expr = body;
                     return Ok(StepOutcome::Continue);
                 }
-                AwaitState::MatchDispatch { branches, scrutinee_occ } => {
+                AwaitState::MatchDispatch {
+                    branches,
+                    scrutinee_occ,
+                } => {
                     let scrutinee_functor = value_functor(&self.kb, &v);
                     let mut picked: Option<(Rc<NodeOccurrence>, super::pattern::Bindings)> = None;
                     for branch in &branches {
@@ -2407,9 +2579,7 @@ impl Interpreter {
                         if let (Some(pat_name), Some(scr_name)) =
                             (constructor_pattern_name(&branch.pattern), scrutinee_functor)
                         {
-                            if !super::pattern::functor_matches(
-                                &self.kb, pat_name, scr_name,
-                            ) {
+                            if !super::pattern::functor_matches(&self.kb, pat_name, scr_name) {
                                 continue;
                             }
                         }
@@ -2431,7 +2601,12 @@ impl Interpreter {
                     top.expr = body;
                     return Ok(StepOutcome::Continue);
                 }
-                AwaitState::ApplyArgs { target, mut buffered, mut remaining, type_args } => {
+                AwaitState::ApplyArgs {
+                    target,
+                    mut buffered,
+                    mut remaining,
+                    type_args,
+                } => {
                     buffered.push(v);
                     if remaining.is_empty() {
                         return self.dispatch_call(target, buffered, type_args);
@@ -2439,7 +2614,10 @@ impl Interpreter {
                     let next_expr = remaining.remove(0);
                     let top = self.stack.top_mut().unwrap();
                     top.awaiting = Some(AwaitState::ApplyArgs {
-                        target, buffered, remaining, type_args,
+                        target,
+                        buffered,
+                        remaining,
+                        type_args,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, next_expr))?;
@@ -2695,7 +2873,8 @@ impl Interpreter {
         let declared = self.kb.type_params_of_sort(sort_sym);
         let named_keys: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
         if let Err(problem) =
-            self.kb.check_sort_type_args(sort_sym, &declared, &named_keys, pos.len())
+            self.kb
+                .check_sort_type_args(sort_sym, &declared, &named_keys, pos.len())
         {
             return Err(EvalError::TypeMismatch {
                 expected: "type arguments matching the sort's declared type parameters",
@@ -2768,7 +2947,10 @@ impl Interpreter {
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
-            Value::Tuple { pos: pos.into(), named: named.into() }
+            Value::Tuple {
+                pos: pos.into(),
+                named: named.into(),
+            }
         } else if Some(ctor_sym) == self.reflect.set_literal {
             // SetLiteral has set semantics: dedup by structural equality so
             // nested tuples/entities compare by shape, not identity. Opaque
@@ -2785,9 +2967,17 @@ impl Interpreter {
                     deduped.push(v);
                 }
             }
-            Value::Entity { functor: ctor_sym, pos: deduped.into(), named: named.into() }
+            Value::Entity {
+                functor: ctor_sym,
+                pos: deduped.into(),
+                named: named.into(),
+            }
         } else {
-            Value::Entity { functor: ctor_sym, pos: pos.into(), named: named.into() }
+            Value::Entity {
+                functor: ctor_sym,
+                pos: pos.into(),
+                named: named.into(),
+            }
         };
         Ok(StepOutcome::Deliver(value))
     }
@@ -2799,16 +2989,21 @@ impl Interpreter {
         elements: Vec<Value>,
         named: &[(Symbol, Value)],
     ) -> Result<Value, EvalError> {
-        let cons_sym = self.reflect.cons.ok_or_else(|| EvalError::Internal(
-            "cons not loaded — stdlib missing anthill.prelude.List.cons".into()
-        ))?;
-        let nil_sym = self.reflect.nil.ok_or_else(|| EvalError::Internal(
-            "nil not loaded — stdlib missing anthill.prelude.List.nil".into()
-        ))?;
-        let tail_seed = named.iter()
+        let cons_sym = self.reflect.cons.ok_or_else(|| {
+            EvalError::Internal("cons not loaded — stdlib missing anthill.prelude.List.cons".into())
+        })?;
+        let nil_sym = self.reflect.nil.ok_or_else(|| {
+            EvalError::Internal("nil not loaded — stdlib missing anthill.prelude.List.nil".into())
+        })?;
+        let tail_seed = named
+            .iter()
             .find(|(s, _)| *s == self.fields.tail)
             .map(|(_, v)| v.clone())
-            .unwrap_or(Value::Entity { functor: nil_sym, pos: Vec::new().into(), named: Vec::new().into() });
+            .unwrap_or(Value::Entity {
+                functor: nil_sym,
+                pos: Vec::new().into(),
+                named: Vec::new().into(),
+            });
 
         let mut acc = tail_seed;
         for elem in elements.into_iter().rev() {
@@ -2866,11 +3061,12 @@ fn find_requirement<'a>(
 /// (WI-272). Reverse order so an inner scope's `T` shadows an outer
 /// one if closure capture ever bridges nested definitions with
 /// same-named type params.
-fn find_type_arg(
-    type_args: &FrameTypeArgs,
-    name: Symbol,
-) -> Option<crate::kb::term::TermId> {
-    type_args.iter().rev().find(|(s, _)| *s == name).map(|(_, t)| *t)
+fn find_type_arg(type_args: &FrameTypeArgs, name: Symbol) -> Option<crate::kb::term::TermId> {
+    type_args
+        .iter()
+        .rev()
+        .find(|(s, _)| *s == name)
+        .map(|(_, t)| *t)
 }
 
 /// Assemble a fresh child frame from a snapshotted parent context
@@ -3060,7 +3256,10 @@ pub(crate) enum ValueDirectedDispatch {
     /// `candidates` are what the shared wording
     /// ([`crate::kb::typing::render_suppliers`] /
     /// [`crate::kb::typing::supplier_tie_repair`]) needs.
-    Tie { carrier: Symbol, candidates: SmallVec<[crate::kb::typing::SpecOpSupplier; 2]> },
+    Tie {
+        carrier: Symbol,
+        candidates: SmallVec<[crate::kb::typing::SpecOpSupplier; 2]>,
+    },
 }
 
 /// WI-1044 — THE value-directed dispatch walk: classify the runtime carrier of
@@ -3094,7 +3293,10 @@ pub(crate) fn spec_op_dispatch_by_value(
     match cands.as_slice() {
         [] => ValueDirectedDispatch::NoSupplier,
         [only] => ValueDirectedDispatch::Sole(only.target),
-        _ => ValueDirectedDispatch::Tie { carrier, candidates: cands },
+        _ => ValueDirectedDispatch::Tie {
+            carrier,
+            candidates: cands,
+        },
     }
 }
 
@@ -3232,10 +3434,7 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Relation { .. } => Some("anthill.prelude.Relation"),
         // Values that never name a spec receiver — no carrier sort. Listed
         // explicitly (no `_` arm) so a new `Value` variant forces a decision.
-        Value::Unit
-        | Value::Tuple { .. }
-        | Value::Substitution(_)
-        | Value::Var(_) => return None,
+        Value::Unit | Value::Tuple { .. } | Value::Substitution(_) | Value::Var(_) => return None,
     };
     if let Some(qn) = qualified {
         return kb.try_resolve_symbol(qn);
@@ -3252,7 +3451,8 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     // supplier and `VectorSpace.vec_add(a, a)` over two `Vec3`s died
     // `OperationBodyMissing`.
     let functor = value_functor(kb, value)?;
-    kb.sort_of_constructor(functor).or_else(|| dictionary_carrier(kb, functor))
+    kb.sort_of_constructor(functor)
+        .or_else(|| dictionary_carrier(kb, functor))
 }
 
 /// WI-1045 — the `Dictionary` row of [`runtime_carrier_sort`]'s value→carrier map,
@@ -3337,9 +3537,11 @@ fn classify_ctor_arg(
 pub fn lookup_operation_body(
     kb: &KnowledgeBase,
     functor: Symbol,
-) -> Option<(std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>, Vec<(Symbol, Value)>)> {
+) -> Option<(
+    std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    Vec<(Symbol, Value)>,
+)> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let body = rec.body_node?;
     Some((body, rec.params))
 }
-

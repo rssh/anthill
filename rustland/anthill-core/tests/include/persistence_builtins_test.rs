@@ -5,14 +5,13 @@
 //! calls `persist` + `flush` on it, the on-disk file ends up containing
 //! the fact, and a fresh process can `pull` it back via `BulkStore`.
 
-
 use anthill_core::eval::{Interpreter, Value};
+use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::term::TermId;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
 use anthill_core::persistence::{BulkStore, PersistenceError, Store};
-use anthill_core::intern::Symbol;
-use anthill_core::kb::term::TermId;
 
 use crate::common::interp_for;
 use anthill_core::kb::ClauseKind;
@@ -20,7 +19,9 @@ use anthill_core::kb::ClauseKind;
 fn stored_reference(interp: &mut Interpreter, stored: &Value) -> Value {
     let reference = interp.kb_mut().intern("reference");
     match stored {
-        Value::Entity { named, .. } => named.iter().find(|(name, _)| *name == reference)
+        Value::Entity { named, .. } => named
+            .iter()
+            .find(|(name, _)| *name == reference)
             .map(|(_, value)| value.clone())
             .expect("StoredRef carries reference"),
         other => panic!("persist must return StoredRef, got {other:?}"),
@@ -42,12 +43,16 @@ fn filestore_value(interp: &mut Interpreter, root: &str) -> Value {
         pos: vec![].into(),
         named: vec![
             (root_sym, Value::Str(root.to_string())),
-            (convention_sym, Value::Entity {
-                functor: flat,
-                pos: vec![].into(),
-                named: vec![].into(),
-            }),
-        ].into(),
+            (
+                convention_sym,
+                Value::Entity {
+                    functor: flat,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
+        ]
+        .into(),
     }
 }
 
@@ -63,12 +68,16 @@ fn persist_then_flush_writes_fact_to_disk() {
     let mut interp = interp_for(src);
 
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
 
-    interp.register_mirror(
-        key.clone(),
-        Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
-    ).expect("a file store declares no intrinsic policy, so nothing is resolved");
+    interp
+        .register_mirror(
+            key.clone(),
+            Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+        )
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
 
     // Build a Foo(value: 7) entity.
     let foo_sym = interp.kb_mut().intern("Foo");
@@ -80,12 +89,23 @@ fn persist_then_flush_writes_fact_to_disk() {
     };
 
     let none_val = Value::Unit;
-    let result = interp.call("anthill.persistence.Store.persist", &[store_val.clone(), foo_val, none_val.clone()])
+    let result = interp
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store_val.clone(), foo_val, none_val.clone()],
+        )
         .expect("persist call");
-    assert!(matches!(result, Value::Entity { .. }), "persist returns StoredRef");
+    assert!(
+        matches!(result, Value::Entity { .. }),
+        "persist returns StoredRef"
+    );
 
-    let nil_val = Value::Unit;  // delta arg, ignored in v1
-    let flushed = interp.call("anthill.persistence.Store.flush", &[store_val.clone(), nil_val])
+    let nil_val = Value::Unit; // delta arg, ignored in v1
+    let flushed = interp
+        .call(
+            "anthill.persistence.Store.flush",
+            &[store_val.clone(), nil_val],
+        )
         .expect("flush call");
     assert!(matches!(flushed, Value::Bool(true)));
 
@@ -107,11 +127,19 @@ fn persist_then_flush_writes_fact_to_disk() {
     // don't know its qname, so we identify by the printed head shape.
     let fact_sort = ClauseKind::Fact;
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb2);
-    let foo_count = kb2.clauses_of_kind(fact_sort)
+    let foo_count = kb2
+        .clauses_of_kind(fact_sort)
         .into_iter()
-        .filter(|&rid| printer.print_term(kb2.rule_head(rid)).contains("Foo(value: 7)"))
+        .filter(|&rid| {
+            printer
+                .print_term(kb2.rule_head(rid))
+                .contains("Foo(value: 7)")
+        })
         .count();
-    assert_eq!(foo_count, 1, "exactly one Foo(value: 7) fact after round-trip");
+    assert_eq!(
+        foo_count, 1,
+        "exactly one Foo(value: 7) fact after round-trip"
+    );
 }
 
 #[test]
@@ -139,15 +167,27 @@ fn failed_mirror_persist_does_not_assert_a_resident_fact() {
 
     let mut interp = interp_for("namespace test.persist_failure\n  entity Foo\nend\n");
     let store_val = filestore_value(&mut interp, "unused");
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(key, Box::new(FailingStore))
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    interp
+        .register_mirror(key, Box::new(FailingStore))
         .expect("FailingStore declares no intrinsic policy");
-    let foo = interp.kb_mut().try_resolve_symbol("test.persist_failure.Foo")
+    let foo = interp
+        .kb_mut()
+        .try_resolve_symbol("test.persist_failure.Foo")
         .expect("declared Foo resolves");
-    let fact = Value::Entity { functor: foo, pos: Vec::new().into(), named: Vec::new().into() };
+    let fact = Value::Entity {
+        functor: foo,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
 
     let error = interp
-        .call("anthill.persistence.Store.persist", &[store_val, fact, Value::Unit])
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store_val, fact, Value::Unit],
+        )
         .expect_err("the mirror failure must surface");
     assert!(format!("{error:?}").contains("deliberate test failure"));
     assert!(
@@ -172,22 +212,51 @@ fn retract_via_builtin_removes_fact_from_disk() {
     let mut interp = interp_for(src);
 
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(
-        key.clone(),
-        Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
-    ).expect("a file store declares no intrinsic policy, so nothing is resolved");
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    interp
+        .register_mirror(
+            key.clone(),
+            Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+        )
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
 
     let foo_sym = interp.kb_mut().intern("Foo");
-    let bar_sym = interp.kb_mut().try_resolve_symbol("test.retract.Bar")
+    let bar_sym = interp
+        .kb_mut()
+        .try_resolve_symbol("test.retract.Bar")
         .expect("declared Bar resolves");
-    let foo_val = Value::Entity { functor: foo_sym, pos: vec![].into(), named: vec![].into() };
-    let bar_val = Value::Entity { functor: bar_sym, pos: vec![].into(), named: vec![].into() };
+    let foo_val = Value::Entity {
+        functor: foo_sym,
+        pos: vec![].into(),
+        named: vec![].into(),
+    };
+    let bar_val = Value::Entity {
+        functor: bar_sym,
+        pos: vec![].into(),
+        named: vec![].into(),
+    };
 
     let none_val = Value::Unit;
-    let _foo_id = interp.call("anthill.persistence.Store.persist", &[store_val.clone(), foo_val, none_val.clone()]).unwrap();
-    let bar_id = interp.call("anthill.persistence.Store.persist", &[store_val.clone(), bar_val, none_val.clone()]).unwrap();
-    interp.call("anthill.persistence.Store.flush", &[store_val.clone(), Value::Unit]).unwrap();
+    let _foo_id = interp
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store_val.clone(), foo_val, none_val.clone()],
+        )
+        .unwrap();
+    let bar_id = interp
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store_val.clone(), bar_val, none_val.clone()],
+        )
+        .unwrap();
+    interp
+        .call(
+            "anthill.persistence.Store.flush",
+            &[store_val.clone(), Value::Unit],
+        )
+        .unwrap();
 
     // Sanity: both on disk.
     let path = root.join("facts.anthill");
@@ -198,13 +267,23 @@ fn retract_via_builtin_removes_fact_from_disk() {
     // Retract Bar. `retract` is a NonMonotonicStore-trait op (proposal 053 /
     // 007 §2); FileStore declares `fact NonMonotonicStore[FileStore]`.
     let bar_reference = stored_reference(&mut interp, &bar_id);
-    let retracted = interp.call("anthill.persistence.NonMonotonicStore.retract", &[store_val.clone(), bar_reference]).unwrap();
+    let retracted = interp
+        .call(
+            "anthill.persistence.NonMonotonicStore.retract",
+            &[store_val.clone(), bar_reference],
+        )
+        .unwrap();
     assert!(matches!(retracted, Value::Bool(true)));
-    interp.call("anthill.persistence.Store.flush", &[store_val, Value::Unit]).unwrap();
+    interp
+        .call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
+        .unwrap();
 
     let after_retract = std::fs::read_to_string(&path).unwrap();
     assert!(after_retract.contains("fact Foo"), "Foo survives");
-    assert!(!after_retract.contains("fact Bar"), "Bar dropped from disk:\n{after_retract}");
+    assert!(
+        !after_retract.contains("fact Bar"),
+        "Bar dropped from disk:\n{after_retract}"
+    );
 }
 
 #[test]
@@ -217,13 +296,19 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
         rule fact_monotonicity(Bar) = non_monotone() [simp]\nend\n";
     let mut interp = interp_for(src);
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    interp.register_mirror(
-        key,
-        Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
-    ).expect("a file store declares no intrinsic policy, so nothing is resolved");
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    interp
+        .register_mirror(
+            key,
+            Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+        )
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
 
-    let bar = interp.kb_mut().try_resolve_symbol("test.update.Bar")
+    let bar = interp
+        .kb_mut()
+        .try_resolve_symbol("test.update.Bar")
         .expect("declared Bar resolves");
     let value = interp.kb_mut().intern("value");
     let original = Value::Entity {
@@ -231,11 +316,17 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
         pos: Vec::new().into(),
         named: vec![(value, Value::Int(1))].into(),
     };
-    let persisted = interp.call(
-        "anthill.persistence.Store.persist",
-        &[store_val.clone(), original, Value::Unit],
-    ).expect("persist");
-    interp.call("anthill.persistence.Store.flush", &[store_val.clone(), Value::Unit])
+    let persisted = interp
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store_val.clone(), original, Value::Unit],
+        )
+        .expect("persist");
+    interp
+        .call(
+            "anthill.persistence.Store.flush",
+            &[store_val.clone(), Value::Unit],
+        )
         .expect("flush initial row");
 
     let replacement = Value::Entity {
@@ -244,25 +335,37 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
         named: vec![(value, Value::Int(2))].into(),
     };
     let persisted_reference = stored_reference(&mut interp, &persisted);
-    let updated = interp.call(
-        "anthill.persistence.NonMonotonicStore.update",
-        &[store_val.clone(), persisted_reference, replacement],
-    ).expect("update");
+    let updated = interp
+        .call(
+            "anthill.persistence.NonMonotonicStore.update",
+            &[store_val.clone(), persisted_reference, replacement],
+        )
+        .expect("update");
     let Value::Entity { functor, named, .. } = updated else {
         panic!("update must return Option.some(StoredRef)");
     };
     assert_eq!(interp.kb().local_name_of(functor), "some");
-    let updated_reference = named.iter().find_map(|(_, value)| match value {
-        Value::Entity { .. } => Some(stored_reference(&mut interp, value)),
-        _ => None,
-    }).expect("some carries StoredRef");
+    let updated_reference = named
+        .iter()
+        .find_map(|(_, value)| match value {
+            Value::Entity { .. } => Some(stored_reference(&mut interp, value)),
+            _ => None,
+        })
+        .expect("some carries StoredRef");
     assert!(matches!(updated_reference, Value::FactRef(_)));
 
-    interp.call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
+    interp
+        .call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
         .expect("flush replacement");
     let text = std::fs::read_to_string(root.join("facts.anthill")).expect("read facts");
-    assert!(!text.contains("Bar(value: 1)"), "old row must be gone: {text}");
-    assert!(text.contains("Bar(value: 2)"), "replacement must persist: {text}");
+    assert!(
+        !text.contains("Bar(value: 1)"),
+        "old row must be gone: {text}"
+    );
+    assert!(
+        text.contains("Bar(value: 2)"),
+        "replacement must persist: {text}"
+    );
 }
 
 #[test]
@@ -280,17 +383,33 @@ fn store_canonical_key_is_stable() {
         pos: vec![].into(),
         named: vec![
             (root, Value::Str("/tmp/x".into())),
-            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into() }),
-        ].into(),
+            (
+                conv,
+                Value::Entity {
+                    functor: flat,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
+        ]
+        .into(),
     };
     let v2 = Value::Entity {
         functor: fs,
         pos: vec![].into(),
         named: vec![
             // reversed order
-            (conv, Value::Entity { functor: flat, pos: vec![].into(), named: vec![].into() }),
+            (
+                conv,
+                Value::Entity {
+                    functor: flat,
+                    pos: vec![].into(),
+                    named: vec![].into(),
+                },
+            ),
             (root, Value::Str("/tmp/x".into())),
-        ].into(),
+        ]
+        .into(),
     };
     let k1 = interp.store_canonical_key(&v1).unwrap();
     let k2 = interp.store_canonical_key(&v2).unwrap();

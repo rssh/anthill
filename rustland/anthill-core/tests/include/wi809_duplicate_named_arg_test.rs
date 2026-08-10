@@ -60,7 +60,8 @@ const ENTITY: &str = "  sort S\n    entity mk(a: Int64, b: Int64)\n  end\n";
 fn assert_dup_refused(src: &str, what: &str) {
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate named argument `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate named argument `a`")),
         "{what} must refuse a repeated label, naming it; got: {errs:?}",
     );
 }
@@ -133,11 +134,16 @@ fn distinct_labels_still_construct_and_read() {
          operation d() -> Int64 = mk(a: 1, b: 2).b\nend\n"
     );
     let errs = try_load_kb_with(&src).err().unwrap_or_default();
-    assert!(errs.is_empty(), "a distinct-label construction must load; got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a distinct-label construction must load; got: {errs:?}"
+    );
     let mut interp = interp_for(&src);
     match interp.call("test.wi809.ok.d", &[]).expect("d") {
         anthill_core::eval::Value::Int(2) => {}
-        other => panic!("`.b` must read the `b` field (2) — the slot the bug left unbound; got {other:?}"),
+        other => panic!(
+            "`.b` must read the `b` field (2) — the slot the bug left unbound; got {other:?}"
+        ),
     }
 }
 
@@ -172,7 +178,8 @@ fn duplicate_label_in_a_constructor_pattern_is_refused() {
     );
     let errs = parse_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate named pattern field `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate named pattern field `a`")),
         "a constructor pattern must refuse a repeated field label; got: {errs:?}",
     );
 }
@@ -186,7 +193,8 @@ fn duplicate_label_in_a_proof_strategy_is_refused() {
                proof p by z3(logic: \"LRA\", logic: \"QF_NRA\") end\nend\n";
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate proof strategy argument `logic`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate proof strategy argument `logic`")),
         "a proof strategy must refuse a repeated argument label; got: {errs:?}",
     );
 }

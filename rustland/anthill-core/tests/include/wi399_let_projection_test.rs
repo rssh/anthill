@@ -20,8 +20,8 @@
 //! Design: `docs/design/expansion-during-unification.md` §4 (Placement) + §7 Layer 2.
 //! Spun out of WI-376.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -30,8 +30,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -99,7 +99,8 @@ end
 "#;
     let errs = load_errors(&[wrong]);
     assert!(
-        errs.iter().any(|e| e.contains("String") && e.contains("Int64")),
+        errs.iter()
+            .any(|e| e.contains("String") && e.contains("Int64")),
         "k : s.cell.T is String, so binding 42 (Int64) must be rejected against String; \
          got: {errs:?}",
     );
@@ -157,7 +158,9 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("'T'") && (e.contains("requires") || e.contains("declares a member"))),
+        errs.iter()
+            .any(|e| e.contains("'T'")
+                && (e.contains("requires") || e.contains("declares a member"))),
         "Wrapper has no `requires` lending P a member T, so s.cell.T must be a loud \
          missing-member error; got: {errs:?}",
     );
@@ -182,7 +185,8 @@ end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("Nope") || e.contains("no member")),
+        errs.iter()
+            .any(|e| e.contains("Nope") || e.contains("no member")),
         "s.Nope projects a member Box does not declare — must be a loud error; got: {errs:?}",
     );
 }

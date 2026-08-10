@@ -144,14 +144,16 @@ namespace wi822.ghost
 end
 "#
     );
-    let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_else(|| {
-        panic!(
-            "the unpinnable-chain program must NOT load — if it does, the only thing \
+    let errs = crate::common::try_load_kb_with(&src)
+        .err()
+        .unwrap_or_else(|| {
+            panic!(
+                "the unpinnable-chain program must NOT load — if it does, the only thing \
              left between its abstract element and a dictionary is the fully-pinned \
              gate, and this test must be rewritten to drive it (a wrong dictionary \
              would deliver Ok(Int(8)))"
-        )
-    });
+            )
+        });
     let text = errs.join("\n");
     assert!(
         text.contains("wi822.ghost.Desc.describe.requires") && text.contains(MISSING_REQUIRES),

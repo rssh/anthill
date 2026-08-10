@@ -1,9 +1,8 @@
 //! Verifies the loader emits a ProofRecord fact per `proof` block
 //! and that its strategy/body fields round-trip the parsed info.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -11,10 +10,14 @@ fn load_with(extra: &str) -> KnowledgeBase {
     let stdlib = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&stdlib);
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -30,14 +33,13 @@ fn render_facts_for(kb: &mut KnowledgeBase, sort_qn: &str) -> Vec<String> {
     // is load-bearing here, not stylistic. They used to be reachable by their
     // clause key instead, because four loader sites filed them under a raw
     // intern of this sort's name where every other clause carries a kind.
-    let sort_sym = kb.try_resolve_symbol(sort_qn)
+    let sort_sym = kb
+        .try_resolve_symbol(sort_qn)
         .unwrap_or_else(|| panic!("resolve `{sort_qn}`"));
     let rules = kb.rules_by_functor(sort_sym);
     let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
     let printer = TermPrinter::new(kb);
-    let mut out: Vec<String> = heads.into_iter()
-        .map(|h| printer.print_term(h))
-        .collect();
+    let mut out: Vec<String> = heads.into_iter().map(|h| printer.print_term(h)).collect();
     out.sort();
     out
 }
@@ -58,11 +60,13 @@ fn proof_record_is_emitted_with_strategy() {
         !records.is_empty(),
         "expected at least one ProofRecord fact; found:\n  {records:?}"
     );
-    let r = records.iter().find(|r| r.contains("lower_violation"))
+    let r = records
+        .iter()
+        .find(|r| r.contains("lower_violation"))
         .unwrap_or_else(|| panic!("no ProofRecord for lower_violation; saw:\n{records:#?}"));
     assert!(r.contains("ProofStrategyKind"), "no strategy: {r}");
-    assert!(r.contains("z3"),                "wrong tool: {r}");
-    assert!(r.contains("Pending"),           "should start Pending: {r}");
+    assert!(r.contains("z3"), "wrong tool: {r}");
+    assert!(r.contains("Pending"), "should start Pending: {r}");
 }
 
 #[test]
@@ -78,9 +82,14 @@ fn proof_with_no_strategy_is_open_obligation() {
     "#;
     let mut kb = load_with(src);
     let records = render_facts_for(&mut kb, "anthill.realization.ProofRecord");
-    let r = records.iter().find(|r| r.contains("test.proof_load_open.foo"))
+    let r = records
+        .iter()
+        .find(|r| r.contains("test.proof_load_open.foo"))
         .unwrap_or_else(|| panic!("no ProofRecord for foo; saw:\n{records:#?}"));
-    assert!(r.contains("ProofStrategyOpen"), "open obligation should use ProofStrategyOpen: {r}");
+    assert!(
+        r.contains("ProofStrategyOpen"),
+        "open obligation should use ProofStrategyOpen: {r}"
+    );
 }
 
 #[test]
@@ -96,10 +105,12 @@ fn proof_with_query_keeps_text() {
     "#;
     let mut kb = load_with(src);
     let records = render_facts_for(&mut kb, "anthill.realization.ProofRecord");
-    let r = records.iter().find(|r| r.contains("add_comm"))
+    let r = records
+        .iter()
+        .find(|r| r.contains("add_comm"))
         .unwrap_or_else(|| panic!("no ProofRecord for add_comm; saw:\n{records:#?}"));
     assert!(r.contains("ProofBodyQuery"), "wrong body: {r}");
-    assert!(r.contains("(assert true)"),  "query text not retained: {r}");
+    assert!(r.contains("(assert true)"), "query text not retained: {r}");
 }
 
 #[test]
@@ -146,7 +157,9 @@ fn structured_proof_body_loads_with_steps_and_conclude() {
     "#;
     let mut kb = load_with(src);
     let records = render_facts_for(&mut kb, "anthill.realization.ProofRecord");
-    let r = records.iter().find(|r| r.contains("big_lemma"))
+    let r = records
+        .iter()
+        .find(|r| r.contains("big_lemma"))
         .unwrap_or_else(|| panic!("no ProofRecord for big_lemma; saw:\n{records:#?}"));
     assert!(
         r.contains("ProofBodyStructured"),
@@ -161,8 +174,10 @@ fn structured_proof_body_loads_with_steps_and_conclude() {
         "expected ProofConcludeClause from trailing using/by, got: {r}"
     );
     // Step labels are preserved as String literals.
-    assert!(r.contains("h1") && r.contains("h2"),
-        "expected step labels h1 and h2 in body: {r}");
+    assert!(
+        r.contains("h1") && r.contains("h2"),
+        "expected step labels h1 and h2 in body: {r}"
+    );
     // Step-local cites (`using h1, h2`) resolve to the
     // `<parent_proof_qn>.<label>` form at load time so phase b's
     // dispatcher doesn't need to guess.
@@ -193,11 +208,15 @@ fn structured_proof_without_concluding_clause_loads() {
     "#;
     let mut kb = load_with(src);
     let records = render_facts_for(&mut kb, "anthill.realization.ProofRecord");
-    let r = records.iter().find(|r| r.contains("lemma_x"))
+    let r = records
+        .iter()
+        .find(|r| r.contains("lemma_x"))
         .unwrap_or_else(|| panic!("no ProofRecord for lemma_x; saw:\n{records:#?}"));
     assert!(r.contains("ProofBodyStructured"), "wrong body: {r}");
     assert!(r.contains("ProofStep"), "missing step: {r}");
     // The conclude slot is absent → encoded as Bottom (⊥).
-    assert!(r.contains("⊥") || !r.contains("ProofConcludeClause"),
-        "expected absent conclude to be ⊥, got: {r}");
+    assert!(
+        r.contains("⊥") || !r.contains("ProofConcludeClause"),
+        "expected absent conclude to be ⊥, got: {r}"
+    );
 }

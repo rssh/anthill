@@ -10,8 +10,8 @@
 //! (`ensures Spec[C]`, the interface-rooted existential) remains WI-402's open
 //! scope — not covered here.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -20,8 +20,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -59,7 +59,10 @@ fn manifest_provider_return_accepted() {
         "namespace test.wi402.ret\n{PRELUDE}\n  operation open(s: SubscriberStore) -> DataProvider[K = String] = s\nend\n"
     );
     let errs = load_errors(&[&src]);
-    assert!(errs.is_empty(), "manifest provider return must typecheck, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "manifest provider return must typecheck, got: {errs:?}"
+    );
 }
 
 /// Same, returning a freshly constructed entity value (provision read through the
@@ -70,7 +73,10 @@ fn manifest_provider_entity_return_accepted() {
         "namespace test.wi402.ent\n{PRELUDE}\n  operation open() -> DataProvider[K = String] = subscriberStore\nend\n"
     );
     let errs = load_errors(&[&src]);
-    assert!(errs.is_empty(), "entity-literal provider return must typecheck, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "entity-literal provider return must typecheck, got: {errs:?}"
+    );
 }
 
 /// Binding-precise means binding-CHECKED: a manifest the provider contradicts stays
@@ -109,7 +115,10 @@ fn manifest_provider_arg_accepted() {
         "namespace test.wi402.arg\n{PRELUDE}\n  operation use(p: DataProvider[K = String]) -> Int64 = 1\n  operation call(s: SubscriberStore) -> Int64 = use(s)\nend\n"
     );
     let errs = load_errors(&[&src]);
-    assert!(errs.is_empty(), "provider arg vs manifest spec param must typecheck, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "provider arg vs manifest spec param must typecheck, got: {errs:?}"
+    );
 }
 
 /// Arg-position twin of the wrong-binding rejection.
@@ -150,7 +159,10 @@ namespace test.wi402.factory
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "fully-bound two-backend factory must typecheck, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "fully-bound two-backend factory must typecheck, got: {errs:?}"
+    );
 }
 
 /// ACCEPTANCE ANCHOR (WI-391-gated): a provider binding to a STRUCTURED value
@@ -176,7 +188,10 @@ namespace test.wi402.structok
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "structured provider binding must typecheck, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "structured provider binding must typecheck, got: {errs:?}"
+    );
 }
 
 /// Structured-binding twin of the wrong-binding rejection.
@@ -223,7 +238,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape")),
+        errs.iter()
+            .any(|e| e.contains("abstracting return") || e.contains("escape")),
         "partial manifest must still be flagged as an abstracting return, got: {errs:?}"
     );
 }

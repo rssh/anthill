@@ -14,18 +14,21 @@
 //!   never bind. A `unify` under `not(...)` is a test (NAF), not a binding, and
 //!   is left alone.
 
+use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::load::{self, NullResolver, LoadError};
 use anthill_core::parse;
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}")));
     let refs: Vec<_> = parsed.iter().collect();
 
@@ -37,16 +40,23 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn naf_errors(errs: &[LoadError]) -> Vec<&LoadError> {
     // WI-745: peel the file-provenance wrapper before matching on the variant.
-    errs.iter().filter(|e| matches!(e.peel(), LoadError::UnsafeNegatedUnify { .. })).collect()
+    errs.iter()
+        .filter(|e| matches!(e.peel(), LoadError::UnsafeNegatedUnify { .. }))
+        .collect()
 }
 
 fn contract_errors(errs: &[LoadError]) -> Vec<&LoadError> {
-    errs.iter().filter(|e| matches!(e.peel(), LoadError::BindingInContract { .. })).collect()
+    errs.iter()
+        .filter(|e| matches!(e.peel(), LoadError::BindingInContract { .. }))
+        .collect()
 }
 
 // ── Part A: negated unify under `not` ───────────────────────────────────

@@ -5,7 +5,6 @@
 //! read_line) all load and resolve after stdlib load. Handler wiring
 //! (actually driving stdio) is WI-050 (M5 effect handlers).
 
-
 use crate::common::load_kb_with;
 
 #[test]

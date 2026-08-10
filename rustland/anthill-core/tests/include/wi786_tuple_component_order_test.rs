@@ -30,7 +30,10 @@ use crate::common::{interp_for, try_load_kb_with};
 fn run_int(src: &str, op: &str) -> i64 {
     // Fresh interpreter per call — a reused one poisons later calls after a trap.
     let mut interp = interp_for(src);
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -73,7 +76,11 @@ fn underscore_label_in_the_middle_keeps_source_order() {
         "(a: 1, _b: 2, c: 3)",
         "lambda (p, q, r) -> p * 100 + q * 10 + r",
     );
-    assert_eq!(run_int(&src, "test.wi786m.drive"), 123, "pre-fix the hoist gave 213");
+    assert_eq!(
+        run_int(&src, "test.wi786m.drive"),
+        123,
+        "pre-fix the hoist gave 213"
+    );
 }
 
 /// The type-soundness consequence, which fails in a different currency: under
@@ -90,7 +97,10 @@ namespace test.wi786sound
     = ap(lambda (p, q) -> p)
 end
 "#;
-    assert!(try_load_kb_with(src).is_ok(), "fixture must load; the check is at eval");
+    assert!(
+        try_load_kb_with(src).is_ok(),
+        "fixture must load; the check is at eval"
+    );
     let mut interp = interp_for(src);
     match interp.call("test.wi786sound.drive", &[]) {
         Ok(anthill_core::eval::Value::Int(i)) => assert_eq!(i, 3, "p must bind the Int64 slot"),
@@ -107,7 +117,12 @@ end
 /// synthetic names for their own indices.
 #[test]
 fn positional_syntax_still_unwraps() {
-    let src = tuple_case("test.wi786p", "(Int64, Int64)", "(3, 10)", "lambda (p, q) -> p - q");
+    let src = tuple_case(
+        "test.wi786p",
+        "(Int64, Int64)",
+        "(3, 10)",
+        "lambda (p, q) -> p - q",
+    );
     assert_eq!(run_int(&src, "test.wi786p.drive"), -7);
 }
 
@@ -122,7 +137,11 @@ fn leading_zero_label_is_not_synthetic() {
         "(_01: 3, b: 10)",
         "lambda (p, q) -> p - q",
     );
-    assert_eq!(run_int(&src, "test.wi786z.drive"), -7, "`_01` must stay in source position 0");
+    assert_eq!(
+        run_int(&src, "test.wi786z.drive"),
+        -7,
+        "`_01` must stay in source position 0"
+    );
 }
 
 /// A synthetic-looking label for the WRONG index must not be unwrapped either:
@@ -136,7 +155,11 @@ fn synthetic_name_for_the_wrong_index_stays_named() {
         "(_2: 3, b: 10)",
         "lambda (p, q) -> p - q",
     );
-    assert_eq!(run_int(&src, "test.wi786w.drive"), -7, "`_2` at index 0 is a user label");
+    assert_eq!(
+        run_int(&src, "test.wi786w.drive"),
+        -7,
+        "`_2` at index 0 is a user label"
+    );
 }
 
 /// A `_`-prefixed user label must remain reachable BY NAME — the old hoist moved
@@ -168,7 +191,11 @@ fn prefix_split_across_pos_and_named_still_binds_in_order() {
         "(_1: 3, b: 10)",
         "lambda (p, q) -> p - q",
     );
-    assert_eq!(run_int(&src, "test.wi786x.drive"), -7, "`_1` is slot 0, `b` slot 1");
+    assert_eq!(
+        run_int(&src, "test.wi786x.drive"),
+        -7,
+        "`_1` is slot 0, `b` slot 1"
+    );
 }
 
 /// The `named.is_empty()` half of the guard, which nothing else here reaches.

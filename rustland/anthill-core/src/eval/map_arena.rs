@@ -19,9 +19,9 @@ use std::rc::Rc;
 use imbl::{HashMap as ImHashMap, Vector as ImVector};
 
 use crate::intern::Symbol;
-use crate::kb::KnowledgeBase;
 use crate::kb::term::{Term, TermId};
 use crate::kb::term_view::{TermView, ViewHead};
+use crate::kb::KnowledgeBase;
 
 use super::value::Value;
 
@@ -212,16 +212,25 @@ pub(crate) struct MapArena {
 
 impl MapArena {
     fn new() -> Self {
-        Self { slots: Vec::new(), free_list: Vec::new() }
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+        }
     }
 
     fn alloc_raw(&mut self, body: MapBody) -> u32 {
         if let Some(reused) = self.free_list.pop() {
-            self.slots[reused as usize] = Slot { body: Some(body), refcount: 1 };
+            self.slots[reused as usize] = Slot {
+                body: Some(body),
+                refcount: 1,
+            };
             reused
         } else {
             let raw = self.slots.len() as u32;
-            self.slots.push(Slot { body: Some(body), refcount: 1 });
+            self.slots.push(Slot {
+                body: Some(body),
+                refcount: 1,
+            });
             raw
         }
     }
@@ -257,7 +266,10 @@ impl MapArenaRef {
 
     pub fn alloc(&self, body: MapBody) -> MapHandle {
         let raw = self.0.borrow_mut().alloc_raw(body);
-        MapHandle { raw, arena: self.clone() }
+        MapHandle {
+            raw,
+            arena: self.clone(),
+        }
     }
 
     /// Borrow the underlying `MapBody` for a read-only callback.
@@ -277,11 +289,15 @@ impl MapArenaRef {
     }
 
     /// Number of live map slots (diagnostic for refcount tests).
-    pub fn live(&self) -> usize { self.0.borrow().live() }
+    pub fn live(&self) -> usize {
+        self.0.borrow().live()
+    }
 }
 
 impl Default for MapArenaRef {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Refcounted map handle. Clone bumps the slot's refcount; Drop decrements
@@ -292,15 +308,22 @@ pub struct MapHandle {
 }
 
 impl MapHandle {
-    pub fn raw(&self) -> u32 { self.raw }
-    #[allow(dead_code)]  // arena handle accessor; kept for future map ops
-    pub(crate) fn arena(&self) -> &MapArenaRef { &self.arena }
+    pub fn raw(&self) -> u32 {
+        self.raw
+    }
+    #[allow(dead_code)] // arena handle accessor; kept for future map ops
+    pub(crate) fn arena(&self) -> &MapArenaRef {
+        &self.arena
+    }
 }
 
 impl Clone for MapHandle {
     fn clone(&self) -> Self {
         self.arena.0.borrow_mut().retain_raw(self.raw);
-        Self { raw: self.raw, arena: self.arena.clone() }
+        Self {
+            raw: self.raw,
+            arena: self.arena.clone(),
+        }
     }
 }
 
@@ -433,7 +456,10 @@ mod tests {
         // nullary `Fn` `resolve_qualified_name_term` mints.
         let ref_tid = kb.alloc(Term::Ref(c));
         let fn_tid = kb.resolve_qualified_name_term("demo.Color.red");
-        assert_ne!(ref_tid, fn_tid, "premise: the mint really does bypass the canon");
+        assert_ne!(
+            ref_tid, fn_tid,
+            "premise: the mint really does bypass the canon"
+        );
 
         let via_ref = MapKey::try_from_value(&kb, &Value::term(ref_tid));
         let via_symbolref = MapKey::try_from_value(&kb, &Value::SymbolRef(c));
@@ -472,7 +498,10 @@ mod tests {
         // boundary is driven rather than assumed — this is the case that would
         // silently merge if the `is_constructor_symbol` gate were dropped.
         let sort = kb.intern("demo.Color");
-        assert!(!kb.is_constructor_symbol(sort), "premise: a sort is not a constructor");
+        assert!(
+            !kb.is_constructor_symbol(sort),
+            "premise: a sort is not a constructor"
+        );
         let sort_fn = kb.resolve_qualified_name_term("demo.Color");
         let sort_ref = kb.alloc(Term::Ref(sort));
         assert_eq!(

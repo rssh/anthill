@@ -2,14 +2,15 @@
 //! mutating commands to stamp `at:` fields on Feedback / status
 //! transitions in the legacy `YYYY-MM-DDTHH:MM:SSZ` form.
 
-
-use anthill_core::eval::Value;
 use crate::common::interp_for;
+use anthill_core::eval::Value;
 
 #[test]
 fn time_now_returns_iso_z_timestamp() {
     let mut interp = interp_for("namespace test.time_now end\n");
-    let v = interp.call("anthill.prelude.Time.now", &[]).expect("Time.now");
+    let v = interp
+        .call("anthill.prelude.Time.now", &[])
+        .expect("Time.now");
     let s = match v {
         Value::Str(s) => s,
         other => panic!("expected Str, got {other:?}"),
@@ -33,10 +34,14 @@ namespace test.time_now_src
 end
 "#;
     let mut interp = interp_for(src);
-    let r = interp.call("test.time_now_src.when", &[]).expect("call when");
+    let r = interp
+        .call("test.time_now_src.when", &[])
+        .expect("call when");
     match r {
-        Value::Str(s) => assert!(s.ends_with('Z') && s.len() == 20,
-            "expected RFC3339-Z timestamp, got {s:?}"),
+        Value::Str(s) => assert!(
+            s.ends_with('Z') && s.len() == 20,
+            "expected RFC3339-Z timestamp, got {s:?}"
+        ),
         other => panic!("expected Str, got {other:?}"),
     }
 }

@@ -23,9 +23,9 @@
 //! ```
 
 use anthill_core::eval::value::Value;
+use anthill_core::intern::SymbolKind;
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::term::{Literal, Term};
-use anthill_core::intern::SymbolKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
@@ -109,7 +109,10 @@ fn every_entity_has_a_sort_including_the_wrapped_one() {
         );
         // The inverse direction agrees: a single-constructor sort's one
         // constructor is itself.
-        assert!(kb.constructors_of_sort(e).contains(&e), "E is its own constructor");
+        assert!(
+            kb.constructors_of_sort(e).contains(&e),
+            "E is its own constructor"
+        );
     }
 }
 
@@ -137,8 +140,12 @@ fn control_the_strict_parent_view_cuts_the_fixpoint() {
 #[test]
 fn control_a_named_variant_has_a_strict_parent() {
     let kb = load_src(&src(SUGAR));
-    let status = kb.try_resolve_symbol("test.wi925.Status").expect("Status resolves");
-    let open = kb.try_resolve_symbol("test.wi925.Status.Open").expect("Open resolves");
+    let status = kb
+        .try_resolve_symbol("test.wi925.Status")
+        .expect("Status resolves");
+    let open = kb
+        .try_resolve_symbol("test.wi925.Status.Open")
+        .expect("Open resolves");
     assert_eq!(kb.sort_of_constructor(open), Some(status));
     assert_eq!(kb.strict_parent_sort(open), Some(status));
 }
@@ -177,11 +184,18 @@ fn a_free_standing_entity_row_can_be_asserted_at_runtime() {
         let stored = kb
             .assert_checked_persistent(r, None)
             .unwrap_or_else(|e| panic!("a row of a free-standing entity must assert: {e:?}"));
-        assert!(stored.is_some(), "no guard is declared here, so the row stores");
+        assert!(
+            stored.is_some(),
+            "no guard is declared here, so the row stores"
+        );
 
         // The runtime row lands under the SAME functor as the source-loaded one —
         // a free-standing entity's two write paths agree on where its rows live.
-        assert_eq!(kb.rules_by_functor(e).len(), 2, "the runtime row joined the source row");
+        assert_eq!(
+            kb.rules_by_functor(e).len(),
+            2,
+            "the runtime row joined the source row"
+        );
     }
 }
 
@@ -195,8 +209,12 @@ fn a_free_standing_entity_row_can_be_asserted_at_runtime() {
 #[test]
 fn control_a_sort_body_variant_is_a_constructor_not_a_sort() {
     let kb = load_src(&src(SUGAR));
-    let status = kb.try_resolve_symbol("test.wi925.Status").expect("Status resolves");
-    let open = kb.try_resolve_symbol("test.wi925.Status.Open").expect("Open resolves");
+    let status = kb
+        .try_resolve_symbol("test.wi925.Status")
+        .expect("Status resolves");
+    let open = kb
+        .try_resolve_symbol("test.wi925.Status.Open")
+        .expect("Open resolves");
 
     // THE claim: the `Sort` role was NOT blanket-applied to every entity. This is
     // what the `!is_sort_scope` guard decides, so it is what must be asserted —
@@ -225,7 +243,10 @@ fn both_spellings_record_the_same_set_of_categories() {
     for decl in [SUGAR, DESUGARED] {
         let kb = load_src(&src(decl));
         let e = kb.try_resolve_symbol("test.wi925.E").expect("E resolves");
-        assert!(kb.has_kind(e, SymbolKind::Sort), "it IS a single-constructor sort");
+        assert!(
+            kb.has_kind(e, SymbolKind::Sort),
+            "it IS a single-constructor sort"
+        );
         assert!(kb.has_kind(e, SymbolKind::Entity), "and it constructs");
     }
 }
@@ -264,7 +285,11 @@ end
         Err(e) => e,
         Ok(_) => panic!("059 R1 must refuse a sort and a same-named entity in one scope"),
     };
-    let joined = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+    let joined = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         joined.contains("type 'Colour' is declared more than once")
             && joined.contains("`sort` at")
@@ -287,6 +312,14 @@ fn control_the_head_of_the_set_is_the_written_keyword() {
     let desugared = load_src(&src(DESUGARED));
     let sym = |kb: &KnowledgeBase| kb.try_resolve_symbol("test.wi925.E").expect("E resolves");
 
-    assert_eq!(sugar.kind_of(sym(&sugar)), Some(SymbolKind::Entity), "`entity E` wrote `entity`");
-    assert_eq!(desugared.kind_of(sym(&desugared)), Some(SymbolKind::Sort), "`sort E` wrote `sort`");
+    assert_eq!(
+        sugar.kind_of(sym(&sugar)),
+        Some(SymbolKind::Entity),
+        "`entity E` wrote `entity`"
+    );
+    assert_eq!(
+        desugared.kind_of(sym(&desugared)),
+        Some(SymbolKind::Sort),
+        "`sort E` wrote `sort`"
+    );
 }

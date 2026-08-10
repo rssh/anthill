@@ -59,8 +59,9 @@ end
 #[test]
 fn dot_rule_macro_expands_at_compile_time() {
     let kb = load_kb_with(EXPANDS);
-    let consumer =
-        kb.try_resolve_symbol("test.wi902.Holder.consumer").expect("consumer resolves");
+    let consumer = kb
+        .try_resolve_symbol("test.wi902.Holder.consumer")
+        .expect("consumer resolves");
     let body = kb.op_body_node(consumer).expect("consumer has a body node");
     assert_eq!(
         head_short(&kb, &body),
@@ -75,7 +76,9 @@ fn dot_rule_macro_expands_at_compile_time() {
 #[test]
 fn dot_rule_macro_output_re_types_and_evaluates() {
     let mut interp = interp_for(EXPANDS);
-    let got = interp.call("test.wi902.Holder.run", &[]).expect("run evaluates");
+    let got = interp
+        .call("test.wi902.Holder.run", &[])
+        .expect("run evaluates");
     match got {
         Value::Int(n) => assert_eq!(n, 105, "wrapped(h, 5) = add(5, 100) = 105"),
         other => panic!("expected Int(105), got {other:?}"),
@@ -114,12 +117,20 @@ namespace test.wi902reject
   end
 end
 "#;
-    let errs = try_load_kb_with(SRC).err().expect("a rejecting macro must fail the load");
+    let errs = try_load_kb_with(SRC)
+        .err()
+        .expect("a rejecting macro must fail the load");
     let [rejection] = rejections(&errs)[..] else {
         panic!("expected exactly one macro rejection, got: {errs:?}");
     };
-    for fragment in ["test.wi902reject.Holder.wrap", "bump is not translatable here"] {
-        assert!(rejection.contains(fragment), "missing {fragment:?} in: {rejection}");
+    for fragment in [
+        "test.wi902reject.Holder.wrap",
+        "bump is not translatable here",
+    ] {
+        assert!(
+            rejection.contains(fragment),
+            "missing {fragment:?} in: {rejection}"
+        );
     }
     assert!(
         !errs.iter().any(|e| e.contains("op-arg")),
@@ -128,7 +139,11 @@ end
     );
     // The dot redex `?h.bump(5)` — computed from the source, so an edit to the
     // fixture cannot silently un-anchor the assertion.
-    let line = SRC.lines().position(|l| l.contains("?h.bump(5)")).expect("the fixture's redex") + 1;
+    let line = SRC
+        .lines()
+        .position(|l| l.contains("?h.bump(5)"))
+        .expect("the fixture's redex")
+        + 1;
     let col = SRC.lines().nth(line - 1).unwrap().find("?h.bump").unwrap() + 1;
     assert!(
         rejection.starts_with(&format!("{line}:{col}:")),
@@ -160,18 +175,19 @@ namespace test.wi902decline
   end
 end
 "#;
-    let errs = try_load_kb_with(SRC).err().expect("the kept template must fail to type-check");
+    let errs = try_load_kb_with(SRC)
+        .err()
+        .expect("the kept template must fail to type-check");
     assert!(
         rejections(&errs).is_empty(),
         "a macro that is merely not applicable must DECLINE, not reject: {errs:?}",
     );
     assert!(
-        errs.iter().any(|e| e.contains("(op-arg)") && e.contains("expected NodeOccurrence")),
+        errs.iter()
+            .any(|e| e.contains("(op-arg)") && e.contains("expected NodeOccurrence")),
         "the kept template's own type-check is what must surface, got: {errs:?}",
     );
 }
-
-
 
 /// SELECTION is connective-agnostic, like the rest of the `[simp]` engine: a dot
 /// rule spelled `<=>` fires exactly as one spelled `=`.
@@ -185,7 +201,9 @@ end
 /// `[simp]` is the enablement; the connective is not (kernel-language §5.3).
 #[test]
 fn dot_rule_selection_is_connective_agnostic() {
-    let src = |conn: &str| format!(r#"
+    let src = |conn: &str| {
+        format!(
+            r#"
 namespace test.wi902conn{conn_ns}
   import anthill.prelude.{{Int64}}
   sort Holder
@@ -196,7 +214,11 @@ namespace test.wi902conn{conn_ns}
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
 end
-"#, conn = conn, conn_ns = if conn == "=" { "eq" } else { "unify" });
+"#,
+            conn = conn,
+            conn_ns = if conn == "=" { "eq" } else { "unify" }
+        )
+    };
     for conn in ["=", "<=>"] {
         assert!(
             try_load_kb_with(&src(conn)).is_ok(),

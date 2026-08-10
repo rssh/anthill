@@ -7,8 +7,8 @@
 //! `result`) and must declare it. These tests pin both directions —
 //! including the let-bound escaping case that wi205 does not exercise.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load stdlib + user source together (mirrors `common::load_kb_with`, the

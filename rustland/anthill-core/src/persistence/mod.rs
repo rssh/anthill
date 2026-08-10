@@ -1,18 +1,17 @@
+pub mod file_store;
+pub mod indexed_file_store;
 /// Persistence — traits and backends for storing/loading KB facts.
 ///
 /// The `Store` trait provides persist/retract/flush for individual facts.
 /// `BulkStore` extends it with `pull()` to load entire file sets.
 ///
 /// `FileStore` is the filesystem backend: reads/writes `.anthill` files.
-
 pub mod print;
-pub mod file_store;
-pub mod indexed_file_store;
 pub mod term_ser;
 
 use crate::intern::Symbol;
-use crate::kb::{ClauseKind, RuleId, KnowledgeBase};
 use crate::kb::term::TermId;
+use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
 use crate::parse::ir::ParsedFile;
 
 // ── Error ──────────────────────────────────────────────────────

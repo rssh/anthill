@@ -77,10 +77,19 @@ fn op_sym(kb: &KnowledgeBase, short: &str) -> Symbol {
 fn single_arm_body_yields_one_unconditional_equation() {
     let mut kb = crate::common::load_kb_with(SRC);
     let d = op_sym(&kb, "double");
-    let eqs = kb.op_defining_equations(d).expect("double must derive an equation");
+    let eqs = kb
+        .op_defining_equations(d)
+        .expect("double must derive an equation");
     assert_eq!(eqs.len(), 1, "one arm for a single-expression body");
-    assert!(eqs[0].guards.is_empty(), "an unconditional body has no guards");
-    assert_eq!(crate::common::head_short(&kb, &eqs[0].result), "add", "result is the body `add(?0, ?0)`");
+    assert!(
+        eqs[0].guards.is_empty(),
+        "an unconditional body has no guards"
+    );
+    assert_eq!(
+        crate::common::head_short(&kb, &eqs[0].result),
+        "add",
+        "result is the body `add(?0, ?0)`"
+    );
     if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
         assert_eq!(pos_args.len(), 2);
     }
@@ -90,18 +99,32 @@ fn single_arm_body_yields_one_unconditional_equation() {
 fn if_body_yields_two_guarded_arms() {
     let mut kb = crate::common::load_kb_with(SRC);
     let c = op_sym(&kb, "clamp");
-    let eqs = kb.op_defining_equations(c).expect("clamp must derive equations");
+    let eqs = kb
+        .op_defining_equations(c)
+        .expect("clamp must derive equations");
     assert_eq!(eqs.len(), 2, "then-arm and else-arm");
 
     // then-arm: guarded by `gte(?0, 0)` (not negated).
     assert_eq!(eqs[0].guards.len(), 1);
-    assert!(!eqs[0].guards[0].negated, "then-arm holds when the condition is true");
-    assert_eq!(crate::common::head_short(&kb, &eqs[0].guards[0].cond), "gte");
+    assert!(
+        !eqs[0].guards[0].negated,
+        "then-arm holds when the condition is true"
+    );
+    assert_eq!(
+        crate::common::head_short(&kb, &eqs[0].guards[0].cond),
+        "gte"
+    );
 
     // else-arm: the SAME condition, negated.
     assert_eq!(eqs[1].guards.len(), 1);
-    assert!(eqs[1].guards[0].negated, "else-arm holds when the condition is false");
-    assert_eq!(crate::common::head_short(&kb, &eqs[1].guards[0].cond), "gte");
+    assert!(
+        eqs[1].guards[0].negated,
+        "else-arm holds when the condition is false"
+    );
+    assert_eq!(
+        crate::common::head_short(&kb, &eqs[1].guards[0].cond),
+        "gte"
+    );
 }
 
 #[test]
@@ -110,12 +133,25 @@ fn let_binding_inlines_into_condition() {
     // equations match `clamp`'s exactly — two arms, each guarded by `gte`.
     let mut kb = crate::common::load_kb_with(SRC);
     let c = op_sym(&kb, "clamp_let");
-    let eqs = kb.op_defining_equations(c).expect("clamp_let must derive equations");
-    assert_eq!(eqs.len(), 2, "the inlined `let` leaves the same then/else arms as clamp");
+    let eqs = kb
+        .op_defining_equations(c)
+        .expect("clamp_let must derive equations");
+    assert_eq!(
+        eqs.len(),
+        2,
+        "the inlined `let` leaves the same then/else arms as clamp"
+    );
     assert_eq!(eqs[0].guards.len(), 1);
     assert!(!eqs[0].guards[0].negated);
-    assert_eq!(crate::common::head_short(&kb, &eqs[0].guards[0].cond), "gte", "the let-bound guard inlined");
-    assert!(eqs[1].guards[0].negated, "else-arm negates the same inlined guard");
+    assert_eq!(
+        crate::common::head_short(&kb, &eqs[0].guards[0].cond),
+        "gte",
+        "the let-bound guard inlined"
+    );
+    assert!(
+        eqs[1].guards[0].negated,
+        "else-arm negates the same inlined guard"
+    );
 }
 
 #[test]
@@ -124,14 +160,21 @@ fn let_binding_inlines_into_nested_expression() {
     // unconditional arm whose result is `add(add(x, x), x)`.
     let mut kb = crate::common::load_kb_with(SRC);
     let s = op_sym(&kb, "shifted");
-    let eqs = kb.op_defining_equations(s).expect("shifted must derive an equation");
+    let eqs = kb
+        .op_defining_equations(s)
+        .expect("shifted must derive an equation");
     assert_eq!(eqs.len(), 1, "no branches — one unconditional arm");
     assert!(eqs[0].guards.is_empty());
-    assert_eq!(crate::common::head_short(&kb, &eqs[0].result), "add", "outer body is `add(y, x)`");
+    assert_eq!(
+        crate::common::head_short(&kb, &eqs[0].result),
+        "add",
+        "outer body is `add(y, x)`"
+    );
     // The first argument is the inlined `y = add(x, x)`, not a residual binder ref.
     if let Some(Expr::Apply { pos_args, .. }) = eqs[0].result.as_expr() {
         assert_eq!(
-            crate::common::head_short(&kb, &pos_args[0]), "add",
+            crate::common::head_short(&kb, &pos_args[0]),
+            "add",
             "the let value `add(x, x)` was spliced into the first argument"
         );
     }
@@ -224,7 +267,8 @@ fn effect_row_blocking_equations_names_the_row() {
         .expect("an effectful op reports a blocking effect row");
     assert!(
         block.row().contains("External"),
-        "the reported row must name External, got `{}`", block.row()
+        "the reported row must name External, got `{}`",
+        block.row()
     );
     // WI-1049 — and it must be classified EFFECTFUL, not effect-polymorphic:
     // `{External}` is a concrete label, so no carrier can make this op pure.
@@ -245,9 +289,15 @@ fn effect_row_blocking_equations_names_the_row() {
 /// The `?result = <rhs>` body node of `op`'s synthesized defining rule: the
 /// single body goal is `eq(?result, rhs)`; return `rhs` (the refolded body).
 fn synth_body_rhs(kb: &mut KnowledgeBase, op: Symbol) -> Rc<NodeOccurrence> {
-    let rid = kb.synthesize_op_defining_rule(op).expect("op must synthesize a defining rule");
+    let rid = kb
+        .synthesize_op_defining_rule(op)
+        .expect("op must synthesize a defining rule");
     let body = kb.rule_body_nodes(rid);
-    assert_eq!(body.len(), 1, "the defining rule has one `?result = <rhs>` body goal");
+    assert_eq!(
+        body.len(),
+        1,
+        "the defining rule has one `?result = <rhs>` body goal"
+    );
     match body[0].as_expr() {
         Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 2 => Rc::clone(&pos_args[1]),
         other => panic!("body goal must be `eq(?result, rhs)`, got {other:?}"),
@@ -258,7 +308,9 @@ fn synth_body_rhs(kb: &mut KnowledgeBase, op: Symbol) -> Rc<NodeOccurrence> {
 fn synth_single_arm_body_is_bare_result_no_if() {
     let mut kb = crate::common::load_kb_with(SRC);
     let d = op_sym(&kb, "double");
-    let rid = kb.synthesize_op_defining_rule(d).expect("double synthesizes");
+    let rid = kb
+        .synthesize_op_defining_rule(d)
+        .expect("double synthesizes");
     // head `double(?0, ?result)`: one param + the result slot.
     assert_eq!(kb.rule_arity(rid), 2, "one parameter plus the result var");
     // The head functor is the op itself, so the emitter's rules_by_functor inline
@@ -269,7 +321,11 @@ fn synth_single_arm_body_is_bare_result_no_if() {
     );
     // A single-expression body refolds to its bare result — no `if`.
     let rhs = synth_body_rhs(&mut kb, d);
-    assert_eq!(crate::common::head_short(&kb, &rhs), "add", "double's body is `add(?0, ?0)`, no conditional");
+    assert_eq!(
+        crate::common::head_short(&kb, &rhs),
+        "add",
+        "double's body is `add(?0, ?0)`, no conditional"
+    );
 }
 
 #[test]
@@ -279,7 +335,11 @@ fn synth_if_body_refolds_to_ite() {
     let rhs = synth_body_rhs(&mut kb, c);
     match rhs.as_expr() {
         Some(Expr::If { condition, .. }) => {
-            assert_eq!(crate::common::head_short(&kb, condition), "gte", "clamp's guard is `gte(x, 0)`");
+            assert_eq!(
+                crate::common::head_short(&kb, condition),
+                "gte",
+                "clamp's guard is `gte(x, 0)`"
+            );
         }
         other => panic!("clamp's body must refold to an `Expr::If`, got {other:?}"),
     }
@@ -293,18 +353,37 @@ fn synth_nested_if_refolds_with_and_not() {
     // grade: if x>=0 then (if x>=5 then 2 else 1) else 0. Three arms refold to
     // `ite(and(g0,g1), 2, ite(and(g0, not g1), 1, 0))`: the outer guard conjoins,
     // the middle guard negates.
-    let Some(Expr::If { condition, else_branch, .. }) = rhs.as_expr() else {
+    let Some(Expr::If {
+        condition,
+        else_branch,
+        ..
+    }) = rhs.as_expr()
+    else {
         panic!("grade must refold to a nested `Expr::If`");
     };
-    assert_eq!(crate::common::head_short(&kb, condition), "and", "the outer arm's guard is a conjunction");
-    let Some(Expr::If { condition: inner_cond, .. }) = else_branch.as_expr() else {
+    assert_eq!(
+        crate::common::head_short(&kb, condition),
+        "and",
+        "the outer arm's guard is a conjunction"
+    );
+    let Some(Expr::If {
+        condition: inner_cond,
+        ..
+    }) = else_branch.as_expr()
+    else {
         panic!("grade's else must be the next `Expr::If`");
     };
     // inner condition is `and(gte(x,0), not(gte(x,5)))` — assert the `not` appears.
-    assert_eq!(crate::common::head_short(&kb, inner_cond), "and", "the middle arm's guard is a conjunction");
+    assert_eq!(
+        crate::common::head_short(&kb, inner_cond),
+        "and",
+        "the middle arm's guard is a conjunction"
+    );
     if let Some(Expr::Apply { pos_args, .. }) = inner_cond.as_expr() {
         assert!(
-            pos_args.iter().any(|a| crate::common::head_short(&kb, a) == "not"),
+            pos_args
+                .iter()
+                .any(|a| crate::common::head_short(&kb, a) == "not"),
             "the middle arm negates the inner guard"
         );
     }
@@ -326,9 +405,13 @@ fn synth_is_idempotent() {
     let c = op_sym(&kb, "clamp");
     let first = kb.synthesize_op_defining_rule(c).expect("first synth");
     let second = kb.synthesize_op_defining_rule(c).expect("second synth");
-    assert_eq!(first, second, "a second synthesis reuses the existing defining rule");
     assert_eq!(
-        kb.rules_by_functor(c).len(), 1,
+        first, second,
+        "a second synthesis reuses the existing defining rule"
+    );
+    assert_eq!(
+        kb.rules_by_functor(c).len(),
+        1,
         "no duplicate defining rule is registered"
     );
 }
@@ -367,4 +450,3 @@ fn transitive_seam_synthesizes_op_called_one_level_down() {
         "the transitive seam synthesizes `twice`'s defining rule"
     );
 }
-

@@ -2,7 +2,6 @@
 //! (`stdlib/anthill/cli/{spec,parse}.anthill`). Drives `parse_argv` on a
 //! 3-subcommand sample program and asserts on the parsed result.
 
-
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 
@@ -67,19 +66,27 @@ fn entity_short_name(interp: &anthill_core::eval::Interpreter, v: &Value) -> Opt
 #[test]
 fn parses_update_subcommand_with_flag_and_repeated() {
     let mut interp = interp_for(PROGRAM);
-    let result = interp.call("test.cli_demo.parse_update", &[]).expect("parse_update runs");
+    let result = interp
+        .call("test.cli_demo.parse_update", &[])
+        .expect("parse_update runs");
 
     // Expect: parse_ok(ParsedArgs("update", [Binding("acceptance","cargo-test"),
     //                                         Binding("description","x"),
     //                                         Binding("id","WI-001")]))
     // (bindings are accumulated by cons, so order is reverse of the argv pass.)
-    assert_eq!(entity_short_name(&interp, &result).as_deref(), Some("parse_ok"));
+    assert_eq!(
+        entity_short_name(&interp, &result).as_deref(),
+        Some("parse_ok")
+    );
 
     let parsed = match &result {
         Value::Entity { pos, .. } => pos.first().cloned().expect("parse_ok payload"),
         _ => panic!("expected parse_ok entity"),
     };
-    assert_eq!(entity_short_name(&interp, &parsed).as_deref(), Some("ParsedArgs"));
+    assert_eq!(
+        entity_short_name(&interp, &parsed).as_deref(),
+        Some("ParsedArgs")
+    );
 
     let (spec_name, bindings) = match &parsed {
         Value::Entity { pos, .. } => (pos[0].clone(), pos[1].clone()),
@@ -101,10 +108,10 @@ fn parses_update_subcommand_with_flag_and_repeated() {
                     let h = pos[0].clone();
                     let t = pos[1].clone();
                     let (n, v) = match h {
-                        Value::Entity { pos: bp, .. } => {
-                            (bp[0].as_str().unwrap_or("").to_string(),
-                             bp[1].as_str().unwrap_or("").to_string())
-                        }
+                        Value::Entity { pos: bp, .. } => (
+                            bp[0].as_str().unwrap_or("").to_string(),
+                            bp[1].as_str().unwrap_or("").to_string(),
+                        ),
                         _ => panic!("expected Binding entity, got {h:?}"),
                     };
                     pairs.push((n, v));
@@ -118,23 +125,34 @@ fn parses_update_subcommand_with_flag_and_repeated() {
     }
 
     pairs.sort();
-    assert_eq!(pairs, vec![
-        ("acceptance".to_string(), "cargo-test".to_string()),
-        ("description".to_string(), "x".to_string()),
-        ("id".to_string(), "WI-001".to_string()),
-    ]);
+    assert_eq!(
+        pairs,
+        vec![
+            ("acceptance".to_string(), "cargo-test".to_string()),
+            ("description".to_string(), "x".to_string()),
+            ("id".to_string(), "WI-001".to_string()),
+        ]
+    );
 }
 
 #[test]
 fn unknown_subcommand_returns_parse_err() {
     let mut interp = interp_for(PROGRAM);
-    let result = interp.call("test.cli_demo.parse_unknown", &[]).expect("parse_unknown runs");
-    assert_eq!(entity_short_name(&interp, &result).as_deref(), Some("parse_err"));
+    let result = interp
+        .call("test.cli_demo.parse_unknown", &[])
+        .expect("parse_unknown runs");
+    assert_eq!(
+        entity_short_name(&interp, &result).as_deref(),
+        Some("parse_err")
+    );
     let err = match &result {
         Value::Entity { pos, .. } => pos.first().cloned().expect("parse_err payload"),
         _ => panic!("expected parse_err entity"),
     };
-    assert_eq!(entity_short_name(&interp, &err).as_deref(), Some("unknown_subcommand"));
+    assert_eq!(
+        entity_short_name(&interp, &err).as_deref(),
+        Some("unknown_subcommand")
+    );
 }
 
 // Golden help-text. Bindings are accumulated by cons, so flag/repeat order
@@ -144,18 +162,28 @@ const EXPECTED_HELP: &str = "update an item\n\nUSAGE: update <id> [--description
 #[test]
 fn help_renders_subcommand_spec() {
     let mut interp = interp_for(PROGRAM);
-    let result = interp.call("test.cli_demo.help_for_update", &[]).expect("help_for_update runs");
+    let result = interp
+        .call("test.cli_demo.help_for_update", &[])
+        .expect("help_for_update runs");
     assert_eq!(result.as_str(), Some(EXPECTED_HELP));
 }
 
 #[test]
 fn missing_required_positional_returns_parse_err() {
     let mut interp = interp_for(PROGRAM);
-    let result = interp.call("test.cli_demo.parse_missing_required", &[]).expect("parse_missing runs");
-    assert_eq!(entity_short_name(&interp, &result).as_deref(), Some("parse_err"));
+    let result = interp
+        .call("test.cli_demo.parse_missing_required", &[])
+        .expect("parse_missing runs");
+    assert_eq!(
+        entity_short_name(&interp, &result).as_deref(),
+        Some("parse_err")
+    );
     let err = match &result {
         Value::Entity { pos, .. } => pos.first().cloned().expect("parse_err payload"),
         _ => panic!("expected parse_err entity"),
     };
-    assert_eq!(entity_short_name(&interp, &err).as_deref(), Some("missing_required"));
+    assert_eq!(
+        entity_short_name(&interp, &err).as_deref(),
+        Some("missing_required")
+    );
 }

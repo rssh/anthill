@@ -45,8 +45,12 @@ fn provides_spec_for(kb: &KnowledgeBase, carrier_qn: &str) -> Option<TermId> {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else { continue };
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
         let matches_carrier = match kb.get_term(sr) {
             Term::Ref(s) => *s == carrier,
             Term::Fn { functor, .. } => *functor == carrier,
@@ -129,13 +133,19 @@ fn stdlib_spec_bindings_all_extract_non_error() {
         "anthill.reflect.SortProvidesInfo",
         "anthill.reflect.SortRequiresInfo",
     ] {
-        let Some(sym) = kb.try_resolve_symbol(info) else { continue };
+        let Some(sym) = kb.try_resolve_symbol(info) else {
+            continue;
+        };
         for rid in kb.rules_by_functor(sym) {
             if !kb.is_fact(rid) {
                 continue;
             }
-            let Some(named) = kb.fact_head_named_args(rid) else { continue };
-            let Some(spec) = get_named_arg(&kb, &named, "spec") else { continue };
+            let Some(named) = kb.fact_head_named_args(rid) else {
+                continue;
+            };
+            let Some(spec) = get_named_arg(&kb, &named, "spec") else {
+                continue;
+            };
             for (param, val) in spec_binding_values(&kb, spec) {
                 assert!(
                     !matches!(extract_type(&kb, &val), TypeExtractor::Error),
@@ -195,7 +205,9 @@ end
 /// `Ref` / `Fn` functor. Mirrors the loader's `unwrap_spec_view` reader.
 fn binding_base_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     match kb.get_term(tid) {
-        Term::Fn { functor, pos_args, .. } => {
+        Term::Fn {
+            functor, pos_args, ..
+        } => {
             if kb.qualified_name_of(*functor).ends_with("SortView") {
                 pos_args.first().and_then(|p| match kb.get_term(*p) {
                     Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {

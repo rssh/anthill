@@ -12,8 +12,8 @@
 //! (input-rooted) join. The `ensures`-vouched join is covered by the unchanged
 //! existential marker (wi402_existential_return_test stays green).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -22,8 +22,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -57,7 +57,8 @@ const PRELUDE: &str = r#"
 "#;
 
 fn is_escape(errs: &[String]) -> bool {
-    errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape"))
+    errs.iter()
+        .any(|e| e.contains("abstracting return") || e.contains("escape"))
 }
 
 /// THE GAP: a bare-spec return whose body is an `if` joining two divergent concrete
@@ -96,7 +97,10 @@ fn manifest_join_accepted() {
         "namespace test.wi457.manifest\n{PRELUDE}\n  operation openStore(persistent: Bool) -> KVStore[K = String, V = String] =\n    if persistent then diskStore(\"/tmp/kv\") else memStore\nend\n"
     );
     let errs = load_errors(&[&src]);
-    assert!(errs.is_empty(), "a fully-manifest join must typecheck, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "a fully-manifest join must typecheck, got: {errs:?}"
+    );
 }
 
 /// MUST NOT REJECT — a same-sort join: both branches are input-rooted `KVStore`

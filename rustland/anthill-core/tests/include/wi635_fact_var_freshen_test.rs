@@ -181,7 +181,9 @@ fn value_entity_operation_info_resolves_without_panic() {
     // (seed from the cached `head_vars`, read NO term-only `rule_head`) — else
     // reaching this candidate panics "rule_head: head is not a Term carrier".
     let mut kb = crate::common::load_kb_with("namespace test.wi635z\nend\n");
-    let op_info = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
+    let op_info = kb
+        .try_resolve_symbol("anthill.reflect.OperationInfo")
+        .unwrap();
 
     // Confirm the value-Entity OperationInfo population actually exists in the
     // loaded KB, so this test genuinely exercises the carrier-neutral path.
@@ -200,8 +202,14 @@ fn value_entity_operation_info_resolves_without_panic() {
     // (term-only) path panics here; a correct one resolves every fact.
     let total = kb.rules_by_functor(op_info).len();
     let fields = [
-        "name", "params", "return_type", "effects", "requires", "ensures",
-        "type_params", "meta",
+        "name",
+        "params",
+        "return_type",
+        "effects",
+        "requires",
+        "ensures",
+        "type_params",
+        "meta",
     ];
     let named_args: SmallVec<[(Symbol, TermId); 2]> = fields
         .iter()
@@ -216,7 +224,10 @@ fn value_entity_operation_info_resolves_without_panic() {
         pos_args: SmallVec::new(),
         named_args,
     });
-    let cfg = ResolveConfig { max_solutions: total + 16, ..ResolveConfig::default() };
+    let cfg = ResolveConfig {
+        max_solutions: total + 16,
+        ..ResolveConfig::default()
+    };
     let sols = kb.resolve(&[goal], &cfg);
     assert!(
         sols.len() >= entity_headed,

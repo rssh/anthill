@@ -10,7 +10,6 @@
 //! `anthill-core`'s `wi907_ambiguous_name_ladder_test`, which also pins which symbol
 //! each case binds.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 fn query(args: &[&str]) -> crate::common::Output {
@@ -64,7 +63,11 @@ fn assert_refused_as_ambiguous(out: &crate::common::Output, name: &str, candidat
 #[test]
 fn an_ambiguous_name_colliding_with_the_implicit_tier_is_refused() {
     let out = query_both(&["SortInfo(name: ?n)"]);
-    assert_refused_as_ambiguous(&out, "SortInfo", &["wi907.alpha.SortInfo", "wi907.beta.SortInfo"]);
+    assert_refused_as_ambiguous(
+        &out,
+        "SortInfo",
+        &["wi907.alpha.SortInfo", "wi907.beta.SortInfo"],
+    );
 }
 
 /// The same refusal for an ordinary user name with no tier twin, which pre-fix bound the
@@ -85,7 +88,11 @@ fn an_ambiguous_user_name_is_refused_with_its_candidates() {
 #[test]
 fn a_single_import_still_answers() {
     let out = query(&["-i", "wi907.alpha.*", "w907a(v: ?x)"]);
-    assert_eq!(out.code, 0, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 0,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     assert!(out.has_stdout_line("?x = 1"), "stdout:\n{}", out.stdout);
 }
 
@@ -95,7 +102,11 @@ fn a_single_import_still_answers() {
 #[test]
 fn an_absent_name_is_still_reported_as_absent() {
     let out = query_both(&["NoSuchThing907(?x)"]);
-    assert_eq!(out.code, 1, "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.code, 1,
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     assert!(
         out.has_diagnostic("error:", "does not resolve to a known functor"),
         "stderr:\n{}",

@@ -28,7 +28,10 @@ struct Vec3 {
     double z;
 };
 ";
-    assert_eq!(cpp, expected, "C++ struct mismatch:\nexpected:\n{expected}\nactual:\n{cpp}");
+    assert_eq!(
+        cpp, expected,
+        "C++ struct mismatch:\nexpected:\n{expected}\nactual:\n{cpp}"
+    );
 }
 
 #[test]

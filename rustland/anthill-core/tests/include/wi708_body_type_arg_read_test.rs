@@ -41,12 +41,24 @@ end
     };
 
     let (functor, named) = match interp.kb().get_term(id).clone() {
-        Term::Fn { functor, named_args, .. } => (functor, named_args),
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (functor, named_args),
         other => panic!("expected a parameterized `Fn` type term (`Cell[V = …]`), got {other:?}"),
     };
-    assert_eq!(interp.kb().local_name_of(functor), "Cell", "the base sort is Cell");
+    assert_eq!(
+        interp.kb().local_name_of(functor),
+        "Cell",
+        "the base sort is Cell"
+    );
     assert_eq!(named.len(), 1, "one type argument (V)");
-    assert_eq!(interp.kb().local_name_of(named[0].0), "V", "keyed by the declared param V");
+    assert_eq!(
+        interp.kb().local_name_of(named[0].0),
+        "V",
+        "keyed by the declared param V"
+    );
 
     // The V binding must be `Int64` — the type argument `T` was bound to. Before the
     // fix it was the op-scoped `Ref(T)` (a dangling self-reference to the param name).
@@ -78,8 +90,13 @@ end
     let mut interp = interp_for(src);
 
     let arg_sort = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> String {
-        let v = interp.call(&format!("test.wi708b.{op}"), &[]).unwrap_or_else(|e| panic!("{op}: {e:?}"));
-        let id = match v { Value::Term { id, .. } => id, other => panic!("{op}: got {other:?}") };
+        let v = interp
+            .call(&format!("test.wi708b.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        let id = match v {
+            Value::Term { id, .. } => id,
+            other => panic!("{op}: got {other:?}"),
+        };
         let named = match interp.kb().get_term(id).clone() {
             Term::Fn { named_args, .. } => named_args,
             other => panic!("{op}: expected Fn, got {other:?}"),
@@ -132,7 +149,10 @@ end
     let v = interp
         .call("test.wi708coll.callProbe", &[])
         .unwrap_or_else(|e| panic!("callProbe: {e:?}"));
-    let id = match v { Value::Term { id, .. } => id, other => panic!("got {other:?}") };
+    let id = match v {
+        Value::Term { id, .. } => id,
+        other => panic!("got {other:?}"),
+    };
     let named = match interp.kb().get_term(id).clone() {
         Term::Fn { named_args, .. } => named_args,
         other => panic!("expected a `Cell[V = …]` Fn, got {other:?}"),

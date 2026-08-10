@@ -16,13 +16,16 @@
 //! share the gap — eval's `match_constructor_pattern` already maps positional
 //! sub-patterns to leading field indices.
 
+use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::resolve::ResolveConfig;
 use smallvec::SmallVec;
 
 fn config() -> ResolveConfig {
-    ResolveConfig { max_solutions: 10, ..ResolveConfig::default() }
+    ResolveConfig {
+        max_solutions: 10,
+        ..ResolveConfig::default()
+    }
 }
 
 fn var(kb: &mut KnowledgeBase, name: &str) -> TermId {
@@ -146,7 +149,8 @@ end
     match crate::common::try_load_kb_with(src) {
         Ok(_) => panic!("Verified(\"now\", \"extra\") (2 args, 1 field) must fail to load"),
         Err(errs) => assert!(
-            errs.iter().any(|e| e.contains("Verified") && e.contains("at")),
+            errs.iter()
+                .any(|e| e.contains("Verified") && e.contains("at")),
             "the arity error must name the constructor and its declared field; got: {errs:?}",
         ),
     }

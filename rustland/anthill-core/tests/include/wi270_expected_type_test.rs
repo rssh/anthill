@@ -17,20 +17,23 @@
 //! `type_check_sorts` walks operations per-sort; free-standing
 //! namespace-level operations aren't reached by the typer pass.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::typing::TypeError;
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra source → (kb, load errors). The caller asserts the
 /// diagnostic shape it expects (or absence of typer-level errors).
 fn try_load(extra: &str) -> (KnowledgeBase, Vec<load::LoadError>) {
     let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
@@ -42,7 +45,10 @@ fn try_load(extra: &str) -> (KnowledgeBase, Vec<load::LoadError>) {
 /// Render load errors as joined strings so an assertion failure shows
 /// the actual diagnostic text without dumping the whole Vec.
 fn fmt_errs(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{}", e)).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{}", e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -304,7 +310,10 @@ fn unconstrained_type_param_format_names_parameter() {
         type_param: e_sym,
     };
     let formatted = err.format(&kb);
-    assert!(formatted.contains("'E'"), "should name 'E'; got {formatted}");
+    assert!(
+        formatted.contains("'E'"),
+        "should name 'E'; got {formatted}"
+    );
     assert!(
         formatted.contains("[E = "),
         "should suggest `[E = …]`; got {formatted}",

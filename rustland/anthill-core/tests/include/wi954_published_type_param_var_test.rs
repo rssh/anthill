@@ -97,7 +97,8 @@ end
 "#;
 
 fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
-    kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("`{qn}` must be a defined symbol"))
+    kb.try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("`{qn}` must be a defined symbol"))
 }
 
 fn var_of(kb: &KnowledgeBase, qn: &str) -> u32 {
@@ -131,9 +132,18 @@ fn three_declarations_three_variables() {
     let sort_param = var_of(&kb, "test.wi954.Holder.T");
     let bracket = var_of(&kb, "test.wi954.Holder.pick.E");
     let carrier = var_of(&kb, "test.wi954.Holder.mk.C");
-    assert_ne!(sort_param, bracket, "`Holder.T` and `pick[E]` are two parameters");
-    assert_ne!(sort_param, carrier, "`Holder.T` and `mk`'s carrier are two parameters");
-    assert_ne!(bracket, carrier, "`pick[E]` and `mk`'s carrier are two parameters");
+    assert_ne!(
+        sort_param, bracket,
+        "`Holder.T` and `pick[E]` are two parameters"
+    );
+    assert_ne!(
+        sort_param, carrier,
+        "`Holder.T` and `mk`'s carrier are two parameters"
+    );
+    assert_ne!(
+        bracket, carrier,
+        "`pick[E]` and `mk`'s carrier are two parameters"
+    );
 }
 
 /// The carrier is declared in the OPERATION's scope, two segments below the sort. A
@@ -198,8 +208,11 @@ fn every_declared_parameter_in_the_stdlib_publishes_its_own_variable() {
         for &p in kb.type_param_syms_of(s) {
             params += 1;
             let v = type_param_global_var(&kb, p).unwrap_or_else(|| {
-                panic!("`{}` is declared by `{}` but publishes no variable",
-                       kb.qualified_name_of(p), kb.qualified_name_of(s))
+                panic!(
+                    "`{}` is declared by `{}` but publishes no variable",
+                    kb.qualified_name_of(p),
+                    kb.qualified_name_of(s)
+                )
             });
             if let Some(prev) = seen.insert(v.raw(), p) {
                 assert_eq!(
@@ -212,7 +225,10 @@ fn every_declared_parameter_in_the_stdlib_publishes_its_own_variable() {
             }
         }
     }
-    assert!(params >= 90, "the stdlib supplies 96 declared parameters; got {params}");
+    assert!(
+        params >= 90,
+        "the stdlib supplies 96 declared parameters; got {params}"
+    );
 }
 
 /// DRIVEN: the bracket parameter's identity decides a real dispatch. Kept small — the
@@ -221,8 +237,13 @@ fn every_declared_parameter_in_the_stdlib_publishes_its_own_variable() {
 #[test]
 fn the_fixture_dispatches() {
     let mut interp = crate::common::interp_for(SRC);
-    match interp.call("test.wi954.Driver.run", &[anthill_core::eval::Value::Int(3)]) {
-        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 3, "`pick` returns its first argument"),
+    match interp.call(
+        "test.wi954.Driver.run",
+        &[anthill_core::eval::Value::Int(3)],
+    ) {
+        Ok(anthill_core::eval::Value::Int(n)) => {
+            assert_eq!(n, 3, "`pick` returns its first argument")
+        }
         other => panic!("`Driver.run` must dispatch through `pick[E]`; got {other:?}"),
     }
 }

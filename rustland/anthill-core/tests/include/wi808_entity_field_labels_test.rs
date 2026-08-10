@@ -51,7 +51,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate entity field `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate entity field `a`")),
         "a repeated entity field name must be refused, naming it; got: {errs:?}",
     );
 }
@@ -72,7 +73,9 @@ fn the_duplicate_is_located_at_the_second_field() {
         .iter()
         .find(|e| e.message.contains("duplicate entity field"))
         .unwrap_or_else(|| panic!("no duplicate-field error; got: {errs:?}"));
-    let second = src.rfind("aa: Int64").expect("fixture spells the second field") as u32;
+    let second = src
+        .rfind("aa: Int64")
+        .expect("fixture spells the second field") as u32;
     assert_eq!(
         (dup.span.start, dup.span.end),
         (second, second + 2),
@@ -99,7 +102,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate entity field `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate entity field `a`")),
         "the fault is the declaration, not the return type; got: {errs:?}",
     );
 }
@@ -119,7 +123,11 @@ namespace test.wi808.ok
   operation drive() -> Int64 = mk(1, "ess").a
 end
 "#;
-    assert!(load_errs(src).is_empty(), "a distinct-field entity must load: {:?}", load_errs(src));
+    assert!(
+        load_errs(src).is_empty(),
+        "a distinct-field entity must load: {:?}",
+        load_errs(src)
+    );
     let mut interp = interp_for(src);
     match interp.call("test.wi808.ok.drive", &[]).expect("drive") {
         anthill_core::eval::Value::Int(1) => {}

@@ -25,8 +25,8 @@
 //! carrier is not in an argument. The op-binding signature validation and the
 //! witness-sort non-provision rule are subsequent WI-431 increments.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -35,8 +35,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -104,12 +104,15 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("backs no operation") && e.contains("flatMap")),
+        errs.iter()
+            .any(|e| e.contains("backs no operation") && e.contains("flatMap")),
         "missing flatMap binding (no default) must be a loud UnbackedProviderOperation: {errs:?}"
     );
     // `pure` IS bound — it must NOT be reported.
     assert!(
-        !errs.iter().any(|e| e.contains("backs no operation") && e.contains("CpsMonad.pure")),
+        !errs
+            .iter()
+            .any(|e| e.contains("backs no operation") && e.contains("CpsMonad.pure")),
         "the bound `pure` op must not be reported as unbacked: {errs:?}"
     );
 }
@@ -319,12 +322,18 @@ end
         Ok(anthill_core::eval::Value::Int(n)) => n,
         other => panic!("member(color 2, [color 1, color 2]) should eval via the instance-fact Eq; got {other:?}"),
     };
-    assert_eq!(hit, 1, "member must find color 2 using the instance-fact-provided colorEq");
+    assert_eq!(
+        hit, 1,
+        "member must find color 2 using the instance-fact-provided colorEq"
+    );
     let miss = match interp.call("test.wi431.member.hasNoMatch", &[]) {
         Ok(anthill_core::eval::Value::Int(n)) => n,
         other => panic!("member(color 9, …) should eval via the instance-fact Eq; got {other:?}"),
     };
-    assert_eq!(miss, 0, "member must not find an absent color (colorEq distinguishes codes)");
+    assert_eq!(
+        miss, 0,
+        "member must not find an absent color (colorEq distinguishes codes)"
+    );
 }
 
 /// Rule 1 (default coexists): a spec op with a DEFAULT body (`idF`, a derived op
@@ -408,7 +417,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("signature-incompatible") && e.contains("parameter")),
+        errs.iter()
+            .any(|e| e.contains("signature-incompatible") && e.contains("parameter")),
         "binding combine to a unary op (spec takes 2) must be a loud arity error: {errs:?}"
     );
 }
@@ -434,7 +444,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("signature-incompatible") && e.contains("parameter")),
+        errs.iter()
+            .any(|e| e.contains("signature-incompatible") && e.contains("parameter")),
         "binding combine to an op with Int64 params (spec expects Tag) must be loud: {errs:?}"
     );
 }
@@ -461,7 +472,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("signature-incompatible") && e.contains("return")),
+        errs.iter()
+            .any(|e| e.contains("signature-incompatible") && e.contains("return")),
         "binding combine to an op returning Int64 (spec returns Tag) must be loud: {errs:?}"
     );
 }
@@ -526,7 +538,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        errs.iter()
+            .any(|e| e.contains("ambigu") || e.contains("coheren")),
         "two instance facts for (Combiner, Tag) must be a loud ambiguity error; got: {errs:?}"
     );
 }
@@ -558,7 +571,9 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        !errs
+            .iter()
+            .any(|e| e.contains("ambigu") || e.contains("coheren")),
         "two IDENTICAL instance facts for (Combiner, Tag) are idempotent, not ambiguous: {errs:?}"
     );
 }
@@ -589,7 +604,9 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        !errs
+            .iter()
+            .any(|e| e.contains("ambigu") || e.contains("coheren")),
         "the same instance written in different field order is idempotent, not ambiguous: {errs:?}"
     );
 }
@@ -667,7 +684,9 @@ end
 "#;
     let errs = load_errors(&[base, inst_a, inst_b]);
     assert!(
-        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        !errs
+            .iter()
+            .any(|e| e.contains("ambigu") || e.contains("coheren")),
         "identical instance facts in different namespaces are idempotent, not ambiguous: {errs:?}"
     );
 }
@@ -701,7 +720,9 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        !errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
+        !errs
+            .iter()
+            .any(|e| e.contains("ambigu") || e.contains("coheren")),
         "instance facts for distinct carriers (Tag, Ring) must not collide: {errs:?}"
     );
 }

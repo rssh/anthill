@@ -61,7 +61,12 @@ impl CacheEntry {
         raw_output: String,
     ) -> Self {
         Self {
-            key, verdict, solver_secs, z3_version, written_at, raw_output,
+            key,
+            verdict,
+            solver_secs,
+            z3_version,
+            written_at,
+            raw_output,
             model_text: String::new(),
             variable_assignments: Vec::new(),
             unsat_core: Vec::new(),
@@ -77,7 +82,9 @@ pub fn lookup(subdir: &Path, key: &str) -> Option<CacheEntry> {
     let path = entry_path(subdir, key);
     let bytes = fs::read(&path).ok()?;
     let entry: CacheEntry = serde_json::from_slice(&bytes).ok()?;
-    if entry.key != key { return None; }
+    if entry.key != key {
+        return None;
+    }
     Some(entry)
 }
 

@@ -21,8 +21,7 @@ fn namespace_header_includes_traits_class() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&mut kb, "test.ns_traits")
-        .expect("emit namespace header");
+    let cpp = emit_namespace_header(&mut kb, "test.ns_traits").expect("emit namespace header");
 
     assert!(
         cpp.contains("struct Pose {"),
@@ -61,8 +60,7 @@ fn data_band_topologically_sorted_by_field_deps() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&mut kb, "test.topo")
-        .expect("emit header");
+    let cpp = emit_namespace_header(&mut kb, "test.topo").expect("emit header");
 
     let inner_pos = cpp.find("struct Inner").expect("Inner present");
     let outer_pos = cpp.find("struct Outer").expect("Outer present");
@@ -86,8 +84,7 @@ fn data_band_chains_three_levels() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_namespace_header(&mut kb, "test.chain")
-        .expect("emit header");
+    let cpp = emit_namespace_header(&mut kb, "test.chain").expect("emit header");
 
     let c_pos = cpp.find("struct C").expect("C present");
     let b_pos = cpp.find("struct B").expect("B present");

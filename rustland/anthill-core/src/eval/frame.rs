@@ -234,35 +234,56 @@ impl ActivationStack {
     /// correctness limit. Tests override via `ActivationStack::set_cap`.
     pub const DEFAULT_DEPTH_CAP: usize = 1_000_000;
 
-    pub fn new() -> Self { Self::with_cap(Self::DEFAULT_DEPTH_CAP) }
-
-    pub fn with_cap(depth_cap: usize) -> Self {
-        Self { frames: Vec::new(), depth_cap }
+    pub fn new() -> Self {
+        Self::with_cap(Self::DEFAULT_DEPTH_CAP)
     }
 
-    pub fn depth(&self) -> usize { self.frames.len() }
-    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+    pub fn with_cap(depth_cap: usize) -> Self {
+        Self {
+            frames: Vec::new(),
+            depth_cap,
+        }
+    }
+
+    pub fn depth(&self) -> usize {
+        self.frames.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
 
     pub fn push(&mut self, frame: Frame) -> Result<(), super::error::EvalError> {
         if self.frames.len() >= self.depth_cap {
-            return Err(super::error::EvalError::DepthExceeded { cap: self.depth_cap });
+            return Err(super::error::EvalError::DepthExceeded {
+                cap: self.depth_cap,
+            });
         }
         self.frames.push(frame);
         Ok(())
     }
 
-    pub fn pop(&mut self) -> Option<Frame> { self.frames.pop() }
+    pub fn pop(&mut self) -> Option<Frame> {
+        self.frames.pop()
+    }
 
-    pub fn top(&self) -> Option<&Frame> { self.frames.last() }
-    pub fn top_mut(&mut self) -> Option<&mut Frame> { self.frames.last_mut() }
+    pub fn top(&self) -> Option<&Frame> {
+        self.frames.last()
+    }
+    pub fn top_mut(&mut self) -> Option<&mut Frame> {
+        self.frames.last_mut()
+    }
 
     /// Override the depth cap (test hook). Lets a test drive the stack
     /// past the cap without waiting for the ~1024-deep default.
-    pub fn set_cap(&mut self, cap: usize) { self.depth_cap = cap; }
+    pub fn set_cap(&mut self, cap: usize) {
+        self.depth_cap = cap;
+    }
 }
 
 impl Default for ActivationStack {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -304,7 +325,10 @@ mod tests {
         s.push(dummy_frame()).unwrap();
         s.push(dummy_frame()).unwrap();
         let err = s.push(dummy_frame()).unwrap_err();
-        assert!(matches!(err, super::super::error::EvalError::DepthExceeded { cap: 2 }));
+        assert!(matches!(
+            err,
+            super::super::error::EvalError::DepthExceeded { cap: 2 }
+        ));
     }
 
     /// WI-078 (Phase A step a): the activation stack is `Clone` — the operation
@@ -336,7 +360,11 @@ mod tests {
         // Later live-stack mutation does not touch the snapshot.
         s.pop();
         assert_eq!(s.depth(), 1);
-        assert_eq!(snap.depth(), 2, "a snapshot must not track the live stack's frames");
+        assert_eq!(
+            snap.depth(),
+            2,
+            "a snapshot must not track the live stack's frames"
+        );
 
         // The MatchDispatch AwaitState round-tripped through the clone.
         match &snap.frames[0].awaiting {

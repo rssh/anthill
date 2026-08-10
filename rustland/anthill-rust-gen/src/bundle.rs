@@ -32,7 +32,9 @@ impl std::fmt::Display for BundleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BundleError::Io(e, p) => write!(f, "io error at {}: {e}", p.display()),
-            BundleError::StdlibNotFound(p) => write!(f, "stdlib directory not found at {}", p.display()),
+            BundleError::StdlibNotFound(p) => {
+                write!(f, "stdlib directory not found at {}", p.display())
+            }
             BundleError::NoSources => write!(f, "no user sources to bundle"),
         }
     }
@@ -115,7 +117,12 @@ pub fn generate_bundle(opts: &BundleOptions, output_dir: &Path) -> Result<(), Bu
 
     // Vendor stdlib by copying every .anthill file under stdlib_dir.
     let mut stdlib_rel_paths: Vec<String> = Vec::new();
-    copy_anthill_tree(&opts.stdlib_dir, &spec_stdlib, &PathBuf::new(), &mut stdlib_rel_paths)?;
+    copy_anthill_tree(
+        &opts.stdlib_dir,
+        &spec_stdlib,
+        &PathBuf::new(),
+        &mut stdlib_rel_paths,
+    )?;
     if stdlib_rel_paths.is_empty() {
         return Err(BundleError::StdlibNotFound(opts.stdlib_dir.clone()));
     }
@@ -173,7 +180,8 @@ fn copy_anthill_tree(
             }
             fs::copy(&path, &dest).map_err(|e| BundleError::Io(e, dest.clone()))?;
             // Use forward slashes for the rendered include_str! literal regardless of host OS.
-            let rel_str = entry_rel.components()
+            let rel_str = entry_rel
+                .components()
                 .filter_map(|c| match c {
                     std::path::Component::Normal(s) => s.to_str().map(|s| s.to_string()),
                     _ => None,
@@ -194,7 +202,11 @@ fn render_core_dep(dep: &CoreDep) -> String {
     match dep {
         CoreDep::Path(p) => format!("{{ path = \"{}\" }}", escape_toml(&p.display().to_string())),
         CoreDep::Git { url, rev } => {
-            format!("{{ git = \"{}\", rev = \"{}\" }}", escape_toml(url), escape_toml(rev))
+            format!(
+                "{{ git = \"{}\", rev = \"{}\" }}",
+                escape_toml(url),
+                escape_toml(rev)
+            )
         }
     }
 }

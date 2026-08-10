@@ -119,7 +119,8 @@ end
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("expected Relation") && e.contains("(name: Int64, age: Int64)")),
+        errs.iter()
+            .any(|e| e.contains("expected Relation") && e.contains("(name: Int64, age: Int64)")),
         "a `T` claiming `name: Int64` must be rejected, and the mismatch must name the \
          REJECTED claim — otherwise the label match is skipping the slot rather than \
          checking it; got: {errs:?}",
@@ -140,7 +141,8 @@ end
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("expected Relation") && e.contains("height")),
+        errs.iter()
+            .any(|e| e.contains("expected Relation") && e.contains("height")),
         "a `T` naming a column the relation does not have must be rejected, and the \
          mismatch must name it; got: {errs:?}",
     );
@@ -161,8 +163,14 @@ end
 #[test]
 fn wi764_a_type_parameter_bound_twice_is_refused() {
     for (case, binding) in [
-        ("right_then_wrong", "T = (name: String, age: Int64), T = (name: Int64, age: Int64)"),
-        ("wrong_then_right", "T = (name: Int64, age: Int64), T = (name: String, age: Int64)"),
+        (
+            "right_then_wrong",
+            "T = (name: String, age: Int64), T = (name: Int64, age: Int64)",
+        ),
+        (
+            "wrong_then_right",
+            "T = (name: Int64, age: Int64), T = (name: String, age: Int64)",
+        ),
     ] {
         let src = format!(
             r#"
@@ -206,9 +214,12 @@ end
 "#
     );
     let errs = load_errs(&src);
-    let rendered = errs.iter().find(|e| e.contains("got Relation[")).unwrap_or_else(|| {
-        panic!("expected the `-> Int64` mismatch to render `r`'s type; got: {errs:?}")
-    });
+    let rendered = errs
+        .iter()
+        .find(|e| e.contains("got Relation["))
+        .unwrap_or_else(|| {
+            panic!("expected the `-> Int64` mismatch to render `r`'s type; got: {errs:?}")
+        });
     assert_eq!(
         rendered.matches("E = ").count(),
         1,
@@ -255,7 +266,9 @@ end
     );
     let errs = load_errs(&src);
     assert!(
-        !errs.iter().any(|e| e.contains("receiver's type cannot be resolved here")),
+        !errs
+            .iter()
+            .any(|e| e.contains("receiver's type cannot be resolved here")),
         "WI-732's unresolvable-receiver diagnostic must not fire for a call-result receiver \
          (it resolves); got: {errs:?}",
     );

@@ -35,8 +35,14 @@ end
 fn a_stdlib_less_kb_does_not_collapse_two_sorts_onto_one_global() {
     let mut kb = load_kb_bare(&[TWO_SORTS_ONE_IMPLICIT_NAME]);
     for (qn, why) in [
-        ("wi900.probe.A.and", "`and` means nothing in this KB, so A's head INTRODUCES it"),
-        ("wi900.probe.B.and", "…and B's head introduces B's own, distinct from A's"),
+        (
+            "wi900.probe.A.and",
+            "`and` means nothing in this KB, so A's head INTRODUCES it",
+        ),
+        (
+            "wi900.probe.B.and",
+            "…and B's head introduces B's own, distinct from A's",
+        ),
     ] {
         let sym = kb
             .try_resolve_symbol(qn)
@@ -125,7 +131,8 @@ end
         );
     };
     assert!(
-        errs.iter().any(|e| e.contains("ambiguous") && e.contains("amb900")),
+        errs.iter()
+            .any(|e| e.contains("ambiguous") && e.contains("amb900")),
         "the refusal must be the AMBIGUITY, named — any other error here means the head \
          resolved (or minted) and this fixture stopped testing its claim; got {errs:?}",
     );

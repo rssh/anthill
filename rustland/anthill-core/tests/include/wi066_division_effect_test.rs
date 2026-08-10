@@ -24,8 +24,8 @@
 //! guard changes only the inferred row, never runtime behavior. These tests pin
 //! the STATIC threading and its discharge.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra source → load errors (empty Vec on clean load).
@@ -34,8 +34,8 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -48,7 +48,10 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
 }
 
 fn errors_text(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A literal NON-ZERO divisor refutes the guard `eq(2, 0)` by ground evaluation,

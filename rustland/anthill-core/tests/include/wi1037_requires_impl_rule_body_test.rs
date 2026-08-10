@@ -221,8 +221,15 @@ fn a_carrier_with_no_supplier_still_runs_the_default() {
         "  fact Desc[T = Leaf, describe = LeafDesc.describeLeaf]\n",
         "",
     );
-    assert!(!src.contains("fact Desc["), "the fixture must really have no supplier");
-    assert_eq!(answer(ns, &src), 1, "no supplier — the spec's default must still run");
+    assert!(
+        !src.contains("fact Desc["),
+        "the fixture must really have no supplier"
+    );
+    assert_eq!(
+        answer(ns, &src),
+        1,
+        "no supplier — the spec's default must still run"
+    );
 }
 
 /// THE OTHER CONTROL: an UNBOUND carrier must not be answered by the default either.
@@ -242,13 +249,12 @@ fn an_unbound_carrier_answers_nothing_rather_than_the_default() {
     let mut kb = crate::common::load_kb_with(&src);
     let sols = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
     assert!(
-        !sols.iter().any(|(v, definite)| *definite
-            && matches!(v, anthill_core::eval::Value::Int(1))),
+        !sols
+            .iter()
+            .any(|(v, definite)| *definite && matches!(v, anthill_core::eval::Value::Int(1))),
         "an unbound carrier must not be answered with the spec's default: {sols:?}",
     );
 }
-
-
 
 /// THE PRECEDENCE THE WOVEN ARM RESTS ON, driven at the mechanism rather than
 /// through a program — because the mechanism is what makes the hazard real and a
@@ -279,10 +285,19 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
 
     let ns = "test.wi1037.restamp";
     let mut kb = crate::common::load_kb_with(&program(ns, " = 1", RULE));
-    let spec = kb.try_resolve_symbol(&format!("{ns}.Desc.describe")).expect("spec op");
-    let pinned = kb.try_resolve_symbol(&format!("{ns}.LeafDesc.describeLeaf")).expect("impl");
-    let dict_choice = kb.try_resolve_symbol(&format!("{ns}.Leaf.tagval")).expect("other member");
-    assert_ne!(pinned, dict_choice, "the two routes must name DIFFERENT operations");
+    let spec = kb
+        .try_resolve_symbol(&format!("{ns}.Desc.describe"))
+        .expect("spec op");
+    let pinned = kb
+        .try_resolve_symbol(&format!("{ns}.LeafDesc.describeLeaf"))
+        .expect("impl");
+    let dict_choice = kb
+        .try_resolve_symbol(&format!("{ns}.Leaf.tagval"))
+        .expect("other member");
+    assert_ne!(
+        pinned, dict_choice,
+        "the two routes must name DIFFERENT operations"
+    );
 
     let site = NodeOccurrence::new_expr(
         Expr::Apply {
@@ -296,7 +311,9 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
     );
     site.set_classification(CallClass::ConcreteApplyWithin {
         fn_target_sym: pinned,
-        callee_spec_sort: kb.try_resolve_symbol(&format!("{ns}.Desc")).expect("spec sort"),
+        callee_spec_sort: kb
+            .try_resolve_symbol(&format!("{ns}.Desc"))
+            .expect("spec sort"),
         spec_op_sym: spec,
         enclosing_sort: None,
         resolved_tree: None,

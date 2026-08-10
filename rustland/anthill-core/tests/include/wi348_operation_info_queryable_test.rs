@@ -23,12 +23,12 @@
 //! sort parameter is universally quantified over the operation, so a body that uses the
 //! cell AT an `Int64` may not leave `V` unwritten. Nothing about `OperationInfo` changed.
 use anthill_core::eval::Value;
+use anthill_core::intern::Symbol;
 use anthill_core::kb::op_info;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::{KnowledgeBase, RuleId};
-use anthill_core::intern::Symbol;
 use smallvec::SmallVec;
 
 use crate::common::load_kb_with;
@@ -51,17 +51,27 @@ const OP_QN: &str = "test.wi348_op_query.overwrite";
 /// total arity, so a query goal carries all of these — `name` ground, the rest
 /// fresh vars — never a partial `OperationInfo(name: ?n)` (which would key on a
 /// different arity and miss the fact). WI-087 added `meta`.
-const OP_INFO_FIELDS: [&str; 8] =
-    ["name", "params", "return_type", "effects", "requires", "ensures", "type_params", "meta"];
+const OP_INFO_FIELDS: [&str; 8] = [
+    "name",
+    "params",
+    "return_type",
+    "effects",
+    "requires",
+    "ensures",
+    "type_params",
+    "meta",
+];
 
 fn op_sym(kb: &KnowledgeBase) -> Symbol {
-    kb.try_resolve_symbol(OP_QN).expect("overwrite op symbol after load")
+    kb.try_resolve_symbol(OP_QN)
+        .expect("overwrite op symbol after load")
 }
 
 /// Find the `OperationInfo` fact RuleId whose `name` field refers to `op` —
 /// the same by-functor + `head_name_ref` walk `lookup_operation_info` uses.
 fn operation_info_rid(kb: &KnowledgeBase, op: Symbol) -> RuleId {
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")
+    let op_info_sym = kb
+        .try_resolve_symbol("anthill.reflect.OperationInfo")
         .expect("OperationInfo schema symbol");
     kb.rules_by_functor(op_info_sym)
         .into_iter()
@@ -89,7 +99,9 @@ fn modify_op_operation_info_is_a_sld_queryable_value_fact() {
     // with the remaining fields fresh vars. `name` ground isolates this op's fact
     // among all OperationInfo facts (stdlib included); `effects: ?e` extracts the
     // denoted-bearing field from the value-fact head.
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo").unwrap();
+    let op_info_sym = kb
+        .try_resolve_symbol("anthill.reflect.OperationInfo")
+        .unwrap();
     let name_ref = kb.alloc(Term::Ref(op));
     let e_sym = kb.intern("e");
     let effects_var = kb.fresh_var(e_sym);
@@ -121,7 +133,8 @@ fn modify_op_operation_info_is_a_sld_queryable_value_fact() {
     let results = kb.browse_program_clauses_matching(&goal);
     let matched: Vec<_> = results.iter().collect();
     assert_eq!(
-        matched.len(), 1,
+        matched.len(),
+        1,
         "the OperationInfo value fact must be found exactly once by the goal",
     );
     assert!(
@@ -132,7 +145,10 @@ fn modify_op_operation_info_is_a_sld_queryable_value_fact() {
 
     // (d) The full SLD entry point (`resolve`) — what `:- OperationInfo(…)` runs —
     // also finds it; the value fact flows through the resolver, not just the tree.
-    let config = ResolveConfig { max_solutions: 1024, ..ResolveConfig::default() };
+    let config = ResolveConfig {
+        max_solutions: 1024,
+        ..ResolveConfig::default()
+    };
     let solutions = kb.resolve(&[goal], &config);
     assert!(
         !solutions.is_empty(),
@@ -149,8 +165,7 @@ fn modify_op_effect_label_rides_in_fact_as_node() {
     // uses. With `op_effects` collapsed into the fact (WI-348 payoff), the
     // labels come straight from the fact head — and a `Modify[c]` label comes
     // back as a `Value::Node`, occurrence intact, never re-grounded to a term.
-    let rec = op_info::lookup_operation_info(&kb, op)
-        .expect("lookup_operation_info for overwrite");
+    let rec = op_info::lookup_operation_info(&kb, op).expect("lookup_operation_info for overwrite");
 
     let node_modify = rec.effects.iter().any(|eff| match eff {
         Value::Node(_) => matches!(

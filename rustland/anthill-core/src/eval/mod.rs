@@ -76,14 +76,17 @@ impl Default for EvalConfig {
 
 impl EvalConfig {
     pub fn unbounded() -> Self {
-        Self { depth_cap: None, step_cap: None, bridge_mode: false }
+        Self {
+            depth_cap: None,
+            step_cap: None,
+            bridge_mode: false,
+        }
     }
 }
 
 /// Rust-side builtin: takes the interpreter and evaluated arg `Value`s,
 /// returns a `Value` or an error. Mirrors `kb::resolve::builtins` in shape.
-pub type BuiltinFn =
-    std::sync::Arc<dyn Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>>;
+pub type BuiltinFn = std::sync::Arc<dyn Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>>;
 
 /// Proposal 039 / WI-084 — a term-level constant's memoized value state in
 /// `Interpreter::const_cache`. `Forcing` marks a const whose value source is
@@ -193,7 +196,7 @@ impl ReflectSymbols {
 /// `Interpreter::new` via `kb.intern` so per-step lookups compare `Symbol`s
 /// instead of scanning strings.
 #[derive(Debug)]
-#[allow(dead_code)]  // params/type_name/guard are reserved for future arms
+#[allow(dead_code)] // params/type_name/guard are reserved for future arms
 pub(crate) struct FieldSymbols {
     pub value: Symbol,
     pub reference: Symbol,
@@ -278,7 +281,6 @@ impl FieldSymbols {
     }
 }
 
-
 /// WI-1045 — why [`Interpreter::frame_requirements_from_trees`] could not build a
 /// frame's requirement channel. Two causes with different owners, kept apart
 /// because collapsing them reported a missing stdlib namespace as an unresolvable
@@ -355,8 +357,7 @@ fn drain_top<V: Copy + Ord>(
     n: usize,
 ) -> Vec<(Symbol, (u64, V))> {
     prof.with(|p| {
-        let mut rows: Vec<(Symbol, (u64, V))> =
-            p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
+        let mut rows: Vec<(Symbol, (u64, V))> = p.borrow().iter().map(|(k, v)| (*k, *v)).collect();
         rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
         rows.truncate(n);
         p.borrow_mut().clear();
@@ -398,18 +399,30 @@ impl Interpreter {
         }
     }
 
-    pub fn config(&self) -> &EvalConfig { &self.config }
+    pub fn config(&self) -> &EvalConfig {
+        &self.config
+    }
 
-    pub fn config_mut(&mut self) -> &mut EvalConfig { &mut self.config }
+    pub fn config_mut(&mut self) -> &mut EvalConfig {
+        &mut self.config
+    }
 
-    pub fn kb(&self) -> &KnowledgeBase { &self.kb }
-    pub fn kb_mut(&mut self) -> &mut KnowledgeBase { &mut self.kb }
-    pub fn into_kb(self) -> KnowledgeBase { self.kb }
+    pub fn kb(&self) -> &KnowledgeBase {
+        &self.kb
+    }
+    pub fn kb_mut(&mut self) -> &mut KnowledgeBase {
+        &mut self.kb
+    }
+    pub fn into_kb(self) -> KnowledgeBase {
+        self.kb
+    }
 
     /// Number of live closure-arena slots. Exposed so refcount/GC tests can
     /// assert reclamation after evaluation (see WI-055, WI-058). Useful
     /// diagnostic at runtime too.
-    pub fn closure_arena_live_count(&self) -> usize { self.closures.live() }
+    pub fn closure_arena_live_count(&self) -> usize {
+        self.closures.live()
+    }
 
     /// Register a Rust builtin keyed by the fully-qualified operation name.
     /// Returns `Err` if the name can't be resolved in the KB's symbol table.
@@ -418,7 +431,9 @@ impl Interpreter {
         F: Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError> + 'static,
     {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
-            EvalError::UnknownOperation { name: qualified_name.to_string() }
+            EvalError::UnknownOperation {
+                name: qualified_name.to_string(),
+            }
         })?;
         self.builtins.insert(sym, std::sync::Arc::new(f));
         Ok(())
@@ -551,7 +566,9 @@ impl Interpreter {
     /// §"Host-to-entry-op boundary".
     pub fn call(&mut self, qualified_name: &str, args: &[Value]) -> Result<Value, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
-            EvalError::UnknownOperation { name: qualified_name.to_string() }
+            EvalError::UnknownOperation {
+                name: qualified_name.to_string(),
+            }
         })?;
         self.call_op_sym(sym, args)
     }
@@ -589,75 +606,84 @@ impl Interpreter {
     ///     never running with a wrong or missing dict. The two suspend for different
     ///     REASONS and say so, but a bridged eval may not abort the enclosing
     ///     resolution either way (WI-483), so both delay.
-    pub(crate) fn call_op_bridged(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
+    pub(crate) fn call_op_bridged(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
         use crate::kb::typing::BridgeRequirements;
-        let requirements = match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, sym, args) {
-            BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
-            BridgeRequirements::Unresolvable { detail } => {
-                return Err(EvalError::Suspended {
-                    detail: format!(
-                        "bridge: cannot resolve a required dictionary for `{}` at these \
+        let requirements =
+            match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, sym, args) {
+                BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
+                BridgeRequirements::Unresolvable { detail } => {
+                    return Err(EvalError::Suspended {
+                        detail: format!(
+                            "bridge: cannot resolve a required dictionary for `{}` at these \
                          argument types: {detail}",
-                        self.kb.qualified_name_of(sym),
-                    ),
-                    // A missing dictionary is a flounder, not a truncated search.
-                    truncated: false,
-                });
-            }
-            // WI-855 — a TIE, kept apart from its siblings above so this consumer
-            // says WHICH failure it is. It still SUSPENDS rather than raising, and
-            // that is the difference from the value-directed consumer: this one runs
-            // inside SLD resolution, where WI-483 substitution transparency says a
-            // bridged eval's failure must not break the enclosing rule — the caller
-            // (`bridge_op_to_eval`) delays either way, so raising would only trade a
-            // named delay for an unnamed one.
-            //
-            // The SENTENCE has one owner — `AmbiguousRequirement`'s `Display` — and
-            // this arm adds only its `bridge:` prefix, the same division the
-            // `Unresolvable` arm above uses with typing.rs's `detail`. Two hand-kept
-            // copies of one message would drift, and only the `Display` copy is under
-            // test — MEASURED, nothing in the crate destructures `Suspended.detail`
-            // at all (the bridge's two readers take `..` / `truncated`, `simp_rewrite`
-            // residualizes), so this text is the record left for whoever first
-            // surfaces one, not something a test could pin today.
-            BridgeRequirements::Ambiguous { requirement, candidates } => {
-                let tie = EvalError::AmbiguousRequirement {
-                    op: self.kb.qualified_name_of(sym).to_string(),
+                            self.kb.qualified_name_of(sym),
+                        ),
+                        // A missing dictionary is a flounder, not a truncated search.
+                        truncated: false,
+                    });
+                }
+                // WI-855 — a TIE, kept apart from its siblings above so this consumer
+                // says WHICH failure it is. It still SUSPENDS rather than raising, and
+                // that is the difference from the value-directed consumer: this one runs
+                // inside SLD resolution, where WI-483 substitution transparency says a
+                // bridged eval's failure must not break the enclosing rule — the caller
+                // (`bridge_op_to_eval`) delays either way, so raising would only trade a
+                // named delay for an unnamed one.
+                //
+                // The SENTENCE has one owner — `AmbiguousRequirement`'s `Display` — and
+                // this arm adds only its `bridge:` prefix, the same division the
+                // `Unresolvable` arm above uses with typing.rs's `detail`. Two hand-kept
+                // copies of one message would drift, and only the `Display` copy is under
+                // test — MEASURED, nothing in the crate destructures `Suspended.detail`
+                // at all (the bridge's two readers take `..` / `truncated`, `simp_rewrite`
+                // residualizes), so this text is the record left for whoever first
+                // surfaces one, not something a test could pin today.
+                BridgeRequirements::Ambiguous {
                     requirement,
                     candidates,
-                };
-                return Err(EvalError::Suspended {
-                    detail: format!("bridge: {tie}"),
-                    // An ambiguity is a flounder, not a truncated search.
-                    truncated: false,
-                });
-            }
-            BridgeRequirements::Resolved(parent, trees) => {
-                self.frame_requirements_from_trees(parent, &trees).map_err(|f| {
-                    EvalError::Suspended {
-                        detail: match f {
-                            FrameReqFailure::CallerScopeSlot(name) => format!(
-                                "bridge: requirement `{}` for `{}` resolved to a \
+                } => {
+                    let tie = EvalError::AmbiguousRequirement {
+                        op: self.kb.qualified_name_of(sym).to_string(),
+                        requirement,
+                        candidates,
+                    };
+                    return Err(EvalError::Suspended {
+                        detail: format!("bridge: {tie}"),
+                        // An ambiguity is a flounder, not a truncated search.
+                        truncated: false,
+                    });
+                }
+                BridgeRequirements::Resolved(parent, trees) => {
+                    self.frame_requirements_from_trees(parent, &trees)
+                        .map_err(|f| {
+                            EvalError::Suspended {
+                                detail: match f {
+                                    FrameReqFailure::CallerScopeSlot(name) => format!(
+                                        "bridge: requirement `{}` for `{}` resolved to a \
                                  caller-scope slot with no caller frame",
-                                self.kb.local_name_of(name),
-                                self.kb.qualified_name_of(sym),
-                            ),
-                            FrameReqFailure::NoDictionarySort => format!(
-                                "bridge: cannot build any requirement dictionary for \
+                                        self.kb.local_name_of(name),
+                                        self.kb.qualified_name_of(sym),
+                                    ),
+                                    FrameReqFailure::NoDictionarySort => format!(
+                                        "bridge: cannot build any requirement dictionary for \
                                  `{}` — this KB never loaded \
                                  `anthill.realization.runtime.Dictionary`",
-                                self.kb.qualified_name_of(sym),
-                            ),
-                        },
-                        // A missing caller frame is a flounder, not truncation.
-                        truncated: false,
-                    }
-                })?
-            }
-        };
+                                        self.kb.qualified_name_of(sym),
+                                    ),
+                                },
+                                // A missing caller frame is a flounder, not truncation.
+                                truncated: false,
+                            }
+                        })?
+                }
+            };
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
@@ -785,7 +811,9 @@ impl Interpreter {
         chain_dicts: smallvec::SmallVec<[value::Dictionary; 2]>,
     ) -> Result<Value, EvalError> {
         let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
-            EvalError::UnknownOperation { name: qualified_name.to_string() }
+            EvalError::UnknownOperation {
+                name: qualified_name.to_string(),
+            }
         })?;
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
@@ -826,7 +854,9 @@ impl Interpreter {
             let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, p);
             for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
                 let want = crate::kb::typing::dict_layout(
-                    &mut self.kb, entry.required_sort, dict.impl_sort(),
+                    &mut self.kb,
+                    entry.required_sort,
+                    dict.impl_sort(),
                 );
                 if dict.arity() != want.arity() {
                     return Err(EvalError::Internal(format!(
@@ -925,14 +955,16 @@ impl Interpreter {
                 // (`dispatch_spec_op_cached` does not read instance-fact op-bindings,
                 // WI-431 inc 2), so it is discoverable BY VALUE alone, and this was
                 // the one crossing that never looked.
-                let impl_target =
-                    self.resolve_spec_op_target_by_value(sym, args)?.filter(|t| *t != sym);
+                let impl_target = self
+                    .resolve_spec_op_target_by_value(sym, args)?
+                    .filter(|t| *t != sym);
                 let runnable = match impl_target {
                     Some(t) => {
                         if let Some(builtin) = self.builtins.get(&t).cloned() {
                             return (builtin)(self, args);
                         }
-                        self.cached_operation_body(t).map(|(body, params)| (t, body, params))
+                        self.cached_operation_body(t)
+                            .map(|(body, params)| (t, body, params))
                     }
                     None => None,
                 };
@@ -1022,7 +1054,9 @@ impl Interpreter {
         for (sym, (calls, steps)) in drain_top(&eval::OP_PROF, 20) {
             eprintln!(
                 "[profile]   {:<46} self-reductions={:<9} calls={}",
-                self.kb.qualified_name_of(sym), steps, calls,
+                self.kb.qualified_name_of(sym),
+                steps,
+                calls,
             );
         }
         eprintln!("[profile] top builtins (by wall time):");
@@ -1030,7 +1064,8 @@ impl Interpreter {
             eprintln!(
                 "[profile]   {:<46} {:>8.3}ms  calls={}",
                 self.kb.qualified_name_of(sym),
-                nanos as f64 / 1.0e6, calls,
+                nanos as f64 / 1.0e6,
+                calls,
             );
         }
     }
@@ -1136,13 +1171,19 @@ impl Interpreter {
     }
 
     /// Number of live stream-arena slots. Diagnostic for refcount tests.
-    pub fn stream_arena_live_count(&self) -> usize { self.streams.live() }
+    pub fn stream_arena_live_count(&self) -> usize {
+        self.streams.live()
+    }
 
     /// Number of live substitution-arena slots. Diagnostic for refcount tests.
-    pub fn subst_arena_live_count(&self) -> usize { self.substs.live() }
+    pub fn subst_arena_live_count(&self) -> usize {
+        self.substs.live()
+    }
 
     /// Number of live map-arena slots. Diagnostic for refcount tests.
-    pub fn map_arena_live_count(&self) -> usize { self.maps.live() }
+    pub fn map_arena_live_count(&self) -> usize {
+        self.maps.live()
+    }
 
     /// Allocate a fresh map slot and return a handle.
     pub fn alloc_map(&self, body: map_arena::MapBody) -> value::MapHandle {
@@ -1150,11 +1191,7 @@ impl Interpreter {
     }
 
     /// Run `f` with a shared reference to the map body behind `h`.
-    pub fn with_map<R>(
-        &self,
-        h: &value::MapHandle,
-        f: impl FnOnce(&map_arena::MapBody) -> R,
-    ) -> R {
+    pub fn with_map<R>(&self, h: &value::MapHandle, f: impl FnOnce(&map_arena::MapBody) -> R) -> R {
         self.maps.with_body(h, f)
     }
 
@@ -1164,7 +1201,9 @@ impl Interpreter {
     }
 
     /// Number of live cell-arena slots. Diagnostic for refcount tests.
-    pub fn cell_arena_live_count(&self) -> usize { self.cells.live() }
+    pub fn cell_arena_live_count(&self) -> usize {
+        self.cells.live()
+    }
 
     /// Build `Dictionary(subs…, impl: functor)` — the host/test-facing face of
     /// [`Self::build_dictionary`]. `None` in a KB with no
@@ -1194,7 +1233,8 @@ impl Interpreter {
     /// the stack is empty or the top frame has no type params.
     #[doc(hidden)]
     pub fn top_frame_type_args_for_test(&self) -> FrameTypeArgs {
-        self.stack.top()
+        self.stack
+            .top()
             .map(|f| f.type_args.clone())
             .unwrap_or_default()
     }
@@ -1307,34 +1347,54 @@ impl Interpreter {
                 search: crate::kb::resolve::SearchStream,
                 columns: std::rc::Rc<[(crate::intern::Symbol, crate::kb::term::VarId)]>,
             },
-            PumpLeft { left: value::StreamHandle, right: value::StreamHandle },
+            PumpLeft {
+                left: value::StreamHandle,
+                right: value::StreamHandle,
+            },
         }
 
         let arena = self.streams.clone();
         let action = arena.with_source_mut(handle, |src| match src {
             StreamSource::Empty => (StreamSource::Empty, Action::Done),
             StreamSource::Resolver(None) => (StreamSource::Resolver(None), Action::Done),
-            StreamSource::Resolver(Some(stream)) => (
-                StreamSource::Resolver(None),
-                Action::PumpResolver(stream),
-            ),
+            StreamSource::Resolver(Some(stream)) => {
+                (StreamSource::Resolver(None), Action::PumpResolver(stream))
+            }
             // WI-714: a materializing resolver — same pump lifecycle as `Resolver`
             // (take the `SearchStream`, leave `None` transiently), but its yielded
             // element is the materialized named-tuple row, not the raw `Solution`.
-            StreamSource::MaterializedResolver { search: None, columns } => (
-                StreamSource::MaterializedResolver { search: None, columns },
+            StreamSource::MaterializedResolver {
+                search: None,
+                columns,
+            } => (
+                StreamSource::MaterializedResolver {
+                    search: None,
+                    columns,
+                },
                 Action::Done,
             ),
-            StreamSource::MaterializedResolver { search: Some(stream), columns } => (
-                StreamSource::MaterializedResolver { search: None, columns: columns.clone() },
-                Action::PumpMaterialized { search: stream, columns },
+            StreamSource::MaterializedResolver {
+                search: Some(stream),
+                columns,
+            } => (
+                StreamSource::MaterializedResolver {
+                    search: None,
+                    columns: columns.clone(),
+                },
+                Action::PumpMaterialized {
+                    search: stream,
+                    columns,
+                },
             ),
             StreamSource::Pure(mut slot) => match slot.take() {
                 Some(v) => (StreamSource::Empty, Action::YieldSelf(v)),
                 None => (StreamSource::Empty, Action::Done),
             },
             StreamSource::MPlus { left, right } => (
-                StreamSource::MPlus { left: left.clone(), right: right.clone() },
+                StreamSource::MPlus {
+                    left: left.clone(),
+                    right: right.clone(),
+                },
                 Action::PumpLeft { left, right },
             ),
             StreamSource::Native(mut f) => match f() {
@@ -1355,9 +1415,8 @@ impl Interpreter {
                 let stream_arena = self.streams.clone();
                 match result {
                     Some((sol, rest)) => {
-                        stream_arena.with_source_mut(handle, |_| {
-                            (StreamSource::Resolver(Some(rest)), ())
-                        });
+                        stream_arena
+                            .with_source_mut(handle, |_| (StreamSource::Resolver(Some(rest)), ()));
                         let solution = self.make_solution_value(sol)?;
                         Ok(Some((solution, handle.clone())))
                     }
@@ -1377,7 +1436,13 @@ impl Interpreter {
                     Some((sol, rest)) => {
                         let cols = columns.clone();
                         stream_arena.with_source_mut(handle, move |_| {
-                            (StreamSource::MaterializedResolver { search: Some(rest), columns: cols }, ())
+                            (
+                                StreamSource::MaterializedResolver {
+                                    search: Some(rest),
+                                    columns: cols,
+                                },
+                                (),
+                            )
                         });
                         let row = self.materialize_solution(sol, &columns)?;
                         Ok(Some((row, handle.clone())))
@@ -1392,7 +1457,13 @@ impl Interpreter {
                 Some((v, left_rest)) => {
                     let arena = self.streams.clone();
                     arena.with_source_mut(handle, |_| {
-                        (StreamSource::MPlus { left: left_rest, right: right.clone() }, ())
+                        (
+                            StreamSource::MPlus {
+                                left: left_rest,
+                                right: right.clone(),
+                            },
+                            (),
+                        )
                     });
                     Ok(Some((v, handle.clone())))
                 }
@@ -1429,9 +1500,11 @@ impl Interpreter {
         } else {
             self.reflect.solution_undecided
         }
-        .ok_or_else(|| EvalError::Internal(
-            "anthill.reflect.Solution not loaded — stdlib missing the Solution enum".into(),
-        ))?;
+        .ok_or_else(|| {
+            EvalError::Internal(
+                "anthill.reflect.Solution not loaded — stdlib missing the Solution enum".into(),
+            )
+        })?;
         let residual = sol.residual;
         let subst_value = Value::Substitution(self.substs.alloc(sol.subst));
         let mut named = if definite {
@@ -1453,7 +1526,11 @@ impl Interpreter {
         // positional pattern (`case undecided(subst, residual)`) binds the right
         // field; `subst`/`residual` are NOT in alphabetical order.
         self.kb.canonicalize_record_named_args(functor, &mut named);
-        Ok(Value::Entity { functor, pos: Vec::new().into(), named: named.into() })
+        Ok(Value::Entity {
+            functor,
+            pos: Vec::new().into(),
+            named: named.into(),
+        })
     }
 
     /// WI-714 (proposal 052 §Typing 2): materialize one resolver `Solution` onto a

@@ -14,8 +14,8 @@
 //! concrete param (`(x: Int64) -> Bool`) — the gap is independent of WI-460's
 //! projection-bearing arrows.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -24,8 +24,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -41,7 +41,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 }
 
 fn is_arrow_mismatch(errs: &[String]) -> bool {
-    errs.iter().any(|e| e.contains("type mismatch") && e.contains("find2.pred"))
+    errs.iter()
+        .any(|e| e.contains("type mismatch") && e.contains("find2.pred"))
 }
 
 /// THE GAP (plain concrete arrow param): `find2`'s `pred` is declared

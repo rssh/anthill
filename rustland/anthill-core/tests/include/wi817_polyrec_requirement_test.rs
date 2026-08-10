@@ -227,7 +227,10 @@ fn op_param_control_and_witness_recurse_identically() {
     operation drive(n: Int64) -> Int64 = f[Leaf](n, leaf())
   end"#,
     );
-    for (label, src, ns) in [("control", &control, "wi817.control"), ("witness", &witness, "wi817.lam")] {
+    for (label, src, ns) in [
+        ("control", &control, "wi817.control"),
+        ("witness", &witness, "wi817.lam"),
+    ] {
         let entry = format!("{ns}.Poly.drive");
         // One interpreter for all three depths: every call is asserted Ok (no trap
         // ever occurs), so the poisoning footgun does not apply.
@@ -264,7 +267,10 @@ fn op_scoped_sort_param_simple_concrete_works() {
   end"#,
     );
     let got = eval_fresh(&src, "wi817.v1.Driver.drive", 0);
-    assert!(matches!(got, Ok(Value::Int(1))), "expected Ok(Int(1)); got {got:?}");
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "expected Ok(Int(1)); got {got:?}"
+    );
 }
 
 /// FIXED BY WI-822 (was: loads clean, then died
@@ -345,7 +351,10 @@ fn op_scoped_recursion_correct_control_and_lambda_identical() {
     operation drive(n: Int64) -> Int64 = FHolder.f(n, leaf())
   end"#,
     );
-    for (label, src, ns) in [("control", &control, "wi817.v4"), ("witness", &witness, "wi817.v7")] {
+    for (label, src, ns) in [
+        ("control", &control, "wi817.v4"),
+        ("witness", &witness, "wi817.v7"),
+    ] {
         let entry = format!("{ns}.Driver.drive");
         // One interpreter for all three depths: every call is asserted Ok
         // (no trap ever occurs), so the poisoning footgun does not apply and
@@ -385,7 +394,10 @@ fn sort_level_single_conditional_level_is_correct() {
   end"#,
     );
     let got = eval_fresh(&src, "wi817.v8.Driver.drive", 0);
-    assert!(matches!(got, Ok(Value::Int(12))), "expected Ok(Int(12)); got {got:?}");
+    assert!(
+        matches!(got, Ok(Value::Int(12))),
+        "expected Ok(Int(12)); got {got:?}"
+    );
 }
 
 /// FIXED BY WI-821 (was outcome (d), silently wrong at every depth), CONTROL
@@ -441,7 +453,10 @@ fn sort_level_recursion_correct_control_and_lambda_identical() {
     operation drive(n: Int64) -> Int64 = FHolder.f(n, leaf())
   end"#,
     );
-    for (label, src, ns) in [("control", &control, "wi817.v9"), ("witness", &witness, "wi817.v10")] {
+    for (label, src, ns) in [
+        ("control", &control, "wi817.v9"),
+        ("witness", &witness, "wi817.v10"),
+    ] {
         let entry = format!("{ns}.Driver.drive");
         // One interpreter for all three depths: every call is asserted Ok
         // (no trap ever occurs), so the poisoning footgun does not apply and
@@ -924,12 +939,14 @@ fn unconditioned_parametric_fact_refused_at_abstract_call() {
   end"#,
     )
     .replace("    requires Desc[T = E]\n", "");
-    assert!(!src.contains("requires Desc[T = E]"), "the conditional's requires must be removed");
+    assert!(
+        !src.contains("requires Desc[T = E]"),
+        "the conditional's requires must be removed"
+    );
     let errs = load_errs(&src);
     let text = errs.join("\n");
     assert!(
-        text.contains("wi817.v5.Desc.describe.requires")
-            && text.contains(MISSING_REQUIRES),
+        text.contains("wi817.v5.Desc.describe.requires") && text.contains(MISSING_REQUIRES),
         "expected the WI-325 ladder to name the spec op and the missing requires \
          (WI-824: no bogus Unique); got:\n{text}"
     );

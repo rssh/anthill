@@ -17,15 +17,18 @@
 //!  - A bare value at BOTH depths of a nested `Option[Option[T]]` is
 //!    rejected loudly (one wrap is inserted, never a guessed double-wrap).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Call a nullary op and expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -37,8 +40,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -91,9 +94,21 @@ namespace wi408.field
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi408.field.t_bare"), 5, "bare field coerced to some(5)");
-    assert_eq!(run_int(&mut interp, "wi408.field.t_explicit"), 7, "explicit some untouched");
-    assert_eq!(run_int(&mut interp, "wi408.field.t_none"), -1, "explicit none untouched");
+    assert_eq!(
+        run_int(&mut interp, "wi408.field.t_bare"),
+        5,
+        "bare field coerced to some(5)"
+    );
+    assert_eq!(
+        run_int(&mut interp, "wi408.field.t_explicit"),
+        7,
+        "explicit some untouched"
+    );
+    assert_eq!(
+        run_int(&mut interp, "wi408.field.t_none"),
+        -1,
+        "explicit none untouched"
+    );
 }
 
 // ── TYPER leg: operation ARGUMENT ────────────────────────────────────────
@@ -119,9 +134,16 @@ namespace wi408.arg
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "bare arg in Option param must load (coerced): {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "bare arg in Option param must load (coerced): {errs:?}"
+    );
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi408.arg.t_bare"), 42, "bare arg coerced to some(42)");
+    assert_eq!(
+        run_int(&mut interp, "wi408.arg.t_bare"),
+        42,
+        "bare arg coerced to some(42)"
+    );
     assert_eq!(run_int(&mut interp, "wi408.arg.t_explicit"), 11);
     assert_eq!(run_int(&mut interp, "wi408.arg.t_none"), -1);
 }
@@ -149,7 +171,11 @@ namespace wi408.term
 end
 "#;
     let mut interp = crate::common::interp_for(src);
-    assert_eq!(run_int(&mut interp, "wi408.term.t"), 1, "bare String in Option[Term] coerced");
+    assert_eq!(
+        run_int(&mut interp, "wi408.term.t"),
+        1,
+        "bare String in Option[Term] coerced"
+    );
 }
 
 // ── Nested Option: no silent double-wrap ─────────────────────────────────
@@ -167,7 +193,8 @@ end
 "#;
     let errs = load_errors(&[bare]);
     assert!(
-        errs.iter().any(|e| e.contains("mismatch") || e.contains("expected")),
+        errs.iter()
+            .any(|e| e.contains("mismatch") || e.contains("expected")),
         "doubly-bare value under nested Option must be rejected: {errs:?}"
     );
 
@@ -180,7 +207,10 @@ namespace wi408.nested2
 end
 "#;
     let errs = load_errors(&[inner]);
-    assert!(errs.is_empty(), "explicit inner some needs only ONE wrap: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "explicit inner some needs only ONE wrap: {errs:?}"
+    );
 }
 
 // ── LOADER leg: on-disk facts + rule patterns ────────────────────────────
@@ -215,7 +245,10 @@ namespace wi408.facts
 end
 "#;
     let kb = &mut crate::common::load_kb_with(src);
-    let config = ResolveConfig { max_solutions: 4, ..ResolveConfig::default() };
+    let config = ResolveConfig {
+        max_solutions: 4,
+        ..ResolveConfig::default()
+    };
 
     for rule in ["first_dep_explicit", "first_dep_bare"] {
         let rule_sym = kb.resolve_symbol(&format!("wi408.facts.{rule}"));
@@ -226,7 +259,10 @@ end
             named_args: smallvec::SmallVec::new(),
         });
         let solutions = kb.resolve(&[goal], &config);
-        assert!(!solutions.is_empty(), "{rule} should match the wrapped fact");
+        assert!(
+            !solutions.is_empty(),
+            "{rule} should match the wrapped fact"
+        );
         let d_tid = kb.reify(var_d, &solutions[0].subst).expect_term();
         match kb.get_term(d_tid).clone() {
             Term::Const(anthill_core::kb::term::Literal::String(s)) => {
@@ -238,7 +274,9 @@ end
 
     // deps_of("a", ?o): ?o binds the WRAPPED value — functor is Option.some.
     let rule_sym = kb.resolve_symbol("wi408.facts.deps_of");
-    let name_term = kb.alloc(Term::Const(anthill_core::kb::term::Literal::String("a".into())));
+    let name_term = kb.alloc(Term::Const(anthill_core::kb::term::Literal::String(
+        "a".into(),
+    )));
     let var_o = make_var(kb, "o");
     let goal = kb.alloc(Term::Fn {
         functor: rule_sym,
@@ -251,13 +289,18 @@ end
     match kb.get_term(o_tid).clone() {
         Term::Fn { functor, .. } => {
             let qn = kb.qualified_name_of(functor).to_string();
-            assert_eq!(qn, "anthill.prelude.Option.some", "fact slot wrapped in some(...)");
+            assert_eq!(
+                qn, "anthill.prelude.Option.some",
+                "fact slot wrapped in some(...)"
+            );
         }
         other => panic!("expected some(...) envelope, got {other:?}"),
     }
 
     // The explicit `none` fact stays none (no wrap around some/none heads).
-    let name_b = kb.alloc(Term::Const(anthill_core::kb::term::Literal::String("b".into())));
+    let name_b = kb.alloc(Term::Const(anthill_core::kb::term::Literal::String(
+        "b".into(),
+    )));
     let var_o2 = make_var(kb, "o2");
     let goal = kb.alloc(Term::Fn {
         functor: rule_sym,
@@ -278,5 +321,3 @@ end
         "explicit none stays none — no wrap around Option heads"
     );
 }
-
-

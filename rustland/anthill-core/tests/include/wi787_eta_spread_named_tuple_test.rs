@@ -37,7 +37,9 @@ use crate::common::{interp_for, list_ints};
 /// which reads as an unrelated second failure.
 fn run(src: &str, op: &str) -> anthill_core::eval::Value {
     let mut interp = interp_for(src);
-    interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
 }
 
 fn run_int(src: &str, op: &str) -> i64 {
@@ -90,7 +92,10 @@ fn named_tuple_spreads_across_eta_operation() {
 /// trapped, the two differing only in whether the components are named.
 #[test]
 fn positional_tuple_still_spreads() {
-    assert_eq!(run_int(&poly_src("test.wi787pos", "(3, 10)"), "test.wi787pos.drive"), -7);
+    assert_eq!(
+        run_int(&poly_src("test.wi787pos", "(3, 10)"), "test.wi787pos.drive"),
+        -7
+    );
 }
 
 /// Components spread in SOURCE order. Labels are spelled `x, acc` so that any
@@ -101,7 +106,10 @@ fn positional_tuple_still_spreads() {
 #[test]
 fn spreads_in_source_order() {
     assert_eq!(
-        run_int(&poly_src("test.wi787order", "(x: 3, acc: 10)"), "test.wi787order.drive"),
+        run_int(
+            &poly_src("test.wi787order", "(x: 3, acc: 10)"),
+            "test.wi787order.drive"
+        ),
         -7,
         "p must take the FIRST WRITTEN component (x = 3); any re-ordering gives +7",
     );
@@ -120,7 +128,8 @@ fn mixed_keying_tuple_literal_is_refused_by_the_parser() {
     let errs = anthill_core::parse::parse(&poly_src("test.wi787split", "(3, x: 10)"))
         .expect_err("a tuple literal may not mix positional and named components");
     assert!(
-        errs.iter().any(|e| e.message.contains("cannot mix positional and named")),
+        errs.iter()
+            .any(|e| e.message.contains("cannot mix positional and named")),
         "expected the mixing refusal, got {errs:?}",
     );
 }
@@ -133,9 +142,9 @@ fn mixed_keying_tuple_literal_is_refused_by_the_parser() {
 fn arity_mismatch_still_raises() {
     let src = poly_src("test.wi787arity", "(a: 1, b: 2, c: 3)");
     let mut interp = interp_for(&src);
-    let err = interp.call("test.wi787arity.drive", &[]).expect_err(
-        "a 3-component tuple must not spread across 2 parameters",
-    );
+    let err = interp
+        .call("test.wi787arity.drive", &[])
+        .expect_err("a 3-component tuple must not spread across 2 parameters");
     assert!(
         format!("{err:?}").contains("ArityMismatch"),
         "expected a loud ArityMismatch, got {err:?}",
@@ -177,5 +186,9 @@ fn relation_row_operation_and_lambda_spellings_agree() {
         list_ints(&via_lambda),
         "operation and lambda spellings over the same relation rows must agree",
     );
-    assert_eq!(list_ints(&via_op), vec![-7], "row (x: 3, y: 10) maps to 3 - 10");
+    assert_eq!(
+        list_ints(&via_op),
+        vec![-7],
+        "row (x: 3, y: 10) maps to 3 - 10"
+    );
 }

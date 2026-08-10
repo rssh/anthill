@@ -96,7 +96,10 @@ end
 #[test]
 fn the_two_predicates_split_by_language() {
     let kb = crate::common::load_kb_with(CPP_ONLY_MEMBER);
-    let sym = |qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("{qn} resolves"));
+    let sym = |qn: &str| {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("{qn} resolves"))
+    };
 
     let max = sym("wi886.cpponly.Box.max");
     assert!(
@@ -110,7 +113,10 @@ fn the_two_predicates_split_by_language() {
     );
 
     let compare = sym("anthill.prelude.Int64.compare");
-    assert!(kb.is_host_mapped_op(compare), "a rust mapping is a host mapping");
+    assert!(
+        kb.is_host_mapped_op(compare),
+        "a rust mapping is a host mapping"
+    );
     assert!(
         kb.is_interpreter_mapped_op(compare),
         "...and is what the interpreter registers"

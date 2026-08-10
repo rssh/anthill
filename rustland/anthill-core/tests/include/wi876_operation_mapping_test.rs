@@ -161,11 +161,20 @@ fn positive_control_a_broken_program_is_refused() {
 /// Bool, so a `max` that returned the wrong operand is visible.
 #[test]
 fn the_whole_comparison_surface_works_from_one_operation() {
-    let v = eval_all(CARRIER, &[
-        "wi876.lex.Driver.cmpGt", "wi876.lex.Driver.cmpLt", "wi876.lex.Driver.cmpEq",
-        "wi876.lex.Driver.isGt", "wi876.lex.Driver.isGte", "wi876.lex.Driver.isLt",
-        "wi876.lex.Driver.isLte", "wi876.lex.Driver.maxX", "wi876.lex.Driver.minX",
-    ]);
+    let v = eval_all(
+        CARRIER,
+        &[
+            "wi876.lex.Driver.cmpGt",
+            "wi876.lex.Driver.cmpLt",
+            "wi876.lex.Driver.cmpEq",
+            "wi876.lex.Driver.isGt",
+            "wi876.lex.Driver.isGte",
+            "wi876.lex.Driver.isLt",
+            "wi876.lex.Driver.isLte",
+            "wi876.lex.Driver.maxX",
+            "wi876.lex.Driver.minX",
+        ],
+    );
     assert_eq!(as_int(&v[0], "compare, greater"), 1);
     assert_eq!(as_int(&v[1], "compare, less"), -1);
     assert_eq!(as_int(&v[2], "compare, equal"), 0);
@@ -217,7 +226,10 @@ fn a_binding_blocks_operation_map_lands_as_facts() {
     let maps_all = |carrier: &str, ops: &[&str]| {
         let have = mapped(carrier);
         for op in ops {
-            assert!(have.iter().any(|m| m == op), "{carrier} maps {op}; has {have:?}");
+            assert!(
+                have.iter().any(|m| m == op),
+                "{carrier} maps {op}; has {have:?}"
+            );
         }
     };
     let total = ["compare", "gt", "gte", "lt", "lte", "max", "min"];
@@ -255,9 +267,18 @@ fn a_binding_blocks_operation_map_lands_as_facts() {
 #[test]
 fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
     let kb = crate::common::load_kb_with("\nnamespace wi876.mapped\n  sort S\n  end\nend\n");
-    let sym = |qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("no symbol {qn}"));
-    assert!(kb.is_host_mapped_op(sym("anthill.prelude.Int64.compare")), "Int64.compare");
-    assert!(kb.is_host_mapped_op(sym("anthill.prelude.Float.gt")), "Float.gt");
+    let sym = |qn: &str| {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("no symbol {qn}"))
+    };
+    assert!(
+        kb.is_host_mapped_op(sym("anthill.prelude.Int64.compare")),
+        "Int64.compare"
+    );
+    assert!(
+        kb.is_host_mapped_op(sym("anthill.prelude.Float.gt")),
+        "Float.gt"
+    );
     assert!(
         !kb.is_host_mapped_op(sym("anthill.prelude.Ord.compare")),
         "the SPEC op carries no host implementation any more — that keying IS the defect",
@@ -293,13 +314,20 @@ namespace wi876.scalars
   end
 end
 ";
-    let v = eval_all(src, &[
-        "wi876.scalars.Driver.ints", "wi876.scalars.Driver.strings",
-        "wi876.scalars.Driver.bigs", "wi876.scalars.Driver.intGt",
-        "wi876.scalars.Driver.intLt", "wi876.scalars.Driver.strLte",
-        "wi876.scalars.Driver.intMax", "wi876.scalars.Driver.intMin",
-        "wi876.scalars.Driver.strMax",
-    ]);
+    let v = eval_all(
+        src,
+        &[
+            "wi876.scalars.Driver.ints",
+            "wi876.scalars.Driver.strings",
+            "wi876.scalars.Driver.bigs",
+            "wi876.scalars.Driver.intGt",
+            "wi876.scalars.Driver.intLt",
+            "wi876.scalars.Driver.strLte",
+            "wi876.scalars.Driver.intMax",
+            "wi876.scalars.Driver.intMin",
+            "wi876.scalars.Driver.strMax",
+        ],
+    );
     assert_eq!(as_int(&v[0], "Int64 compare"), 1);
     assert_eq!(as_int(&v[1], "String compare"), 1);
     assert_eq!(as_int(&v[2], "BigInt compare"), 1);
@@ -334,12 +362,18 @@ namespace wi876.floats
   end
 end
 ";
-    let v = eval_all(src, &[
-        "wi876.floats.Driver.gtPlain", "wi876.floats.Driver.ltPlain",
-        "wi876.floats.Driver.gteEq", "wi876.floats.Driver.gtNan",
-        "wi876.floats.Driver.ltNan", "wi876.floats.Driver.gteNan",
-        "wi876.floats.Driver.lteNan",
-    ]);
+    let v = eval_all(
+        src,
+        &[
+            "wi876.floats.Driver.gtPlain",
+            "wi876.floats.Driver.ltPlain",
+            "wi876.floats.Driver.gteEq",
+            "wi876.floats.Driver.gtNan",
+            "wi876.floats.Driver.ltNan",
+            "wi876.floats.Driver.gteNan",
+            "wi876.floats.Driver.lteNan",
+        ],
+    );
     assert!(as_bool(&v[0], "2.5 > 1.5"));
     assert!(!as_bool(&v[1], "2.5 < 1.5"));
     assert!(as_bool(&v[2], "1.5 >= 1.5"));
@@ -403,10 +437,16 @@ fn a_well_formed_mapping_over_a_declared_operation_loads() {
 /// clean, registered nothing, and no layer ever mentioned it.
 #[test]
 fn an_unquoted_host_function_is_refused_at_load() {
-    let errs = load_errs(&mapping_program("wi876.unquoted", "squish: no_such_host_function"));
+    let errs = load_errs(&mapping_program(
+        "wi876.unquoted",
+        "squish: no_such_host_function",
+    ));
     let joined = errs.join("\n");
     assert!(joined.contains("squish"), "names the entry: {joined}");
-    assert!(joined.contains("STRING"), "says what is wrong with it: {joined}");
+    assert!(
+        joined.contains("STRING"),
+        "says what is wrong with it: {joined}"
+    );
 }
 
 /// A mapping for an operation the carrier never DECLARED is refused at LOAD — by the
@@ -415,10 +455,19 @@ fn an_unquoted_host_function_is_refused_at_load() {
 /// operation; it does not bring one into existence.
 #[test]
 fn a_mapping_for_an_undeclared_operation_is_refused_at_load() {
-    let errs = load_errs(&mapping_program("wi876.badop", "compare: \"ordered_compare\""));
+    let errs = load_errs(&mapping_program(
+        "wi876.badop",
+        "compare: \"ordered_compare\"",
+    ));
     let joined = errs.join("\n");
-    assert!(joined.contains("wi876.badop.Widget.compare"), "names the operation: {joined}");
-    assert!(joined.contains("declares no operation"), "says what is wrong: {joined}");
+    assert!(
+        joined.contains("wi876.badop.Widget.compare"),
+        "names the operation: {joined}"
+    );
+    assert!(
+        joined.contains("declares no operation"),
+        "says what is wrong: {joined}"
+    );
 }
 
 /// RESOLVING IS NOT ENOUGH — the target must be an OPERATION. An entity constructor is
@@ -429,9 +478,15 @@ fn a_mapping_for_an_undeclared_operation_is_refused_at_load() {
 /// way.
 #[test]
 fn a_mapping_over_a_non_operation_is_refused_at_load() {
-    let errs = load_errs(&mapping_program("wi876.ctor", "widget: \"ordered_compare\""));
+    let errs = load_errs(&mapping_program(
+        "wi876.ctor",
+        "widget: \"ordered_compare\"",
+    ));
     let joined = errs.join("\n");
-    assert!(joined.contains("not an OPERATION"), "says what is wrong: {joined}");
+    assert!(
+        joined.contains("not an OPERATION"),
+        "says what is wrong: {joined}"
+    );
 }
 
 /// The declared operation and the host function must AGREE ON ARITY. Checked at
@@ -448,8 +503,14 @@ fn a_host_function_of_the_wrong_arity_is_loud() {
         provides Widget language rust\n    artifact \"nowhere.rs\"\n    \
         operation_map { squish: \"ordered_compare\" }\n  end\nend\n";
     let err = registration_err(src);
-    assert!(err.contains("wi876.arity.Widget.squish"), "names the operation: {err}");
-    assert!(err.contains("1 argument"), "names the declared arity: {err}");
+    assert!(
+        err.contains("wi876.arity.Widget.squish"),
+        "names the operation: {err}"
+    );
+    assert!(
+        err.contains("1 argument"),
+        "names the declared arity: {err}"
+    );
     assert!(err.contains("takes 2"), "names the host arity: {err}");
 }
 
@@ -499,8 +560,14 @@ fn an_unknown_host_function_is_loud_at_registration() {
     let src = mapping_program("wi876.badfn", "squish: \"no_such_host_function\"");
     loads_clean(&src, "the loader must not judge a host function name");
     let err = registration_err(&src);
-    assert!(err.contains("no_such_host_function"), "names the key: {err}");
-    assert!(err.contains("wi876.badfn.Widget.squish"), "names the operation: {err}");
+    assert!(
+        err.contains("no_such_host_function"),
+        "names the key: {err}"
+    );
+    assert!(
+        err.contains("wi876.badfn.Widget.squish"),
+        "names the operation: {err}"
+    );
 }
 
 /// A carrier's OWN host-mapped member must WIN over the spec's default body. This is
@@ -534,7 +601,11 @@ namespace wi876.rival
 end
 ";
     assert!(
-        !eval_bool(src, "wi876.rival.Driver.hostOrder", "String lt beside a rival ordering"),
+        !eval_bool(
+            src,
+            "wi876.rival.Driver.hostOrder",
+            "String lt beside a rival ordering"
+        ),
         "`String`'s OWN host `lt` must answer — alphabetically \"zz\" is NOT before \
          \"aaa\". Falling through to the spec default would resolve `compare` by value \
          and find both `String` and `ByLength`.",

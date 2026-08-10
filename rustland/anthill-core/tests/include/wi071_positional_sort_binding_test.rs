@@ -11,10 +11,9 @@
 //! returns declaration order via the new `Scope::type_params_ordered`
 //! Vec) to map index 0 → first param, index 1 → second, etc.
 
-
-use anthill_core::parse;
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
+use anthill_core::parse;
 
 /// Load a tiny test program and assert it has no errors. Returns the
 /// KB so the caller can probe further.
@@ -23,10 +22,14 @@ fn load_ok(source: &str) -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
     let stdlib_dir = crate::common::stdlib_dir();
     let stdlib_files = crate::common::collect_anthill_files(&stdlib_dir);
-    let stdlib_parsed: Vec<_> = stdlib_files.iter()
+    let stdlib_parsed: Vec<_> = stdlib_files
+        .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).expect("stdlib parse"))
         .collect();
-    let refs: Vec<_> = stdlib_parsed.iter().chain(std::iter::once(&parsed)).collect();
+    let refs: Vec<_> = stdlib_parsed
+        .iter()
+        .chain(std::iter::once(&parsed))
+        .collect();
     if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
         for e in &errs {
             eprintln!("load error: {e}");

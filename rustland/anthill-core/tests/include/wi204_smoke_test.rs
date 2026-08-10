@@ -5,9 +5,8 @@
 //! the refactor is blocked on a typer/eval gap rather than a
 //! mechanical rewrite of main.anthill.
 
-
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Load stdlib + Rust stl bindings + anthill-todo/domain.anthill +
@@ -15,27 +14,33 @@ use anthill_core::parse;
 /// loaded KB if all phases succeed; panics with diagnostics otherwise.
 fn load_bundle_context(driver_src: &str) -> KnowledgeBase {
     let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
+    files
+        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"));
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
-    let mut parsed: Vec<_> = files.iter().map(|p| {
-        let src = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-        parse::parse(&src)
-            .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-    }).collect();
+    let mut parsed: Vec<_> = files
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
     parsed.push(parse::parse(driver_src).expect("parse driver"));
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .unwrap_or_else(|errs| {
-            for e in &errs { eprintln!("{}", e); }
-            panic!("load failed with {} errors", errs.len());
-        });
+    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        panic!("load failed with {} errors", errs.len());
+    });
     kb
 }
 
@@ -64,7 +69,8 @@ namespace test.wi204_smoke_lookup
 end
 "#;
     let kb = load_bundle_context(driver);
-    let drive_sym = kb.try_resolve_symbol("test.wi204_smoke_lookup.Driver.drive")
+    let drive_sym = kb
+        .try_resolve_symbol("test.wi204_smoke_lookup.Driver.drive")
         .expect("drive registered");
     // The very fact load_bundle_context returned without panicking
     // means the body type-checked. Pin one more thing: dispatch_origin
@@ -78,9 +84,11 @@ end
             break;
         }
     }
-    assert!(hit,
+    assert!(
+        hit,
         "expected dispatch_origin to record a rewrite of WorkItemStore.lookup \
-         inside Driver.drive; got none. drive_sym={drive_sym:?}");
+         inside Driver.drive; got none. drive_sym={drive_sym:?}"
+    );
 }
 
 #[test]
@@ -113,6 +121,8 @@ end
             break;
         }
     }
-    assert!(hit,
-        "expected dispatch_origin to record a rewrite of WorkItemStore.commit");
+    assert!(
+        hit,
+        "expected dispatch_origin to record a rewrite of WorkItemStore.commit"
+    );
 }

@@ -36,7 +36,10 @@ fn run_int(src: &str, op: &str) -> i64 {
     // bogus Internal("deliver: parent frame had no awaiting state") on every
     // later call, which reads as an unrelated second failure.
     let mut interp = interp_for(src);
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -122,7 +125,11 @@ end
     let a = run_int(named_lambda, "test.wi785a.drive");
     let b = run_int(positional_lambda, "test.wi785b.drive");
     let c = run_int(named_opref, "test.wi785c.drive");
-    assert_eq!((a, b, c), (-7, -7, -7), "all three spellings must agree (pre-fix the first raised)");
+    assert_eq!(
+        (a, b, c),
+        (-7, -7, -7),
+        "all three spellings must agree (pre-fix the first raised)"
+    );
 }
 
 /// A non-destructuring binder over the same named tuple — the workaround users

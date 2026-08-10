@@ -17,7 +17,6 @@
 //! below pin each of those alongside the genuinely-unknown case they must be told
 //! apart from — conflating the two in either direction is the whole defect.
 
-
 use crate::common::{anthill, fixtures_dir};
 
 fn query(args: &[&str]) -> crate::common::Output {
@@ -49,7 +48,12 @@ fn is_refused(out: &crate::common::Output, name: &str) -> bool {
 #[test]
 fn an_unknown_functor_is_refused_not_silently_empty() {
     let out = query(&["nope(row: ?x)"]);
-    assert!(is_refused(&out, "nope"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+    assert!(
+        is_refused(&out, "nope"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
     assert!(
         !out.stdout.contains("no solutions") && !out.stdout.contains("solution(s)"),
         "a refused query must not also print an answer; stdout:\n{}",
@@ -66,7 +70,8 @@ fn an_unknown_qualified_functor_is_refused() {
     assert!(
         is_refused(&out, "app.util.Q.nope"),
         "stdout:\n{}\nstderr:\n{}",
-        out.stdout, out.stderr
+        out.stdout,
+        out.stderr
     );
 }
 
@@ -78,7 +83,12 @@ fn an_unknown_qualified_functor_is_refused() {
 #[test]
 fn a_namespaced_name_queried_bare_is_refused_but_qualified_answers() {
     let bare = query(&["q(row: ?x)"]);
-    assert!(is_refused(&bare, "q"), "stdout:\n{}\nstderr:\n{}", bare.stdout, bare.stderr);
+    assert!(
+        is_refused(&bare, "q"),
+        "stdout:\n{}\nstderr:\n{}",
+        bare.stdout,
+        bare.stderr
+    );
     assert!(
         bare.has_diagnostic("error:", "-i") || bare.has_diagnostic("error:", "Qualify"),
         "the refusal must guide the user to qualify or import; stderr:\n{}",
@@ -86,8 +96,16 @@ fn a_namespaced_name_queried_bare_is_refused_but_qualified_answers() {
     );
 
     let qualified = query(&["app.util.Q.q(row: ?x)"]);
-    assert_eq!(qualified.code, 0, "the qualified name must answer; stderr:\n{}", qualified.stderr);
-    assert!(qualified.stdout.contains("?x = 7"), "stdout:\n{}", qualified.stdout);
+    assert_eq!(
+        qualified.code, 0,
+        "the qualified name must answer; stderr:\n{}",
+        qualified.stderr
+    );
+    assert!(
+        qualified.stdout.contains("?x = 7"),
+        "stdout:\n{}",
+        qualified.stdout
+    );
 }
 
 // ── What must NOT be refused ────────────────────────────────────────
@@ -99,8 +117,16 @@ fn a_namespaced_name_queried_bare_is_refused_but_qualified_answers() {
 #[test]
 fn a_known_functor_with_no_match_answers_empty() {
     let out = query(&["app.util.Q.q(row: 999)"]);
-    assert_eq!(out.code, 0, "a known-but-nonmatching query must run; stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("no solutions"), "stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "a known-but-nonmatching query must run; stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.has_stdout_line("no solutions"),
+        "stdout:\n{}",
+        out.stdout
+    );
     assert_eq!(
         out.diagnostics("error:").count(),
         0,
@@ -117,7 +143,11 @@ fn a_known_functor_with_a_match_answers() {
     let out = query(&["app.util.Q.q(row: ?x)"]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
     assert!(out.stdout.contains("?x = 7"), "stdout:\n{}", out.stdout);
-    assert!(out.has_stdout_line("1 solution(s)"), "stdout:\n{}", out.stdout);
+    assert!(
+        out.has_stdout_line("1 solution(s)"),
+        "stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// A head with no functor — a bare variable — has no name to resolve, so it is
@@ -126,9 +156,22 @@ fn a_known_functor_with_a_match_answers() {
 #[test]
 fn a_variable_head_is_exempt() {
     let out = query(&["?x"]);
-    assert_eq!(out.code, 0, "a variable head must not be refused; stderr:\n{}", out.stderr);
-    assert_eq!(out.diagnostics("error:").count(), 0, "stderr:\n{}", out.stderr);
-    assert!(out.stdout.contains("solution(s)"), "it enumerates; stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "a variable head must not be refused; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.diagnostics("error:").count(),
+        0,
+        "stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("solution(s)"),
+        "it enumerates; stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// A builtin (`eq`) is a `Resolved` operation, so it is defined and must not be
@@ -136,9 +179,22 @@ fn a_variable_head_is_exempt() {
 #[test]
 fn a_builtin_functor_is_exempt() {
     let out = query(&["eq(1, 1)"]);
-    assert_eq!(out.code, 0, "a builtin must resolve, not block; stderr:\n{}", out.stderr);
-    assert_eq!(out.diagnostics("error:").count(), 0, "stderr:\n{}", out.stderr);
-    assert!(out.has_stdout_line("1 solution(s)"), "stdout:\n{}", out.stdout);
+    assert_eq!(
+        out.code, 0,
+        "a builtin must resolve, not block; stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.diagnostics("error:").count(),
+        0,
+        "stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.has_stdout_line("1 solution(s)"),
+        "stdout:\n{}",
+        out.stdout
+    );
 }
 
 /// A bounded quantifier is a resolver special form (`forall_in` / `some_in`) with
@@ -148,11 +204,19 @@ fn a_builtin_functor_is_exempt() {
 #[test]
 fn a_bounded_quantifier_is_not_refused() {
     let t = query_props(&["(forall ?x in [1, 2]: base(?x))"]);
-    assert_eq!(t.code, 0, "a true quantifier must resolve; stderr:\n{}", t.stderr);
+    assert_eq!(
+        t.code, 0,
+        "a true quantifier must resolve; stderr:\n{}",
+        t.stderr
+    );
     assert!(t.stdout.contains("true"), "stdout:\n{}", t.stdout);
 
     let f = query_props(&["(some ?x in [999]: base(?x))"]);
-    assert_eq!(f.code, 0, "a false quantifier answers empty, not refused; stderr:\n{}", f.stderr);
+    assert_eq!(
+        f.code, 0,
+        "a false quantifier answers empty, not refused; stderr:\n{}",
+        f.stderr
+    );
     assert!(f.has_stdout_line("no solutions"), "stdout:\n{}", f.stdout);
     assert_eq!(f.diagnostics("error:").count(), 0, "stderr:\n{}", f.stderr);
 }
@@ -164,7 +228,11 @@ fn a_bounded_quantifier_is_not_refused() {
 #[test]
 fn an_arity_0_proposition_is_not_refused() {
     let t = query_props(&["holds"]);
-    assert_eq!(t.code, 0, "a true proposition must resolve; stderr:\n{}", t.stderr);
+    assert_eq!(
+        t.code, 0,
+        "a true proposition must resolve; stderr:\n{}",
+        t.stderr
+    );
     assert!(t.stdout.contains("true"), "stdout:\n{}", t.stdout);
 
     let f = query_props(&["never"]);
@@ -183,7 +251,11 @@ fn an_arity_0_proposition_is_not_refused() {
 
     // The control: a genuinely absent proposition IS refused.
     let absent = query_props(&["absent_prop"]);
-    assert!(is_refused(&absent, "absent_prop"), "stderr:\n{}", absent.stderr);
+    assert!(
+        is_refused(&absent, "absent_prop"),
+        "stderr:\n{}",
+        absent.stderr
+    );
 }
 
 // ── --match mode ────────────────────────────────────────────────────
@@ -193,11 +265,24 @@ fn an_arity_0_proposition_is_not_refused() {
 #[test]
 fn an_unknown_functor_is_refused_under_match() {
     let out = query(&["--match", "nope(row: ?x)"]);
-    assert!(is_refused(&out, "nope"), "stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
-    assert!(!out.stdout.contains("result(s)"), "no browse output on a refusal; stdout:\n{}", out.stdout);
+    assert!(
+        is_refused(&out, "nope"),
+        "stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains("result(s)"),
+        "no browse output on a refusal; stdout:\n{}",
+        out.stdout
+    );
 
     let ok = query(&["--match", "app.util.Q.q(row: ?x)"]);
-    assert_eq!(ok.code, 0, "the browse itself must work; stderr:\n{}", ok.stderr);
+    assert_eq!(
+        ok.code, 0,
+        "the browse itself must work; stderr:\n{}",
+        ok.stderr
+    );
     assert!(ok.has_stdout_line("1 result(s)"), "stdout:\n{}", ok.stdout);
 }
 
@@ -213,10 +298,18 @@ fn an_unknown_functor_mid_file_does_not_drop_later_queries() {
     let kb = fixtures_dir("wi754").join("props.anthill");
     let qf = fixtures_dir("wi754").join("multi-query.anthill");
     let out = anthill(&[
-        "query", "-p", kb.to_str().unwrap(), "--query-file", qf.to_str().unwrap(),
+        "query",
+        "-p",
+        kb.to_str().unwrap(),
+        "--query-file",
+        qf.to_str().unwrap(),
     ]);
 
-    assert_eq!(out.code, 1, "one unknown pattern must make the run fail; stderr:\n{}", out.stderr);
+    assert_eq!(
+        out.code, 1,
+        "one unknown pattern must make the run fail; stderr:\n{}",
+        out.stderr
+    );
     assert!(
         out.has_diagnostic("error:", "'nonesuch'"),
         "the unknown middle pattern must be reported; stderr:\n{}",

@@ -19,7 +19,9 @@
 use crate::common::LAMBDA_HINT as HINT;
 
 fn load_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// A 2-ary predicate head with an UNBOUNDED `[t]` introducer must now get the
@@ -37,7 +39,8 @@ end
 "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains("no bounding guard") && e.contains('t')),
+        errs.iter()
+            .any(|e| e.contains("no bounding guard") && e.contains('t')),
         "a 2-ary head's `[t]` introducer must be collected (and, unbounded, \
          diagnosed); got: {errs:?}",
     );

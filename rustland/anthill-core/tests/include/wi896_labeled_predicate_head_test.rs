@@ -96,7 +96,11 @@ fn the_four_cases_are_decided_by_resolution_not_by_the_label() {
             wrong.push(format!("`{qn}` introduced={got}, want {want}: {why}"));
         }
     }
-    assert!(wrong.is_empty(), "the label decided a case it may not decide:\n{}", wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "the label decided a case it may not decide:\n{}",
+        wrong.join("\n")
+    );
 }
 
 /// THE OBSTACLE THE TICKET NAMES, DRIVEN INSTEAD OF ARGUED. WI-523's handoff refused a
@@ -128,7 +132,8 @@ namespace wi896.orcapture
 end
 "#;
     let mut kb = crate::common::load_kb_with(SRC);
-    let got = crate::wi282_rule_body_dot_test::resolve_query(&mut kb, "wi896.orcapture.reach896", 1);
+    let got =
+        crate::wi282_rule_body_dot_test::resolve_query(&mut kb, "wi896.orcapture.reach896", 1);
     assert_eq!(
         got, 2,
         "`or` must still be the kernel disjunction in a scope that also writes it in \
@@ -187,15 +192,27 @@ end
 "#;
     let kb = crate::common::load_kb_with(SRC);
     for (q, why) in [
-        ("S.eq", "a bodied `=` head is a predicate rule whose functor is the CONNECTIVE; \
-                  a local shadow hides every equation from `apply_eq_rules`"),
+        (
+            "S.eq",
+            "a bodied `=` head is a predicate rule whose functor is the CONNECTIVE; \
+                  a local shadow hides every equation from `apply_eq_rules`",
+        ),
         ("S.unify", "same for `<=>`"),
-        ("S.bodiedEq896", "and the LHS is not the subject either — a bodied rule is not \
-                           an equation, so its head is not about its LHS"),
-        ("S.bodiedUni896", "same, labeled — the label still decides nothing"),
+        (
+            "S.bodiedEq896",
+            "and the LHS is not the subject either — a bodied rule is not \
+                           an equation, so its head is not about its LHS",
+        ),
+        (
+            "S.bodiedUni896",
+            "same, labeled — the label still decides nothing",
+        ),
     ] {
         let qn = format!("wi896.connective.{q}");
-        assert!(!kb.has_qualified_name(&qn), "`{qn}` must not be minted: {why}");
+        assert!(
+            !kb.has_qualified_name(&qn),
+            "`{qn}` must not be minted: {why}"
+        );
     }
 }
 

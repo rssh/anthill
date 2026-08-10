@@ -30,7 +30,11 @@ namespace test.wi084p2.ret
 end
 "#;
     let r = try_load_kb_with(src);
-    assert!(r.is_ok(), "bare const should type as its declared type:\n{}", errs(r));
+    assert!(
+        r.is_ok(),
+        "bare const should type as its declared type:\n{}",
+        errs(r)
+    );
 }
 
 #[test]
@@ -46,7 +50,11 @@ namespace test.wi084p2.arg
 end
 "#;
     let r = try_load_kb_with(src);
-    assert!(r.is_ok(), "const in arg position should check against the param type:\n{}", errs(r));
+    assert!(
+        r.is_ok(),
+        "const in arg position should check against the param type:\n{}",
+        errs(r)
+    );
 }
 
 #[test]
@@ -84,7 +92,11 @@ namespace test.wi084p2.shadow
 end
 "#;
     let r = try_load_kb_with(src);
-    assert!(r.is_ok(), "a let-local must shadow a same-named const:\n{}", errs(r));
+    assert!(
+        r.is_ok(),
+        "a let-local must shadow a same-named const:\n{}",
+        errs(r)
+    );
 }
 
 #[test]

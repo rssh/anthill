@@ -18,13 +18,19 @@ use std::process::Command;
 const ANTHILL_BIN: &str = env!("CARGO_BIN_EXE_anthill");
 
 fn z3_available() -> bool {
-    Command::new("z3").arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false)
+    Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("anthill-using-test-{}-{}", std::process::id(), name));
+    let dir = std::env::temp_dir().join(format!(
+        "anthill-using-test-{}-{}",
+        std::process::id(),
+        name
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
@@ -33,7 +39,9 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 #[test]
 fn proof_with_using_clause_dispatches_lemma_as_hypothesis() {
-    if !z3_available() { return; }
+    if !z3_available() {
+        return;
+    }
     // Setup:
     //   lemma `bound_d` is a positive-form rule:
     //     premise `?x >= 5` ⇒ conclusion `?x >= 3`. Trivial under
@@ -84,16 +92,23 @@ fn proof_with_using_clause_dispatches_lemma_as_hypothesis() {
     let path = write_temp("with_using.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("test.using.basic.target_violation: proved"),
-        "target_violation must discharge to unsat:\n{stdout}");
+    assert!(
+        stdout.contains("test.using.basic.target_violation: proved"),
+        "target_violation must discharge to unsat:\n{stdout}"
+    );
     // Cite dispatch should be visible in the canon string.
-    assert!(stdout.contains("using=") || stdout.contains("bound_d"),
-        "expected the verbose output to mention the cited lemma:\n{stdout}");
+    assert!(
+        stdout.contains("using=") || stdout.contains("bound_d"),
+        "expected the verbose output to mention the cited lemma:\n{stdout}"
+    );
     // Lemma's own proof discharges first.
-    assert!(stdout.contains("test.using.basic.bound_d: proved"),
-        "lemma bound_d must discharge:\n{stdout}");
+    assert!(
+        stdout.contains("test.using.basic.bound_d: proved"),
+        "lemma bound_d must discharge:\n{stdout}"
+    );
 }
 
 #[test]
@@ -121,7 +136,8 @@ fn citing_un_discharged_lemma_fails_loudly() {
     let path = write_temp("undischarged_cite.anthill", src);
     let out = Command::new(ANTHILL_BIN)
         .args(["prove", path.to_str().unwrap(), "-v", "--no-cache"])
-        .output().expect("anthill prove");
+        .output()
+        .expect("anthill prove");
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

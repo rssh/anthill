@@ -21,8 +21,8 @@
 //! discarded). The unify-boundary fix is in place for when that lands; the
 //! return/projection positions below are the checked positions today.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -31,8 +31,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -58,7 +58,10 @@ namespace test.wi381.loads
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "alias `sort IntList = List[T = Int64]` should load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "alias `sort IntList = List[T = Int64]` should load: {errs:?}"
+    );
 }
 
 /// `s.T` on an `IntList` projects `Int64` (off the resolved shape `List[T = Int64]`).
@@ -112,7 +115,10 @@ namespace test.wi381.chain
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "Top -> Mid -> List[T=Int64]; (Top).T must project Int64: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "Top -> Mid -> List[T=Int64]; (Top).T must project Int64: {errs:?}"
+    );
 }
 
 /// `T = Int64` is KEPT at the subtype boundary: an `IntList` conforms to its own

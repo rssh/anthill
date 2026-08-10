@@ -14,10 +14,10 @@
 
 mod common;
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -29,8 +29,8 @@ fn load_example(name: &str) -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -40,7 +40,10 @@ fn load_example(name: &str) -> KnowledgeBase {
         for e in &errs {
             eprintln!("load error: {e}");
         }
-        panic!("examples/classic-mini/{name} must LOAD; got {} error(s)", errs.len());
+        panic!(
+            "examples/classic-mini/{name} must LOAD; got {} error(s)",
+            errs.len()
+        );
     }
     kb
 }
@@ -69,7 +72,10 @@ fn query(
         pos_args: SmallVec::from_slice(args),
         named_args: SmallVec::new(),
     });
-    let cfg = ResolveConfig { max_solutions: 100, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 100,
+        ..Default::default()
+    };
     kb.resolve(&[g], &cfg)
 }
 
@@ -92,7 +98,10 @@ fn classic_mini_ancestor_yields_the_transitive_closure() {
     let mut kb = load_example("ancestor");
 
     // Mode (out, out): the whole closure.
-    let cols: Vec<TermId> = ["child", "elder"].iter().map(|n| fresh(&mut kb, n)).collect();
+    let cols: Vec<TermId> = ["child", "elder"]
+        .iter()
+        .map(|n| fresh(&mut kb, n))
+        .collect();
     let sols = query(&mut kb, "classic.ancestry.ancestor", &cols);
     assert!(
         sols.iter().all(|s| s.is_definite()),
@@ -110,15 +119,26 @@ fn classic_mini_ancestor_yields_the_transitive_closure() {
     let bart = text(&mut kb, "bart");
     let elder = fresh(&mut kb, "elder");
     let sols = query(&mut kb, "classic.ancestry.ancestor", &[bart, elder]);
-    assert_eq!(sols.len(), 3, "bart has three ancestors: homer, abe, orville");
+    assert_eq!(
+        sols.len(),
+        3,
+        "bart has three ancestors: homer, abe, orville"
+    );
 
     // Mode (in, in): a membership question, derivable exactly once — and its
     // converse is not derivable at all (the relation is not symmetric).
     let (bart, orville) = (text(&mut kb, "bart"), text(&mut kb, "orville"));
     let sols = query(&mut kb, "classic.ancestry.ancestor", &[bart, orville]);
-    assert_eq!(sols.len(), 1, "orville is bart's ancestor, three `parent` links up");
+    assert_eq!(
+        sols.len(),
+        1,
+        "orville is bart's ancestor, three `parent` links up"
+    );
     let sols = query(&mut kb, "classic.ancestry.ancestor", &[orville, bart]);
-    assert!(sols.is_empty(), "ancestry runs one way — bart is not orville's ancestor");
+    assert!(
+        sols.is_empty(),
+        "ancestry runs one way — bart is not orville's ancestor"
+    );
 }
 
 /// Map colouring: six free columns, three colours, nine border constraints.

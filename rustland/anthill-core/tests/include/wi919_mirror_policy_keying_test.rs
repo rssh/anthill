@@ -64,12 +64,22 @@ struct PolicyStore {
 }
 
 impl Store for PolicyStore {
-    fn persist(&mut self, _kb: &KnowledgeBase, _f: TermId, _s: ClauseKind, _d: Symbol, _m: Option<TermId>)
-        -> Result<(), PersistenceError> { Ok(()) }
+    fn persist(
+        &mut self,
+        _kb: &KnowledgeBase,
+        _f: TermId,
+        _s: ClauseKind,
+        _d: Symbol,
+        _m: Option<TermId>,
+    ) -> Result<(), PersistenceError> {
+        Ok(())
+    }
     fn retract(&mut self, _kb: &KnowledgeBase, _id: RuleId) -> Result<bool, PersistenceError> {
         Ok(true)
     }
-    fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> { Ok(()) }
+    fn flush(&mut self, _kb: &KnowledgeBase) -> Result<(), PersistenceError> {
+        Ok(())
+    }
     fn owned_monotonicity(&self) -> Vec<(String, Monotonicity)> {
         vec![(self.functor.clone(), self.policy)]
     }
@@ -82,37 +92,59 @@ fn register_declaring(
     functor: &str,
 ) -> (Value, Result<(), ExtentRegError>) {
     let store_functor = interp.kb_mut().intern("PolicyStore");
-    let store_val = Value::Entity { functor: store_functor, pos: vec![].into(), named: vec![].into() };
-    let key = interp.store_canonical_key(&store_val).expect("canonical key");
-    let outcome = interp.register_mirror(key, Box::new(PolicyStore {
-        functor: functor.to_owned(),
-        policy: Monotonicity::NonMonotone,
-    }));
+    let store_val = Value::Entity {
+        functor: store_functor,
+        pos: vec![].into(),
+        named: vec![].into(),
+    };
+    let key = interp
+        .store_canonical_key(&store_val)
+        .expect("canonical key");
+    let outcome = interp.register_mirror(
+        key,
+        Box::new(PolicyStore {
+            functor: functor.to_owned(),
+            policy: Monotonicity::NonMonotone,
+        }),
+    );
     (store_val, outcome)
 }
 
 /// A nullary carrier headed by the declared entity `qname` — the fact to persist.
 fn functor_value(interp: &mut Interpreter, qname: &str) -> Value {
-    let sym = interp.kb_mut().try_resolve_symbol(qname)
+    let sym = interp
+        .kb_mut()
+        .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("resolve `{qname}`"));
-    Value::Entity { functor: sym, pos: vec![].into(), named: vec![].into() }
+    Value::Entity {
+        functor: sym,
+        pos: vec![].into(),
+        named: vec![].into(),
+    }
 }
 
 /// Persist `fact` through `store`, then retract it through the reference that came back.
 fn persist_then_retract(interp: &mut Interpreter, store: &Value, fact: Value) -> Value {
     let stored = interp
-        .call("anthill.persistence.Store.persist", &[store.clone(), fact, Value::Unit])
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store.clone(), fact, Value::Unit],
+        )
         .expect("persist ok");
     let reference_field = interp.kb_mut().intern("reference");
     let reference = match &stored {
-        Value::Entity { named, .. } => named.iter()
+        Value::Entity { named, .. } => named
+            .iter()
             .find(|(name, _)| *name == reference_field)
             .map(|(_, value)| value.clone())
             .expect("StoredRef carries reference"),
         other => panic!("persist must return StoredRef, got {other:?}"),
     };
     interp
-        .call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+        .call(
+            "anthill.persistence.NonMonotonicStore.retract",
+            &[store.clone(), reference],
+        )
         .expect("the store declared non_monotone, so the guard passes")
 }
 
@@ -160,7 +192,10 @@ fn a_store_policy_naming_a_contested_functor_is_refused_as_ambiguous() {
     match err {
         ExtentRegError::AmbiguousName { candidates, .. } => assert_eq!(
             candidates,
-            vec!["wi919.alpha.Widget919".to_owned(), "wi919.beta.Widget919".to_owned()],
+            vec![
+                "wi919.alpha.Widget919".to_owned(),
+                "wi919.beta.Widget919".to_owned()
+            ],
             "and it must name what it could not choose between",
         ),
         other => panic!("expected AmbiguousName; got {other:?}"),
@@ -181,7 +216,10 @@ fn the_matching_declaration_registers_and_still_reaches_the_retract_guard() {
 
     let fact = functor_value(&mut interp, "test.syn.Ghost");
     assert!(
-        matches!(persist_then_retract(&mut interp, &store, fact), Value::Bool(true)),
+        matches!(
+            persist_then_retract(&mut interp, &store, fact),
+            Value::Bool(true)
+        ),
         "the store's declared non_monotone must still reach the guard",
     );
 }

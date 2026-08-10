@@ -24,8 +24,8 @@
 //! spec keeps `F` skolemized at the def-site, so decomposition is against a fixed-but-
 //! arbitrary functor.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -34,8 +34,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -64,7 +64,10 @@ fn structured_param_application_surface_loads() {
 end
 "#;
     let errs = load_errors(&[snippet]);
-    assert!(errs.is_empty(), "marked-carrier HK surface should load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "marked-carrier HK surface should load: {errs:?}"
+    );
 }
 
 /// Piece 3 (ACCEPT): a body whose result is an application of the SAME functor with the
@@ -80,7 +83,10 @@ fn rigid_functor_application_decomposes_accept() {
 end
 "#;
     let errs = load_errors(&[snippet]);
-    assert!(errs.is_empty(), "reFmap (-> F[T=B], returns F[T=B]) should typecheck: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "reFmap (-> F[T=B], returns F[T=B]) should typecheck: {errs:?}"
+    );
 }
 
 /// Piece 3 (REJECT, wrong binding): injectivity — `wrongFmap` returns `fmap(...) : F[T = B]`
@@ -101,7 +107,10 @@ end
     // legible — `rigidify_op_type_params` names each rigid after its parameter's short name.
     assert!(
         errs.iter().any(|e| {
-            e.contains("wrongFmap") && e.contains("mismatch") && e.contains("?A") && e.contains("?B")
+            e.contains("wrongFmap")
+                && e.contains("mismatch")
+                && e.contains("?A")
+                && e.contains("?B")
         }),
         "wrongFmap must be rejected with a binding-distinct diagnostic (?A vs ?B); got: {errs:?}"
     );
@@ -122,7 +131,8 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        errs.iter().any(|e| e.contains("confused") && e.contains("mismatch")),
+        errs.iter()
+            .any(|e| e.contains("confused") && e.contains("mismatch")),
         "confused (-> F[T=A], returns G[T=A]) MUST be rejected on the functor; got: {errs:?}"
     );
 }
@@ -139,7 +149,10 @@ fn nested_application_decomposes() {
 end
 "#;
     let errs = load_errors(&[snippet]);
-    assert!(errs.is_empty(), "nested F[T=F[T=A]] pass-through should typecheck: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "nested F[T=F[T=A]] pass-through should typecheck: {errs:?}"
+    );
 }
 
 /// Piece 4 (surface): the proposal-002 monad-law rules — including the FLEXIBLE-head
@@ -157,7 +170,10 @@ fn monad_law_rule_bodies_load() {
 end
 "#;
     let errs = load_errors(&[snippet]);
-    assert!(errs.is_empty(), "monad-law rules (flexible head ?f(?x)) should load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "monad-law rules (flexible head ?f(?x)) should load: {errs:?}"
+    );
 }
 
 /// The full proposal-002 `CpsMonad` operation surface (marked carrier `F[T]`, `pure`/
@@ -176,5 +192,8 @@ fn full_cpsmonad_operation_surface_loads() {
 end
 "#;
     let errs = load_errors(&[snippet]);
-    assert!(errs.is_empty(), "CpsMonad operation surface should load: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "CpsMonad operation surface should load: {errs:?}"
+    );
 }

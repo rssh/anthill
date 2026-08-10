@@ -139,15 +139,19 @@ fn call_s(interp: &mut Interp, entry: &str, args: &[&str]) -> Value {
 }
 fn call_bool(interp: &mut Interp, entry: &str, args: &[&str]) -> bool {
     let v = call_s(interp, entry, args);
-    v.as_bool().unwrap_or_else(|| panic!("{entry}{args:?}: expected a Bool, got {v:?}"))
+    v.as_bool()
+        .unwrap_or_else(|| panic!("{entry}{args:?}: expected a Bool, got {v:?}"))
 }
 fn call_int(interp: &mut Interp, entry: &str, args: &[&str]) -> i64 {
     let v = call_s(interp, entry, args);
-    v.as_int().unwrap_or_else(|| panic!("{entry}{args:?}: expected an Int64, got {v:?}"))
+    v.as_int()
+        .unwrap_or_else(|| panic!("{entry}{args:?}: expected an Int64, got {v:?}"))
 }
 fn call_str(interp: &mut Interp, entry: &str, args: &[&str]) -> String {
     let v = call_s(interp, entry, args);
-    v.as_str().unwrap_or_else(|| panic!("{entry}{args:?}: expected a String, got {v:?}")).to_string()
+    v.as_str()
+        .unwrap_or_else(|| panic!("{entry}{args:?}: expected a String, got {v:?}"))
+        .to_string()
 }
 
 /// The headline: the five host-backed `String` operations run. Each answered
@@ -175,9 +179,9 @@ fn the_string_search_and_edit_surface_evaluates() {
         );
     }
     for (args, want) in [
-        (["abcb", "b"], "a-c-"),   // EVERY occurrence, not the first
-        (["aaa", "aa"], "-a"),     // non-overlapping, scanned LEFT TO RIGHT
-        (["abc", ""], "-a-b-c-"),  // the empty pattern occurs at every boundary
+        (["abcb", "b"], "a-c-"),  // EVERY occurrence, not the first
+        (["aaa", "aa"], "-a"),    // non-overlapping, scanned LEFT TO RIGHT
+        (["abc", ""], "-a-b-c-"), // the empty pattern occurs at every boundary
     ] {
         assert_eq!(
             call_str(&mut interp, "dReplace", &args),
@@ -212,8 +216,8 @@ fn index_of_agrees_with_substring_and_length() {
     for (s, sub) in [
         ("abc", "b"),
         ("abcdef", "cde"),
-        ("éb", "b"),          // one multi-byte scalar before the match
-        ("ééb", "b"),         // two
+        ("éb", "b"),            // one multi-byte scalar before the match
+        ("ééb", "b"),           // two
         ("日本語text", "text"), // three, and a wider one
         ("日本語", "本"),
     ] {
@@ -304,7 +308,9 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
     let mut kb = crate::common::load_kb_with(DRIVER);
     {
         let mut solutions = |goal: &str, simplify: bool| {
-            let sym = kb.try_resolve_symbol(goal).unwrap_or_else(|| panic!("{goal} not in KB"));
+            let sym = kb
+                .try_resolve_symbol(goal)
+                .unwrap_or_else(|| panic!("{goal} not in KB"));
             let name = kb.intern("X");
             let vid = kb.fresh_var(name);
             let v: TermId = kb.alloc(Term::Var(Var::Global(vid)));
@@ -313,15 +319,41 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
                 pos_args: SmallVec::from_slice(&[v]),
                 named_args: SmallVec::new(),
             });
-            kb.resolve(&[g], &ResolveConfig { simplify, ..Default::default() }).len()
+            kb.resolve(
+                &[g],
+                &ResolveConfig {
+                    simplify,
+                    ..Default::default()
+                },
+            )
+            .len()
         };
         for (goal, simplify, want, why) in [
-            ("control_pred", false, 1, "the control must answer, or nothing below proves anything"),
-            ("ite_reduces", true, 1, "a nested redex rewrites once `simplify` is on"),
-            ("ite_reduces", false, 0, "`simplify` is off by default, so no equation fires"),
+            (
+                "control_pred",
+                false,
+                1,
+                "the control must answer, or nothing below proves anything",
+            ),
+            (
+                "ite_reduces",
+                true,
+                1,
+                "a nested redex rewrites once `simplify` is on",
+            ),
+            (
+                "ite_reduces",
+                false,
+                0,
+                "`simplify` is off by default, so no equation fires",
+            ),
         ] {
             let qn = format!("wi884.siblings.{goal}");
-            assert_eq!(solutions(&qn, simplify), want, "{goal} (simplify={simplify}): {why}");
+            assert_eq!(
+                solutions(&qn, simplify),
+                want,
+                "{goal} (simplify={simplify}): {why}"
+            );
         }
     }
 
@@ -383,8 +415,14 @@ end
 "#;
     let mut interp = crate::common::interp_for(SPELLINGS);
     for (entry, why) in [
-        ("R.viaBare", "an imported bare `ite` must inline to its then-branch"),
-        ("Q.viaMember", "`Bool.ite` must name the scoped rule functor and inline"),
+        (
+            "R.viaBare",
+            "an imported bare `ite` must inline to its then-branch",
+        ),
+        (
+            "Q.viaMember",
+            "`Bool.ite` must name the scoped rule functor and inline",
+        ),
     ] {
         let path = format!("wi887.spellings.{entry}");
         match interp.call(&path, &[Value::Int(0)]) {
@@ -492,8 +530,14 @@ end
             interp = crate::common::interp_for(&src);
         }
         let got = interp.call(&format!("wi884.{ns}.C.drive"), &[Value::Int(0)]);
-        let label =
-            format!("`{connective}`{}", if attribute.is_empty() { " bare" } else { " [simp]" });
+        let label = format!(
+            "`{connective}`{}",
+            if attribute.is_empty() {
+                " bare"
+            } else {
+                " [simp]"
+            }
+        );
         match (expected, got) {
             (Some(want), Ok(Value::Int(n))) => assert_eq!(n, *want, "{label}"),
             (None, Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. })) => {

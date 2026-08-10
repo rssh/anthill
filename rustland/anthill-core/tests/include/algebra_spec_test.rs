@@ -13,19 +13,26 @@
 
 #[test]
 fn ring_spec_loads_and_resolves() {
-    let kb = crate::common::load_kb_with(r#"
+    let kb = crate::common::load_kb_with(
+        r#"
         namespace test.algebra.ring_smoke
           rule Marker(?x) :- ?x = 1
         end
-    "#);
+    "#,
+    );
     assert!(
-        kb.try_resolve_symbol("anthill.prelude.algebra.Ring").is_some(),
+        kb.try_resolve_symbol("anthill.prelude.algebra.Ring")
+            .is_some(),
         "Ring spec must be loaded from stdlib"
     );
     // Operation symbols are scoped under Ring (Ring.add, Ring.mul, …).
-    for op in ["anthill.prelude.algebra.Ring.add", "anthill.prelude.algebra.Ring.sub",
-               "anthill.prelude.algebra.Ring.mul", "anthill.prelude.algebra.Ring.zero",
-               "anthill.prelude.algebra.Ring.one"] {
+    for op in [
+        "anthill.prelude.algebra.Ring.add",
+        "anthill.prelude.algebra.Ring.sub",
+        "anthill.prelude.algebra.Ring.mul",
+        "anthill.prelude.algebra.Ring.zero",
+        "anthill.prelude.algebra.Ring.one",
+    ] {
         assert!(
             kb.try_resolve_symbol(op).is_some(),
             "missing Ring operation: {op}"
@@ -35,19 +42,24 @@ fn ring_spec_loads_and_resolves() {
 
 #[test]
 fn vector_space_spec_loads_and_resolves() {
-    let kb = crate::common::load_kb_with(r#"
+    let kb = crate::common::load_kb_with(
+        r#"
         namespace test.algebra.vs_smoke
           rule Marker(?x) :- ?x = 1
         end
-    "#);
+    "#,
+    );
     assert!(
-        kb.try_resolve_symbol("anthill.prelude.algebra.VectorSpace").is_some(),
+        kb.try_resolve_symbol("anthill.prelude.algebra.VectorSpace")
+            .is_some(),
         "VectorSpace spec must be loaded from stdlib"
     );
-    for op in ["anthill.prelude.algebra.VectorSpace.vec_add",
-               "anthill.prelude.algebra.VectorSpace.vec_sub",
-               "anthill.prelude.algebra.VectorSpace.vec_scale",
-               "anthill.prelude.algebra.VectorSpace.vec_zero"] {
+    for op in [
+        "anthill.prelude.algebra.VectorSpace.vec_add",
+        "anthill.prelude.algebra.VectorSpace.vec_sub",
+        "anthill.prelude.algebra.VectorSpace.vec_scale",
+        "anthill.prelude.algebra.VectorSpace.vec_zero",
+    ] {
         assert!(
             kb.try_resolve_symbol(op).is_some(),
             "missing VectorSpace operation: {op}"
@@ -73,11 +85,13 @@ fn float_provides_ring_and_vec3_provides_vector_space() {
     // This test does NOT prove the members run; `check_provider_operations` is
     // what makes the fact load-blocking, and `vec3_ops_test::the_four_members_evaluate`
     // is what drives them. Backing the bodies out fails BOTH — this one at load.
-    let kb = crate::common::load_kb_with(r#"
+    let kb = crate::common::load_kb_with(
+        r#"
         namespace test.algebra.satisfaction
           rule Marker(?x) :- ?x = 1
         end
-    "#);
+    "#,
+    );
     // CARRIER-AWARE, via the shared `common::sort_provisions` walk. `!rules_by_
     // functor(spec).is_empty()` would NOT do: it keys on the spec functor alone, so
     // ANY carrier's fact satisfies it — move the provision to some other carrier and

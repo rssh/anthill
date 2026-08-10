@@ -45,7 +45,8 @@ fn assert_unresolved(sources: &[&str], name: &str, why: &str) {
     match try_load_kb_with_files(sources) {
         Ok(_) => panic!("must NOT load: {why}"),
         Err(errs) => assert!(
-            errs.iter().any(|e| e.contains(&format!("unresolved name '{name}'"))),
+            errs.iter()
+                .any(|e| e.contains(&format!("unresolved name '{name}'"))),
             "{why}; expected `{name}` to be unresolved, got: {errs:?}",
         ),
     }
@@ -121,6 +122,15 @@ end
 fn a_top_level_import_is_not_an_item() {
     let parsed = anthill_core::parse::parse("import wi853.lib\n\nfact mk(x: 1)\n")
         .expect("a top-level import must parse");
-    assert_eq!(parsed.imports.len(), 1, "the import must be collected as an import");
-    assert_eq!(parsed.items.len(), 1, "only the fact is an item; got {:?}", parsed.items);
+    assert_eq!(
+        parsed.imports.len(),
+        1,
+        "the import must be collected as an import"
+    );
+    assert_eq!(
+        parsed.items.len(),
+        1,
+        "only the fact is an item; got {:?}",
+        parsed.items
+    );
 }

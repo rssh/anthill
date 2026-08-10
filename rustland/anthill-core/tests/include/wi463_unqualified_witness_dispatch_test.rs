@@ -24,8 +24,8 @@
 //! This pins that completion — the unqualified witness call both LOADS clean
 //! and DISPATCHES to the witness member at eval (result `99`).
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// The witness scenario with the spec op brought into scope by a self-namespace
@@ -66,8 +66,8 @@ fn load_errors(src: &str) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let s = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let s =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&s).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();

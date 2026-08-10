@@ -115,7 +115,10 @@ end
 /// deleted `same_symbol` for exactly this) and would let any other sort's `cons` /
 /// `nil` / `relation_floundered` satisfy these assertions. Field LABELS below are
 /// still name-compared: a label is not a qualified identity (cf. `same_label`).
-fn canonical(interp: &anthill_core::eval::Interpreter, qname: &str) -> anthill_core::intern::Symbol {
+fn canonical(
+    interp: &anthill_core::eval::Interpreter,
+    qname: &str,
+) -> anthill_core::intern::Symbol {
     interp
         .kb()
         .try_resolve_symbol(qname)
@@ -139,7 +142,10 @@ fn assert_floundered(interp: &anthill_core::eval::Interpreter, err: EvalError) -
     };
     assert_eq!(
         functor,
-        canonical(interp, "anthill.prelude.RelationFloundered.relation_floundered"),
+        canonical(
+            interp,
+            "anthill.prelude.RelationFloundered.relation_floundered"
+        ),
         "the payload is the RelationFloundered witness, not some other Error payload"
     );
     let goals = named
@@ -225,7 +231,11 @@ fn wi737_definite_relation_still_drains() {
     let n = interp
         .call("test.wi737.pairAnyCount", &[])
         .expect("a DEFINITE relation drains unchanged — the gate is on the residual");
-    assert_eq!(n.as_int(), Some(9), "3 nums x 3 nums, no guard to flounder on");
+    assert_eq!(
+        n.as_int(),
+        Some(9),
+        "3 nums x 3 nums, no guard to flounder on"
+    );
 }
 
 /// CONTROL, the sharpest: the SAME `neq` guard that makes `unbound_pair` raise

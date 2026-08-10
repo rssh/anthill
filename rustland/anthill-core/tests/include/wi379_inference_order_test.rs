@@ -6,8 +6,8 @@
 //! `LetAfterValue` for an annotated `let`) because `resolved_ret` carries the
 //! argument-derived type.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn try_load(extra: &str) -> Vec<load::LoadError> {
@@ -22,11 +22,16 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
     parsed.push(parse::parse(extra).expect("parse extra"));
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).err().unwrap_or_default()
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .err()
+        .unwrap_or_default()
 }
 
 fn errors_text(errs: &[load::LoadError]) -> String {
-    errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")
+    errs.iter()
+        .map(|e| format!("{e}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── Baseline: SAME-sort 042 inference (List arg, List param) ────────────────
@@ -42,7 +47,11 @@ end
 "#;
     let errs = try_load(src);
     eprintln!("=== same_sort_infers ===\n{}", errors_text(&errs));
-    assert!(errs.is_empty(), "same-sort [Elem] inference: {}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "same-sort [Elem] inference: {}",
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -56,7 +65,10 @@ end
 "#;
     let errs = try_load(src);
     eprintln!("=== same_sort_wrong ===\n{}", errors_text(&errs));
-    assert!(!errs.is_empty(), "id_list(List[Int64]) is List[Int64], not List[String]");
+    assert!(
+        !errs.is_empty(),
+        "id_list(List[Int64]) is List[Int64], not List[String]"
+    );
 }
 
 // ── CROSS-sort 042 inference (List used as Stream, via List-provides-Stream) ─
@@ -92,7 +104,10 @@ end
 "#;
     let errs = try_load(src);
     eprintln!("=== cross_sort_wrong ===\n{}", errors_text(&errs));
-    assert!(!errs.is_empty(), "probe(List[Int64] as Stream) is Option[Int64], not Option[String]");
+    assert!(
+        !errs.is_empty(),
+        "probe(List[Int64] as Stream) is Option[Int64], not Option[String]"
+    );
 }
 
 // ── Constructor path: same args-before-expected order (check_constructor_iter) ─
@@ -108,7 +123,11 @@ end
 "#;
     let errs = try_load(src);
     eprintln!("=== constructor_infers_ok ===\n{}", errors_text(&errs));
-    assert!(errs.is_empty(), "some(42) is Option[Int64]: {}", errors_text(&errs));
+    assert!(
+        errs.is_empty(),
+        "some(42) is Option[Int64]: {}",
+        errors_text(&errs)
+    );
 }
 
 // WI-384 (the constructor analogue of the apply-path fix): `some(42)` typed against a
@@ -129,7 +148,10 @@ end
 "#;
     let errs = try_load(src);
     eprintln!("=== constructor_wrong_return ===\n{}", errors_text(&errs));
-    assert!(!errs.is_empty(), "some(42) is Option[Int64], not Option[String]");
+    assert!(
+        !errs.is_empty(),
+        "some(42) is Option[Int64], not Option[String]"
+    );
 }
 
 // ── Annotated-let conformance (the LetAfterValue use-site check) ─────────────
@@ -146,8 +168,15 @@ namespace test.s042.letok
 end
 "#;
     let errs = try_load(src);
-    eprintln!("=== let_annotation_conformance_ok ===\n{}", errors_text(&errs));
-    assert!(errs.is_empty(), "let v: List[Int64] = id_list(List[Int64]) conforms: {}", errors_text(&errs));
+    eprintln!(
+        "=== let_annotation_conformance_ok ===\n{}",
+        errors_text(&errs)
+    );
+    assert!(
+        errs.is_empty(),
+        "let v: List[Int64] = id_list(List[Int64]) conforms: {}",
+        errors_text(&errs)
+    );
 }
 
 #[test]
@@ -162,7 +191,10 @@ namespace test.s042.letwrong
 end
 "#;
     let errs = try_load(src);
-    eprintln!("=== let_annotation_conformance_rejected ===\n{}", errors_text(&errs));
+    eprintln!(
+        "=== let_annotation_conformance_rejected ===\n{}",
+        errors_text(&errs)
+    );
     assert!(
         !errs.is_empty(),
         "id_list(List[Int64]) is List[Int64]; the let annotation List[String] must be rejected"

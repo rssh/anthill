@@ -53,7 +53,8 @@ pub fn resolve_cache_root(override_path: Option<&Path>) -> PathBuf {
 /// result out of any per-obligation loop — this canonicalises
 /// `repo_root` (a syscall).
 pub fn proof_subdir(cache_root: &Path, repo_root: &Path, solver: Solver) -> PathBuf {
-    let repo_canon = repo_root.canonicalize()
+    let repo_canon = repo_root
+        .canonicalize()
         .unwrap_or_else(|_| repo_root.to_path_buf());
     let mut h = Sha256::new();
     h.update(repo_canon.to_string_lossy().as_bytes());

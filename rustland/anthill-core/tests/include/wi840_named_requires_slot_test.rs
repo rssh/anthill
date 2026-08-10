@@ -147,7 +147,10 @@ end
 "#
         )
     };
-    loaded(&program("lo"), "the binder must be addressable as a bracket key");
+    loaded(
+        &program("lo"),
+        "the binder must be addressable as a bracket key",
+    );
     refused_with(
         &program("Bogus"),
         "unknown type-param 'Bogus'",
@@ -456,11 +459,18 @@ fn sort_info_requires_bases(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String>
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let field = |k: &str| {
-            named.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
         };
-        let (Some(name), Some(reqs)) = (field("name"), field("requires")) else { continue };
+        let field = |k: &str| {
+            named
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == k)
+                .map(|(_, t)| *t)
+        };
+        let (Some(name), Some(reqs)) = (field("name"), field("requires")) else {
+            continue;
+        };
         if head_sym(kb, name) != Some(sort_sym) {
             continue;
         }
@@ -472,17 +482,26 @@ fn sort_info_requires_bases(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String>
 /// `sort_sym`'s `SortRequiresInfo` FACT spec bases, in the order the functor index
 /// enumerates them — deliberately a different reader from the one above.
 fn sort_requires_fact_bases(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
-    let sri = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo").unwrap();
+    let sri = kb
+        .try_resolve_symbol("anthill.reflect.SortRequiresInfo")
+        .unwrap();
     let mut out = Vec::new();
     for rid in kb.rules_by_functor(sri) {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else { continue };
-        let field = |k: &str| {
-            named.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
         };
-        let (Some(owner), Some(spec)) = (field("sort_ref"), field("spec")) else { continue };
+        let field = |k: &str| {
+            named
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == k)
+                .map(|(_, t)| *t)
+        };
+        let (Some(owner), Some(spec)) = (field("sort_ref"), field("spec")) else {
+            continue;
+        };
         if head_sym(kb, owner) != Some(sort_sym) {
             continue;
         }
@@ -496,14 +515,24 @@ fn cons_list_bases(kb: &KnowledgeBase, list: anthill_core::kb::term::TermId) -> 
     use anthill_core::kb::term::Term;
     let mut out = Vec::new();
     let mut cur = list;
-    while let Term::Fn { functor, named_args, .. } = kb.get_term(cur) {
+    while let Term::Fn {
+        functor,
+        named_args,
+        ..
+    } = kb.get_term(cur)
+    {
         if kb.local_name_of(*functor) != "cons" {
             break;
         }
         let field = |k: &str| {
-            named_args.iter().find(|(s, _)| kb.local_name_of(*s) == k).map(|(_, t)| *t)
+            named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == k)
+                .map(|(_, t)| *t)
         };
-        let (Some(h), Some(t)) = (field("head"), field("tail")) else { break };
+        let (Some(h), Some(t)) = (field("head"), field("tail")) else {
+            break;
+        };
         out.push(spec_base_name(kb, h));
         cur = t;
     }
@@ -515,7 +544,10 @@ fn cons_list_bases(kb: &KnowledgeBase, list: anthill_core::kb::term::TermId) -> 
 /// bare spec reference an unparameterized one stays as.
 fn spec_base_name(kb: &KnowledgeBase, spec: anthill_core::kb::term::TermId) -> String {
     use anthill_core::kb::term::Term;
-    if let Term::Fn { functor, pos_args, .. } = kb.get_term(spec) {
+    if let Term::Fn {
+        functor, pos_args, ..
+    } = kb.get_term(spec)
+    {
         if kb.local_name_of(*functor) == "SortView" && !pos_args.is_empty() {
             let inner = pos_args[0];
             return head_sym(kb, inner)

@@ -95,8 +95,7 @@ use crate::wi1010_defaulted_op_instance_fact_test::program;
 /// implementations of one defaulted op for one carrier.
 const TWO_SUPPLIERS_LEAF: &str =
     "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
-const TWO_SUPPLIERS_TAIL: &str =
-    "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
+const TWO_SUPPLIERS_TAIL: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
      fact Desc[T = Leaf, describe = otherDescribe]\n";
 
 fn two_suppliers(ns: &str, tail: &str) -> String {
@@ -143,8 +142,14 @@ fn a_concrete_carrier_tie_is_refused_at_load() {
     let ns = "test.wi1012.load";
     let msg = refusal(&two_suppliers(ns, ""));
     assert!(msg.contains("ambiguous dispatch"), "{msg}");
-    assert!(msg.contains("Desc.describe"), "the spec op must be named: {msg}");
-    assert!(msg.contains("carrier `test.wi1012.load.Leaf`"), "the carrier must be named: {msg}");
+    assert!(
+        msg.contains("Desc.describe"),
+        "the spec op must be named: {msg}"
+    );
+    assert!(
+        msg.contains("carrier `test.wi1012.load.Leaf`"),
+        "the carrier must be named: {msg}"
+    );
     assert!(
         msg.contains("the carrier's own member 'test.wi1012.load.Leaf.describe'"),
         "route 1 by route: {msg}",
@@ -203,15 +208,21 @@ fn a_rule_reaching_the_tie_through_an_operation_is_refused() {
 fn a_tie_in_a_branch_that_never_runs_is_refused() {
     let ns = "test.wi1012.dead";
     let src = two_suppliers(ns, "")
-    // `gt(1, 0)` is true, so the `else` arm never evaluates — but the typer types both
-    // arms to join them, which is why the tie is visible to it and to nothing else.
-    .replace(
-        "operation probe() -> Int64 = Desc.describe(leaf())",
-        "operation probe() -> Int64 = if gt(1, 0) then 0 else Desc.describe(leaf())",
+        // `gt(1, 0)` is true, so the `else` arm never evaluates — but the typer types both
+        // arms to join them, which is why the tie is visible to it and to nothing else.
+        .replace(
+            "operation probe() -> Int64 = Desc.describe(leaf())",
+            "operation probe() -> Int64 = if gt(1, 0) then 0 else Desc.describe(leaf())",
+        );
+    assert!(
+        src.contains("if gt(1, 0) then"),
+        "fixture guard: the rewrite must have applied"
     );
-    assert!(src.contains("if gt(1, 0) then"), "fixture guard: the rewrite must have applied");
     let msg = refusal(&src);
-    assert!(msg.contains("ambiguous dispatch"), "a dead branch's tie must report: {msg}");
+    assert!(
+        msg.contains("ambiguous dispatch"),
+        "a dead branch's tie must report: {msg}"
+    );
 }
 
 /// THE EVAL FACE, KEPT ON PURPOSE — the control the load refusal must NOT consume.
@@ -225,10 +236,18 @@ fn a_tie_on_an_abstract_carrier_is_still_refused_at_the_call() {
     let err = crate::common::interp_for(&abstract_carrier_program(ns))
         .call(&format!("{ns}.probe"), &[])
         .expect_err("two implementations, a carrier the typer cannot pin — refuse at the call");
-    let EvalError::AmbiguousSpecOpDispatch { carrier, candidates, .. } = &err else {
+    let EvalError::AmbiguousSpecOpDispatch {
+        carrier,
+        candidates,
+        ..
+    } = &err
+    else {
         panic!("expected AmbiguousSpecOpDispatch, got {err:?}");
     };
-    assert!(carrier.ends_with(".Leaf"), "the tie is per CARRIER: {carrier}");
+    assert!(
+        carrier.ends_with(".Leaf"),
+        "the tie is per CARRIER: {carrier}"
+    );
     assert_eq!(candidates.len(), 2, "both routes: {candidates:?}");
 }
 
@@ -264,7 +283,10 @@ fn both_faces_render_one_message_body() {
         "the carrier's own member '",
         "an instance fact binding `describe = ",
     ] {
-        assert!(load_msg.contains(phrase), "load face is missing `{phrase}`:\n{load_msg}");
+        assert!(
+            load_msg.contains(phrase),
+            "load face is missing `{phrase}`:\n{load_msg}"
+        );
     }
     // The load face additionally carries `line:col: `, which the eval face has no source
     // text to resolve — strip exactly that prefix and the rest must be EQUAL, not merely

@@ -173,7 +173,8 @@ end
 #[test]
 fn entity_then_sort_body_is_refused_by_059_r1_and_still_unwired() {
     crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(r#"
+        crate::common::try_load_kb_with(
+            r#"
 namespace wi979.es
   import anthill.prelude.Int64
   entity Rec(n: Int64)
@@ -182,7 +183,8 @@ namespace wi979.es
     operation twice(r: Rec) -> Int64 = r.n
   end
 end
-"#),
+"#,
+        ),
         &[
             // WI-997 / 059 R1 — the pair itself, named with both keywords and lines.
             "type 'Rec' is declared more than once in scope 'wi979.es': \

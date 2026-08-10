@@ -8,8 +8,8 @@
 //! partial parametric-sort annotation is rewritten to KEEP the value's
 //! inferred parameters instead of erasing them.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 /// Stdlib + extra sources → load-error strings (empty Vec on clean load).
@@ -19,8 +19,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -52,7 +52,10 @@ namespace test.wi374.bare_ann
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "bare annotation must keep inferred params: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "bare annotation must keep inferred params: {errs:#?}"
+    );
 }
 
 /// A PARTIAL annotation keeps its written binding and takes the rest from the
@@ -70,7 +73,10 @@ namespace test.wi374.partial_ann
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "partial annotation must keep written + inferred: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "partial annotation must keep written + inferred: {errs:#?}"
+    );
 }
 
 /// The annotation stays AUTHORITATIVE where written: a contradicting written
@@ -127,7 +133,10 @@ namespace test.wi374.tie_accept
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "same-element append must stay accepted: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "same-element append must stay accepted: {errs:#?}"
+    );
 }
 
 /// §3 bullet 2 — two bare refs of a FOREIGN sort in one signature are
@@ -149,7 +158,10 @@ namespace test.wi374.foreign_indep
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "foreign bare refs are independent (§3 bullet 2): {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "foreign bare refs are independent (§3 bullet 2): {errs:#?}"
+    );
 }
 
 /// Review-fix regression: REFINEMENT is not violation. A bare `List` element
@@ -170,7 +182,10 @@ namespace test.wi374.tie_refine
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "bare-vs-parameterized same-sort bindings unify (refinement): {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "bare-vs-parameterized same-sort bindings unify (refinement): {errs:#?}"
+    );
 }
 
 /// Review-fix regression: a same-sort SIBLING member call at a DIFFERENT
@@ -192,7 +207,10 @@ namespace test.wi374.sibling
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "sibling member call at a fresh instance must stay accepted: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "sibling member call at a fresh instance must stay accepted: {errs:#?}"
+    );
 }
 
 /// Review-fix regression: a TOP-LEVEL op in the SAME namespace as the sort is
@@ -215,7 +233,10 @@ namespace test.wi374.ns_foreign
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "same-namespace top-level op is foreign (§3 bullet 2): {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "same-namespace top-level op is foreign (§3 bullet 2): {errs:#?}"
+    );
 }
 
 /// Review-fix regression: an EARLIER benign foreign conflict must not mask a
@@ -291,7 +312,10 @@ namespace test.wi374.wildcard_ann
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "a written wildcard must take the inferred binding: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "a written wildcard must take the inferred binding: {errs:#?}"
+    );
 }
 
 /// CONSTRUCTOR tie, enforced (same §3-bullet-1 decision, field peer): two
@@ -359,7 +383,10 @@ namespace test.wi374.ctor_ok
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "consistent / refining constructor fields must stay accepted: {errs:#?}");
+    assert!(
+        errs.is_empty(),
+        "consistent / refining constructor fields must stay accepted: {errs:#?}"
+    );
 }
 
 /// Review-fix regression (round 3): enforcement must be ORDER-INDEPENDENT on
@@ -399,7 +426,10 @@ namespace test.wi374.order2
   operation driver() -> Int64 = comb(mkB(b: 1), mkB(b: "x"), mkA(a: 2))
 end
 "#;
-    for (label, src) in [("benign-first", benign_first), ("genuine-first", genuine_first)] {
+    for (label, src) in [
+        ("benign-first", benign_first),
+        ("genuine-first", genuine_first),
+    ] {
         let errs = load_errors(&[src]);
         assert!(
             !errs.is_empty(),
@@ -480,4 +510,3 @@ end
         "an erased producer return must stay rejected (no reconstruction)"
     );
 }
-

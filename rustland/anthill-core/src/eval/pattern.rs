@@ -51,9 +51,11 @@ pub fn match_pattern(
                 None
             }
         }
-        Pattern::Constructor { name, pos_args, named_args } => {
-            match_constructor_pattern(interp, *name, pos_args, named_args, scrutinee)
-        }
+        Pattern::Constructor {
+            name,
+            pos_args,
+            named_args,
+        } => match_constructor_pattern(interp, *name, pos_args, named_args, scrutinee),
         Pattern::Tuple { positional, labels } => {
             match_tuple_pattern(interp, positional, labels, scrutinee)
         }
@@ -304,15 +306,28 @@ fn constructor_sub_values(
     // (WI-1025).
     let scrutinee = scrutinee.carried();
     match scrutinee {
-        Value::Entity { functor, pos, named, .. } => {
-            if !functor_matches(kb, expected, *functor) { return None; }
+        Value::Entity {
+            functor,
+            pos,
+            named,
+            ..
+        } => {
+            if !functor_matches(kb, expected, *functor) {
+                return None;
+            }
             let mut all: Vec<Value> = pos.to_vec();
             all.extend(named.iter().map(|(_, v)| v.clone()));
             Some(all)
         }
         Value::Term { id: tid, .. } => match kb.get_term(*tid) {
-            Term::Fn { functor, pos_args, named_args } => {
-                if !functor_matches(kb, expected, *functor) { return None; }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                if !functor_matches(kb, expected, *functor) {
+                    return None;
+                }
                 let mut all: Vec<Value> = pos_args.iter().map(|t| Value::term(*t)).collect();
                 all.extend(named_args.iter().map(|(_, t)| Value::term(*t)));
                 Some(all)
@@ -323,7 +338,9 @@ fn constructor_sub_values(
             // bare identifier). Accept those so a `case nil()` arm matches both
             // `cons("x", nil)` and the bare `nil`.
             Term::Ref(sym) | Term::Ident(sym) => {
-                if !functor_matches(kb, expected, *sym) { return None; }
+                if !functor_matches(kb, expected, *sym) {
+                    return None;
+                }
                 Some(Vec::new())
             }
             _ => None,
@@ -335,13 +352,17 @@ fn constructor_sub_values(
         // fails outright. WI-1016 added `SymbolRef`; WI-1025 added the occurrence
         // when `value_functor` began accepting it.
         Value::SymbolRef(sym) => {
-            if !functor_matches(kb, expected, *sym) { return None; }
+            if !functor_matches(kb, expected, *sym) {
+                return None;
+            }
             Some(Vec::new())
         }
         Value::Node(occ) => match occ.as_expr() {
             Some(crate::kb::node_occurrence::Expr::Ref(sym))
             | Some(crate::kb::node_occurrence::Expr::Ident(sym)) => {
-                if !functor_matches(kb, expected, *sym) { return None; }
+                if !functor_matches(kb, expected, *sym) {
+                    return None;
+                }
                 Some(Vec::new())
             }
             // An APPLIED occurrence is deliberately not destructured here: its
@@ -368,9 +389,19 @@ pub(crate) fn functor_matches(
     pattern_sym: Symbol,
     scrutinee_sym: Symbol,
 ) -> bool {
-    if pattern_sym == scrutinee_sym { return true; }
-    let pattern_short = kb.local_name_of(pattern_sym).rsplit('.').next().unwrap_or("");
-    let scrut_short = kb.local_name_of(scrutinee_sym).rsplit('.').next().unwrap_or("");
+    if pattern_sym == scrutinee_sym {
+        return true;
+    }
+    let pattern_short = kb
+        .local_name_of(pattern_sym)
+        .rsplit('.')
+        .next()
+        .unwrap_or("");
+    let scrut_short = kb
+        .local_name_of(scrutinee_sym)
+        .rsplit('.')
+        .next()
+        .unwrap_or("");
     !pattern_short.is_empty() && pattern_short == scrut_short
 }
 

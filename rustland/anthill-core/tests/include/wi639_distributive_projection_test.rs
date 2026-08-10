@@ -20,7 +20,10 @@ use anthill_core::eval::Value;
 use crate::common::{interp_for, parse_errs, try_load_kb_with};
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp.call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+    match interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
+    {
         Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
@@ -60,16 +63,44 @@ end
     );
     let mut interp = interp_for(src);
     // keep: `(x,y)` selects x and y, drops z — re-read by name off the result.
-    assert_eq!(run_int(&mut interp, "test.wi639.keep_x"), 10, "(…).(x, y).x");
-    assert_eq!(run_int(&mut interp, "test.wi639.keep_y"), 20, "(…).(x, y).y");
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.keep_x"),
+        10,
+        "(…).(x, y).x"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.keep_y"),
+        20,
+        "(…).(x, y).y"
+    );
     // rename: keys are `a`/`b`, values sourced from `x`/`y`.
-    assert_eq!(run_int(&mut interp, "test.wi639.rename_a"), 10, "(x,y).(a: x, b: y).a");
-    assert_eq!(run_int(&mut interp, "test.wi639.rename_b"), 20, "(x,y).(a: x, b: y).b");
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.rename_a"),
+        10,
+        "(x,y).(a: x, b: y).a"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.rename_b"),
+        20,
+        "(x,y).(a: x, b: y).b"
+    );
     // 1-collapse: a single member is the scalar value, not a 1-tuple.
-    assert_eq!(run_int(&mut interp, "test.wi639.single_collapse"), 10, "(x,y).(x) ⇒ 10");
-    assert_eq!(run_int(&mut interp, "test.wi639.single_rename_collapse"), 10, "(x,y).(a: x) ⇒ 10");
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.single_collapse"),
+        10,
+        "(x,y).(x) ⇒ 10"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.single_rename_collapse"),
+        10,
+        "(x,y).(a: x) ⇒ 10"
+    );
     // param: projection of a named-tuple param, returned as a tuple and re-read.
-    assert_eq!(run_int(&mut interp, "test.wi639.use_param"), 9, "param_keep((7,9)).y");
+    assert_eq!(
+        run_int(&mut interp, "test.wi639.use_param"),
+        9,
+        "param_keep((7,9)).y"
+    );
 }
 
 /// Projection is schema-preserving/narrowing: the result carries EXACTLY the
@@ -157,7 +188,8 @@ fn duplicate_projection_key_is_a_loud_error() {
         );
         let errs = parse_errs(&src);
         assert!(
-            errs.iter().any(|e| e.contains("duplicate distributive projection key")),
+            errs.iter()
+                .any(|e| e.contains("duplicate distributive projection key")),
             "duplicate key ({name}) `{body}` must surface a loud error; got: {errs:?}",
         );
     }
@@ -178,7 +210,8 @@ end
 "#;
     let errs = parse_errs(src);
     assert!(
-        errs.iter().any(|e| e.contains("colliding with the positional-tuple convention")),
+        errs.iter()
+            .any(|e| e.contains("colliding with the positional-tuple convention")),
         "`_`-prefixed key must surface a loud error; got: {errs:?}",
     );
 }
@@ -204,8 +237,16 @@ end
         try_load_kb_with(src).err(),
     );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi639posok.swap_a"), 200, "(a: _2, b: _1).a = t._2");
-    assert_eq!(run_int(&mut interp, "test.wi639posok.swap_b"), 100, "(a: _2, b: _1).b = t._1");
+    assert_eq!(
+        run_int(&mut interp, "test.wi639posok.swap_a"),
+        200,
+        "(a: _2, b: _1).a = t._2"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi639posok.swap_b"),
+        100,
+        "(a: _2, b: _1).b = t._1"
+    );
 }
 
 /// Projection composes with WI-638 single-field access and nests: a projected
@@ -227,6 +268,14 @@ end
         try_load_kb_with(src).err(),
     );
     let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi639c.nested"), 6, "(a:(m,n), b, c).(a, b).a.n");
-    assert_eq!(run_int(&mut interp, "test.wi639c.project_then_field"), 100, ".(x, y).x");
+    assert_eq!(
+        run_int(&mut interp, "test.wi639c.nested"),
+        6,
+        "(a:(m,n), b, c).(a, b).a.n"
+    );
+    assert_eq!(
+        run_int(&mut interp, "test.wi639c.project_then_field"),
+        100,
+        ".(x, y).x"
+    );
 }

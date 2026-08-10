@@ -76,12 +76,30 @@ fn eq_ordered_on_nan_follow_ieee() {
     // IEEE 754: a NaN operand makes == false, != true, and every ordering
     // comparison false (NaN is UNORDERED). This is what the C++ codegen already
     // does (`eq`->`==`, `gt`->`>`) and what stdlib float.anthill documents.
-    assert!(!call_bool(&mut i, "test.wi645.eq_nan"), "eq(nan, nan) must be false (IEEE)");
-    assert!(call_bool(&mut i, "test.wi645.neq_nan"), "neq(nan, nan) must be true (IEEE)");
-    assert!(!call_bool(&mut i, "test.wi645.gt_nan"), "gt(nan, 1.0) must be false (IEEE unordered)");
-    assert!(!call_bool(&mut i, "test.wi645.lt_nan"), "lt(nan, 1.0) must be false (IEEE unordered)");
-    assert!(!call_bool(&mut i, "test.wi645.gte_nan"), "gte(nan, 1.0) must be false (IEEE unordered)");
-    assert!(!call_bool(&mut i, "test.wi645.lte_nan"), "lte(nan, 1.0) must be false (IEEE unordered)");
+    assert!(
+        !call_bool(&mut i, "test.wi645.eq_nan"),
+        "eq(nan, nan) must be false (IEEE)"
+    );
+    assert!(
+        call_bool(&mut i, "test.wi645.neq_nan"),
+        "neq(nan, nan) must be true (IEEE)"
+    );
+    assert!(
+        !call_bool(&mut i, "test.wi645.gt_nan"),
+        "gt(nan, 1.0) must be false (IEEE unordered)"
+    );
+    assert!(
+        !call_bool(&mut i, "test.wi645.lt_nan"),
+        "lt(nan, 1.0) must be false (IEEE unordered)"
+    );
+    assert!(
+        !call_bool(&mut i, "test.wi645.gte_nan"),
+        "gte(nan, 1.0) must be false (IEEE unordered)"
+    );
+    assert!(
+        !call_bool(&mut i, "test.wi645.lte_nan"),
+        "lte(nan, 1.0) must be false (IEEE unordered)"
+    );
 }
 
 /// WI-644 / proposal 004: `TotalFloat` is the LAWFUL wrapper — its equality is

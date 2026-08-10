@@ -29,8 +29,8 @@ fn load_kb() -> KnowledgeBase {
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -62,7 +62,9 @@ fn assert_node_identity(kb: &mut KnowledgeBase, input: &Rc<NodeOccurrence>) {
     // structurally; `Value` has no `PartialEq`).
     let stamped = r.node.inferred_type();
     assert!(
-        stamped.as_ref().is_some_and(|s| anthill_core::kb::term_view::views_structurally_equal(kb, s, &r.ty)),
+        stamped
+            .as_ref()
+            .is_some_and(|s| anthill_core::kb::term_view::views_structurally_equal(kb, s, &r.ty)),
         "the result's node carries the inferred type the Stamp frame recorded: \
          stamped {stamped:?} vs ty {:?}",
         r.ty,
@@ -91,7 +93,12 @@ fn node_identity_for_constructor() {
     // cons(head: 1, tail: nil()) routes through the Constructor build
     // frame + check_constructor_iter — the node must come back identical.
     let o1 = occ(Expr::Const(Literal::Int(1)));
-    let onil = occ(Expr::Constructor { name: nil, pos_args: vec![], named_args: vec![], from_projection: false });
+    let onil = occ(Expr::Constructor {
+        name: nil,
+        pos_args: vec![],
+        named_args: vec![],
+        from_projection: false,
+    });
     let ocons = occ(Expr::Constructor {
         name: cons,
         pos_args: vec![],

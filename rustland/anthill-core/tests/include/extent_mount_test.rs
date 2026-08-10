@@ -53,13 +53,23 @@ const WORKITEM_QN: &str = "test.extent.Demo.WorkItem";
 /// A `WorkItem(id: <n>, description: <s>)` row as a raw `Value::Entity` — the
 /// shape `InMemoryExtentSource` seeds and the resolver matches, with named args
 /// in canonical symbol order (as the KB's `Term::Fn { named_args }` invariant).
-fn workitem_row(functor: Symbol, id_field: Symbol, desc_field: Symbol, id: i64, desc: &str) -> Value {
+fn workitem_row(
+    functor: Symbol,
+    id_field: Symbol,
+    desc_field: Symbol,
+    id: i64,
+    desc: &str,
+) -> Value {
     let mut named = vec![
         (id_field, Value::Int(id)),
         (desc_field, Value::Str(desc.to_string())),
     ];
     named.sort_by_key(|(s, _)| s.index());
-    Value::Entity { functor, pos: [].into(), named: named.into() }
+    Value::Entity {
+        functor,
+        pos: [].into(),
+        named: named.into(),
+    }
 }
 
 /// Load `BASE` into a fresh KB and return `(kb, workitem_functor, id_field,
@@ -120,7 +130,13 @@ fn workitem_goal(
 #[test]
 fn all_free_goal_enumerates_every_seeded_row() {
     let (mut kb, functor, id_field, desc_field) = kb_with_base();
-    mount_workitems(&mut kb, functor, id_field, desc_field, &[(1, "first"), (2, "second"), (3, "third")]);
+    mount_workitems(
+        &mut kb,
+        functor,
+        id_field,
+        desc_field,
+        &[(1, "first"), (2, "second"), (3, "third")],
+    );
 
     let id_name = kb.intern("id_q");
     let id_var = kb.fresh_var(id_name);
@@ -155,7 +171,11 @@ fn all_free_goal_enumerates_every_seeded_row() {
     assert_eq!(descs, vec!["first", "second", "third"]);
 
     // Lineage-preserving: extent rows bind through `bind_value`, never interning.
-    assert_eq!(kb.term_store_len(), baseline, "TermStore must not grow during the mounted scan");
+    assert_eq!(
+        kb.term_store_len(),
+        baseline,
+        "TermStore must not grow during the mounted scan"
+    );
 }
 
 // ── (2) by-id pushdown ─────────────────────────────────────────
@@ -163,7 +183,13 @@ fn all_free_goal_enumerates_every_seeded_row() {
 #[test]
 fn ground_key_goal_pushes_down_and_yields_the_match() {
     let (mut kb, functor, id_field, desc_field) = kb_with_base();
-    mount_workitems(&mut kb, functor, id_field, desc_field, &[(1, "first"), (2, "second"), (3, "third")]);
+    mount_workitems(
+        &mut kb,
+        functor,
+        id_field,
+        desc_field,
+        &[(1, "first"), (2, "second"), (3, "third")],
+    );
 
     // WorkItem(id: 2, description: ?desc) — id is ground → the by-id mode.
     let two = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(2)));
@@ -198,10 +224,18 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     let functor = kb.try_resolve_symbol(WORKITEM_QN).expect("WorkItem loaded");
-    let tag = kb.try_resolve_symbol("test.extent.Demo.Tag").expect("Tag loaded");
+    let tag = kb
+        .try_resolve_symbol("test.extent.Demo.Tag")
+        .expect("Tag loaded");
     let id_field = kb.intern("id");
     let desc_field = kb.intern("description");
-    mount_workitems(&mut kb, functor, id_field, desc_field, &[(1, "first"), (2, "second"), (3, "third")]);
+    mount_workitems(
+        &mut kb,
+        functor,
+        id_field,
+        desc_field,
+        &[(1, "first"), (2, "second"), (3, "third")],
+    );
 
     // Shared ?x across both conjuncts.
     let x_name = kb.intern("x_q");
@@ -215,9 +249,16 @@ end
     let (wi_goal, _desc_var) = workitem_goal(&mut kb, functor, id_field, desc_field, x_term);
 
     let solutions = kb.resolve(&[tag_goal, wi_goal], &ResolveConfig::default());
-    let mut xs: Vec<i64> = solutions.iter().filter_map(|s| sol_int(&kb, s, x_var)).collect();
+    let mut xs: Vec<i64> = solutions
+        .iter()
+        .filter_map(|s| sol_int(&kb, s, x_var))
+        .collect();
     xs.sort();
-    assert_eq!(xs, vec![1, 2], "only ids present in both the resident Tag facts and the mounted rows");
+    assert_eq!(
+        xs,
+        vec![1, 2],
+        "only ids present in both the resident Tag facts and the mounted rows"
+    );
 }
 
 // ── (4) loader refusal: mount-then-load ────────────────────────
@@ -255,7 +296,8 @@ end
     let errs = load::load_incremental(&mut kb, &[&offending], &NullResolver)
         .expect_err("a resident fact for a mounted functor must be refused at load");
     assert!(
-        errs.iter().any(|e| e.to_string().contains("owned by a mounted extent source")),
+        errs.iter()
+            .any(|e| e.to_string().contains("owned by a mounted extent source")),
         "expected FunctorOwnedByExtent, got: {:?}",
         errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
     );
@@ -320,7 +362,9 @@ namespace test.extent
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
-    let tag = kb.try_resolve_symbol("test.extent.Demo.Tag").expect("Tag loaded");
+    let tag = kb
+        .try_resolve_symbol("test.extent.Demo.Tag")
+        .expect("Tag loaded");
     let id_field = kb.intern("id");
     let tag_row = Value::Entity {
         functor: tag,
@@ -328,8 +372,13 @@ end
         named: [(id_field, Value::Int(1))].into(),
     };
     // Seed itself is fine (a keyed row); the collision is at registration.
-    let src = InMemoryExtentSource::new(&kb, "test.extent.Demo.Tag", ArgKey::Named(id_field), vec![tag_row])
-        .expect("seed ok");
+    let src = InMemoryExtentSource::new(
+        &kb,
+        "test.extent.Demo.Tag",
+        ArgKey::Named(id_field),
+        vec![tag_row],
+    )
+    .expect("seed ok");
     let err = kb
         .register_extent_owner(Box::new(src))
         .expect_err("registering over a resident functor must be refused");

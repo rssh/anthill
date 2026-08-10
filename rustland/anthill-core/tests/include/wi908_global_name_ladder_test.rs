@@ -96,7 +96,8 @@ fn a_name_qualified_by_an_imported_head_mounts() {
     mount(&mut kb, "Box.thing").expect("`Box.thing` denotes via its imported head");
 
     assert!(
-        kb.extent_owner(kb.resolve_symbol("wi908.lib.Box.thing")).is_some(),
+        kb.extent_owner(kb.resolve_symbol("wi908.lib.Box.thing"))
+            .is_some(),
         "the head `Box` resolves to `wi908.lib.Box`, so the tail names its entity",
     );
 }
@@ -141,7 +142,11 @@ fn a_short_name_outside_the_implicit_tier_no_longer_resolves_absolutely() {
          not about absence",
     );
 
-    assert_unmountable(&mut kb, "Sort", "a short name must denote at `_global` to mount");
+    assert_unmountable(
+        &mut kb,
+        "Sort",
+        "a short name must denote at `_global` to mount",
+    );
 }
 
 /// …AND THE HALF THAT SURVIVES, which the test above must not be read as denying: the
@@ -162,7 +167,8 @@ fn a_short_implicit_tier_name_still_mounts_with_no_scope_presence() {
     mount(&mut kb, "SortView").expect("`SortView` is an implicit-tier name");
 
     assert!(
-        kb.extent_owner(kb.resolve_symbol("anthill.reflect.SortView")).is_some(),
+        kb.extent_owner(kb.resolve_symbol("anthill.reflect.SortView"))
+            .is_some(),
         "the implicit tier maps the bare short name to its qualified target",
     );
 }

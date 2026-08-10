@@ -17,8 +17,8 @@
 //! not resolve regardless of the existential (a pre-existing spec-op-call limitation),
 //! so these fixtures use the dotted form the design's worked example uses.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -27,8 +27,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -74,7 +74,10 @@ fn bound_existential_factory_admitted() {
         "namespace test.wi402x.bound\n{FACTORY}\n  operation openStore(persistent: Bool) -> C ensures KVStore[C, K = String, V = String] =\n    if persistent then diskStore(\"/d\") else memStore\nend\n"
     );
     let errs = load_errors(&[&src]);
-    assert!(errs.is_empty(), "bound existential factory must type-check, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "bound existential factory must type-check, got: {errs:?}"
+    );
 }
 
 /// Binding-precise: a member the body's providers contradict (`K = Int64` vs the provided
@@ -111,7 +114,10 @@ namespace test.wi402x.unbound
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "unbound `ensures Spec[C]` return must be admitted, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "unbound `ensures Spec[C]` return must be admitted, got: {errs:?}"
+    );
 }
 
 /// The `ensures` is LOAD-BEARING: the SAME bare-Spec return WITHOUT an `ensures` clause is
@@ -135,7 +141,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape")),
+        errs.iter()
+            .any(|e| e.contains("abstracting return") || e.contains("escape")),
         "a bare-spec return WITHOUT an `ensures` must stay rejected (WI-401), got: {errs:?}"
     );
 }
@@ -160,7 +167,10 @@ namespace test.wi402x.concrete
 end
 "#;
     let errs = load_errors(&[src]);
-    assert!(errs.is_empty(), "concrete return + ensures postcondition must still load, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "concrete return + ensures postcondition must still load, got: {errs:?}"
+    );
 }
 
 /// REGRESSION (review finding): the ensures-aware gate skip must be SCOPED to ops the
@@ -185,7 +195,8 @@ end
 "#;
     let errs = load_errors(&[src]);
     assert!(
-        errs.iter().any(|e| e.contains("abstracting return") || e.contains("escape")),
+        errs.iter()
+            .any(|e| e.contains("abstracting return") || e.contains("escape")),
         "a bare real-sort return is not existential-rewritten; its `ensures` must NOT admit \
          the sealing escape, got: {errs:?}"
     );
@@ -231,7 +242,10 @@ fn existential_result_dotted_dispatch_typechecks() {
         "namespace test.wi402x.caller\n{FACTORY}\n  operation openStore(persistent: Bool) -> C ensures KVStore[C, K = String, V = String] =\n    if persistent then diskStore(\"/d\") else memStore\n  operation client(p: Bool) -> String =\n    let store = openStore(p)\n    store.describe()\nend\n"
     );
     let errs = load_errors(&[&src]);
-    assert!(errs.is_empty(), "dotted dispatch on an existential result must type-check, got: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "dotted dispatch on an existential result must type-check, got: {errs:?}"
+    );
 }
 
 /// EVAL — the DICT FLOWS OUT: `openStore` returns a concrete `memStore`/`diskStore`

@@ -37,7 +37,9 @@ namespace test.wi608b
     mapped(iterator(src), fn)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "iterator(src) over a FiniteCollection-typed param should ground its \
@@ -77,7 +79,9 @@ namespace test.wi608
   end
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "a thin Iterable combinator delegating iterator to a FiniteCollection \

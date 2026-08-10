@@ -33,10 +33,10 @@
 //! separates "refuted / undecided" from "proved". Before the fix `not_diag(2,1)`
 //! produced a DEFINITE solution (the structural lie); after, it produces none.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
-use anthill_core::kb::term::{Term, TermId, Literal};
+use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
@@ -75,8 +75,8 @@ fn load_kb() -> KnowledgeBase {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -105,7 +105,11 @@ fn goal(kb: &mut KnowledgeBase, qn: &str, args: &[TermId]) -> TermId {
 fn definite_solutions(kb: &mut KnowledgeBase, qn: &str, args: &[i64]) -> Vec<Solution> {
     let ts: Vec<TermId> = args.iter().map(|&n| int(kb, n)).collect();
     let g = goal(kb, qn, &ts);
-    let cfg = ResolveConfig { max_solutions: 10, definite_only: true, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        definite_only: true,
+        ..Default::default()
+    };
     kb.resolve(&[g], &cfg)
 }
 
@@ -220,7 +224,11 @@ fn wi738_term_carried_operand_also_delays() {
     let two = int(&mut kb, 2);
     let sub_call = goal(&mut kb, "anthill.prelude.Numeric.sub", &[two, one]);
     let g = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[one, sub_call]);
-    let cfg = ResolveConfig { max_solutions: 10, definite_only: true, ..Default::default() };
+    let cfg = ResolveConfig {
+        max_solutions: 10,
+        definite_only: true,
+        ..Default::default()
+    };
     let sols = kb.resolve(&[g], &cfg);
     assert!(
         sols.is_empty(),

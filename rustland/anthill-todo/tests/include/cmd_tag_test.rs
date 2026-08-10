@@ -3,7 +3,6 @@
 //! `--anthill` bundle: the tag/insert/list-ordering features live there
 //! (the build-loop skill and `docs/design/typing-build-loop.md` use that path).
 
-
 use std::process::Command;
 
 use crate::common::{read_combined, setup_project, workitem_block_contains};
@@ -37,12 +36,18 @@ fact WorkItem(
 fn run(proj: &std::path::Path, args: &[&str]) -> std::process::Output {
     let mut full = vec!["-d", proj.to_str().unwrap()];
     full.extend_from_slice(args);
-    Command::new(BIN).args(&full).output().expect("run anthill-todo")
+    Command::new(BIN)
+        .args(&full)
+        .output()
+        .expect("run anthill-todo")
 }
 
 fn ok(out: &std::process::Output) -> String {
-    assert!(out.status.success(),
-        "command failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "command failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -54,17 +59,27 @@ fn tag_persists_a_tag_fact_and_show_reports_it() {
     let proj = setup_project(&tmp, THREE_ITEMS);
 
     let stdout = ok(&run(&proj, &["tag", "WI-001", "typing"]));
-    assert!(stdout.contains("tagged: WI-001 +typing"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("tagged: WI-001 +typing"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("fact Tag("), "no Tag fact persisted:\n{combined}");
-    assert!(combined.contains("workitem: \"WI-001\"") && combined.contains("name: \"typing\""),
-        "tag fact missing markers:\n{combined}");
+    assert!(
+        combined.contains("fact Tag("),
+        "no Tag fact persisted:\n{combined}"
+    );
+    assert!(
+        combined.contains("workitem: \"WI-001\"") && combined.contains("name: \"typing\""),
+        "tag fact missing markers:\n{combined}"
+    );
 
     // show surfaces the tag
     let shown = ok(&run(&proj, &["show", "WI-001"]));
-    assert!(shown.contains("Tags:") && shown.contains("typing"),
-        "show did not report tag:\n{shown}");
+    assert!(
+        shown.contains("Tags:") && shown.contains("typing"),
+        "show did not report tag:\n{shown}"
+    );
 }
 
 #[test]
@@ -97,15 +112,23 @@ fn untag_removes_the_fact_then_errors_when_absent() {
 
     ok(&run(&proj, &["tag", "WI-003", "typing"]));
     let stdout = ok(&run(&proj, &["untag", "WI-003", "typing"]));
-    assert!(stdout.contains("untagged: WI-003 -typing"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("untagged: WI-003 -typing"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("workitem: \"WI-003\""),
-        "Tag fact for WI-003 not removed:\n{combined}");
+    assert!(
+        !combined.contains("workitem: \"WI-003\""),
+        "Tag fact for WI-003 not removed:\n{combined}"
+    );
 
     // second untag is a loud no-op
     let out = run(&proj, &["untag", "WI-003", "typing"]);
-    assert!(!out.status.success(), "untagging an absent tag should error");
+    assert!(
+        !out.status.success(),
+        "untagging an absent tag should error"
+    );
 }
 
 #[test]
@@ -118,8 +141,14 @@ fn untag_keeps_one_of_multiple_tags() {
     ok(&run(&proj, &["untag", "WI-001", "typing"]));
 
     let shown = ok(&run(&proj, &["show", "WI-001"]));
-    assert!(shown.contains("review"), "review tag should survive:\n{shown}");
-    assert!(!shown.contains("typing"), "typing tag should be gone:\n{shown}");
+    assert!(
+        shown.contains("review"),
+        "review tag should survive:\n{shown}"
+    );
+    assert!(
+        !shown.contains("typing"),
+        "typing tag should be gone:\n{shown}"
+    );
 }
 
 // ── list --tag (ordered sequence view) ──────────────────────────
@@ -136,14 +165,21 @@ fn list_tag_shows_items_in_dependency_order() {
     let stdout = ok(&run(&proj, &["list", "--tag", "typing"]));
     let pos1 = stdout.find("WI-001").expect("WI-001 listed");
     let pos2 = stdout.find("WI-002").expect("WI-002 listed");
-    assert!(pos1 < pos2,
-        "dependency WI-001 must precede dependent WI-002:\n{stdout}");
+    assert!(
+        pos1 < pos2,
+        "dependency WI-001 must precede dependent WI-002:\n{stdout}"
+    );
 
     // WI-001 (Open, no unmet deps) is the build-loop's pick.
-    assert!(stdout.contains("<- next"), "expected a `<- next` marker:\n{stdout}");
+    assert!(
+        stdout.contains("<- next"),
+        "expected a `<- next` marker:\n{stdout}"
+    );
     // WI-002 is blocked by its unsatisfied dependency.
-    assert!(stdout.contains("blocked: WI-001"),
-        "WI-002 should show its unmet dependency:\n{stdout}");
+    assert!(
+        stdout.contains("blocked: WI-001"),
+        "WI-002 should show its unmet dependency:\n{stdout}"
+    );
 }
 
 #[test]
@@ -160,8 +196,10 @@ fn list_tag_marks_next_after_dependency_delivered() {
     let stdout = ok(&run(&proj, &["list", "--tag", "typing"]));
     // The `<- next` marker should now sit on the WI-002 line, not WI-001.
     let next_line = stdout.lines().find(|l| l.contains("<- next")).unwrap_or("");
-    assert!(next_line.contains("WI-002"),
-        "next marker should move to WI-002 once WI-001 delivered:\n{stdout}");
+    assert!(
+        next_line.contains("WI-002"),
+        "next marker should move to WI-002 once WI-001 delivered:\n{stdout}"
+    );
 }
 
 #[test]
@@ -185,8 +223,10 @@ fn add_with_tag_writes_workitem_and_tag() {
 
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(combined.contains("id: \"WI-004\""), "WI-004 not persisted");
-    assert!(combined.contains("workitem: \"WI-004\"") && combined.contains("name: \"typing\""),
-        "tag fact for WI-004 not persisted:\n{combined}");
+    assert!(
+        combined.contains("workitem: \"WI-004\"") && combined.contains("name: \"typing\""),
+        "tag fact for WI-004 not persisted:\n{combined}"
+    );
 }
 
 // ── insert --before ─────────────────────────────────────────────
@@ -196,16 +236,37 @@ fn insert_before_creates_tags_and_adds_dependency() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, THREE_ITEMS);
 
-    let stdout = ok(&run(&proj, &["insert", "prerequisite", "--before", "WI-002", "--tag", "typing"]));
-    assert!(stdout.contains("inserted: WI-004 before WI-002"), "stdout: {stdout}");
+    let stdout = ok(&run(
+        &proj,
+        &[
+            "insert",
+            "prerequisite",
+            "--before",
+            "WI-002",
+            "--tag",
+            "typing",
+        ],
+    ));
+    assert!(
+        stdout.contains("inserted: WI-004 before WI-002"),
+        "stdout: {stdout}"
+    );
 
     let combined = read_combined(&proj.join("anthill-todo"));
     // The new item exists and is tagged.
-    assert!(combined.contains("id: \"WI-004\""), "WI-004 not created:\n{combined}");
-    assert!(combined.contains("workitem: \"WI-004\""), "WI-004 not tagged:\n{combined}");
+    assert!(
+        combined.contains("id: \"WI-004\""),
+        "WI-004 not created:\n{combined}"
+    );
+    assert!(
+        combined.contains("workitem: \"WI-004\""),
+        "WI-004 not tagged:\n{combined}"
+    );
     // WI-002 now depends on the freshly-inserted WI-004.
-    assert!(workitem_block_contains(&combined, "WI-002", "WI-004"),
-        "WI-002 should depend on WI-004:\n{combined}");
+    assert!(
+        workitem_block_contains(&combined, "WI-002", "WI-004"),
+        "WI-002 should depend on WI-004:\n{combined}"
+    );
 }
 
 #[test]
@@ -214,13 +275,25 @@ fn insert_orders_new_item_before_target_in_tag_view() {
     let proj = setup_project(&tmp, THREE_ITEMS);
     ok(&run(&proj, &["tag", "WI-002", "typing"]));
 
-    ok(&run(&proj, &["insert", "prerequisite", "--before", "WI-002", "--tag", "typing"]));
+    ok(&run(
+        &proj,
+        &[
+            "insert",
+            "prerequisite",
+            "--before",
+            "WI-002",
+            "--tag",
+            "typing",
+        ],
+    ));
 
     let stdout = ok(&run(&proj, &["list", "--tag", "typing"]));
     let pos_new = stdout.find("WI-004").expect("WI-004 listed");
     let pos_002 = stdout.find("WI-002").expect("WI-002 listed");
-    assert!(pos_new < pos_002,
-        "inserted WI-004 must precede WI-002 in the sequence:\n{stdout}");
+    assert!(
+        pos_new < pos_002,
+        "inserted WI-004 must precede WI-002 in the sequence:\n{stdout}"
+    );
 }
 
 #[test]
@@ -228,11 +301,19 @@ fn insert_unknown_before_errors_and_creates_nothing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, THREE_ITEMS);
 
-    let out = run(&proj, &["insert", "x", "--before", "WI-999", "--tag", "typing"]);
-    assert!(!out.status.success(), "insert before a missing item should error");
+    let out = run(
+        &proj,
+        &["insert", "x", "--before", "WI-999", "--tag", "typing"],
+    );
+    assert!(
+        !out.status.success(),
+        "insert before a missing item should error"
+    );
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains("id: \"WI-004\""),
-        "no item should be created when --before is missing:\n{combined}");
+    assert!(
+        !combined.contains("id: \"WI-004\""),
+        "no item should be created when --before is missing:\n{combined}"
+    );
 }
 
 #[test]
@@ -243,24 +324,36 @@ fn insert_before_non_bracket_depends_succeeds() {
     // simply WORKS — the orphan hazard the old test guarded is structurally
     // gone (WI-009 cutover).
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp, r#"
+    let proj = setup_project(
+        &tmp,
+        r#"
 fact WorkItem(
   id: "WI-001",
   description: "nil deps",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: nil(),
   status: Open)
-"#);
+"#,
+    );
 
-    let out = run(&proj, &["insert", "prereq", "--before", "WI-001", "--tag", "typing"]);
-    assert!(out.status.success(),
+    let out = run(
+        &proj,
+        &["insert", "prereq", "--before", "WI-001", "--tag", "typing"],
+    );
+    assert!(
+        out.status.success(),
         "insert must rewrite a non-bracket depends_on: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("description: some(value: \"prereq\")"),
-        "the new item should be persisted:\n{combined}");
-    assert!(workitem_block_contains(&combined, "WI-001", "WI-002"),
-        "WI-001 should now depend on the inserted WI-002:\n{combined}");
+    assert!(
+        combined.contains("description: some(value: \"prereq\")"),
+        "the new item should be persisted:\n{combined}"
+    );
+    assert!(
+        workitem_block_contains(&combined, "WI-001", "WI-002"),
+        "WI-001 should now depend on the inserted WI-002:\n{combined}"
+    );
 }
 
 // ── escaping: a tag name with special characters round-trips ─────
@@ -275,11 +368,17 @@ fn untag_finds_escaped_tag_name() {
     let weird = r#"a"b"#;
     ok(&run(&proj, &["tag", "WI-001", weird]));
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains(r#"name: "a\"b""#), "escaped tag not persisted:\n{combined}");
+    assert!(
+        combined.contains(r#"name: "a\"b""#),
+        "escaped tag not persisted:\n{combined}"
+    );
 
     ok(&run(&proj, &["untag", "WI-001", weird]));
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!combined.contains(r#"name: "a\"b""#), "escaped tag not removed:\n{combined}");
+    assert!(
+        !combined.contains(r#"name: "a\"b""#),
+        "escaped tag not removed:\n{combined}"
+    );
 }
 
 // ── dep-edit (add-dependency / remove-dependency) ───────────────
@@ -291,13 +390,17 @@ fn add_and_remove_dependency_roundtrip() {
 
     ok(&run(&proj, &["add-dependency", "WI-003", "WI-001"]));
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(workitem_block_contains(&combined, "WI-003", "WI-001"),
-        "WI-003 should depend on WI-001:\n{combined}");
+    assert!(
+        workitem_block_contains(&combined, "WI-003", "WI-001"),
+        "WI-003 should depend on WI-001:\n{combined}"
+    );
 
     ok(&run(&proj, &["remove-dependency", "WI-003", "WI-001"]));
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(!workitem_block_contains(&combined, "WI-003", "WI-001"),
-        "WI-003 dependency on WI-001 should be removed:\n{combined}");
+    assert!(
+        !workitem_block_contains(&combined, "WI-003", "WI-001"),
+        "WI-003 dependency on WI-001 should be removed:\n{combined}"
+    );
 }
 
 #[test]
@@ -307,7 +410,10 @@ fn add_dependency_rejects_cycle() {
 
     // WI-002 already depends on WI-001; WI-001 -> WI-002 would close a cycle.
     let out = run(&proj, &["add-dependency", "WI-001", "WI-002"]);
-    assert!(!out.status.success(), "cyclic dependency should be rejected");
+    assert!(
+        !out.status.success(),
+        "cyclic dependency should be rejected"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cycle"), "stderr: {stderr}");
 }

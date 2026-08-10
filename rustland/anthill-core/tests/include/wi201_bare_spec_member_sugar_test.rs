@@ -19,8 +19,8 @@
 //!   - the sugar fires ONLY in operation signatures; a bare-spec member in a
 //!     sort/entity field stays the loud `RigidTypeProjection` conflation error.
 
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_errors(extras: &[&str]) -> Vec<String> {
@@ -29,8 +29,8 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
-            let src = std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
             parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
         })
         .collect();
@@ -187,13 +187,11 @@ fn carrier_in_scope_narrowing_positional_binding() {
 /// the binding sort, not applied globally.
 #[test]
 fn no_carrier_in_scope_stays_generic() {
-    let src = with_store(
-        "generic",
-        "  operation gen(s: Store.State) -> WIS = s\n",
-    );
+    let src = with_store("generic", "  operation gen(s: Store.State) -> WIS = s\n");
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("WIS") && (e.contains("State") || e.contains("?"))),
+        errs.iter()
+            .any(|e| e.contains("WIS") && (e.contains("State") || e.contains("?"))),
         "no binding in scope ⟹ Store.State is a generic existential, not WIS; got: {errs:?}",
     );
 }
@@ -202,10 +200,7 @@ fn no_carrier_in_scope_stays_generic() {
 /// a carrier — it stays the loud no-member error.
 #[test]
 fn undeclared_member_is_loud() {
-    let src = with_store(
-        "undeclared",
-        "  operation bad(s: Store.Nope) -> Int64\n",
-    );
+    let src = with_store("undeclared", "  operation bad(s: Store.Nope) -> Int64\n");
     let errs = load_errors(&[&src]);
     assert!(
         errs.iter().any(|e| e.contains("Nope")),
@@ -226,7 +221,8 @@ fn data_sort_member_is_not_sugar() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("conflate distinct carriers")),
+        errs.iter()
+            .any(|e| e.contains("conflate distinct carriers")),
         "Box has constructors ⟹ Box.T is not the spec sugar, stays loud; got: {errs:?}",
     );
 }
@@ -262,7 +258,8 @@ fn conflicting_carrier_bindings_do_not_narrow() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("WIS") && e.contains("State")),
+        errs.iter()
+            .any(|e| e.contains("WIS") && e.contains("State")),
         "two conflicting carrier facts ⟹ no narrowing, a generic existential; got: {errs:?}",
     );
 }
@@ -278,7 +275,8 @@ fn bare_spec_member_in_entity_field_stays_loud() {
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter().any(|e| e.contains("conflate distinct carriers")),
+        errs.iter()
+            .any(|e| e.contains("conflate distinct carriers")),
         "Store.State in an entity field is not an op signature ⟹ stays loud; got: {errs:?}",
     );
 }

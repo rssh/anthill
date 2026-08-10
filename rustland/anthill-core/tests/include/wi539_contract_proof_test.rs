@@ -23,7 +23,13 @@ fn functor_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
         Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
         _ => return None,
     };
-    Some(kb.qualified_name_of(functor).rsplit('.').next().unwrap_or("").to_string())
+    Some(
+        kb.qualified_name_of(functor)
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_string(),
+    )
 }
 
 fn named_field(kb: &KnowledgeBase, term: TermId, key: &str) -> Option<TermId> {
@@ -139,7 +145,10 @@ fn reflexive_ensures_discharges() {
         "#,
     );
     let report = verify_proofs(&mut kb);
-    assert_eq!(verdict_for(&report, "wrap.ensures"), ProofVerdict::Discharged);
+    assert_eq!(
+        verdict_for(&report, "wrap.ensures"),
+        ProofVerdict::Discharged
+    );
 }
 
 #[test]
@@ -161,7 +170,10 @@ fn false_ensures_is_failed_not_discharged() {
     );
     let report = verify_proofs(&mut kb);
     assert!(
-        matches!(verdict_for(&report, "wrap.ensures"), ProofVerdict::Failed { .. }),
+        matches!(
+            verdict_for(&report, "wrap.ensures"),
+            ProofVerdict::Failed { .. }
+        ),
         "an unestablished postcondition must be Failed"
     );
     assert_eq!(
@@ -202,7 +214,10 @@ fn requires_premise_enables_ensures() {
         "the precondition assumed into Γ discharges the postcondition"
     );
     assert!(
-        matches!(verdict_for(&report, "no_pre.ensures"), ProofVerdict::Failed { .. }),
+        matches!(
+            verdict_for(&report, "no_pre.ensures"),
+            ProofVerdict::Failed { .. }
+        ),
         "without the precondition premise the same postcondition is not derivable"
     );
 }
@@ -226,7 +241,10 @@ fn abstract_op_ensures_is_deferred_not_discharged() {
     );
     let report = verify_proofs(&mut kb);
     assert!(
-        matches!(verdict_for(&report, "describe.ensures"), ProofVerdict::Deferred { .. }),
+        matches!(
+            verdict_for(&report, "describe.ensures"),
+            ProofVerdict::Deferred { .. }
+        ),
         "an abstract op's ensures has no concrete body to prove against"
     );
     assert_eq!(

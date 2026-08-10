@@ -100,7 +100,8 @@ end
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("got (person: String, years: Int64)")),
+        errs.iter()
+            .any(|e| e.contains("got (person: String, years: Int64)")),
         "keeping the `String` column `name` as `person` must not conform to `person: Int64`, \
          and the mismatch must name the REDUCED schema; got: {errs:?}",
     );
@@ -188,7 +189,8 @@ end
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("keep-spec entry `person`") && e.contains("denoted")),
+        errs.iter()
+            .any(|e| e.contains("keep-spec entry `person`") && e.contains("denoted")),
         "a keep-spec component that is not a denoted source name must be loud and name the \
          offending ENTRY; got: {errs:?}",
     );
@@ -210,7 +212,8 @@ end
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("`Keep` must be a named-tuple type")),
+        errs.iter()
+            .any(|e| e.contains("`Keep` must be a named-tuple type")),
         "a `Keep` that is not a named-tuple type must be loud; got: {errs:?}",
     );
 }
@@ -259,7 +262,8 @@ end
     );
     let errs = parse_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("duplicate tuple type component label `a`")),
+        errs.iter()
+            .any(|e| e.contains("duplicate tuple type component label `a`")),
         "a keep spec naming one result key twice must be loud and NAME the key, not build a \
          duplicate-keyed schema; got: {errs:?}",
     );
@@ -304,7 +308,9 @@ end
 "#;
     let errs = parse::parse(src).err().unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.message.contains("parameter `a` is declared with a constant")),
+        errs.iter().any(|e| e
+            .message
+            .contains("parameter `a` is declared with a constant")),
         "a literal in an arrow PARAMETER's type slot must be refused, naming the parameter; \
          got: {errs:?}",
     );
@@ -383,10 +389,12 @@ namespace test.wi763arrowone
   operation takes_fn(f: (a: "x") -> Int64) -> Int64
 end
 "#;
-    let errs = parse::parse(src)
-        .expect_err("`(a: \"x\") -> Int64` has no valid reading — a param's type is never a literal");
+    let errs = parse::parse(src).expect_err(
+        "`(a: \"x\") -> Int64` has no valid reading — a param's type is never a literal",
+    );
     assert!(
-        errs.iter().any(|e| e.message.contains("declared with a constant for its type")),
+        errs.iter()
+            .any(|e| e.message.contains("declared with a constant for its type")),
         "the one-parameter case must get the same explanatory diagnostic as the multi-parameter \
          one, not a bare syntax error; got: {errs:?}",
     );

@@ -12,7 +12,6 @@
 //! Reference: docs/design/operation-call-model.md §"Closures carry their
 //! own requirements".
 
-
 use smallvec::SmallVec;
 
 use anthill_core::eval::{Interpreter, Value};
@@ -26,15 +25,14 @@ fn fresh_interp() -> Interpreter {
     Interpreter::new(kb)
 }
 
-fn build_lambda(
-    kb: &mut KnowledgeBase,
-    body: TermId,
-) -> TermId {
+fn build_lambda(kb: &mut KnowledgeBase, body: TermId) -> TermId {
     // Construct a `lambda(param: <wildcard>, body: <body>)` term that
     // ignores its argument and reduces to `body`.
-    let lambda_sym = kb.try_resolve_symbol("anthill.reflect.Expr.lambda_expr")
+    let lambda_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.lambda_expr")
         .expect("Expr.lambda_expr registered");
-    let wildcard_sym = kb.try_resolve_symbol("anthill.reflect.Pattern.wildcard")
+    let wildcard_sym = kb
+        .try_resolve_symbol("anthill.reflect.Pattern.wildcard")
         .expect("Pattern.wildcard registered");
     let wildcard = kb.alloc(Term::Fn {
         functor: wildcard_sym,
@@ -46,10 +44,7 @@ fn build_lambda(
     kb.alloc(Term::Fn {
         functor: lambda_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (param_field, wildcard),
-            (body_field, body),
-        ]),
+        named_args: SmallVec::from_slice(&[(param_field, wildcard), (body_field, body)]),
     })
 }
 
@@ -64,15 +59,16 @@ fn lambda_construction_snapshots_enclosing_frame_requirements() {
 
     // Body doesn't matter for snapshot test — use a literal so the
     // closure is well-formed.
-    let body = interp.kb_mut().alloc(
-        Term::Const(anthill_core::kb::term::Literal::Int(0)),
-    );
+    let body = interp
+        .kb_mut()
+        .alloc(Term::Const(anthill_core::kb::term::Literal::Int(0)));
     let lambda_term = build_lambda(interp.kb_mut(), body);
 
     let req_name = interp.kb_mut().intern("__req_probe");
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
     requirements.push((req_name, h.clone()));
-    let value = interp.run_with_requirements(lambda_term, requirements)
+    let value = interp
+        .run_with_requirements(lambda_term, requirements)
         .expect("lambda reduction should succeed");
 
     let closure_h = match value {
@@ -80,10 +76,16 @@ fn lambda_construction_snapshots_enclosing_frame_requirements() {
         other => panic!("expected Value::Closure, got {other:?}"),
     };
     let snapshot = interp.closure_requirements_for_test(&closure_h);
-    assert_eq!(snapshot.len(), 1,
-        "lambda must snapshot the enclosing frame's single requirement");
-    assert_eq!(snapshot[0].1.impl_sort(), h.impl_sort(),
-        "snapshotted dictionary should reference the same impl");
+    assert_eq!(
+        snapshot.len(),
+        1,
+        "lambda must snapshot the enclosing frame's single requirement"
+    );
+    assert_eq!(
+        snapshot[0].1.impl_sort(),
+        h.impl_sort(),
+        "snapshotted dictionary should reference the same impl"
+    );
 }
 
 #[test]
@@ -99,7 +101,8 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
 
     // Body of the lambda: var_ref(name: __req_probe) — a named
     // requirement read (WI-237 names model).
-    let var_ref_sym = interp.kb()
+    let var_ref_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .unwrap();
     let req_name = interp.kb_mut().intern("__req_probe");
@@ -114,12 +117,14 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
 
     // let f = <lambda_term> in apply(fn = "f", args = [tuple()])
     let f_sym = interp.kb_mut().intern("f");
-    let var_pattern_sym = interp.kb()
+    let var_pattern_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Pattern.var_pattern")
         .unwrap();
     // `ApplyArg.name` is declared `Option[Symbol]`, so ITS absent value really is
     // a `none()` payload — unlike the pattern annotation below.
-    let none_sym = interp.kb()
+    let none_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.prelude.Option.none")
         .expect("Option.none registered");
     let none_term = interp.kb_mut().alloc(Term::Fn {
@@ -142,35 +147,41 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     // apply(fn = f, args = [ApplyArg(name: None, value: int_lit(0))])
     // The lambda's pattern is wildcard so the arg is ignored — use any
     // simple literal.
-    let apply_sym = interp.kb()
+    let apply_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.apply")
         .unwrap();
-    let int_lit_sym = interp.kb()
+    let int_lit_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.int_lit")
         .unwrap();
-    let zero_lit = interp.kb_mut().alloc(
-        Term::Const(anthill_core::kb::term::Literal::Int(0)),
-    );
+    let zero_lit = interp
+        .kb_mut()
+        .alloc(Term::Const(anthill_core::kb::term::Literal::Int(0)));
     let value_field = interp.kb_mut().intern("value");
     let unit_arg = interp.kb_mut().alloc(Term::Fn {
         functor: int_lit_sym,
         pos_args: SmallVec::new(),
         named_args: SmallVec::from_slice(&[(value_field, zero_lit)]),
     });
-    let apply_arg_sym = interp.kb()
+    let apply_arg_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.ApplyArg")
         .expect("ApplyArg registered");
     let arg_struct = interp.kb_mut().alloc(Term::Fn {
         functor: apply_arg_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (name_field, none_term),
-            (value_field, unit_arg),
-        ]),
+        named_args: SmallVec::from_slice(&[(name_field, none_term), (value_field, unit_arg)]),
     });
     // args list: cons(arg_struct, nil)
-    let nil_sym = interp.kb().try_resolve_symbol("anthill.prelude.List.nil").unwrap();
-    let cons_sym = interp.kb().try_resolve_symbol("anthill.prelude.List.cons").unwrap();
+    let nil_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.List.nil")
+        .unwrap();
+    let cons_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .unwrap();
     let nil_t = interp.kb_mut().alloc(Term::Fn {
         functor: nil_sym,
         pos_args: SmallVec::new(),
@@ -181,10 +192,7 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     let args_list = interp.kb_mut().alloc(Term::Fn {
         functor: cons_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (head_field, arg_struct),
-            (tail_field, nil_t),
-        ]),
+        named_args: SmallVec::from_slice(&[(head_field, arg_struct), (tail_field, nil_t)]),
     });
     let fn_field = interp.kb_mut().intern("fn");
     let args_field = interp.kb_mut().intern("args");
@@ -192,13 +200,11 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
     let apply_term = interp.kb_mut().alloc(Term::Fn {
         functor: apply_sym,
         pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[
-            (fn_field, f_ref2),
-            (args_field, args_list),
-        ]),
+        named_args: SmallVec::from_slice(&[(fn_field, f_ref2), (args_field, args_list)]),
     });
 
-    let let_sym = interp.kb()
+    let let_sym = interp
+        .kb()
         .try_resolve_symbol("anthill.reflect.Expr.let_expr")
         .unwrap();
     let pattern_field = interp.kb_mut().intern("pattern");
@@ -215,13 +221,17 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
 
     let mut requirements: SmallVec<[_; 2]> = SmallVec::new();
     requirements.push((req_name, h.clone()));
-    let value = interp.run_with_requirements(let_term, requirements)
+    let value = interp
+        .run_with_requirements(let_term, requirements)
         .expect("let-bound closure invocation should reduce");
     let observed = anthill_core::eval::value::Dictionary::from_value(interp.kb(), &value)
         .unwrap_or_else(|| panic!("expected a Dictionary value, got {value:?}"));
-    assert_eq!(observed.impl_sort(), h.impl_sort(),
+    assert_eq!(
+        observed.impl_sort(),
+        h.impl_sort(),
         "closure body should observe the requirement snapshotted at \
-         lambda construction time, not the invocation-site context");
+         lambda construction time, not the invocation-site context"
+    );
 }
 
 #[test]
@@ -229,18 +239,21 @@ fn lambda_constructed_with_empty_frame_snapshots_empty_requirements() {
     // Counter-test: a lambda built with frame.requirements = [] should
     // hold an empty `closure.requirements`.
     let mut interp = fresh_interp();
-    let body = interp.kb_mut().alloc(
-        Term::Const(anthill_core::kb::term::Literal::Int(0)),
-    );
+    let body = interp
+        .kb_mut()
+        .alloc(Term::Const(anthill_core::kb::term::Literal::Int(0)));
     let lambda_term = build_lambda(interp.kb_mut(), body);
 
-    let value = interp.run_with_requirements(lambda_term, SmallVec::new())
+    let value = interp
+        .run_with_requirements(lambda_term, SmallVec::new())
         .expect("lambda reduction should succeed");
     let closure_h = match value {
         Value::Closure(h) => h,
         other => panic!("expected Value::Closure, got {other:?}"),
     };
     let snapshot = interp.closure_requirements_for_test(&closure_h);
-    assert!(snapshot.is_empty(),
-        "lambda built in an empty-requirements frame must snapshot empty");
+    assert!(
+        snapshot.is_empty(),
+        "lambda built in an empty-requirements frame must snapshot empty"
+    );
 }
