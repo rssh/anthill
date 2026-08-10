@@ -1,5 +1,7 @@
 # Proposal 032: Symmetric Rule Arrows
 
+**Canonical reference:** [`kernel-language.md` §5.3](../kernel-language.md#53-rule).
+
 **Status:** Draft
 **Related:** [023-kb-guards](023-kb-guards.md), [025-proof-constructs](025-proof-constructs.md), [031-structured-proofs](031-structured-proofs.md)
 **Affects:** `docs/kernel-language.md` §5.3, `tree-sitter-anthill/grammar.js` (rule production), `rustland/anthill-core/src/parse/` (rule IR + converter), `scaland/` (parallel parser), all call sites using `rule H :- B -: C` form

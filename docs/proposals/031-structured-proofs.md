@@ -1,5 +1,7 @@
 # Proposal 031: Structured Proofs
 
+**Canonical reference:** [`kernel-language.md` §5.10](../kernel-language.md#510-proof-declarations-in-body-proofs-and-provides-blocks).
+
 **Status:** Draft
 **Depends on:** [030-theorem-registry](030-theorem-registry.md) (witness machinery, MetaCompose, β.3 + β.6 checking, γ cite resolution), [032-symmetric-rule-arrows](032-symmetric-rule-arrows.md) (single-arrow rule grammar; head is the conclusion).
 **Related:** [025-proof-constructs](025-proof-constructs.md), [025.1-z3-tactic-dsl](025.1-z3-tactic-dsl.md)

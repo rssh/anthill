@@ -8,7 +8,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 1. **Minimal kernel.** Four constructs: `namespace`, `sort`, `rule`, `operation`. The kernel is deliberately small — analogous to the kernel of a proof assistant (Lean, Coq) that is small, trusted, and verifies proofs, while tactics (large, untrusted) find them. `entity` is syntactic sugar (see §6).
 
-2. **Rule is THE knowledge primitive.** All knowledge in the KB is expressed as rules (Horn clauses). `fact` and `constraint` are syntactic sugar that desugar to rules. This unifies ground assertions, derived knowledge, and integrity constraints under one mechanism.
+2. **Rule is THE knowledge primitive.** All knowledge in the KB is expressed as rules (Horn clauses). `fact` and `constraint` have a rule/denial logical reading. This unifies ground assertions, derived knowledge, and integrity constraints at the language-model level; the current execution boundary for constraints is narrower (§6.2, §8.4).
 
 3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
@@ -712,9 +712,64 @@ map(xs, lambda x -> add(x, 1))
 
 The parameter pattern is a bare variable (`x`), a single parenthesized typed binder (`(x: T)`), a tuple destructuring (`(a, b)` or `(a: A, b: B)`, two or more binders), or the empty tuple (`()`) for a nullary thunk; the nullary form has arrow type `() -> R`. Parentheses around a single pattern are pure grouping — in **any** pattern position (lambda parameter, `match` case, `let`): `lambda (x) -> …` binds the same single variable as `lambda x -> …`, and `case (p) -> …` matches the same as `case p -> …`. A single parenthesized element is **not** a 1-tuple (WI-620).
 
+### 4.8 Executable expression bodies
+
+An operation or concrete `const` may carry an Anthill expression after `=`.  The
+body may be written directly or enclosed in braces; the braces delimit the one
+expression and do not introduce a second sequencing construct.  Sequencing is a
+right-nested `let` chain.  This is the implemented surface of proposal 018.
+
+```
+BodyExpr   ::= Expr | '{' Expr '}'
+Expr       ::= Term
+             | MatchExpr
+             | IfExpr
+             | LetExpr
+             | LambdaExpr
+             | ProofStatement
+
+MatchExpr  ::= 'match' Term MatchBranch+
+MatchBranch ::= 'case' Pattern ['|' Term] '->' Expr
+IfExpr     ::= 'if' Term 'then' Expr 'else' Expr
+LetExpr    ::= 'let' Pattern [':' Type] '=' Expr Expr
+
+Pattern    ::= Identifier                         -- binder
+             | '_'                                -- wildcard
+             | Literal
+             | Name '(' [PatternArg (',' PatternArg)*] ')'
+             | '(' ')'                            -- unit/empty-tuple pattern
+             | '(' Pattern ')'                    -- grouping, not a 1-tuple
+             | '(' PatternElem ',' PatternElem
+                   (',' PatternElem)* ')'          -- tuple destructuring
+             | '(' Identifier ':' Type ')'        -- typed single binder
+PatternArg ::= Pattern | Identifier ':' Pattern   -- constructor field pattern
+PatternElem ::= Pattern | Identifier ':' Type     -- typed tuple binder
+```
+
+There is no `end` belonging to `match`: each `case` arm's body is an `Expr`, and
+the surrounding declaration/body delimiter ends the last arm.  A guard after
+`|` is checked only for that arm.  Patterns bind lexically in their arm or
+continuation; a repeated source name at a later binder is a distinct binding.
+
+`let p: T = value continuation` gives `value` the expected type `T` and makes
+the pattern's bindings available only in `continuation`.  The annotation is one
+slot: a type on the whole pattern and a type on that same single binder may not
+both be written.  Per-element annotations inside a tuple pattern are distinct
+slots and may coexist with a whole-pattern annotation.
+
+Operation bodies and const bodies use this same grammar.  A const adds the
+purity and bounded-folding rules of §5.9; using the same expression syntax does
+not make an effectful expression legal in a const.  In-body `ProofStatement` is
+specified with the other proof forms in §5.10.
+
+Design record: [proposal 018](proposals/018-expressions-and-operation-implementation.md).
+
 ## 5. Kernel Constructs
 
-Four constructs the reasoning engine understands natively — §5.1–§5.4. The sections after them cover what attaches to those four (effects, operation attributes) and, in §5.9, the one further declaration that is neither a native construct nor sugar.
+Four constructs the reasoning engine understands natively — §5.1–§5.4. The
+sections after them cover what attaches to those four (effects and operation
+attributes), followed by the `const`, proof, and realization declarations that
+use the kernel but are neither additional native constructs nor §6 sugar.
 
 ### 5.1 Namespace
 
@@ -896,22 +951,60 @@ spec, write `fact Spec[Carrier]`, whose carrier does come from the bindings.
 
 A type declaration. Sort has three forms — **unspecified** (declared, carrier unknown), **type alias** (equated to another type), and **sort with body** (inhabitants enumerated as a closed ADT, or algebra with operations/rules):
 
+Design records: [proposal 002](proposals/002-arrow-sorts.md) for the sort/arrow
+parameter lineage and [proposal 045](proposals/045-effect-sets-and-expressions.md)
+for effect-row binders.
+
 ```
 Sort ::= DescriptionBlock*
            [Visibility] 'sort' Name '=' VariableTerm              -- unspecified
-           ['meta' ':' Meta]
+           [MetaBlock]
        | DescriptionBlock*
-           [Visibility] 'sort' Name '=' Type                   -- type alias
-           ['meta' ':' Meta]
+           [Visibility] 'sort' Name '=' Type                      -- type alias
+           [MetaBlock]
        | DescriptionBlock*
-           [Visibility] 'sort' Name                            -- sort with body
+           [Visibility] 'sort' Name [SortTypeParamList]            -- sort with body
            Body[SortContent*]
-           ['meta' ':' Meta]
+           [MetaBlock]
+       | SortVarBinder | SortBracketBinder
+
+SortTypeParamList ::= '[' SortTypeParam (',' SortTypeParam)* ']'
+SortTypeParam     ::= Identifier [SortTypeParamList]               -- `A`, `F[T]`
+SortVarBinder     ::= DescriptionBlock* [Visibility]
+                      'sort' Var [SortBinderBody] [MetaBlock]
+SortBracketBinder ::= DescriptionBlock* [Visibility]
+                      'sort' '[' Identifier ']' [SortBinderBody] [MetaBlock]
+SortBinderBody    ::= '{' (SortVarBinder | SortBracketBinder)+ '}'
+
+EffectsSortItem ::= DescriptionBlock* [Visibility]
+                    'effects' Name '=' Type [MetaBlock]
+
+Enum ::= DescriptionBlock* [Visibility] 'enum' Name
+         Body[EnumContent*] [MetaBlock]
 
 Constructor ::= 'entity' Name ['(' FieldList ')']            -- variant/constructor
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 ```
+
+The enclosing-list form (`sort CpsMonad[F[T], A] { ... }`) and the
+per-statement forms (`sort ?A`, `sort [A]`) declare the same non-rigid sort type
+parameters (proposal 002, WI-451/WI-454).  A structured per-statement binder has
+a brace-only, non-empty body containing binders only, recursively; it cannot
+silently acquire operations, entities, or facts.  Sort type-parameter defaults
+are not part of this surface.
+
+`effects E = ?` is the effect-row-specific spelling of such a sort parameter;
+`effects E = Row` binds it to a row.  It lowers to the corresponding sort
+declaration plus the effects-runtime requirement described in §5.5 (proposal
+045 / WI-320).
+
+`enum` is the explicit closed-ADT-facing spelling implemented by the grammar.
+Its contents are the constructor/specification subset admitted by
+`EnumContent`; like a sort with constructors it records one sort identity and
+the listed entity variants.  The spelling has no separately numbered proposal,
+so its implementation provenance is the grammar and loader rather than a
+proposal document.
 
 `SortContent` mirrors `NamespaceContent`: imports are ordinary statements that can appear anywhere in the body, interleaved with sorts, entities, rules, operations, sugar forms, descriptions, or even nested namespaces.
 
@@ -983,8 +1076,13 @@ The routing fires only once the call actually **reduces**. `unify` is structural
 **Requires declaration** — a standalone `requires` in a sort or namespace body declares a sort-level constraint: the enclosing scope depends on another algebraic spec. This is distinct from an operation-level `requires` clause, which is scoped to the one operation — a *precondition* when it names a boolean condition, and an *op-scoped requirement* when it names a spec (see below).
 
 ```
-RequiresDecl ::= 'requires' Type
+RequiresDecl ::= 'requires' [Identifier ':'] Type
 ```
+
+An optional binder names the requirement slot (`requires O: Ord[T]`, proposal
+058 / WI-840).  A named slot is a type parameter of the enclosing sort and is
+therefore addressable in type/selection position; an anonymous slot remains a
+constraint that is solved rather than incorporated into the sort's identity.
 
 The `requires` declaration takes a type expression — either a simple sort name or a parameterized sort with bindings:
 
@@ -1019,18 +1117,28 @@ entity Account(id: AccountId, balance: Money)
 
 **THE knowledge primitive.** A Horn clause. All knowledge in the KB is expressed as rules. Two important special cases are given syntactic sugar (see §6):
 
+Relevant design records: [proposal 032](proposals/032-symmetric-rule-arrows.md),
+[proposal 033.1](proposals/033.1-cut-and-the-barrier-mechanism.md), and
+[proposal 060](proposals/060-clause-level-requirements-and-typed-heads.md).
+
 - `fact X` = bodyless rule (ground assertion)
-- `constraint I :- G` = integrity constraint (invariant `I` must hold when guard `G` holds)
+- `constraint I :- G` = integrity-declaration sugar (the current executable
+  subset and ordinary-denial boundary are in §6.2)
 
 ```
 Rule ::= DescriptionBlock*
-           'rule' [Name ':'] (Heads ':-' RuleBody | RuleBody '-:' Heads | Heads)
-           ['meta' ':' Meta]
+           'rule' [Name ':'] RuleShape
+           [MetaBlock]
 
-Heads       ::= Term (',' Term)*           -- one or more heads (multi-head: conjunctive sugar)
+RuleShape   ::= Heads ':-' RuleBody
+              | RuleBody '-:' Heads
+              | Heads
+Heads       ::= Goal (',' Goal)*           -- one or more heads (multi-head: conjunctive sugar)
               | '⊥'                        -- bottom (for denials; cannot mix with positive heads)
-
-RuleBody    ::= Term (',' Term)*           -- premises (conjunction)
+RuleBody    ::= Goal (',' Goal)*           -- premises (conjunction)
+Goal        ::= Cut | LetBinding | Term
+Cut         ::= '!'
+LetBinding  ::= 'let' VariableTerm '=' Term
 ```
 
 A leading `DescriptionBlock` requires the optional `Name` label to be present. The
@@ -1039,6 +1147,44 @@ The label is the description target (and, for a multi-head rule, remains one tar
 regardless of how many stored clauses the sugar produces).
 
 **Single arrow per rule.** `:-` and `-:` are mirror surface forms of the same implication operator (proposal 032). Exactly one of them appears per rule (or neither, for a bare-head fact). The dual-arrow form `head :- body -: conclusion` is **not** part of the grammar — under the unified design the head IS the rule's conclusion, so a separate `-:` slot would duplicate it. `:-` reads as "if" (head if body); `-:` reads as "then" (body therefore head). They produce the same internal Horn clause; choice is purely stylistic.
+
+The grammar deliberately shares `Goal` between heads and bodies so the two
+comma lists do not form competing parses.  `let` and cut are nevertheless
+body-only constructs: conversion rejects either in a head, as well as an
+outermost literal (§4.1), with a located diagnostic.
+
+**Cut (`!`, proposal 033.1 / WI-568).** A standalone `!` body goal commits the
+current rule invocation: once reached, alternatives created since that
+invocation's choice-point barrier are pruned, while choice points belonging to
+its callers remain available.  It is distinct from prefix negation (`!atom` or
+`not atom`): the standalone token is control, the token with an operand builds a
+negated goal.
+
+**Clause-level requirement binding (`require[X]`, delivered subset of proposal
+060 / WI-1040).** Two and only two source positions are interpreted:
+
+```
+rule p(?x, ?y) :- require[Eq[T]], eq(?x, ?y)
+rule q(?x, ?d) :- ?d = require[Eq[T]], consume(?x, ?d)
+```
+
+The bare form brings the resolved dictionary into the clause for covered body
+calls; the direct `?d = require[X]` form also exposes that same structural
+dictionary as a clause variable.  The latter is a converter-recognized binding
+form at the top level of a body goal—not a change to ordinary `=`, which remains
+a semantic equality test (§8.3).  A nested occurrence such as
+`consume(require[Eq[T]])` is refused rather than lifted or silently ignored.
+Both forms lower before resolution to the existing `find_dictionary` relation
+with an output slot, and the dictionary is an ordinary structural value in the
+clause substitution.
+
+This is deliberately only the delivered requirement-binding half of proposal
+060. Typed head syntax is **partially** implemented: the typed-pattern form on
+a `[simp]`/`[unfold]` equation is implemented below, while accepting the same
+annotation on a plain relational rule (including the parameter spelling
+`p(x: T)`) is not. WI-742 owns that relational `domain(x, T)` lowering, and
+WI-743 owns finite/user-defined domain generation. Do not confuse proposal 060
+with the unrelated work item WI-060.
 
 **Forms:**
 
@@ -1086,7 +1232,33 @@ One consequence is deliberate and **not yet diagnosed**: once the head resolves,
 
 **`[simp]` is what makes an equation run (WI-881).** The attribute does not merely pick a *direction* — it is the *enablement*. An **untagged** equational rule is inert: the normalizer never fires it, so a body-less operation whose only definition is an untagged equation dies `OperationBodyMissing` at eval. Tag the same equation `[simp]` and the operation runs, because the typer rewrites LHS→RHS in operation bodies before any dispatch. That is **inlining, not dispatch**, and the distinction is load-bearing: the §8.7 backing check does not count a `[simp]` equation, so one cannot discharge a *spec* operation's obligation (a rule is not backing — WI-818); what it can do is give a sort's **own** operation a meaning — but **not** as a third way beside a body and a host mapping, and WI-885 is deciding whether it is a backing kind at all. `[simp]` needs two things a *dispatched* call does not have: a syntactic **redex**, and a **statically known carrier** (`set.anthill` states the second — its laws fire "once the redex's carrier is known to provide `Set`"). Dispatch through a requirement **dictionary** has neither: `dispatch_via_sort_ops_table` resolves an operation *symbol* out of the dict and invokes it, and the invocation path is builtin → body → value-directed impl. There is no slot a rewrite rule could occupy, so **no dictionary entry can be built from a `[simp]` equation** — which is why `carrier_override_op` reading such a member as absent is the correct answer, not a bug. Treat `[simp]` as proposal 043's directional-rewrite attribute; write a definition as a body (WI-580: the equational, relational and proof views are *derived* from it — WI-669) or as a host mapping. Two spellings are traps, both measured: a **nullary head must carry its parentheses** — `rule tau <=> …` never fires, because the bare identifier is not an application and no redex matches it, while `rule tau() <=> …` does — and a bare-identifier RHS immediately before the attribute parses as an instantiation (`<=> none [simp]` is `none[simp]`), so write `none()`. The parenthesized head has a **reach** the dispatched forms do not: it matches an application, so it rewrites `tau()` and **not** a bare `tau` call site (a `var_ref`). A nullary operation callable both ways therefore wants a body or a host mapping, not an equation.
 
-**Typed rule patterns (`?x: T`) are a rewrite-rule feature (WI-582, WI-903).** A variable in a rule's LHS pattern may carry a type bound — `rule keep_id: keep(?x: Summable, ?y) = ?x [simp]` — read as the guard "the matched value's type conforms to `T`". The annotation is **stripped from the head**, so the indexed pattern is the untyped one, and the bound is three-valued: it fires where the carried type conforms, and neither fires nor refutes where that type is under-determined. The equivalent **introducer** spelling binds the type variable in the head and states the bound as a guard — `keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]` — which the loader **folds out of the body**, so the rule is still an equation. It is enforced at exactly **one** site — the resolver, firing a directional rewrite — so it is legal only on a `[simp]`/`[unfold]` equational rule (an equation being bodyless, §8.3) and **refused at load** anywhere else, naming the rule. A body goal that is *not* a folded `Spec[T]` guard therefore disqualifies it: the rule is no longer an equation, nothing fires it as a rewrite, and the bound would have no reader. That refusal includes a `[simp]` **dot rule** — a sort-scoped law written against the method-call form, `rule dr: dot_apply(?receiver, member, ?x) = … [simp]`: such a rule is fired by the typer, which enforces typed bounds nowhere, so the bound could only be ignored — write the law as an operation-headed equation instead. The refusal is exactly as wide as that firing: an `[unfold]` dot rule, which only the resolver fires, keeps its bound.
+**Typed rule patterns (`?x: T`) are currently a directional-rewrite feature
+(WI-582, WI-903).** A variable in a rule's LHS pattern may carry a type bound —
+`rule keep_id: keep(?x: Summable, ?y) = ?x [simp]` — read as the guard "the
+matched value's carried type conforms to `T`". The annotation is **stripped from
+the head**, so the indexed pattern is the untyped one, and the bound is
+three-valued: it fires where the carried type conforms, and neither fires nor
+refutes where that type is under-determined. This bound-mode meaning is the
+compatibility contract for proposal 060's plain-relational form: WI-742's
+generated `domain(?x, T)` goal must make the same carried-type decision when
+`?x` is bound. Its body-goal placement, column typing, and future output mode
+are different execution duties, not a different meaning for the annotation.
+
+The equivalent **introducer** spelling binds the type variable in the head and
+states the bound as a guard — `keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]`
+— which the loader **folds out of the body**, so the rule is still an equation.
+It is enforced at exactly **one** site — the resolver, firing a directional
+rewrite — so it is legal today only on a `[simp]`/`[unfold]` equational rule (an
+equation being bodyless, §8.3) and **refused at load** anywhere else, naming the
+rule. A body goal that is *not* a folded `Spec[T]` guard therefore disqualifies
+it: the rule is no longer an equation, nothing fires it as a rewrite, and the
+bound would have no reader. That refusal includes a `[simp]` **dot rule** — a
+sort-scoped law written against the method-call form, `rule dr:
+dot_apply(?receiver, member, ?x) = … [simp]`: such a rule is fired by the typer,
+which enforces typed bounds nowhere, so the bound could only be ignored — write
+the law as an operation-headed equation instead. The refusal is exactly as wide
+as that firing: an `[unfold]` dot rule, which only the resolver fires, keeps its
+bound.
 
 **Bounded quantification over a collection (WI-027).** A rule-body goal may quantify over the elements of a list:
 
@@ -1122,21 +1294,51 @@ Rules can optionally be **named** (e.g., `non_negative:`) for reference in error
 
 A typed behavioral specification with contracts. Kernel-level because sorts + operations + laws = **algebra** — the foundation of the verification system. The kernel type-checks signatures and generates proof obligations from contracts.
 
+Relevant design records: [proposal 018](proposals/018-expressions-and-operation-implementation.md),
+[proposal 041](proposals/041-operation-result-naming.md), [proposal
+042](proposals/042-explicit-type-parameters-on-operations.md), and [proposal
+058](proposals/058-modular-instances.md).
+
 ```
 Operation     ::= DescriptionBlock*
                     [Visibility] 'operation' Name [TypeParamList] '(' [ParamList] ')' '->' Type
-                    ['requires' RuleBody]            -- precondition
-                    ['ensures' RuleBody]             -- postcondition
-                    ['effects' '(' Effect (',' Effect)* ')']
-                    ['meta' MetaBlock]               -- attributes (WI-087); see §5.8, §7
+                    OperationClause*
+                    ['=' BodyExpr]
+                    [MetaBlock]
+
+OperationClause ::= 'requires' RequiresBody
+                  | 'ensures' RuleBody
+                  | 'effects' EffectSet
+                  | 'meta' MetaBlock                -- attributes (WI-087); see §5.8, §7
+RequiresBody ::= RequiresItem (',' RequiresItem)*
+RequiresItem ::= RequiresBinder | Goal
+RequiresBinder ::= Identifier ':' Type
 
 TypeParamList ::= '[' TypeParam (',' TypeParam)* ']'
-TypeParam     ::= Name                          -- per proposal 042; BARE name only (WI-850)
+TypeParam     ::= Identifier                    -- per proposal 042; BARE name only (WI-850)
 ParamList     ::= Param (',' Param)*
-Param         ::= ['...'] Name ':' Type          -- leading '...' = variadic capture (056)
+Param         ::= ['...'] Identifier ':' Type    -- leading '...' = variadic capture (056)
 ```
 
-Parameters are **named bindings** — referenced by name (without `?`) in `requires`/`ensures` clauses. This distinguishes them from rule variables (`?x`), which are pattern-matching unification variables. `requires` clauses may reference parameter names only (precondition: checked before execution). `ensures` clauses may additionally reference `result`, which binds to the return value (postcondition: checked after execution). Using `result` in `requires` is a semantic error.
+The optional body uses §4.8's expression grammar, either directly or inside a
+single pair of braces (proposal 018).  A body-less operation is an abstract or
+host-backed obligation; an operation with `=` has an Anthill implementation.
+
+Parameters are **named bindings** — referenced by name (without `?`) in
+`requires`, `ensures`, effects, and the body. This distinguishes them from rule
+variables (`?x`), which are pattern-matching unification variables. A
+`RequiresBinder` (`requires plus: Monoid[T]`) names an operation-local
+requirement slot; like its sort-level peer in §5.2, it is a type parameter and
+can be selected by its binder (proposal 058 / WI-840). Other items in the same
+comma list are ordinary spec requirements or value preconditions.
+
+`requires` is checked before execution and therefore cannot reference
+`result`. `ensures` and `effects` may reference the reserved `result`, which
+denotes the return value; a named-tuple return can be addressed through normal
+field access (`result.a`, `result.b`). A parameter named `result` is refused.
+Inside an operation body, `result` has no reserved output meaning and follows
+ordinary lexical binding rules. This delivered widening is proposal 041 /
+WI-261.
 
 **Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int64, String](args)`) or named (`foo[T1 = Int64, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
 
@@ -1144,7 +1346,7 @@ Parameters are **named bindings** — referenced by name (without `?`) in `requi
 
 **Every call-site binding must land, and only an operation body may carry one** (WI-839). Within one bracket, each binding must reach a **distinct** target of the callee. Four ways it can fail, all **load errors**: a named key naming no target; the **same key twice**; a positional with no parameter **left** to bind (those a named key already took do not count as available); and a callee that is not an operation at all — a function value, an applied rule citation, an entity constructor — which has no type-parameter list for a bracket to bind.
 
-**What a key may name — two rungs, in order** (WI-841, proposal 058 §4.2). (1) A declared **type parameter**: the operation's own, **or its enclosing sort's**. Both scopes, one list — an operation may not declare a parameter whose name collides with its sort's, so no key has two targets, and that collision is refused at the *declaration*. (2) A requirement's **spec short name**, when it picks out exactly **one** *anonymous* requirement slot of the callee — its own `requires`, its enclosing sort's, or, for a body-less spec op, the spec being dispatched (`Monoid.combine[Monoid = AddM](a, b)` selects the dictionary backing that very call). The value there names a **witness sort**, and the binding *selects* that provider for the slot: explicit selection outranks both the search for a unique provider and a deferral to the enclosing frame's dictionary. A slot the author **named** (`requires m: Monoid[T]` — WI-840; proposal 058 §4.7, not yet written up here) is reached by its binder under rung (1) — which both pins the parameter and selects — and is no longer answered by its spec's short name, so one bracket cannot bind one slot twice. A **positional** binding is rung (1) only: a requirement slot has no position a call site could count to.
+**What a key may name — two rungs, in order** (WI-841, proposal 058 §4.2). (1) A declared **type parameter**: the operation's own, **or its enclosing sort's**. Both scopes, one list — an operation may not declare a parameter whose name collides with its sort's, so no key has two targets, and that collision is refused at the *declaration*. (2) A requirement's **spec short name**, when it picks out exactly **one** *anonymous* requirement slot of the callee — its own `requires`, its enclosing sort's, or, for a body-less spec op, the spec being dispatched (`Monoid.combine[Monoid = AddM](a, b)` selects the dictionary backing that very call). The value there names a **witness sort**, and the binding *selects* that provider for the slot: explicit selection outranks both the search for a unique provider and a deferral to the enclosing frame's dictionary. A slot the author **named** (`requires m: Monoid[T]` — WI-840; proposal 058 §4.7) is reached by its binder under rung (1) — which both pins the parameter and selects — and is no longer answered by its spec's short name, so one bracket cannot bind one slot twice. A **positional** binding is rung (1) only: a requirement slot has no position a call site could count to.
 
 Three refusals belong to rung (2), all **load errors**: a **qualified** key (`fold[algebra.Monoid = AddM]`) is refused rather than resolved — resolving it would make selection depend on the *caller's* imports, while the supply path consults no scope at all, and every selection a short name cannot express is written by naming the slot; a short name matching **two or more** anonymous slots (the gate that makes matching by short name sound at all); and two keys selecting **different** witnesses for one spec.
 
@@ -1171,12 +1373,49 @@ An operation without an implementation is an **open obligation** — it emits a 
 
 Effects are part of operation declarations, not standalone constructs. An effect declares **non-obvious behavior** — something the operation does that is not visible from its parameter list alone. Reading a parameter is not an effect; mutating it is.
 
-Effect kinds are **open** — any `Name` or `Name[target]` pair is valid:
+Design records: [proposal 013](proposals/013-abstract-effects.md), [proposal
+045](proposals/045-effect-sets-and-expressions.md), and [proposal
+048](proposals/048-conditional-effects.md).
+
+Effect labels are **open** and effect rows have the implemented algebra from
+proposals 013/045/048:
 
 ```
-Effect ::= Name                          -- bare effect (e.g. Error)
-         | Name '[' Name ']'             -- effect with target (e.g. Modify[store])
+EffectSet  ::= EffectExpr
+             | '{' [EffectExpr (',' EffectExpr)*] '}'
+EffectExpr ::= SimpleEffect                         -- presence is the default
+             | '+' SimpleEffect                    -- explicit presence
+             | '-' SimpleEffect                    -- absence/lacks constraint
+             | 'merge' '(' EffectExpr (',' EffectExpr)* ')'
+             | SimpleEffect ':-' Term              -- one-goal guard
+             | '(' SimpleEffect ':-' RuleBody ')'  -- conjunctive guard
+SimpleEffect ::= Name
+               | Name '[' SortBinding (',' SortBinding)* ']'
+               | VariableTerm
 ```
+
+`{}` is the closed empty row and therefore the explicit pure row. A single
+effect needs no braces. `merge(E1, ..., En)` is row union and may nest; a bare
+label and `+label` both assert presence, while `-label` records a lacks
+constraint. These spellings are accepted both after an operation's `effects`
+keyword and after an arrow type's `@`.
+
+**Guarded effects** (proposal 048, WI-478/WI-067) qualify one row element, not
+the whole row. The bare spelling admits one guard term so an outer comma still
+separates row elements; parentheses delimit a conjunctive `RuleBody`:
+
+```
+effects {Modify[s], Error[DivisionByZero] :- eq(b, 0)}
+effects {(Error[BadInput] :- malformed(x), unsupported(x))}
+```
+
+At a call site the parameters are substituted into the guard. The label is
+dropped only when the local logical context **constructively proves the guard's
+negation**; a proven guard or an undecided/floundered guard conservatively keeps
+the effect. Thus guarded effects are optional precision, not preconditions or
+proof debts. A guard over an enclosing parameter can propagate with that
+parameter substituted. The same effect label may also occur unconditionally;
+refuting one guarded occurrence never removes the unconditional occurrence.
 
 Currently implemented effect kinds:
 
@@ -1210,7 +1449,13 @@ Future effect kinds (not yet implemented in codegen):
 
 are the same type: unifying the two arrows aligns the *i*-th parameter of each, so the binders compare equal by position. A target naming anything else — an operation parameter, the result — is a **free** reference and compares by symbol identity; it is never alpha-equated.
 
-**Effect parameters on sorts.** A sort may declare an abstract effect parameter (`sort E = ?`) to express effect polymorphism. Concrete sorts bind `E` to specific effects. For example, `Stream[T, E]` declares that iterating the stream may have effect `E`; a file-backed stream would bind `E = Error`, while a pure in-memory stream leaves `E` unbound (no effects).
+**Effect parameters on sorts.** A sort may declare an abstract effect parameter
+with the dedicated `effects E = ?` item (proposal 045 / WI-320) to express row
+polymorphism; `effects E = Row` binds it. The item lowers to the corresponding
+sort parameter plus its effects-runtime requirement. For example, `Stream[T,
+E]` declares that iterating the stream may have effect `E`; a file-backed stream
+can bind `E = Error`, while a pure in-memory stream binds the closed empty row
+`E = {}`.
 
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
@@ -1220,7 +1465,7 @@ Effects give operations a precise execution semantics via a state-passing interp
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects {Modify[S], Error Err, Suspend, Branch}
+  effects {Modify[S], Error[Err], Suspend, Branch}
 ```
 
 is interpreted as a function that threads an **environment** and returns an **outcome**:
@@ -1235,7 +1480,7 @@ The outcome type varies with the declared effects:
 |---------|-------------|
 | (none) — pure | `R × Env` where `Env_after = Env_before` |
 | `Modify[S]` | `R × Env` (environment may change) |
-| `Error Err` | `(R × Env) + Err` |
+| `Error[Err]` | `(R × Env) + Err` |
 | `Branch` | `List(R × Env)` (zero or more results) |
 | `Suspend` | `(R × Env) + Suspended(Env, Continuation)` |
 | All combined | `List((R × Env) + Suspended(Env, K)) + Err` |
@@ -1291,7 +1536,7 @@ When an `Implementation` fact links code to an operation with effects:
 2. `requires` clauses are checked against input parameters and the pre-environment.
 3. `ensures` clauses are checked against input parameters, the result, and the post-environment.
 
-These generate proof obligations (see §8.4) that can be discharged at various trust levels.
+These generate proof obligations (see §8.5) that can be discharged at various trust levels.
 
 ### 5.7 Monadic Interpretation of Effects
 
@@ -1299,7 +1544,7 @@ The same effects admit an equivalent **monadic interpretation**. An operation
 
 ```
 operation op(x1: A1, ..., xm: Am) -> R
-  effects {Modify[S], Error Err, Suspend, Branch}
+  effects {Modify[S], Error[Err], Suspend, Branch}
 ```
 
 is interpreted as a computation in a combined monad `M_E`:
@@ -1420,8 +1665,8 @@ own declaration with its own loader path. See proposal 039.
 
 ```
 Const       ::= DescriptionBlock*
-                  [Visibility] 'const' Name ':' Type ['=' ConstExpr]
-                  ['meta' ':' Meta]
+                  [Visibility] 'const' Name ':' Type ['=' BodyExpr]
+                  [MetaBlock]
 ```
 
 It slots into the same positions as an operation — a namespace body and a sort body —
@@ -1445,6 +1690,81 @@ check, the kernel having no body to inspect.
 
 **Description blocks are admitted, identically to operations** — §4.1 position 1.
 
+### 5.10 Proof declarations, in-body proofs, and provides blocks
+
+Proof syntax names an existing rule/obligation and records how it is to be
+discharged (proposals 025, 025.1, 030, and 031). The parser admits a single
+tactic/query form and a structured sequence of tactic-checked rule steps:
+
+Design records: [proposal 025](proposals/025-proof-constructs.md), [proposal
+025.1](proposals/025.1-z3-tactic-dsl.md), [proposal
+030](proposals/030-theorem-registry.md), and [proposal
+031](proposals/031-structured-proofs.md).
+
+```
+Proof ::= DescriptionBlock* 'proof' Name
+          (SingleProof | StructuredProof) 'end' [Name]
+
+SingleProof ::= ['using' NameList] ['by' ProofStrategy] [ProofBody]
+ProofBody ::= ':-' RuleBody
+            | 'query' StringLit ['mapping' MappingBlock]
+ProofStrategy ::= Identifier
+                | Identifier '(' FnArg (',' FnArg)* ')'
+
+StructuredProof ::= ProofStep+ [ProofConclusion]
+ProofStep ::= 'rule' [Name ':'] RuleShape [MetaBlock]
+              ['using' NameList] 'by' ProofStrategy
+ProofConclusion ::= ['using' NameList] 'by' ProofStrategy
+
+MappingBlock ::= '{' MappingEntry (',' MappingEntry)* [','] '}'
+MappingEntry ::= Name '->' (Name | StringLit)
+```
+
+The strategy name is an open syntactic dispatch key; parsing a strategy does
+not imply that a given proof executor implements it. `using` cites previously
+discharged positive rules through the theorem/ProofRecord registry. A denial
+headed by `⊥` has no conclusion to lift and is not citable (§5.3). Structured
+proofs accumulate the checked step rules and optionally use a final tactic to
+discharge the enclosing target.
+
+An operation/const body may put a proof in control flow (proposal 025, WI-538):
+
+```
+ProofStatement ::= 'proof' Name ['using' NameList]
+                   ['by' ProofStrategy] ['conclude' Term]
+                   'end' Expr
+```
+
+The proof is checked in the body's local logical context and scopes over the
+continuation expression after `end`. `conclude` supplies a local proposition
+when no named rule supplies the goal; successful derivation feeds the conclusion
+back into that continuation's context.
+
+`provides` has two surfaces. A clause on a sort claims a spec, optionally under
+per-provision spec conditions (proposal 058 / WI-869). A standalone host block
+records realization artifacts and name mappings (proposal 025):
+
+```
+ProvidesClause ::= 'provides' SpecInstantiation
+                   [':-' SpecInstantiation (',' SpecInstantiation)*]
+
+ProvidesBlock ::= DescriptionBlock* 'provides' Type
+                  'language' Identifier ProvidesItem* 'end' [Name]
+ProvidesItem ::= 'artifact' StringLit
+               | 'carrier' Bindings
+               | 'namespace_map' Bindings
+               | 'operation_map' Bindings
+               | 'const_map' Bindings
+               | Rule | RuleBlock | Fact | Proof
+```
+
+The conditional tail accepts spec instantiations, not arbitrary rule goals: it
+describes dictionary dependencies of this one provision. `const_map` is the
+value-level peer of `operation_map` (§5.9). Provides blocks are namespace/file
+realization declarations and are not admitted inside a sort body; a
+`ProvidesClause` instead takes its provider from the sort address where it is
+written (§5.1, §8.7, §10.2).
+
 ## 6. Syntactic Sugar
 
 Readable shorthand that desugars to kernel constructs. The reasoning engine only sees rules and sorts.
@@ -1456,7 +1776,7 @@ A ground assertion — the most common way to add knowledge to the KB.
 ```
 Fact ::= DescriptionBlock*
            'fact' Term
-           ['meta' ':' Meta]
+           [MetaBlock]
 ```
 
 `DescriptionBlock*` is accepted for a precise diagnostic, but a fact has no declaration
@@ -1472,19 +1792,56 @@ fact parent("alice", "bob")
 
 ### 6.2 Constraint (headless rule / denial)
 
-An integrity invariant — the KB rejects any state that violates it.
+An integrity-invariant declaration. The quantified subset is enforced by the
+KB guard engine; the current boundary for ordinary denials is stated below.
+
+Design record: [proposal 023](proposals/023-kb-guards.md).
 
 ```
 Constraint ::= DescriptionBlock*
-                 'constraint' [Name ':'] Invariant [':-' Guard]
-                 ['meta' ':' Meta]
+                 'constraint' [Name ':'] ConstraintBody
+                 [MetaBlock]
+
+ConstraintBody ::= RuleBody [':-' RuleBody]
+                 | QuantifiedConstraint
+                 | AggregationConstraint
+QuantifiedConstraint ::= Quantifier '(' Variable ':' Term ')' '-:' ConstraintBody
+                       | Quantifier Variable ':' RuleBody '-:' ConstraintBody
+                       | Quantifier Variable '-:' ConstraintBody
+Quantifier ::= 'forall' | 'some' | 'one' | 'lone' | 'no'
+AggregationConstraint ::= Aggregate '(' Variable ':' RuleBody '-:' RuleBody ')'
+                          Comparison Term
+Aggregate ::= 'count' | 'sum' | 'min' | 'max'
+Comparison ::= '<=' | '>=' | '<' | '>' | '=' | '!='
 ```
 
 A leading description requires the optional label. The label is defined as a
 `Constraint` symbol in the declaring scope and is the `DescriptionInfo.target`; the
 unlabeled combination is parsed only to produce the precise §4.1 refusal.
 
-The invariant (head) states what must be true; the guard (body after `:-`) states when it must be true. Without a guard, the invariant must always hold.
+The invariant (head) states what must be true; the guard (body after `:-`)
+states when it would apply. This is the logical reading and the desugaring
+below. **Current execution boundary:** an ordinary denial/invariant constraint
+is stored but not registered with the guard engine, so it is inert today. Only
+the quantified forms described next are enforced. WI-882 owns removal of the
+misleading stdlib denials and correction of this surface; do not rely on a
+plain constraint as an operation precondition—use an operation `requires`
+clause or guarded effect.
+
+The quantified forms from proposal 023 are enforced through KB guards. The
+condition selects bindings for the variable; `some`, `one`, `lone`, and `no`
+require respectively at least one, exactly one, at most one, or zero satisfying
+bindings. `forall` requires the body for every selected binding. A typed binder
+`forall (?x: T) -: body` supplies the type/domain condition directly.
+
+The delivered `forall` guard can negate a single body atom. A multi-atom
+`forall` body is currently refused as an unsupported constraint form because
+negating a conjunction atom-by-atom would be unsound. Likewise, the grammar
+recognizes `count`/`sum`/`min`/`max` aggregation constraints, but the loader
+refuses them explicitly: aggregate enforcement remains future work alongside
+the aggregation design in WI-712. These
+parse-only forms are not executable language capabilities, and the refusal is
+part of the current contract rather than a silent no-op.
 
 **Desugars to:**
 
@@ -1500,7 +1857,7 @@ A standalone entity declaration is sugar for a sort with one constructor. This i
 ```
 Entity ::= DescriptionBlock*
              [Visibility] 'entity' Name ['(' FieldList ')']
-             ['meta' ':' Meta]
+             [MetaBlock]
 ```
 
 **Desugars to:**
@@ -1683,15 +2040,12 @@ Multiple operations or rules can be grouped under a single keyword using block s
 ```
 OperationBlock ::= 'operation' Body[OperationEntry*]
 OperationEntry ::= DescriptionBlock*
-                     [Visibility] Name '(' [ParamList] ')' '->' Type
-                     ['requires' RuleBody]
-                     ['ensures' RuleBody]
-                     ['effects' '(' Effect (',' Effect)* ')']
-                     ['meta' MetaBlock]               -- attributes (WI-087); see §5.8
+                     [Visibility] Name [TypeParamList]
+                     '(' [ParamList] ')' '->' Type
+                     OperationClause* ['=' BodyExpr] [MetaBlock]
 
 RuleBlock      ::= 'rule' Body[RuleEntry*]
-RuleEntry      ::= [Name ':'] Head [':-' RuleBody]
-                     ['meta' ':' Meta]
+RuleEntry      ::= [Name ':'] RuleShape [MetaBlock]
 ```
 
 **Desugars to** individual declarations:
@@ -2226,13 +2580,21 @@ The kernel's reasoning engine supports:
 
 ### 8.4 Constraint Enforcement
 
-Constraints (denials) are checked whenever a new fact is asserted:
+Only **registered quantified guards** are currently enforced. Each such guard is
+checked once after the complete source set has loaded and again when a fact that
+matches one of its trigger sorts is asserted:
 
-1. For each denial `rule ⊥ :- B1, B2, ...`, check if the new fact, combined with existing facts, satisfies the body.
-2. If the body is fully satisfied, the assertion is **rejected** — the constraint is violated.
-3. The rejection includes the constraint name and the bindings that caused the violation.
+1. The post-load check blocks the load when the guard is violated, cannot be
+   lowered, or cannot be decided within the resolver budget.
+2. The per-assert check retracts and rejects a newly inserted fact when the guard
+   is violated or undecidable.
+3. A labeled violation identifies the source constraint in its diagnostic.
 
-This is the kernel's integrity mechanism — it prevents logically inconsistent states.
+An ordinary denial/invariant constraint is currently stored as reflected
+structure but is **not** registered as a guard and therefore does not reject a
+load or assertion. Aggregation constraints and unsupported quantified shapes are
+refused loudly instead of being accepted without enforcement. See §6.2 for the
+exact surface boundary; WI-882 tracks the misleading legacy plain-denial uses.
 
 ### 8.5 Operation Contracts and Obligations
 
@@ -2836,7 +3198,7 @@ BoolLit     ::= 'true' | 'false'
 -- Literal sugar for compound types (desugars to Fn terms):
 DurationLit      ::= IntLit ('ms' | 's' | 'm' | 'h' | 'd')            -- 5m → Duration(5, "m")
 CollectionLit    ::= '[' ']'                                            -- [] → ListLiteral()
-                   | '[' Term (',' Term)* ('|' Term)? ']'               -- [a,b] → ListLiteral(a,b)
+                   | '[' Term (',' Term)* ']'                            -- [a,b] → ListLiteral(a,b)
 SetLit           ::= '{' Term? (',' Term)* '}'                          -- {a,b} → SetLiteral(a,b)
 
 Body[F]     ::= '{' F '}'  |  F 'end'
@@ -2872,6 +3234,24 @@ PrefixOp    ::= '!' | 'not'
 InfixTerm   ::= AtomTerm (InfixOp AtomTerm)+   -- desugars via Pratt to nested Fn
 PrefixTerm  ::= PrefixOp AtomTerm               -- desugars to Fn(functor, [operand])
 
+-- Executable bodies (§4.8). `BodyExpr` admits optional braces only at the
+-- operation/const boundary; nested expressions use `Expr`.
+BodyExpr    ::= Expr | '{' Expr '}'
+Expr        ::= Term | MatchExpr | IfExpr | LetExpr | LambdaExpr | ProofStatement
+MatchExpr   ::= 'match' Term MatchBranch+
+MatchBranch ::= 'case' Pattern ['|' Term] '->' Expr
+IfExpr      ::= 'if' Term 'then' Expr 'else' Expr
+LetExpr     ::= 'let' Pattern [':' Type] '=' Expr Expr
+LambdaExpr  ::= 'lambda' Pattern '->' Expr
+Pattern     ::= Identifier | '_' | Literal
+              | Name '(' [PatternArg (',' PatternArg)*] ')'
+              | '(' ')' | '(' Pattern ')'
+              | '(' PatternElem ',' PatternElem (',' PatternElem)* ')'
+              | '(' Identifier ':' Type ')'
+PatternArg  ::= Pattern | Identifier ':' Pattern
+PatternElem ::= Pattern | Identifier ':' Type
+FnArg       ::= Term | Identifier ':' Term | VariableTerm ':' Type | LambdaExpr
+
 -- =================================================================
 -- Kernel Constructs (4)
 -- =================================================================
@@ -2895,7 +3275,7 @@ File             ::= (NamespaceContent - ProvidesClause)*
                                                  -- the note below for the one exclusion
 
 NamespaceContent ::= Import
-                   | Sort | Rule | Operation
+                   | Sort | Enum | Rule | Operation | Const
                    | RequiresDecl                 -- sort-level constraint
                    | Entity                       -- sugar (§6.3)
                    | Fact | Constraint            -- sugar (§6.1, §6.2)
@@ -2916,21 +3296,39 @@ Visibility  ::= 'internal' | 'public'
 
 Sort        ::= DescriptionBlock*
                   [Visibility] 'sort' Name '=' VariableTerm        -- unspecified (only in SortContent)
-                  ['meta' ':' Meta]
+                  [MetaBlock]
               | DescriptionBlock*
                   [Visibility] 'sort' Name '=' Type                -- type alias
-                  ['meta' ':' Meta]
+                  [MetaBlock]
               | DescriptionBlock*
-                  [Visibility] 'sort' Name                         -- sort with body
+                  [Visibility] 'sort' Name [SortTypeParamList]     -- sort with body
                   Body[SortContent*]
-                  ['meta' ':' Meta]
+                  [MetaBlock]
+              | SortVarBinder | SortBracketBinder
+
+SortTypeParamList ::= '[' SortTypeParam (',' SortTypeParam)* ']'
+SortTypeParam ::= Identifier [SortTypeParamList]
+SortVarBinder ::= DescriptionBlock* [Visibility]
+                    'sort' Var [SortBinderBody] [MetaBlock]
+SortBracketBinder ::= DescriptionBlock* [Visibility]
+                        'sort' '[' Identifier ']' [SortBinderBody] [MetaBlock]
+SortBinderBody ::= '{' (SortVarBinder | SortBracketBinder)+ '}'
+EffectsSortItem ::= DescriptionBlock* [Visibility]
+                      'effects' Name '=' Type [MetaBlock]
+Enum ::= DescriptionBlock* [Visibility] 'enum' Name
+           Body[EnumContent*] [MetaBlock]
+SortAlias ::= DescriptionBlock* [Visibility]
+                'sort' Name '=' Type [MetaBlock]
+EnumContent ::= Import | SortAlias | EffectsSortItem | RequiresDecl
+              | Entity | Operation | Rule | Fact | Constraint
+              | OperationBlock | RuleBlock | Describe | Proof | ProvidesClause
 
 -- Note: unspecified sorts (first form) may only appear inside a sort body
 -- as type parameters. Type aliases (second form) may appear in sort or namespace bodies.
 -- Namespaces contain sorts-with-body and type aliases (not unspecified sorts).
 
 SortContent ::= Import
-              | Sort | Entity | Operation | Rule
+              | Sort | Enum | EffectsSortItem | Entity | Operation | Const | Rule
               | RequiresDecl
               | Fact | Constraint | OperationBlock | RuleBlock
               | Describe | Namespace
@@ -2938,21 +3336,33 @@ SortContent ::= Import
               -- NOT ProvidesBlock: a host realization block is admitted in a
               -- namespace body and at a file's top level, never in a sort body.
 
--- Proof / provides, listed here for the two content productions above.
--- Their semantics are §7.3 (proof results), §8.7 (spec claims) and §10.2 (host
--- realization); only the outer shapes are given, and a proof's strategy / step
--- forms (`by z3(…)`, `using`, tactic terms) are proposal 025.1's, not restated here.
-Proof          ::= DescriptionBlock* 'proof' Name <proof body> 'end'
-ProvidesClause ::= 'provides' Type [':-' Type (',' Type)*]   -- conditions: 058 §3.8
-ProvidesBlock  ::= 'provides' Type 'language' Name          -- NamespaceContent / File only
-                     ProvidesItem* 'end'
-ProvidesItem   ::= 'artifact' String
-                 | 'carrier'       '{' MapEntry* '}'         -- anthill type  -> host type
-                 | 'operation_map' '{' MapEntry* '}'         -- operation     -> host fn
-                 | 'const_map'     '{' MapEntry* '}'         -- const         -> host value
-                 | 'namespace_map' '{' MapEntry* '}'         -- namespace     -> host module
+-- Proof / provides (§5.10).
+Proof ::= DescriptionBlock* 'proof' Name
+           (SingleProof | StructuredProof) 'end' [Name]
+SingleProof ::= ['using' NameList] ['by' ProofStrategy] [ProofBody]
+ProofBody ::= ':-' RuleBody
+            | 'query' StringLit ['mapping' MappingBlock]
+ProofStrategy ::= Identifier | Identifier '(' FnArg (',' FnArg)* ')'
+StructuredProof ::= ProofStep+ [ProofConclusion]
+ProofStep ::= 'rule' [Name ':'] RuleShape [MetaBlock]
+               ['using' NameList] 'by' ProofStrategy
+ProofConclusion ::= ['using' NameList] 'by' ProofStrategy
+ProofStatement ::= 'proof' Name ['using' NameList] ['by' ProofStrategy]
+                     ['conclude' Term] 'end' Expr
+
+ProvidesClause ::= 'provides' SpecInstantiation
+                    [':-' SpecInstantiation (',' SpecInstantiation)*]
+ProvidesBlock  ::= DescriptionBlock* 'provides' Type 'language' Identifier
+                     ProvidesItem* 'end' [Name]
+ProvidesItem   ::= 'artifact' StringLit
+                 | 'carrier' Bindings                         -- anthill type  -> host type
+                 | 'operation_map' Bindings                   -- operation     -> host fn
+                 | 'const_map' Bindings                       -- const         -> host value
+                 | 'namespace_map' Bindings                   -- namespace     -> host module
                  | Rule | RuleBlock | Fact | Proof           -- admitted; see §5.1 in an entry
-MapEntry       ::= Name ':' (String | Type) [',']
+Bindings       ::= '{' Identifier ':' Term (',' Identifier ':' Term)* '}'
+MappingBlock   ::= '{' MappingEntry (',' MappingEntry)* [','] '}'
+MappingEntry   ::= Name '->' (Name | StringLit)
 
 DescriptionBlock ::= '{<' Text '>}'               -- free-form text, preserved as KB facts
 Describe    ::= 'describe' Name DescriptionBlock+  -- attach description(s) to named symbol; appends to existing
@@ -2965,72 +3375,98 @@ Type        ::= Name                                           -- simple: Accoun
               | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}+ ?
               | TupleType                                        -- tuple type: (), (a: A), (A, B)
               | TupleType '->' Type                              -- arrow type: (A) -> B
-              | TupleType '->' Type '@' Type                     -- effectful arrow: (A) -> B @ E
+              | TupleType '->' Type '@' EffectSet                -- effectful arrow: (A) -> B @ E
 TupleType   ::= '(' ')'                                          -- unit
               | '(' TupleTypeArg ')'                             -- 1 element
               | '(' TupleTypeArg ',' TupleTypeArg (',' TupleTypeArg)* [','] ')'  -- 2+ elements
 TupleTypeArg ::= Type | Name ':' Type | Name ':' Literal
+SpecInstantiation ::= Name
+                    | Name '[' SortBinding (',' SortBinding)* ']'
 -- An arrow's parameter list IS a TupleType (WI-766); there is no separate
 -- ArrowParams production. A lone positional element `(A)` parses, but is a
 -- parameter list only -- as a TYPE it is an error.
 
 Rule        ::= DescriptionBlock*
-                  'rule' [Name ':'] Head [':-' RuleBody]
-                  ['meta' ':' Meta]
-Head        ::= Term | '⊥'
-RuleBody    ::= Term (',' Term)*
+                  'rule' [Name ':'] RuleShape [MetaBlock]
+RuleShape   ::= Heads ':-' RuleBody | RuleBody '-:' Heads | Heads
+Heads       ::= Goal (',' Goal)* | '⊥'
+RuleBody    ::= Goal (',' Goal)*
+Goal        ::= Cut | LetBinding | Term
+Cut         ::= '!'
+LetBinding  ::= 'let' VariableTerm '=' Term
 
 Operation   ::= DescriptionBlock*
-                  [Visibility] 'operation' Name '(' [ParamList] ')' '->' Type
-                  ['requires' RuleBody]
-                  ['ensures' RuleBody]
-                  ['effects' '(' Effect (',' Effect)* ')']
-                  ['meta' MetaBlock]               -- attributes (WI-087); see §5.8
+                  [Visibility] 'operation' Name [TypeParamList]
+                  '(' [ParamList] ')' '->' Type
+                  OperationClause* ['=' BodyExpr] [MetaBlock]
+TypeParamList ::= '[' TypeParam (',' TypeParam)* ']'
+TypeParam    ::= Identifier                        -- legal form; `= Type` parses only for refusal
+OperationClause ::= 'requires' RequiresBody
+                  | 'ensures' RuleBody
+                  | 'effects' EffectSet
+                  | 'meta' MetaBlock
+RequiresBody ::= RequiresItem (',' RequiresItem)*
+RequiresItem ::= RequiresBinder | Goal
+RequiresBinder ::= Identifier ':' Type
 ParamList   ::= Param (',' Param)*
-Param       ::= Name ':' Type
+Param       ::= ['...'] Identifier ':' Type
 
-Effect      ::= Name                       -- bare effect (e.g. Error)
-              | Name '[' Name ']'         -- effect with target (e.g. Modify[store])
+EffectSet   ::= EffectExpr | '{' [EffectExpr (',' EffectExpr)*] '}'
+EffectExpr  ::= SimpleEffect | '+' SimpleEffect | '-' SimpleEffect
+              | 'merge' '(' EffectExpr (',' EffectExpr)* ')'
+              | SimpleEffect ':-' Term
+              | '(' SimpleEffect ':-' RuleBody ')'
+SimpleEffect ::= Name
+               | Name '[' SortBinding (',' SortBinding)* ']'
+               | VariableTerm
 
 Const       ::= DescriptionBlock*                 -- term-level constant; see §5.9
-                  [Visibility] 'const' Name ':' Type ['=' ConstExpr]
-                  ['meta' ':' Meta]
+                  [Visibility] 'const' Name ':' Type ['=' BodyExpr]
+                  [MetaBlock]
               -- type MANDATORY, body OPTIONAL (body-less = host-supplied via const_map)
               -- no params, no type params, no effects clause
 
-RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sort/namespace body)
+RequiresDecl ::= 'requires' [Identifier ':'] Type
+                  -- optional binder = named requirement slot (proposal 058)
 
 -- =================================================================
 -- Syntactic Sugar
 -- =================================================================
 
 Fact        ::= DescriptionBlock*
-                  'fact' Term ['meta' ':' Meta]
+                  'fact' Term [MetaBlock]
               -- desugars to: rule Term
 
 Constraint  ::= DescriptionBlock*
-                  'constraint' [Name ':'] Invariant [':-' Guard]
-                  ['meta' ':' Meta]
-              -- desugars to: rule [Name ':'] ⊥ :- Guard, ¬Invariant
+                  'constraint' [Name ':'] ConstraintBody
+                  [MetaBlock]
+ConstraintBody ::= RuleBody [':-' RuleBody]
+                 | QuantifiedConstraint | AggregationConstraint
+QuantifiedConstraint ::= Quantifier '(' VariableTerm ':' Term ')' '-:' ConstraintBody
+                       | Quantifier VariableTerm ':' RuleBody '-:' ConstraintBody
+                       | Quantifier VariableTerm '-:' ConstraintBody
+Quantifier ::= 'forall' | 'some' | 'one' | 'lone' | 'no'
+AggregationConstraint ::= Aggregate '(' VariableTerm ':' RuleBody '-:' RuleBody ')'
+                            Comparison Term
+Aggregate ::= 'count' | 'sum' | 'min' | 'max'
+Comparison ::= '<=' | '>=' | '<' | '>' | '=' | '!='
+              -- aggregates parse but are refused as unsupported (§6.2)
 
 Entity      ::= DescriptionBlock*
                   [Visibility] 'entity' Name ['(' FieldList ')']
-                  ['meta' ':' Meta]
+                  [MetaBlock]
               -- desugars to: sort Name { entity Name [( FieldList )] }
 
 OperationBlock ::= 'operation' Body[OperationEntry*]
               -- desugars to: individual Operation declarations
 OperationEntry ::= DescriptionBlock*
-                     [Visibility] Name '(' [ParamList] ')' '->' Type
-                     ['requires' RuleBody]
-                     ['ensures' RuleBody]
-                     ['effects' '(' Effect (',' Effect)* ')']
-                     ['meta' MetaBlock]               -- attributes (WI-087); see §5.8
+                     [Visibility] Name [TypeParamList]
+                     '(' [ParamList] ')' '->' Type
+                     OperationClause* ['=' BodyExpr] [MetaBlock]
 
 RuleBlock   ::= 'rule' Body[RuleEntry*]
               -- desugars to: individual Rule declarations
-RuleEntry   ::= [Name ':'] Head [':-' RuleBody]
-                  ['meta' ':' Meta]
+RuleEntry   ::= [Name ':'] RuleShape [MetaBlock]
 
 -- =================================================================
 -- Metadata
@@ -3060,7 +3496,7 @@ Trust       ::= 'proved' | 'verified' | 'tested' '(' IntLit ')'
 --   tested-47  →  tested(47)
 
 MetaBlock   ::= '[' MetaEntry (',' MetaEntry)* ']'
-MetaEntry   ::= Name ':' Term                   -- any key-value pair
+MetaEntry   ::= Name [':' Term]                 -- flag or any key-value pair
 ```
 
 ## 12. Open Questions
@@ -3069,9 +3505,16 @@ Design questions discovered during implementation that need decisions.
 
 ### 12.1 Effect semantics
 
-Effect declarations are stored as-is — open `Name` or `Name[target]` pairs. Currently implemented: `Modify[target]` (mutation) and `Error` / `Error[type]` (fallibility). Open questions:
+Effect declarations use §5.5's row algebra and guarded elements. Row parsing,
+canonicalization, propagation, lacks constraints, and guarded discharge are
+implemented; executing every possible effect label is a separate runtime
+question. Open questions:
 
 - **Effect checking**: Should declared effects be verified against implementations, or remain advisory?
-- **Control flow effects**: `Suspend` and `Branch` are described in §5.7 but not yet implemented. How should they interact with codegen?
-- **Effect polymorphism**: Sorts can declare abstract effect parameters (`sort E = ?`) — how should unbound effect parameters be propagated and resolved?
-- **Ambient resource effects**: Effects for resources not in the parameter list (e.g. `Output{stdout}`, `Log{logger}`) need concrete use cases before design.
+- **Control flow effects**: `Suspend` and `Branch` are valid row labels, but their
+  continuation/nondeterminism runtime behavior remains open in WI-069/WI-070.
+- **Effect polymorphism**: Sorts declare row parameters as `effects E = ?`; the
+  row typer propagates them, while host/codegen representation remains backend
+  specific.
+- **Ambient resource effects**: Effects for resources not in the parameter list
+  (e.g. `Output[stdout]`, `Log[logger]`) need concrete use cases before design.

@@ -1,5 +1,8 @@
 # Proposal 002: Arrow Sorts (with Effect Annotations)
 
+**Canonical reference:** [`kernel-language.md` §§4.4 and 5.2](../kernel-language.md#52-sort),
+including the delivered higher-kinded sort-binder extensions.
+
 **Status:** Draft
 **Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md)
 **Subsumes:** [003-effect-arrow-sorts](003-effect-arrow-sorts.md)

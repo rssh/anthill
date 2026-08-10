@@ -1,5 +1,7 @@
 # Proposal 045 — Effect sets, effect expressions, and effect checking
 
+**Canonical reference:** [`kernel-language.md` §5.5](../kernel-language.md#55-effects).
+
 ## Status: Draft (2026-05-24; row-unification pivot 2026-05-25; variant-7 adoption 2026-05-28)
 
 > Promotes `docs/brainstorms/effect-sets.md`, which has the full variant

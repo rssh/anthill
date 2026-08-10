@@ -1,5 +1,7 @@
 # Proposal 048 — Conditional (guarded) effects
 
+**Canonical reference:** [`kernel-language.md` §5.5](../kernel-language.md#55-effects).
+
 ## Status: Draft (2026-06-15)
 
 > **Purpose.** An effect-row element may carry a **guard** — a value-predicate over the

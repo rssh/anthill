@@ -1,5 +1,8 @@
 # Proposal 030: Certified ProofRecord and Translation Policy
 
+**Canonical reference:** [`kernel-language.md` §5.10](../kernel-language.md#510-proof-declarations-in-body-proofs-and-provides-blocks)
+for the `using` surface; this proposal remains the registry/evidence design record.
+
 **Status:** Implemented (α + β.1/β.3–β.7 + γ + WI-124 sidecar persistence + δ.1–δ.3 + ε.1/ε CLI flag set landed). β.2 (SldDerivation real replay) and δ.4/δ.5 (smt-gen call-site policy integration + logic-fragment selection) remain — see §Implementation status.
 **Depends on:** [025-proof-constructs](025-proof-constructs.md), [025.1-z3-tactic-dsl](025.1-z3-tactic-dsl.md)
 **Related:** [023-kb-guards](023-kb-guards.md), [029-rust-mapping-split](029-rust-mapping-split.md)

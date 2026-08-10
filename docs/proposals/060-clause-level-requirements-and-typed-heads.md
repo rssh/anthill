@@ -1,5 +1,10 @@
 # 060: Clause-level type declarations compile to generated body goals
 
+**Canonical reference:** [`kernel-language.md` §5.3](../kernel-language.md#53-rule).
+The reference records the delivered `require[X]` subset and the existing
+directional-rewrite typed patterns; WI-742's compatible plain-relational typed
+heads remain explicitly unimplemented.
+
 ## Status: Draft (2026-08-07). The **language** half of the requirement channel (WI-1040) and of typed relational heads (WI-742). Mechanics — goal encoding, crossings, σ-carrier — are owned by [`../design/requirement-channel.md`](../design/requirement-channel.md); this proposal owns the surface and its rules. The staging invariant is assumed throughout: after the typing pass, run time performs no typing operations (channel doc §2.1).
 
 ## Relates to: 058 (§3.3 bracket selection, §3.4 named slots, §3.8 conditional provisions, §3.10 instances are never chosen at run time), 052 (relation column types — the consumer of typed heads), 043 / WI-582 (typed patterns on `[simp]` heads), WI-300 (the delivered `requires(X)` guard tier), [`../design/constrained-term-substrate.md`](../design/constrained-term-substrate.md) (the desugaring `head(…) :- conforms(typeof(?x), T), body` — meaning this proposal turns into code), 055 (types in value position).

@@ -1,5 +1,9 @@
 # Proposal 058 — Modular instances: selecting a non-canonical provider at a use site
 
+**Canonical reference:** named requirement slots and call-site selection are in
+[`kernel-language.md` §§5.2–5.4](../kernel-language.md#52-sort); conditional
+provisions are in [§5.10](../kernel-language.md#510-proof-declarations-in-body-proofs-and-provides-blocks).
+
 **Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will; §3.10's congruent positive lawfulness, the use-site discharge WI-869 left unread, is proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem

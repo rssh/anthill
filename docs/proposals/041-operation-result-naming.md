@@ -1,5 +1,7 @@
 # 041 — `result` in Effects Rows
 
+**Canonical reference:** [`kernel-language.md` §5.4](../kernel-language.md#54-operation).
+
 ## Status
 
 Draft. Driver is WI-261 (filed). Direct dependency of [027.1](027.1-alloc-effect-and-allocator-revision.md) — the `Modify[result]` discharge story can't be written without `result` being a name resolvable in the effects row.

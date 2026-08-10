@@ -1,5 +1,7 @@
 # 042 — Explicit Type Parameters on Operations
 
+**Canonical reference:** [`kernel-language.md` §5.4](../kernel-language.md#54-operation).
+
 ## Status
 
 Draft. Three concurrent drivers:

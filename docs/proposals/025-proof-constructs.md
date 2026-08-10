@@ -1,5 +1,7 @@
 # Proposal 025: Proof Constructs
 
+**Canonical reference:** [`kernel-language.md` §5.10](../kernel-language.md#510-proof-declarations-in-body-proofs-and-provides-blocks).
+
 ## Motivation
 
 The kernel generates proof obligations from operation contracts (`requires`/`ensures`) and from `constraint` declarations. Currently, discharging these obligations is untyped — any agent can assert a `ProofResult` fact without the kernel verifying the proof structure. When definitions change, there is no mechanism to detect which proofs are invalidated.

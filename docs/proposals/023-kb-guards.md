@@ -1,5 +1,8 @@
 # Proposal 023: KB Guards — Constraint Checking on Assert
 
+**Canonical reference:** [`kernel-language.md` §6.2](../kernel-language.md#62-constraint-headless-rule--denial),
+including the implemented quantifier subset and explicit unsupported boundaries.
+
 ## Summary
 
 Add a guard mechanism to the KB: constraints checked on every `assert`.

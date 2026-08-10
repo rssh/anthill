@@ -1,5 +1,7 @@
 # 013: Abstract Effect Parameters
 
+**Canonical reference:** [`kernel-language.md` §5.5](../kernel-language.md#55-effects).
+
 ## Status: Partially implemented (grammar + parse IR + codegen + KB loading; effect checking not yet done)
 
 ## Depends on: none

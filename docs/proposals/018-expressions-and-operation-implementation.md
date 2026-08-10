@@ -1,5 +1,8 @@
 # Proposal 018: Expressions and Operation Implementation
 
+**Canonical reference:** [`kernel-language.md` §4.8](../kernel-language.md#48-executable-expression-bodies)
+and the operation body production in [§5.4](../kernel-language.md#54-operation).
+
 **Status:** Draft
 **Depends on:** [016-extensible-infix-operators](016-extensible-infix-operators.md), [022-typing-as-facts](022-typing-as-facts.md) (Occurrences, TypeOf)
 **Related:** [002-arrow-sorts](002-arrow-sorts.md) (arrow sort `(A) -> B` syntax, not yet implemented; `Function[A, B]` from stdlib available now)
