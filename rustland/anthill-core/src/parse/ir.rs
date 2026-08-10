@@ -436,6 +436,10 @@ pub enum Item {
 #[derive(Debug)]
 pub struct Namespace {
     pub name: Name,
+    /// WI-1072: the namespace's own `{< … >}` blocks. These are direct fields of
+    /// `namespace_declaration`, not body items; the converter must both preserve them
+    /// here and keep them out of `items`.
+    pub descriptions: Vec<String>,
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
     pub span: Span,
@@ -524,6 +528,10 @@ pub struct FieldDecl {
 #[derive(Debug)]
 pub struct Rule {
     pub label: Option<Name>,
+    /// WI-1072: declaration descriptions target the rule's citation label. The
+    /// converter refuses a non-empty list when `label` is `None`, so an anonymous
+    /// rule never reaches later consumers carrying text they cannot name.
+    pub descriptions: Vec<String>,
     /// One or more positive head terms, or a single `RuleHead::Bottom`
     /// for denial. Mixing `Bottom` with positive heads is rejected at
     /// load time. Multi-head desugars conjunctively (proposal 032).
@@ -650,12 +658,17 @@ pub struct Entity {
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub fields: Vec<FieldDecl>,
+    /// WI-1072: the constructor declaration's own `{< … >}` blocks.
+    pub descriptions: Vec<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
 
 #[derive(Debug)]
 pub struct Fact {
+    /// A fact has no declaration name or citation handle, so it deliberately has no
+    /// description field. WI-1072 makes the converter refuse a leading block instead
+    /// of constructing an IR value that must silently lose it later.
     pub term: TermId,
     pub meta: Option<MetaBlock>,
     pub span: Span,
@@ -664,6 +677,9 @@ pub struct Fact {
 #[derive(Debug)]
 pub struct Constraint {
     pub label: Option<Name>,
+    /// WI-1072: declaration descriptions target the constraint label. As for rules,
+    /// the converter refuses descriptions on an unlabeled constraint.
+    pub descriptions: Vec<String>,
     pub body: ConstraintBody,
     pub meta: Option<MetaBlock>,
     pub span: Span,

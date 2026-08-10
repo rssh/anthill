@@ -430,6 +430,34 @@ impl<'a> Converter<'a> {
         node.children_by_field_name(name, &mut cursor).collect()
     }
 
+    /// A declaration's direct `description` fields, stripped but still in source
+    /// order. Direct fields are load-bearing: variable descriptions and nested
+    /// declaration blocks belong to their own nodes and must not be swept up here.
+    fn declaration_descriptions(&self, node: Node) -> Vec<String> {
+        self.fields_by_name(node, "description")
+            .into_iter()
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .collect()
+    }
+
+    /// WI-1072: refuse a description on a declaration with no stable name/citation
+    /// target. This is decided from the surface alone, so it belongs in conversion:
+    /// every `ParsedFile` consumer sees the refusal, including generators that never
+    /// load a KB. One diagnostic per declaration, even if several blocks were written.
+    fn reject_description_without_target(&mut self, node: Node, kind: &str) {
+        let Some(at) = self.fields_by_name(node, "description").into_iter().next() else {
+            return;
+        };
+        self.err(
+            format!(
+                "description block on {kind} has no stable target: descriptions name a \
+                 declaration symbol or citation handle. Add a label where this \
+                 construct permits one, or move the text to a named declaration"
+            ),
+            at,
+        );
+    }
+
     // ── Root ────────────────────────────────────────────────────
 
     pub fn convert_file(&mut self, root: Node) {
@@ -2991,6 +3019,7 @@ impl<'a> Converter<'a> {
         let name = self.field(node, "name")
             .map(|n| self.convert_name(n))?;
         let span = self.span(node);
+        let descriptions = self.declaration_descriptions(node);
 
         let imports = self.collect_imports(node);
 
@@ -2999,7 +3028,7 @@ impl<'a> Converter<'a> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "name" | "import_clause" => {}
+                "name" | "description_block" | "import_clause" => {}
                 _ => {
                     let converted = self.convert_items_at(child, ItemOwner::NotASort);
                     items.extend(converted);
@@ -3009,6 +3038,7 @@ impl<'a> Converter<'a> {
 
         Some(Namespace {
             name,
+            descriptions,
             imports,
             items,
             span,
@@ -3388,6 +3418,12 @@ impl<'a> Converter<'a> {
 
         let label = self.field(node, "label")
             .map(|n| self.convert_name(n));
+        let descriptions = if label.is_some() {
+            self.declaration_descriptions(node)
+        } else {
+            self.reject_description_without_target(node, "unlabeled rule");
+            Vec::new()
+        };
 
         let heads = self.field(node, "heads")
             .map(|h| self.convert_rule_heads(h))
@@ -3399,7 +3435,7 @@ impl<'a> Converter<'a> {
         let meta = self.convert_meta_block(node);
 
         self.snapshot_rule_var_scope(&label);
-        Some(Rule { label, heads, body, meta, span })
+        Some(Rule { label, descriptions, heads, body, meta, span })
     }
 
     /// Save the current `var_scope` keyed by the rule's label so a
@@ -3502,10 +3538,7 @@ impl<'a> Converter<'a> {
         // and is not swept up here. Read in `convert_operation` rather than in the two
         // callers because `operation_entry` shares this converter (see
         // `convert_operation_block`), so both spellings are covered once.
-        let descriptions: Vec<String> = self.fields_by_name(node, "description")
-            .into_iter()
-            .map(|d| strip_description_delimiters(self.text(d)))
-            .collect();
+        let descriptions = self.declaration_descriptions(node);
 
         // The name AS WRITTEN, for diagnostics that must quote the declaration
         // (WI-850's type-param-default refusal).
@@ -3606,10 +3639,7 @@ impl<'a> Converter<'a> {
         let ty = self.field(node, "type").map(|t| self.convert_type(t))?;
         let value = self.field(node, "value").map(|v| self.convert_expr_body(v));
         // WI-1070 — the same read as `convert_operation`'s, for the same reason.
-        let descriptions: Vec<String> = self.fields_by_name(node, "description")
-            .into_iter()
-            .map(|d| strip_description_delimiters(self.text(d)))
-            .collect();
+        let descriptions = self.declaration_descriptions(node);
         let meta = self.convert_meta_block(node);
         Some(Const { visibility, name, ty, value, descriptions, meta, span })
     }
@@ -3763,6 +3793,7 @@ impl<'a> Converter<'a> {
             .map(|n| self.convert_name(n))?;
         let visibility = self.convert_visibility(node);
         let span = self.span(node);
+        let descriptions = self.declaration_descriptions(node);
 
         // WI-808: an entity's field names must be DISTINCT, checked here because this is
         // where they are declared and the only place with a node to point at. Built in a
@@ -3787,11 +3818,12 @@ impl<'a> Converter<'a> {
 
         let meta = self.convert_meta_block(node);
 
-        Some(Entity { visibility, name, fields, meta, span })
+        Some(Entity { visibility, name, fields, descriptions, meta, span })
     }
 
     fn convert_fact(&mut self, node: Node) -> Option<Fact> {
         let span = self.span(node);
+        self.reject_description_without_target(node, "fact");
         let term_node = self.field(node, "term")?;
         // A fact IS a rule with an empty body, so its term is a conclusion.
         if self.reject_literal_conclusion(term_node, "fact") {
@@ -3807,6 +3839,12 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         let label = self.field(node, "label")
             .map(|n| self.convert_name(n));
+        let descriptions = if label.is_some() {
+            self.declaration_descriptions(node)
+        } else {
+            self.reject_description_without_target(node, "unlabeled constraint");
+            Vec::new()
+        };
         // `head` resolves the `_constraint_body` choice: a `quantified_constraint`
         // / `aggregation_constraint` node, or a `rule_body` for the plain denial
         // form (whose `:- guard` is hoisted to this `constraint_declaration` node).
@@ -3832,7 +3870,7 @@ impl<'a> Converter<'a> {
             }
         };
         let meta = self.convert_meta_block(node);
-        Some(Constraint { label, body, meta, span })
+        Some(Constraint { label, descriptions, body, meta, span })
     }
 
     fn convert_quantified(&mut self, node: Node) -> Option<ConstraintBody> {
@@ -3985,7 +4023,7 @@ impl<'a> Converter<'a> {
             .map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
         self.snapshot_rule_var_scope(&label);
-        Some(Rule { label, heads, body, meta, span })
+        Some(Rule { label, descriptions: Vec::new(), heads, body, meta, span })
     }
 
     // ── Describe ────────────────────────────────────────────────
@@ -4280,7 +4318,7 @@ impl<'a> Converter<'a> {
         let strategy = self.field(node, "tactic")
             .map(|n| self.convert_proof_strategy(n))?;
 
-        let rule = Rule { label, heads, body, meta, span };
+        let rule = Rule { label, descriptions: Vec::new(), heads, body, meta, span };
         Some(ProofStep { rule, using, strategy, span })
     }
 

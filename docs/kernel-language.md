@@ -12,7 +12,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
-4. **Partial formalization.** Any declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Each block is stored as its own indexed `Description` fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language.
+4. **Partial formalization.** Any named declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Each block is stored as its own indexed `anthill.reflect.DescriptionInfo` fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language. A fact or an unlabeled rule/constraint has no stable declaration target, so a leading block on one is refused rather than dropped (§4.1).
 
 5. **Everything carries metadata.** Every fact has provenance (who, when, trust level, iteration). Trust is attached to facts, not to agents.
 
@@ -109,7 +109,7 @@ Term ::= Const(type, value)            -- ground value: 42 : Int64, "hello" : St
 
 ### 4.1 Description Blocks
 
-Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `Description` facts in the KB. Multiple description blocks can be attached to the same target; each block is stored as its own `Description` fact, ordered by an index argument.
+Description blocks (`{< >}`) attach human-readable text to declarations. Unlike comments (`--`, `{- -}`), description blocks are **structural** — they are preserved as `anthill.reflect.DescriptionInfo` facts in the KB. Multiple description blocks can be attached to the same target; each block is stored as its own fact, ordered by an index argument.
 
 ```
 -- Inline description on an abstract sort:
@@ -138,13 +138,13 @@ operation withdraw(amount: ?T {< monetary type >} {< must support subtraction >}
 
 Description blocks can appear in three positions:
 
-1. **Before a declaration keyword** (`sort`, `operation`, `const`, `rule`, `entity`, `fact`, `constraint`, `namespace`) — describes the declaration that follows. For an `operation` this holds in BOTH spellings — the standalone `operation NAME(…)` and an entry of an `operation { … }` block — and the description attaches to the entry it precedes, not to the block.
+1. **Before a named declaration keyword** (`sort`, `operation`, `const`, labeled `rule`, `entity`, labeled `constraint`, `namespace`) — describes the declaration that follows. For an `operation` this holds in BOTH spellings — the standalone `operation NAME(…)` and an entry of an `operation { … }` block — and the description attaches to the entry it precedes, not to the block. A fact, unlabeled rule, or unlabeled constraint has no declaration symbol/citation handle to put in `DescriptionInfo.target`; the grammar accepts a leading block so the converter can refuse it precisely, never silently discard it. Add a label where one is available, or move the text to a named declaration.
 2. **After `describe Name`** — standalone, can reference any named symbol. Appends to existing descriptions.
 3. **After a variable (`?` or `?name`), closed by trailing `?`** — describes what the variable represents in that rule, constraint, fact, or operation contract. The trailing `?` delimiter disambiguates variable descriptions from declaration descriptions.
 
-Multiple `{< >}` blocks on the same target each emit a separate fact with an increasing index, preserving declaration order. The `describe` construct emits additional `Description` facts for its target, enabling incremental annotation across files (the index counter is per file, so declaration order is encoded within a file, not across files).
+Multiple `{< >}` blocks on the same target each emit a separate fact with an increasing index, preserving declaration order. The `describe` construct emits additional `DescriptionInfo` facts for its target, enabling incremental annotation across files (the index counter is per file, so declaration order is encoded within a file, not across files).
 
-Descriptions are stored as `Description(target, text, index)` facts — one fact per block, with a 0-based per-target `index` — queryable via `by_functor("Description")`. For variables, the target is the variable's term in the KB.
+Descriptions are stored as `anthill.reflect.DescriptionInfo(target, content, index)` facts — one fact per block, with a 0-based per-target `index`. For variables, the target is the variable's term in the KB; for a declaration, it is the declaration's qualified symbol term. A labeled rule's target is its citation label, so a multi-head rule still emits once; a labeled constraint's label is likewise a `Constraint` symbol in its declaring scope.
 
 | Purpose | Syntax | Structural? |
 |---------|--------|-------------|
@@ -1033,6 +1033,11 @@ Heads       ::= Term (',' Term)*           -- one or more heads (multi-head: con
 RuleBody    ::= Term (',' Term)*           -- premises (conjunction)
 ```
 
+A leading `DescriptionBlock` requires the optional `Name` label to be present. The
+grammar retains the unlabeled combination only to produce the precise §4.1 refusal.
+The label is the description target (and, for a multi-head rule, remains one target
+regardless of how many stored clauses the sugar produces).
+
 **Single arrow per rule.** `:-` and `-:` are mirror surface forms of the same implication operator (proposal 032). Exactly one of them appears per rule (or neither, for a bare-head fact). The dual-arrow form `head :- body -: conclusion` is **not** part of the grammar — under the unified design the head IS the rule's conclusion, so a separate `-:` slot would duplicate it. `:-` reads as "if" (head if body); `-:` reads as "then" (body therefore head). They produce the same internal Horn clause; choice is purely stylistic.
 
 **Forms:**
@@ -1454,6 +1459,10 @@ Fact ::= DescriptionBlock*
            ['meta' ':' Meta]
 ```
 
+`DescriptionBlock*` is accepted for a precise diagnostic, but a fact has no declaration
+name or citation handle and therefore no stable `DescriptionInfo.target`; a non-empty
+prefix is refused (§4.1). Describe the named relation/sort declaration instead.
+
 **Desugars to:**
 
 ```
@@ -1470,6 +1479,10 @@ Constraint ::= DescriptionBlock*
                  'constraint' [Name ':'] Invariant [':-' Guard]
                  ['meta' ':' Meta]
 ```
+
+A leading description requires the optional label. The label is defined as a
+`Constraint` symbol in the declaring scope and is the `DescriptionInfo.target`; the
+unlabeled combination is parsed only to produce the precise §4.1 refusal.
 
 The invariant (head) states what must be true; the guard (body after `:-`) states when it must be true. Without a guard, the invariant must always hold.
 
@@ -3062,4 +3075,3 @@ Effect declarations are stored as-is — open `Name` or `Name[target]` pairs. Cu
 - **Control flow effects**: `Suspend` and `Branch` are described in §5.7 but not yet implemented. How should they interact with codegen?
 - **Effect polymorphism**: Sorts can declare abstract effect parameters (`sort E = ?`) — how should unbound effect parameters be propagated and resolved?
 - **Ambient resource effects**: Effects for resources not in the parameter list (e.g. `Output{stdout}`, `Log{logger}`) need concrete use cases before design.
-

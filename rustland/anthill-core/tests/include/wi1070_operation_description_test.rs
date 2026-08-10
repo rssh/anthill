@@ -49,7 +49,7 @@ fn named_arg(kb: &KnowledgeBase, term_id: TermId, field: &str) -> Option<TermId>
 /// Reading BACK through the fact's own `target` field is the point: the stdlib
 /// contributes plenty of `DescriptionInfo` facts, so a global count would pass while
 /// naming nothing, and asserting "the program loads" would pass with the text dropped.
-fn descriptions_of(kb: &KnowledgeBase, target_qname: &str) -> Vec<(i64, String)> {
+pub(crate) fn descriptions_of(kb: &KnowledgeBase, target_qname: &str) -> Vec<(i64, String)> {
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let mut out: Vec<(i64, String)> = Vec::new();
     for fid in kb.rules_by_functor(desc_sym) {

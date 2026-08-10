@@ -210,6 +210,9 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
     let items = std::mem::take(&mut pf.items);
     pf.items.push(Item::Namespace(Namespace {
         name,
+        // Synthetic ownership wrapper, not a source declaration: it has no written
+        // description blocks of its own.
+        descriptions: Vec::new(),
         imports: Vec::new(),
         items,
         span: Span::default(),

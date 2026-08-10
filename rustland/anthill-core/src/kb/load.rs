@@ -3925,8 +3925,15 @@ impl ScopePass for DefinePass<'_> {
                     scan_rule(kb, rule, parse_sym, scope, prefix);
                 }
             }
-            Item::Constraint(_) => {
-                // Constraints don't define named symbols
+            Item::Constraint(c) => {
+                // WI-1072: a labeled constraint is a named citation target, just as
+                // a labeled rule is. Define it in pass 1 so inline descriptions and
+                // every later reference resolve to the same qualified symbol.
+                if let Some(label) = &c.label {
+                    let name = join_segments(parse_sym, &label.segments);
+                    let qualified = make_qualified(prefix, &name);
+                    kb.symbols.define(&name, &qualified, SymbolKind::Constraint, scope);
+                }
             }
             // Stage 0 items, facts, requires — handled elsewhere or not names
             _ => {}
@@ -15526,6 +15533,11 @@ impl<'a> Loader<'a> {
         let ns_domain = ns_scope.owner();
         let ns_term = self.kb.make_name_term_from_sym(ns_domain);
 
+        // A namespace is its own description TARGET, but the metadata fact belongs
+        // to the domain that contains the declaration, before descent changes it.
+        let parent_domain = self.current_domain();
+        self.emit_own_descriptions(ns_domain, &n.descriptions, parent_domain);
+
         // Assert namespace as a fact — a namespace is its own domain.
         self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
 
@@ -16250,6 +16262,7 @@ impl<'a> Loader<'a> {
 
     fn load_entity(&mut self, e: &Entity, domain: Symbol) {
         let functor = self.remap_name(&e.name);
+        self.emit_own_descriptions(functor, &e.descriptions, domain);
 
         // The field TYPES (the carrier-agnostic literal-typing hints) are lowered and
         // registered by the WI-936 declaration pass, before ANY file's terms are
@@ -16892,8 +16905,12 @@ impl<'a> Loader<'a> {
         }
 
         let prev_owner = self.current_owner;
-        if let Some(ref label) = r.label {
-            self.current_owner = Some(self.remap_name(label));
+        let label_sym = r.label.as_ref().map(|label| self.remap_name(label));
+        if let Some(label) = label_sym {
+            self.current_owner = Some(label);
+            // One description belongs to one citation handle, even when a multi-head
+            // rule desugars to several RuleIds below.
+            self.emit_own_descriptions(label, &r.descriptions, domain);
         }
 
         // WI-618: rule type-vars (`[t]` introducers) live in rule_tvar_bounds,
@@ -17001,8 +17018,6 @@ impl<'a> Loader<'a> {
         // into N rules sharing label X, each with head H_i and the
         // same body B — `using X` fans out to all of them via
         // `rules_by_label[X]`.
-        let label_sym = r.label.as_ref().map(|l| self.remap_name(l));
-
         let kb_heads: Vec<TermId> = match (&r.label, has_bottom, positive_heads.len()) {
             // Denial: head = ⊥. (Labeled cites via label index;
             // unlabeled denial is citable only by pattern.)
@@ -17871,6 +17886,9 @@ impl<'a> Loader<'a> {
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: Symbol) {
+        if let Some(label) = c.label.as_ref().map(|n| self.remap_name(n)) {
+            self.emit_own_descriptions(label, &c.descriptions, domain);
+        }
         let label = c.label.as_ref().map(|n| join_segments(&self.parsed.symbols, &n.segments));
 
         // WI-525 (proposal 049, Part B): a `constraint` body is a contract — it
@@ -19259,10 +19277,10 @@ impl<'a> Loader<'a> {
         self.convert_term(parse_id)
     }
 
-    /// WI-1070: emit a declaration's OWN `{< … >}` blocks (§4.1) against the symbol the
-    /// declaration defines. For `operation` and `const` — declarations whose target is
-    /// a SYMBOL, not a sort term — this is the peer of the `for desc_text in
-    /// &s.descriptions` loops `load_abstract_sort` / `enter_sort_with_body` run.
+    /// WI-1070/WI-1072: emit a declaration's OWN `{< … >}` blocks (§4.1) against
+    /// the symbol it defines. Operations, consts, namespaces, entities, labeled
+    /// rules, and labeled constraints use this path; sort declarations keep their
+    /// existing term-oriented loops.
     ///
     /// The target term is `make_name_term_from_sym`, which is the very shape
     /// [`Self::name_to_sort_term`] builds for a standalone `describe NAME`. That

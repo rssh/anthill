@@ -1129,3 +1129,6 @@ mod wi1044_query_spec_op_dispatch_test;
 
 #[path = "include/wi1070_operation_description_test.rs"]
 mod wi1070_operation_description_test;
+
+#[path = "include/wi1072_declaration_description_test.rs"]
+mod wi1072_declaration_description_test;
