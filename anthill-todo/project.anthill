@@ -1,7 +1,26 @@
 -- Project configuration
+--
+-- TWO IMPLEMENTATIONS, TWO BUILDS, and the domain already has the shape for it:
+-- `Project.language` / `Project.build` are `Option[T = String]` — ONE each — because
+-- the multi-language carrier is `Module`, whose `language` is required and whose
+-- `build` is its own. So the project-level pair names the PRIMARY (rustland is the
+-- reference implementation) and the modules state the rest.
+--
+-- `tools` lists both test gates. A work item's `acceptance` names the ONE that gates
+-- it: `cargo-test` for rustland work, `scaland-sbt-test` for scaland's. `anthill-todo
+-- add` defaults to a single `cargo-test` when `--acceptance` is not passed (see
+-- `resolve_acceptance` in the bundled main.anthill) — it does NOT read this list — so
+-- a scaland ticket must pass `--acceptance scaland-sbt-test` explicitly. Twenty-five
+-- were filed without it and corrected in bulk; the wrong entry is not loud, because a
+-- scala-gen change cannot fail the Rust suite, so the recorded gate passes while
+-- measuring nothing the ticket is about.
 
 fact Project(
   name: "anthill",
   language: "rust",
   build: "cargo",
-  tools: ["cargo-test"])
+  modules: ["rustland", "scaland"],
+  tools: ["cargo-test", "scaland-sbt-test"])
+
+fact Module(name: "rustland", root: "rustland", language: "rust", build: "cargo")
+fact Module(name: "scaland", root: "scaland", language: "scala", build: "sbt")
