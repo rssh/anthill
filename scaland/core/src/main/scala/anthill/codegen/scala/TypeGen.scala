@@ -228,7 +228,7 @@ object TypeGen:
   // name a project declares in a sibling FILE with no import: `fileTypes` is per-file
   // and the caller's auto-import set is the prelude, so a project's own `Pair`
   // reaches the prelude's. Closing that means resolving a project's whole file set
-  // the way `ScalaTypes.resolve` resolves the prelude's, which is a caller-side
-  // capability (WI-1020's closure) rather than a `place` link.
+  // the way `ScalaTypes.resolve` resolves the prelude's — the same package-keyed
+  // table `FileTypes` needs one scope down, which is why WI-1067 owns both.
 
 end TypeGen

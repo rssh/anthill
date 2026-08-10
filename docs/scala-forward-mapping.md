@@ -207,7 +207,8 @@ for a bad fact. And a project declaring its **own** `Pair` in a sibling file sti
 reaches the prelude table: an explicit `import` of another package shadows it (and is
 then refused, since the emitter writes no Scala `import`), but a sibling declaration
 with no import is invisible from one file's parse IR. Closing that needs a resolved
-project closure, not a lookup-order change.
+project closure, not a lookup-order change — WI-1067, which also owns the same defect
+one scope down, where a file's *own* table is flat while the file may span packages.
 
 `rust_std`'s hardcoded `map_primitive_type` (`rustland/anthill-core/src/codegen/rust.rs`)
 is **explicitly out of scope here**: it is a different backend in a different

@@ -116,7 +116,8 @@ object Bootstrap:
     * contain neither. Answering would mean emitting every file to build the table — and
     * the closure compile catches it one step later, as a missing type rather than a
     * wrong one. The entry is a promise about a file that must be in the emission set,
-    * not a claim that it already is.
+    * not a claim that it already is — and WI-1067 owns making that either true or
+    * stated where something enforces it.
     */
   def emittedTypes(
     files: Iterable[ParsedFile], autoImportPackage: String = "anthill.prelude"
@@ -173,7 +174,7 @@ object Bootstrap:
       * not resolve. `EmittedType.pkg` is what would close it — by filtering to the
       * mentioning declaration's package and the packages ENCLOSING it, since Scala
       * packages nest lexically — and that is a rule with its own case to make, not a
-      * line to add here. */
+      * line to add here. WI-1067. */
     def kindsByLeaf: Map[String, ParamKinds] = types.view.mapValues(_.kinds).toMap
 
   /** One file's own names, plus the project-wide tables every file is rendered against. */
@@ -223,7 +224,7 @@ object Bootstrap:
     * namespace (`namespace anthill.prelude { sort anthill.prelude.Concat … }`) is
     * emitted into `anthill.prelude.anthill.prelude`. No corpus file writes it, and the
     * auto-import filter keeps such an entry out of the cross-file table — but it is a
-    * fault in `splitPath`, not something this walk corrects.
+    * fault in `splitPath`, not something this walk corrects. WI-1067.
     *
     * COUPLED TO THE EMIT WALK BY HAND: the three arms here are the same three
     * `generate`/`emitNamespace` dispatch on, and the `case _` means `-Wconf:id=E029`
@@ -243,7 +244,7 @@ object Bootstrap:
         // here they are two legitimately different packages — but the flat table
         // cannot hold both, so `place` gets an arbitrary winner and checks a use site
         // against the wrong arity. The fix is the same one `kindsByLeaf` names: key
-        // the file table by package. No corpus file writes two namespaces.
+        // the file table by package (WI-1067). No corpus file writes two namespaces.
         val inner = fileTypes(sym, ns.items, namespacePath(sym, ns, packagePath).childPath)
         FileTypes(acc.types ++ inner.types,
           acc.declaredNotEmitted ++ inner.declaredNotEmitted)
