@@ -36,7 +36,7 @@ UE and no-STL profiles will define their own mappings for containers, strings, a
 
 | Anthill | C++ (cpp17-stl profile) |
 |---|---|
-| `namespace N` | `namespace n {}` (lowercase, dots → nested) |
+| `namespace N` | `namespace N {}` (case preserved, `-` → `_`, dots → nested) |
 | Sort with abstract sub-sort + ops | `template<typename T...> struct SortName { static-method per op; };` (traits-class idiom) |
 | Sort with no abstract sub-sort, ops only | non-template `struct SortName { static-method per op; };` |
 | Sort with constructors | `struct C1 { ... }; struct C2 { ... }; using S = std::variant<C1, C2>;` |
@@ -69,7 +69,25 @@ namespace anthill.prelude    →   namespace anthill::prelude { ... }
 namespace banking            →   namespace banking { ... }
 ```
 
-Names are lowercased; dots become C++17 nested-namespace syntax. Default-visible items have no extra decoration (everything in a namespace is accessible by qualified name); `internal` items go inside an unnamed `namespace { ... }` block.
+Case is preserved; dots become C++17 nested-namespace syntax. Every namespace segment crosses the identifier boundary described below, so `test.hy-phen` becomes `test::hy_phen`, not the invalid `test::hy-phen`. Default-visible items have no extra decoration (everything in a namespace is accessible by qualified name); `internal` items go inside an unnamed `namespace { ... }` block.
+
+#### Identifier boundary and generated filenames
+
+Anthill identifiers admit `-`; C++ identifiers do not. The `cpp17-stl` mapping therefore replaces every `-` with `_` and otherwise preserves the written spelling and case:
+
+```text
+my-widget  → my_widget
+zero-val   → zero_val
+Widget     → Widget
+```
+
+This normalization applies at every C++ identifier producer and its matching reference: namespace segments, sorts, entities and sum constructors, fields, operations, parameters, constants, template parameters, and expression-local binders. A kind-specific host convention composes after normalization. In particular, a carrier dispatch under the `snake_case` → `camelCase` convention maps Anthill `get-value` through `get_value` to host method `getValue`; the emitted Anthill traits method itself remains `get_value`.
+
+Header filenames use the same per-segment rule, then join a dotted namespace with `_`: `test.hy-phen` → `test_hy_phen.hpp`. The CLI's short namespace header follows the same rule (`hy-phen` → `hy_phen.hpp`).
+
+Normalization is many-to-one. If two distinct Anthill spellings in one emitted C++ scope normalize to the same identifier, such as `foo-bar` and `foo_bar`, cpp-gen refuses emission with a collision diagnostic naming both spellings. It never emits two declarations and leaves a C++ compiler to discover that information was lost.
+
+Realization data is not source code and is not rewritten. Anthill-side lookup keys such as `Implementation.target`, `CarrierBinding.sort_name`, `TypeMapping.anthill_type`, and `namespace_map` keys retain their exact Anthill spelling; cpp-gen resolves those before emission. Host-side values such as `host_type`, `host_fn`, artifact paths, and `namespace_map` host values are verbatim C++/path strings. Normalizing either side of those lookups independently would turn a working binding into a silent miss.
 
 ### 3.2 Sort with operations → traits-class template
 

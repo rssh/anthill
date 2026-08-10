@@ -1045,7 +1045,7 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
     })?;
 
     let short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
-    let header_filename = format!("{short}.hpp");
+    let header_filename = format!("{}.hpp", anthill_cpp_gen::cpp_identifier(short));
 
     if args.dry_run {
         println!(
@@ -1143,7 +1143,9 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     } else {
         declared
             .iter()
-            .map(|t| t.source.rsplit('.').next().unwrap_or(&t.source).to_string())
+            .map(|t| {
+                anthill_cpp_gen::cpp_identifier(t.source.rsplit('.').next().unwrap_or(&t.source))
+            })
             .collect()
     };
     if controllers.is_empty() {
@@ -1195,7 +1197,7 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     };
 
     let ns_short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
-    let header_filename = format!("{ns_short}.hpp");
+    let header_filename = format!("{}.hpp", anthill_cpp_gen::cpp_identifier(ns_short));
 
     for ctor_name in &controllers {
         let dir = args.output_dir.join("controllers").join(ctor_name);

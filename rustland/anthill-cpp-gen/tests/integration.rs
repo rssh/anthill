@@ -41,6 +41,7 @@ mod traits_struct_test;
 mod type_mapping_query_test;
 mod unsupported_test;
 mod variant_test;
+mod wi1071_cpp_identifier_test;
 mod wi533_const_test;
 mod wi536_const_ref_test;
 mod wi760_realization_rule_test;

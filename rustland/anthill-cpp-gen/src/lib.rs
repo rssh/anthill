@@ -996,12 +996,63 @@ fn short_name_of(qn: &str) -> &str {
     qn.rsplit('.').next().unwrap_or(qn)
 }
 
+/// Map one Anthill identifier to its C++ spelling.
+///
+/// Anthill admits `-` in identifiers while C++ does not. The C++ profile keeps
+/// source spelling otherwise, so normalization is deliberately the single
+/// substitution `-` -> `_`; kind-specific transforms such as a carrier's
+/// snake_case -> camelCase convention run after this boundary transform.
+pub fn cpp_identifier(source: &str) -> String {
+    source.replace('-', "_")
+}
+
+/// Render a dotted Anthill namespace as a C++17 nested namespace, normalizing
+/// each segment at the same boundary as every other emitted identifier.
+fn cpp_namespace(namespace: &str) -> String {
+    namespace
+        .split('.')
+        .map(cpp_identifier)
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Reject the information loss introduced by `-` -> `_` inside one C++ name
+/// scope. Repeated occurrences of the same Anthill spelling are harmless (for
+/// example an overloaded operation name); two distinct spellings are not.
+fn refuse_cpp_identifier_collisions<'a>(
+    scope: &str,
+    source_names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), CppCodegenError> {
+    let mut by_cpp: HashMap<String, String> = HashMap::new();
+    for source in source_names {
+        let cpp = cpp_identifier(source);
+        if let Some(previous) = by_cpp.get(&cpp) {
+            if previous != source {
+                return Err(CppCodegenError {
+                    message: format!(
+                        "C++ identifier collision in {scope}: Anthill identifiers \
+                         '{previous}' and '{source}' both normalize to '{cpp}'"
+                    ),
+                });
+            }
+        } else {
+            by_cpp.insert(cpp, source.to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Filename convention for a generated namespace's header: dotted
 /// name with `.` → `_`. Mirrors what `anthill codegen cpp-project`
 /// writes (`anthill.geometry` → `anthill_geometry.hpp`); both
 /// producers and consumers of cross-namespace references must agree.
 pub fn header_filename_for_namespace(namespace: &str) -> String {
-    format!("{}.hpp", namespace.replace('.', "_"))
+    let stem = namespace
+        .split('.')
+        .map(cpp_identifier)
+        .collect::<Vec<_>>()
+        .join("_");
+    format!("{stem}.hpp")
 }
 
 /// Register an `#include "<other_namespace>.hpp"` when emitting a
@@ -1034,15 +1085,16 @@ fn register_cross_namespace_include(ctx: &CodegenContext, entity_qn: &str) {
 /// namespace, or no namespace context (direct `emit_traits_struct`
 /// callers), fall back to the short name.
 fn qualify_cross_namespace(ctx: &CodegenContext, entity_qn: &str, short: &str) -> String {
+    let short = cpp_identifier(short);
     let current_ns = ctx.emitting_namespace.borrow();
     let Some(current) = current_ns.as_deref() else {
-        return short.to_string();
+        return short;
     };
     let entity_ns = parent_namespace_of(entity_qn);
     match entity_ns {
-        Some(ens) if ens == current => short.to_string(),
-        Some(_) => format!("::{}", entity_qn.replace('.', "::")),
-        None => short.to_string(),
+        Some(ens) if ens == current => short,
+        Some(_) => format!("::{}", cpp_namespace(entity_qn)),
+        None => short,
     }
 }
 
@@ -1148,9 +1200,10 @@ pub fn emit_entity_struct_by_symbol(
     // is byte-for-byte what it always was.
     let (_, methods_text) = traits_struct_members(kb, ctx, functor)?;
     let qualified = kb.qualified_name_of(functor).to_string();
+    let name = cpp_identifier(short_name_of(&qualified));
     Ok(TEMPLATE_ENTITY_STRUCT
         .replace("{template}", &template)
-        .replace("{name}", short_name_of(&qualified))
+        .replace("{name}", &name)
         .replace("{fields}", &format!("{fields_text}{methods_text}")))
 }
 
@@ -1184,6 +1237,11 @@ fn entity_struct_members(
             _ => None,
         })
         .collect();
+    let field_names: Vec<&str> = fields
+        .iter()
+        .map(|(sym, _)| kb.local_name_of(*sym))
+        .collect();
+    refuse_cpp_identifier_collisions(&format!("entity '{qualified}'"), field_names)?;
 
     // Templates: an entity declared inside `sort S { sort T = ?; … }`
     // takes its parent sort's type parameters. We emit the template
@@ -1208,7 +1266,7 @@ fn entity_struct_members(
     // such functors in the loaded stdlib answer `Some`).
     let parent_sym = kb.sort_of_constructor(functor);
     let (template, type_params) = match parent_sym {
-        Some(p) => template_prefix_for_sort(kb, p),
+        Some(p) => template_prefix_for_sort(kb, p)?,
         None => (String::new(), std::collections::HashMap::new()),
     };
     let _guard = ctx.push_type_params(type_params);
@@ -1216,11 +1274,11 @@ fn entity_struct_members(
     let mut fields_text = String::new();
     for (field_sym, type_tid) in &fields {
         let cpp_type = lower_type(kb, ctx, *type_tid)?;
-        let field_name = kb.local_name_of(*field_sym);
+        let field_name = cpp_identifier(kb.local_name_of(*field_sym));
         fields_text.push_str(
             &TEMPLATE_FIELD
                 .replace("{ty}", &cpp_type)
-                .replace("{name}", field_name),
+                .replace("{name}", &field_name),
         );
     }
 
@@ -1241,6 +1299,8 @@ fn entity_struct_members(
 /// One term-level constant (proposal 039 / WI-084), lowered for C++ emission
 /// as a `constexpr`. WI-533.
 struct ConstSig {
+    /// Source spelling retained for many-to-one collision diagnostics.
+    source_name: String,
     name: String,
     cpp_type: String,
     cpp_value: String,
@@ -1268,9 +1328,11 @@ fn consts_in_scope(
 
     let mut out = Vec::with_capacity(syms.len());
     for sym in syms {
-        let name = short_name_of(kb.qualified_name_of(sym)).to_string();
+        let source_name = short_name_of(kb.qualified_name_of(sym)).to_string();
+        let name = cpp_identifier(&source_name);
         let (cpp_type, cpp_value) = lower_one_const(kb, ctx, sym)?;
         out.push(ConstSig {
+            source_name,
             name,
             cpp_type,
             cpp_value,
@@ -1383,9 +1445,11 @@ fn carrier_bound_const_companions(
 
     let mut out = Vec::with_capacity(syms.len());
     for sym in syms {
-        let name = companion_name(kb, sym);
+        let source_name = companion_source_name(kb, sym);
+        let name = cpp_identifier(&source_name);
         let (cpp_type, cpp_value) = lower_one_const(kb, ctx, sym)?;
         out.push(ConstSig {
+            source_name,
             name,
             cpp_type,
             cpp_value,
@@ -1398,11 +1462,15 @@ fn carrier_bound_const_companions(
 /// `Sort_NAME`. Single source of truth shared by the declaration site
 /// (`carrier_bound_const_companions`) and the reference site (`const_ref_cpp`),
 /// so the two cannot drift out of sync.
-fn companion_name(kb: &KnowledgeBase, const_sym: Symbol) -> String {
+fn companion_source_name(kb: &KnowledgeBase, const_sym: Symbol) -> String {
     let qn = kb.qualified_name_of(const_sym);
     let parent = parent_qualified_name(kb, const_sym);
     let sort_short = parent.as_deref().map(short_name_of).unwrap_or("");
     format!("{sort_short}_{}", short_name_of(qn))
+}
+
+fn companion_name(kb: &KnowledgeBase, const_sym: Symbol) -> String {
+    cpp_identifier(&companion_source_name(kb, const_sym))
 }
 
 /// WI-536: C++ reference expression for a term-level const — a NAMED constant,
@@ -1413,9 +1481,9 @@ fn companion_name(kb: &KnowledgeBase, const_sym: Symbol) -> String {
 /// namespace's header.
 fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> String {
     let qn = kb.qualified_name_of(sym).to_string();
-    let name = short_name_of(&qn);
+    let name = cpp_identifier(short_name_of(&qn));
     let Some(parent) = parent_qualified_name(kb, sym) else {
-        return name.to_string();
+        return name;
     };
     let parent_is_sort = matches!(
         kb.try_resolve_symbol(&parent).and_then(|s| kb.kind_of(s)),
@@ -1428,11 +1496,14 @@ fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> S
         if ctx.carriers.lookup(&parent).is_some() {
             (sort_ns, companion_name(kb, sym)) // namespace companion
         } else {
-            (sort_ns, format!("{}::{name}", short_name_of(&parent))) // emitted struct member
+            (
+                sort_ns,
+                format!("{}::{name}", cpp_identifier(short_name_of(&parent))),
+            ) // emitted struct member
         }
     } else {
         // Namespace-level const: the parent qualified name IS the namespace.
-        (parent, name.to_string())
+        (parent, name)
     };
 
     let current = ctx.emitting_namespace.borrow().clone();
@@ -1444,7 +1515,7 @@ fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> S
                 ctx.requested_includes
                     .borrow_mut()
                     .insert(format!("#include \"{header}\""));
-                format!("::{}::{}", decl_ns.replace('.', "::"), in_ns)
+                format!("::{}::{}", cpp_namespace(&decl_ns), in_ns)
             } else {
                 format!("::{in_ns}")
             }
@@ -1572,9 +1643,10 @@ pub fn emit_traits_struct_by_symbol(
     if kb.entity_field_types(sort_sym).is_some() {
         return emit_entity_struct_by_symbol(kb, ctx, sort_sym);
     }
+    let name = cpp_identifier(short_name_of(&qualified));
     Ok(TEMPLATE_TRAITS_STRUCT
         .replace("{template}", &template)
-        .replace("{name}", short_name_of(&qualified))
+        .replace("{name}", &name)
         .replace("{methods}", &methods_text))
 }
 
@@ -1596,7 +1668,7 @@ fn traits_struct_members(
     // the duration of operation signature lowering — `lower_type`
     // consults the stack to render `?T` references to the C++
     // template parameter name.
-    let (template, type_params) = template_prefix_for_sort(kb, sort_sym);
+    let (template, type_params) = template_prefix_for_sort(kb, sort_sym)?;
     // The sort's chosen C++ param names seed each op's canonicaliser so a
     // per-operation type param can't collide with a class template param.
     let sort_param_cpp: std::collections::HashSet<String> =
@@ -1605,6 +1677,12 @@ fn traits_struct_members(
 
     let ops = operations_in_sort(kb, ctx, sort_sym, &sort_param_cpp)?;
     let consts = consts_in_scope(kb, ctx, &qualified)?;
+    let mut member_names: Vec<&str> = ops.iter().map(|op| op.source_name.as_str()).collect();
+    member_names.extend(consts.iter().map(|c| c.source_name.as_str()));
+    if let Some(fields) = kb.entity_field_types(sort_sym) {
+        member_names.extend(fields.iter().map(|(sym, _)| kb.local_name_of(*sym)));
+    }
+    refuse_cpp_identifier_collisions(&format!("sort '{qualified}'"), member_names)?;
     let mut methods_text = String::new();
     // Term-level constants (WI-533) first: they read as the class's named
     // sentinels and match source order where the const precedes the operations
@@ -1646,6 +1724,8 @@ fn traits_struct_members(
 /// `body` is `Some` when we can synthesise a definition that calls
 /// into the carrier; `None` otherwise (declaration-only).
 struct OperationSig {
+    /// Anthill spelling, retained for collision checks and diagnostics.
+    source_name: String,
     name: String,
     params: Vec<ParamInfo>,
     return_type_cpp: String,
@@ -1657,6 +1737,8 @@ struct OperationSig {
 }
 
 struct ParamInfo {
+    /// Anthill spelling used by expression-body symbol lookup.
+    source_name: String,
     name: String,
     cpp_type: String,
     /// The param's anthill type term, kept so body synthesis can look
@@ -1865,6 +1947,11 @@ fn synthesise_body_for(
         // WI-891: clear before, read after — see `CodegenContext::capability_gap`
         // for why that ordering is what makes the flag exact.
         ctx.capability_gap.set(false);
+        let frame = params
+            .iter()
+            .map(|param| (param.source_name.clone(), param.name.clone()))
+            .collect();
+        let _param_guard = ctx.push_value_bindings(frame);
         match lower_node(kb, ctx, &body_node) {
             Ok(expr) => {
                 return Ok(Some(if return_type == "void" {
@@ -2054,7 +2141,7 @@ fn operations_in_sort(
         let mut _op_guard = None;
         if !op_type_params.is_empty() {
             let mut op_taken = sort_param_cpp.clone();
-            let (decls, frame) = template_param_decls(kb, op_sym, &op_type_params, &mut op_taken);
+            let (decls, frame) = template_param_decls(kb, op_sym, &op_type_params, &mut op_taken)?;
             // (cpp_name, decl) pairs in declaration order, captured before the
             // frame is moved into the type-param stack.
             op_param_decls = op_type_params
@@ -2099,12 +2186,18 @@ fn operations_in_sort(
                 }
             };
             let cpp_type = lower_type(kb, ctx, p_term)?;
+            let source_name = kb.local_name_of(*p_name_sym).to_string();
             params.push(ParamInfo {
-                name: kb.local_name_of(*p_name_sym).to_string(),
+                name: cpp_identifier(&source_name),
+                source_name,
                 cpp_type,
                 type_term: p_term,
             });
         }
+        refuse_cpp_identifier_collisions(
+            &format!("parameters of operation '{name}'"),
+            params.iter().map(|param| param.source_name.as_str()),
+        )?;
 
         // WI-576 CAPABILITY GATE: the operation's residual required effect row
         // must be a SUBSET of the target profile's supported-effect set. That
@@ -2176,7 +2269,8 @@ fn operations_in_sort(
         let template_prefix =
             member_template_prefix(&op_param_decls, &params, &return_type_cpp, &body);
         out.push(OperationSig {
-            name,
+            name: cpp_identifier(&name),
+            source_name: name,
             params,
             return_type_cpp,
             body,
@@ -2184,6 +2278,10 @@ fn operations_in_sort(
         });
     }
 
+    refuse_cpp_identifier_collisions(
+        &format!("operations of sort '{qualified}'"),
+        out.iter().map(|op| op.source_name.as_str()),
+    )?;
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
@@ -2214,10 +2312,15 @@ pub fn traits_classes_in_namespace(
 ) -> Result<Vec<String>, CppCodegenError> {
     let ctx = CodegenContext::new(kb)?;
     let (_, _, traits) = classify_namespace(kb, &ctx, namespace)?;
-    Ok(traits
+    let source_names: Vec<&str> = traits
         .iter()
-        .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string())
-        .collect())
+        .map(|sym| short_name_of(kb.qualified_name_of(*sym)))
+        .collect();
+    refuse_cpp_identifier_collisions(
+        &format!("traits classes in namespace '{namespace}'"),
+        source_names.iter().copied(),
+    )?;
+    Ok(source_names.into_iter().map(cpp_identifier).collect())
 }
 
 /// One `fact Generated(...)` declaration: an anthill sort the
@@ -2436,6 +2539,33 @@ pub fn emit_namespace_header_in(
         return Ok(None);
     }
 
+    // All of these declarations land directly in the same C++ namespace: sum
+    // constructors are lifted out of their Anthill sort beside its variant
+    // alias, and carrier-bound constants become namespace companions. Refuse
+    // `foo-bar` / `foo_bar` before rendering either declaration.
+    let mut namespace_names: Vec<String> = entities
+        .iter()
+        .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string())
+        .collect();
+    for (sort, constructors) in &sums {
+        namespace_names.push(short_name_of(kb.qualified_name_of(*sort)).to_string());
+        namespace_names.extend(
+            constructors
+                .iter()
+                .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string()),
+        );
+    }
+    namespace_names.extend(
+        traits
+            .iter()
+            .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string()),
+    );
+    namespace_names.extend(const_band.iter().map(|c| c.source_name.clone()));
+    refuse_cpp_identifier_collisions(
+        &format!("namespace '{namespace}'"),
+        namespace_names.iter().map(String::as_str),
+    )?;
+
     // Emit data types (flat entities + sum sorts) first, then traits
     // classes — this guarantees traits-class method declarations
     // referencing entity / sum types compile without forward
@@ -2503,7 +2633,7 @@ pub fn emit_namespace_header_in(
         needs.add_directive(inc);
     }
 
-    let ns_cpp = namespace.replace('.', "::");
+    let ns_cpp = cpp_namespace(namespace);
     Ok(Some(
         TEMPLATE_HEADER
             .replace("{ns_anthill}", namespace)
@@ -2546,6 +2676,14 @@ fn emit_sum_in(
 ) -> Result<String, CppCodegenError> {
     let sort_qualified = kb.qualified_name_of(sort_sym).to_string();
     let sort_short = short_name_of(&sort_qualified);
+    let sort_cpp = cpp_identifier(sort_short);
+    let mut declaration_names = vec![sort_short];
+    declaration_names.extend(
+        ctors
+            .iter()
+            .map(|ctor| short_name_of(kb.qualified_name_of(*ctor))),
+    );
+    refuse_cpp_identifier_collisions(&format!("sum sort '{sort_qualified}'"), declaration_names)?;
 
     // Generic-sort header: `template<typename T>` if the sum sort
     // declares any `sort T = ?` parameters. Each constructor that
@@ -2558,7 +2696,7 @@ fn emit_sum_in(
     // the per-ctor branch below reads them by reference to avoid
     // re-scanning `by_qualified_name` per constructor.
     let param_names = type_params_of(kb, sort_sym);
-    let (template_prefix, mapping) = template_prefix_for_sort(kb, sort_sym);
+    let (template_prefix, mapping) = template_prefix_for_sort(kb, sort_sym)?;
     let cpp_args = if param_names.is_empty() {
         String::new()
     } else {
@@ -2584,10 +2722,11 @@ fn emit_sum_in(
         .iter()
         .map(|c| {
             let short = short_name_of(kb.qualified_name_of(*c)).to_string();
+            let cpp = cpp_identifier(&short);
             if !param_names.is_empty() && constructor_uses_params(kb, *c, &param_names) {
-                format!("{short}<{cpp_args}>")
+                format!("{cpp}<{cpp_args}>")
             } else {
-                short
+                cpp
             }
         })
         .collect::<Vec<_>>()
@@ -2595,7 +2734,7 @@ fn emit_sum_in(
     out.push_str(
         &TEMPLATE_VARIANT_ALIAS
             .replace("{template}", &template_prefix)
-            .replace("{sort_name}", sort_short)
+            .replace("{sort_name}", &sort_cpp)
             .replace("{ctor_list}", &ctor_list),
     );
     Ok(out)
@@ -3078,7 +3217,7 @@ fn lower_node(
         Expr::VarRef { name } => lower_symbol_ref(kb, ctx, *name, true),
         Expr::Apply { functor, pos_args, named_args, .. } => {
             let fn_qn = kb.qualified_name_of(*functor).to_string();
-            let fn_short = short_name_of(&fn_qn).to_string();
+            let fn_short = cpp_identifier(short_name_of(&fn_qn));
 
             // field_access(object, field) is the desugared form of
             // `obj.field` — emit dot syntax. The second arg is a
@@ -3199,7 +3338,12 @@ fn lower_node(
         Expr::Let { .. } => lower_let_chain_node(kb, ctx, occ),
         Expr::Lambda { param, body } => {
             // WI-318: param is now a Pattern-kind occurrence.
-            let pname = pattern_var_name_occ(kb, param)?;
+            let source_name = pattern_var_name_occ(kb, param)?;
+            let pname = cpp_identifier(&source_name);
+            let _guard = ctx.push_value_bindings(std::collections::HashMap::from([(
+                source_name,
+                pname.clone(),
+            )]));
             let body_s = lower_node(kb, ctx, body)?;
             Ok(format!("[=](auto {pname}) {{ return {body_s}; }}"))
         }
@@ -3329,10 +3473,12 @@ fn lower_let_chain_node(
 ) -> Result<String, CppCodegenError> {
     use anthill_core::kb::node_occurrence::{Expr, NodeKind};
     enum Slot {
-        Bind(String, String),
+        Bind { cpp_name: String, value: String },
         Discard(String),
     }
     let mut slots: Vec<Slot> = Vec::new();
+    let mut source_names = Vec::new();
+    let mut binding_guards = Vec::new();
     let mut current = root.clone();
     let body_node = loop {
         let next_body = match &current.kind {
@@ -3350,10 +3496,18 @@ fn lower_let_chain_node(
                 use anthill_core::kb::node_occurrence::Pattern;
                 let is_wildcard = matches!(pattern.as_pattern(), Some(Pattern::Wildcard));
                 if !is_wildcard {
-                    let bind_name = pattern_var_name_occ(kb, pattern)?;
-                    check_recursive_lambda_node(kb, ctx, value, &bind_name)?;
+                    let source_name = pattern_var_name_occ(kb, pattern)?;
+                    check_recursive_lambda_node(kb, ctx, value, &source_name)?;
                     let val_s = lower_node(kb, ctx, value)?;
-                    slots.push(Slot::Bind(bind_name, val_s));
+                    let cpp_name = cpp_identifier(&source_name);
+                    source_names.push(source_name.clone());
+                    slots.push(Slot::Bind {
+                        cpp_name: cpp_name.clone(),
+                        value: val_s,
+                    });
+                    binding_guards.push(ctx.push_value_bindings(std::collections::HashMap::from(
+                        [(source_name, cpp_name)],
+                    )));
                 } else {
                     let val_s = lower_node(kb, ctx, value)?;
                     slots.push(Slot::Discard(val_s));
@@ -3364,12 +3518,16 @@ fn lower_let_chain_node(
         };
         current = next_body;
     };
+    refuse_cpp_identifier_collisions(
+        "one flattened let expression",
+        source_names.iter().map(String::as_str),
+    )?;
     let body_s = lower_node(kb, ctx, &body_node)?;
     let mut out = String::from("[&]() { ");
     for slot in &slots {
         match slot {
-            Slot::Bind(name, val) => {
-                out.push_str(&format!("auto {name} = {val}; "));
+            Slot::Bind { cpp_name, value } => {
+                out.push_str(&format!("auto {cpp_name} = {value}; "));
             }
             Slot::Discard(val) => {
                 out.push_str(&format!("{val}; "));
@@ -3399,7 +3557,7 @@ fn field_name_from_node(
             Expr::Const(Literal::String(s)) => return Ok(s.clone()),
             Expr::VarRef { name } | Expr::Ref(name) | Expr::Ident(name) => {
                 let qn = kb.qualified_name_of(*name);
-                return Ok(short_name_of(qn).to_string());
+                return Ok(cpp_identifier(short_name_of(qn)));
             }
             _ => {}
         }
@@ -3652,8 +3810,8 @@ fn canonicalise_param_name(
     source_name: &str,
     taken: &mut std::collections::HashSet<String>,
 ) -> String {
-    let base = source_name.trim_start_matches('?');
-    let needs_suffix = CPP_KEYWORDS.contains(&base) || taken.contains(base);
+    let base = cpp_identifier(source_name.trim_start_matches('?'));
+    let needs_suffix = CPP_KEYWORDS.contains(&base.as_str()) || taken.contains(&base);
     let chosen = if needs_suffix {
         let mut n = 0;
         loop {
@@ -3664,7 +3822,7 @@ fn canonicalise_param_name(
             n += 1;
         }
     } else {
-        base.to_string()
+        base
     };
     taken.insert(chosen.clone());
     chosen
@@ -3683,10 +3841,17 @@ fn template_param_decls(
     owner_sym: Symbol,
     params: &[String],
     taken: &mut std::collections::HashSet<String>,
-) -> (
-    Vec<String>,
-    std::collections::HashMap<String, TypeParamBinding>,
-) {
+) -> Result<
+    (
+        Vec<String>,
+        std::collections::HashMap<String, TypeParamBinding>,
+    ),
+    CppCodegenError,
+> {
+    refuse_cpp_identifier_collisions(
+        &format!("type parameters of '{}'", kb.qualified_name_of(owner_sym)),
+        params.iter().map(|p| p.trim_start_matches('?')),
+    )?;
     let mut mapping = std::collections::HashMap::new();
     let mut decls = Vec::with_capacity(params.len());
     for p in params {
@@ -3707,7 +3872,7 @@ fn template_param_decls(
         mapping.insert(p.clone(), TypeParamBinding { cpp, higher_kinded });
         decls.push(decl);
     }
-    (decls, mapping)
+    Ok((decls, mapping))
 }
 
 /// Build the `(template prefix, name → binding)` pair for a sort.
@@ -3715,15 +3880,15 @@ fn template_param_decls(
 fn template_prefix_for_sort(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
-) -> (String, std::collections::HashMap<String, TypeParamBinding>) {
+) -> Result<(String, std::collections::HashMap<String, TypeParamBinding>), CppCodegenError> {
     let params = type_params_of(kb, sort_sym);
     if params.is_empty() {
-        return (String::new(), std::collections::HashMap::new());
+        return Ok((String::new(), std::collections::HashMap::new()));
     }
     let mut taken = std::collections::HashSet::new();
-    let (decls, mapping) = template_param_decls(kb, sort_sym, &params, &mut taken);
+    let (decls, mapping) = template_param_decls(kb, sort_sym, &params, &mut taken)?;
     let prefix = format!("template<{}>\n", decls.join(", "));
-    (prefix, mapping)
+    Ok((prefix, mapping))
 }
 
 /// Build an operation's `    template<…>\n` member-template prefix from its
@@ -3938,7 +4103,7 @@ fn lower_symbol_ref(
     if let Some(err) = unlowerable_operation(kb, ctx, sym) {
         return Err(err);
     }
-    Ok(short.to_string())
+    Ok(cpp_identifier(short))
 }
 
 /// WI-886 — lower a BARE reference to a mapped operation: `pi`, `tau`,
@@ -4266,9 +4431,13 @@ fn lower_match_branches_node(
         // Bindings frame: `?w` in the body refers to the local
         // `auto w` introduced by the IIFE, not to the access
         // expression — the latter could re-trigger side effects.
+        refuse_cpp_identifier_collisions(
+            "one match pattern",
+            info.decls.iter().map(|decl| decl.source_name.as_str()),
+        )?;
         let mut frame: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        for (name, _access) in &info.decls {
-            frame.insert(name.clone(), name.clone());
+        for decl in &info.decls {
+            frame.insert(decl.source_name.clone(), decl.cpp_name.clone());
         }
         let _guard = ctx.push_value_bindings(frame);
         let body_s = lower_node(kb, ctx, &branch.body)?;
@@ -4276,8 +4445,8 @@ fn lower_match_branches_node(
             body_s
         } else {
             let mut decls = String::new();
-            for (name, access) in &info.decls {
-                decls.push_str(&format!("auto {name} = {access}; "));
+            for decl in &info.decls {
+                decls.push_str(&format!("auto {} = {}; ", decl.cpp_name, decl.access));
             }
             format!("[&]() {{ {decls}return {body_s}; }}()")
         };
@@ -4309,7 +4478,13 @@ fn lower_match_branches_node(
 /// the local is used instead of re-evaluating the access.
 struct PatternInfo {
     tag_check: Option<String>,
-    decls: Vec<(String, String)>,
+    decls: Vec<PatternBinding>,
+}
+
+struct PatternBinding {
+    source_name: String,
+    cpp_name: String,
+    access: String,
 }
 
 /// Compile a pattern against `scrutinee` into a tag check + binding map.
@@ -4366,7 +4541,11 @@ fn analyse_pattern_occ(
                 let bind_name = pattern_var_name_occ(kb, &pos_args[0])?;
                 return Ok(PatternInfo {
                     tag_check: Some(format!("{scrutinee}.has_value()")),
-                    decls: vec![(bind_name, format!("{scrutinee}.value()"))],
+                    decls: vec![PatternBinding {
+                        cpp_name: cpp_identifier(&bind_name),
+                        source_name: bind_name,
+                        access: format!("{scrutinee}.value()"),
+                    }],
                 });
             }
             if ctor_qn == "anthill.prelude.Option.none" || ctor_qn == "Option.none" {
@@ -4379,7 +4558,8 @@ fn analyse_pattern_occ(
             // bind into `std::get<Ctor>(s).<field>`. Mirrors the pre-WI-318
             // term-based path's error reporting — fail loudly on unknown
             // entity and arity mismatch rather than emit invalid C++.
-            let tag = format!("std::holds_alternative<{short}>({scrutinee})");
+            let cpp_short = cpp_identifier(short);
+            let tag = format!("std::holds_alternative<{cpp_short}>({scrutinee})");
             let fields = kb
                 .entity_field_types(ctor_sym)
                 .ok_or_else(|| CppCodegenError {
@@ -4394,17 +4574,18 @@ fn analyse_pattern_occ(
                     ),
                 });
             }
-            let mut decls: Vec<(String, String)> = Vec::new();
+            let mut decls: Vec<PatternBinding> = Vec::new();
             for (sub_pat, (field_sym, _)) in pos_args.iter().zip(fields.iter()) {
                 if matches!(sub_pat.as_pattern(), Some(Pattern::Wildcard)) {
                     continue;
                 }
                 let bind_name = pattern_var_name_occ(kb, sub_pat)?;
-                let field_name = kb.local_name_of(*field_sym);
-                decls.push((
-                    bind_name,
-                    format!("std::get<{short}>({scrutinee}).{field_name}"),
-                ));
+                let field_name = cpp_identifier(kb.local_name_of(*field_sym));
+                decls.push(PatternBinding {
+                    cpp_name: cpp_identifier(&bind_name),
+                    source_name: bind_name,
+                    access: format!("std::get<{cpp_short}>({scrutinee}).{field_name}"),
+                });
             }
             Ok(PatternInfo {
                 tag_check: Some(tag),
@@ -4423,7 +4604,10 @@ fn nullary_tag_check(ctor_qn: &str, scrutinee: &str) -> String {
         return format!("!{scrutinee}.has_value()");
     }
     let short = short_name_of(ctor_qn);
-    format!("std::holds_alternative<{short}>({scrutinee})")
+    format!(
+        "std::holds_alternative<{}>({scrutinee})",
+        cpp_identifier(short)
+    )
 }
 
 /// Extract the bound name from a `Pattern.var_pattern(name: Ref(<n>), ...)`.
@@ -5532,6 +5716,10 @@ fn query_include_mappings(
 /// non-compilable C++. Per-operation acronym irregulars (get_gps -> getGPS)
 /// ride a CppName override (WI-087), not this default.
 fn cpp_method_name(kb: &mut KnowledgeBase, source: &str) -> Result<String, CppCodegenError> {
+    // NamingConvention describes casing, not lexical validity. Cross the
+    // Anthill -> C++ identifier boundary first so both identity casing and the
+    // snake_case -> camelCase transform receive `zero_val`, never `zero-val`.
+    let normalized = cpp_identifier(source);
     // WI-833: RESOLVED, not `Refuse` — a bodied `NamingConvention` rule is
     // EVALUATED (its guard honored), so a project can gate the convention on a
     // condition instead of the read refusing it loudly.
@@ -5591,10 +5779,10 @@ fn cpp_method_name(kb: &mut KnowledgeBase, source: &str) -> Result<String, CppCo
         });
     };
     Ok(match (source_case.as_deref(), method_case.as_deref()) {
-        (Some("snake_case"), Some("camelCase")) => snake_to_camel(source),
+        (Some("snake_case"), Some("camelCase")) => snake_to_camel(&normalized),
         // Same source/method spelling: a legitimate no-op (e.g. a profile that
         // keeps snake_case).
-        (Some(s), Some(m)) if s == m => source.to_string(),
+        (Some(s), Some(m)) if s == m => normalized,
         // A declared-but-unimplemented, partial, or malformed casing is a
         // realization-profile misconfiguration (not user input): fail loudly in
         // dev/test per "loud error over silent skip"; identity in release.
@@ -5604,7 +5792,7 @@ fn cpp_method_name(kb: &mut KnowledgeBase, source: &str) -> Result<String, CppCo
                 "cpp NamingConvention declares unsupported/partial casing {s:?} -> {m:?}; \
                  only snake_case -> camelCase (and identity) are implemented"
             );
-            source.to_string()
+            normalized
         }
     })
 }
