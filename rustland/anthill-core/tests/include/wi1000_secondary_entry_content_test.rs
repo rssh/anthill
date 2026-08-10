@@ -648,14 +648,15 @@ end
 /// WHY NOT REFUSED OUTRIGHT, though the fact ban would reach it (it asserts
 /// `DescriptionInfo`): that objection does not single `describe` out, because the
 /// inline `{< … >}` block R3 calls "inert and always allowed" asserts the very same
-/// predicate from a nested sort or an alias in the same entry. And refusing it
-/// outright would cost a real capability rather than nothing — measured, an
-/// operation's own inline description block emits NO `DescriptionInfo` at all
-/// (`parse::ir::Operation` has no field for the one the grammar parses), so a
-/// standalone `describe` is today the only way to document a member, including one
-/// the entry itself declares. That drop is WI-1070; when it closes the verdict here
-/// survives it, being keyed on the TARGET rather than on the absence of an
-/// alternative — but this reason should be re-read at that point.
+/// predicate from a nested sort or an alias in the same entry.
+///
+/// A SECOND reason once stood here and is now FALSE: that refusing `describe` would
+/// cost a real capability, because an operation's own inline block emitted no
+/// `DescriptionInfo` at all and `describe` was therefore the only way to document a
+/// member. WI-1070 closed that drop — an `operation`'s and a `const`'s own block now
+/// emits like a sort's, in both operation spellings — so `describe` is no longer the
+/// only route. The verdict below is UNCHANGED, and surviving the loss of that reason
+/// is the test of it: it keys on the TARGET, not on the absence of an alternative.
 #[test]
 fn a_describe_reaches_only_its_own_entry() {
     let own = fixture(

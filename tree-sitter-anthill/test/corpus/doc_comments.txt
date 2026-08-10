@@ -43,3 +43,69 @@ sort U { }
   (sort_with_body
     description: (description_block)
     name: (name (identifier))))
+
+==================
+WI-1070 Documented Operation Entry
+==================
+sort Math
+  operation {
+    {< doubles it >}
+    double(x: Int) -> Int = x
+    triple(x: Int) -> Int = x
+  }
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (operation_block
+      (operation_entry
+        description: (description_block)
+        name: (name (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type (name (identifier))))
+        return_type: (simple_type (name (identifier)))
+        body: (name (identifier)))
+      (operation_entry
+        name: (name (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type (name (identifier))))
+        return_type: (simple_type (name (identifier)))
+        body: (name (identifier))))))
+
+==================
+WI-1070 Documented Operation Entry Between Entries
+==================
+sort Math
+  operation {
+    double(x: Int) -> Int = x
+    {< triples it >}
+    triple(x: Int) -> Int = x
+  }
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (operation_block
+      (operation_entry
+        name: (name (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type (name (identifier))))
+        return_type: (simple_type (name (identifier)))
+        body: (name (identifier)))
+      (operation_entry
+        description: (description_block)
+        name: (name (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type (name (identifier))))
+        return_type: (simple_type (name (identifier)))
+        body: (name (identifier))))))

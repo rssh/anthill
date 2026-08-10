@@ -138,7 +138,7 @@ operation withdraw(amount: ?T {< monetary type >} {< must support subtraction >}
 
 Description blocks can appear in three positions:
 
-1. **Before a declaration keyword** (`sort`, `operation`, `rule`, `entity`, `fact`, `constraint`, `namespace`) — describes the declaration that follows.
+1. **Before a declaration keyword** (`sort`, `operation`, `const`, `rule`, `entity`, `fact`, `constraint`, `namespace`) — describes the declaration that follows. For an `operation` this holds in BOTH spellings — the standalone `operation NAME(…)` and an entry of an `operation { … }` block — and the description attaches to the entry it precedes, not to the block.
 2. **After `describe Name`** — standalone, can reference any named symbol. Appends to existing descriptions.
 3. **After a variable (`?` or `?name`), closed by trailing `?`** — describes what the variable represents in that rule, constraint, fact, or operation contract. The trailing `?` delimiter disambiguates variable descriptions from declaration descriptions.
 
@@ -714,7 +714,7 @@ The parameter pattern is a bare variable (`x`), a single parenthesized typed bin
 
 ## 5. Kernel Constructs
 
-Four constructs the reasoning engine understands natively.
+Four constructs the reasoning engine understands natively — §5.1–§5.4. The sections after them cover what attaches to those four (effects, operation attributes) and, in §5.9, the one further declaration that is neither a native construct nor sugar.
 
 ### 5.1 Namespace
 
@@ -1406,6 +1406,40 @@ shape as fact/rule metadata) carried as the `meta` field of the operation's
 `meta_has_flag` (flag presence) and `meta_value` (a key's value); an operation
 with no `meta` clause carries an empty `meta()` (reported as "no attributes").
 
+### 5.9 Const (term-level named constant)
+
+A name that **is** a value at every term position — `BROADCAST_CHANNEL` denoting the
+integer `-1` rather than standing for a nullary operation that computes it. Not one of
+the four native constructs, and not sugar either: a `const` does not desugar, it is its
+own declaration with its own loader path. See proposal 039.
+
+```
+Const       ::= DescriptionBlock*
+                  [Visibility] 'const' Name ':' Type ['=' ConstExpr]
+                  ['meta' ':' Meta]
+```
+
+It slots into the same positions as an operation — a namespace body and a sort body —
+and accepts the inline `Visibility` prefix. **Monomorphic and carrier-independent by
+design**: no parameters, no type parameters, and the grammar admits no `effects`
+clause.
+
+**The declared type is mandatory, the body optional.** `: Type` is part of the name's
+contract, not an inference target. A body-less `const` is **host-supplied** — its value
+comes from the host language, bound by the `const_map` clause of a `provides` block,
+which is the const-level peer of `operation_map` (a const is not an operation, so
+`operation_map` refuses it).
+
+**The empty effect row is the purity gate.** Because no `effects` clause can be
+written, a const's anthill body must be pure, which is what makes it referentially
+transparent and safe to memoize. This excludes allocators — `Cell.new` and friends
+carry `Modify[result]` — so `const COUNTER: Cell[Int64] = Cell.new(0)` is a load-time
+error rather than a load-time singleton. Folding is lazy (first value-demand, then
+cached) and bounded by the evaluator's step cap; a host-supplied value waives the fold
+check, the kernel having no body to inspect.
+
+**Description blocks are admitted, identically to operations** — §4.1 position 1.
+
 ## 6. Syntactic Sugar
 
 Readable shorthand that desugars to kernel constructs. The reasoning engine only sees rules and sorts.
@@ -1635,7 +1669,8 @@ Multiple operations or rules can be grouped under a single keyword using block s
 
 ```
 OperationBlock ::= 'operation' Body[OperationEntry*]
-OperationEntry ::= [Visibility] Name '(' [ParamList] ')' '->' Type
+OperationEntry ::= DescriptionBlock*
+                     [Visibility] Name '(' [ParamList] ')' '->' Type
                      ['requires' RuleBody]
                      ['ensures' RuleBody]
                      ['effects' '(' Effect (',' Effect)* ')']
@@ -2944,6 +2979,12 @@ Param       ::= Name ':' Type
 Effect      ::= Name                       -- bare effect (e.g. Error)
               | Name '[' Name ']'         -- effect with target (e.g. Modify[store])
 
+Const       ::= DescriptionBlock*                 -- term-level constant; see §5.9
+                  [Visibility] 'const' Name ':' Type ['=' ConstExpr]
+                  ['meta' ':' Meta]
+              -- type MANDATORY, body OPTIONAL (body-less = host-supplied via const_map)
+              -- no params, no type params, no effects clause
+
 RequiresDecl ::= 'requires' Type                -- sort-level constraint (in sort/namespace body)
 
 -- =================================================================
@@ -2966,7 +3007,8 @@ Entity      ::= DescriptionBlock*
 
 OperationBlock ::= 'operation' Body[OperationEntry*]
               -- desugars to: individual Operation declarations
-OperationEntry ::= [Visibility] Name '(' [ParamList] ')' '->' Type
+OperationEntry ::= DescriptionBlock*
+                     [Visibility] Name '(' [ParamList] ')' '->' Type
                      ['requires' RuleBody]
                      ['ensures' RuleBody]
                      ['effects' '(' Effect (',' Effect)* ')']

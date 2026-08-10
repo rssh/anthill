@@ -555,6 +555,14 @@ pub struct Operation {
     pub ensures: Vec<Vec<TermId>>,
     pub effects: Vec<Effect>,
     pub body: Option<TermId>,
+    /// WI-1070: the operation's OWN `{< … >}` blocks, in source order — the peer of
+    /// [`AbstractSort::descriptions`] / [`SortWithBody::descriptions`], reaching the KB
+    /// as `anthill.reflect.DescriptionInfo` facts from `load_operation`. The grammar
+    /// always accepted the blocks; with no field to hold them the converter dropped
+    /// the text in silence, so the single most documentation-worthy declaration in the
+    /// language was the one that could not carry documentation attached to itself
+    /// (§4.1 makes a description block "preserved as KB facts").
+    pub descriptions: Vec<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
@@ -613,6 +621,11 @@ pub struct Const {
     pub ty: TypeExpr,
     /// The defining expression (`= EXPR`), or `None` for a host-supplied const.
     pub value: Option<TermId>,
+    /// WI-1070: the const's own `{< … >}` blocks — the same hole `Operation` had, and
+    /// closed the same way (`load_const` emits the `DescriptionInfo` facts).
+    /// `const_declaration` was modeled on `operation_declaration` down to the leading
+    /// `description` repeat, so it inherited the drop along with the shape.
+    pub descriptions: Vec<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }

@@ -17304,8 +17304,14 @@ impl<'a> Loader<'a> {
     /// just a typed symbol with an optionally-stored body. The body resolves
     /// against the enclosing scope (a const has no params/result, so — unlike
     /// `load_operation` — it needs no dedicated op scope).
-    fn load_const(&mut self, c: &Const, _domain: Symbol) {
+    fn load_const(&mut self, c: &Const, domain: Symbol) {
         let const_sym = self.remap_name(&c.name);
+
+        // WI-1070: the const's own description blocks (§4.1), emitted against the SAME
+        // target term `load_describe` builds for a standalone `describe NAME` — a
+        // nullary name term on the resolved symbol — so the two spellings land on one
+        // target and `emit_desc_fact`'s per-target counter indexes them as one run.
+        self.emit_own_descriptions(const_sym, &c.descriptions, domain);
 
         // Own type/body occurrences by the const symbol (mirrors load_operation).
         let prev_owner = self.current_owner;
@@ -17339,6 +17345,12 @@ impl<'a> Loader<'a> {
         // `check_duplicate_operation_declarations` can name both lines.
         let decl_site = SourceSpan::from_span(self.source_id, o.span);
         self.kb.record_op_decl_site(functor, decl_site);
+
+        // WI-1070: the operation's own description blocks (§4.1) — see
+        // `emit_own_descriptions`. Emitted here, before the signature conversion that
+        // can push errors, for the same reason the decl site is: the text is the
+        // author's and does not depend on the signature loading.
+        self.emit_own_descriptions(functor, &o.descriptions, domain);
 
         // Set owner for expression occurrences
         let prev_owner = self.current_owner;
@@ -19245,6 +19257,31 @@ impl<'a> Loader<'a> {
             return self.kb.alloc(Term::Const(super::term::Literal::String(s)));
         }
         self.convert_term(parse_id)
+    }
+
+    /// WI-1070: emit a declaration's OWN `{< … >}` blocks (§4.1) against the symbol the
+    /// declaration defines. For `operation` and `const` — declarations whose target is
+    /// a SYMBOL, not a sort term — this is the peer of the `for desc_text in
+    /// &s.descriptions` loops `load_abstract_sort` / `enter_sort_with_body` run.
+    ///
+    /// The target term is `make_name_term_from_sym`, which is the very shape
+    /// [`Self::name_to_sort_term`] builds for a standalone `describe NAME`. That
+    /// agreement is the point: one target term means `emit_desc_fact`'s per-target
+    /// index counts BOTH spellings in one run (inline 0, then `describe` 1), and a
+    /// reflect reader filtering on `target` sees them together rather than split across
+    /// two keys that print the same.
+    ///
+    /// The empty guard is not a loop optimization — the loop is already empty. It keeps
+    /// the undescribed case (every declaration in the current corpus) from interning a
+    /// name term into `TermStore` that nothing then reads.
+    fn emit_own_descriptions(&mut self, sym: Symbol, texts: &[String], domain: Symbol) {
+        if texts.is_empty() {
+            return;
+        }
+        let target = self.kb.make_name_term_from_sym(sym);
+        for text in texts {
+            self.emit_desc_fact(target, text, domain);
+        }
     }
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: Symbol) {

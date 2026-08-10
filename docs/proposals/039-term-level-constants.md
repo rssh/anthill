@@ -125,6 +125,10 @@ Const ::= DescriptionBlock*
             ['meta' ':' Meta]
 ```
 
+The leading `DescriptionBlock*` is §4.1 position 1 and behaves as it does on a sort: each block reaches the KB as an `anthill.reflect.DescriptionInfo` fact targeting the constant, indexed per target, sharing that target with a standalone `describe NAME` (WI-1070).
+
+> Now also carried in the reference: **kernel-language.md §5.9** documents this construct, and §11's collected grammar carries the production. This section stays the design record; the spec section is what an implementer reads.
+
 Two shapes:
 
 ```anthill

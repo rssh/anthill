@@ -1022,7 +1022,14 @@ module.exports = grammar({
       '{', repeat($.operation_entry), '}',
     ),
 
+    // WI-1070: the leading `description` repeat is the SAME field
+    // `operation_declaration` carries — an entry is an operation, and §4.1's
+    // description block attaches to the declaration it precedes. Without it the
+    // block form could not even be written (a syntax error at the `{<`), which is
+    // why the entry form is the one row of the WI-1070 suite that fails as a PARSE
+    // error rather than as a missing fact.
     operation_entry: $ => seq(
+      repeat(field('description', $.description_block)),
       optional($.visibility),
       field('name', $.name),
       optional($.operation_type_param_list),

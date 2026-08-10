@@ -3496,6 +3496,17 @@ impl<'a> Converter<'a> {
         let name = self.convert_name(name_node);
         let visibility = self.convert_visibility(node);
 
+        // WI-1070: the operation's OWN `{< … >}` blocks. `fields_by_name` takes DIRECT
+        // children only, so this is exactly the leading repeat — a description on a
+        // parameter's variable, or on a nested declaration, is that node's own field
+        // and is not swept up here. Read in `convert_operation` rather than in the two
+        // callers because `operation_entry` shares this converter (see
+        // `convert_operation_block`), so both spellings are covered once.
+        let descriptions: Vec<String> = self.fields_by_name(node, "description")
+            .into_iter()
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .collect();
+
         // The name AS WRITTEN, for diagnostics that must quote the declaration
         // (WI-850's type-param-default refusal).
         // `mut`: a NAMED requirement slot in a `requires` clause is a type parameter
@@ -3576,6 +3587,7 @@ impl<'a> Converter<'a> {
             ensures,
             effects,
             body,
+            descriptions,
             meta,
             span,
         })
@@ -3593,8 +3605,13 @@ impl<'a> Converter<'a> {
         let visibility = self.convert_visibility(node);
         let ty = self.field(node, "type").map(|t| self.convert_type(t))?;
         let value = self.field(node, "value").map(|v| self.convert_expr_body(v));
+        // WI-1070 — the same read as `convert_operation`'s, for the same reason.
+        let descriptions: Vec<String> = self.fields_by_name(node, "description")
+            .into_iter()
+            .map(|d| strip_description_delimiters(self.text(d)))
+            .collect();
         let meta = self.convert_meta_block(node);
-        Some(Const { visibility, name, ty, value, meta, span })
+        Some(Const { visibility, name, ty, value, descriptions, meta, span })
     }
 
     /// `op` is the enclosing operation's name as written — carried in for the WI-850
