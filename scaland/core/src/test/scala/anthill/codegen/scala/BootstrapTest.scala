@@ -1327,7 +1327,7 @@ class BootstrapTest extends munit.FunSuite:
     // its supertrait, and `Wrapper` is a data sort whose `requires Walk[C = SrcC,
     // …]` is over a parameter and must not become one.
     //
-    // FAILS WHEN BACKED OUT, run: make `extendsClause` unconditional (its
+    // FAILS WHEN BACKED OUT, run: make `requiresMapping` unconditional (its
     // pre-WI-1064 form) and the emission is `enum Wrapper[SrcC, Src] extends
     // Walk[SrcC, Src]:`, so the exact-line assertion fails — before the compile,
     // which is therefore not what the control demonstrates. The compile symptom of
@@ -1385,7 +1385,7 @@ class BootstrapTest extends munit.FunSuite:
     // THE ARM NO OTHER TEST REACHES. `shapeOf` keys eponymy on the ANTHILL name, so
     // every other fixture here (`Wrapper`/`wrapped`, `Boxed`/`boxed`) and BOTH corpus
     // sorts (`FiniteMappedStream`/`fmapped`) classify as `Sum` — the lowercase-entity
-    // form is stdlib's convention. The `Record` branch of `extendsClause` was
+    // form is stdlib's convention. The `Record` branch of `requiresMapping` was
     // therefore dead to the suite, and every pre-existing Record test (Vec3,
     // TotalFloat, Box, Acct) declares no `requires`, so it short-circuits at
     // `if requires.isEmpty`. Only an EXACT-case eponymous constructor gets here.
@@ -1553,6 +1553,283 @@ class BootstrapTest extends munit.FunSuite:
     }
   }
 
+  // ── WI-1066: an ALGEBRA sort's carrier is READ, not assumed ────────────────
+  //
+  // WI-1064 answered the carrier question from the SORT SHAPE, which is exact with
+  // constructors and a proxy without them. These read it: the carrier is the sort
+  // ITSELF when some operation takes the sort as a parameter (self-representing —
+  // `Set`, `Map`), and otherwise the sort's FIRST type parameter. That is rustland's
+  // rule and not a second one — `spec_is_self_representing` /
+  // `requires_edge_is_carrier_preserving` (kb/typing.rs, WI-614) decide the identical
+  // question for member lending, down to "its first type-param".
+  //
+  // NOTHING HERE CAN BE DRIVEN BY A COMPILE, and that is the ticket's own finding: a
+  // Scala trait tolerates unimplemented members, so `trait Set[T] extends Eq[T]`
+  // compiles exactly as well as `trait Set[T]` does. The fixtures below are compiled
+  // anyway — the emission must stay legal Scala — but every arm is carried by an
+  // assertion on the emitted TEXT.
+
+  /** The four algebra shapes the carrier rule has to separate, in one file so the
+    * arm and its controls are compiled together and cannot drift apart. */
+  private val wi1066Fixture =
+    """namespace anthill.wi1066
+      |  sort Cmp
+      |    sort T = ?
+      |    operation cmp(a: T, b: T) -> T
+      |  end
+      |
+      |  sort Bag
+      |    sort T = ?
+      |    requires Cmp[T]
+      |    operation empty() -> Bag
+      |    operation insert(s: Bag, x: T) -> Bag
+      |  end
+      |
+      |  sort Space
+      |    sort V = ?
+      |    sort F = ?
+      |    requires Cmp[F]
+      |    operation vadd(a: V, b: V) -> V
+      |    operation vscale(c: F, v: V) -> V
+      |  end
+      |
+      |  sort Graded
+      |    sort V = ?
+      |    sort F = ?
+      |    requires Cmp[V]
+      |    operation gadd(a: V, b: V) -> V
+      |  end
+      |
+      |  sort Marked
+      |    sort T = ?
+      |    requires Cmp[T]
+      |  end
+      |end
+      |""".stripMargin
+
+  private def wi1066Emission(sort: String, files: IndexedSeq[GeneratedFile]): String =
+    files.find(_.relPath.endsWith(s"/$sort.scala"))
+      .getOrElse(fail(s"expected $sort.scala in: ${files.map(_.relPath)}")).contents
+
+  test("WI-1066: a SELF-REPRESENTING algebra's `requires` is over its ELEMENT") {
+    // `Bag`'s operations take `s: Bag`, so the carrier is `Bag` and `T` is content —
+    // `requires Cmp[T]` constrains the element and claims nothing about `Bag`. This is
+    // set.anthill's shape (WI-596 made `Set` self-representing) and map.anthill's.
+    //
+    // ANY operation and not the first: `empty() -> Bag` is declared ahead of `insert`
+    // and RETURNS the sort rather than receiving it. Reading only the first operation
+    // classifies `Bag` as carried by `T` and this test goes green for the wrong reason
+    // — which is why the fixture declares them in that order.
+    //
+    // FAILS WHEN BACKED OUT, run: make the Algebra arm of `requiresMapping`
+    // unconditional (its WI-1064 form) and the emission is `trait Bag[T] extends
+    // Cmp[T]:`, so both assertions below fail. The compile passes either way, by
+    // design — see the block comment above.
+    val files = gen(parseSource(wi1066Fixture, "wi1066.anthill"))
+    val bag = wi1066Emission("Bag", files)
+    assert(bag.contains("trait Bag[T]:"),
+      s"a self-representing algebra's `requires` is not a supertrait:\n$bag")
+    assert(!bag.contains("extends"), s"and no other clause smuggles it back:\n$bag")
+
+    // CONTROL, and the one that stops the arm reading as "algebra sorts lost their
+    // supertraits": `Graded`'s requirement IS over its carrier `V`, and it keeps the
+    // clause. Passes either way BY DESIGN — it is what the arm must not break.
+    val graded = wi1066Emission("Graded", files)
+    assert(graded.contains("trait Graded[V, F] extends Cmp[V]:"),
+      s"a requirement over the carrier is still a supertrait:\n$graded")
+
+    ScalaCompile.assertCompiles("the WI-1066 fixture", files)
+  }
+
+  test("WI-1066: the carrier is the sort's FIRST type parameter, not any it names") {
+    // `Space` is algebra.anthill's `VectorSpace` shape: carried by `V`, requiring a
+    // spec over the SCALAR `F`. It is not self-representing at all, so a rule keyed on
+    // self-representation alone would miss it — which is why the fixture carries this
+    // sort beside `Bag`.
+    //
+    // THE FIRST TYPE PARAMETER is rustland's convention (`provision_carrier_sort`),
+    // and reading it here rather than reading the operations is what makes `Marked`
+    // below answerable. Note `vscale(c: F, v: V)` receives `F` too: "some operation
+    // receives it" does not separate `V` from `F`, and declaration order does.
+    //
+    // FAILS WHEN BACKED OUT: with the Algebra arm unconditional the emission is `trait
+    // Space[V, F] extends Cmp[F]:`. It also fails if the carrier is taken from the
+    // requirement's own argument rather than the declaration.
+    val files = gen(parseSource(wi1066Fixture, "wi1066.anthill"))
+    val space = wi1066Emission("Space", files)
+    assert(space.contains("trait Space[V, F]:"),
+      s"a requirement over a non-carrier parameter is not a supertrait:\n$space")
+  }
+
+  test("WI-1066: a sort declaring NO operations takes its first parameter as carrier") {
+    // THE TRAP THE TICKET NAMES. `sort Eq` (eq.anthill:35) declares no operations at
+    // all — it adds only the reflexivity law — so it has no receiver to read, and it
+    // is one of the two emissions pinned green since WI-170/WI-644. `Marked` is that
+    // shape as a fixture. Answering "the first type parameter" costs it nothing: with
+    // no operation to take the sort, it is not self-representing, and its sole
+    // parameter is its first.
+    //
+    // FAILS WHEN BACKED OUT: default the carrier to the SORT when no operation names a
+    // parameter — the other plausible reading — and `Marked` loses its supertrait
+    // here, and `trait Eq[T] extends PartialEq[T]` fails in the WI-170/WI-644 test
+    // above. Refusing the case instead (there being no receiver to read) fails here
+    // with a `BootstrapError` rather than an assertion.
+    val files = gen(parseSource(wi1066Fixture, "wi1066.anthill"))
+    val marked = wi1066Emission("Marked", files)
+    assert(marked.contains("trait Marked[T] extends Cmp[T]"),
+      s"a sort with no operations is carried by its sole parameter:\n$marked")
+  }
+
+  test("WI-1066: a requirement with NO arguments is a marker, and stays a supertrait") {
+    // `sort anthill.cli.Main` is empty — no parameters, no operations, no laws — and
+    // rustland's CLI fixtures write `sort Hello { requires anthill.cli.Main; operation
+    // main(…) }`. A requirement with no arguments has no slot to be over anything but
+    // the declaring sort, so the tag is its whole content and `extends` carries
+    // exactly the tag.
+    //
+    // SOUND ONLY BECAUSE A PARAMETERIZED SPEC CANNOT REACH HERE WRITTEN BARE: `TypeGen`
+    // refuses a partial application first (WI-1055 B3, pinned in its own test). What is
+    // left is a genuinely nullary spec.
+    //
+    // DIVERGES FROM RUSTLAND DELIBERATELY: `requires_edge_is_carrier_preserving`
+    // answers `false` for a sort with no type parameters, because it asks whether the
+    // required spec lends its MEMBERS to this receiver and a marker has none to lend.
+    // The question here is whether the emitted Scala type is a subtype.
+    //
+    // FAILS WHEN BACKED OUT, run: delete the `args.isEmpty ||` disjunct in
+    // `isOverCarrier`, so an argument-less requirement is judged by a mention it has no
+    // slot to make. `Tagged` then loses `extends Tag` and gains an evidence note.
+    val files = gen(parseSource(
+      """namespace anthill.wi1066
+        |  import anthill.prelude.{Int64}
+        |  sort Tag
+        |  end
+        |
+        |  sort Tagged
+        |    requires Tag
+        |    operation run() -> Int64
+        |  end
+        |end
+        |""".stripMargin, "tagged.anthill"))
+    val tagged = wi1066Emission("Tagged", files)
+    assert(tagged.contains("trait Tagged extends Tag:"),
+      s"a marker requirement is a supertrait:\n$tagged")
+    ScalaCompile.assertCompiles("the WI-1066 marker fixture", files)
+  }
+
+  test("WI-1066: a `requires` that names no sort at all is REFUSED") {
+    // The grammar takes a full `typeExpr` after `requires`, so an arrow parses. It
+    // names no sort, hence has no carrier slot, and the rule above has no answer for
+    // it. No corpus file writes one.
+    //
+    // WHAT THE REFUSAL BUYS, measured rather than assumed: the alternative emission
+    // `trait Weird[T] extends (T) => T:` does not compile — `end of toplevel definition
+    // expected but '=>' found` — so this is not a silent-wrong-output case but a
+    // located diagnostic instead of a syntax error inside generated text, which is the
+    // trade WI-1055 made for every other unrenderable construct.
+    //
+    // FAILS WHEN BACKED OUT, run: return `IndexedSeq.empty` from the fallback arm of
+    // `writtenArguments` — reading an arrow as a marker — and this `intercept` finds no
+    // throw.
+    val err = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi1066
+        |  sort Weird
+        |    sort T = ?
+        |    requires (T) -> T
+        |    operation f(a: T) -> T
+        |  end
+        |end
+        |""".stripMargin, "weird.anthill")))
+    assert(err.getMessage.contains("must name a sort"),
+      s"refusal must say what is wrong with it: ${err.getMessage}")
+    assert(err.getMessage.contains("weird.anthill:"),
+      s"refusal must be located: ${err.getMessage}")
+  }
+
+  test("WI-1066 CORPUS: Set / Map / VectorSpace stop claiming a spec over their element") {
+    // THE THREE MEASURED EMISSIONS, on emitted TEXT because a compile cannot see them:
+    // all three compiled before this ticket and all three compile after it. What
+    // shipped was an obligation on every implementor that the anthill sort never
+    // declared — an implementor of `trait Set[T] extends Eq[T]` must supply `eq(a: T,
+    // b: T)` over ELEMENTS, beside Set's own `eq(a: Set, b: Set)` as an overload.
+    //
+    // Each sort's real claim about itself is a `provides` (set.anthill's `provides
+    // Eq[T = Set]`, eleven lines below the `requires`), which Bootstrap reads nothing
+    // of — `emitSort` has no `ProvidesClauseItem` arm — so the `extends` was built
+    // from the only line it did read.
+    //
+    // WHAT THE OMITTED CLAUSE BECOMES is asserted here too, and it is a RECORD rather
+    // than a refusal: the requirement is named in the emitted source with what it is
+    // over and what would carry it (§2.7's `using`, WI-1022). A data sort's
+    // undischarged requirement is refused instead (WI-1064) because its only possible
+    // home — a constructor field's type — is genuinely absent; an algebra sort's has a
+    // Scala home that Bootstrap has not implemented, and refusing would delete three
+    // prelude files from the tree to punish that.
+    //
+    // FAILS WHEN BACKED OUT: with the Algebra arm unconditional the three emissions are
+    // `trait Set[T] extends _root_.anthill.prelude.Eq[T]:`, `trait Map[K, V] extends
+    // _root_.anthill.prelude.Eq[K]:` and `trait VectorSpace[V, F] extends Ring[F]:`,
+    // and every assertion below fails. MEASURED with the peeled-closure harness: the
+    // three are the ONLY emissions in the 44-file prelude that change.
+    Seq(
+      ("set", "Set", "trait Set[T]:", "`requires _root_.anthill.prelude.Eq[T]`",
+        "carrier is\n//   `Set` itself (self-representing)"),
+      ("map", "Map", "trait Map[K, V]:", "`requires _root_.anthill.prelude.Eq[K]`",
+        "carrier is\n//   `Map` itself (self-representing)"),
+      ("algebra", "VectorSpace", "trait VectorSpace[V, F]:", "`requires Ring[F]`",
+        "carrier is\n//   its parameter `V`"),
+    ).foreach { case (file, sort, decl, named, carrier) =>
+      val src = wi1066Emission(sort, preludeClosure(file))
+      assert(src.contains(decl), s"$sort must carry no supertrait:\n$src")
+      assert(src.contains(named), s"$sort must still NAME what it requires:\n$src")
+      assert(src.contains(carrier), s"$sort must say what its carrier is:\n$src")
+      assert(src.contains("WI-1022"), s"$sort must say what would carry it:\n$src")
+    }
+  }
+
+  test("WI-1066 CORPUS CONTROL: every other prelude supertrait is unchanged") {
+    // THE OTHER SIDE OF THE SAME MEASUREMENT, and the complete one: fourteen prelude
+    // algebra sorts carry a `requires` (sortedset.anthill's fifteenth is refused
+    // earlier, for its named requirement slot). Three lose the clause above; these are
+    // the other ELEVEN, all of them, so a rule that simply stopped emitting `extends`
+    // for algebra sorts fails here rather than looking like a fix.
+    //
+    // `FiniteCollection` is the ticket's named control — `requires Iterable[C = C,
+    // Element = Element, E = E]` binds the required spec's carrier to its OWN `C`, so
+    // it is a supertrait and stays one (which is also why WI-1065's refining-override
+    // defect survives this ticket). `Ord` carries TWO requirements and keeps both.
+    // `Eq` is the no-operations shape, also pinned by the WI-170/WI-644 test above.
+    //
+    // PASSES EITHER WAY BY DESIGN — that is what a control is. It fails if the carrier
+    // reading overreaches: taking the carrier from the requirement's argument, or
+    // treating a nullary-operation sort (`NonEq`, `BoundedLattice`) as having no
+    // readable carrier, breaks lines here.
+    Seq(
+      ("ordered", "Ord", "trait Ord[T] extends _root_.anthill.prelude.Eq[T], PartialOrd[T]:"),
+      ("ordered", "PartialOrd", "trait PartialOrd[T] extends _root_.anthill.prelude.PartialEq[T]:"),
+      ("finite_collection", "FiniteCollection",
+        "trait FiniteCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element]:"),
+      ("collection", "PersistentCollection",
+        "trait PersistentCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element]:"),
+      // A requirement whose named slot DIFFERS from the parameter written into it
+      // (`requires Modifiable[T = C]`) — the shape `Map`'s `Eq[T = K]` has, and here it
+      // is over the carrier, so the two are separated by the argument and not the name.
+      ("mutable_collection", "MutableCollection",
+        "trait MutableCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element], " +
+        "_root_.anthill.prelude.Modifiable[C]:"),
+      ("eq", "Eq", "trait Eq[T] extends PartialEq[T]"),
+      ("eq", "NonEq", "trait NonEq[T] extends PartialEq[T]:"),
+      ("lattice", "Lattice", "trait Lattice[T] extends _root_.anthill.prelude.Eq[T]:"),
+      ("lattice", "BoundedLattice", "trait BoundedLattice[T] extends Lattice[T]:"),
+      ("numeric", "Numeric", "trait Numeric[T] extends _root_.anthill.prelude.PartialOrd[T]:"),
+      ("field", "Field", "trait Field[T] extends _root_.anthill.prelude.Numeric[T]:"),
+    ).foreach { case (file, sort, decl) =>
+      val src = wi1066Emission(sort, preludeClosure(file))
+      assert(src.contains(decl), s"$sort's supertrait must be unchanged:\n$src")
+      assert(!src.contains("is EVIDENCE"), s"$sort must carry no evidence note:\n$src")
+    }
+  }
+
   test("WI-1055: the prelude refusal set is a NAMED list, and the compiling count is a floor") {
     // The ticket's two numeric guards, together because they are one trade-off:
     // every refusal added takes a file out of the tree, so the refusal list and
@@ -1587,6 +1864,14 @@ class BootstrapTest extends munit.FunSuite:
     // needs its siblings", which this counter cannot see. The closure is the number
     // that moved: 11 errors -> 4.
     //
+    // RE-MEASURED AT WI-1066: 18, and the one that moved is set.anthill. Its only
+    // reference to a sibling WAS the `extends _root_.anthill.prelude.Eq[T]` that ticket
+    // removed; every remaining name in `Set.scala` is `Set` itself or a scalar, so it
+    // now compiles alone. The counter going UP for a removed `extends` is a fair
+    // reading of what it measures (self-containedness, §"WHAT A STANDALONE COMPILE
+    // MEANS HERE") and not evidence that the emission got better — `Map` and
+    // `VectorSpace` changed the same way and still name siblings.
+    //
     // Compiling the whole closure is WI-1020's. What is left of it, MEASURED at
     // WI-1062: FOUR errors, down from eleven. One is WI-1054 (`zero-val` is not a
     // Scala identifier, `Numeric.scala`); the other three are `Modifiable`, which
@@ -1602,6 +1887,7 @@ class BootstrapTest extends munit.FunSuite:
     //   before WI-1062  11 -> 3 (Field, the Numeric cascade) -> clean
     //   after  WI-1062   4 -> 3 (the same) -> 4 -> clean
     //   after  WI-1064   4 -> 3 (the same) -> 2 -> 4 -> clean
+    //   after  WI-1066   4 -> 3 (the same) -> 2 -> 4 -> clean   (unchanged)
     // Six more files compile at WI-1062, and the round it added is the one it
     // UNCOVERED rather than caused: `requires` -> `extends` (§2.7) is unsound for a
     // refining override and for a data sort that requires an algebra, which only
@@ -1612,6 +1898,13 @@ class BootstrapTest extends munit.FunSuite:
     // went are `class Fmapped needs to be abstract` / the `Ffiltered` twin. The two
     // left are the refining override (`error overriding method map in trait
     // Iterable`), which is WI-1065's and is why a round still fails.
+    //
+    // WI-1066 MOVED NOTHING HERE, and that is the expected result rather than a fix
+    // that failed. The three emissions it corrects (`Set` / `Map` / `VectorSpace`) all
+    // COMPILED before and after — a trait tolerates unimplemented members — so none of
+    // them was ever among these errors. What it removes is a claim nothing in the
+    // closure depended on, which is exactly why no compile could have caught it and
+    // why its own tests assert on emitted text.
     //
     // THE FINAL ROUND OF 4 IS PEELING, NOT A DEFECT, and reading it as one would be
     // easy: once finite_collection.anthill is peeled off for the override above,

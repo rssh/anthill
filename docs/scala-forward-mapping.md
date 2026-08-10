@@ -79,7 +79,7 @@ hyphens in identifiers become underscores.
 | `effects (Error)` or `effects (Error E)` | `Either[E, R]` return (default profile) |
 | `effects (Requires Cap)` | `(using Cap)` context parameter |
 | `sort T` (abstract sub-sort = type parameter) | `[T]` type parameter |
-| `requires Eq[T]` | upper bound or `using Eq[T]` |
+| `requires Eq[T]` | supertrait when it is over the sort's carrier, else `using Eq[T]` evidence — see §2.7a |
 | `fact SortName` (inside sort body) | `extends SortName` |
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
 | `Int64` / `Float` / `Bool` / `String` / `BigInt` / `Unit` / `Nothing` | `scala.Long` / `scala.Double` / `scala.Boolean` / `java.lang.String` / `scala.math.BigInt` / `scala.Unit` / `scala.Nothing` — see §2.1a |
@@ -429,9 +429,8 @@ every body's evidence" — it is the requirement **dictionary**. The is-a claim 
 So `requires` → `extends` is right only where the two *coincide*: where the required spec's
 carrier slot is bound to the declaring sort's own **carrier**.
 
-The carrier is not identified by position or by naming — it is what the sort's operations
-take as their receiver, and everything else in the bracket is a parameter of that algebra.
-Three shapes occur in the prelude:
+What the carrier *is* is what the sort's operations take as their receiver; everything else
+in the bracket is a parameter of that algebra. Three shapes occur in the prelude:
 
 | shape | example | carrier |
 |---|---|---|
@@ -439,11 +438,49 @@ Three shapes occur in the prelude:
 | carrier is the sole parameter | `PartialEq { sort T = ? }`, ops take `a: T, b: T` | `T` |
 | self-representing — carrier is the sort | `Set { sort T = ? }`, ops take `s: Set` | `Set`; `T` is the element |
 
-**What the bootstrap mapper decides today, and on what.** It reads the sort's *shape*, which
-is a proxy for the carrier question and is exact only in one direction:
+**Which sort is the carrier (WI-1066).** The mapper reads it, in the two steps rustland
+already reads it in (`spec_is_self_representing` / `requires_edge_is_carrier_preserving`,
+`kb/typing.rs`, WI-614 — this is one rule with two implementations, not two rules):
+
+1. If **any** declared operation takes a parameter typed by the **sort itself**, the sort is
+   *self-representing* and is its own carrier; its type parameters are content — element,
+   key, value. `set.anthill` declares `empty() -> Set` before `insert(s: Set, x: T)`, so it
+   has to be *any* operation and a **parameter**: a return of the sort is not a receiver.
+2. Otherwise the carrier is the sort's **first declared type parameter** (effect parameters
+   skipped — a carrier is a sort, and an `effects E = ?` does not even survive to the emitted
+   type, §2.8a). This is the `provision_carrier_sort` convention the kernel's provides
+   resolver uses, and reading the *declaration* rather than the operations is what makes the
+   operation-less sorts answerable without a special case: `sort Eq` declares no operations
+   at all (it adds only the reflexivity law) and `NonEq` / `BoundedLattice` declare only
+   nullary ones, so none of them has a receiver to read — and all three are carried by their
+   sole parameter, which is also their first.
+
+A sort declaring no type parameters at all is its own carrier, because there is nothing else
+it could be (`sort Hello { requires anthill.cli.Main; operation main(…) }`).
+
+**Which requirements are supertraits, then.** A `requires` becomes `extends` when it is over
+that carrier, and the mapper asks a **weaker question** than that: does the requirement
+mention the carrier **anywhere among its arguments**? The exact question is whether the
+required spec's *carrier slot* is bound to it, and answering it means knowing which of
+`Ring[…]`'s parameters is its carrier — its first, by the convention above — which lives in
+the file that declares `Ring`. Proposal 034 gives the bootstrap mapper one `ParsedFile` and
+no KB; the resolved type table (WI-1060) carries each prelude sort's parameter *count* and
+kinds, not their names, so it cannot say which named binding is the carrier one. The weaker
+test is exact on every file in the corpus (`Iterable[C = C, …]` mentions `C`; `Ring[F]` does
+not mention `V`; `Eq[T]` inside `Set` does not mention `Set`) and would over-qualify only a
+requirement that named the carrier in a *non-carrier* slot, which nothing writes. A
+requirement with **no arguments** is a supertrait: `requires anthill.cli.Main` is a marker
+with no parameters and no members, so it has no slot to be over anything else and the tag is
+its whole content. (A spec that *does* declare parameters cannot reach that arm written bare
+— `TypeGen` refuses a partial application first, "declares N type parameter(s), but 0 were
+written", WI-1055 B3.) A `requires` naming no sort at all — the grammar admits an arrow — is
+refused.
+
+**What each shape emits.**
 
 - **A sort with constructors** *is* the carrier, so a requirement on it can only be over some
-  other parameter and can never be an is-a claim. It produces **no `extends`**.
+  other parameter and can never be an is-a claim. It produces **no `extends`**, decided from
+  the shape without consulting the rule above — exact, not an approximation.
   `finite_combinators.anthill` writes
 
   ```
@@ -458,30 +495,52 @@ is a proxy for the carrier question and is exact only in one direction:
   define, produces `class Fmapped needs to be abstract, since it has 9 unimplemented
   members`.
 
-- **A sort without constructors** gets the supertrait, **unconditionally**. That is correct
-  wherever the carrier is a type parameter the requirement is over (`trait Ord[T] extends
-  Eq[T]`), and **wrong for a self-representing algebra**, whose carrier is the sort itself:
-  `set.anthill` emits `trait Set[T] extends anthill.prelude.Eq[T]` off a `requires Eq[T]`
-  that constrains the *element*, with the real claim in its `provides Eq[T = Set]`. Same for
-  `map.anthill` (`requires Eq[T = K]`, over the key) and `algebra.anthill`'s `VectorSpace`
-  (carried by `V`, requiring `Ring[F]` over the scalar). These compile — a trait tolerates
-  unimplemented members — so nothing in the emitted tree reports them. **WI-1066** owns
-  reading the carrier properly; until it lands, this half of the rule is a known
-  over-approximation and is written down here rather than left to be discovered.
+- **A sort without constructors** gets the supertrait for each requirement over its carrier
+  and **none** for the rest. `trait Ord[T] extends Eq[T], PartialOrd[T]` and
+  `trait FiniteCollection[C, Element] extends Iterable[C, Element]` are the first;
+  `trait Set[T]`, `trait Map[K, V]` and `trait VectorSpace[V, F]` are the second — their
+  `requires Eq[T]` / `Eq[T = K]` / `Ring[F]` constrain the *element*, the *key* and the
+  *scalar*, and each sort's claim about itself is a `provides` (`set.anthill`'s
+  `provides Eq[T = Set]`, eleven lines below its `requires`). All three compiled before and
+  after — a trait tolerates unimplemented members — so nothing in the emitted tree reports
+  the difference; what shipped was an obligation on every implementor that the anthill sort
+  never declared, sitting beside `Set`'s own `eq(a: Set, b: Set)` as an overload.
 
-A data sort's `requires` is **not discarded** by the omission: the required spec reaches
-Scala as the declared type of the constructor field typed by it (`source:
-FiniteCollection[SrcC, Src]` above), which is the whole of what a signature-only emission can
-say about it. The check is per constructor and matches the requirement nested inside a field
-type (`sources: List[T = Walk[…]]` carries `Walk[…]`). A constructor that carries it **nowhere**
-is **refused** rather than emitted short — that case is §2.7's other half, the `using` context
-parameter, which the bootstrap mapper does not emit (WI-1022).
+**Neither omission is a silent drop, and the two are prevented differently.**
 
-*(WI-1064. The `provides` clause has no bootstrap emission of its own — a `given` instance
-would need the bodies proposal 034 assigns to the KB-driven gen — so today it is read for
-nothing; what this rule fixes is that the `requires` was being read in its place. A sort whose
-operation **refines** one inherited from a required sort is a separate defect with a separate
-cause: see WI-1065.)*
+A **data** sort's `requires` is not discarded: the required spec reaches Scala as the declared
+type of the constructor field typed by it (`source: FiniteCollection[SrcC, Src]` above), which
+is the whole of what a signature-only emission can say about it. The check is per constructor
+and matches the requirement nested inside a field type (`sources: List[T = Walk[…]]` carries
+`Walk[…]`). A constructor that carries it **nowhere** is **refused** rather than emitted short.
+
+An **algebra** sort's has no such place — a trait's abstract members carry no evidence — so it
+is **recorded** in the emitted source instead, as a comment naming the requirement, the carrier
+it is not over, and what would carry it:
+
+```scala
+// `requires _root_.anthill.prelude.Eq[T]`
+//   is EVIDENCE, not a supertype claim (§2.7a, kernel §8.7). This sort's carrier is
+//   `Set` itself (self-representing), and the requirement is not over it. What carries
+//   it is §2.7's `using` context parameter, which Bootstrap does not emit (WI-1022).
+trait Set[T]:
+```
+
+The asymmetry is deliberate. A data sort's requirement has exactly one possible home and a
+constructor that lacks it is a loss with no remedy, so it is refused. An algebra sort's *has*
+a Scala home — §2.7's `using` context parameter, which WI-1022 owns — so refusing would take
+`set` / `map` / `algebra` out of the emitted tree to punish a gap that is already ticketed,
+and would delete the three emissions this rule exists to correct rather than correct them.
+Until WI-1022 lands the emitted trait is **genuinely weaker** than the anthill declaration,
+and the comment is what says so.
+
+*(WI-1064 for the data half, WI-1066 for the carrier reading. The `provides` clause has no
+bootstrap emission of its own — a `given` instance would need the bodies proposal 034 assigns
+to the KB-driven gen — so today it is read for nothing; what these rules fix is that the
+`requires` was being read in its place. A sort whose operation **refines** one inherited from
+a required sort is a separate defect with a separate cause: see WI-1065, whose
+`FiniteCollection requires Iterable[C = C, …]` is over its own carrier and so survives the
+rule above with its supertrait intact.)*
 
 ### 2.8 Effects → Method Shape
 
