@@ -47522,12 +47522,20 @@ mod wi956_kind_gate_tests {
     /// `peek` reads `Rec`'s own type parameter `T` from inside the secondary entry —
     /// 059 R2's measured symmetry, and what makes the type-param row below live.
     ///
+    /// IT CARRIES A BODY BECAUSE 059 R3 REQUIRES ONE (WI-1000): an operation
+    /// INTRODUCED by a secondary entry adds a complete new member, and a body-less
+    /// declaration there would reserve an implementation slot on a type the entry is
+    /// extending. `= x` changes nothing this module measures — the question is
+    /// whether `peek` can SEE `T`, and its signature is untouched. `Ord.look` beside
+    /// it stays body-less deliberately: it sits in a MAIN entry, where a body-less
+    /// declaration remains legal, so the pair is also the control for that.
+    ///
     /// `Ord` is the control: the same sort with nothing declared ahead of it, so its
     /// head IS `Sort`. Nothing else about it differs.
     const SRC: &str = r#"
 namespace test.wi956
   namespace Rec
-    operation peek(x: T) -> T
+    operation peek(x: T) -> T = x
   end
   sort Rec
     sort T = ?

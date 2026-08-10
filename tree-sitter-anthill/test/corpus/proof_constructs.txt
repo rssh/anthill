@@ -249,6 +249,36 @@ end
                 (identifier)))))))))
 
 =====================================
+Provides clause inside a namespace body (secondary entry, 059 R3 / WI-1000)
+=====================================
+
+namespace test
+  namespace IntStack
+    provides Stack[T = Int]
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (namespace_declaration
+      name: (name
+        (identifier))
+      (provides_clause
+        spec: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier)))))))))
+
+=====================================
 Provides block (anthill language) with rules and proofs
 =====================================
 

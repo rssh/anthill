@@ -98,9 +98,28 @@ const SORT: &str = "sort Rec\n    entity rec(n: Int64)\n  end";
 
 /// `Rec` claims `Show`, with the claim either inside the secondary entry or one
 /// level out, and with the backing member either present or absent.
+///
+/// THE TWO PLACEMENTS ARE NOW SPELLED DIFFERENTLY, and that is forced rather than
+/// chosen (WI-1000 / 059 R3). Inside a secondary entry the `fact Spec[X]` spelling is
+/// refused and `provides Spec[X]` is the one allowed — the claim is welcome, only
+/// that spelling of it is not, because in an entry a `fact` cannot be told from an
+/// ordinary fact over a parameterized data sort while `provides` is a declaration the
+/// grammar recognises. Outside, `provides` would file under the enclosing NAMESPACE
+/// (`load_provides_clause` takes the enclosing scope as the providing sort), so the
+/// one-level-out claim must stay the `fact` spelling that names its carrier in the
+/// bindings. The pair below is therefore the only writable one, and the property it
+/// measures is unchanged: the two spellings coincide EXACTLY when the carrier is the
+/// entry's own sort, which is this fixture's case and the one 059 R3 retires in favour
+/// of `provides`. They are not interchangeable in general — `provides` takes the
+/// carrier from the enclosing scope and `fact` from the bindings, so only `fact` can
+/// name a FOREIGN carrier — but that is not what varies here, and the obligation must
+/// reach the claim in the entry exactly as it reaches the claim outside.
 fn fixture(ns: &str, main_entry: &str, claim_in_entry: bool, backed: bool) -> String {
-    let claim = "fact Show[T = Rec]";
-    let (inner_claim, outer_claim) = if claim_in_entry { (claim, "") } else { ("", claim) };
+    let (inner_claim, outer_claim) = if claim_in_entry {
+        ("provides Show[T = Rec]", "")
+    } else {
+        ("", "fact Show[T = Rec]")
+    };
     // The backing member stays in the secondary entry in every row, so the only
     // thing that varies across a row PAIR is where the CLAIM sits.
     let member = if backed { "operation show(x: Rec) -> Int64 = 111" } else { "" };
@@ -190,6 +209,10 @@ fn backing_present_is_accepted_and_recorded() {
 
 /// The two placements must give the SAME message, not merely both refuse — the
 /// ticket asks for "the same message it gives one level out".
+///
+/// The two rows differ in the claim's SPELLING as well as its placement now; see
+/// [`fixture`] for why that pair is the only one 059 R3 leaves writable, and why the
+/// property is the same one.
 #[test]
 fn both_placements_report_identically() {
     let inside = crate::common::try_load_kb_with(&fixture("wi978.same", ENTITY, true, false))
@@ -210,6 +233,10 @@ fn both_placements_report_identically() {
 /// `Namespace`, carrier derived from the bindings) and `entity Rec` first loaded
 /// clean (primary kind `Entity`, no arm matched). Post-fix both refuse, because
 /// `has_kind` cannot see which declaration came first.
+///
+/// The claim is spelled `provides` in both rows (WI-1000 / 059 R3 — see [`fixture`]),
+/// which leaves the experiment intact: the two rows still differ in exactly one
+/// thing, the order of the two declarations.
 #[test]
 fn order_alone_decided_it() {
     let entity_first = r#"
@@ -221,7 +248,7 @@ namespace wi978.o.ef
   end
   entity Rec(n: Int64)
   namespace Rec
-    fact Show[T = Rec]
+    provides Show[T = Rec]
   end
 end
 "#;
@@ -233,7 +260,7 @@ namespace wi978.o.nf
     operation show(x: T) -> Int64
   end
   namespace Rec
-    fact Show[T = Rec]
+    provides Show[T = Rec]
   end
   entity Rec(n: Int64)
 end

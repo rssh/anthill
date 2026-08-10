@@ -1073,6 +1073,10 @@ mod wi994_variant_exposure_test;
 #[path = "include/wi997_declaration_ledger_test.rs"]
 mod wi997_declaration_ledger_test;
 
+#[path = "include/wi1000_secondary_entry_content_test.rs"]
+mod wi1000_secondary_entry_content_test;
+
+
 #[path = "include/wi1040_require_clause_dictionary_test.rs"]
 mod wi1040_require_clause_dictionary_test;
 #[path = "include/wi1036_builtin_defaulted_dispatch_test.rs"]

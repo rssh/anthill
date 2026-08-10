@@ -834,8 +834,63 @@ NamespaceContent ::= Import                        -- statements can appear anyw
                    | Fact | Constraint           -- sugar (desugars to Rule, see §6.1, §6.2)
                    | OperationBlock | RuleBlock  -- sugar (desugars to individual declarations, see §6.4)
                    | Describe                    -- description block (see §4.1)
+                   | Proof | ProvidesClause      -- see §7.3, §8.7; a ProvidesClause needs a sort at the address
+                   | ProvidesBlock               -- host realization (see §10.2)
                    | Namespace                   -- nested namespaces
 ```
+
+**A `namespace X` at the address of a sort `X` is a SECONDARY ENTRY to that
+sort's scope** — not a separate module attached to it. `SymbolTable::define`
+merges the two declarations onto one symbol (§8.6), so what the block declares
+enters `X`'s own scope, is scoped by `X`'s type parameters, and may back `X`'s
+spec claims. It is the only way to add a member to a type whose declaration one
+does not own, and it is legal before, beside or after the type's declaration, in
+the same file or another. The two are told apart by the **address**, never by the
+text: the same `namespace X` block is an ordinary namespace wherever no sort
+occupies `X`.
+
+**What a secondary entry may contain — members and spec claims, never identity**
+(proposal 059 R3; enforced by `SecondaryEntryPass`, `kb/load.rs`). The list is
+DEFAULT-DENY, so an unclassified production is refused rather than silently
+admitted:
+
+| in a secondary entry | |
+|---|---|
+| an `operation`, or an `operation { … }` block | **allowed, and it must have a runnable Anthill body.** An entry adds a complete new member; a body-less declaration reserves an implementation slot for a builtin or a host `operation_map`, which is a main entry's to reserve. Asked of the declaration as written — a `[simp]` equation is not a body, and no `operation_map` or builtin makes one appear. A body-less operation in a MAIN entry stays legal, as the host carriers require |
+| a `const` | allowed, **and it must have a defining value** — the same clause as the operation above, for the same reason: a value-less `const` reserves a host slot for a `const_map` entry (§10.2), the const-level peer of `operation_map`. A value-less `const` in a MAIN entry stays legal, as `Float.infinity` / `nan` require |
+| a nested `sort` / `enum` with a body, or a type alias `sort A = T` | allowed: each declares a new type at its own address (`X.A`), so it is that type's main entry and the restrictions do not recurse into it |
+| a nested `namespace` | allowed, and not recursed into: it is an ordinary namespace at `X.Inner` |
+| `provides Spec[…]`, and a host `provides Spec language L … end` block | allowed. The block's INTERIOR is classified by this same table — realization clauses only |
+| a `proof`, or a standalone `describe` | allowed **iff its target is declared in this same entry**. A proof writes its verdict back onto the target declaration and a `describe` writes a description onto it, so neither may reach a declaration another entry owns |
+| an `entity`, or a type-parameter binder (`sort T = ?`, `sort ?T`, `sort [T]`, `sort [F] { … }`) | **refused** — a constructor and a type parameter are the type's identity, and identity is declared once (§5.2, §6.3) |
+| a sort-level `requires` | **refused** — a requirement constrains every CALLER of the type's operations, and an entry may not add an obligation to a type's users. The qualified call `Spec.op(x)` needs no clause |
+| a `rule`, a `rule { … }` block, any `fact`, any `constraint` | **refused** — the search over rules is not monotone, so a clause added here can falsify a statement already proved. Facts are rules, so the ban reaches them. A claim that THIS sort satisfies a spec is written `provides Spec[…]`; a claim about any other carrier is not about this sort and is written one level out, where `fact Spec[Carrier]` remains the spelling |
+
+An **entry** is individuated by file: all `namespace X` text at one address
+within one file is ONE secondary entry, and the same text in a second file is a
+second one. A `proof` / `describe` target may be written bare or qualified against
+the entry's own address (`describe Rec.g` inside `namespace Rec`); a nested sort's
+member is another entry's, that sort being the main entry of its own type.
+
+**Only what the entry declares at its OWN address is classified.** A dotted
+declaration name declares into the namespace its prefix names — `operation
+Inner.helper` in a secondary entry to `Rec` declares `Rec.Inner.helper`, a member
+of the ordinary namespace `Rec.Inner` — so nothing above reaches it, and the
+dotted spelling and the nested-`namespace` spelling of one declaration get one
+verdict. The exception is a dotted `sort <p>.T = ?`, which still registers `T` as
+a type parameter of the enclosing sort and so stays refused.
+
+The rule ban is wider than intended and deliberately so: a rule that *introduces*
+a fresh head owned by one entry is sound, but deciding "introduces" needs a head
+binding that does not depend on declaration order, which §5.3 does not yet
+guarantee.
+
+**A `provides` clause names its subject by WHERE it is written** — the enclosing
+sort, or a secondary entry at that sort's address. Its bindings are the spec's
+arguments, not a carrier selector, so `provides Spec[T = Other]` still records
+the enclosing sort as the provider, silently (WI-1069). Written in a namespace
+that names no type it is refused. To claim that some other carrier satisfies a
+spec, write `fact Spec[Carrier]`, whose carrier does come from the bindings.
 
 ### 5.2 Sort
 
@@ -2786,8 +2841,10 @@ SortBinding ::= Name ['=' Type]                 -- without '= Type': punning (Eq
               | Type                            -- positional: next unfilled param in declaration order (§5.2)
               | VariableTerm                    -- variable binding: Modify[?], Modify[?r]
 
-File             ::= NamespaceContent*           -- a file's top level: same content,
-                                                 -- scoped to the GLOBAL scope (§5.1)
+File             ::= (NamespaceContent - ProvidesClause)*
+                                                 -- a file's top level: the same content,
+                                                 -- scoped to the GLOBAL scope (§5.1); see
+                                                 -- the note below for the one exclusion
 
 NamespaceContent ::= Import
                    | Sort | Rule | Operation
@@ -2796,7 +2853,16 @@ NamespaceContent ::= Import
                    | Fact | Constraint            -- sugar (§6.1, §6.2)
                    | OperationBlock | RuleBlock   -- sugar (§6.4)
                    | Describe                     -- description (§4.1)
+                   | Proof                        -- §7.3
+                   | ProvidesClause               -- §8.7; needs a sort at the address (§5.1)
+                   | ProvidesBlock                -- host realization (§10.2)
                    | Namespace
+
+-- A namespace at the address of a sort is a SECONDARY ENTRY to that sort's scope,
+-- and §5.1 bounds what it may contain. `File` above reuses this production with ONE
+-- exception: a ProvidesClause takes its subject from the scope it is written in, and
+-- a file's top level is the global scope, which is no sort — so it is not admitted
+-- there at all. Proof and ProvidesBlock are.
 
 Visibility  ::= 'internal' | 'public'
 
@@ -2820,6 +2886,25 @@ SortContent ::= Import
               | RequiresDecl
               | Fact | Constraint | OperationBlock | RuleBlock
               | Describe | Namespace
+              | Proof | ProvidesClause
+              -- NOT ProvidesBlock: a host realization block is admitted in a
+              -- namespace body and at a file's top level, never in a sort body.
+
+-- Proof / provides, listed here for the two content productions above.
+-- Their semantics are §7.3 (proof results), §8.7 (spec claims) and §10.2 (host
+-- realization); only the outer shapes are given, and a proof's strategy / step
+-- forms (`by z3(…)`, `using`, tactic terms) are proposal 025.1's, not restated here.
+Proof          ::= DescriptionBlock* 'proof' Name <proof body> 'end'
+ProvidesClause ::= 'provides' Type [':-' Type (',' Type)*]   -- conditions: 058 §3.8
+ProvidesBlock  ::= 'provides' Type 'language' Name          -- NamespaceContent / File only
+                     ProvidesItem* 'end'
+ProvidesItem   ::= 'artifact' String
+                 | 'carrier'       '{' MapEntry* '}'         -- anthill type  -> host type
+                 | 'operation_map' '{' MapEntry* '}'         -- operation     -> host fn
+                 | 'const_map'     '{' MapEntry* '}'         -- const         -> host value
+                 | 'namespace_map' '{' MapEntry* '}'         -- namespace     -> host module
+                 | Rule | RuleBlock | Fact | Proof           -- admitted; see §5.1 in an entry
+MapEntry       ::= Name ':' (String | Type) [',']
 
 DescriptionBlock ::= '{<' Text '>}'               -- free-form text, preserved as KB facts
 Describe    ::= 'describe' Name DescriptionBlock+  -- attach description(s) to named symbol; appends to existing

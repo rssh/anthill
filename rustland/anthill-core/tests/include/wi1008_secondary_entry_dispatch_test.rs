@@ -173,12 +173,21 @@ fn secondary_entry_fixture() -> String {
 }
 
 /// FIXTURE (3) — op AND claim both in the secondary entry.
+///
+/// THE CLAIM IS SPELLED `provides`, NOT `fact` (WI-1000 / 059 R3). Inside a
+/// secondary entry the `fact Spec[X]` spelling is refused and the `provides` one is
+/// allowed — not because the claim is unwelcome but because a `fact` there cannot be
+/// told from an ordinary fact over a parameterized data sort, while `provides` is a
+/// declaration the grammar recognises. The two mean the same thing (058 §4 proposes
+/// retiring the `fact` spelling outright), so this is a re-spelling of the fixture
+/// and not a change of what it asks: the claim is still in the entry, which is the
+/// whole variable this row holds against fixture (2).
 fn claim_in_entry_fixture() -> String {
     fixture(
         &format!(
             "  sort Rec\n    entity rec(n: Int64)\n  end\n  \
              namespace Rec\n    operation show(x: Rec) -> Int64 = {ANSWER}\n    \
-             fact Show[T = Rec]\n  end"
+             provides Show[T = Rec]\n  end"
         ),
         "rec(n: 7)",
     )

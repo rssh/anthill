@@ -742,6 +742,50 @@ pub enum LoadError {
         /// dependent. Never assume 2.
         facts: usize,
     },
+    /// WI-1000 / proposal 059 R3 — A SECONDARY ENTRY MAY ADD MEMBERS AND SPEC
+    /// CLAIMS, NEVER IDENTITY. A `namespace X … end` written at the address of a
+    /// sort `X` declares into `X`'s own scope (R2), so what it contains is governed
+    /// by a DEFAULT-DENY list: fresh body-having operations, consts, nested types,
+    /// same-entry proofs and `provides` claims are admitted, and everything else —
+    /// starting with the constructs that would REDEFINE the type — is refused here.
+    ///
+    /// Span-bearing and [`LoadError::Located`]-wrapped, unlike its two neighbours
+    /// above: one refused construct sits in exactly one file, so a file prefix names
+    /// it exactly. (The sort it belongs to may be declared elsewhere; the message
+    /// names it by qualified name rather than by span, which is what
+    /// [`Self::sort`] is for.)
+    SecondaryEntryContent {
+        /// The sort whose scope the entry declares into, QUALIFIED. Not a span: the
+        /// main entry may sit in another file, and this error carries one span.
+        sort: String,
+        /// The refused construct's keyword AS WRITTEN (`entity`, `rule`, `fact`,
+        /// `requires`, `describe`, `operation`, …) — the word the author typed, so
+        /// the diagnostic points at their text rather than at an IR variant name.
+        construct: &'static str,
+        /// The declaration's own name where it has one (`Some("show")`), `None` for
+        /// the anonymous productions (a fact, a constraint, an unlabeled rule).
+        name: Option<String>,
+        /// 059's own clause for the refusal — see [`secondary_entry_message`], which
+        /// owns every other word of the rendering.
+        reason: &'static str,
+        span: Span,
+    },
+    /// WI-1000 — a `provides Spec[…]` CLAUSE written in a namespace that names no
+    /// type. The clause names its subject by WHERE it stands
+    /// (`load_provides_clause` takes the enclosing scope's owner as the providing
+    /// sort), so at an address no sort occupies there is nothing for it to be about
+    /// and it would file a provision under the namespace itself.
+    ///
+    /// The production is admitted in a namespace body so that a SECONDARY ENTRY can
+    /// carry 059 R3's allowed spelling of a spec claim; the grammar cannot tell a
+    /// secondary entry from an ordinary namespace, because that is a question about
+    /// the address rather than about the text (059 §"the two are told apart by the
+    /// address, not by the text"). This is where it is told apart.
+    ProvidesClauseNeedsSort {
+        /// The namespace the clause was written in, qualified.
+        namespace: String,
+        span: Span,
+    },
     /// WI-582 / WI-903 — a typed rule pattern (`?x: T`) written on a rule shape
     /// whose firing site never consults it. The bound has exactly ONE enforcer:
     /// the resolver's `apply_eq_rules`, via [`super::typing::typed_pattern_bounds_hold`],
@@ -1340,7 +1384,9 @@ impl LoadError {
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::BooleanOperatorInGoalPosition { span, .. }
-            | LoadError::UnknownEntityField { span, .. } => Some(*span),
+            | LoadError::UnknownEntityField { span, .. }
+            | LoadError::SecondaryEntryContent { span, .. }
+            | LoadError::ProvidesClauseNeedsSort { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
@@ -1695,6 +1741,16 @@ impl LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 duplicate_operation_message(op, sites, *facts)
             }
+            LoadError::SecondaryEntryContent { sort, construct, name, reason, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    secondary_entry_message(sort, construct, name.as_deref(), reason),
+                )
+            }
+            LoadError::ProvidesClauseNeedsSort { namespace, span } => {
+                format!("{}: {}", loc.format_start(*span), provides_needs_sort_message(namespace))
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -1880,6 +1936,18 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 write!(f, "{}", duplicate_operation_message(op, sites, *facts))
+            }
+            LoadError::SecondaryEntryContent { sort, construct, name, reason, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    secondary_entry_message(sort, construct, name.as_deref(), reason),
+                    span.start,
+                    span.end,
+                )
+            }
+            LoadError::ProvidesClauseNeedsSort { namespace, span } => {
+                write!(f, "{} at {}..{}", provides_needs_sort_message(namespace), span.start, span.end)
             }
             LoadError::UnresolvedImport { path, span } => {
                 write!(f, "unresolved import '{}' at {}..{}", path, span.start, span.end)
@@ -2277,6 +2345,28 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // every other pass here accumulates: one bad declaration must not hide the
     // rest of the file's diagnostics.
     let mut errors = ledger.duplicate_type_errors(kb, files);
+
+    // Sub-pass 1b (WI-1000 / 059 R3) — classify the direct content of every
+    // SECONDARY ENTRY. Runs here, between passes 1 and 2, for the reason the section
+    // header gives: `has_kind(X, Sort)` is answerable only once every file's names
+    // are defined, and reporting before pass 2 names the refused construct as itself
+    // rather than through its cascade. Per file, because an entry is one FILE's text
+    // at one address (059's Definitions) — so the pass's state is per file too, and
+    // `finish` reports the verdicts that needed all of it.
+    for file in files {
+        let mut file_errors = Vec::new();
+        let mut pass = SecondaryEntryPass {
+            kb,
+            parse_sym: &file.symbols,
+            errors: &mut file_errors,
+            declared: HashMap::new(),
+            targets: Vec::new(),
+        };
+        walk_scopes(&mut pass, &file.items, global);
+        pass.finish();
+        errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
+    }
+
     let mut pending: Vec<PendingImport> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         // WI-745: collect this file's pass-2 errors on their own so each is
@@ -3156,6 +3246,51 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
     )
 }
 
+/// WI-1000 — THE 059 R3 SENTENCE, one owner. Same reason [`duplicate_type_message`]
+/// gives: `LoadError` renders through two paths — the span-resolving
+/// `format_with_source` and the bare `Display` — and only one of them is under test,
+/// so a second hand-kept copy would drift.
+///
+/// Says WHAT IS LEGAL as well as what is not, because an author who wrote an
+/// `entity` or a `rule` inside a `namespace X … end` almost certainly did not know
+/// the block was a secondary entry at all — 059 records that as its own uncomfortable
+/// consequence: "a namespace becomes a secondary entry because someone else declared
+/// a sort at its address". The message therefore names the sort that made it one.
+fn secondary_entry_message(
+    sort: &str,
+    construct: &str,
+    name: Option<&str>,
+    reason: &str,
+) -> String {
+    let subject = match name {
+        Some(n) => format!("`{construct}` '{n}'"),
+        None => format!("`{construct}`"),
+    };
+    format!(
+        "{subject} is not allowed in a secondary entry of sort '{sort}': {reason} \
+         — a `namespace` block at the address of a sort is a SECONDARY ENTRY to that \
+         sort's own scope (proposal 059 R2/R3), and may add members and spec claims, \
+         never identity. Write it in the sort's own declaration instead, or at an \
+         address no sort occupies."
+    )
+}
+
+/// WI-1000 — the sentence for [`LoadError::ProvidesClauseNeedsSort`]. One owner, for
+/// the reason [`duplicate_type_message`] states in full: `LoadError` renders through
+/// two paths — the span-resolving `format_with_source` and the bare `Display` — and
+/// only one of them is under test, so a second hand-kept copy would drift.
+fn provides_needs_sort_message(namespace: &str) -> String {
+    format!(
+        "a `provides` clause needs a type at its address, and '{namespace}' is a \
+         namespace with no sort declared there — the clause names its subject by \
+         WHERE it is written (the enclosing sort, or a `namespace X … end` at the \
+         address of a sort `X`, which is a secondary entry to it), so here there is \
+         nothing for it to be a claim about. Write it inside the sort's own \
+         declaration, or in a `namespace` block at that sort's address; a claim about \
+         a carrier named elsewhere is `fact Spec[Carrier]`."
+    )
+}
+
 /// WI-997 — the QUALIFIED name of a scope the ledger keys on. Qualified rather
 /// than local because R1's key is `(scope, local name)` and a bare `Rec` in the
 /// message would not say WHICH `Rec` — the whole point of the pair.
@@ -3797,6 +3932,677 @@ impl ScopePass for DefinePass<'_> {
             _ => {}
         }
     }
+}
+
+// ── Sub-pass 1b: 059 R3 — what a SECONDARY ENTRY may contain ───────────────
+//
+// WI-1000. A SECONDARY ENTRY is a `namespace X … end` written at an address that
+// already has a MAIN ENTRY — a `sort X` / `enum X` / free-standing `entity X` that
+// DEFINES the type. It declares into that sort's own scope (059 R2, delivered), so
+// R3 bounds what it may contain: **members and spec claims, never identity.**
+//
+// DEFAULT-DENY, and the `match` below has NO wildcard arm so it stays that way. 059
+// says "anything unlisted is refused pending classification rather than silently
+// allowed"; written with a `_ =>` catch-all that promise would hold only until
+// someone added an `Item` variant, and then it would hold in whichever direction the
+// catch-all happened to point. Exhaustive, a new production is a COMPILE error and
+// its classification is a decision someone has to take.
+//
+// WHY HERE — after sub-pass 1, before sub-pass 2. The classification is
+// `has_kind(X, Sort)` (059 §"the two are told apart by the address, not by the
+// text"), and only sub-pass 1 can answer it: `SymbolTable::define` merges
+// `namespace X` onto the sort's symbol and ACCUMULATES the category (WI-926/WI-956),
+// and pass 1 walks EVERY file before any later pass runs (the WI-321 invariant), so
+// a main entry in another file — or written after the entry, which 059 explicitly
+// permits — is already recorded. Reporting before pass 2 names the refused
+// construct as itself rather than through the cascade it causes, exactly as R1 does
+// two passes up; loading CONTINUES, so one refusal does not hide the file's other
+// diagnostics.
+
+/// A `proof` or `describe` whose verdict needs the WHOLE entry, deferred until the
+/// file's walk has seen every block at that address.
+///
+/// 059 individuates an entry BY FILE — "all `namespace X` text at that address
+/// **within one file**" is ONE secondary entry — so a proof in the first block may
+/// legitimately target an operation declared in the second, and the target set is
+/// not complete until the walk ends. Everything else R3 decides is a property of the
+/// single declaration and is decided on sight.
+struct DeferredTarget {
+    /// The entry's address — the sort's symbol, which is the grouping key: one
+    /// written name is one symbol (WI-926), so every block at that address in this
+    /// file lands under it.
+    address: Symbol,
+    sort: String,
+    construct: &'static str,
+    /// The target AS WRITTEN. A DOTTED target names another scope outright and is
+    /// foreign without further ado; a bare one is checked against the entry's own
+    /// declarations.
+    target: String,
+    span: Span,
+}
+
+/// Sub-pass 1b — classify the direct content of every secondary entry (059 R3).
+///
+/// The pass owns the descent through [`ScopePass`] like every other (WI-953) and
+/// carries NO borrow of the file's items: what it needs beyond the single
+/// declaration in hand is the entry's set of declared names, accumulated as owned
+/// strings. That is deliberate — [`ScopeSite`] ties the decl's lifetime to the
+/// walk's own locals, so a pass cannot stash `&Item` across calls, and the
+/// alternative (a second hand-written descent) is what WI-953 removed.
+struct SecondaryEntryPass<'a> {
+    kb: &'a KnowledgeBase,
+    parse_sym: &'a crate::intern::SymbolTable,
+    errors: &'a mut Vec<LoadError>,
+    /// Per entry ADDRESS, the local names its blocks declare in THIS file.
+    declared: HashMap<Symbol, HashSet<String>>,
+    /// See [`DeferredTarget`].
+    targets: Vec<DeferredTarget>,
+}
+
+impl ScopePass for SecondaryEntryPass<'_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        self.parse_sym
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
+        // A MISS IS UNREACHABLE HERE, unlike in the two passes after this one:
+        // [`DefinePass`] just walked the same spine and DEFINED every scope on it, and
+        // this pass runs before anything can retract one. Reported rather than skipped
+        // all the same, because [`lookup_defined`] is the single answer to that
+        // question for every pass (WI-953) and a second spelling could drift from it —
+        // and because if the invariant ever does break, a silent skip here would drop
+        // the classification of every entry below this point.
+        let sym = lookup_defined(
+            self.kb,
+            site.qualified,
+            site.decl.name().span,
+            "its content cannot be checked against proposal 059 R3",
+            self.errors,
+        )?;
+        // A `sort`/`enum` body is the MAIN entry — R3 says nothing about it. Only a
+        // `namespace` at an address a type already occupies is a secondary entry;
+        // `has_kind`, not `primary_kind`, because the two declarations share one
+        // symbol and which keyword happens to head its category list is source order
+        // (WI-956/WI-979).
+        if matches!(site.decl, ScopeDecl::Namespace(_)) {
+            let name = self.kb.qualified_name_of(sym).to_string();
+            if self.kb.has_kind(sym, SymbolKind::Sort) {
+                self.classify_entry(sym, &name, site.decl.items());
+            } else {
+                self.refuse_orphan_provides(&name, site.decl.items());
+            }
+        }
+        Some(self.kb.symbols.scope_id(sym))
+    }
+
+    /// Nothing: R3 governs a `namespace` block's CONTENT, which
+    /// [`Self::enter_scope`] reads whole. An item reaching here is either at an
+    /// address with no main entry (an ordinary namespace — 059: "nothing in R3 or R4
+    /// reaches it") or inside a sort body (the main entry).
+    fn at_item(&mut self, _item: &Item, _scope: ScopeId, _prefix: &str) {}
+}
+
+impl SecondaryEntryPass<'_> {
+    /// THE OTHER SIDE OF THE ADDRESS QUESTION — an ORDINARY namespace, one with no
+    /// main entry. 059 is explicit that "nothing in R3 or R4 reaches it": a rule, an
+    /// entity, a nested sort are all as legal there as they have ever been, and this
+    /// pass must not touch them.
+    ///
+    /// The one exception is the production the grammar admits in a namespace body
+    /// only so that a secondary entry can write R3's allowed spec claim. A `provides`
+    /// clause names its subject by WHERE it stands, so at an address no sort occupies
+    /// there is nothing for it to be about — it would file a provision under the
+    /// namespace. Refused rather than reinterpreted: deriving the carrier from the
+    /// bindings, the way a namespace-level `fact Spec[Carrier]` does, is 058 §4's
+    /// proposal to retire the `fact` spelling, not something to slip in here.
+    ///
+    /// THE ADJACENT SHAPE IS NOT REFUSED AND IS NOT THIS PASS'S — WI-1069. A
+    /// `provides Spec[T = Other]` written where a sort DOES occupy the address files
+    /// under that sort and not under `Other`, silently, because the clause's bindings
+    /// are the spec's arguments and never a carrier selector. Pre-existing (a sort
+    /// body has always admitted it), and refusing it needs the corpus population that
+    /// binds a non-carrier spec parameter deliberately — §8.7's `provides Effect[T =
+    /// ConsoleOutput]` on `sort Console` — measured first.
+    fn refuse_orphan_provides(&mut self, namespace: &str, items: &[Item]) {
+        for item in items {
+            if let Item::ProvidesClause(pc) = item {
+                self.errors.push(LoadError::ProvidesClauseNeedsSort {
+                    namespace: namespace.to_string(),
+                    span: pc.span,
+                });
+            }
+        }
+    }
+
+    /// THE TWO LISTS. `address` is the entry's grouping key, `sort` its qualified
+    /// name for the diagnostics, `items` the block's DIRECT content.
+    fn classify_entry(&mut self, address: Symbol, sort: &str, items: &[Item]) {
+        // The entry's declared names FIRST, and for every named declaration whatever
+        // its verdict below. The target check this feeds asks "is this declaration
+        // WRITTEN in this entry" — 059's condition — not "is it legal": a refusal does
+        // not stop the declaration loading, so a `describe` beside a refused `rule` of
+        // the same name really is about this entry's own declaration, and reporting it
+        // as foreign would raise a second error for one root cause and name the wrong
+        // reason. Separate from the classification loop because an entry's blocks are
+        // not ordered relative to one another either.
+        self.record_declared_names(address, items);
+        for item in items {
+            if declares_at_another_address(self.parse_sym, item) {
+                continue;
+            }
+            match item {
+                // ── Allowed ──────────────────────────────────────────────────
+                //
+                // AN OPERATION — the dispatch surface, and the point of the
+                // mechanism. R4 clause 2: it must carry a runnable Anthill body.
+                Item::Operation(op) => self.require_body(sort, op),
+                // An `operation … end` BLOCK is sugar for its entries and follows
+                // them (059 R3's allowed list says so in as many words).
+                Item::OperationBlock(ob) => {
+                    for op in &ob.entries {
+                        self.require_body(sort, op);
+                    }
+                }
+                // A CONST — a member, and not on the dispatch surface. It carries
+                // R4 clause 2's rule for the same reason an operation does: a
+                // value-less `const` reserves a HOST-FACING slot, `const_map` being
+                // the const-level peer of `operation_map` (§10.2 / WI-889), and
+                // reserving a slot on a type one is extending is a main entry's to do.
+                // 059's allowed list says only "consts", written before that peer was
+                // weighed; the rule is clause 2's, applied to the declaration the
+                // clause's own reason reaches.
+                Item::Const(c) => self.require_value(sort, c),
+                // A NESTED NAMESPACE — not a secondary entry to `X` but an ordinary
+                // namespace at its own address (`X.Inner`), so R3 does not recurse
+                // into it. If a sort occupies THAT address the walk reaches it on its
+                // own and classifies it there, which is the same rule applied once.
+                Item::Namespace(_) => {}
+                // A NESTED `sort` / `enum` WITH A BODY — a new type at its own
+                // address, hence that type's MAIN entry, not a declaration about `X`.
+                // The marked binder `sort [F] { … }` / `sort ?F { … }` wears the same
+                // IR and is NOT that: `is_type_param` says it is a type PARAMETER of
+                // the enclosing sort (WI-452), which is identity — refused below.
+                Item::SortWithBody(s) if !s.is_type_param => {
+                    let _ = s;
+                }
+                // A `provides Spec[X]` CLAIM. 059: a secondary entry is the sort's own
+                // scope, so there is nothing to refuse in the claim itself, and a
+                // satisfaction fact belongs in the closure where its backing exists
+                // (§6.3 / 038). A secondary entry that could not carry the claim for
+                // the members it supplies could never make a foreign carrier satisfy a
+                // spec, which is most of why one writes one.
+                Item::ProvidesClause(_) => {}
+                // A HOST REALIZATION BLOCK. Allowed where it stands; its INTERIOR is
+                // classified by the same two lists (059's recursion rule).
+                Item::ProvidesBlock(pb) => self.classify_provides_block(address, sort, pb),
+
+                // ── Classified by WI-1000, which 059 left open ────────────────
+                //
+                // A BODYLESS TYPE ALIAS (`sort Alias = Int64`) — ALLOWED, and for the
+                // nested-sort reason above: it declares a NEW TYPE at its own address
+                // (`X.Alias`), so it is that type's main entry rather than a statement
+                // about `X`. 059's allowed list says "with a body" only to exclude the
+                // `= ?` binder beside it, and an alias's definition is a concrete type,
+                // not a hole. Measured: `sort Code = Int64` in a secondary entry, used
+                // as a sibling operation's return type, loads and the operation answers
+                // — the alias is a working type at `X.Code`, and 059 already records
+                // that an alias behaves as a MAIN ENTRY at its own address.
+                //
+                // A TYPE-PARAMETER BINDER — REFUSED. `sort T = ?`, and equally the
+                // per-statement synonyms `sort ?T` / `sort [T]`, which the converter
+                // desugars to exactly this IR (WI-454). A type parameter is the type's
+                // identity, and R3 refuses identity. Measured, it is also recorded
+                // INCOHERENTLY today, which is the concrete harm: `sort T = ?` in a
+                // secondary entry reaches `SymbolTable::add_type_param` (the entry's
+                // scope IS the sort's scope, so `is_sort_scope` holds) while
+                // `SortInfo(name: X).parameters` stays `nil` — against `[T]` for the
+                // identical declaration in the main entry. That is WI-1008's split
+                // exactly, in the one field R3 says must never be written from here.
+                Item::AbstractSort(s) => match s.definition {
+                    TypeExpr::Variable { .. } => self.refuse(
+                        sort,
+                        "sort",
+                        Some(self.written_name(&s.name)),
+                        "a type parameter is the type's identity, and identity is \
+                         declared once, in the type's own declaration",
+                        s.span,
+                    ),
+                    _ => {}
+                },
+                // The braced binder — same declaration, other spelling.
+                Item::SortWithBody(s) => self.refuse(
+                    sort,
+                    "sort",
+                    Some(self.written_name(&s.name)),
+                    "a type parameter is the type's identity, and identity is \
+                     declared once, in the type's own declaration",
+                    s.span,
+                ),
+                // A STANDALONE `describe` — governed by the SAME condition as a
+                // `proof`, and for the reason 059 raises against a foreign-target
+                // proof: it names a TARGET, so it writes about a declaration another
+                // entry may own. Deferred with the proofs.
+                //
+                // NOT refused outright, though the fact ban would reach it (it asserts
+                // `DescriptionInfo`): that objection does not single `describe` out,
+                // because the inline `{< … >}` block R3 calls "inert and always
+                // allowed" asserts the very same predicate from a nested sort or an
+                // alias in the same entry. What is distinctive is the target — so the
+                // target is what is checked. And refusing it outright would cost a real
+                // capability rather than nothing: measured, an operation's own inline
+                // description block emits NO `DescriptionInfo` at all (the grammar
+                // parses `description` on `operation_declaration`; `parse::ir::Operation`
+                // has no field for it), so a standalone `describe` is today the ONLY way
+                // to document a member — including one the entry itself declares. That drop is
+                // WI-1070; when it closes, re-read this reason — the rule survives it,
+                // being keyed on the TARGET rather than on the absence of an alternative.
+                Item::Describe(d) => self.defer_target(address, sort, "describe", &d.target, d.span),
+                // A `proof` — allowed only where its TARGET is declared in the same
+                // entry. A proof is not a pure consumer of the knowledge base:
+                // verification calls `set_proof_result`, writing the verdict back onto
+                // the target declaration, so a foreign-target proof mutates the state
+                // of a declaration this entry may not own.
+                Item::Proof(p) => self.defer_target(address, sort, "proof", &p.target, p.span),
+
+                // ── Refused, each naming the sort ────────────────────────────
+                Item::Entity(e) => self.refuse(
+                    sort,
+                    "entity",
+                    Some(self.written_name(&e.name)),
+                    "a constructor is identity, and a type is defined once (059 R1) \
+                     — an entity written here constructs but is not a variant, and \
+                     surfaces later as a type error",
+                    e.span,
+                ),
+                Item::RequiresDecl(r) => self.refuse(
+                    sort,
+                    "requires",
+                    None,
+                    "a sort-level requirement is a constraint on the type's CALLERS \
+                     — every use of its operations must then supply that dictionary \
+                     — and a secondary entry may not add an obligation to a type's \
+                     users. Declare it in the sort, or reach the spec's operations \
+                     qualified (`Show.show(x)`), which needs no clause",
+                    r.span,
+                ),
+                Item::Rule(r) => self.refuse(sort, "rule", rule_label(self.parse_sym, r), RULE_REASON, r.span),
+                Item::RuleBlock(rb) => {
+                    for r in &rb.entries {
+                        self.refuse(sort, "rule", rule_label(self.parse_sym, r), RULE_REASON, r.span);
+                    }
+                }
+                Item::Fact(f) => self.refuse(sort, "fact", None, FACT_REASON, f.span),
+                Item::Constraint(c) => self.refuse(
+                    sort,
+                    "constraint",
+                    c.label.as_ref().map(|l| self.written_name(l)),
+                    "facts are rules, and a constraint is a rule with no head — the \
+                     rule ban reaches it",
+                    c.span,
+                ),
+            }
+        }
+    }
+
+    /// R3's recursion rule: a `provides Spec language L … end` block is a
+    /// REALIZATION — it says how an existing declaration is met in a host language —
+    /// not a second place to define predicates, so the same two lists govern its
+    /// interior. The grammar admits rules, facts and proofs inside one and the loader
+    /// takes them through the ordinary `load_rule` path, so every hazard the bans
+    /// exist for is reachable one level in: 059 measured the non-monotonicity example
+    /// dropping `q(0)` from one answer to zero identically whether the clause was the
+    /// entry's direct content or sat inside a `provides … language anthill … end`
+    /// block in it.
+    fn classify_provides_block(&mut self, address: Symbol, sort: &str, pb: &ProvidesBlock) {
+        for item in &pb.items {
+            match item {
+                // The realization clauses, which are the block's whole content in the
+                // corpus and cannot appear as an entry's direct content at all.
+                ProvidesItem::Artifact(_)
+                | ProvidesItem::Carrier(_)
+                | ProvidesItem::NamespaceMap(_)
+                | ProvidesItem::OperationMap(_)
+                | ProvidesItem::ConstMap(_) => {}
+                ProvidesItem::Rule(r) => {
+                    self.refuse(sort, "rule", rule_label(self.parse_sym, r), RULE_REASON, r.span)
+                }
+                ProvidesItem::RuleBlock(rb) => {
+                    for r in &rb.entries {
+                        self.refuse(sort, "rule", rule_label(self.parse_sym, r), RULE_REASON, r.span);
+                    }
+                }
+                // REFUSED HERE TOO, and this is the one place the two lists cost
+                // something rather than nothing. A block carries its lawfulness claims
+                // as `fact Spec[T = Carrier]` (measured: every `fact` in the corpus's
+                // 15 blocks is one), and `ProvidesItem` admits no `provides` spelling,
+                // so inside a secondary entry those claims move OUT of the block and
+                // are written `provides Spec[T = Carrier]` as the entry's direct
+                // content — where R3 allows them. The discriminator problem is why:
+                // `maybe_emit_fact_provides_info` recognises a claim by SHAPE (a
+                // functor that is a sort with at least one type parameter), which
+                // cannot tell a spec claim from a fact over a parameterized DATA sort,
+                // and that population is exactly what the default-deny rule refuses.
+                // The corpus pays nothing — it contains no secondary entry, so no
+                // block sits inside one.
+                ProvidesItem::Fact(f) => self.refuse(sort, "fact", None, FACT_REASON, f.span),
+                ProvidesItem::Proof(p) => {
+                    self.defer_target(address, sort, "proof", &p.target, p.span)
+                }
+            }
+        }
+    }
+
+    /// R4 clause 2 — AN OPERATION INTRODUCED BY A SECONDARY ENTRY HAS A RUNNABLE
+    /// ANTHILL BODY. A body-less declaration reserves an implementation slot for a
+    /// later builtin or host `operation_map`; a secondary entry adds a COMPLETE new
+    /// member instead. Deliberately asks only about the declaration as written — it
+    /// does not consult `OperationMapping` facts or builtin registries, because those
+    /// are backing for one declaration and do not decide who owns its name (059).
+    ///
+    /// A `[simp]` equation does not satisfy this: an equation is an `Item::Rule`,
+    /// refused here outright, and `[simp]` is inlining rather than backing anyway
+    /// (WI-818/881/885).
+    ///
+    /// FRESHNESS is NOT checked here. R4 clause 1 — one operation declaration per
+    /// name per scope — is delivered by WI-1049 as a whole-KB pass over
+    /// `OperationInfo` records, and it already crosses the main/secondary boundary
+    /// (one written name is one symbol). Re-deriving it here would be a second
+    /// implementation of one rule, and the two could disagree.
+    ///
+    /// A `const` carries the SAME clause, in [`Self::require_value`].
+    ///
+    /// The two are split rather than generalized over "has a definition": they read
+    /// different IR fields and their diagnostics name different host channels
+    /// (`operation_map` / `const_map`), and one function taking a bool would hide
+    /// which is which at the call site.
+    fn require_body(&mut self, sort: &str, op: &Operation) {
+        if op.body.is_none() {
+            self.refuse(
+                sort,
+                "operation",
+                Some(self.written_name(&op.name)),
+                "an operation introduced by a secondary entry must have a runnable \
+                 Anthill body — a body-less declaration reserves an implementation \
+                 slot for a builtin or a host `operation_map`, and a secondary entry \
+                 adds a complete new member rather than reserving a slot on a type it \
+                 is extending. Give it a body, or declare it in the sort itself",
+                op.span,
+            );
+        }
+    }
+
+    /// R4 clause 2 for a `const` — [`Self::require_body`]'s peer, and its doc carries
+    /// the reasoning the two share.
+    fn require_value(&mut self, sort: &str, c: &Const) {
+        if c.value.is_none() {
+            self.refuse(
+                sort,
+                "const",
+                Some(self.written_name(&c.name)),
+                "a const introduced by a secondary entry must have a defining value — \
+                 a value-less declaration reserves a host slot for a `const_map` entry \
+                 (the const-level peer of `operation_map`, §10.2), and a secondary \
+                 entry adds a complete new member rather than reserving a slot on a \
+                 type it is extending. Give it a value, or declare it in the sort itself",
+                c.span,
+            );
+        }
+    }
+
+    /// Every LOCAL name this block of the entry declares, whatever the two lists then
+    /// say about it — the set the `proof` / `describe` target check reads. Exhaustive
+    /// for the same reason [`Self::classify_entry`]'s match is: a new `Item` variant
+    /// that binds a name must be considered here too, and a `_ =>` would quietly
+    /// answer "declares nothing".
+    fn record_declared_names(&mut self, address: Symbol, items: &[Item]) {
+        let mut names: Vec<String> = Vec::new();
+        for item in items {
+            // A DOTTED name declares at another address, so the entry does not declare
+            // it and the target set must not claim it. Recording only its last segment
+            // was the mirror of the classification bug: `operation Inner.helper` put
+            // `helper` in the set, and a `proof helper` beside it was then ADMITTED
+            // though the entry declares `Rec.Inner.helper` — the exact hole this check
+            // exists to close, with the eventual `unresolved name` naming the wrong
+            // problem. See [`declares_at_another_address`].
+            if declares_at_another_address(self.parse_sym, item) {
+                continue;
+            }
+            match item {
+                Item::Operation(op) => names.push(self.written_short_name(&op.name)),
+                Item::OperationBlock(ob) => {
+                    names.extend(ob.entries.iter().map(|op| self.written_short_name(&op.name)))
+                }
+                Item::Const(c) => names.push(self.written_short_name(&c.name)),
+                Item::Namespace(n) => names.push(self.written_short_name(&n.name)),
+                Item::SortWithBody(s) => names.push(self.written_short_name(&s.name)),
+                Item::AbstractSort(s) => names.push(self.written_short_name(&s.name)),
+                Item::Entity(e) => names.push(self.written_short_name(&e.name)),
+                // A rule's CITATION LABEL is the handle a `proof` names it by, and
+                // `rule` is the target production a proof exists for — so an unlabeled
+                // rule contributes nothing, correctly: it cannot be cited either.
+                Item::Rule(r) => names.extend(rule_label(self.parse_sym, r)),
+                Item::RuleBlock(rb) => {
+                    for r in &rb.entries {
+                        names.extend(rule_label(self.parse_sym, r));
+                    }
+                }
+                Item::Constraint(c) => {
+                    names.extend(c.label.as_ref().map(|l| self.written_short_name(l)))
+                }
+                // Nameless, or naming something declared elsewhere: a fact is a term, a
+                // `requires`/`provides` names the SPEC it claims, and a `describe` /
+                // `proof` names the very target this set is consulted for.
+                Item::Fact(_)
+                | Item::RequiresDecl(_)
+                | Item::ProvidesClause(_)
+                | Item::ProvidesBlock(_)
+                | Item::Describe(_)
+                | Item::Proof(_) => {}
+            }
+        }
+        self.declared.entry(address).or_default().extend(names);
+    }
+
+    fn defer_target(
+        &mut self,
+        address: Symbol,
+        sort: &str,
+        construct: &'static str,
+        target: &Name,
+        span: Span,
+    ) {
+        let target = self.written_name(target);
+        self.targets.push(DeferredTarget {
+            address,
+            sort: sort.to_string(),
+            construct,
+            target,
+            span,
+        });
+    }
+
+    /// The verdicts that needed the whole file — see [`DeferredTarget`].
+    fn finish(mut self) {
+        for t in std::mem::take(&mut self.targets) {
+            if !self.target_names_this_entry(&t) {
+                self.refuse(
+                    &t.sort,
+                    t.construct,
+                    Some(t.target.clone()),
+                    match t.construct {
+                        "proof" => {
+                            "a proof writes its verdict BACK onto the target \
+                             declaration (`set_proof_result`), so its target must be \
+                             declared in this same entry — the entry that declares a \
+                             thing may prove things about it, and nobody else"
+                        }
+                        _ => {
+                            "a `describe` writes a description onto the declaration it \
+                             names, so its target must be declared in this same entry \
+                             — 059 individuates an entry as one file's text at one \
+                             address"
+                        }
+                    },
+                    t.span,
+                );
+            }
+        }
+    }
+
+    /// Does `t.target` name a declaration THIS ENTRY makes?
+    ///
+    /// A bare target is the entry's iff the entry declared that name. A QUALIFIED one
+    /// is the entry's iff its prefix names the entry's OWN address — `describe Rec.g`
+    /// written inside `namespace Rec` is a qualified self-reference and means exactly
+    /// what `describe g` means. The first cut tested `!target.contains('.')` and so
+    /// refused every qualified spelling, asserting a condition that in fact held; on a
+    /// language where an operation's inline description block is dropped (WI-1070) that
+    /// took away the only way to document a member under its qualified name.
+    ///
+    /// A prefix naming something ELSE stays foreign, and a NESTED SORT's member is the
+    /// case that shows this is not merely a syntax allowance: `Code.widen`, where
+    /// `sort Code … end` sits in this same entry, is refused — 059 makes a nested sort
+    /// with a body the MAIN ENTRY OF ITS OWN TYPE, so its members belong to that entry
+    /// and not to this one.
+    ///
+    /// The prefix test is syntactic (equal to the entry's qualified name, or a
+    /// dot-suffix of it) rather than resolved: pass 1b runs before imports are wired,
+    /// so there is no scope to resolve a local prefix in. Its one imprecision is a
+    /// different `Rec` shadowing the entry's own name at the entry's own address, which
+    /// would be accepted; that direction is the mild one — the check is an ownership
+    /// gate, and a false ACCEPT costs a diagnostic while a false REFUSE costs a legal
+    /// program.
+    fn target_names_this_entry(&self, t: &DeferredTarget) -> bool {
+        let (prefix, last) = match t.target.rsplit_once('.') {
+            Some((p, l)) => (Some(p), l),
+            None => (None, t.target.as_str()),
+        };
+        if let Some(p) = prefix {
+            if p != t.sort && !t.sort.ends_with(&format!(".{p}")) {
+                return false;
+            }
+        }
+        self.declared.get(&t.address).is_some_and(|d| d.contains(last))
+    }
+
+    /// The name AS WRITTEN, dots and all — what the author typed, which is what a
+    /// diagnostic must echo and what the qualified-target test above reads.
+    fn written_name(&self, name: &Name) -> String {
+        join_segments(self.parse_sym, &name.segments)
+    }
+
+    /// The LOCAL name a declaration binds: the last segment, since a dotted
+    /// declaration lands in the namespace its prefix names.
+    fn written_short_name(&self, name: &Name) -> String {
+        match name.segments.last() {
+            Some(&s) => self.parse_sym.local_name(s).to_string(),
+            None => String::new(),
+        }
+    }
+
+    fn refuse(
+        &mut self,
+        sort: &str,
+        construct: &'static str,
+        name: Option<String>,
+        reason: &'static str,
+        span: Span,
+    ) {
+        self.errors.push(LoadError::SecondaryEntryContent {
+            sort: sort.to_string(),
+            construct,
+            name,
+            reason,
+            span,
+        });
+    }
+}
+
+/// 059 R3's rule clause, shared by the four sites that can carry one (a `rule`, a
+/// `rule` block's entry, and both of those inside a `provides` block).
+///
+/// THE BLANKET BAN IS WHAT AN IMPLEMENTATION DOES TODAY, not the intended rule.
+/// 059's narrow rule admits a rule whose head INTRODUCES and whose predicate is owned
+/// by one entry; both conditions are undecidable until WI-980 makes a head's binding
+/// independent of text order and WI-895 stops a rule body referencing what resolves to
+/// nothing. WI-1001 lands the narrow rule when they close.
+const RULE_REASON: &str = "the search over rules is NOT monotone, so a clause added \
+    here can make a statement that was true false — and every proof discharged from \
+    it was verified against a knowledge base that no longer exists. A rule about the \
+    type belongs in the type's own declaration";
+
+/// 059's fact ban, written as ONE clause because facts ARE rules: a fact is a rule
+/// with no body, so the rule ban already reaches it. Shared by the entry-level and
+/// the `provides`-block-interior sites.
+const FACT_REASON: &str = "facts are rules — a fact is a rule with no body, so the \
+    rule ban reaches it, and in a secondary entry a `fact Spec[X]` cannot be told \
+    from an ordinary fact over a parameterized data sort. A claim that THIS sort \
+    satisfies a spec is written `provides Spec[…]` here, which is a declaration and \
+    needs no discriminator; a claim about ANY OTHER carrier is not about this sort at \
+    all and belongs one level out, where `fact Spec[Carrier]` stays the spelling";
+
+/// WI-1000 — DOES THIS DECLARATION'S WRITTEN NAME PUT IT AT ANOTHER ADDRESS? A DOTTED
+/// name declares into the namespace its prefix names — `ensure_intermediate_namespaces`
+/// creates it — so `operation Inner.helper` written in a secondary entry to `Rec`
+/// declares `Rec.Inner.helper`, a member of an ORDINARY namespace, and 059 is explicit
+/// that "nothing in R3 or R4 reaches" one. R3 governs the entry's OWN address.
+///
+/// MEASURED, and the reason this is a rule rather than a nicety: the symbol resolves
+/// at `…Rec.Inner.helper` and NOT at `…Rec.helper`, and the nested-namespace spelling
+/// of the same declaration (`namespace Inner … end` inside the entry) is admitted
+/// already — so classifying the dotted one gave two spellings of ONE declaration
+/// opposite verdicts.
+///
+/// ONE EXCEPTION, also measured: a `sort <prefix>.T = ?` still registers `T` as a type
+/// PARAMETER of the ENCLOSING sort. [`DefinePass`]'s arm calls
+/// `add_type_param(scope, short, …)` with the scope the declaration is WRITTEN in, not
+/// the one its name lands in, so `sort Inner.T = ?` in a main entry yields
+/// `type_params_of_sort(Rec) == ["T"]` while its symbol sits at `Rec.Inner.T`. It
+/// reaches the sort's identity wherever the symbol ends up, so R3 must still refuse
+/// it — hence the arm below, not a blanket dotted skip. The braced binder
+/// `sort [F] { … }` cannot be dotted (the grammar's binder name is an `identifier`),
+/// so it needs no companion clause.
+///
+/// A RULE, FACT, CONSTRAINT, `requires`, `provides`, `proof` or `describe` is NEVER
+/// skipped here: none of them declares a name at an address. A rule's label is a
+/// citation handle and its head is resolved where the rule is WRITTEN; a `proof` /
+/// `describe` name is a TARGET, which is the deferred check's business.
+fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &Item) -> bool {
+    let name = match item {
+        Item::Operation(o) => &o.name,
+        Item::Const(c) => &c.name,
+        Item::Namespace(n) => &n.name,
+        Item::SortWithBody(s) => &s.name,
+        Item::Entity(e) => &e.name,
+        // The exception above: a dotted type-parameter binder still binds THIS sort.
+        Item::AbstractSort(s) if matches!(s.definition, TypeExpr::Variable { .. }) => {
+            return false
+        }
+        Item::AbstractSort(s) => &s.name,
+        // An `operation { … }` block's entries carry names too, but the loader's own
+        // arm for them does NOT call `ensure_intermediate_namespaces` — it defines the
+        // whole dotted spelling as a local name in the enclosing scope. So a dotted
+        // entry lands in the ENTRY's scope after all, and R3 keeps it. (That the two
+        // operation spellings disagree about a dotted name is the loader's, not R3's.)
+        Item::OperationBlock(_)
+        | Item::Rule(_)
+        | Item::RuleBlock(_)
+        | Item::Fact(_)
+        | Item::Constraint(_)
+        | Item::RequiresDecl(_)
+        | Item::ProvidesClause(_)
+        | Item::ProvidesBlock(_)
+        | Item::Describe(_)
+        | Item::Proof(_) => return false,
+    };
+    let _ = parse_sym;
+    name.segments.len() > 1
+}
+
+/// A rule's citation LABEL, for the diagnostics above. `None` for an unlabeled rule,
+/// which has no handle to name it by — the span is then the whole identification.
+fn rule_label(parse_sym: &crate::intern::SymbolTable, r: &Rule) -> Option<String> {
+    r.label.as_ref().map(|l| join_segments(parse_sym, &l.segments))
 }
 
 // ── Sub-pass 2: requires + imports ─────────────────────────────────────────

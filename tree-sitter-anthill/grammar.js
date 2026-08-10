@@ -217,6 +217,17 @@ module.exports = grammar({
       $.import_clause,
       $.proof_declaration,
       $.provides_block,
+      // WI-1000 (proposal 059 R3). A `namespace X` written at the address of a
+      // sort `X` is a SECONDARY ENTRY to that sort's own scope, and R3 makes the
+      // spec claim `provides Spec[X]` its ALLOWED spelling while refusing the
+      // `fact Spec[X]` one — a `fact` there cannot be told from an ordinary fact
+      // over a parameterized data sort. Admitted only in `_sort_content` before
+      // this, that made the allowed spelling UNWRITABLE in the one place R3 calls
+      // the point of the mechanism. The grammar cannot tell a secondary entry from
+      // an ordinary namespace (that is an address question, not a text one), so it
+      // admits the clause here and the LOADER classifies: written where no sort
+      // occupies the address, it is refused naming the namespace.
+      $.provides_clause,
     ),
 
     _body_sort: $ => choice(
