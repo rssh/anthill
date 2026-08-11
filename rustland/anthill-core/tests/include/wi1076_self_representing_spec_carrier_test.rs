@@ -30,8 +30,9 @@
 //! 058 §3.6 was missing. ALL SEVEN are closed, but only six of them by this code: the
 //! seventh, `Relation provides LogicalStream`, was closed by fixing the DECLARATION
 //! that misled the reader — `pure(x: T)` reused the sort's type parameter for a value
-//! it merely lifts, and is now `pure[A](x: A) -> LogicalStream[A, {}]`. It predates
-//! operation type parameters by three months and could not have said so when written.
+//! it merely lifts, and is now `pure[A](x: A) -> LogicalStream[A, {}]`. That was wrong
+//! from the first day rather than a limit of its vintage — a shared logical variable
+//! said the same thing, and the neighbouring `mplus` used one in the same commit.
 //! No other row in either relation moved.
 //!
 //! THE FIX ASKS WHICH PARAMETER THE OPERATIONS TAKE (`spec_carrier_param`): the first
@@ -276,11 +277,14 @@ fn the_stdlib_stream_provisions_read_their_provider() {
 /// question stops being asked — `LogicalStream` takes none of its own type parameters,
 /// so it has no carrier parameter and its provisions record their provider.
 ///
-/// THE DECLARATION PREDATES THE FEATURE, which is why it read that way and why this is
-/// a fix rather than a workaround: `pure` was written 2026-02-23 (`9e6b81c1`, the
-/// original stdlib-sorts commit) and stdlib's first operation type parameter landed
-/// 2026-06-10 (WI-424). `pure` had no way to say "my own type parameter" and reused the
-/// sort's; every reader since has had to guess what that `T` meant.
+/// IT WAS WRONG FROM THE FIRST DAY, and the vintage is not the excuse it looks like.
+/// `pure` was written 2026-02-23 (`9e6b81c1`) and stdlib's first OPERATION type
+/// parameter landed 2026-06-10 (WI-424) — but a shared LOGICAL VARIABLE says the same
+/// thing and needed nothing new. `pure(x: ?A) -> LogicalStream[?A, {}]` type-checks
+/// today (measured, same refusal), and the neighbour `mplus(a: LogicalStream{T = ?A}, b:
+/// LogicalStream{T = ?A})` was written that way IN THE SAME COMMIT, six lines below.
+/// Types are terms and they unify, so operation-level polymorphism was always
+/// expressible here; `pure` simply reached for the sort's parameter instead.
 ///
 /// This is the shape WI-1077 should prefer wherever it applies — a declaration saying
 /// what it means, rather than a predicate inferring it. What WI-1077 still owns is the
@@ -334,6 +338,58 @@ end
         "`pure`'s result must carry its ARGUMENT's type, so lifting an `Int64` into a \
          `String`-element stream is refused naming both — with the bare `-> \
          LogicalStream` return this loaded clean: {errs:?}"
+    );
+}
+
+/// THE ALGEBRA, DRIVEN — `mplus` of an EMPTY stream and a NON-EMPTY one, which is the
+/// interaction the `pure` signature change is really about and which no row above
+/// reaches.
+///
+/// `empty() -> LogicalStream[?A]` leaves its element open; `pure(1)` now fixes its own
+/// to `Int64`; `mplus(a: LogicalStream[?A], b: LogicalStream[?A]) -> LogicalStream[?A]`
+/// SHARES one variable across both arguments and the result. So combining them must
+/// unify the open element with the concrete one and answer `LogicalStream[T = Int64]`.
+/// Written inside a sort that `requires LogicalStream[…]`, which is what lets an
+/// abstract spec's operations be called at all.
+///
+/// THE MISMATCH ARM IS WHY THIS MEANS ANYTHING: `mplus(pure(1), pure("s"))` must be
+/// REFUSED naming both element types. Without it, an `mplus` that simply dropped its
+/// element constraint would satisfy the first arm just as well — the WI-1069 lesson
+/// about an instrument that cannot tell agreement from indifference.
+#[test]
+fn mplus_unifies_an_empty_stream_with_a_non_empty_one() {
+    let ok = r#"namespace test.wi1076.mplusok
+  import anthill.prelude.{LogicalStream, Int64}
+  sort Q
+    import anthill.prelude.{LogicalStream, Int64}
+    import anthill.prelude.LogicalStream.{empty, pure, mplus}
+    requires LogicalStream[T = Int64, E = {}]
+    operation combine() -> LogicalStream[T = Int64, E = {}] = mplus(empty(), pure(1))
+  end
+end
+"#;
+    assert!(
+        crate::common::try_load_kb_with(ok).is_ok(),
+        "an empty stream must combine with an `Int64` one — `empty`'s open element \
+         unifies with `pure(1)`'s through `mplus`'s shared `?A`"
+    );
+
+    let bad = r#"namespace test.wi1076.mplusbad
+  import anthill.prelude.{LogicalStream, Int64, String}
+  sort Q
+    import anthill.prelude.{LogicalStream, Int64, String}
+    import anthill.prelude.LogicalStream.{pure, mplus}
+    requires LogicalStream[T = Int64, E = {}]
+    operation combine() -> LogicalStream[T = Int64, E = {}] = mplus(pure(1), pure("s"))
+  end
+end
+"#;
+    let errs = crate::common::try_load_kb_with(bad).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("LogicalStream[T = Int64")
+            && e.contains("LogicalStream[T = String")),
+        "`mplus` shares ONE element variable, so two different element types are \
+         refused naming both — this is the control for the arm above: {errs:?}"
     );
 }
 

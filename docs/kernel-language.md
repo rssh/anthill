@@ -1001,15 +1001,28 @@ where the explicit `C = …` binding is discarded. **TICKET WI-1077**, which is 
 language question — the fix is to let a declaration *say* which parameter is the
 carrier.
 
-**An operation that lifts a value should take its OWN type parameter**, not the
-sort's, and where one does not, the repair is the declaration rather than the
-inference. `LogicalStream.pure` read `pure(x: T) -> LogicalStream`, reusing the
-sort's element parameter for a value it merely injects; written `pure[A](x: A) ->
-LogicalStream[A, {}]` the ambiguity does not arise. The bare return was losing
-information on its own account, too: by the expansion rule above it means
-`LogicalStream[T = ?, E = ?]` with a *fresh* variable, so `pure(1)` produced a
-stream whose element type was unconstrained and a lift of an `Int64` into a
-`String`-element stream was accepted (measured).
+**An operation that lifts a value must relate its result to its ARGUMENT**, not to
+the sort's parameter, and where one does not the repair is the declaration rather
+than the inference. `LogicalStream.pure` read `pure(x: T) -> LogicalStream`,
+reusing the sort's element parameter for a value it merely injects; written
+`pure[A](x: A) -> LogicalStream[A, {}]` the ambiguity does not arise. The bare
+return was losing information on its own account: by the expansion rule above it
+means `LogicalStream[T = ?, E = ?]` with a *fresh* variable, so `pure(1)` produced
+a stream whose element type was unconstrained and lifting an `Int64` into a
+`String`-element stream was accepted (measured). Either spelling states the
+relation — an operation type parameter (`pure[A](x: A)`) or a shared logical
+variable (`pure(x: ?A) -> LogicalStream[?A, {}]`), the latter needing nothing
+beyond §4.4.
+
+**A NULLARY producer is the opposite case**: with no argument to relate to, a fresh
+variable per use *is* the polymorphism and no parameter is wanted.
+`List.empty() -> List` means `List[T = ?]`, and the same `empty()` serves
+`List[T = Int64]` and `List[T = String]` in one program (measured). An operation
+type parameter would be wrong here for the reason §5.6 gives — it is the caller's
+to instantiate, and a call pinning it from nothing is the loud `got unconstrained`.
+A bottom-typed result (`List[Nothing]`, leaning on `Covariant(sort: List, param:
+T)`) would be the subsumption-based alternative; the kernel uses unification, which
+needs no variance for this case.
 
 Where a spec genuinely has no carrier parameter, **a witness for it cannot
 exist**: dispatch is directed by the receiver value's own sort, there being no

@@ -23014,13 +23014,20 @@ fn provision_carrier_sort(
 ///
 /// ONE INSTANCE OF IT WAS NOT A LIMIT BUT A BUG IN THE DECLARATION, and that is the
 /// preferred repair wherever it applies. `LogicalStream.pure` read `pure(x: T) ->
-/// LogicalStream`, reusing the SORT's parameter for a value it merely lifts, because it
-/// was written 2026-02-23 and stdlib's first OPERATION type parameter landed 2026-06-10
-/// (WI-424) — it could not say "my own parameter" when written. As `pure[A](x: A) ->
-/// LogicalStream[A, {}]` the question stops being asked, and `Relation provides
-/// LogicalStream` reads its provider. Prefer fixing such a declaration over widening
-/// this predicate: it makes the illegal state unrepresentable instead of inferring
-/// around it, and the bare return was independently losing the argument's type.
+/// LogicalStream`, reusing the SORT's parameter for a value it merely lifts. As
+/// `pure[A](x: A) -> LogicalStream[A, {}]` the question stops being asked, and
+/// `Relation provides LogicalStream` reads its provider. Prefer fixing such a
+/// declaration over widening this predicate: it makes the illegal state unrepresentable
+/// instead of inferring around it, and the bare return was independently losing the
+/// argument's type.
+///
+/// IT WAS WRONG FROM THE FIRST DAY, not a victim of its vintage. An earlier draft of
+/// this note blamed the age — `pure` was written 2026-02-23 and stdlib's first OPERATION
+/// type parameter landed 2026-06-10 (WI-424) — but that is not why. A shared LOGICAL
+/// VARIABLE says the same thing and needed nothing new: `pure(x: ?A) -> LogicalStream[?A,
+/// {}]` type-checks today, and its neighbour `mplus(a: LogicalStream{T = ?A}, b: …)` was
+/// written that way IN THE SAME COMMIT. Types are terms and they unify (§4.4), so
+/// operation-level polymorphism was always expressible; `pure` simply did not use it.
 ///
 /// THE FAILURE MODE IS THE SAFE ONE, and that is why this predicate was chosen over the
 /// stricter [`spec_is_self_representing`], which closes `LogicalStream` and was
