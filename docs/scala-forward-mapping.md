@@ -205,10 +205,39 @@ The table is deliberately an **emission promise**, not proof that emission alrea
 succeeded. Calling `Bootstrap.generate` to construct it would be circular because
 generation needs the table. The caller must therefore pass and generate the same
 complete parsed closure; compiling the generated Scala closure is the enforcement
-point. If one of today's seven refused prelude files promises `SortedSet`, `Delay`,
-`Relation`, `EffectExpression`, or `Meta` but emits no file, compilation fails on that
-missing `_root_` declaration. The named refusal-set test pins those seven promises so
-the boundary cannot change silently.
+point. Where a refused declaration promises `SortedSet`, `Delay`, `Relation`,
+`EffectExpression`, `MatchFailed` or `Meta` but emits no file, compilation fails on
+that missing `_root_` declaration. The named refusal-set test pins every refused
+declaration so the boundary cannot change silently.
+
+#### A refusal is scoped to a DECLARATION (WI-1080)
+
+`Bootstrap.generate` refuses the construct it cannot spell and emits the rest of the
+file, returning both halves (`Generated(files, refusals)`). A refusal is therefore not
+contagious: `effects.anthill` declares eleven sorts in `namespace anthill.prelude` and
+two of them carry `anthill.reflect` types, so the other nine — `Modifiable` among them
+— emit and `MutableCollection`'s `extends _root_.anthill.prelude.Modifiable[C]` names
+a type that exists. It was file-scoped through WI-1055, which is how one unspellable
+field cost nine correct declarations and cascaded into a file with nothing wrong
+with it.
+
+The unit is one emitted Scala file, so a namespace's operations still refuse together
+— they render into one `<Ns>Ops` trait — while the sorts declared beside them emit.
+A container is not a unit: a `namespace` whose member refuses keeps its other members.
+
+**Only a declaration's fault is collected.** Two faults stay fatal, because neither is
+about a declaration and no partial tree built under them would mean anything: a leaf
+this file declares twice in one Scala package (its name table contradicts itself, so
+nothing can be placed), and a `ProfileError` — the profile's `type_map` missing an
+entry a renderer needs by name, which breaks the same path for every declaration at
+once. `BootstrapError` and `ProfileError` are the two `GenError` kinds, and the
+collected channel is typed to the first.
+
+**The loud failure is unchanged and only narrower.** A caller must report `refusals`;
+nothing converts them for it. A refused declaration's consumers — in its own file or
+another — still emit their reference to it, because the name table is built before
+emission and cannot see the refusal, so the promise breaks at the mandatory closure
+compile naming that one missing type.
 
 Three consequences worth stating. A profile that **drops** a scalar entry does not
 get a fallback: the name falls to the sort the prelude declares (`trait Int64`, which
