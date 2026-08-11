@@ -24,6 +24,29 @@ If none of (1)–(3) supplies a body for an operation, codegen emits the abstrac
 
 `???` never appears in generated output. If it does, that's a codegen bug.
 
+**"Compiles" is measured, and the measurement is currently red (WI-1020).** The whole
+emitted prelude closure is compiled by a real Scala compiler in the test suite —
+in-process through `dotty.tools.dotc.Driver`, pinned to the build's `scalaVersion`, so
+there is no skip-when-unavailable branch for a defect to hide behind. **It does not
+compile clean today**: four errors remain, all one defect (a written `anthill.reflect.Symbol`
+loses its package prefix, WI-1081), and the test pins that count so a fifth fails it.
+Peel off the one file that emits them and the rest of the prelude compiles as one
+closure. No file is excluded from the compile — the four errors are pinned, not skipped.
+
+A construct with no Scala spelling is a **refusal** rather than a placeholder: an earlier
+emitter rendered a type variable as `?` and a value-in-type as `Any`, neither of which
+the promise above could survive. Every refused declaration **of the prelude** is named in
+the suite's refusal-set list; files outside `anthill/prelude` are not in that list, and
+`anthill/reflect` in particular refuses most of its own declarations because its central
+types are abstract sorts.
+
+The compile does **not** replace the string-match tests — it makes a check they cannot.
+Output that compiles and means something else is invisible to it: `enum Pair: case Pair(…)`
+compiles (§6.3), a well-formed but wrong supertrait claim compiles, and `zeroval` would
+satisfy it as readily as `zeroVal` (§5). What only the compile catches is output that is
+not Scala at all, and output naming a declaration nothing in the closure emits — the
+`Iterable` and `Modifiable` cascades shipped green under string matching for two releases.
+
 **Target language version**: Scala 3.3+ (LTS). The `enum` keyword, top-level definitions, intersection / union types, and context functions are part of the baseline.
 
 ## 1.1 Output layout
