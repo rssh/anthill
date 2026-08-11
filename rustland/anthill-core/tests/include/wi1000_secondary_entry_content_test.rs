@@ -519,12 +519,14 @@ fn the_provides_block_interior_is_classified() {
 /// THE ORPHAN CLAIM — the capability the fact ban must NOT have taken, and the reason
 /// the ban is narrow rather than a retirement of the `fact` spelling.
 ///
-/// The two spellings take their carrier from DIFFERENT PLACES, measured: a `provides`
-/// clause files under the ENCLOSING SCOPE's owner (so `provides Show[T = Other]`
-/// inside `namespace Rec` records `(Rec, Show)`, the binding being a spec argument and
-/// not a carrier selector — silently, which is WI-1069 and not this ticket's), while
-/// `fact Show[T = Other]` derives the carrier from the BINDINGS. So `fact Spec[Carrier]` is the only way to declare that some OTHER sort
-/// satisfies a spec, and it must stay writable.
+/// The two spellings differ ONLY WHERE THE SCOPE NAMES NO TYPE — WI-1069 measured it
+/// and corrected what this comment used to say. `provides Show[T = Other]` in a
+/// namespace with a sort at its address records `(Rec, Show-for-Other)`: provider from
+/// the scope, carrier from the binding, i.e. a witness. So does `fact Show[T = Other]`
+/// written in that same body. At an address NO type occupies the `provides` clause has
+/// no provider to be about and is refused, while `fact Show[T = Other]` still derives
+/// its carrier from the bindings — which is why the one-level-out `fact` spelling must
+/// stay writable, and it is the only thing that must.
 ///
 /// It does. R3 reaches a `namespace X` block's DIRECT content and nothing else, so a
 /// claim about a foreign carrier — which is not a claim about `X` at all — is written

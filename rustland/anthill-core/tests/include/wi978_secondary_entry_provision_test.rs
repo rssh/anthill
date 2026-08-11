@@ -104,16 +104,22 @@ const SORT: &str = "sort Rec\n    entity rec(n: Int64)\n  end";
 /// refused and `provides Spec[X]` is the one allowed — the claim is welcome, only
 /// that spelling of it is not, because in an entry a `fact` cannot be told from an
 /// ordinary fact over a parameterized data sort while `provides` is a declaration the
-/// grammar recognises. Outside, `provides` would file under the enclosing NAMESPACE
-/// (`load_provides_clause` takes the enclosing scope as the providing sort), so the
-/// one-level-out claim must stay the `fact` spelling that names its carrier in the
-/// bindings. The pair below is therefore the only writable one, and the property it
-/// measures is unchanged: the two spellings coincide EXACTLY when the carrier is the
-/// entry's own sort, which is this fixture's case and the one 059 R3 retires in favour
-/// of `provides`. They are not interchangeable in general — `provides` takes the
-/// carrier from the enclosing scope and `fact` from the bindings, so only `fact` can
-/// name a FOREIGN carrier — but that is not what varies here, and the obligation must
-/// reach the claim in the entry exactly as it reaches the claim outside.
+/// grammar recognises. Outside, `provides` has no type at its address at all and is
+/// refused (`ProvidesClauseNeedsSort`), so the one-level-out claim must stay the
+/// `fact` spelling. The pair below is therefore the only writable one.
+///
+/// WHAT SEPARATES THE TWO IS THE SCOPE, NOT THE SPELLING — WI-1069, correcting what
+/// this comment used to claim ("only `fact` can name a FOREIGN carrier"). Inside a
+/// sort body they record ONE PROVISION: `load_fact` takes `sort_ref` from the enclosing
+/// scope whenever that scope names a type, exactly as `load_provides_clause` does, and
+/// BOTH leave the carrier in the bindings for `provision_carrier_binding` to read — so
+/// `provides Spec[Other]` in an entry is a writable witness claim, and R3 costs no
+/// CLAIM. What it does cost is the fact's queryable head, a `fact` being a rule with an
+/// empty body — which is the very surface the ban exists to withhold. On the provision
+/// itself they diverge only at an address no type occupies, which is the one thing the
+/// pair below cannot vary. The
+/// property it measures is unchanged: the obligation must reach the claim in the entry
+/// exactly as it reaches the claim outside.
 fn fixture(ns: &str, main_entry: &str, claim_in_entry: bool, backed: bool) -> String {
     let (inner_claim, outer_claim) = if claim_in_entry {
         ("provides Show[T = Rec]", "")

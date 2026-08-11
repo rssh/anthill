@@ -5083,13 +5083,18 @@ impl SecondaryEntryPass<'_> {
     /// bindings, the way a namespace-level `fact Spec[Carrier]` does, is 058 §4's
     /// proposal to retire the `fact` spelling, not something to slip in here.
     ///
-    /// THE ADJACENT SHAPE IS NOT REFUSED AND IS NOT THIS PASS'S — WI-1069. A
-    /// `provides Spec[T = Other]` written where a sort DOES occupy the address files
-    /// under that sort and not under `Other`, silently, because the clause's bindings
-    /// are the spec's arguments and never a carrier selector. Pre-existing (a sort
-    /// body has always admitted it), and refusing it needs the corpus population that
-    /// binds a non-carrier spec parameter deliberately — §8.7's `provides Effect[T =
-    /// ConsoleOutput]` on `sort Console` — measured first.
+    /// THE ADJACENT SHAPE IS NOT REFUSED, AND WI-1069 SETTLED WHY. A `provides Spec[T
+    /// = Other]` written where a sort DOES occupy the address records that sort as the
+    /// PROVIDER and `Other` as the CARRIER — the two are separate questions and the
+    /// provision answers both, the carrier being read off the bindings by
+    /// `provision_carrier_binding` (`kb/typing.rs`). That is a WITNESS, the shape 058
+    /// §3.6's defaults and witness dispatch are built on, and it records the same
+    /// PROVISION `fact Spec[T = Other]` records in that same body — not the same
+    /// statement, the fact additionally entering the rule index. Refusing it was
+    /// implemented and measured: in its plain form it refuses the shipped stdlib at
+    /// five sites, and with a carrier naming one of the provider's own type parameters
+    /// exempted it fails 90 tests across 25 modules. See
+    /// `wi1069_provides_binding_carrier_test` and kernel-language §5.1.
     fn refuse_orphan_provides(&mut self, namespace: &str, items: &[Item]) {
         for item in items {
             if let Item::ProvidesClause(pc) = item {

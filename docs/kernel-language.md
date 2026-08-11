@@ -943,7 +943,7 @@ admitted:
 | a `proof`, or a standalone `describe` | allowed **iff its target is declared in this same entry**. A proof writes its verdict back onto the target declaration and a `describe` writes a description onto it, so neither may reach a declaration another entry owns |
 | an `entity`, or a type-parameter binder (`sort T = ?`, `sort ?T`, `sort [T]`, `sort [F] { … }`) | **refused** — a constructor and a type parameter are the type's identity, and identity is declared once (§5.2, §6.3) |
 | a sort-level `requires` | **refused** — a requirement constrains every CALLER of the type's operations, and an entry may not add an obligation to a type's users. The qualified call `Spec.op(x)` needs no clause |
-| a `rule`, a `rule { … }` block, any `fact`, any `constraint` | **refused** — the search over rules is not monotone, so a clause added here can falsify a statement already proved. Facts are rules, so the ban reaches them. A claim that THIS sort satisfies a spec is written `provides Spec[…]`; a claim about any other carrier is not about this sort and is written one level out, where `fact Spec[Carrier]` remains the spelling |
+| a `rule`, a `rule { … }` block, any `fact`, any `constraint` | **refused** — the search over rules is not monotone, so a clause added here can falsify a statement already proved. Facts are rules, so the ban reaches them. Every spec claim an entry can make is written `provides Spec[…]` — including one whose carrier is some OTHER sort, which is a witness claim and so genuinely about this sort (it supplies the dictionary). What the ban costs is only the `fact` SPELLING of those claims, not the claims; `fact Spec[Carrier]` one level out remains available and is the only spelling at an address no type occupies |
 
 An **entry** is individuated by file: all `namespace X` text at one address
 within one file is ONE secondary entry, and the same text in a second file is a
@@ -964,12 +964,46 @@ a fresh head owned by one entry is sound, but deciding "introduces" needs a head
 binding that does not depend on declaration order, which §5.3 does not yet
 guarantee.
 
-**A `provides` clause names its subject by WHERE it is written** — the enclosing
-sort, or a secondary entry at that sort's address. Its bindings are the spec's
-arguments, not a carrier selector, so `provides Spec[T = Other]` still records
-the enclosing sort as the provider, silently (WI-1069). Written in a namespace
-that names no type it is refused. To claim that some other carrier satisfies a
-spec, write `fact Spec[Carrier]`, whose carrier does come from the bindings.
+**A `provides` clause names its PROVIDER by WHERE it is written, and its CARRIER
+by its bindings** — two questions, and the provision records both (WI-1069). The
+provider is the enclosing sort, or a secondary entry at that sort's address; it
+is whose member set becomes the dictionary. The carrier is the value bound to the
+spec's **carrier parameter**, its first declared type parameter, and it is what
+the provision dispatches at. Where the two coincide the clause is an ordinary
+self-provision (`sort Set provides Eq[T = Set]`). Where they differ it is a
+**witness** — `sort ListOrd provides Ord[T = List[T = E]]` says `ListOrd`
+supplies the `Ord` dictionary *for* `List` — which is the shape proposal 058
+§3.6's defaults, `DefaultProvider` and witness dispatch are all built on. One
+owner decides this for every reader (`provision_carrier_binding` /
+`witness_dispatch_carrier_value`), so the load checks, the coherence grouping and
+dispatch cannot disagree about what a witness is. **The carrier parameter is
+identified POSITIONALLY**, and that is a heuristic rather than a declaration —
+nothing marks a sort as a spec or a parameter as its carrier. A **self-carried**
+spec, whose carrier is the spec sort itself and which therefore declares no
+carrier parameter, does not satisfy it: `sort List provides Stream[T, {}]` names
+`Stream`'s *element* parameter first, so the provision is recorded at carrier `T`
+and `List` does not `self_provides` `Stream` (measured). Provider admissibility is
+unaffected, because it reads the PROVIDER and not the dispatch carrier — the
+`provides()` rule joins on `SortProvidesInfo(sort_ref:)` — so a `List` is still
+usable where a `Stream` is expected; and a provision with an explicit carrier
+parameter is right either way (`List provides FiniteCollection[C = List[T]]`
+records `List`). What has the hole is the defaults substrate, which reads the
+dispatch carrier and so infers no default row for a self-carried spec.
+**TICKET WI-1076.**
+
+**Inside a sort body, `provides Spec[…]` and `fact Spec[…]` record the same
+PROVISION** — both take the provider from the scope and the carrier from the
+bindings, so neither can say something about a carrier the other cannot. They are
+not the same *statement*, and the difference is what 058 §4's retirement of the
+`fact` spelling actually costs. A fact is a rule with an empty body (§5.3), so it
+also enters the rule index: the goal `Spec(T: ?q)` answers under the `fact`
+spelling and not under `provides` (measured). Two further asymmetries run the
+other way — a `fact` naming a non-parametric sort **with constructors** asserts a
+data instance and emits no provision at all (§8.7), and a conditional provision
+`provides Spec[…] :- goals` has no `fact` spelling. Outside a sort body the two
+diverge on the provision as well: at an address no type occupies a `fact` still
+derives its carrier from the bindings, while a `provides` clause has no provider
+to be about and is refused.
 
 **A declaration may not capture a name it does not override** (proposal 059 R4
 clause 3; `check_name_captures`, `kb/load.rs`). A name can already mean something

@@ -73,7 +73,7 @@ fn load_errors(src: &str) -> Vec<String> {
 /// back as a `Value::Term`, while a field read straight off a matched fact comes back as
 /// a `Value::Node` occurrence. Gating on `Value::Term` here panicked on the declared
 /// leg alone.
-fn relation_rows(kb: &mut KnowledgeBase, rel: &str, arity: usize) -> Vec<String> {
+pub(crate) fn relation_rows(kb: &mut KnowledgeBase, rel: &str, arity: usize) -> Vec<String> {
     let qn = format!("anthill.reflect.typing.{rel}");
     let sym = kb
         .try_resolve_symbol(&qn)
