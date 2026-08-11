@@ -52,6 +52,16 @@
 //! [`a_de_bruijn_var_is_not_one_of_these_forms`]) pass under that back-out by design, and say
 //! so at their sites: they fix the BOUNDARY of the claim rather than measuring the change.
 //!
+//! THE SAME DUPLICATE EXISTED FOR THE FLEX HALF and is gone too — `value_flex_var_id` and
+//! `value_is_anonymous_wildcard` each opened with a hand-rolled `Value::Term{Var::Global}` /
+//! `Value::Var(Global)` match. Those were NARROWER than the boundary, not just redundant:
+//! neither had a `Value::Node` arm, while an occurrence carrying `Expr::Var(Global)` heads as
+//! `ViewHead::Var` and is a flexible variable like any other. So an anonymous `?` in a slot
+//! that rides the Node carrier (because a sibling binding is denoted-bearing) answered "not a
+//! variable", and the WI-1063/WI-1078 opening silently did not fire for that spelling. Both
+//! now ask `extract_type`. Found by review, not by the suite — no row here or elsewhere
+//! reaches that carrier today, which is exactly why it could sit there unnoticed.
+//!
 //! ## THE DEFECT WAS LIVE, and by a wide margin — counted, not argued
 //!
 //! The ticket asked whether a skolem ever REACHES `extract` today, expecting a negative that
@@ -113,12 +123,17 @@ fn field<'a>(v: &'a Value, key: Symbol) -> Option<&'a Value> {
 /// Driven through eval rather than through the Rust `extract_type` on purpose: the ticket's
 /// deliverable is that a PROGRAM can `case` over these forms, and a Rust-level assertion would
 /// pass while the entity the stdlib declares was still missing or misnamed.
-fn extract_var(kb: KnowledgeBase, v: Var) -> (Symbol, String, i64) {
-    let mut kb = kb;
+fn extract_var(kb: &mut KnowledgeBase, v: Var) -> (Symbol, String, i64) {
     let ty = kb.alloc(Term::Var(v));
     let name_key = kb.intern("name");
     let id_key = kb.intern("id");
-    let mut interp = Interpreter::new(kb);
+    // ONE KnowledgeBase THROUGHOUT. The first cut took `kb` by VALUE, which forced each row
+    // to build a SECOND KB for its second variable and then compare symbols across the two —
+    // valid only while both symbol tables happen to be byte-identical. `SymbolTable::local_name`
+    // indexes `defs` unguarded, so a variable named anything the stdlib does not already intern
+    // (`?E`, `Rho`) minted an id past the other table's end and the row panicked out of bounds
+    // instead of failing. Borrowing removes the hazard rather than documenting it.
+    let mut interp = Interpreter::new(std::mem::replace(kb, KnowledgeBase::new()));
     register_standard_builtins(&mut interp).expect("register builtins");
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
@@ -135,6 +150,7 @@ fn extract_var(kb: KnowledgeBase, v: Var) -> (Symbol, String, i64) {
         Some(Value::Int(n)) => *n,
         other => panic!("`id` field missing or not an Int: {other:?}"),
     };
+    *kb = interp.into_kb();
     (functor, name, id)
 }
 
@@ -154,20 +170,21 @@ fn ctor(kb: &KnowledgeBase, short: &str) -> Symbol {
 #[test]
 fn a_rigid_reifies_as_a_skolem_and_a_flex_var_as_a_flex_var() {
     let mut kb = load_kb_with("");
-    let name = kb.intern("E");
+    // A name the stdlib does NOT already intern — see `extract_var`'s note. With the
+    // by-value helper this row panicked out of bounds instead of asserting.
+    let name = kb.intern("Rho");
     let rigid = Var::Rigid(kb.fresh_var(name));
     let flex = Var::Global(kb.fresh_var(name));
     let skolem_ctor = ctor(&kb, "Skolem");
     let flex_ctor = ctor(&kb, "FlexVar");
 
-    let (f, n, _) = extract_var(kb, rigid);
+    let (f, n, _) = extract_var(&mut kb, rigid);
     assert_eq!(f, skolem_ctor, "a `Var::Rigid` is an OPAQUE CONSTANT");
-    assert_eq!(n, "E", "and it carries the name a diagnostic prints");
+    assert_eq!(n, "Rho", "and it carries the name a diagnostic prints");
 
-    let kb2 = load_kb_with("");
-    let (f2, n2, _) = extract_var(kb2, flex);
+    let (f2, n2, _) = extract_var(&mut kb, flex);
     assert_eq!(f2, flex_ctor, "a `Var::Global` is a UNIFIABLE HOLE");
-    assert_eq!(n2, "E", "same name, different form — the kind is what decides");
+    assert_eq!(n2, "Rho", "same name, different form — the kind is what decides");
 }
 
 /// IDENTITY IS THE `id`, NOT THE NAME. Two skolems minted for one parameter name are
@@ -180,13 +197,12 @@ fn a_rigid_reifies_as_a_skolem_and_a_flex_var_as_a_flex_var() {
 #[test]
 fn two_skolems_of_one_name_are_two_types() {
     let mut kb = load_kb_with("");
-    let name = kb.intern("E");
+    let name = kb.intern("Rho");
     let a = Var::Rigid(kb.fresh_var(name));
     let b = Var::Rigid(kb.fresh_var(name));
 
-    let kb2 = load_kb_with("");
-    let (_, na, ia) = extract_var(kb, a);
-    let (_, nb, ib) = extract_var(kb2, b);
+    let (_, na, ia) = extract_var(&mut kb, a);
+    let (_, nb, ib) = extract_var(&mut kb, b);
 
     assert_eq!(na, nb, "they render alike — that is the trap");
     assert_ne!(ia, ib, "and they are NOT the same type; `id` is what says so");

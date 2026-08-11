@@ -7580,10 +7580,20 @@ impl KnowledgeBase {
     /// A type is a term in the DECLARED reflect vocabulary — `entity TypeVar(name:
     /// Symbol)` beside `SortRef` / `Parameterized` / the arrow, in
     /// `stdlib/anthill/prelude/sort.anthill` — and `typing::type_head` dispatches on
-    /// the functor's qualified name. `Var` is not in that vocabulary: `type_head` reads
-    /// `ViewHead::functor_sym()`, which is `None` for a `Var`, so a bare logic var in
-    /// type position classifies as `TypeHead::Error`. It would not be an UNKNOWN type,
-    /// it would be a MALFORMED one.
+    /// the functor's qualified name.
+    ///
+    /// WI-1079 CORRECTED WHAT THIS PARAGRAPH USED TO SAY. It read: "`Var` is not in that
+    /// vocabulary … a bare logic var in type position classifies as `TypeHead::Error`. It
+    /// would not be an UNKNOWN type, it would be a MALFORMED one." The first half was a true
+    /// description of the CODE and a false one of the LANGUAGE, and the code has since moved:
+    /// a logic variable now classifies as `TypeHead::FlexVar` / `TypeHead::Skolem` and reifies
+    /// as the matching stdlib entity. A skolem is an opaque CONSTANT, not a malformed term.
+    ///
+    /// WHAT SURVIVES IS THE DISTINCTION, and it is why this function still exists: a
+    /// `type_var` is neither of those forms. It is the PLACEHOLDER for a type that has no
+    /// name — an un-annotated lambda binder (`?param`), a carrier the effect lowering could
+    /// not read (`?_`) — and it carries a name and NO identity, where a variable carries an
+    /// `id` that is its identity. Three forms, three questions.
     ///
     /// The semantics differ where it matters. A `Var::Global` is a LOGIC variable:
     /// unification BINDS it, and the discrimination tree reads a flex `Global` as a

@@ -147,6 +147,15 @@ fn stdlib_spec_bindings_all_extract_non_error() {
                 continue;
             };
             for (param, val) in spec_binding_values(&kb, spec) {
+                // WI-1079 NARROWED WHAT THIS CATCHES, and the loss is recorded rather than
+                // absorbed. A raw `Term::Var(Var::Global)` stored in a binding position used
+                // to trip this assertion; it now classifies as `TypeExtractor::FlexVar` and
+                // passes. That is the criterion working as stated — `Error` is for malformed
+                // USER input, never a system-minted shape, and an inference variable is
+                // system-minted — but "no stored binding carries an UNRESOLVED variable" is a
+                // different claim, and nothing asserts it now. If a leak of that class turns
+                // up, it will not be caught here; add a `FlexVar` arm with its own reason
+                // rather than widening this one back.
                 assert!(
                     !matches!(extract_type(&kb, &val), TypeExtractor::Error),
                     "{info} binding `{}` = {:?} extracts as TypeExtractor::Error — every stored \

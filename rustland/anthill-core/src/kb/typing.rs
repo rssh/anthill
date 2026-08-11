@@ -43953,16 +43953,22 @@ fn value_is_flex_var(kb: &KnowledgeBase, v: &Value) -> bool {
 /// fresh `VarId`.
 ///
 /// Deliberately NOT reading a `TypeExtractor::TypeVar` carrier, which
-/// [`value_is_anonymous_wildcard`] does read: that spelling carries a NAME AND NOTHING ELSE
-/// (WI-1079), so there is no `VarId` to answer with. A reflect-minted type var therefore keeps
-/// WI-1063's behaviour — the anonymous test still sees it, and a named one is left alone.
+/// [`value_is_anonymous_wildcard`] does read: that spelling carries a NAME AND NOTHING ELSE,
+/// so there is no `VarId` to answer with. A reflect-minted type var therefore keeps WI-1063's
+/// behaviour — the anonymous test still sees it, and a named one is left alone.
+///
+/// ASKED THROUGH [`extract_type`], NOT BY MATCHING CARRIERS (WI-1079). The first cut wrote the
+/// two carriers out by hand — `Value::Term{Term::Var(Global)}` and `Value::Var(Global)` — as
+/// the sibling [`value_contains_rigid`] used to for the rigid half, and for the same reason:
+/// the boundary could not answer. It can now, and the hand-rolled version was not merely a
+/// duplicate but NARROWER — it had no `Value::Node` arm, while an occurrence carrying
+/// `Expr::Var(Global)` heads as `ViewHead::Var` and so IS a flexible variable. That gap was
+/// one-directional and silent: a slot on the Node carrier answered "not a variable", so
+/// [`value_is_anonymous_wildcard`] declined it and the WI-1063/WI-1078 opening did not fire
+/// for that spelling.
 fn value_flex_var_id(kb: &KnowledgeBase, v: &Value) -> Option<VarId> {
-    match v {
-        Value::Term { id, .. } => match kb.get_term(*id) {
-            Term::Var(Var::Global(vid)) => Some(*vid),
-            _ => None,
-        },
-        Value::Var(Var::Global(vid)) => Some(*vid),
+    match extract_type(kb, v) {
+        TypeExtractor::FlexVar { name, id } => Some(VarId::new(id, name)),
         _ => None,
     }
 }
@@ -43995,16 +44001,14 @@ fn value_flex_var_id(kb: &KnowledgeBase, v: &Value) -> Option<VarId> {
 ///   definition reaches a type slot as the sort's canonical `SortAlias` target, not as this
 ///   carrier — a written sort parameter arrives resolved, and its tie survives.
 fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool {
+    // BOTH SPELLINGS THROUGH ONE BOUNDARY (WI-1079). The `_` arm used to write the parser's
+    // two carriers out by hand and so missed the third — a `Value::Node` occurrence carrying
+    // `Expr::Var(Global)`, which heads as `ViewHead::Var` and is a flexible variable like any
+    // other. `extract_type` reads all three, which is the point of it.
     let name = match extract_type(kb, v) {
         TypeExtractor::TypeVar(n) => n,
-        _ => match v {
-            Value::Term { id, .. } => match kb.get_term(*id) {
-                Term::Var(Var::Global(vid)) => vid.name(),
-                _ => return false,
-            },
-            Value::Var(Var::Global(vid)) => vid.name(),
-            _ => return false,
-        },
+        TypeExtractor::FlexVar { name, .. } => name,
+        _ => return false,
     };
     anonymous_var_name(kb, name)
 }
