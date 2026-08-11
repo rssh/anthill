@@ -14,6 +14,16 @@
 //!   1. head-qualification (SCOPE-RELATIVE), then
 //!   2. the absolute qualified name, guarded by `head_owns_path`.
 //!
+//! WI-1075 gave rung 2 its own SPELLING and retired the implicit reading: `a.b.c` is
+//! rung 1 and nothing else (a miss under the head is loud), `..a.b.c` is rung 2 and
+//! nothing else. The fixtures below that reached rung 2 therefore write `..` — and the
+//! uniformity claim is unchanged and stronger, because the marker must be understood by
+//! every position too. The ONE implicit-absolute route left is the visibility
+//! fall-through this file pins (`wi752_internal_head_hit_falls_through_to_the_absolute_rung`):
+//! a hit REJECTED FOR VISIBILITY has not bound the path, which is a different question
+//! from a miss, and `head_owns_path` — now `hidden_hit_ends_the_path` — is what is left
+//! deciding it.
+//!
 //! WHAT THESE TESTS ARE FOR. Every test below writes ONE dotted spelling and checks
 //! that every position agrees about it — so a future rung added to one resolver and
 //! forgotten in the others fails here rather than shipping as the next WI-75x. The
@@ -89,15 +99,17 @@ end
     }
 }
 
-/// The ABSOLUTE rung, in every position. Reaching it needs the head slot taken by a
-/// NON-namespace (a namespace head owns its paths — `head_owns_path`), so `sort myroot`
-/// is load-bearing: it makes head-qualification miss and hands the name to rung 2.
+/// The ABSOLUTE rung, in every position — since WI-1075 spelled `..`, which is what
+/// makes this a request rather than a rescue. `sort myroot` remains load-bearing in a
+/// new way: it is what the marked path has to SURVIVE, and its unmarked twin below is
+/// loud under exactly that declaration.
 ///
 /// GREEN BEFORE WI-752, deliberately kept: WI-751 gave the term functor and the rule
 /// citation this rung, and the type reference's bare `by_qualified_name` lookup happened
 /// to agree here. It is a UNIFORMITY guard, not a bug detector — it fails if a future
-/// change reaches the absolute rung from some positions and not others. What the type
-/// position did NOT share was the guard beside that rung, which the next test measures.
+/// change reaches the absolute reading from some positions and not others, which is now
+/// also the question "does every position understand `..`". What the type position did
+/// NOT share was the guard beside that rung, which the next test measures.
 #[test]
 fn wi752_absolute_path_resolves_in_every_position() {
     const SRC: &str = r#"
@@ -119,15 +131,15 @@ namespace test.wi752abs
   sort myroot
     entity mr(row: Int64)
   end
-  operation callSite() -> Int64 effects Error = myroot.inner.helper()
-  operation typeSite(x: myroot.inner.T) -> Int64 = 2
-  operation citeSite() -> Bool effects Error = myroot.inner.rel.isEmpty
+  operation callSite() -> Int64 effects Error = ..myroot.inner.helper()
+  operation typeSite(x: ..myroot.inner.T) -> Int64 = 2
+  operation citeSite() -> Bool effects Error = ..myroot.inner.rel.isEmpty
 end
 "#;
     try_load_kb_with(SRC).unwrap_or_else(|errs| {
         panic!(
-            "with `sort myroot` holding the head slot, every position must fall to the \
-             ABSOLUTE rung and resolve `myroot.inner.*`; got:\n{}",
+            "with `sort myroot` holding the head slot, every position must read `..` as \
+             the ABSOLUTE spelling and resolve `myroot.inner.*`; got:\n{}",
             errs.join("\n")
         )
     });
@@ -139,6 +151,33 @@ end
     {
         Value::Int(n) => assert_eq!(n, 41, "must reach `myroot.inner.helper`"),
         other => panic!("expected an Int, got {other:?}"),
+    }
+
+    // The UNMARKED twin, per position. WI-1075: `sort myroot` takes the head slot, the
+    // path misses under it, and there is no implicit re-root — in EVERY position, which
+    // is this file's claim applied to the new rule.
+    for (marked, position) in [
+        ("..myroot.inner.helper()", "term functor"),
+        ("..myroot.inner.T", "type reference"),
+        ("..myroot.inner.rel.isEmpty", "rule citation"),
+    ] {
+        let relative = SRC.replace(marked, marked.trim_start_matches(".."));
+        let errs = try_load_kb_with(&relative).err().unwrap_or_else(|| {
+            panic!(
+                "the UNMARKED path in {position} position must be loud under `sort \
+                 myroot` — a position that kept the implicit absolute reading is the \
+                 divergence this file exists to catch"
+            )
+        });
+        // The RENDERING is position-dependent once the path fails to resolve (the term
+        // functor reports an unknown functor, the citation decomposes into unresolved
+        // segments), and pinning it here would be pinning the FALLBACK rather than the
+        // rule. What is pinned is that each position refuses, and refuses about the
+        // path that was written.
+        assert!(
+            errs.iter().any(|e| e.contains("myroot") || e.contains("inner")),
+            "the {position} miss must be about the path's segments; got: {errs:?}"
+        );
     }
 }
 
@@ -275,8 +314,22 @@ fn proof_record_targets(kb: &mut KnowledgeBase) -> Vec<String> {
 /// The old per-rung gate (`accept_qualified_hit`) reported `ForbiddenInternalAccess` and
 /// returned, so an unrelated shadowing declaration carrying an `internal` member of the
 /// right name broke an otherwise-valid absolute path AND named a symbol the author never
-/// wrote. The pair below is byte-identical but for the internal member's NAME, so the
-/// only thing that can explain a divergence is the terminating gate.
+/// wrote.
+///
+/// THE PAIR CHANGED WITH WI-1075, and the change is what makes it sharp. Both halves are
+/// still byte-identical but for the internal member's NAME, and they now ANSWER
+/// DIFFERENTLY:
+///
+/// | fixture | reading |
+/// |---|---|
+/// | `internal util` — COLLIDES | rung 1 HITS and is hidden → not a binding → the absolute reading answers 41 |
+/// | `internal utilX` — the CONTROL | rung 1 does not hit at all → a plain miss → **loud** |
+///
+/// Before WI-1075 both answered 41, because the absolute rung fired unconditionally and
+/// the control could not distinguish "the hit was unusable" from "there was no hit". The
+/// fall-through is keyed on a HIDDEN HIT, and that is exactly what the pair now measures
+/// — conflating the two (the naive form of WI-1075) fails the COLLIDING half, and
+/// dropping the miss's loudness fails the control.
 #[test]
 fn wi752_internal_head_hit_falls_through_to_the_absolute_rung() {
     const COLLIDING: &str = r#"
@@ -293,8 +346,8 @@ namespace test.wi752int
   operation callSite() -> Int64 effects Error = lib.util()
 end
 "#;
-    // identical but for the internal member's name — it no longer collides, so the
-    // absolute rung was always reachable here
+    // identical but for the internal member's name — it no longer collides, so rung 1
+    // produces no hit at all and the path is an ordinary relative miss
     const CONTROL: &str = r#"
 namespace lib
   import anthill.prelude.Int64
@@ -309,28 +362,39 @@ namespace test.wi752int
   operation callSite() -> Int64 effects Error = lib.util()
 end
 "#;
-    for (src, label) in [(COLLIDING, "colliding"), (CONTROL, "renamed (the control)")] {
-        try_load_kb_with(src).unwrap_or_else(|errs| {
-            panic!(
-                "with an {label} `internal` member, `lib.util()` must still reach the \
-                 absolute `lib.util` — a rung's hit being unusable is a reason to try \
-                 the NEXT rung, not to stop; got:\n{}",
-                errs.join("\n")
-            )
-        });
-        let mut interp = interp_for(src);
-        match interp
-            .call("test.wi752int.callSite", &[])
-            .expect("`lib.util()` must run")
-        {
-            Value::Int(n) => assert_eq!(
-                n, 41,
-                "with an {label} `internal` member, `lib.util()` must answer the \
-                 absolute `lib.util` (41)"
-            ),
-            other => panic!("expected an Int, got {other:?}"),
-        }
+    try_load_kb_with(COLLIDING).unwrap_or_else(|errs| {
+        panic!(
+            "with a COLLIDING `internal` member, `lib.util()` must still reach the \
+             absolute `lib.util` — a rung's hit being unusable is a reason to try the \
+             NEXT reading, not to stop; got:\n{}",
+            errs.join("\n")
+        )
+    });
+    let mut interp = interp_for(COLLIDING);
+    match interp
+        .call("test.wi752int.callSite", &[])
+        .expect("`lib.util()` must run")
+    {
+        Value::Int(n) => assert_eq!(
+            n, 41,
+            "the hidden hit did not bind the path, so `lib.util()` answers the absolute \
+             `lib.util` (41), not the `internal` member's 2"
+        ),
+        other => panic!("expected an Int, got {other:?}"),
     }
+
+    let errs = try_load_kb_with(CONTROL).err().unwrap_or_else(|| {
+        panic!(
+            "THE CONTROL: with the internal member RENAMED there is no hit to be hidden, \
+             so `lib.util()` is a plain miss under the `sort lib` its head binds — and \
+             WI-1075 makes that loud. A clean load here means the fall-through fires on \
+             a MISS too, which is the implicit absolute reading back again"
+        )
+    });
+    assert!(
+        errs.iter().any(|e| e.contains("lib.util")),
+        "the control's miss must name `lib.util`; got: {errs:?}"
+    );
 }
 
 /// The fall-through must not become a LOOPHOLE. When `internal` hides the only reading
@@ -340,6 +404,12 @@ end
 /// GREEN BEFORE WI-752: this guards the NEW code, not the old defect. Making a hidden
 /// hit non-terminal is exactly the change that could have turned this diagnostic into a
 /// generic unknown-name error, so it is asserted alongside the fall-through it bounds.
+///
+/// WI-1075 spelled the path `..`, which is what keeps the fixture's SUBJECT. Unmarked, it
+/// is now a plain relative miss under the `sort lib` its head binds, and the loud finding
+/// would be that miss rather than the forbidden access — a correct answer to a different
+/// question. Marked, the reading reaches `lib.secret.hidden` and is refused for
+/// visibility, which is the loophole this test is about.
 #[test]
 fn wi752_internal_with_no_other_reading_still_reports() {
     const SRC: &str = r#"
@@ -353,7 +423,7 @@ namespace test.wi752intloud
   sort lib
     entity l(v: Int64)
   end
-  operation bad() -> Int64 effects Error = lib.secret.hidden()
+  operation bad() -> Int64 effects Error = ..lib.secret.hidden()
 end
 "#;
     let errs = try_load_kb_with(SRC)
@@ -388,6 +458,11 @@ end
 /// hit is filtered, `head_owns_path` stands the absolute rung down, the gate declines,
 /// and the error becomes `anthill.prelude.Relation.hidden … no such member (dot
 /// dispatch)` — a member miss on a relation the author never mentioned.
+///
+/// WI-1075 spelled the path `..`, for the same reason as the test above: unmarked, the
+/// head binds the labelled rule `lib` and the path misses under it, so the finding would
+/// be that miss. The gate's question — "does this path have an ANSWER, hidden or not" —
+/// needs a path that HAS one, and `..lib.hidden` is how that is written now.
 #[test]
 fn wi752_reroute_gate_keeps_the_precise_internal_diagnostic() {
     const SRC: &str = r#"
@@ -403,7 +478,7 @@ namespace test.wi752gate
   end
   fact q(row: 1)
   rule lib: rel(?x) :- q(row: ?x)
-  operation bad() -> Int64 effects Error = lib.hidden()
+  operation bad() -> Int64 effects Error = ..lib.hidden()
 end
 "#;
     let errs = try_load_kb_with(SRC)

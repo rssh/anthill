@@ -8,7 +8,7 @@ use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-use crate::intern::{positional_label, Symbol, SymbolTable};
+use crate::intern::{positional_label, Symbol, SymbolTable, ABSOLUTE_PATH_MARKER};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::span::Span;
 
@@ -462,6 +462,19 @@ impl<'a> Converter<'a> {
     // ── Root ────────────────────────────────────────────────────
 
     pub fn convert_file(&mut self, root: Node) {
+        // WI-1075: when recovery cannot even build a `source_file`, the ROOT ITSELF is
+        // an `ERROR` and its children are the fragments the parser could not place — a
+        // stray `name`, a stray `identifier`. Walking them reports each as an
+        // "unexpected top-level node", which is not a second finding but the SAME
+        // syntax error told again in a vocabulary the author cannot act on. The syntax
+        // error is already reported, located, by `parse::parse`'s ERROR walk; this
+        // returns rather than inventing derived ones.
+        //
+        // MEASURED on `fact mk(x:` (wi852's fixture, `--pattern` form): three stderr
+        // lines, of which two were `unexpected top-level node: name` / `: identifier`.
+        if root.is_error() {
+            return;
+        }
         // WI-853: a top-level `import` is collected the way a namespace / sort
         // body's is — into the imports of the thing that OWNS the scope it
         // enters, here the file, whose scope is `_global`. It is NOT an `Item`:
@@ -543,6 +556,24 @@ impl<'a> Converter<'a> {
     fn convert_name(&mut self, node: Node) -> Name {
         let span = self.span(node);
         let mut segments = SmallVec::new();
+        // WI-1075: an `absolute_name` (`..a.b.c`) needs NO arm of its own. Its head
+        // segment is a single token that INCLUDES the marker, aliased to `identifier`,
+        // so the generic scan below reads it as the segments `["..a", "b", "c"]` — the
+        // marker riding on the head's text is exactly the representation every
+        // consumer downstream wants (`join_name_segments` for a call functor, the
+        // `Ident`-rooted `field_access` chain for a bare reference), and the segment
+        // COUNT stays the path's, so callers that read `segments.len()` (namespace
+        // nesting, rule-prefix splitting) see the shape a relative path has.
+        //
+        // `..` cannot occur in an identifier ([`ABSOLUTE_PATH_MARKER`]), so a marked
+        // head collides with no user symbol, and a path that fails to resolve is
+        // interned under the text the AUTHOR WROTE — which is what the `unknown
+        // functor` diagnostic then names.
+        debug_assert!(
+            node.kind() != "absolute_name"
+                || self.text(node).starts_with(ABSOLUTE_PATH_MARKER),
+            "an `absolute_name`'s head token must carry the marker into its text"
+        );
         if node.kind() == "field_access" {
             self.collect_field_access_segments(node, &mut segments);
             return Name { segments, span };
@@ -612,7 +643,7 @@ impl<'a> Converter<'a> {
     fn convert_type(&mut self, node: Node) -> TypeExpr {
         match node.kind() {
             "simple_type" => {
-                let name_node = self.child_by_kind(node, "name").unwrap_or(node);
+                let name_node = self.ref_name_child(node).unwrap_or(node);
                 TypeExpr::Simple(self.convert_name(name_node))
             }
             "application" => {
@@ -919,7 +950,12 @@ impl<'a> Converter<'a> {
                 results.push(tid);
             }
             "ref_term" => {
-                let name_node = self.child_by_kind(node, "name");
+                // WI-1075: either spelling — `Ref(a.b)` or `Ref(..a.b)`. A bare
+                // `child_by_kind(_, "name")` sees only the first, and the marked form
+                // then fell to the `?` placeholder below and loaded as `unresolved name
+                // '?'` — a position that admits the marker in the GRAMMAR but drops it
+                // in the converter is worse than one that refuses it outright.
+                let name_node = self.ref_name_child(node);
                 let sym = if let Some(n) = name_node {
                     let name = self.convert_name(n);
                     self.intern_name(&name)
@@ -943,7 +979,10 @@ impl<'a> Converter<'a> {
                 let sym = self.intern(self.text(node));
                 results.push(self.terms.alloc(Term::Ident(sym), span));
             }
-            "name" => {
+            // WI-1075: `..a.b.c` is the same path with its head segment marked, so it
+            // folds through the identical chain — `segs[0]` is `..a`, and the loader's
+            // `field_access_dotted_name` reads the marker back off the chain's root.
+            "name" | "absolute_name" => {
                 // The bare-reference atom is `$.name` (WI-311; was
                 // `$.identifier`). A single segment is a plain ref, identical
                 // to the former `identifier` atom. WI-312: a dotted term path
@@ -2541,9 +2580,22 @@ impl<'a> Converter<'a> {
         // `simple_type` carries a `name` child. Prefer the field.
         let name_node = self
             .field(node, "name")
-            .or_else(|| self.child_by_kind(node, "name"))
+            .or_else(|| self.ref_name_child(node))
             .unwrap_or(node);
         self.convert_name(name_node)
+    }
+
+    /// The `name`-or-`absolute_name` child of a reference position (WI-1075).
+    ///
+    /// The grammar routes those positions through `_ref_name`, so a bare
+    /// `child_by_kind(_, "name")` sees only half of what they admit — and the half it
+    /// misses is the new one. Measured both ways it goes wrong: under `simple_type` an
+    /// `..a.b.T` annotation fell to [`Self::convert_name`]'s whole-node text fallback
+    /// (right string, wrong segment count, silent); under `ref_term` it fell to the `?`
+    /// placeholder and loaded as `unresolved name '?'`.
+    fn ref_name_child<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        self.child_by_kind(node, "name")
+            .or_else(|| self.child_by_kind(node, "absolute_name"))
     }
 
     fn convert_tuple_type(&mut self, node: Node) -> TypeExpr {
@@ -3025,7 +3077,7 @@ impl<'a> Converter<'a> {
             return Some(type_node);
         }
         if type_node.kind() == "simple_type" {
-            if let Some(name) = self.child_by_kind(type_node, "name") {
+            if let Some(name) = self.ref_name_child(type_node) {
                 return Some(name);
             }
         }
@@ -4911,6 +4963,8 @@ fn is_term_kind(kind: &str) -> bool {
             | "paren_expr"
             | "identifier"
             | "name"
+            // WI-1075: the absolute spelling of a `name` atom.
+            | "absolute_name"
             // A lambda is a value expression collectible as a positional
             // argument: `map(xs, lambda x -> f(x))`. The grammar only
             // admits `lambda_expr` in `_fn_arg` / `_expr_body` positions,

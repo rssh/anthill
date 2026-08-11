@@ -35,14 +35,21 @@ Comments nest: `{- outer {- inner -} still outer -}`.
 ### 2.3 Identifiers and Names
 
 ```
-Identifier ::= Letter (Letter | Digit | '-' | '_')*
-             | '"' [^"]+ '"'                          -- quoted identifier
+Identifier   ::= Letter (Letter | Digit | '-' | '_')*
+               | '"' [^"]+ '"'                        -- quoted identifier
 
-Name       ::= Identifier                             -- simple: "transfer"
-             | Name '.' Identifier                    -- qualified: banking.accounts.transfer
+Name         ::= Identifier                           -- simple: "transfer"
+               | Name '.' Identifier                  -- qualified: banking.accounts.transfer
+
+AbsoluteName ::= '::' Name                            -- absolute: ..banking.accounts.transfer
 ```
 
 Quoted identifiers allow arbitrary strings as names: `"my weird name"`.
+
+A `Name` is resolved **relative** to where it is written; `..` asks for the
+**root** instead, and is admitted only in *reference* positions — a term, a type,
+a citation — never in a declaration (§8.6). `..` is a marker rather than an
+identifier, so it names nothing and can itself never be shadowed.
 
 ### 2.4 Literals
 
@@ -316,8 +323,8 @@ The inline form `List[T=Int64]` refers to the sort `List` with unspecified sort 
 **Grammar:**
 
 ```
-Type ::= Name                                        -- simple type reference
-       | Name '[' SortBinding (',' SortBinding)* ']' -- inline instantiation
+Type ::= RefName                                        -- simple type reference (§2.3: Name or ::Name)
+       | RefName '[' SortBinding (',' SortBinding)* ']' -- inline instantiation
        | VariableTerm                                 -- logical variable: ?, ?T, ?T {< desc >}+ ?
        | TupleType                                    -- tuple type: (Int64, String), (a: Int64, b: String), ()
        | ArrowType                                    -- arrow type (function sort)
@@ -2706,44 +2713,66 @@ model) were removed in WI-291.
    resolved, two or more distinct symbols → **ambiguous** (a load/query error).
 
 **Dotted names — the fallback ladder.** When `resolve_in_scope` leaves a name
-containing a `.` unresolved, it is a *path* and two further rungs apply, in this
-order (Rust; `scaland` does not yet implement either):
+unresolved and it is a *path* — it contains a `.`, or carries the `..` marker —
+which reading applies is decided by **how the path is spelled** (Rust; `scaland`
+implements neither reading yet):
 
-1. **head-qualification** (scope-relative) — resolve the *first* segment in
-   scope, append the remaining segments to its `qualified_name`, look that up in
-   `by_qualified_name`. This is what makes `Map.empty` work for an imported
-   `Map`. A hit whose kind is **`Field`** is refused: entity fields are indexed
-   under their constructor's path, and a field is reached by dot dispatch on a
-   value, never by a path.
-2. **absolute** — the name *is* some symbol's own `qualified_name`. Skipped
-   entirely when the path's head resolves in scope to a **namespace** (it owns
-   every path beneath it, so a missing member is a member miss, not a licence to
-   re-root the path elsewhere).
+- `a.b.c` — **relative**, and only relative (**head-qualification**): resolve the
+  *first* segment in scope, append the remaining segments to its
+  `qualified_name`, look that up in `by_qualified_name`. This is what makes
+  `Map.empty` work for an imported `Map`. A hit whose kind is **`Field`** is
+  refused: entity fields are indexed under their constructor's path, and a field
+  is reached by dot dispatch on a value, never by a path. A **miss** under the
+  head the path bound is **loud**; the path is never re-anchored elsewhere.
+- `..a.b.c` — **absolute**, always: the name *is* some symbol's own
+  `qualified_name`, looked up directly — the same channel `import` uses, so
+  nothing can shadow it. `..` is a marker, not an identifier, so it burns no name
+  and cannot itself be shadowed (unlike Scala's `_root_`). A single segment
+  counts: `..top` asks for the top-level `top`. The `internal` gate still
+  applies — `..` escapes **shadowing**, not visibility.
 
-Neither rung is reached when the head resolves **ambiguously**: the ladder answers
-with that ambiguity instead (below).
+The relative reading is not reached when the head resolves **ambiguously**: the
+ladder answers with that ambiguity instead (below). An absolute path has no head
+to contest. The relative reading admits no name without a dot — a short name is
+not a path, and resolving one that way would reinstate the global short-name scan
+removed in WI-476; the marker is what lifts that for `..top`, which is an exact
+lookup of the name written rather than a search.
 
-Rung 1 outranks rung 2: a scope-relative reading beats a bare global path, so a
-nearer same-rooted namespace is never displaced by a top-level one. Rung 2
-exists because a `sort`, `operation`, or labelled `rule` sharing a namespace
-root's spelling otherwise captures the head slot and disables every path under
-that root (WI-751). Neither rung admits a name without a dot — a short name is
-not a path, and resolving one that way would reinstate the global short-name
-scan removed in WI-476.
+**A relative path still reaches the root**, which is why `..` is rarely needed:
+the scope walk goes out to `_global`, where a top-level namespace is an ordinary
+local, so with nothing shadowing `outer` the head of `outer.inner.g` binds the
+top-level `outer` and the whole path resolves relatively. `..` is needed **only**
+where something shadows the head.
 
-**Rung 2 gives a fully-qualified path immunity from shadowing, and the same rung
-can silently re-root a RELATIVE one.** Measured: with both `outer` and `inner`
-shadowed by members of the enclosing sort, `outer.inner.g(…)` still binds
-`outer.inner.g` — an FQN needs no `import` and survives shadowing of even its
-outermost segment. But a *relative* `inner.g` in that same body, where a
-top-level `inner.g` also exists, binds the **top-level** one; with the two
-returning the same type nothing complains. The two cases are indistinguishable
-at the point of decision — head resolves locally, rung 1 misses, rung 2 hits —
-so no rule over the present syntax separates them. Giving the absolute reading
-its own spelling (`::a.b.c`) and making a bare path purely relative is
-**WI-1075**; measured over stdlib, `anthill-stl`, the examples and
-`anthill-todo`, rung 2 fires **zero** times, so the hazard is currently
-unreachable and the change would cost no migration.
+**Why the absolute reading needed its own spelling (WI-1075).** Until then both
+readings shared one, as an unconditional second rung under head-qualification,
+and that rung's two jobs were indistinguishable at the point of decision — head
+resolves locally, rung 1 misses, rung 2 hits. Measured: with both `outer` and
+`inner` shadowed by members of the enclosing sort, `outer.inner.g(…)` still bound
+`outer.inner.g` (the capability — an FQN needed no `import` and survived
+shadowing of even its outermost segment); but a *relative* `inner.g` in that same
+body, where a top-level `inner.g` also existed, bound the **top-level** one, and
+with the two returning the same type nothing complained. The only difference is
+whether the author meant the path absolutely, which is not in the text — a
+relative path can *coincide* with some other symbol's fully-qualified name — so
+every rule keyed on the old syntax picks one side and loses the other. Two
+spellings, one meaning each, is the separation.
+
+The marker **replaces** the implicit absolute reading rather than joining it:
+leaving an unmarked path absolute-when-it-has-to-be would give one meaning two
+spellings differing only in a rare corner, and the safe one is the one nobody
+writes, because the unmarked one appears to work — the defect proposal 059 R4
+refuses for `fact Spec[X]` vs `provides Spec[X]`. Migration was **zero**,
+measured: an instrumented rung 2 over stdlib, `anthill-stl`, the examples and
+`anthill-todo` fired **zero** times, and the count is kept executable.
+
+**One implicit-absolute route survives, and only one:** a head-qualified hit
+**hidden by `internal`**. Such a hit has not *bound* the path — the citing scope
+may not see it — so the descent continues to the absolute reading, which is a
+different question from a miss (WI-752). It is stood down under a **namespace**
+head, which owns every path beneath it: an `internal` member there is a member
+the citing scope is forbidden, reported as such, not a licence to bind a
+same-spelled top-level path instead.
 
 **An ambiguity ends the ladder.** The rungs below `resolve_in_scope` — the dotted
 readings, then the implicit prelude / reserved kernel vocab — are for a name that
@@ -2757,9 +2786,10 @@ ambiguity as denoting for the same reason.
 A **dotted path** ends the ladder the same way, on its **head segment** (WI-917):
 the head is the only part resolved in scope — the tail is appended to whatever it
 denotes and is never looked up on its own — so a contested head is a contested
-path, and the candidates reported are the head's. Both rungs would stand down
-under one anyway; what the ambiguity adds is that standing down is no longer
-silent.
+path, and the candidates reported are the head's. The relative reading would
+stand down under one anyway; what the ambiguity adds is that standing down is no
+longer silent. (An **absolute** path has no head to contest: it is resolved by
+qualified name, with no scope walk.)
 
 The ambiguity is then **reported wherever the name is written**: as a load error
 at a reference, as a refused mount for a host-supplied name, and as a refused
@@ -2773,21 +2803,25 @@ tolerance exists to avoid.
 
 **The `internal` gate applies to the ladder, not to a rung.** The qualified index
 bypasses step 3's filter, so visibility is checked explicitly on each hit — but a
-hit hidden by `internal` **skips to the next rung** rather than ending the
+hit hidden by `internal` **skips to the next reading** rather than ending the
 descent. A path therefore keeps whatever reading it has: a shadowing declaration
 carrying a hidden member of the right name does not break an otherwise-valid
-absolute path. Only when *no* rung has a visible answer is the hidden one
-reported, as the (load-blocking) forbidden-internal access — a precise diagnostic
-that outranks the generic unresolved-name error it replaces.
+`..` path. Only when *nothing* has a visible answer is the hidden one reported,
+as the (load-blocking) forbidden-internal access — a precise diagnostic that
+outranks the generic unresolved-name error it replaces.
 
-**The ladder is position-independent.** The same two rungs, in the same order,
+**The ladder is position-independent.** The same readings, decided the same way,
 resolve a dotted name wherever one is written — a term functor, a type or sort
 reference, a rule citation, a proof target, and a query pattern all consult one
-definition (WI-752). A name supplied by the **host** rather than by source text
-reads the same way, at the top-level scope (WI-908): the functor an extent mount
-owns is the one that spelling would name in a program written outside any
-namespace, so a short host name must be *in scope* (or in the implicit tier), and
-an `internal` member is no more mountable than it is citable. A **command-line**
+definition (WI-752). The *spelling* is admitted per position by the grammar, and
+every position that can write a path admits both: a position given only the
+relative one would have no way to say what `..` says. A name supplied by the
+**host** rather than by source text reads the same way, at the top-level scope
+(WI-908): the functor an extent mount owns is the one that spelling would name in
+a program written outside any namespace, so a short host name must be *in scope*
+(or in the implicit tier), an `internal` member is no more mountable than it is
+citable — and a host that means the root regardless of what is in scope there
+spells it `..a.b.c`, as source does. A **command-line**
 name reads the same way, at the same scope (WI-914): `anthill query --mode functor`
 and `--mode domain` name what the same text names in `--mode pattern`, and `-i`
 therefore bears on all three — every mode `query` has, since WI-921 removed the
@@ -3283,6 +3317,8 @@ end
 Identifier  ::= Letter (Letter | Digit | '-' | '_')*
               | '"' [^"]+ '"'
 Name        ::= Identifier ('.' Identifier)*
+AbsName     ::= '::' Name                    -- absolute path; REFERENCE positions only
+RefName     ::= Name | AbsName               -- what a term / type / citation may write
 StringLit   ::= '"' [^"]* '"'
 IntLit      ::= '-'? Digit+
 FloatLit    ::= '-'? Digit+ '.' Digit+
@@ -3305,9 +3341,9 @@ Term        ::= AtomTerm
 
 AtomTerm    ::= Const(type, value)
               | VariableTerm                 -- variable with optional description
-              | Fn(name, args: [Term])
-              | Ref(Name)
-              | Instantiation(Name, SortBinding+)  -- Eq[T = Int64] in term position
+              | Fn(RefName, args: [Term])
+              | Ref(RefName)
+              | Instantiation(RefName, SortBinding+)  -- Eq[T = Int64] in term position
               | CollectionLit                -- [a, b] → ListLiteral(a, b)
               | SetLit                       -- {a, b} → SetLiteral(a, b)
               | TupleLiteral                 -- (a, b) → TupleLiteral(_1: a, _2: b)
@@ -3463,8 +3499,8 @@ Describe    ::= 'describe' Name DescriptionBlock+  -- attach description(s) to n
 FieldList   ::= Field (',' Field)*
 Field       ::= Name ':' Type
 
-Type        ::= Name                                           -- simple: Account, Int64
-              | Name '[' SortBinding (',' SortBinding)* ']'    -- inline instantiation: List[T=Int64]
+Type        ::= RefName                                        -- simple: Account, Int64, ..a.b.T
+              | RefName '[' SortBinding (',' SortBinding)* ']' -- inline instantiation: List[T=Int64]
               | VariableTerm                                    -- logical variable: ?, ?T, ?T {< desc >}+ ?
               | TupleType                                        -- tuple type: (), (a: A), (A, B)
               | TupleType '->' Type                              -- arrow type: (A) -> B

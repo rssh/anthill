@@ -38,6 +38,115 @@ The name-resolution algorithm and visibility model are as written in
    become dispatchable symbols. rustland registers them as `Goal`s (and needed
    R2); scaland does not register them at all. This dispatch mechanism is
    separable from name resolution and is deferred.
+6. **A dotted path is RELATIVE; `..a.b.c` is the absolute spelling (WI-1075).**
+   `a.b.c` binds its head where the reference is written and resolves the rest
+   under that binding — a miss under that head is **loud**, and the path is never
+   re-anchored elsewhere. `..a.b.c` goes straight to `by_qualified_name`, the
+   channel `import` already uses, so nothing can shadow it. See §"Absolute paths"
+   below and `kernel-language.md` §8.6 (canonical). rustland only; `scaland`
+   implements neither reading yet.
+
+## Absolute paths (WI-1075)
+
+**The decision.** One spelling per meaning:
+
+| written | means |
+|---|---|
+| `a.b.c` | bind `a` in the citing scope, resolve `b.c` under it; a miss is loud |
+| `..a.b.c` | the symbol whose own qualified name is `a.b.c`, whatever is in scope |
+
+A relative path **still reaches the root**, and that is why the migration was
+zero: the scope walk goes out to `_global`, where a top-level namespace is an
+ordinary local, so with nothing shadowing `outer` the head of `outer.inner.g`
+binds the top-level `outer` and the path resolves relatively. `..` is needed
+**only** where something shadows the head.
+
+**Why one spelling could not carry both.** Before WI-1075 the absolute reading
+was an unconditional second rung under head-qualification, and its two jobs were
+indistinguishable at the point of decision — head resolves locally, rung 1
+misses, rung 2 hits:
+
+| | |
+|---|---|
+| capability | `outer.inner.g` with `outer` shadowed — rung 2 supplies the *right* answer |
+| defect | `inner.g` with `inner` shadowed — rung 2 supplies a *foreign* answer, silently |
+
+The only difference is whether the author meant the path absolutely, which is not
+in the text: a relative path can *coincide* with some other symbol's
+fully-qualified name. So every rule keyed on the old syntax picks one side and
+loses the other — measured, standing the rung down whenever the head resolved
+failed 8 tests, 4 of them the capability.
+
+**Non-coexisting, deliberately.** The marker *replaces* the implicit absolute
+reading rather than joining it. If `..` were additive while an unmarked path
+stayed absolute-when-it-had-to-be, one meaning would have two spellings differing
+only in a rare corner — and the safe one would be the one nobody writes, because
+the unmarked one appears to work. That is the defect proposal 059 R4 refuses for
+`fact Spec[X]` vs `provides Spec[X]`.
+
+**Why a marker and not a name.** A marker burns no identifier, so the escape hatch
+itself cannot be shadowed. `_root_` (Scala) and `_global` (which *is* the root
+scope's owner symbol — `global_scope()` interns that exact string) both name
+something real: a declaration of that name is *legal*, and every path written
+under it would then mean the escape hatch rather than that declaration's member —
+the same "one name, two questions" defect this proposal removes, reintroduced at
+the marker. Reserving them also cuts into the `_`-prefix space left to users.
+
+**Why `..` and not `::`.** Anthill's path separator is `.`, so the marker is built
+from it and *rhymes* with the paths it marks — `..a.b.c` is the separator doubled,
+exactly the relationship Rust's `::a::b` has to its own `::`. A borrowed `::`
+reads as a foreign glyph in a dot-path language, and it measured worse:
+
+| marker | fixture (term / type / `p.v` / `p.(v, w)` / `...args: R`) | tree-sitter error recovery |
+|---|---|---|
+| `::a.b.c` | parses clean | **perturbed** — on `fact mk(x:` the ERROR covers the whole item instead of the tail, so a parse error's reported column and quoted snippet widen |
+| `..a.b.c` | parses clean | **unchanged** |
+| `.a.b.c` | parses clean | **unchanged** |
+
+The `::` drift is the `:`/`::` prefix overlap in recovery's search, not the rule's
+shape — `token`, `prec`, `token(prec(…))` and gluing the marker to its head
+segment were all measured and none move it. A bare leading `.` rhymes best of all
+and measures identically to `..`, but it would permanently foreclose leading-dot
+method chaining (`expr` newline `.map(f)`), since `.map` at a term start would
+parse as an absolute path; the corpus has zero such lines today, so this is a
+choice about the future rather than a migration. `..` gives up nothing: `...` (the
+WI-727 variadic capture) and `.(` (distribute-dot) stay distinct because the head
+is one glued token requiring an identifier character immediately after the dots.
+Its one cost is connotation — `..` reads as *range* or *parent directory* in other
+languages, and parent is the opposite of root.
+
+One symptom found while measuring `::` was worth fixing on its own account and
+was: a root `ERROR` node's children are no longer walked as top-level items, so a
+syntax error no longer drags two invented `unexpected top-level node` errors
+behind it.
+
+**What other languages answer**, measured on the same fixture (Rust edition 2021,
+Scala 3.8.2, javac 21):
+
+| | |
+|---|---|
+| Rust | `mod lib` and `fn lib` **coexist** — separate type / value / macro namespaces, so a value declaration can never capture a path prefix, and `mod lib` + `struct lib` is refused *at the declaration*. Not available to Anthill, which merges every category onto one symbol (WI-926). |
+| Scala 3 | shadows; **silent** when the shadowing value's type happens to have the same member chain. Escape is `_root_`. |
+| Java | shadows; silent identically (JLS 6.4.2 obscuring). **No escape**; the mitigation is the naming convention. |
+
+Anthill's old answer was worse in *kind* than Scala's or Java's: their silent
+answer at least comes from the object the author wrote as `lib`, whereas the
+re-root came from an unrelated top-level namespace nobody named in that path.
+
+**Scope of the change.** One token, one grammar rule (`absolute_name`, reached
+through `_ref_name` at reference positions only — a declaration takes bare `$.name`,
+which is what keeps `namespace ..a.b` a parse error), and one arm in
+`resolve_dotted_in_kb`. The ladder is shared by six resolvers (WI-752), so term,
+type and citation positions inherit the *reading* at once; the *spelling* has to be
+admitted per grammar position, and every position that could reach the old implicit
+absolute rung must get it or retiring that rung silently removes a reading rather
+than renaming it — `describe`, the `proof` target, `Ref(…)` and an SMT mapping's
+source were found that way.
+
+**One implicit-absolute route survives:** a head-qualified hit **hidden by
+`internal`** has not *bound* the path, so the descent continues to the absolute
+reading (WI-752's fall-through, stood down under a namespace head). A miss is a
+different question, and conflating the two is the naive form of this change.
 
 **Status of behavior conformance:** **both engines conform.** rustland: R2 +
 variants-only exposure + visible-by-default (full suite green; `ring-polynom`

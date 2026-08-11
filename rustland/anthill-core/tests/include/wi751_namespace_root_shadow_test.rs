@@ -34,6 +34,21 @@
 //! `data.user.name()`), and the same absolute rung in `resolve_qualified_rule_readonly`,
 //! without which the BARE rule-reference citation stayed broken while the applied call
 //! was fixed.
+//!
+//! ## THE CAPABILITY NOW HAS ITS OWN SPELLING (WI-1075)
+//!
+//! Every fixture below whose path needed the ABSOLUTE rung now writes it `..myroot.…`.
+//! WI-751's capability is unchanged — a declaration sharing a namespace root's spelling
+//! must not disable references under that root — but the rung that supplied it also
+//! supplied a DEFECT it was indistinguishable from: an unmarked path whose head is
+//! shadowed and which misses under that head was silently re-anchored at a top-level
+//! twin the author never named. WI-1075 separated the two by spelling, so the capability
+//! is asked for and the defect is unwritable. The unmarked twin of each fixture is
+//! asserted LOUD beside it, which is the half these tests could not state before.
+//!
+//! `head_owns_path` is now `hidden_hit_ends_the_path`: with every relative miss loud,
+//! the only decision left to it is whether a hit REJECTED FOR VISIBILITY under a
+//! namespace head may be re-read absolutely.
 
 use anthill_core::eval::Value;
 
@@ -47,14 +62,22 @@ end
 "#;
 
 /// ACCEPTANCE: each declaration shape that occupies the root's name slot, against a
-/// control with no such declaration. All must load AND answer the same value — an
-/// inert declaration cannot change what a fully-qualified path means.
+/// control with no such declaration. Written `..myroot.inner.helper()`, all four must
+/// load AND answer the same value — an inert declaration cannot change what an ABSOLUTE
+/// path means (WI-1075 narrowed WI-751's principle to that spelling; see the module note).
 ///
 /// The EVAL comparison is the point: loading only proves the name resolved to
 /// something, and the failure being fixed is precisely a name resolving to the wrong
 /// thing. The load is done through `try_load_kb_with` FIRST so a regression names the
 /// SHAPE that broke; `interp_for` alone panics with a generic "load failed with N
 /// errors" from the shared helper and discards which fixture it was.
+///
+/// THE UNMARKED TWIN IS THE OTHER HALF, and it splits where the marked one does not:
+/// with nothing shadowing the head, `myroot.inner.helper()` still answers 41 (the scope
+/// walk reaches `_global`, where the top-level `myroot` is an ordinary local); with any
+/// of the three declarations in the way, it is LOUD. That split is what makes the four
+/// marked rows a capability rather than a coincidence — before WI-1075 both spellings
+/// answered 41 in all four, and no test could tell the readings apart.
 #[test]
 fn wi751_root_shadowing_declaration_keeps_qualified_paths() {
     const LABELLED_RULE: &str = r#"
@@ -64,7 +87,7 @@ namespace test.wi751rule
   end
   fact q(row: 1)
   rule myroot: r(?x) :- q(row: ?x)
-  operation useIt() -> Int64 effects Error = myroot.inner.helper()
+  operation useIt() -> Int64 effects Error = ..myroot.inner.helper()
 end
 "#;
     const SORT: &str = r#"
@@ -72,31 +95,31 @@ namespace test.wi751sort
   sort myroot
     entity mr(row: Int64)
   end
-  operation useIt() -> Int64 effects Error = myroot.inner.helper()
+  operation useIt() -> Int64 effects Error = ..myroot.inner.helper()
 end
 "#;
     const OPERATION: &str = r#"
 namespace test.wi751op
   operation myroot() -> Int64 = 7
-  operation useIt() -> Int64 effects Error = myroot.inner.helper()
+  operation useIt() -> Int64 effects Error = ..myroot.inner.helper()
 end
 "#;
     const CONTROL: &str = r#"
 namespace test.wi751ctl
-  operation useIt() -> Int64 effects Error = myroot.inner.helper()
+  operation useIt() -> Int64 effects Error = ..myroot.inner.helper()
 end
 "#;
-    for (src, ns, shape) in [
-        (LABELLED_RULE, "test.wi751rule", "a labelled rule"),
-        (SORT, "test.wi751sort", "a sort"),
-        (OPERATION, "test.wi751op", "an operation"),
-        (CONTROL, "test.wi751ctl", "nothing (the control)"),
+    for (src, ns, shape, shadows) in [
+        (LABELLED_RULE, "test.wi751rule", "a labelled rule", true),
+        (SORT, "test.wi751sort", "a sort", true),
+        (OPERATION, "test.wi751op", "an operation", true),
+        (CONTROL, "test.wi751ctl", "nothing (the control)", false),
     ] {
         let source = format!("{HELPERS}{src}");
         try_load_kb_with(&source).unwrap_or_else(|errs| {
             panic!(
                 "with {shape} named after the namespace root `myroot`, the absolute \
-                 path `myroot.inner.helper()` must still resolve; got:\n{}",
+                 path `..myroot.inner.helper()` must still resolve; got:\n{}",
                 errs.join("\n")
             )
         });
@@ -108,10 +131,47 @@ end
             }) {
             Value::Int(n) => assert_eq!(
                 n, 41,
-                "with {shape} named after the root, `myroot.inner.helper()` must reach \
+                "with {shape} named after the root, `..myroot.inner.helper()` must reach \
                  `myroot.inner.helper` — the control answers 41 with no such declaration"
             ),
             other => panic!("expected the helper's Int, got {other:?}"),
+        }
+
+        // The same fixture with the marker removed. WI-1075: the reading splits here.
+        let relative = format!("{HELPERS}{}", src.replace("..myroot", "myroot"));
+        let errs = try_load_kb_with(&relative).err();
+        if shadows {
+            let errs = errs.unwrap_or_else(|| {
+                panic!(
+                    "with {shape} holding the head slot, the UNMARKED \
+                     `myroot.inner.helper()` must be LOUD — re-reading it as the \
+                     top-level path is the silent re-rooting `..` replaced"
+                )
+            });
+            // The RENDERING differs per shape and deliberately is not pinned: the head
+            // binds a different KIND of thing in each, so once the path fails to
+            // resolve the dot-call re-route reads what is left differently — a labelled
+            // rule head reports `Relation.inner … no such member (dot dispatch)`, a
+            // sort/operation head an unresolved-name mismatch. What is pinned is that
+            // the load FAILS and the finding is about the path the author wrote, which
+            // is the whole of "loud" here.
+            assert!(
+                errs.iter().any(|e| e.contains("inner")),
+                "the unmarked miss under {shape} must be about the path's segments; \
+                 got: {errs:?}"
+            );
+        } else {
+            assert!(
+                errs.is_none(),
+                "with NOTHING shadowing the head, the unmarked path must still resolve \
+                 by head-qualification — the scope walk reaches `_global`, and this is \
+                 why WI-1075 cost no migration; got: {errs:?}"
+            );
+            let mut interp = interp_for(&relative);
+            match interp.call(&format!("{ns}.useIt"), &[]).expect("must run") {
+                Value::Int(n) => assert_eq!(n, 41, "the unshadowed relative path answers 41"),
+                other => panic!("expected the helper's Int, got {other:?}"),
+            }
         }
     }
 }
@@ -254,8 +314,13 @@ end
 /// the constructor's qualified name, so `sort data { entity user(name: Int64) }`
 /// supplies a complete `<ns>.data.user.name` for the head `data` to land on: without
 /// the `Field` refusal, head-qualification HITS and `data.user.name()` is captured from
-/// the namespace `data.user`. This is the HIT half of the defect — the absolute rung
-/// alone cannot reach it, because head-qualification never misses.
+/// the namespace `data.user`. This is the HIT half of the defect.
+///
+/// WI-1075 changed what the refusal BUYS, not whether it is needed. It used to hand the
+/// name to the absolute rung, which had the real answer; now it makes the unmarked path
+/// LOUD and `..data.user.name()` is how the namespace member is asked for. Both halves
+/// are driven: without the refusal the marked call is unaffected but the unmarked one
+/// binds the FIELD — a category error where a loud miss belongs.
 #[test]
 fn wi751_entity_field_does_not_capture_a_namespace_path() {
     const SRC: &str = r#"
@@ -267,22 +332,34 @@ namespace test.wi751field
   sort data
     entity user(name: Int64)
   end
-  operation useIt() -> Int64 effects Error = data.user.name()
+  operation useIt() -> Int64 effects Error = ..data.user.name()
 end
 "#;
     let mut interp = interp_for(SRC);
     match interp
         .call("test.wi751field.useIt", &[])
-        .expect("`data.user.name()` must run")
+        .expect("`..data.user.name()` must run")
     {
         Value::Int(n) => assert_eq!(
             n, 41,
-            "`data.user.name()` must reach the operation in namespace `data.user`, not \
+            "`..data.user.name()` must reach the operation in namespace `data.user`, not \
              the local entity's `name` FIELD — a field is reached by dot dispatch on a \
              value, never by a qualified path"
         ),
         other => panic!("expected the operation's Int, got {other:?}"),
     }
+
+    // The unmarked twin: the head `data` binds the LOCAL sort, whose `user.name` is a
+    // FIELD. The refusal turns that hit into a miss, and WI-1075 makes the miss loud.
+    let relative = SRC.replace("..data.user.name()", "data.user.name()");
+    let errs = try_load_kb_with(&relative)
+        .err()
+        .expect("the unmarked `data.user.name()` must not bind the local entity's FIELD");
+    assert!(
+        errs.iter().any(|e| e.contains("data.user.name")),
+        "the unmarked miss must name the path; a clean load here means the path bound \
+         either the field or the namespace member without being asked to; got: {errs:?}"
+    );
 }
 
 /// REACH 2 — the BARE rule-reference citation resolves under a shadowed root too.
@@ -291,6 +368,10 @@ end
 /// only in `remap_name_str_inner` fixed the applied CALL and left these broken — the
 /// WI-729/749/750 citation forms, decomposed into field accesses on a name that
 /// resolves.
+///
+/// WI-1075: the citation positions inherit the `..` spelling for free, because they read
+/// the SAME ladder. That is the property this test now also carries — a marker taught to
+/// the term position and forgotten at the citation ones would fail here.
 #[test]
 fn wi751_rule_reference_citation_under_a_shadowed_root() {
     const DATA: &str = r#"
@@ -308,7 +389,7 @@ namespace test.wi751bare
   sort myroot
     entity mr(row: Int64)
   end
-  operation cite() -> Bool effects Error = myroot.inner.rel.isEmpty
+  operation cite() -> Bool effects Error = ..myroot.inner.rel.isEmpty
 end
 "#;
     const APPLIED: &str = r#"
@@ -317,18 +398,26 @@ namespace test.wi751applied
   sort myroot
     entity mr(row: Int64)
   end
-  operation cite() -> List[Int64] effects Error = myroot.inner.rel.takeN(1)
+  operation cite() -> List[Int64] effects Error = ..myroot.inner.rel.takeN(1)
 end
 "#;
     for (src, form) in [(BARE, "bare"), (APPLIED, "applied")] {
         try_load_kb_with(&format!("{DATA}{src}")).unwrap_or_else(|errs| {
             panic!(
-                "the {form} rule-reference citation `myroot.inner.rel` must resolve \
+                "the {form} rule-reference citation `..myroot.inner.rel` must resolve \
                  with a `sort myroot` shadowing the root, exactly as the applied call \
                  form does — one probe, one answer; got:\n{}",
                 errs.join("\n")
             )
         });
+        // The unmarked twin, at the citation positions too: one ladder, one rule.
+        let relative = format!("{DATA}{}", src.replace("..myroot", "myroot"));
+        assert!(
+            try_load_kb_with(&relative).is_err(),
+            "the UNMARKED {form} citation must be loud under a `sort myroot` — a \
+             citation position that kept the implicit absolute reading would be a \
+             second ladder, which is the divergence WI-752 removed"
+        );
     }
 }
 
@@ -428,12 +517,20 @@ end
     }
 }
 
-/// The absolute rung applies the SAME `internal` visibility gate the head-qualified
-/// rung does — it bypasses `resolve_in_scope`'s filter identically, so a hidden hit
-/// must be the precise `ForbiddenInternalAccess`, never a silent resolution.
+/// The ABSOLUTE spelling applies the SAME `internal` visibility gate head-qualification
+/// does — it bypasses `resolve_in_scope`'s filter identically, so a hidden hit must be
+/// the precise `ForbiddenInternalAccess`, never a silent resolution.
 ///
-/// The local `sort lib` is load-bearing: it makes head-qualification MISS, so the
-/// reference reaches the absolute rung rather than the head one.
+/// `..` is an escape from SHADOWING, not from visibility, and this is the test that says
+/// so: the marker reaches a symbol no scope walk would find, and the symbol is still
+/// refused for being `internal`. A `..` arm written as a bare `by_qualified_name` lookup
+/// without the gate passes every other test in this file and fails here.
+///
+/// The local `sort lib` is retained from the pre-WI-1075 fixture, where it was
+/// load-bearing (it made head-qualification MISS, so the reference reached the absolute
+/// rung). Under the marked spelling it no longer decides anything, and keeping it makes
+/// that visible: the diagnostic must be identical with a shadowing declaration in the
+/// way and without one.
 #[test]
 fn wi751_absolute_path_respects_internal_visibility() {
     const SRC: &str = r#"
@@ -445,16 +542,28 @@ namespace test.wi751internal
   sort lib
     entity l(v: Int64)
   end
-  operation bad() -> Int64 effects Error = lib.secret.hidden()
+  operation bad() -> Int64 effects Error = ..lib.secret.hidden()
 end
 "#;
-    let errs = try_load_kb_with(SRC)
-        .err()
-        .expect("an `internal` operation named by its absolute path must NOT load");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("hidden") && e.contains("internal")),
-        "naming an `internal` symbol by its absolute path must report the forbidden \
-         internal access, not resolve silently; got: {errs:?}"
-    );
+    // byte-identical but for the shadowing declaration, which `..` must ignore
+    const NO_SHADOW: &str = r#"
+namespace lib.secret
+  internal operation hidden() -> Int64 = 1
+end
+
+namespace test.wi751internal2
+  operation bad() -> Int64 effects Error = ..lib.secret.hidden()
+end
+"#;
+    for (src, label) in [(SRC, "with a shadowing `sort lib`"), (NO_SHADOW, "without one")] {
+        let errs = try_load_kb_with(src).err().unwrap_or_else(|| {
+            panic!("an `internal` operation named by its absolute path must NOT load ({label})")
+        });
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("hidden") && e.contains("internal")),
+            "naming an `internal` symbol by its absolute path must report the forbidden \
+             internal access, not resolve silently ({label}); got: {errs:?}"
+        );
+    }
 }

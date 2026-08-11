@@ -810,9 +810,14 @@ module.exports = grammar({
 
     description_block: $ => token(seq('{<', /[^>]*(?:>[^}][^>]*)*/, '>}')),
 
+    // WI-1075: a citation target is a REFERENCE, so it takes the absolute spelling
+    // too. Every position that could reach the old implicit absolute rung must be
+    // able to spell `..a.b.c`, or retiring that rung silently removes a reading
+    // rather than renaming it — measured, `describe myroot.inner.helper` under a
+    // shadowing `sort myroot` stopped loading with no spelling that worked.
     describe_declaration: $ => prec.right(seq(
       'describe',
-      field('target', $.name),
+      field('target', $._ref_name),
       repeat1(field('content', $.description_block)),
     )),
 
@@ -840,7 +845,7 @@ module.exports = grammar({
     proof_declaration: $ => seq(
       repeat(field('description', $.description_block)),
       'proof',
-      field('target', $.name),
+      field('target', $._ref_name),
       choice(
         seq(
           optional(seq('using', field('using', $.proof_using_list))),
@@ -917,9 +922,11 @@ module.exports = grammar({
     ),
 
     // mapping rhs is a free string token (e.g. `+`, `=`, `Int`) — to keep
-    // it simple we accept either a name or a string_literal.
+    // it simple we accept either a name or a string_literal. The SOURCE is an
+    // anthill name and so takes the absolute spelling (WI-1075); the TARGET is the
+    // solver's symbol, which anthill's path rules do not reach.
     mapping_entry: $ => seq(
-      field('source', $.name),
+      field('source', $._ref_name),
       '->',
       field('target', choice($.name, $.string_literal)),
     ),
@@ -1138,9 +1145,14 @@ module.exports = grammar({
     // (not field_access); the loader classifies ref / qualified / projection
     // via SymbolKind. `field_access` is reserved for a `_non_name_atom_term`
     // receiver (`?x.y`, `42.foo()`, `[1,2].map(f)`, `(e).y`, `Map[…].empty`).
+    // WI-1075: `..a.b.c` is the ABSOLUTE spelling — a reference position only.
+    // Deliberately NOT in `_non_name_atom_term`: an absolute path is a whole
+    // name, so it is never a dot RECEIVER (`..a.b.c.d` is one path, not a
+    // projection off `..a.b.c`).
     _atom_term: $ => choice(
       $._non_name_atom_term,
       prec(-1, $.name),
+      prec(-1, $.absolute_name),
     ),
 
     // Every atom whose head is not a bare/dotted `name` path. This is exactly
@@ -1287,6 +1299,7 @@ module.exports = grammar({
     fn_term: $ => seq(
       field('name', choice(
         $.name,
+        $.absolute_name,
         $.field_access,
         $.variable,
         $.application,
@@ -1361,7 +1374,7 @@ module.exports = grammar({
       seq('(', $._fn_arg, ',', commaSep1($._fn_arg), optional(','), ')'), // 2+ elements
     )),
 
-    ref_term: $ => seq('Ref', '(', $.name, ')'),
+    ref_term: $ => seq('Ref', '(', $._ref_name, ')'),
 
     // Operator token: any sequence of operator chars (maximal munch).
     // prec(-1) ensures keywords and other tokens take priority.
@@ -1472,7 +1485,7 @@ module.exports = grammar({
     // (`conclude p`) is unambiguous: it sits in the `conclude` slot and
     // is never confused with targeting a rule named `p`.
     proof_statement: $ => prec.right(seq(
-      'proof', field('target', $.name),
+      'proof', field('target', $._ref_name),
       optional(seq('using', field('using', $.proof_using_list))),
       optional(seq('by', field('strategy', $.proof_strategy))),
       optional(seq('conclude', field('conclude', $._term))),
@@ -1660,7 +1673,7 @@ module.exports = grammar({
       field('type', $._type_literal),
     ),
 
-    simple_type: $ => $.name,
+    simple_type: $ => choice($.name, $.absolute_name),
 
     // WI-311: unified type/term application — `Name[bindings]`. Merges the
     // former parameterized_type (type position) and instantiation_term (term
@@ -1672,7 +1685,7 @@ module.exports = grammar({
     // `[…]` as a trailing `meta_block` (abstract-sort / operation-return have an
     // optional meta_block); `name`'s prec.left otherwise wins that shift-reduce.
     application: $ => prec(1, seq(
-      field('name', $.name),
+      field('name', choice($.name, $.absolute_name)),
       '[',
       commaSep1($.sort_binding),
       ']',
@@ -1693,6 +1706,63 @@ module.exports = grammar({
     // =========================================================
 
     name: $ => prec.left(sep1(reserved('none', $.identifier), '.')),
+
+    // WI-1075 — the ABSOLUTE path spelling. `a.b.c` is resolved through the
+    // scope chain (bind the head where the reference is written, resolve the
+    // rest under it, and a miss under that head is LOUD); `..a.b.c` goes
+    // straight to the root, the channel `import` already uses, so nothing can
+    // shadow it. The two readings used to share one spelling, which meant the
+    // same rung was both the escape hatch for a shadowed FQN and a silent
+    // re-root of a relative path.
+    //
+    // WHY `..` — THE SEPARATOR, DOUBLED. Anthill's path separator is `.`, so a
+    // marker built from it rhymes with the paths it marks, the way Rust's
+    // `::a::b` is its own `::` separator with an empty first segment. A borrowed
+    // `..` would read as a foreign glyph in a dot-path language, and measured, it
+    // also perturbs tree-sitter's error RECOVERY wherever `:` is live (it broke
+    // wi852's fixture); `..` does not. A bare leading `.` rhymes best of all but
+    // would permanently foreclose leading-dot method chaining (`expr` newline
+    // `.map(f)`), since `.map` at a term start would parse as an absolute path.
+    //
+    // It is a marker, not an identifier, so it burns no name and cannot itself be
+    // shadowed — unlike Scala's `_root_` or a reserved `_global`, either of which
+    // a legal declaration could take, making every path under it mean the hatch.
+    // Verified free: `..` appears in this grammar nowhere else, and `...` (the
+    // WI-727 variadic capture) stays distinct because this head token requires an
+    // identifier character immediately after the two dots.
+    //
+    // A DECLARATION cannot spell one: `namespace`, `sort`, `operation`, … all
+    // take `$.name`, and only the reference positions take this rule. `namespace
+    // ..a.b` is therefore a parse error rather than a namespace whose first
+    // segment is punctuation.
+    // WI-1075: what a REFERENCE position takes — a relative path or an absolute
+    // one. Declarations take bare `$.name`, which is what keeps `namespace ..a.b`
+    // a parse error. Hidden (`_`-prefixed) so the CST shape at each site is
+    // unchanged: the child is still a `name` or an `absolute_name`.
+    _ref_name: $ => choice($.name, $.absolute_name),
+
+    absolute_name: $ => prec.left(seq(
+      alias($._absolute_head, $.identifier),
+      repeat(seq('.', reserved('none', $.identifier))),
+    )),
+
+    // The marker and the head segment are ONE token, so a marked path's HEAD
+    // SEGMENT carries the marker in its own text (`..outer`) and the whole path
+    // is a flat identifier list — the same shape `name` has, which is what lets
+    // every downstream reader (the parse converter's segment scan, the loader's
+    // `field_access_dotted_name`) spell it as one string with nothing new to
+    // learn. It also refuses `.. a.b` with a space, the rule `?name` already has.
+    //
+    // It does NOT restore tree-sitter's pre-marker error RECOVERY. Measured, on
+    // `fact mk(x:` (wi852's fixture): before the marker, recovery kept `fact mk`
+    // and put the ERROR at the `(`; with `..` reachable from a term start it
+    // reports the whole line, glued or not, and with a prefix-disjoint marker
+    // (`@@`) it does not. So the drift is the `:`/`..` overlap in the recovery
+    // search, not the rule's shape, and it is not something `token`, `prec`, or
+    // `token(prec(…))` moves — all three measured. `parse::parse` no longer
+    // walks a root ERROR's children (WI-1075), so what is left of the drift is
+    // the reported COLUMN on that one fixture.
+    _absolute_head: $ => token(seq('..', /[a-zA-Z_][a-zA-Z0-9_-]*/)),
 
     identifier: $ => reserved('none', $._identifier_token),
 

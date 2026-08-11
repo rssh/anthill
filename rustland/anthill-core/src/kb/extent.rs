@@ -636,6 +636,16 @@ impl KnowledgeBase {
     /// mirror's `owned_monotonicity()` functor are the same question asked by the same
     /// kind of author, so they get the same answer and the same two refusals. They were
     /// briefly two copies of this match; the second one is what WI-919 was.
+    ///
+    /// WI-1075 — A HOST NAME IS READ RELATIVE TO THE TOP-LEVEL SCOPE, like source text
+    /// written there, which is `resolve_name_in_global`'s whole point: a mount must not
+    /// take a functor its author never named. So `"a.b.Rel"` binds the head `a` at
+    /// `_global` and resolves `b.Rel` under it — which every LOADED KB supports, since
+    /// `scan_definitions` defines each declaration's dot-separated prefixes as implicit
+    /// namespaces. A host that means the ROOT whatever is in scope there says so the way
+    /// source does, by embedding the marker in its string: `"..a.b.Rel"`. Nothing
+    /// in-tree registers a functor name today, so this is API surface rather than a
+    /// migration.
     fn registration_symbol(&mut self, name: &str) -> Result<Symbol, ExtentRegError> {
         match self.resolve_name_in_global(name) {
             ResolveResult::Found(sym) => Ok(sym),
@@ -2124,12 +2134,28 @@ mod tests {
     }
 
     /// Define `qname` so `resolve_name_in_global` finds it (registration resolves
-    /// owned names to symbols). `qname` must be DOTTED: a qualified-only definition has
-    /// no scope presence, so only the ladder's absolute rung can reach it, and that rung
-    /// is dotted-only (WI-908).
+    /// owned names to symbols). `qname` must be DOTTED — that is the shape a host
+    /// registration name has (WI-908).
+    ///
+    /// THE ROOT NAMESPACE IS DEFINED TOO, and it is not ceremony. WI-1075 made a bare
+    /// dotted path purely RELATIVE: its head binds where the name is asked and the whole
+    /// tail is appended to what the head denotes, so `test.Widget` is reachable only if
+    /// its HEAD SEGMENT `test` is a symbol at `_global`. Every LOADED KB has one —
+    /// `scan_definitions` defines each dot-separated prefix of a declaration as an
+    /// implicit namespace (spec §"Dotted names desugar to nested namespaces") — so a
+    /// fixture without it was building a KB the loader cannot produce, and passing on
+    /// the strength of the implicit absolute reading WI-1075 retired. (A host that
+    /// genuinely wants the root can spell it `..test.Widget`; these fixtures instead
+    /// model the KB a load produces.)
+    ///
+    /// The HEAD, not the last prefix: the relative reading appends `b.Widget` whole to
+    /// what `a` denotes, so `a.b.Widget` needs `a` in scope and nothing else.
     fn define(kb: &mut KnowledgeBase, qname: &str) -> Symbol {
         let short = qname.rsplit('.').next().unwrap();
         let root_scope = kb.global_scope();
+        let (head, _) = qname.split_once('.').expect("a registration name is dotted");
+        kb.symbols
+            .define(head, head, SymbolKind::Namespace, root_scope);
         kb.symbols
             .define_qualified_only(short, qname, SymbolKind::Sort, root_scope)
     }

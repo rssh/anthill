@@ -1614,6 +1614,45 @@ pub fn is_positional_label_at(label: &str, index: usize) -> bool {
     positional_label_index(label) == Some(index)
 }
 
+// ── Absolute paths (WI-1075) ────────────────────────────────────
+
+/// The marker an ABSOLUTE path carries: `..a.b.c` means the symbol whose own
+/// fully-qualified name is `a.b.c`, reached through the same channel `import`
+/// uses — no scope walk, so nothing can shadow it. A bare `a.b.c` is purely
+/// RELATIVE: its head binds where the reference is written and the rest resolves
+/// under that binding, loudly.
+///
+/// THE SEPARATOR, DOUBLED. Anthill's path separator is `.`, so the marker is built
+/// from it and rhymes with the paths it marks — the way Rust's `::a::b` is its own
+/// `..` separator with an empty first segment. A borrowed `..` reads as a foreign
+/// glyph in a dot-path language and, measured, perturbs tree-sitter's error
+/// recovery wherever `:` is live; a bare leading `.` rhymes best but would
+/// permanently foreclose leading-dot method chaining.
+///
+/// It rides on the head SEGMENT's text (`grammar.js`'s `_absolute_head` is one
+/// token), so a marked path is one string all the way down — which is also why it
+/// must be a sequence no identifier can contain: `_identifier_token` admits only
+/// `[a-zA-Z_][a-zA-Z0-9_-]*`, so no user symbol can collide with a marked head,
+/// and an unresolvable marked path is reported under the text the author wrote. A
+/// NAME would not have that property — `_root_` / `_global` are ordinary
+/// identifiers a *legal declaration* can take, which would make every path under
+/// that name mean the escape hatch instead of the declaration's member; and they
+/// eat into the `_`-prefix space this module leaves to users.
+pub const ABSOLUTE_PATH_MARKER: &str = "..";
+
+/// The qualified name `name` demands ABSOLUTELY, or `None` when it is an
+/// ordinary (relative) name. The SOLE reader of [`ABSOLUTE_PATH_MARKER`] —
+/// paired with the sole minter in `convert_name` — so the two spellings of "is
+/// this path absolute" cannot drift.
+///
+/// A single segment counts: `..top` asks for the top-level `top` by the same
+/// rule `..top.f` asks for `top.f`. That does NOT reinstate the WI-476 global
+/// short-name scan, which SEARCHED for a short name anywhere in the KB; this is
+/// an exact lookup of the name written, which can only ever find a root symbol.
+pub fn absolute_path_target(name: &str) -> Option<&str> {
+    name.strip_prefix(ABSOLUTE_PATH_MARKER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

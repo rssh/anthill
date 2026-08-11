@@ -1135,3 +1135,6 @@ mod wi1070_operation_description_test;
 
 #[path = "include/wi1072_declaration_description_test.rs"]
 mod wi1072_declaration_description_test;
+
+#[path = "include/wi1075_absolute_path_test.rs"]
+mod wi1075_absolute_path_test;

@@ -23,8 +23,8 @@ use super::typing::{binding_op_symbol, extract_sort_ref_sym, extract_type, TypeE
 use super::{ClauseKind, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
-    positional_label, positional_label_index, ImportOrigin, ResolveResult, ScopeId, ScopeInclusion,
-    Symbol, SymbolDef, SymbolKind,
+    absolute_path_target, positional_label, positional_label_index, ImportOrigin, ResolveResult,
+    ScopeId, ScopeInclusion, Symbol, SymbolDef, SymbolKind,
 };
 use crate::parse::ir::*;
 use crate::parse::pratt;
@@ -1054,7 +1054,7 @@ pub enum LoadError {
     /// WI-839: a CALL-SITE type-argument bracket (`f[T = X](…)`, proposal 042's
     /// `type_args` channel) written where no lowering honours it. Parsed since
     /// WI-271, it is threaded onward from exactly two places — an OPERATION BODY's
-    /// call (`build_call_type_args` → `Expr::Apply.type_args` → the typer's
+    /// call (`build_call_type_args` → `Expr..Apply.type_args` → the typer's
     /// `seed_op_type_args`) and a rule HEAD's `[T]` type-variable INTRODUCER
     /// (`collect_rule_tvar_names`, WI-582). Everywhere else — a rule-body atom, a
     /// `fact` head, a constraint, an entity-constructor call — it was parsed and then
@@ -3755,6 +3755,14 @@ fn scan_rule_goal(
     if name_denotes_for_rule_head(kb, functor_name, scope) {
         return;
     }
+    // WI-1075: a MARKED head (`..a.b`) can never reach this mint, and does not need
+    // its own arm here — the marker is built from the separator, so every marked name
+    // contains a `.` and [`rule_introduced_functor_name`]'s older refusal ("a qualified
+    // name references an existing symbol; it never introduces one") already returned
+    // `None` for it. What the marker still needs is the REFUSAL, since a marked head
+    // that names nothing would otherwise fall to the WI-476 bare intern and store a
+    // clause under a symbol nothing can cite: that is
+    // [`Loader::refuse_unresolvable_absolute_head`], at the LOAD of a rule or a fact.
     let qualified = make_qualified(prefix, functor_name);
     kb.symbols
         .define(functor_name, &qualified, introduced_by.symbol_kind(), scope);
@@ -10358,18 +10366,20 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// of. What a capture does to it is break or re-point the path, and MEASURED that
 /// belongs to the dotted ladder rather than to the declaration:
 ///
-/// | written | result |
-/// |---|---|
-/// | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` |
-/// | + a member `Box.inner` | **loud** `unknown functor` |
-/// | + a member `Box.inner`, and a TOP-LEVEL `namespace inner` also exists | loads clean, silently calling the TOP-LEVEL `inner.g` |
+/// | written | before WI-1075 | now |
+/// |---|---|---|
+/// | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` | unchanged |
+/// | + a member `Box.inner` | **loud** `unknown functor` | unchanged |
+/// | + a member `Box.inner`, and a TOP-LEVEL `namespace inner` also exists | loads clean, silently calling the TOP-LEVEL `inner.g` | **loud** — `..inner.g` is how the top-level one is asked for |
 ///
-/// The third row is [`dotted_absolute`] recovering a shadowed head at the bare
-/// global twin because the ladder has no scope-relative rung between
-/// [`dotted_by_head`] and it — WI-751's own stated principle ("scope-relative beats
-/// bare global") with the rung for a shadowed head missing. Tracked as its own
-/// ticket; refusing the declaration would close one route into a defect reachable
-/// without any declaration at all.
+/// The third row was [`dotted_absolute`] recovering a shadowed head at the bare global
+/// twin, on the strength of a spelling that also meant "resolve me relatively". WI-1075
+/// gave the absolute reading its own spelling and made a bare path purely relative, so
+/// the exclusion above no longer rests on the hazard being rare: with no way to write
+/// the re-rooting, capturing a namespace name can neither break a path silently nor
+/// re-point one. Refusing the declaration would in any case have closed one route into
+/// a defect reachable without any declaration at all — a `let` binder or a labelled
+/// rule shadows a head just as well.
 ///
 /// `has_kind`, not `kind_of`, and the value/type kinds are named rather than
 /// negated: `namespace X` beside `sort X` is ONE symbol carrying both categories
@@ -11389,35 +11399,64 @@ enum DottedVisibility {
 /// while `util.T` reported `unresolved type name`, because the structured-`Name`
 /// resolver had the absolute rung and no head-qualified one.
 ///
-/// # The rungs, in order
+/// # The two readings, each with its own spelling (WI-1075)
 ///
-/// 1. **Head-qualification** ([`dotted_by_head`]) — SCOPE-RELATIVE: resolve the head
-///    segment where the reference is written, append the tail to its qualified path.
-/// 2. **Absolute** ([`dotted_absolute`]) — the name IS some symbol's own fully-qualified
-///    name.
+/// * `a.b.c` — **RELATIVE**, and only relative: [`dotted_by_head`] resolves the head
+///   segment where the reference is written and appends the tail to its qualified path.
+///   A miss under that head is LOUD; the path is never re-anchored somewhere else.
+/// * `..a.b.c` — **ABSOLUTE**, always: [`dotted_absolute`] looks the path up in
+///   `by_qualified_name` directly, the same channel `import` uses (`process_imports`
+///   resolves its path with a bare `by_qualified_name` get and no scope walk), so
+///   nothing can shadow it.
 ///
-/// # Why that order
+/// A relative path STILL REACHES THE ROOT, which is why WI-1075 cost no migration: the
+/// scope walk goes out to `_global`, where a top-level namespace is an ordinary local,
+/// so with nothing shadowing `outer` the head of `outer.inner.g` binds the top-level
+/// `outer` and the whole path resolves by head-qualification. `..` is needed ONLY where
+/// something shadows the head.
 ///
-/// Both rungs can hit for one name, and only their order decides the answer. A
-/// scope-relative reading must outrank a bare global path, or a sibling namespace's
-/// path silently re-points at a same-rooted TOP-LEVEL twin
-/// (`wi751_scope_relative_root_beats_a_top_level_namespace` pins the inversion).
+/// # Why the absolute reading needed its own spelling
 ///
-/// The absolute rung is NOT "purely additive": head-qualification MISSING is not the
-/// same as the name resolving to nothing, and an earlier cut of WI-751 shipped that
-/// mistake — on a PARTIAL miss (head resolving correctly to a nearer namespace, only a
-/// later segment absent) it re-rooted the whole path at a namespace the author never
-/// named. [`head_owns_path`] is the guard that keeps such a path loud; the guard and
-/// this ordering are two halves of one rule, and neither alone suffices.
+/// Until WI-1075 both readings shared one, as an unconditional second rung under
+/// head-qualification, and the rung's two jobs were indistinguishable AT THE POINT OF
+/// DECISION — head resolves locally, rung 1 misses, rung 2 hits:
+///
+/// | | |
+/// |---|---|
+/// | capability | `outer.inner.g` with `outer` shadowed — rung 2 supplies the RIGHT answer |
+/// | defect | `inner.g` with `inner` shadowed — rung 2 supplies a FOREIGN answer |
+///
+/// The only difference is whether the author meant the path absolutely, which is not in
+/// the text: a relative path can COINCIDE with some other symbol's fully-qualified name.
+/// So every rule keyed on the old syntax picks one side and loses the other — measured,
+/// standing the rung down whenever the head resolved failed 8 tests, 4 of them WI-751's
+/// capability. Two spellings, one meaning each, is the only separation there is.
+///
+/// The marker REPLACES the implicit absolute reading rather than joining it: leaving an
+/// unmarked path absolute-when-it-has-to-be would give one meaning two spellings that
+/// differ only in a rare corner, and the safe one is the one nobody writes, because the
+/// unmarked one appears to work. (The defect proposal 059 R4 refuses for `fact Spec[X]`
+/// vs `provides Spec[X]`.)
+///
+/// # A hit REJECTED FOR VISIBILITY is not a binding (WI-752)
+///
+/// The one place the absolute reading is still consulted for an UNMARKED path. WI-752
+/// deliberately made a head-qualified hit hidden by `internal` keep descending — "a
+/// rung's hit being unusable is a reason to try the NEXT rung" — and a head whose hit
+/// the citing scope may not see has not bound the path, so the descent continues there.
+/// That is a different question from a MISS, which WI-1075 makes loud, and conflating
+/// the two breaks `wi752_internal_head_hit_falls_through_to_the_absolute_rung`.
+/// [`hidden_hit_ends_the_path`] still stands the reading down under a NAMESPACE head,
+/// which owns its paths.
 ///
 /// # An AMBIGUOUS HEAD ends the ladder (WI-917)
 ///
-/// Answering in `resolve_in_scope`'s three-way vocabulary is what lets it: BOTH rungs
-/// stand down under a contested head (rung 1 needs a single head symbol; rung 2 must not
-/// re-root a name the loader cannot read), and while they were the only two answers that
-/// was indistinguishable from a plain miss — so the path fell to the WI-476 bare intern
-/// and the conflict was reported NOWHERE at a reference and FALSELY ("no rule, fact, or
-/// declaration is in scope for it") at a query pattern.
+/// Answering in `resolve_in_scope`'s three-way vocabulary is what lets it: the relative
+/// reading stands down under a contested head (it needs a single head symbol), and while
+/// `Found`/`NotFound` were the only two answers that was indistinguishable from a plain
+/// miss — so the path fell to the WI-476 bare intern and the conflict was reported
+/// NOWHERE at a reference and FALSELY ("no rule, fact, or declaration is in scope for
+/// it") at a query pattern.
 ///
 /// The candidates are the HEAD's, because the head is the only segment resolved here: the
 /// tail is appended to whatever the head denotes and is never looked up on its own.
@@ -11427,96 +11466,167 @@ fn resolve_dotted_in_kb(
     scope: ScopeId,
     vis: DottedVisibility,
 ) -> ResolveResult {
-    // DOTTED-ONLY, decided ONCE for both rungs: a spelled-out PATH identifies itself,
-    // whereas admitting short names would reinstate the WI-476 global short-name scan.
-    let Some((head, tail)) = name.split_once('.') else {
-        return ResolveResult::NotFound;
-    };
-    // The head is resolved ONCE and shared. Both rungs need it — rung 1 to qualify
-    // against, rung 2 (via `head_owns_path`) to decide whether to stand down — and
-    // resolving it twice also built the `Ambiguous` candidate list twice.
-    let head_sym = match kb.symbols.resolve_in_scope(head, scope) {
-        ResolveResult::Found(sym) => Some(sym),
-        // Returned rather than passed down, so no rung can be reached under a contested
-        // head — the state the rungs used to have to guard against is now unrepresentable
-        // (`head_owns_path` lost its `Ambiguous` arm to this line).
-        ResolveResult::Ambiguous(candidates) => return ResolveResult::Ambiguous(candidates),
-        ResolveResult::NotFound => None,
-    };
     let admits = |sym: &Symbol| match vis {
         DottedVisibility::VisibleOnly => kb.symbols.internal_visible_from(*sym, scope),
         DottedVisibility::Any => true,
     };
-    dotted_by_head(kb, head_sym, tail)
+    // A FIELD is not nameable by PATH, in EITHER reading. Entity fields are registered
+    // under the constructor's qualified name (`<ns>.Sort.entity.field`), so both a
+    // head-qualified join and a bare `by_qualified_name` lookup can land on one — and a
+    // field is reached by dot DISPATCH on a value (`field_access`), never by a path, so
+    // the hit is a category error rather than a competing reading.
+    //
+    // Applied to the LADDER, not to one reading (WI-1075). Gating only the relative one
+    // let `..data.Holder.user.name` resolve to the FIELD while the unmarked twin
+    // correctly refused: measured, `anthill query --mode functor` then accepted the
+    // marked spelling and printed `0 result(s)` — the empty-listing failure mode WI-914
+    // removed — and a call position lost the path text from its diagnostic
+    // (`type mismatch in name.apply` for the marked form, `… in data.Holder.user.name.
+    // apply` for the unmarked one). "A path does not name a field" is a property of the
+    // resolution, so it belongs where the resolution is decided.
+    let not_a_field = |sym: &Symbol| !matches!(kb.kind_of(*sym), Some(SymbolKind::Field));
+    // WI-1075: `..a.b.c` — straight to the root, no head, no scope walk. Ahead of the
+    // dotted-only split because `..top` asks the same question `..top.f` does; the
+    // split below guards the RELATIVE reading, whose rung needs a head to qualify
+    // against.
+    if let Some(path) = absolute_path_target(name) {
+        return dotted_absolute(kb, path)
+            .filter(not_a_field)
+            .filter(admits)
+            .map_or(ResolveResult::NotFound, ResolveResult::Found);
+    }
+    // DOTTED-ONLY: a spelled-out PATH identifies itself, whereas admitting short names
+    // would reinstate the WI-476 global short-name scan.
+    let Some((head, tail)) = name.split_once('.') else {
+        return ResolveResult::NotFound;
+    };
+    let head_sym = match kb.symbols.resolve_in_scope(head, scope) {
+        ResolveResult::Found(sym) => Some(sym),
+        // Returned rather than passed down, so the reading below cannot be reached under
+        // a contested head — the state it used to have to guard against is now
+        // unrepresentable (`head_owns_path` lost its `Ambiguous` arm to this line).
+        ResolveResult::Ambiguous(candidates) => return ResolveResult::Ambiguous(candidates),
+        ResolveResult::NotFound => None,
+    };
+    let Some(hit) = dotted_by_head(kb, head_sym, tail).filter(not_a_field) else {
+        // The relative reading MISSED. WI-1075: loud — re-reading the literal path text
+        // as a top-level qualified name here is the re-rooting the `..` spelling exists
+        // to replace.
+        return ResolveResult::NotFound;
+    };
+    if admits(&hit) {
+        return ResolveResult::Found(hit);
+    }
+    if hidden_hit_ends_the_path(kb, head_sym) {
+        return ResolveResult::NotFound;
+    }
+    note_absolute_fallthrough();
+    dotted_absolute(kb, name)
         .filter(admits)
-        .or_else(|| dotted_absolute(kb, name, head_sym).filter(admits))
         .map_or(ResolveResult::NotFound, ResolveResult::Found)
 }
 
-/// Ladder rung 1 — HEAD-SEGMENT qualification: append the trailing segments to the
-/// already-resolved head's qualified path and look that joined name up directly in
+// ── WI-1075's census instrument ─────────────────────────────────
+//
+// How many times an UNMARKED path has been re-read as an ABSOLUTE one — i.e. how often
+// the one surviving implicit-absolute route, the WI-752 visibility fall-through above,
+// has been taken.
+//
+// WI-1075's migration claim was measured with an instrumented rung 2 over stdlib,
+// `anthill-stl`, the examples and `anthill-todo`: ZERO hits, so retiring the implicit
+// absolute reading cost no migration. This keeps the claim MEASURABLE rather than
+// historical — `wi1075_absolute_path_test` re-runs the count over the corpus, and
+// SELF-CHECKS the instrument on a shape that must move it. A zero from an instrument
+// nothing can move is not coverage.
+//
+// THREAD-LOCAL, not a global atomic: loading runs on the caller's thread, and the test
+// suites run many loads in parallel in one process. A shared counter would make the
+// census read other tests' loads, so the "zero" would be neither reproducible nor
+// attributable — and the fix for that is not a mutex but the observation that the
+// question is per-load.
+//
+// Counted before the lookup, so it reads "the fall-through was TAKEN", not "the
+// fall-through found something": a taken-but-missing fall-through is exactly as much a
+// dependency on the implicit reading as a taken-and-hit one.
+thread_local! {
+    static ABSOLUTE_FALLTHROUGH_HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn note_absolute_fallthrough() {
+    ABSOLUTE_FALLTHROUGH_HITS.with(|c| c.set(c.get() + 1));
+}
+
+/// The census count so far ON THIS THREAD. See the module note above
+/// [`ABSOLUTE_FALLTHROUGH_HITS`]; read it as a DELTA around the load under test, with
+/// [`reset_absolute_fallthrough_hits`].
+pub fn absolute_fallthrough_hits() -> usize {
+    ABSOLUTE_FALLTHROUGH_HITS.with(|c| c.get())
+}
+
+/// Zero the census count on this thread, so the next read is a delta.
+pub fn reset_absolute_fallthrough_hits() {
+    ABSOLUTE_FALLTHROUGH_HITS.with(|c| c.set(0));
+}
+
+/// The RELATIVE reading — HEAD-SEGMENT qualification: append the trailing segments to
+/// the already-resolved head's qualified path and look that joined name up directly in
 /// `by_qualified_name` (the `Map.empty` / proposal-035 `Map[…].empty` / `ns.rule` shape
 /// a single joined Symbol takes — one that appears in no scope's locals/imports). This
-/// is what makes `Map.empty` work for an imported `Map`.
+/// is what makes `Map.empty` work for an imported `Map`, and since WI-1075 it is the
+/// WHOLE of what an unmarked `a.b.c` means.
 fn dotted_by_head(kb: &KnowledgeBase, head_sym: Option<Symbol>, tail: &str) -> Option<Symbol> {
     let head_sym = head_sym?;
     let head_qualified = match kb.symbols.get(head_sym) {
         SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
         SymbolDef::Unresolved { name } => name.clone(),
     };
-    let hit = kb
-        .symbols
+    // WI-751: the `Field` refusal that used to live here now guards BOTH readings, in
+    // [`resolve_dotted_in_kb`] — see the note there for why one reading having it was a
+    // defect. The shape it catches on this side: a local `sort data { entity user(name:
+    // Int64) }` supplies a complete `<ns>.data.user.name` for the head `data` to land
+    // on, so head-qualification HITS, wrongly, capturing `data.user.name()` from the
+    // namespace `data.user` and reporting `unknown functor` at the call.
+    kb.symbols
         .by_qualified_name
         .get(&format!("{head_qualified}.{tail}"))
-        .copied()?;
-    // WI-751: a FIELD is not nameable by PATH. Entity fields are registered under the
-    // constructor's qualified name (`<ns>.Sort.entity.field`), so a local `sort data {
-    // entity user(name: Int64) }` supplies a complete `<ns>.data.user.name` for the head
-    // `data` to land on — and head-qualification then HITS, wrongly, capturing
-    // `data.user.name()` from the namespace `data.user` and reporting `unknown functor`
-    // at the call. A field is reached by dot DISPATCH on a value (`field_access`), never
-    // by a qualified name, so the hit is a category error rather than a competing
-    // reading: refusing it here lets the name fall through to the absolute rung, which
-    // has the real answer.
-    //
-    // This is the HIT half of the root-shadowing defect — the MISS half is what the
-    // absolute rung alone fixes. Filtered in the shared rung, not at one call site,
-    // because "a path does not name a field" is a property of the resolution.
-    (!matches!(kb.kind_of(hit), Some(SymbolKind::Field))).then_some(hit)
+        .copied()
 }
 
-/// Ladder rung 2 — the symbol whose OWN fully-qualified name is `name` (WI-751).
-/// (The dotted-only restriction is applied by the caller, once, for both rungs.)
-fn dotted_absolute(kb: &KnowledgeBase, name: &str, head_sym: Option<Symbol>) -> Option<Symbol> {
-    if head_owns_path(kb, head_sym) {
-        return None;
-    }
-    kb.symbols.by_qualified_name.get(name).copied()
+/// The symbol whose OWN fully-qualified name is `path` (WI-751) — the ABSOLUTE reading,
+/// which since WI-1075 is what `..path` spells. No scope, no head: this is exactly the
+/// lookup `process_imports` does for an import path.
+///
+/// Takes the path with the marker already stripped, so the ONE reader of
+/// [`crate::intern::ABSOLUTE_PATH_MARKER`] is [`absolute_path_target`] at the caller and
+/// this function cannot be handed a marked and an unmarked spelling of the same path.
+fn dotted_absolute(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
+    kb.symbols.by_qualified_name.get(path).copied()
 }
 
-/// WI-751: does `head_sym` — what the path's HEAD segment resolved to in the citing scope
-/// — name something that OWNS every path beneath it, in which case [`dotted_absolute`]
-/// must STAY OUT, because a missing member under an owning root is a genuine member miss
-/// and not a licence to re-root the name somewhere else?
+/// Does a rung-1 hit that the citing scope may NOT SEE end the path here, rather than
+/// letting it be re-read absolutely (WI-752's fall-through, WI-1075's scope)?
+///
+/// Renamed from `head_owns_path`, whose name stated the OLD rule: back then the absolute
+/// reading was an unconditional second rung and this guard was what kept a MISS under a
+/// namespace root loud. WI-1075 makes every relative miss loud, so the only decision left
+/// is the narrower one above.
 ///
 /// A NAMESPACE owns its paths: qualified paths are exactly what namespaces are traversed
-/// by, so if `util` names one in scope, `util.f` means "member `f` of THAT namespace" and
-/// its absence must stay the loud `unknown functor`. Without this guard the absolute rung
-/// fires on a PARTIAL miss — the head resolving correctly and only a later segment being
-/// absent — and silently re-roots the whole path at a same-spelled TOP-LEVEL namespace
-/// the author never named. Verified both ways by
-/// `wi751_partial_miss_under_an_owning_root_stays_loud`.
+/// by, so if `util` names one in scope, `util.f` means "member `f` of THAT namespace",
+/// and an `internal` member is a member the citing scope is FORBIDDEN, not a licence to
+/// bind a same-spelled top-level `util.f` instead. `resolve_dotted_reported` then reports
+/// the forbidden access by name, which is the precise finding
+/// (`wi752_internal_with_no_other_reading_still_reports`).
 ///
 /// A head that resolves to a NON-namespace (the `sort` / `operation` / labelled `rule`
 /// that merely SHARES a namespace root's spelling) owns nothing here — that is precisely
-/// the WI-751 collision, and the rung exists for it. Neither does a head that resolves to
-/// NOTHING: `None` is the miss the absolute rung is for.
+/// the WI-751 collision, and the fall-through exists for it
+/// (`wi752_internal_head_hit_falls_through_to_the_absolute_rung`). `None` cannot reach
+/// here at all: with no head symbol rung 1 produces no hit, hidden or otherwise.
 ///
-/// An AMBIGUOUS head is not a case here at all any more (WI-917). It used to be — "owns
-/// the path" was how the rung was stood down under one — but standing down SILENTLY is
-/// exactly the defect: [`resolve_dotted_in_kb`] now returns the ambiguity before either
-/// rung is consulted, so this guard never sees one.
-fn head_owns_path(kb: &KnowledgeBase, head_sym: Option<Symbol>) -> bool {
+/// An AMBIGUOUS head is not a case here either (WI-917): [`resolve_dotted_in_kb`] returns
+/// the ambiguity before any reading is consulted, so this guard never sees one.
+fn hidden_hit_ends_the_path(kb: &KnowledgeBase, head_sym: Option<Symbol>) -> bool {
     matches!(
         head_sym.and_then(|sym| kb.kind_of(sym)),
         Some(SymbolKind::Namespace)
@@ -11865,7 +11975,7 @@ struct Loader<'a> {
     // WI-839: the parse `Term::Fn` nodes whose CALL-SITE BRACKET (`f[T = X](…)`, the
     // `type_args` ParseAux channel) was actually READ by a lowering that honours it.
     // The channel has exactly two honouring readers — `build_call_type_args` (an
-    // operation body's `Expr::Apply.type_args`, which the typer seeds from) and
+    // operation body's `Expr..Apply.type_args`, which the typer seeds from) and
     // `collect_rule_tvar_names` (a rule HEAD's `[T]` type-variable introducer) — and
     // each records its node here. `check_unconsumed_call_type_args` then sweeps the
     // whole parse store and refuses every bracket NOT in this set.
@@ -12651,6 +12761,16 @@ impl<'a> Loader<'a> {
                 if let Some(sym) = self.forbid_if_internal(name, span) {
                     return sym;
                 }
+                // NOT the place to refuse a marked path that names nothing (WI-1075).
+                // Tried, and MEASURED wrong: a whole dotted name is resolved here
+                // BEFORE the dot ladders get to decompose it, so refusing at this
+                // position broke the applied rule-reference citation
+                // `..myroot.inner.rel.takeN(1)` — whose prefix `..myroot.inner.rel`
+                // resolves perfectly once `rule_prefix_split` peels the member off.
+                // "Resolves to nothing AS WRITTEN" is not "resolves to nothing"; the
+                // refusal belongs where a bare intern is the FINAL answer, which for
+                // the shapes the marker adds is `scan_rule_goal` (a rule head) and
+                // `load_fact` (a fact head).
                 // WI-476: name not resolvable in the local environment. A
                 // functor / identifier that names nothing in scope is interned as
                 // a bare symbol (a data name, or a genuinely-unknown functor the
@@ -12792,11 +12912,13 @@ impl<'a> Loader<'a> {
                 // reference justifies a different reading of a path; a name that
                 // denotes something in term position denotes the same thing here.
                 //
-                // The ladder also brings `head_owns_path` to this position, which the
-                // bare `by_qualified_name` lookup lacked: a dotted type name whose head
-                // resolves to a NAMESPACE now reports a member miss under that namespace
-                // instead of silently re-rooting at a same-spelled top-level twin. That
-                // is the WI-751 rule, and it was already how the term positions behaved.
+                // The ladder also brings the RELATIVE-ONLY reading to this position,
+                // which the bare `by_qualified_name` lookup lacked: a dotted type name
+                // that misses under the head it resolved reports that miss instead of
+                // silently re-rooting at a same-spelled top-level twin. WI-751 made
+                // that so for a NAMESPACE head (`head_owns_path`, now
+                // `hidden_hit_ends_the_path`) and WI-1075 for every head; both were
+                // already how the term positions behaved.
                 if let Some(sym) = self.resolve_dotted_reported(&lookup_name, name.span) {
                     return sym;
                 }
@@ -14611,10 +14733,11 @@ impl<'a> Loader<'a> {
     fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
         let scope = self.current_scope;
         // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
-        // now come from `resolve_dotted_in_kb` like everywhere else). Without the
-        // absolute rung a root-shadowing declaration suppressed the RULE-REFERENCE
-        // citation forms (`myroot.inner.rel.isEmpty`, `myroot.inner.rel.takeN(1)`) even
-        // after the applied-call path was fixed — the same defect one resolver over.
+        // now come from `resolve_dotted_in_kb` like everywhere else). Without it a
+        // root-shadowing declaration suppressed the RULE-REFERENCE citation forms
+        // (`..myroot.inner.rel.isEmpty`, `..myroot.inner.rel.takeN(1)`) even after the
+        // applied-call path was fixed — the same defect one resolver over. Sharing the
+        // ladder is also what gives this position WI-1075's `..` spelling for free.
         let resolved = self
             .kb
             .symbols
@@ -15206,7 +15329,7 @@ impl<'a> Loader<'a> {
     /// value), and the bound type as a `Value`. A value-in-type bound (the `3` in
     /// `g[3]`) lowers via `type_expr_to_value` to a `Value::Node` denoted — never
     /// re-grounded via `make_denoted`. The occurrence carries these directly
-    /// (`BuildFrame::Apply.type_args`); the vestigial term-side handle is built
+    /// (`BuildFrame..Apply.type_args`); the vestigial term-side handle is built
     /// separately by `type_args_term_handle`. Empty when no explicit bindings.
     ///
     /// WI-839: this is ONE of the channel's two honouring readers, so it records the
@@ -18820,6 +18943,7 @@ impl<'a> Loader<'a> {
         let prev_owner = self.current_owner;
         if let Term::Fn { functor, .. } = self.parsed.terms.get(f.term) {
             let functor = *functor;
+            self.refuse_unresolvable_absolute_head(functor, self.parsed.terms.span(f.term));
             self.current_owner =
                 Some(self.resolve_owner_symbol(functor, self.parsed.terms.span(f.term)));
         }
@@ -19300,8 +19424,53 @@ impl<'a> Loader<'a> {
         None
     }
 
+    /// WI-1075 — a CLAUSE HEAD spelled `..a.b` asserts about a ROOT symbol, so there had
+    /// better be one. No-op for an unmarked head and for a marked one that resolves.
+    ///
+    /// A head is a TERM, which is the one place the marker is writable outside a
+    /// reference: the grammar admits `absolute_name` in reference positions only, so
+    /// `namespace ..a.b` is a parse error, but `rule ..a.b(?x) :- …` and `fact ..a.b(…)`
+    /// parse. Neither MINTS — `rule_introduced_functor_name` refuses any name containing
+    /// a `.`, and the marker is built from the separator so every marked name has one —
+    /// which is exactly why the refusal has to be here: without a mint the head falls to
+    /// the WI-476 bare intern and the clause is stored under a symbol nothing can cite.
+    /// MEASURED: `fact ..zzq(row: 1)` loaded clean and asserted a fact under a symbol
+    /// named literally `..zzq`, attached to no declaration and reachable by nothing.
+    ///
+    /// An UNMARKED head that resolves to nothing is untouched: it may legitimately be a
+    /// new data name (WI-476). A marked one names something or names nothing.
+    ///
+    /// `Any` visibility, because the question is whether the path HAS an answer — an
+    /// `internal` one is answered (and refused) by the reference machinery, which has
+    /// the precise diagnostic; reporting "unresolved" over it would bury that.
+    fn refuse_unresolvable_absolute_head(&mut self, functor: Symbol, span: Span) {
+        let name = self.parsed.symbols.local_name(functor);
+        if absolute_path_target(name).is_none()
+            || self.resolve_dotted(name, DottedVisibility::Any).denotes()
+        {
+            return;
+        }
+        let name = name.to_owned();
+        self.errors.push(LoadError::UnresolvedName {
+            name,
+            span,
+            scope_name: self.scope_display_name(),
+        });
+    }
+
     fn load_rule(&mut self, r: &Rule, domain: Symbol) {
         let rule_sort = ClauseKind::Rule;
+        // WI-1075: the same refusal the fact path makes, for the same reason — see
+        // [`Self::refuse_unresolvable_absolute_head`]. Applied to every head, since a
+        // multi-head rule may spell the marker on any of them.
+        for h in &r.heads {
+            if let RuleHead::Term(tid) = h {
+                if let Term::Fn { functor, .. } = self.parsed.terms.get(*tid) {
+                    let (functor, span) = (*functor, self.parsed.terms.span(*tid));
+                    self.refuse_unresolvable_absolute_head(functor, span);
+                }
+            }
+        }
 
         // WI-582: desugar the `[T]` type-variable-introducer form into the inline
         // form. Collect the head's introduced type-vars (`[T]`) and map each to

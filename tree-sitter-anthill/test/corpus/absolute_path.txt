@@ -1,0 +1,152 @@
+=====================================
+Absolute path as a call callee
+=====================================
+
+namespace n
+  operation f() -> Int64 = ..myroot.inner.helper()
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (fn_term
+        name: (absolute_name
+          (identifier)
+          (identifier)
+          (identifier))))))
+
+=====================================
+Absolute path as a bare reference
+=====================================
+
+namespace n
+  operation f() -> Int64 = ..myroot.inner.konst
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (absolute_name
+        (identifier)
+        (identifier)
+        (identifier)))))
+
+=====================================
+Absolute path in a type position
+=====================================
+
+namespace n
+  operation f(x: ..myroot.inner.T) -> Int64 = 2
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (simple_type
+          (absolute_name
+            (identifier)
+            (identifier)
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (integer_literal))))
+
+=====================================
+Absolute path as a parameterized-type base
+=====================================
+
+namespace n
+  operation f(x: ..scala.prelude.List[Int64]) -> Int64 = 1
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (application
+          name: (absolute_name
+            (identifier)
+            (identifier)
+            (identifier))
+          (sort_binding
+            type: (simple_type
+              (name
+                (identifier))))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (integer_literal))))
+
+=====================================
+A single-segment absolute path
+=====================================
+
+namespace n
+  operation f() -> Int64 = ..top()
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      body: (fn_term
+        name: (absolute_name
+          (identifier))))))
+
+=====================================
+A DECLARATION may not spell an absolute path
+=====================================
+
+namespace ..a.b
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (ERROR
+      (identifier))
+    (name
+      (identifier))))

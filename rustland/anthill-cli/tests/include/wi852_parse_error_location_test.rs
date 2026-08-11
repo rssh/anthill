@@ -235,16 +235,33 @@ fn a_span_merged_across_the_prefix_is_located_in_the_file() {
 /// typed, and every line around it (`import` lines, the `fact` keyword) is
 /// synthesized. A `line:col` would point into text they never wrote — the same
 /// "location naming nothing" this ticket removes — so the origin IS the flag.
+///
+/// THE CLAIM IS THE ORIGIN. WI-1075 added a path marker to the grammar, and the
+/// exact-match assertion below is what said whether it cost this diagnostic
+/// anything: a `::` marker moved tree-sitter's ERROR node to cover the whole
+/// synthesized item, so the snippet quoted the `fact ` the author never typed. The
+/// chosen `..` leaves recovery untouched and the assertion exact. The absence of a
+/// `line:col` is asserted beside it, since that is the ticket's own claim.
 #[test]
 fn an_inline_pattern_names_the_flag() {
     let kb = fixture("good.anthill");
     let out = anthill(&["query", "--path", kb.to_str().unwrap(), "mk(x:"]);
 
     assert_eq!(out.code, 1, "the query must block; stderr:\n{}", out.stderr);
+    let faults: Vec<&str> = out.diagnostics("error:").collect();
     assert!(
-        out.diagnostics("error:")
-            .any(|l| l == "error: --pattern: syntax error near `(x:`"),
-        "expected the fault blamed on `--pattern`; stderr:\n{}",
+        faults
+            .iter()
+            .any(|l| *l == "error: --pattern: syntax error near `(x:`"),
+        "expected the fault blamed on `--pattern`, quoting the author's text and \
+         nothing synthesized around it; stderr:\n{}",
+        out.stderr
+    );
+    // No `line:col` anywhere: the synthesized wrapper has lines the author never
+    // wrote, so locating INTO it is exactly the defect WI-852 removed.
+    assert!(
+        !faults.iter().any(|l| l.contains(":1:") || l.contains(":2:")),
+        "an inline pattern must carry no line:col at all; stderr:\n{}",
         out.stderr
     );
 }

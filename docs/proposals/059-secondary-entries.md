@@ -268,13 +268,13 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
 
   Neither missed shape is excused by "it would fail loudly", which this clause refuses everywhere else. The constructor shape is silent: measured, a sibling enum's `entity m(left, right)` and a sort member `m(left, right)` of the same return type load clean and the unedited body calls the member. The namespace shape is silent too, and that is why it is the *ladder's*:
 
-  | written | measured |
-  |---|---|
-  | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` |
-  | + a member `Box.inner` | **loud** `unknown functor` |
-  | + a member `Box.inner`, and a **top-level** `namespace inner` also exists | **loads clean**, silently calling the TOP-LEVEL `inner.g` |
+  | written | measured, before WI-1075 | now |
+  |---|---|---|
+  | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` | unchanged |
+  | + a member `Box.inner` | **loud** `unknown functor` | unchanged |
+  | + a member `Box.inner`, and a **top-level** `namespace inner` also exists | **loads clean**, silently calling the TOP-LEVEL `inner.g` | **loud** — `..inner.g` is how the top-level one is asked for |
 
-  The third row is the recovery rung WI-751 added for a shadowed head, re-rooting at the bare global twin. Reachable with no capturing declaration anywhere — a `let` binder, a sort or a labelled rule shadows a head just as well — so refusing the declaration would close one route into a defect that has others. Tracked as **WI-1075**, whose design is settled: the rung's two jobs are separated by giving the absolute reading its own spelling, `::a.b.c`, and making a bare dotted path purely relative. Measured, the rung fires **zero** times across the corpus, so the exclusion above currently rests on nothing being reachable, and WI-1075 makes it rest on nothing being writable.
+  The third row was the recovery rung WI-751 added for a shadowed head, re-rooting at the bare global twin. Reachable with no capturing declaration anywhere — a `let` binder, a sort or a labelled rule shadows a head just as well — so refusing the declaration would have closed one route into a defect that has others. **WI-1075 closed it at the ladder**, by separating that rung's two jobs: the absolute reading got its own spelling, `..a.b.c`, and a bare dotted path became purely relative (proposal 044 §"Absolute paths"; `kernel-language.md` §8.6). The rung had fired **zero** times across the corpus, so the change cost no migration — and the exclusion above no longer rests on nothing being *reachable* but on nothing being *writable*: with `..` spelled, capturing a namespace name can neither break a path silently nor re-point one.
 
   So on the *no-override* hazard the clause bites **nothing in the corpus** — which is what the census claimed, now holding for stated reasons rather than by an incomplete count. Its whole migration is the two sites the exclusion below stops covering, which WI-1048 measured as a deliberate refinement, so they are two sites clause 3 must NOT touch rather than two it must migrate (see below).
 
