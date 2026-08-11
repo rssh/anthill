@@ -66,7 +66,13 @@ object Bootstrap:
     */
   def generate(pf: ParsedFile, types: ScalaTypes): IndexedSeq[GeneratedFile] =
     val files = ArrayBuffer.empty[GeneratedFile]
-    val env = FileEnv(fileTypes(pf.symbols, pf.items, ""), types)
+    // The shadow table gets the same same-file complement `decls` gives the type
+    // table: a required spec declared in THIS file is not in the resolved closure's
+    // `specMembers` unless the caller listed the file there, and the rendering half
+    // would see it while the shadow half did not — one emission's two halves
+    // disagreeing about what the file declares (WI-1065 review).
+    val env = FileEnv(fileTypes(pf.symbols, pf.items, ""), types,
+      specMemberNames(Seq(pf), base = types.specMembers))
     pf.items.foreach {
       case Item.NamespaceItem(ns) => emitNamespace(pf.symbols, ns, "", env, Map.empty, files)
       case Item.SortWithBodyItem(s) => emitSort(pf.symbols, s, "", env, Map.empty, files)
@@ -172,6 +178,96 @@ object Bootstrap:
       pkg -> PackageTypes(types, missing)
     }.toMap)
 
+  /** The operations an item list declares, block entries flattened — the ONE reading
+    * shared by the emission sites and the shadow table, so an Item kind that starts
+    * carrying operations cannot be taught to one and missed by the other (the drift
+    * the table exists to prevent). */
+  private def declaredOps(items: Iterable[Item]): IndexedSeq[Operation] =
+    items.iterator.flatMap {
+      case Item.OperationItem(op) => Iterator.single(op)
+      case Item.OperationBlockItem(b) => b.entries.iterator
+      case _ => Iterator.empty
+    }.toIndexedSeq
+
+  /** Every sort's member METHOD names, transitive over its `requires` edges — the
+    * table [[requiresMapping]] reads to keep a shadowed requirement out of the
+    * `extends` clause (WI-1065).
+    *
+    * WHY A TABLE AT ALL: whether `FiniteCollection.map` collides with a member of the
+    * `Iterable` it requires is a fact about ANOTHER file, and proposal 034 gives
+    * `generate` one `ParsedFile` and no KB. Like [[emittedTypes]], the answer is
+    * derived by the caller from the same parsed closure and supplied as a value
+    * ([[ScalaTypes.specMembers]]), so it cannot drift from the declarations it copies.
+    * `base` is that supplied table when THIS call derives a single file's complement
+    * on top of it (`generate`): edges resolve against the merged view, and the result
+    * carries both — the same same-file complement `FileEnv.decls` gives the type
+    * table. `base` entries are already transitively closed, so they seed the fixpoint
+    * and pass through unchanged.
+    *
+    * EMITTED METHOD NAMES, not anthill spellings: the override group Scala forms is
+    * over what [[Names.scalaMethodName]] produces, so `zero-val` and `zero_val` are
+    * one name here exactly as they are in the output (WI-1054).
+    *
+    * TWO STATED OVER-APPROXIMATIONS, both in the demotion-safe direction — each can
+    * only ever DROP an `extends` that might have stayed, and a demoted requirement is
+    * still recorded, as evidence (the third safe over-approximation, name-keying, is
+    * [[requiresMapping]]'s and stated there):
+    *  - keyed by LEAF name, so a leaf declared in two packages merges its member
+    *    sets ([[emittedTypes]] can afford per-package keys because a USE site names
+    *    one package; a `requires` head is resolved per-file by `TypeScope`, which
+    *    this walk deliberately does not replicate);
+    *  - transitive over EVERY `requires` edge, although an edge that is itself
+    *    demoted (or is evidence over a non-carrier parameter) lends no members to
+    *    the emitted trait.
+    *
+    * ONE BLIND SPOT IN THE OTHER DIRECTION, stated rather than filed under the safe
+    * ones: a required spec NO supplied file declares (an Ambient name — a
+    * hand-written or carrier-bound trait outside the generated closure) contributes
+    * an EMPTY member set, so a shadow against it is missed and the `extends` is
+    * KEPT. That errs toward the compile error this table exists to prevent, and it
+    * is the same blind spot every Ambient name has: Bootstrap has not read the
+    * declaration, so nothing per-file can know its members. A SAME-FILE spec is not
+    * in this class — `generate`'s per-file complement covers it.
+    */
+  def specMemberNames(
+    files: Iterable[ParsedFile], base: Map[String, Set[String]] = Map.empty
+  ): Map[String, Set[String]] =
+    case class Direct(ops: Set[String], requires: Set[String])
+    val direct = scala.collection.mutable.Map.empty[String, Direct]
+    def visit(sym: SymbolTable, items: Iterable[Item]): Unit =
+      items.foreach {
+        case Item.NamespaceItem(ns) => visit(sym, ns.items)
+        case Item.SortWithBodyItem(s) if !s.isTypeParam =>
+          val ops = declaredOps(s.items)
+            .map(o => Names.scalaMethodName(sym.name(o.name.last))).toSet
+          val reqs = s.items
+            .collect { case Item.RequiresDeclItem(r) => headName(sym, r.typeExpr) }
+            .flatten.toSet
+          val leaf = sym.name(s.name.last)
+          val prev = direct.getOrElse(leaf, Direct(Set.empty, Set.empty))
+          direct(leaf) = Direct(prev.ops ++ ops, prev.requires ++ reqs)
+          visit(sym, s.items) // nested sorts declare members of their own
+        case _ => ()
+      }
+    files.foreach(pf => visit(pf.symbols, pf.items))
+    // Fixpoint rather than a memoized descent: a `requires` cycle would hand the
+    // descent a partial set to cache, and the table is ~50 keys of depth ≤ 4.
+    var closed: Map[String, Set[String]] = direct.view.mapValues(_.ops).toMap
+    var changed = true
+    while changed do
+      changed = false
+      direct.foreach { case (leaf, d) =>
+        val grown = closed(leaf) ++ d.requires.flatMap(r =>
+          closed.getOrElse(r, Set.empty) ++ base.getOrElse(r, Set.empty))
+        if grown.size > closed(leaf).size then
+          closed = closed.updated(leaf, grown)
+          changed = true
+      }
+    // Union per key, not replacement: a leaf in both (the file is itself in the
+    // caller's closure, or shares its leaf with another package's sort) must stay
+    // monotone — dropping a base member would flip a demotion back to a kept clause.
+    base ++ closed.map((leaf, ms) => leaf -> (ms ++ base.getOrElse(leaf, Set.empty)))
+
   /** One type a file EMITS: where it goes, what Scala calls it, how it is parameterized,
     * and where it was written (which is what a cross-file refusal points at). */
   private case class EmittedType(pkg: String, scalaName: String, kinds: ParamKinds,
@@ -229,7 +325,13 @@ object Bootstrap:
         second)
 
   /** One file's own names, plus the project-wide tables every file is rendered against. */
-  private case class FileEnv(decls: FileTypes, scalaTypes: ScalaTypes):
+  private case class FileEnv(
+    decls: FileTypes, scalaTypes: ScalaTypes,
+    /** [[ScalaTypes.specMembers]] plus this file's own sorts ([[specMemberNames]]'
+      * `base` merge) — the view [[requiresMapping]]'s shadow check reads, complete
+      * for same-file required specs the resolved closure never saw. */
+    specMembers: Map[String, Set[String]]
+  ):
 
     private val fileTypePlacements: Map[(String, String), Placement.Known] =
       decls.types.view.mapValues { t =>
@@ -489,11 +591,7 @@ object Bootstrap:
       case _ => // facts/rules at namespace level — TODO in KB-driven gen
     }
     // Top-level operations inside a namespace land in a <NsName>Ops trait.
-    val nsOps = ns.items.flatMap {
-      case Item.OperationItem(op) => Seq(op)
-      case Item.OperationBlockItem(b) => b.entries
-      case _ => Seq.empty
-    }
+    val nsOps = declaredOps(ns.items)
     if nsOps.nonEmpty then
       val typeName = Names.scalaTypeName(nsLeaf) + "Ops"
       val scope = env.scopeAt(
@@ -546,11 +644,7 @@ object Bootstrap:
         SortRequirement(r,
           TypeGen.render(sym, r.typeExpr, scope.at(s"$sortName's `requires`", r.span)))
     }
-    val ops = sort.items.flatMap {
-      case Item.OperationItem(op) => Seq(op)
-      case Item.OperationBlockItem(b) => b.entries
-      case _ => Seq.empty
-    }
+    val ops = declaredOps(sort.items)
     val shape = shapeOf(sym, sort.name, sort.items.collect { case Item.EntityItem(e) => e })
     // `typeParams` and not `written`: the carrier is chosen from the parameters that
     // SURVIVE erasure, through the one reading of which those are (`keepTypeArgs`).
@@ -558,7 +652,8 @@ object Bootstrap:
     // question, and a parameter kind that erases for some new reason would make the
     // two disagree — the carrier would name a binder the emitted type does not have.
     val req = requiresMapping(
-      sym, sym.name(sort.name.last), shape, typeParams, ops, requires, scope)
+      sym, sym.name(sort.name.last), shape, typeParams, ops, requires, scope,
+      env.specMembers)
 
     // Rules + constraints are NOT emitted from bootstrap. Their bodies
     // are semantic (rule term → ScalaCheck Boolean expression); the
@@ -682,26 +777,58 @@ object Bootstrap:
     * what ships is an obligation on every implementor that `sort Set` never
     * declared, sitting beside Set's own `eq(a: Set, b: Set)` as an overload.
     *
+    * OVER THE CARRIER IS STILL NOT ENOUGH (WI-1065). A requirement whose spec the
+    * sort REDECLARES a member of is a SHADOW: kernel §8.7 rules the two same-named
+    * operations DISTINCT, not one operation refined — `FiniteCollection.map` returns
+    * a `FiniteCollection` where `Iterable.map` returns a `Stream`, the spec's own
+    * worked example. Scala's `extends` reads the same two declarations the other
+    * way: matching members (same name, same parameter types — the return type is
+    * not part of matching) form ONE override group, and RefChecks refuses the
+    * incompatible return (E164, `error overriding method map in trait Iterable`).
+    * The emitted clause would therefore assert exactly the relation the kernel
+    * denies, so a shadowed requirement is demoted to EVIDENCE, recorded with the
+    * members that shadow it ([[shadowNote]]). The collision is read from
+    * [[FileEnv.specMembers]] — cross-file knowledge proposal 034 keeps out of
+    * Bootstrap, supplied like every other resolved table (WI-1060), plus the
+    * file's own sorts — and is keyed on emitted METHOD NAMES, an
+    * over-approximation in the demotion-safe direction ([[specMemberNames]] holds
+    * the other two): a same-name-different-params member would be a legal
+    * overload, but dropping to evidence never breaks a compile and keeping the
+    * clause can. The demotion guards ONE dimension — the sort's own members
+    * against each requirement, which is the shadow relation kernel §8.7 names.
+    * Two KEPT supertraits whose specs declare same-named members against EACH
+    * OTHER are not compared: name sets cannot tell that apart from the legal
+    * diamond (`Ord`'s `Eq[T]` and `PartialOrd[T]` both reach `PartialEq`'s
+    * `eq`/`neq`, one inherited declaration and fine), and no corpus file writes
+    * the conflicting shape. A sort that hits it gets Scala's own conflicting-
+    * members error at the closure compile, named at the declaration.
+    *
     * NOT A SILENT DROP, in both directions: a data sort's undischarged requirement
     * is refused ([[checkDischarged]]), and an algebra sort's is RECORDED in the
-    * emitted source ([[evidenceNote]]).
+    * emitted source ([[evidenceNote]], [[shadowNote]]).
     */
   private def requiresMapping(
     sym: SymbolTable, sortLeaf: String, shape: SortShape,
     typeParams: IndexedSeq[TypeParamDecl], ops: IndexedSeq[Operation],
-    requires: IndexedSeq[SortRequirement], scope: TypeScope
+    requires: IndexedSeq[SortRequirement], scope: TypeScope,
+    specMembers: Map[String, Set[String]]
   ): RequiresMapping =
     if requires.isEmpty then RequiresMapping("", "")
     else
       shape match
         case SortShape.Algebra =>
           val carrier = carrierOf(sym, sortLeaf, typeParams, ops)
-          val (supertraits, evidence) =
+          val (overCarrier, evidence) =
             requires.partition(r => isOverCarrier(sym, r, carrier))
+          val (shadowed, supertraits) = overCarrier.partitionMap { r =>
+            val members = shadowedMemberNames(sym, r, ops, specMembers)
+            if members.nonEmpty then Left((r, members)) else Right(r)
+          }
           RequiresMapping(
             if supertraits.isEmpty then ""
             else s" extends ${supertraits.map(_.rendered).mkString(", ")}",
-            evidence.map(r => evidenceNote(r.rendered, carrier)).mkString)
+            shadowed.map((r, members) => shadowNote(r.rendered, members)).mkString +
+              evidence.map(r => evidenceNote(r.rendered, carrier)).mkString)
         case SortShape.Record(ctor) =>
           checkDischarged(sym, sortLeaf, IndexedSeq(ctor), requires, scope)
           RequiresMapping("", "")
@@ -881,13 +1008,52 @@ object Bootstrap:
     * an operation-less sort is `indented definitions expected, eof found` — the same
     * trap [[renderMainSort]]'s `ops.isEmpty` arm exists for.
     */
-  private def evidenceNote(rendered: String, carrier: Carrier): String =
+  /** One frame for both requirement notes: the `requires` header, the demotion's
+    * reason lines, and the shared WI-1022 tail. The tail lives ONCE because it is a
+    * claim about what Bootstrap emits — when WI-1022 lands a `using` emission, one
+    * site changes and both notes follow. `reason` ends mid-sentence, flowing into
+    * the tail's "What carries…". */
+  private def requirementNote(rendered: String, reason: String): String =
     // The requirement gets its own line: it is the only part of this whose length
     // varies, so wrapping the rest by hand stays honest as the name grows.
-    s"// `requires $rendered`\n" +
-    "//   is EVIDENCE, not a supertype claim (§2.7a, kernel §8.7). This sort's carrier is\n" +
-    s"//   ${carrier.describe}, and the requirement is not over it. What carries\n" +
+    s"// `requires $rendered`\n" + reason + "What carries\n" +
     "//   it is §2.7's `using` context parameter, which Bootstrap does not emit (WI-1022).\n"
+
+  private def evidenceNote(rendered: String, carrier: Carrier): String =
+    requirementNote(rendered,
+      "//   is EVIDENCE, not a supertype claim (§2.7a, kernel §8.7). This sort's carrier is\n" +
+      s"//   ${carrier.describe}, and the requirement is not over it. ")
+
+  /** The sort's own operations that SHADOW a member of the required spec — the
+    * declaring sort's spelling, in declaration order, empty when the requirement is
+    * a clean supertrait. Compared as EMITTED method names on both sides, because
+    * the override group Scala would form is over those (WI-1054). */
+  private def shadowedMemberNames(
+    sym: SymbolTable, req: SortRequirement, ops: IndexedSeq[Operation],
+    specMembers: Map[String, Set[String]]
+  ): IndexedSeq[String] =
+    headName(sym, req.decl.typeExpr) match
+      case Some(specLeaf) =>
+        val inherited = specMembers.getOrElse(specLeaf, Set.empty)
+        ops.map(o => sym.name(o.name.last))
+          .distinctBy(Names.scalaMethodName) // one entry per EMITTED name (WI-1054)
+          .filter(n => inherited.contains(Names.scalaMethodName(n)))
+      // Unreachable for a requirement that passed [[isOverCarrier]] — an arrow or
+      // tuple already threw in [[writtenArguments]] — kept total rather than partial.
+      case None => IndexedSeq.empty
+
+  /** The comment a SHADOWED requirement becomes (WI-1065): over the carrier, so it
+    * would have been the supertrait, and demoted because the sort redeclares members
+    * of the required spec — distinct operations per kernel §8.7, which one Scala
+    * override group cannot hold. Same frame as [[evidenceNote]], and above the
+    * declaration for the same indentation-syntax reason. */
+  private def shadowNote(rendered: String, members: IndexedSeq[String]): String =
+    val names = members.map(m => s"`$m`").mkString(", ")
+    requirementNote(rendered,
+      "//   is EVIDENCE here, not a supertrait (§2.7a, kernel §8.7): this sort redeclares\n" +
+      s"//   $names, and a redeclared member of a merely-required spec is a DISTINCT\n" +
+      "//   operation shadowing it, not an override — a relation one Scala override\n" +
+      "//   group cannot hold (WI-1065). ")
 
   /** Refuse a data sort's `requires` that the emitted tree would not carry.
     *

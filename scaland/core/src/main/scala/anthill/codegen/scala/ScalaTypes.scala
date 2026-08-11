@@ -3,8 +3,10 @@ package anthill.codegen.scala
 import anthill.kb.KnowledgeBase
 import anthill.parse.ParsedFile
 
-/** The two tables a written PRELUDE name is placed against, resolved from outside the
-  * emitter (WI-1060).
+/** The tables the emitter reads but must not derive itself (proposal 034), resolved
+  * from outside it: the two a written PRELUDE name is placed against (WI-1060), and
+  * the member table the `requires` → `extends` shadow check reads (WI-1065,
+  * [[specMembers]] — not a placement table, a peer resolved one).
   *
   * A prelude name has exactly two ways to have a Scala counterpart at all, and WI-1021
   * decided which is which by asking whether anthill can BUILD a value of the sort: a
@@ -71,7 +73,16 @@ case class ScalaTypes(
     * generation itself needs the table. The caller must generate the same closure it
     * supplied to [[resolve]]; the mandatory Scala compilation of that closure catches a
     * refused declaring file as a missing `_root_` type. */
-  packageTypes: Map[String, Bootstrap.PackageTypes]
+  packageTypes: Map[String, Bootstrap.PackageTypes],
+  /** Anthill sort leaf → the member METHOD names its emitted trait would lend a
+    * subtype, transitive over `requires` edges ([[Bootstrap.specMemberNames]],
+    * WI-1065). Read by the `requires` → `extends` decision: a requirement whose
+    * spec's members the declaring sort redeclares is a SHADOW (kernel §8.7, distinct
+    * operations), and the supertrait that would merge the two into one Scala
+    * override group is demoted to evidence. Derived from the same parsed closure as
+    * [[packageTypes]], for the same reason: the collision is cross-file knowledge
+    * proposal 034 keeps out of the emitter itself. */
+  specMembers: Map[String, Set[String]]
 ):
 
   private val autoImported: Bootstrap.PackageTypes =
@@ -166,8 +177,8 @@ case class ScalaTypes(
 
 object ScalaTypes:
 
-  /** Resolve both tables: the scalars from a loaded profile, the prelude sorts from the
-    * prelude's own parsed files.
+  /** Resolve the tables: the scalars from a loaded profile, the prelude sorts and the
+    * spec member sets from the prelude's own parsed files.
     *
     * `autoImported` is the file set whose declarations a consumer reaches WITHOUT writing
     * an import. Only the declarations emitted into `autoImportPackage` itself are taken
@@ -193,10 +204,14 @@ object ScalaTypes:
         s"no usable type_map for language `$language`, profile `$profile`: $other")
     // Both sets enter ONE package-keyed inventory. If a caller includes the prelude in
     // `projectFiles` too, identical spans make that repetition idempotent; two distinct
-    // declarations at one (package, leaf) remain a located refusal.
-    val reachable = Bootstrap.emittedTypes(autoImported ++ projectFiles)
+    // declarations at one (package, leaf) remain a located refusal. ONE closure value
+    // for both derivations — the type table and the member table are only sound over
+    // the SAME file set, so the shared input is structural, not coincidental.
+    val closure = autoImported ++ projectFiles
+    val reachable = Bootstrap.emittedTypes(closure)
     ScalaTypes(scalars, Names.scalaPackagePathOf(autoImportPackage),
-      reachable.packages)
+      reachable.packages,
+      Bootstrap.specMemberNames(closure))
 
 end ScalaTypes
 

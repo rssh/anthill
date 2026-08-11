@@ -79,7 +79,7 @@ hyphens in identifiers become underscores (§5).
 | `effects (Error)` or `effects (Error E)` | `Either[E, R]` return (default profile) |
 | `effects (Requires Cap)` | `(using Cap)` context parameter |
 | `sort T` (abstract sub-sort = type parameter) | `[T]` type parameter |
-| `requires Eq[T]` | supertrait when it is over the sort's carrier, else `using Eq[T]` evidence — see §2.7a |
+| `requires Eq[T]` | supertrait when it is over the sort's carrier AND the sort redeclares none of the spec's members, else `using Eq[T]` evidence — see §2.7a |
 | `fact SortName` (inside sort body) | `extends SortName` |
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
 | `Int64` / `Float` / `Bool` / `String` / `BigInt` / `Unit` / `Nothing` | `scala.Long` / `scala.Double` / `scala.Boolean` / `java.lang.String` / `scala.math.BigInt` / `scala.Unit` / `scala.Nothing` — see §2.1a |
@@ -509,7 +509,7 @@ refused.
 
 - **A sort without constructors** gets the supertrait for each requirement over its carrier
   and **none** for the rest. `trait Ord[T] extends Eq[T], PartialOrd[T]` and
-  `trait FiniteCollection[C, Element] extends Iterable[C, Element]` are the first;
+  `trait PersistentCollection[C, Element] extends Iterable[C, Element]` are the first;
   `trait Set[T]`, `trait Map[K, V]` and `trait VectorSpace[V, F]` are the second — their
   `requires Eq[T]` / `Eq[T = K]` / `Ring[F]` constrain the *element*, the *key* and the
   *scalar*, and each sort's claim about itself is a `provides` (`set.anthill`'s
@@ -518,7 +518,47 @@ refused.
   the difference; what shipped was an obligation on every implementor that the anthill sort
   never declared, sitting beside `Set`'s own `eq(a: Set, b: Set)` as an overload.
 
-**Neither omission is a silent drop, and the two are prevented differently.**
+**Over the carrier is still not enough: a shadowed requirement (WI-1065).** A requirement
+whose spec the sort *redeclares a member of* does not become a supertrait either. Kernel
+§8.7: a sort that merely `requires` a spec and declares an operation of the same name "is
+**not** overriding it: that operation is unrelated", and a shadow that provably refines the
+signature "is a distinct operation by construction" — the spec's own worked example being
+exactly this corpus pair, `FiniteCollection.map` returning a `FiniteCollection` where
+`Iterable.map` returns a `Stream`, with an unqualified call settled by the coherence ladder
+and the loser still reachable qualified. Scala reads the same two declarations the other
+way: under `extends`, members with matching signatures (same name and parameter types — the
+return type is not part of matching) form **one override group**, checked at the
+declaration, so the emitted clause asserted the very relation the kernel denies and
+RefChecks refused it (`error overriding method map in trait Iterable … has incompatible
+type`, twice). The fix is not a Scala spelling for the refinement — an abstract type member
+would *encode* the one-operation reading §8.7 rules out, and would delete the losing
+operation besides — it is not emitting the relation: the requirement is demoted to
+evidence, with a note naming the shadowing members.
+
+The collision is **cross-file knowledge** — the required spec's member names live in its own
+file, and proposal 034 gives the bootstrap mapper one `ParsedFile` — so it arrives the way
+every resolved table does (WI-1060): the caller derives a member table from the same parsed
+closure (`ScalaTypes.specMembers`, transitive over `requires` edges, since Scala inherits
+through the whole `extends` chain), and `generate` complements it with the file's own sorts,
+so a spec declared beside its requirer is seen too. The check is keyed on **emitted method
+names**, which over-approximates in the demotion-safe direction three ways: a
+same-name-different-params member would be a legal Scala overload but demotes anyway (stated
+at `requiresMapping`); a leaf declared in two packages merges its member sets; and the
+closure follows every `requires` edge, including ones that are themselves evidence (both
+stated at `Bootstrap.specMemberNames`). Each of the three can only drop an `extends` that
+might have stayed — recorded, never silent. Two limits err the OTHER way and are stated at
+their sites rather than filed under the safe ones: a required spec **no supplied file
+declares** (an Ambient name — a hand-written trait outside the generated closure)
+contributes an empty member set, so a shadow against it is missed and the clause kept; and
+the check guards one dimension only — two *kept* supertraits whose specs declare same-named
+members against **each other** are not compared, because name sets cannot tell that apart
+from the legal diamond (`Ord`'s two requirements both reach `PartialEq`'s `eq`/`neq` — one
+inherited declaration, fine). Both limits surface as Scala's own error at the mandatory
+closure compile rather than silently. Measured over the prelude, exactly one emission
+changes: `FiniteCollection` (ops ∩ `Iterable`'s = `map`, `filter`); the other ten
+supertrait-keeping pairs all have empty intersections and are pinned unchanged as controls.
+
+**No omission is a silent drop, and the shapes are prevented differently.**
 
 A **data** sort's `requires` is not discarded: the required spec reaches Scala as the declared
 type of the constructor field typed by it (`source: FiniteCollection[SrcC, Src]` above), which
@@ -538,6 +578,19 @@ it is not over, and what would carry it:
 trait Set[T]:
 ```
 
+A **shadowed** requirement (over the carrier, demoted for the redeclared members) is
+recorded the same way, naming the members instead of the carrier:
+
+```scala
+// `requires _root_.anthill.prelude.Iterable[C, Element]`
+//   is EVIDENCE here, not a supertrait (§2.7a, kernel §8.7): this sort redeclares
+//   `map`, `filter`, and a redeclared member of a merely-required spec is a DISTINCT
+//   operation shadowing it, not an override — a relation one Scala override
+//   group cannot hold (WI-1065). What carries
+//   it is §2.7's `using` context parameter, which Bootstrap does not emit (WI-1022).
+trait FiniteCollection[C, Element]:
+```
+
 The asymmetry is deliberate. A data sort's requirement has exactly one possible home and a
 constructor that lacks it is a loss with no remedy, so it is refused. An algebra sort's *has*
 a Scala home — §2.7's `using` context parameter, which WI-1022 owns — so refusing would take
@@ -546,13 +599,10 @@ and would delete the three emissions this rule exists to correct rather than cor
 Until WI-1022 lands the emitted trait is **genuinely weaker** than the anthill declaration,
 and the comment is what says so.
 
-*(WI-1064 for the data half, WI-1066 for the carrier reading. The `provides` clause has no
-bootstrap emission of its own — a `given` instance would need the bodies proposal 034 assigns
-to the KB-driven gen — so today it is read for nothing; what these rules fix is that the
-`requires` was being read in its place. A sort whose operation **refines** one inherited from
-a required sort is a separate defect with a separate cause: see WI-1065, whose
-`FiniteCollection requires Iterable[C = C, …]` is over its own carrier and so survives the
-rule above with its supertrait intact.)*
+*(WI-1064 for the data half, WI-1066 for the carrier reading, WI-1065 for the shadow rule.
+The `provides` clause has no bootstrap emission of its own — a `given` instance would need
+the bodies proposal 034 assigns to the KB-driven gen — so today it is read for nothing; what
+these rules fix is that the `requires` was being read in its place.)*
 
 ### 2.8 Effects → Method Shape
 

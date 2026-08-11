@@ -747,17 +747,15 @@ class BootstrapTest extends munit.FunSuite:
       "_root_.anthill.prelude.Iterable[C, Element]:"),
       s"a placed name's effect slot must erase on the declaration side:\n$declared")
 
-    // THE CORPUS INSTANCE, asserted on its emitted TEXT and not compiled, and the
-    // reason is a DIFFERENT defect that this ticket does not own. Once these files
-    // entered the tree, `requires` -> `extends` (§2.7) turned out to be unsound in
-    // two shapes neither of which is about effects: `FiniteCollection.map` REFINES
-    // `Iterable.map`'s return type (a `FiniteCollection`, not a `Stream`), which
-    // anthill allows through `provides` and Scala rejects as an override; and
-    // `FiniteMappedStream` is a DATA sort that `requires` an algebra, so its enum
-    // case inherits nine abstract members it cannot leave abstract. MEASURED as
-    // four RefChecks errors across FiniteCollection / FiniteMappedStream /
-    // FiniteFilteredStream, and owned by WI-1064 — see the closure numbers on the
-    // refusal-set test.
+    // THE CORPUS INSTANCE, asserted on its emitted TEXT here; the closure COMPILE
+    // is WI-1065's test below. When these files entered the tree, `requires` ->
+    // `extends` (§2.7) turned out to be unsound in two shapes neither of which is
+    // about effects: `FiniteMappedStream` is a DATA sort that `requires` an
+    // algebra, so its enum case inherited nine abstract members (WI-1064), and
+    // `FiniteCollection.map` SHADOWS `Iterable.map` with a different return type —
+    // distinct operations per kernel §8.7, which Scala's one override group cannot
+    // hold (WI-1065). Both are since fixed, which is why the corpus header below
+    // carries NO supertrait where the non-shadowing fixture above keeps one.
     //
     // What IS this ticket's, and is asserted: the arities. The nested
     // `FiniteMappedStream[SrcC = C, Src = Element, T = Dst, ES = E, EF = EffP]` is
@@ -766,8 +764,7 @@ class BootstrapTest extends munit.FunSuite:
     // inside a row — three survive, matching the three the emission declares.
     val src = gen(parseStdlib("anthill/prelude/finite_collection.anthill"))
       .head.contents
-    assert(src.contains("trait FiniteCollection[C, Element] extends " +
-      "_root_.anthill.prelude.Iterable[C, Element]:"),
+    assert(src.contains("trait FiniteCollection[C, Element]:"),
       s"the corpus instance must erase the same way as the fixture:\n$src")
     assert(src.contains("def map[Dst](c: C, f: (Element) => Dst): " +
       "FiniteCollection[_root_.anthill.prelude.FiniteMappedStream[C, Element, Dst], Dst]"),
@@ -1315,12 +1312,13 @@ class BootstrapTest extends munit.FunSuite:
   // over a PARAMETER constrains an INPUT and is not an is-a claim about anything.
 
   test("WI-1064: a data sort's `requires` constrains an input, so it emits no `extends`") {
-    // A FIXTURE and not finite_combinators.anthill, for a reason worth stating: the
-    // corpus instance cannot be COMPILED in a closure of its own, because the
-    // `FiniteCollection` its field names is itself rejected by RefChecks for an
-    // unrelated defect (a refining override — WI-1065). Only a fixture lets this
-    // arm be driven by the compiler rather than by a substring. The corpus instance
-    // is asserted on its emitted text below.
+    // A FIXTURE and not finite_combinators.anthill, for a reason worth stating: when
+    // this ticket landed, the corpus instance could not be COMPILED in a closure of
+    // its own — the `FiniteCollection` its field names was itself rejected by
+    // RefChecks for an unrelated defect (a shadowing redeclaration, since fixed;
+    // WI-1065's test now compiles that closure). A fixture lets this arm be driven
+    // by the compiler rather than by a substring either way. The corpus instance is
+    // asserted on its emitted text below.
     //
     // BOTH READINGS IN ONE FIXTURE, because they are one decision: `Counted` is an
     // algebra whose `requires Walk[C = C, …]` is over its OWN carrier and must keep
@@ -1790,25 +1788,27 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-1066 CORPUS CONTROL: every other prelude supertrait is unchanged") {
     // THE OTHER SIDE OF THE SAME MEASUREMENT, and the complete one: fourteen prelude
     // algebra sorts carry a `requires` (sortedset.anthill's fifteenth is refused
-    // earlier, for its named requirement slot). Three lose the clause above; these are
-    // the other ELEVEN, all of them, so a rule that simply stopped emitting `extends`
-    // for algebra sorts fails here rather than looking like a fix.
+    // earlier, for its named requirement slot). Three lose the clause to WI-1066's
+    // carrier rule, and a fourth — `FiniteCollection`, WI-1066's own named control —
+    // lost it later to WI-1065's shadow rule (its `requires Iterable[C = C, …]` IS
+    // over its own carrier, but the sort redeclares `map`/`filter`; pinned in the
+    // WI-1065 tests below). These are the other TEN, all of them, so a rule that
+    // simply stopped emitting `extends` for algebra sorts fails here rather than
+    // looking like a fix.
     //
-    // `FiniteCollection` is the ticket's named control — `requires Iterable[C = C,
-    // Element = Element, E = E]` binds the required spec's carrier to its OWN `C`, so
-    // it is a supertrait and stays one (which is also why WI-1065's refining-override
-    // defect survives this ticket). `Ord` carries TWO requirements and keeps both.
-    // `Eq` is the no-operations shape, also pinned by the WI-170/WI-644 test above.
+    // `Ord` carries TWO requirements and keeps both. `Eq` is the no-operations
+    // shape, also pinned by the WI-170/WI-644 test above.
     //
     // PASSES EITHER WAY BY DESIGN — that is what a control is. It fails if the carrier
     // reading overreaches: taking the carrier from the requirement's argument, or
     // treating a nullary-operation sort (`NonEq`, `BoundedLattice`) as having no
-    // readable carrier, breaks lines here.
+    // readable carrier, breaks lines here. It equally fails if the WI-1065 shadow
+    // reading overreaches: every row below names a spec whose members its requirer
+    // does NOT redeclare (measured — the corpus intersections are all empty), so a
+    // demotion keyed on anything looser than a member-name collision lands here.
     Seq(
       ("ordered", "Ord", "trait Ord[T] extends _root_.anthill.prelude.Eq[T], PartialOrd[T]:"),
       ("ordered", "PartialOrd", "trait PartialOrd[T] extends _root_.anthill.prelude.PartialEq[T]:"),
-      ("finite_collection", "FiniteCollection",
-        "trait FiniteCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element]:"),
       ("collection", "PersistentCollection",
         "trait PersistentCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element]:"),
       // A requirement whose named slot DIFFERS from the parameter written into it
@@ -1828,6 +1828,176 @@ class BootstrapTest extends munit.FunSuite:
       assert(src.contains(decl), s"$sort's supertrait must be unchanged:\n$src")
       assert(!src.contains("is EVIDENCE"), s"$sort must carry no evidence note:\n$src")
     }
+  }
+
+  // ── WI-1065: a redeclared required member is a SHADOW, not an override ─────
+  //
+  // Kernel §8.7: a sort that merely `requires` a spec and redeclares an operation
+  // of the same name is NOT overriding it — the two are DISTINCT operations, and
+  // a shadow that provably refines the signature is "a distinct operation by
+  // construction". The spec's own worked example is this corpus pair:
+  // `FiniteCollection.map` returns a `FiniteCollection` where `Iterable.map`
+  // returns a `Stream`. Scala reads the same two declarations the other way —
+  // matching members (same name and parameter types; the return type is not part
+  // of matching) form ONE override group, checked at the declaration — so the
+  // emitted `extends` asserted a relation the kernel denies, and RefChecks
+  // refused it (E164, `error overriding method map in trait Iterable`, twice).
+  // The fix is not a Scala spelling for the refinement; it is not emitting the
+  // relation: a shadowed requirement is demoted to evidence.
+  //
+  // The collision is CROSS-FILE knowledge — Iterable's members live in
+  // iterable.anthill, and proposal 034 gives Bootstrap one ParsedFile — so it
+  // arrives like every other resolved table (WI-1060's channel): the caller
+  // derives `ScalaTypes.specMembers` from the same parsed closure.
+
+  test("WI-1065: a redeclared required member demotes the supertrait to evidence") {
+    // FAILS WHEN BACKED OUT, run: drop the shadow partition from `requiresMapping`
+    // (emit every over-carrier requirement as a supertrait, its pre-WI-1065 form)
+    // and `Shadower`'s no-extends assertion fails here, the corpus test fails at
+    // its pin (before its compile — which would then report this ticket's two
+    // E164s, on record in the peel ladder and reproduced from the emitted
+    // signatures), and the transitive test fails too. `Keeper` and the WI-1066
+    // corpus controls pass either way BY DESIGN — the control that a non-shadowing
+    // requirer keeps its clause (as does WI-1062's Walkable2 fixture above).
+    //
+    // `Shadower.map` takes DIFFERENT parameters than `Iterable.map` on purpose: in
+    // Scala that pair would be a legal overload, and the demotion fires anyway,
+    // which is the stated name-keyed over-approximation (`specMemberNames`) driven
+    // rather than described — demotion-safe, because evidence never breaks a
+    // compile and a kept clause can.
+    val src = gen(parseSource(
+      """namespace anthill.wi1065
+        |  sort Shadower
+        |    import anthill.prelude.{Iterable, Bool}
+        |    sort C = ?
+        |    sort Element = ?
+        |    effects E = ?
+        |    requires Iterable[C = C, Element = Element, E = E]
+        |    operation map(c: C) -> Element effects E
+        |    operation walked(c: C) -> Bool effects E
+        |  end
+        |  sort Keeper
+        |    import anthill.prelude.{Iterable, Bool}
+        |    sort C = ?
+        |    sort Element = ?
+        |    effects E = ?
+        |    requires Iterable[C = C, Element = Element, E = E]
+        |    operation walked(c: C) -> Bool effects E
+        |  end
+        |end
+        |""".stripMargin, "wi1065.anthill"))
+    val shadower = src.find(_.relPath.endsWith("Shadower.scala"))
+      .getOrElse(fail(s"expected Shadower.scala in: ${src.map(_.relPath)}")).contents
+    assert(shadower.contains("trait Shadower[C, Element]:"),
+      s"a shadowed requirement must not become a supertrait:\n$shadower")
+    assert(!shadower.contains("extends"),
+      s"no extends clause may survive the demotion:\n$shadower")
+    assert(shadower.contains("`map`") && shadower.contains("WI-1065"),
+      s"the note must name the shadowing member and the rule:\n$shadower")
+    assert(!shadower.contains("`walked`"),
+      s"a member the spec does not declare is no shadow:\n$shadower")
+    val keeper = src.find(_.relPath.endsWith("Keeper.scala"))
+      .getOrElse(fail(s"expected Keeper.scala in: ${src.map(_.relPath)}")).contents
+    assert(keeper.contains(
+      "trait Keeper[C, Element] extends _root_.anthill.prelude.Iterable[C, Element]:"),
+      s"a non-shadowing requirer keeps its supertrait:\n$keeper")
+  }
+
+  test("WI-1065: the shadow is read through the required spec's own `requires` chain") {
+    // `eq` is not PartialOrd's member — it is PartialEq's, one `requires` edge
+    // below — and Scala inherits through the whole extends chain, so the demotion
+    // must too. FAILS WHEN BACKED OUT, run: replace `specMemberNames`' fixpoint
+    // with the direct member sets (drop the closure loop) and this assertion fails
+    // while the direct-shadow fixture above still passes.
+    val src = gen(parseSource(
+      """namespace anthill.wi1065
+        |  sort Chained
+        |    import anthill.prelude.{PartialOrd, Bool}
+        |    sort T = ?
+        |    requires PartialOrd[T]
+        |    operation eq(a: T, b: T) -> Bool
+        |  end
+        |end
+        |""".stripMargin, "wi1065b.anthill")).head.contents
+    assert(src.contains("trait Chained[T]:") && !src.contains("extends"),
+      s"a member of a transitively required spec still shadows:\n$src")
+    assert(src.contains("`eq`"),
+      s"the note must name the transitively shadowed member:\n$src")
+  }
+
+  test("WI-1065: a spec declared in the SAME file still feeds the shadow check") {
+    // The suite's `scalaTypes` is resolved over the prelude only, so nothing in
+    // THIS fixture is in `ScalaTypes.specMembers` — the closure table alone would
+    // keep `SameFile`'s supertrait and emit the E164 shape §2.7a promises not to.
+    // What this drives is `generate`'s per-file complement
+    // (`specMemberNames(Seq(pf), base = types.specMembers)`): `Walk` is seen from
+    // the file itself, and `ChainedLocal` additionally needs the file-local entry
+    // CLOSED against the prelude table (`lt` reaches it only through Walk's
+    // `requires PartialOrd`, whose members live in `base`).
+    //
+    // FAILS WHEN BACKED OUT, run: pass `env.scalaTypes.specMembers` to
+    // `requiresMapping` instead of `env.specMembers` and both demotions here fail
+    // (supertraits kept) while every prelude-spec fixture above still passes —
+    // which is exactly why this test exists. `Walk` itself keeps its OWN
+    // supertrait either way by design: it requires PartialOrd and redeclares
+    // nothing, the control that the merge does not over-demote same-file sorts.
+    val src = gen(parseSource(
+      """namespace anthill.wi1065
+        |  sort Walk
+        |    import anthill.prelude.{PartialOrd}
+        |    sort C = ?
+        |    requires PartialOrd[T = C]
+        |    operation step(c: C) -> C
+        |  end
+        |  sort SameFile
+        |    sort C = ?
+        |    requires Walk[C = C]
+        |    operation step(c: C) -> C
+        |  end
+        |  sort ChainedLocal
+        |    import anthill.prelude.{Bool}
+        |    sort C = ?
+        |    requires Walk[C = C]
+        |    operation lt(a: C, b: C) -> Bool
+        |  end
+        |end
+        |""".stripMargin, "wi1065c.anthill"))
+    def emitted(leaf: String): String =
+      src.find(_.relPath.endsWith(s"$leaf.scala"))
+        .getOrElse(fail(s"expected $leaf.scala in: ${src.map(_.relPath)}")).contents
+    val same = emitted("SameFile")
+    assert(same.contains("trait SameFile[C]:") && !same.contains("extends"),
+      s"a same-file required spec's member must shadow:\n$same")
+    assert(same.contains("`step`"),
+      s"the note must name the same-file shadowed member:\n$same")
+    val chained = emitted("ChainedLocal")
+    assert(chained.contains("trait ChainedLocal[C]:") && !chained.contains("extends"),
+      s"the file-local entry must close against the resolved table:\n$chained")
+    assert(chained.contains("`lt`"),
+      s"the note must name the member reached through the base table:\n$chained")
+    assert(emitted("Walk").contains(
+      "trait Walk[C] extends _root_.anthill.prelude.PartialOrd[C]:"),
+      s"a same-file sort that shadows nothing keeps its supertrait:\n${emitted("Walk")}")
+  }
+
+  test("WI-1065 CORPUS: FiniteCollection is demoted, and its closure COMPILES") {
+    // The pair the kernel spec names, pinned on the emission and then DRIVEN
+    // through dotc — the two E164s this ticket was filed on are gone, so the two
+    // files WI-1062 brought into the tree and WI-1064 half-fixed finally compile
+    // together. Before this ticket the peel ladder ended `… -> 2 -> 4 -> clean at
+    // 32 files`: the 2 were these overrides, and the trailing 4 was
+    // finite_combinators losing `FiniteCollection` once its file was peeled.
+    val fc = gen(parseStdlib("anthill/prelude/finite_collection.anthill"))
+      .head.contents
+    assert(fc.contains("trait FiniteCollection[C, Element]:"),
+      s"the corpus shadow must be demoted:\n$fc")
+    assert(!fc.contains("FiniteCollection[C, Element] extends"),
+      s"no supertrait may survive on the corpus shadow:\n$fc")
+    assert(fc.contains("`map`, `filter`"),
+      s"the note must name both shadowing members, in declaration order:\n$fc")
+    ScalaCompile.assertCompiles("the finite_collection/finite_combinators closure",
+      preludeClosure("finite_collection", "finite_combinators", "iterable",
+        "stream", "combinators", "option", "pair", "list"))
   }
 
   // ── WI-1054: the hyphen is the one character anthill admits and Scala does not ──
@@ -2086,20 +2256,31 @@ class BootstrapTest extends munit.FunSuite:
     //   after  WI-1064   4 -> 3 (the same) -> 2 -> 4 -> clean
     //   after  WI-1066   4 -> 3 (the same) -> 2 -> 4 -> clean   (unchanged)
     //   after  WI-1054        3 (Modifiable) -> 2 -> 4 -> clean
+    //   after  WI-1065        3 (Modifiable, mutable_collection.anthill) -> clean at 36 files
     // WI-1054 removed the FIRST rung outright rather than shortening one: the round
     // of 4 was 3 Modifiable errors plus the `zero-val` parse error, and with the
     // parse error gone that round IS the old second rung. The remaining ladder is
     // unchanged, which is the check that it fixed one thing.
+    //
+    // WI-1065 removed the LAST TWO rungs together, which is one fix and not two:
+    // the 2 was its overrides (`error overriding method map in trait Iterable`,
+    // map and filter), and the trailing 4 was only ever those errors seen one
+    // round later — finite_combinators reporting `FiniteCollection` missing once
+    // its file was peeled. With the shadowed `requires` demoted to evidence,
+    // finite_collection.anthill and finite_combinators.anthill BOTH stay in the
+    // compiled set, which is why the clean count grew. The one rung left is the
+    // `Modifiable` cascade: effects.anthill is refused (see the set above), so
+    // `MutableCollection`'s second supertrait names a type no file emits.
     // Six more files compile at WI-1062, and the round it added is the one it
     // UNCOVERED rather than caused: `requires` -> `extends` (§2.7) is unsound for a
     // refining override and for a data sort that requires an algebra, which only
     // became observable once FiniteCollection / FiniteMappedStream /
     // FiniteFilteredStream were in the tree at all. Nothing about effects.
     //
-    // WI-1064 TOOK THE DATA-SORT HALF: that round of 4 is now 2, and the two that
+    // WI-1064 TOOK THE DATA-SORT HALF: that round of 4 became 2, and the two that
     // went are `class Fmapped needs to be abstract` / the `Ffiltered` twin. The two
-    // left are the refining override (`error overriding method map in trait
-    // Iterable`), which is WI-1065's and is why a round still fails.
+    // that were left were the shadowing redeclaration (`error overriding method map
+    // in trait Iterable`), WI-1065's — taken since, see its ladder row above.
     //
     // WI-1066 MOVED NOTHING HERE, and that is the expected result rather than a fix
     // that failed. The three emissions it corrects (`Set` / `Map` / `VectorSpace`) all
@@ -2108,14 +2289,13 @@ class BootstrapTest extends munit.FunSuite:
     // closure depended on, which is exactly why no compile could have caught it and
     // why its own tests assert on emitted text.
     //
-    // THE FINAL ROUND OF 4 IS PEELING, NOT A DEFECT, and reading it as one would be
-    // easy: once finite_collection.anthill is peeled off for the override above,
-    // `FiniteCollection` is no longer in the compilation set, so the two combinator
-    // files that name it as a FIELD TYPE report `type FiniteCollection is not a
-    // member of anthill.prelude`. It is WI-1065's error seen one round later.
-    // WHAT THIS MEANS FOR THE FILE COUNT: unchanged, and that is expected — WI-1064
-    // alone cannot grow the closure, because the files it fixed depend on the file
-    // WI-1065 has yet to.
+    // THAT ERA'S FINAL ROUND OF 4 WAS PEELING, NOT A DEFECT, and reading it as one
+    // would have been easy: once finite_collection.anthill was peeled off for the
+    // override above, `FiniteCollection` left the compilation set, so the two
+    // combinator files that name it as a FIELD TYPE reported `type FiniteCollection
+    // is not a member of anthill.prelude` — WI-1065's error seen one round later.
+    // That is also why WI-1064 alone could not grow the closure (the files it fixed
+    // depend on the file WI-1065 owned), and why WI-1065's row grows it by four.
     //
     // (DECLARATION, construct) and not the construct alone: WI-1021's measured
     // finding was precisely that iterable.anthill's refusal MOVED within its file,
