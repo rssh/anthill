@@ -120,7 +120,11 @@ end
 "#;
 
 /// `provision_carrier(?P, ?S, ?C)` rows for one spec, by its short name.
-fn carrier_rows(kb: &mut KnowledgeBase, spec: &str) -> Vec<String> {
+///
+/// `pub(crate)` for WI-1077, which drives the RESIDUE this file records — the shapes
+/// `spec_carrier_param` answers by "accepts" where "receives on" would decide. One reader of
+/// one relation, so the two files cannot disagree about what a carrier row is.
+pub(crate) fn carrier_rows(kb: &mut KnowledgeBase, spec: &str) -> Vec<String> {
     let needle = format!("| {spec} |");
     relation_rows(kb, "provision_carrier", 3)
         .into_iter()
@@ -393,7 +397,7 @@ end
     );
 }
 
-/// THE SAME RESIDUE FROM THE CARRIER-PARAMETERIZED SIDE, pinned because the claim
+/// THE SAME RULE FROM THE CARRIER-PARAMETERIZED SIDE, pinned because the claim
 /// "declaration order retires the positional assumption" is true only while no operation
 /// takes the earlier parameter — and a review found me asserting it without that clause.
 ///
@@ -401,6 +405,14 @@ end
 /// element, so `Element` answers and the explicit `C = Box` binding is discarded exactly
 /// as the old positional read discarded it. Not a regression — the positional read gave
 /// the same answer — but the shipped rule must not be described as if it did not.
+///
+/// WI-1077 DECIDED THIS IS THE RULE, not a residue awaiting a fix (option (c), user
+/// 2026-08-11): the carrier parameter stays INFERRED, "takes as a parameter" is the
+/// question asked, and no surface is added to say otherwise. The verdict below is
+/// therefore permanent rather than provisional — an earlier version of this row said
+/// "change this row when WI-1077 lands", and what landed keeps it. Its sibling face — a
+/// spec that RECEIVES on its own sort and also accepts its element — is driven by
+/// `wi1077_accepts_vs_receives_test`, which had no coverage at all until that ticket.
 ///
 /// Passes with the ticket backed out. It is here to keep the documented rule and the
 /// implemented one from drifting apart, which is the failure this file exists to record.
@@ -432,10 +444,11 @@ end
     assert_eq!(
         carrier_rows(&mut kb, "Holder"),
         vec!["BoxHolder | Holder | Int64".to_string()],
-        "KNOWN RESIDUE (WI-1077): `has(c: C, e: Element)` merely ACCEPTS the element, \
-         but `spec_carrier_param` cannot tell that from receiving on it, so the \
-         earlier-declared `Element` answers and `C = Box` is discarded. Change this row \
-         when WI-1077 lands — do not delete it"
+        "THE RULE (WI-1077 option (c)): `has(c: C, e: Element)` merely ACCEPTS the \
+         element, but `spec_carrier_param` cannot tell that from receiving on it, so the \
+         earlier-declared `Element` answers and `C = Box` is discarded. Inferred by \
+         design — the repair for an UNINTENDED reuse is the declaration, as \
+         `LogicalStream.pure` was repaired"
     );
 }
 

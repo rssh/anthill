@@ -1150,3 +1150,6 @@ mod wi1078_unbound_return_var_test;
 
 #[path = "include/wi1079_variable_forms_reflect_test.rs"]
 mod wi1079_variable_forms_reflect_test;
+
+#[path = "include/wi1077_accepts_vs_receives_test.rs"]
+mod wi1077_accepts_vs_receives_test;

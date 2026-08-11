@@ -992,16 +992,25 @@ provider** as their carrier: `Stream`'s operations all receive on `Stream` itsel
 and its `T` appears only in return and callback types, so `sort List provides
 Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`.
 
-The intended notion is narrower than the implemented one, and the difference is a
-known gap rather than a subtlety. What *should* decide is whether an operation
-**receives on** a parameter; what is asked is whether one **accepts** it, and the
-two part company for a spec that takes its own element somewhere —
-`Set.insert(s: Set, x: T)`, `Map.put(m: Map, key: K, value: V)` — or for a
-carrier-parameterized spec that declares its element *first* and accepts it
-(`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e: Element) }`),
-where the explicit `C = …` binding is discarded. **TICKET WI-1077**, which is a
-language question — the fix is to let a declaration *say* which parameter is the
-carrier.
+**"Takes" is the rule, not an approximation of one** (WI-1077). A narrower reading is
+imaginable — whether an operation **receives on** a parameter rather than merely
+**accepting** it — and the two part company in two shapes: a spec that takes its own
+element somewhere (`Set.insert(s: Set, x: T)`, `Map.put(m: Map, key: K, value: V)`), and
+a carrier-parameterized spec that declares its element *first* and accepts it
+(`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e: Element) }`), where
+the explicit `C = …` binding is discarded. In both, the earlier-declared *element*
+answers and the provision is filed at it.
+
+That is the language's answer and not a pending fix. Making it narrower requires the
+surface to *say* which parameter is the carrier — a marker (`sort C = ? carrier`) or a
+`spec` keyword — and neither is being added; inferring it from a wider operation shape
+was tried and **refuses a program that loads**, because a spec may declare both a carrier
+parameter and a self-receiving operation, and gating on self-representation throws its
+explicit binding away. So where the reuse is *accidental*, the repair is the
+**declaration**: `LogicalStream.pure` reused the sort's element for a value it merely
+lifts and now takes its own (`pure[A](x: A) -> LogicalStream[A, {}]`). Where it is
+*intended* — `insert` really does take the sort's element — the filing at the element is
+what the rule says.
 
 **An operation that lifts a value must relate its result to its ARGUMENT**, not to
 the sort's parameter, and where one does not the repair is the declaration rather
