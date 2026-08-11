@@ -202,6 +202,22 @@ Spec[C]` to a bare `-> Spec` and they then rode the ordinary expansion path.
 WI-1063 opens both by one rule; `wi1063_existential_return_test` drives it, and
 the corpus reaches it zero times, so that file is its only coverage.
 
+**Which slots are unwritten is a question about the SIGNATURE, not about the
+spelling (WI-1078).** WI-1063 opened only the slots written `?` or omitted, which
+exempted a *named* variable and left its own exploit alive under a two-character
+edit (`-> Stream[T = Int64, E = ?E]`). The name buys binding *across the term*,
+so read it there: a variable the declaration also uses in a **parameter**, in its
+own **`[A]`** binder, or in a **`requires`** bound is an ordinary universal the
+caller instantiates, while one used **only in the return** is the existential
+above and opens at each use. A parameter of the **enclosing sort** needs no such
+entry — written in a type it is a reference to its symbol, not a logical
+variable, so `to_pair(h: Holder) -> Pair[A = T, B = T]` is not a candidate at
+all. Sharing survives — a
+named variable opens to one rigid per *use*, shared by every slot it appears in,
+so `-> Pair[A = ?t, B = ?t]` still says its components agree.
+`wi1078_unbound_return_var_test` drives it; the corpus reaches this one zero
+times too.
+
 ## 6. Structured and higher-kinded parameters
 
 The fresh-variable source is the `?` **leaves at any depth**, with structure

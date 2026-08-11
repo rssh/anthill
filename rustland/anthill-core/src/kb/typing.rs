@@ -5084,6 +5084,7 @@ fn check_bare_ref(
         let ret = open_existential_return(
             kb,
             impl_parent_sort_of_op(kb, sym),
+            sym,
             &ret,
             occ.span,
             occ.owner,
@@ -6298,6 +6299,7 @@ fn operation_as_function_value(
     let return_type = open_existential_return(
         kb,
         impl_parent_sort_of_op(kb, sym),
+        sym,
         &op.return_type,
         span,
         owner,
@@ -11852,6 +11854,7 @@ fn check_apply_iter(
             } else {
                 impl_parent_sort_of_op(kb, return_owner)
             },
+            return_owner,
             &proj_return_type,
             occ.span,
             occ.owner,
@@ -13570,6 +13573,7 @@ fn check_apply_iter(
             let ret = open_existential_return(
                 kb,
                 impl_parent_sort_of_op(kb, fn_sym),
+                fn_sym,
                 &ret,
                 occ.span,
                 occ.owner,
@@ -43400,6 +43404,12 @@ fn rigidify_unwritten_sort_params(
                 continue;
             }
         }
+        // WI-1078 — a slot the author wrote as an UNBOUND NAMED variable takes the one rigid
+        // this call opened that VARIABLE to, so every slot the author tied together stays
+        // tied. Read before the mint and after the self question, which is the order the two
+        // rules already have: a self slot is not existential at all (WI-1063), so it never
+        // gets here whatever it was spelled.
+        let opened_named = slot.and_then(|i| position.opened_named_var(kb, &written[i].1));
         let filled = if is_self {
             match position.fill_self(kb, *canonical) {
                 Some(v) => v,
@@ -43416,6 +43426,8 @@ fn rigidify_unwritten_sort_params(
                     continue;
                 }
             }
+        } else if let Some(rho) = opened_named {
+            rho
         } else {
             fill.mint(kb, *param)
         };
@@ -43469,6 +43481,8 @@ fn rigidify_unwritten_sort_params(
 /// always the one the CALL named: the WI-606 fallback threads a concrete override's
 /// declaration, and asking the §3 self question of the spec op would read the override's own
 /// carrier as foreign. Its callers pass `impl_parent_sort_of_op` of the right symbol.
+/// `callee_op` is that same operation's SYMBOL, and it is what WI-1078 reads the rest of the
+/// signature through — see [`unbound_return_var_openings`].
 ///
 /// `None` when nothing was opened, which is the overwhelmingly common case: a fully-written
 /// return, a non-parametric one, or a self-sort one. The caller keeps its original value
@@ -43476,18 +43490,225 @@ fn rigidify_unwritten_sort_params(
 fn open_existential_return(
     kb: &mut KnowledgeBase,
     callee_sort: Option<Symbol>,
+    callee_op: Symbol,
     ret: &Value,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
+    let opened = unbound_return_var_openings(kb, callee_op, ret);
     rigidify_unwritten_sort_params(
         kb,
         UnwrittenFill::Anonymous,
         ret,
-        SlotPosition::CallResult { callee_sort },
+        SlotPosition::CallResult {
+            callee_sort,
+            opened: &opened,
+        },
         span,
         owner,
     )
+}
+
+/// WI-1078 — THIS CALL'S OPENING OF THE CALLEE'S UNBOUND RETURN VARIABLES: one fresh
+/// `Var::Rigid` per unbound variable, keyed by the variable it stands for. Empty (the
+/// overwhelmingly common case) when the declared return has no variable the signature leaves
+/// unbound, and then nothing below it behaves differently from WI-1063.
+///
+/// WHAT WI-1063 LEFT OPEN. Its call-side narrowing reads only an ANONYMOUS slot as unwritten
+/// ([`value_is_anonymous_wildcard`]), so its own headline exploit survived writing `E = ?E`
+/// where the refused program omitted the slot — `-> Stream[T = Int64, E = ?E]` put `{Error}`
+/// into a parameter declaring `E = {}`. `docs/kernel-language.md` §"Sort composition" is
+/// explicit that BOTH spellings express existential quantification and that a name buys only
+/// binding "across the term", so the exemption had no rule behind it.
+///
+/// BOUND IS A PROPERTY OF THE SIGNATURE, NOT OF THE SPELLING. A variable the declaration also
+/// uses somewhere the CALLER supplies or instantiates is an ordinary universally-quantified
+/// parameter and must be left flexible — this call's arguments are what pin it. Three such
+/// places, each a real population and each with its own back-out measurement:
+///
+/// * a PARAMETER type — `interleave(a: LogicalStream[T = ?A, E = ?E], …) -> LogicalStream[T =
+///   ?A, E = ?E]`. This is the case the rule exists to separate out; dropping it also costs
+///   `wi186_free_standing_parametric_test::make_pair_free_standing_parametric_returns_pair`;
+/// * the operation's OWN `[A]` binders — `mk3[A]() -> List[T = A]`, whose §5.6 reading is that
+///   the CALLER instantiates `A`. `seed_op_type_args` binds these from an explicit `mk3[A =
+///   …]`, and opening one would skolemize a parameter out from under its own inference (the
+///   `FilteredStream.splitFirst` failure WI-1063 measured for the broad flex test). Dropping
+///   it costs 16 tests across WI-204/236/270/427/734 — much the widest of the three;
+/// * a `requires` clause. `-> C requires Monoid[C]` is a universal WITH A BOUND, which is
+///   precisely the shape WI-1079 records as `PolyType`'s binder-plus-bound; reading its
+///   variable as existential would refuse the dispatch that clause exists to drive.
+///
+/// The DECLARED EFFECTS are deliberately not a fourth. A row the operation INCURS is on the
+/// same side of the arrow as the return — `-> Stream[E = ?E] effects ?E` says "the row I hand
+/// back is the row I incur", which relates two positive positions to each other and binds
+/// neither. Measured: no corpus declaration ties a return variable to its effect row, so this
+/// is a reading rather than a cost.
+///
+/// ONE RIGID PER VARIABLE, NOT PER SLOT, and that is the half of the rule the NAME earns.
+/// `?` is fresh at each occurrence and keeps [`UnwrittenFill::Anonymous`]'s per-slot mint;
+/// `mkpair() -> Pair[A = ?t, B = ?t]` states that its two components AGREE, so the opening
+/// must preserve that agreement — `Pair[A = ρ, B = ρ]`, one ρ. Keying the map on the
+/// VARIABLE, not on the slot, is what makes the tie survive the opening; it is also why the
+/// consumer's `wantsame(p: Pair[A = Int64, B = Int64])` is now refused, which is the
+/// existential reading applied to a tie rather than a new judgement about ties.
+///
+/// THE CANDIDATES COME FROM THE DECLARATION, NEVER FROM `ret`, and this is the difference
+/// between the rule and a regression. By the time Path 1 calls this, `ret` has been through
+/// `eliminate_type_projections` and the WI-459 re-key: `takeN(s: Stream, n: Int64) -> List[T =
+/// s.T]` arrives as `List[T = ?x]`, where `?x` is the RECEIVER's variable substituted in. That
+/// variable is in no parameter type of `takeN`, so reading candidates off `ret` classifies it
+/// unbound and skolemizes the caller's own row — DRIVEN, it is
+/// `wi714_relation_reference_test::wi714_cross_sort_rule_body_subgoal`, which fails at
+/// `expected List[T = Int64], got List[T = ?x]`. Only a variable the AUTHOR WROTE in the
+/// declared return can be the existential this ticket is about; `ret` is consulted solely as
+/// the cheap gate that keeps a variable-free result off the signature read.
+///
+/// The map is keyed on `VarId::raw()` — a `VarId` is not `Hash` — and its values are the
+/// minted rigids as [`Value`]s, ready to drop into a binding.
+fn unbound_return_var_openings(
+    kb: &mut KnowledgeBase,
+    callee_op: Symbol,
+    ret: &Value,
+) -> HashMap<u32, Value> {
+    // No variable survives into this call's result, so no slot below can match one. Nearly
+    // every call in the corpus stops here, which is what keeps the signature read off the hot
+    // path.
+    let mut in_result: Vec<VarId> = Vec::new();
+    collect_type_vars_value(kb, ret, &mut in_result);
+    if in_result.is_empty() {
+        return HashMap::new();
+    }
+    let Some(op) = lookup_operation_info_full(kb, callee_op) else {
+        // No readable signature, so no variable can be SHOWN unbound. WI-1063's reading
+        // stands for this call; it is the answer that changes nothing, which is the right one
+        // when the evidence the rule runs on is absent.
+        return HashMap::new();
+    };
+    let mut candidates: Vec<VarId> = Vec::new();
+    collect_type_vars_value(kb, &op.return_type, &mut candidates);
+    let mut bound: Vec<VarId> = Vec::new();
+    for (_, ty) in &op.params {
+        collect_type_vars_value(kb, ty, &mut bound);
+    }
+    for r in &op.requires {
+        collect_type_vars_value(kb, r, &mut bound);
+    }
+    for (_, v) in &op.type_params {
+        if let Var::Global(vid) = v {
+            bound.push(*vid);
+        }
+    }
+    // THE ENCLOSING SORT'S PARAMETERS ARE NOT A FOURTH ENTRY, and their absence is measured
+    // rather than assumed — the first cut collected them here. They cannot BE candidates: a
+    // sort parameter WRITTEN in a type is a `Ref` to its own symbol, never a `Var::Global`, so
+    // `Holder`'s `T` in `to_pair(h: Holder) -> Pair[A = T, B = T]` arrives variable-free and
+    // returns at the gate above. READ DIRECTLY rather than inferred from a silence: at that
+    // call the result prints `Pair[A = T, B = T]` with `vars_in_result = []`. The canonical var
+    // `sort_type_params_as_pairs` would have contributed lives behind the `SortAlias` and in the
+    // WI-424 body rigidify — a different carrier from anything a declaration writes. Dropping
+    // the entry costs ZERO tests across the workspace suite and it had fired zero times over all
+    // six corpus tiers; the two together are why it is gone rather than kept as insurance.
+    // `wi1078_…::the_enclosing_sorts_parameter_is_threaded_from_the_receiver` holds the
+    // behaviour from the other side.
+    let mut opened = HashMap::new();
+    for vid in candidates {
+        if bound.iter().any(|b| b.raw() == vid.raw()) {
+            continue;
+        }
+        // An ANONYMOUS carrier keeps its per-SLOT mint below — `?` names nothing and ties
+        // nothing, so giving it a per-VARIABLE entry here would be the one case where the
+        // sharing this map exists for is wrong. (It would also be invisible on the parser's
+        // carrier, where every bare `?` is already its own `VarId`; it is `?_`, a scope-SHARED
+        // var the parser and [`value_is_anonymous_wildcard`] both read as anonymous, that the
+        // distinction is actually about.)
+        if matches!(kb.local_name_of(vid.name()), "_" | "?" | "?_") {
+            continue;
+        }
+        let fresh = kb.fresh_var(vid.name());
+        let rigid = kb.alloc(Term::Var(Var::Rigid(fresh)));
+        opened.insert(vid.raw(), Value::term(rigid));
+    }
+    opened
+}
+
+/// WI-1078 — every logical variable occurring in a declared type, on EITHER carrier. Deduping
+/// is the caller's business (both readers only ever ask "is this var in here?").
+///
+/// The `Value::Node` arm mirrors [`rewrite_type_occ_deep`]'s traversal exactly, and for the
+/// same reason: a Node-carried type keeps its variables in `TypeChild::Ground` leaves, so
+/// walking the leaves and recursing the nodes finds them all. The arms it declines to descend
+/// into are the ones that arm declines too — a `Denoted` payload is a VALUE occurrence, which
+/// carries no type var.
+///
+/// Under-collecting HERE is not symmetric between this function's two callers: a variable
+/// missed in the RETURN merely leaves that slot as it is (WI-1063's behaviour), while one
+/// missed in a PARAMETER would read a bound variable as existential and open it. So the
+/// `TypeNode` and `EffectExprNode` matches are written out in full rather than defaulted — a
+/// new arm there is a compile error, not a silent miss.
+fn collect_type_vars_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<VarId>) {
+    match v {
+        Value::Term { id, .. } => out.extend(kb.collect_vars(*id)),
+        Value::Var(Var::Global(vid)) => out.push(*vid),
+        Value::Node(occ) => collect_type_vars_occ(kb, occ, out),
+        _ => {}
+    }
+}
+
+/// The `Value::Node` half of [`collect_type_vars_value`].
+fn collect_type_vars_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, out: &mut Vec<VarId>) {
+    fn child(kb: &KnowledgeBase, c: &TypeChild, out: &mut Vec<VarId>) {
+        match c {
+            TypeChild::Ground(t) => out.extend(kb.collect_vars(*t)),
+            TypeChild::Node(n) => collect_type_vars_occ(kb, n, out),
+        }
+    }
+    match &occ.kind {
+        NodeKind::Type(node) => match node {
+            TypeNode::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
+                child(kb, param, out);
+                child(kb, result, out);
+                child(kb, effects, out);
+                child(kb, arity, out);
+            }
+            TypeNode::Parameterized { base, bindings } => {
+                child(kb, base, out);
+                for (_, c) in bindings {
+                    child(kb, c, out);
+                }
+            }
+            TypeNode::EffectsRows { effects_expr } => child(kb, effects_expr, out),
+            TypeNode::ExprCarried { value, member } => {
+                child(kb, value, out);
+                child(kb, member, out);
+            }
+            TypeNode::NamedTuple { fields } => collect_type_vars_value(kb, fields, out),
+            TypeNode::Denoted { .. } => {}
+        },
+        NodeKind::EffectExpr(node) => match node {
+            EffectExprNode::Merge { left, right } => {
+                child(kb, left, out);
+                child(kb, right, out);
+            }
+            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
+                child(kb, label, out)
+            }
+            EffectExprNode::Guarded { label, guard } => {
+                child(kb, label, out);
+                collect_type_vars_value(kb, guard, out);
+            }
+            EffectExprNode::Open { tail } => child(kb, tail, out),
+            EffectExprNode::EmptyRow => {}
+        },
+        // `Expr` / `RuleHead` / `Pattern` are not type carriers. One reaches a type slot only
+        // as a `Denoted` payload — a VALUE occurrence, which the arm above declines for the
+        // same reason `rewrite_type_occ_deep` does.
+        NodeKind::Expr { .. } | NodeKind::RuleHead { .. } | NodeKind::Pattern { .. } => {}
+    }
 }
 
 /// WI-1063 — WHICH POSITION [`rigidify_unwritten_sort_params`] is walking. The walk itself is
@@ -43503,8 +43724,14 @@ enum SlotPosition<'a> {
         sort: Option<Symbol>,
         rigidify: &'a Substitution,
     },
-    /// One CALL's result (WI-1063). `callee_sort` is the CALLEE's own sort.
-    CallResult { callee_sort: Option<Symbol> },
+    /// One CALL's result (WI-1063). `callee_sort` is the CALLEE's own sort; `opened` is
+    /// WI-1078's per-call opening of the declared return's UNBOUND named variables, built
+    /// once by [`unbound_return_var_openings`] and empty whenever the signature binds them
+    /// all.
+    CallResult {
+        callee_sort: Option<Symbol>,
+        opened: &'a HashMap<u32, Value>,
+    },
 }
 
 impl SlotPosition<'_> {
@@ -43512,7 +43739,7 @@ impl SlotPosition<'_> {
     fn self_sort(self) -> Option<Symbol> {
         match self {
             SlotPosition::Body { sort, .. } => sort,
-            SlotPosition::CallResult { callee_sort } => callee_sort,
+            SlotPosition::CallResult { callee_sort, .. } => callee_sort,
         }
     }
 
@@ -43550,24 +43777,44 @@ impl SlotPosition<'_> {
     /// agreement: by then the op's own `[E]` and its enclosing sort's parameters are already
     /// `Var::Rigid` (WI-392/WI-942), so nothing else is left flexible.
     ///
-    /// AT A CALL, ONLY AN ANONYMOUS ONE IS, and the same broad test would read the opposite
-    /// fact. The signature a call site sees is the KB's `OperationInfo`, where NOTHING has
-    /// been rigidified: the op's `[Elem]`, the enclosing sort's parameters, and a `s.T`
-    /// projection already eliminated against the receiver are all still flexible Globals, and
-    /// they are precisely the slots this call is about to BIND. MEASURED, and it is why this
-    /// is a policy and not a shared constant: with the body's answer here the stdlib reports
-    /// `FilteredStream.splitFirst`'s `Pair[A = Elem]` re-minted as an unrelated `Pair[A = ?A]`
-    /// — the op's own type parameter skolemized out from under its own inference — and
-    /// `LogicalStream.empty() -> LogicalStream[?A]` writes a NAMED variable on purpose in a
-    /// RETURN, so a call to it would hand back a row nothing can bind. A named variable can be
-    /// TIED across slots (`Pair[A = ?t, B = ?t]` says "these two agree, whatever they are"),
-    /// which is the same reason [`merge_annotation_bindings`] replaces only the anonymous
-    /// spelling; an anonymous one appears once and pins nothing.
+    /// AT A CALL, THE BROAD TEST WOULD READ THE OPPOSITE FACT, so this asks a narrower
+    /// question in two parts. The signature a call site sees is the KB's `OperationInfo`,
+    /// where NOTHING has been rigidified: the op's `[Elem]`, the enclosing sort's parameters,
+    /// and a `s.T` projection already eliminated against the receiver are all still flexible
+    /// Globals, and they are precisely the slots this call is about to BIND. MEASURED, and it
+    /// is why this is a policy and not a shared constant: with the body's answer here the
+    /// stdlib reports `FilteredStream.splitFirst`'s `Pair[A = Elem]` re-minted as an unrelated
+    /// `Pair[A = ?A]` — the op's own type parameter skolemized out from under its own
+    /// inference.
+    ///
+    /// The two parts are an ANONYMOUS carrier — `Stream[T = Int64, E = ?]`, which pins nothing
+    /// anywhere — and WI-1078's UNBOUND NAMED one: a variable this signature uses ONLY in its
+    /// return, which is the existential the polarity rule describes and which WI-1063's
+    /// anonymous-only reading let through. A named variable can be TIED across slots
+    /// (`Pair[A = ?t, B = ?t]` says "these two agree, whatever they are"), and the tie
+    /// survives — [`unbound_return_var_openings`] keys its mint on the VARIABLE, so both slots
+    /// take one ρ. What does NOT reach this arm is a variable the signature binds elsewhere
+    /// (a parameter, an `[A]` binder, a `requires` bound); that map is empty of it, and
+    /// [`merge_annotation_bindings`] replaces only the anonymous spelling for the same reason.
     fn written_slot_is_unwritten(self, kb: &KnowledgeBase, v: &Value) -> bool {
         match self {
             SlotPosition::Body { .. } => value_is_flex_var(kb, v),
-            SlotPosition::CallResult { .. } => value_is_anonymous_wildcard(kb, v),
+            SlotPosition::CallResult { opened, .. } => {
+                value_is_anonymous_wildcard(kb, v)
+                    || value_flex_var_id(kb, v).is_some_and(|vid| opened.contains_key(&vid.raw()))
+            }
         }
+    }
+
+    /// WI-1078 — the rigid THIS call opened `v`'s variable to, when `v` is one of the callee's
+    /// unbound named return variables. `None` everywhere else, and the fill falls back to
+    /// [`UnwrittenFill`]'s per-slot mint — which is what an anonymous `?` and an omitted slot
+    /// both want, since neither names anything to share with.
+    fn opened_named_var(self, kb: &KnowledgeBase, v: &Value) -> Option<Value> {
+        let SlotPosition::CallResult { opened, .. } = self else {
+            return None;
+        };
+        opened.get(&value_flex_var_id(kb, v)?.raw()).cloned()
     }
 }
 
@@ -43673,10 +43920,26 @@ impl UnwrittenFill {
 /// enclosing sort's parameter already pinned, and re-spelling it as a projection would
 /// rename a variable the rest of the signature refers to.
 fn value_is_flex_var(kb: &KnowledgeBase, v: &Value) -> bool {
+    value_flex_var_id(kb, v).is_some()
+}
+
+/// The same question as [`value_is_flex_var`] with the variable's IDENTITY kept, which is what
+/// WI-1078 keys its per-call opening on. A name would not do: two distinct `?A`s in two
+/// declarations share a name and nothing else, and a rigid's own doc says its identity is its
+/// fresh `VarId`.
+///
+/// Deliberately NOT reading a `TypeExtractor::TypeVar` carrier, which
+/// [`value_is_anonymous_wildcard`] does read: that spelling carries a NAME AND NOTHING ELSE
+/// (WI-1079), so there is no `VarId` to answer with. A reflect-minted type var therefore keeps
+/// WI-1063's behaviour — the anonymous test still sees it, and a named one is left alone.
+fn value_flex_var_id(kb: &KnowledgeBase, v: &Value) -> Option<VarId> {
     match v {
-        Value::Term { id, .. } => matches!(kb.get_term(*id), Term::Var(Var::Global(_))),
-        Value::Var(Var::Global(_)) => true,
-        _ => false,
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Var(Var::Global(vid)) => Some(*vid),
+            _ => None,
+        },
+        Value::Var(Var::Global(vid)) => Some(*vid),
+        _ => None,
     }
 }
 

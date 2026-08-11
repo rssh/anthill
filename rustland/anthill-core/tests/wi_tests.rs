@@ -1144,3 +1144,6 @@ mod wi1075_absolute_path_test;
 
 #[path = "include/wi1076_self_representing_spec_carrier_test.rs"]
 mod wi1076_self_representing_spec_carrier_test;
+
+#[path = "include/wi1078_unbound_return_var_test.rs"]
+mod wi1078_unbound_return_var_test;

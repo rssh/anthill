@@ -60,7 +60,14 @@
 //! | the eta opening alone (`operation_as_function_value` keeps `op.return_type`) | `the_eta_reading_opens_the_return_too`'s first half |
 //! | REFUSING the eta lift instead of opening it | `typing_test::wi420_eta_of_curried_requires_op_is_loud_type_error` — a loud load error becomes a clean load that crashes at eval |
 //! | the SELF gate (`SlotPosition::CallResult { callee_sort: None }`) | the PRELUDE stops loading (`cons.type_args`, "expected consistent bindings for the sort's shared type parameter") and **1590** tests fail |
-//! | the anonymity narrowing (`value_is_flex_var` at the call) | the stdlib reports `combinators.anthill:121` — `FilteredStream.splitFirst`'s own `Pair[A = Elem]` re-minted as an unrelated `Pair[A = ?A]` |
+//! | the call-side narrowing (`value_is_flex_var` at the call) | the stdlib reports `combinators.anthill:121` — `FilteredStream.splitFirst`'s own `Pair[A = Elem]` re-minted as an unrelated `Pair[A = ?A]` |
+//!
+//! THE NARROWING'S SHAPE CHANGED UNDER WI-1078 and its cost did not: it was "anonymous
+//! carriers only", which exempted a NAMED variable and left this ticket's own exploit alive
+//! under a two-character edit; it is now "anonymous, or a variable the SIGNATURE binds
+//! nowhere". The last row's measurement still holds — what it protects is the op's own
+//! `[Elem]`, which the signature binds — and `every_spelling_of_an_unbound_return_slot_opens`
+//! carries the corrected verdict.
 //!
 //! Each was run alone, on the delivered tree. Three rows here pass under EVERY revert, by
 //! design, and say so at their own sites: `the_ensures_carrier_is_still_abstract_at_the_-
@@ -277,18 +284,24 @@ fn a_self_sort_return_is_not_opened_but_a_foreign_one_on_a_member_is() {
 /// IT IS A DIFFERENT CARRIER FROM THE BODY'S, which is why it needs its own row rather than
 /// riding the headline. In the body every remaining flexible variable IS an author's `?`, so
 /// WI-1061 tests for one. At a call NOTHING has been rigidified — the op's own `[Elem]`, the
-/// enclosing sort's parameters and an eliminated `s.T` are all still flexible — so only an
-/// ANONYMOUS variable counts, and `value_is_anonymous_wildcard` is what separates them. The
-/// corpus proved that distinction necessary rather than tidy: reading every flexible variable
-/// as unwritten re-minted `FilteredStream.splitFirst`'s own `Pair[A = Elem]` as an unrelated
-/// skolem, and `LogicalStream.empty() -> LogicalStream[?A]` writes a NAMED variable in a
-/// return on purpose.
+/// enclosing sort's parameters and an eliminated `s.T` are all still flexible, so the broad
+/// test would skolemize slots this call is about to BIND. The corpus proved that necessary
+/// rather than tidy: reading every flexible variable as unwritten re-minted
+/// `FilteredStream.splitFirst`'s own `Pair[A = Elem]` as an unrelated skolem.
 ///
-/// CONTROL: `?` LOADS on main (the fourth spelling of the hole, leaking); `?A` loads on main
-/// and must keep loading — it is a named variable the caller binds, and skolemizing it is the
-/// mistake the corpus caught.
+/// WHAT NARROWED IT WAS ONCE THE SPELLING, AND IS NOW THE SIGNATURE (WI-1078). This ticket
+/// shipped `value_is_anonymous_wildcard` — anonymous carriers only — and the second half of
+/// this row used to assert that `mk_named() -> Stream[T = Int64, E = ?A]` was therefore
+/// exempt. It was the same hole under a two-character edit, and it is now REFUSED: a variable
+/// the signature binds nowhere is the existential this section is about, whatever it is
+/// spelled. What the narrowing protects is unchanged, and is a property of the DECLARATION
+/// rather than of the carrier — see `wi1078_unbound_return_var_test`.
+///
+/// CONTROL: `?` LOADS on main (the fourth spelling of the hole, leaking); `?A` also loaded on
+/// main, which is exactly what WI-1078 closed, so the second half fails on the tree this
+/// ticket delivered.
 #[test]
-fn a_written_anonymous_wildcard_return_opens_but_a_named_variable_does_not() {
+fn every_spelling_of_an_unbound_return_slot_opens() {
     let anon = refusal(
         "namespace test.wi1063.anon\n\
          \x20 import anthill.prelude.{Int64, Stream, Error}\n\
@@ -304,13 +317,18 @@ fn a_written_anonymous_wildcard_return_opens_but_a_named_variable_does_not() {
         "`E = ?` in a return is the same existential as omitting it, opened at the same place: \
          {anon}",
     );
-    crate::common::load_kb_with(
+    let named = refusal(
         "namespace test.wi1063.named\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
          \x20 operation mk_named() -> Stream[T = Int64, E = ?A]\n\
          \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
          \x20 operation ok() -> Int64 = takes_pure(mk_named())\n\
          end\n",
+    );
+    assert!(
+        named.contains("takes_pure.s") && named.contains("E = ?A"),
+        "a NAMED variable the signature binds nowhere is the same existential (WI-1078): \
+         {named}",
     );
 }
 
