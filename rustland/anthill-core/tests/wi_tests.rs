@@ -1068,6 +1068,9 @@ mod wi984_scope_identity_test;
 #[path = "include/wi994_variant_exposure_test.rs"]
 mod wi994_variant_exposure_test;
 
+#[path = "include/wi995_import_file_locality_test.rs"]
+mod wi995_import_file_locality_test;
+
 #[path = "include/wi997_declaration_ledger_test.rs"]
 mod wi997_declaration_ledger_test;
 

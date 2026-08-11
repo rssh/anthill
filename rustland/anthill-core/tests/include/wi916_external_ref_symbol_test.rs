@@ -76,7 +76,10 @@ const MOUNT_NAME: &str = "Widget916.w916a";
 /// the fixture entity carries that field), and one row inserted THROUGH the mount.
 /// Returns the KB, the mounted functor, the `id` field, and the row's reference.
 fn mounted_with_one_row() -> (KnowledgeBase, Symbol, Symbol, StoredRow) {
-    let mut kb = load_kb_with(&format!("{DECLS}\nimport wi916.alpha.*\n"));
+    let mut kb = load_kb_with(DECLS);
+    // WI-995 — through the INVOCATION (`-i wi916.alpha.*`), because [`MOUNT_NAME`] is a
+    // HOST string and a host has no file for a file-local import to be local to.
+    crate::common::supply_invocation_imports(&mut kb, &["wi916.alpha.*"]);
     let functor = kb
         .try_resolve_symbol("wi916.alpha.Widget916.w916a")
         .expect("the entity loaded");
@@ -98,13 +101,22 @@ fn row(functor: Symbol, id_field: Symbol, id: i64) -> Value {
     }
 }
 
-/// Load a SECOND top-level wildcard import into the live KB, contesting `Widget916` at
-/// `_global` — the load that used to happen "between" the mount and the mutation. A
-/// top-level import is KB-wide (WI-853), and nothing here references the contested name,
-/// so this loads clean and the ambiguity is live but unreported.
+/// Bring a SECOND wildcard import into the live KB, contesting `Widget916` at `_global`
+/// — the event that used to happen "between" the mount and the mutation. Nothing
+/// references the contested name, so this is accepted and the ambiguity is live but
+/// unreported.
+///
+/// WI-995 CHANGED HOW THIS HAZARD IS BUILT, and the change is worth stating because it
+/// NARROWS the hazard rather than merely renaming it. This used to load a second FILE
+/// whose top-level import contested the name for everyone; imports are file-local now,
+/// so that route is closed by construction — one file's import can no longer change what
+/// another file's text, or an earlier mount, resolves. What remains reachable is the
+/// INVOCATION channel: a second `-i` supplied after the mount. That is a genuine sequence
+/// (a longer-lived host process, a second `-i` flag), so the defect this suite pins is
+/// still live and its fix — keying the mount on the resolved `Symbol` — is still what
+/// stops it.
 fn contest_the_mount_name(kb: &mut KnowledgeBase) {
-    let parsed = parse::parse("import wi916.beta.*\n").expect("parse the second import");
-    load::load(kb, &parsed, &NullResolver).expect("a top-level import alone loads clean");
+    crate::common::supply_invocation_imports(kb, &["wi916.beta.*"]);
 }
 
 /// How many rows the mounted extent holds.

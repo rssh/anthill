@@ -23,8 +23,8 @@ use super::typing::{binding_op_symbol, extract_sort_ref_sym, extract_type, TypeE
 use super::{ClauseKind, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
-    positional_label, positional_label_index, ResolveResult, ScopeId, ScopeInclusion, Symbol,
-    SymbolDef, SymbolKind,
+    positional_label, positional_label_index, ImportOrigin, ResolveResult, ScopeId, ScopeInclusion,
+    Symbol, SymbolDef, SymbolKind,
 };
 use crate::parse::ir::*;
 use crate::parse::pratt;
@@ -2838,7 +2838,70 @@ impl std::error::Error for LoadError {}
 /// carry pass-1-needed info, must preserve the "all pass 1, then all pass 2"
 /// ordering or the cycle deadlocks. Pinned by
 /// `wi321_cross_file_mutual_recursion_test`.
+/// WI-995 — register a file's source text so it has a [`SourceId`], the identity
+/// every span already carries. Hoisted out of `Loader::new` because the identity is
+/// now needed BEFORE the loader exists: `scan_definitions` attributes each import to
+/// the file that wrote it, and the scan runs before any `Loader` is built.
+///
+/// One call per file per load, and no more: registering twice banks a duplicate entry
+/// and gives one file two ids, so two spans into the same text render as different
+/// sources.
+pub fn register_source(kb: &mut KnowledgeBase, parsed: &ParsedFile) -> SourceId {
+    let name = parsed
+        .path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
+    kb.sources
+        .register_file(name, parsed.source.clone(), parsed.path.clone())
+}
+
+/// Register every file's source, in the order given.
+pub fn register_sources(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<SourceId> {
+    files.iter().map(|f| register_source(kb, f)).collect()
+}
+
+/// Scan a file set that has no load phase around it — a query source, a `-i` flag, a
+/// test's hand-built IR. Registers its own sources; the load entry points register once
+/// and call [`scan_definitions_with_sources`], so a file never gets two ids.
+///
+/// WI-995 — IT LEAVES THE ASKING FILE SET to the last source it scanned, because the
+/// shipped use of this function is scan-then-RESOLVE (`anthill query` scans a pattern or
+/// query file, then converts it). Clearing it, as the internal pass does, made every
+/// import that source itself wrote invisible to the resolution that follows — a name the
+/// caller had imported one line earlier answering `NotFound`, with nothing to
+/// distinguish "not yours" from "no such name". The caller may still override it.
 pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
+    let source_ids = register_sources(kb, files);
+    let errors = scan_definitions_with_sources(kb, files, &source_ids, ImportAttribution::PerFile);
+    kb.symbols.set_asking_file(source_ids.last().copied());
+    errors
+}
+
+/// WI-995 — how the imports THIS scan processes are attributed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ImportAttribution {
+    /// The ordinary case: each import belongs to the file that wrote it.
+    PerFile,
+    /// The import was supplied by the INVOCATION, not written in any file — the
+    /// `anthill query -i <ns>` flags. It has no file to be local to, so it is visible
+    /// to everything in the run, exactly like the prelude's own aliases. Without this
+    /// the flag would be file-local to the synthetic one-line source the CLI parses it
+    /// from, and so invisible to the very query it was passed to serve.
+    Invocation,
+}
+
+pub fn scan_definitions_with_sources(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    source_ids: &[SourceId],
+    attribution: ImportAttribution,
+) -> Vec<LoadError> {
+    assert_eq!(
+        files.len(),
+        source_ids.len(),
+        "scan_definitions_with_sources: one SourceId per file"
+    );
     let global = kb.global_scope();
 
     // Sub-pass 1: define all names
@@ -2849,6 +2912,8 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // once here and read after the whole loop rather than per file.
     let mut ledger = DeclLedger::default();
     for (file_idx, file) in files.iter().enumerate() {
+        // WI-995 — every pass below resolves names on ONE file's behalf; say which.
+        kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         let mut pass = DefinePass {
             kb,
             parse_sym: &file.symbols,
@@ -2876,7 +2941,8 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // rather than through its cascade. Per file, because an entry is one FILE's text
     // at one address (059's Definitions) — so the pass's state is per file too, and
     // `finish` reports the verdicts that needed all of it.
-    for file in files {
+    for (file_idx, file) in files.iter().enumerate() {
+        kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         let mut file_errors = Vec::new();
         let mut pass = SecondaryEntryPass {
             kb,
@@ -2892,6 +2958,14 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
 
     let mut pending: Vec<PendingImport> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
+        kb.symbols.set_asking_file(Some(source_ids[file_idx]));
+        // WI-995: whose import is this? `PerFile` for ordinary text; `Invocation` for
+        // the CLI's `-i` flags, which belong to the run and not to the one-line source
+        // they were parsed from.
+        let origin = match attribution {
+            ImportAttribution::PerFile => ImportOrigin::File(source_ids[file_idx]),
+            ImportAttribution::Invocation => ImportOrigin::Invocation,
+        };
         // WI-745: collect this file's pass-2 errors on their own so each is
         // stamped with the file it came from before merging into the flat list.
         let mut file_errors = Vec::new();
@@ -2907,6 +2981,7 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
             &mut file_errors,
             &mut pending,
             file_idx,
+            origin,
         );
         let mut pass = ImportPass {
             kb,
@@ -2914,6 +2989,7 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
             errors: &mut file_errors,
             pending: &mut pending,
             file_idx,
+            origin,
         };
         walk_scopes(&mut pass, &file.items, global);
         errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
@@ -2921,7 +2997,8 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
     // inherited/existing origin where one resolves (proposal 044 / B2).
-    for file in files {
+    for (file_idx, file) in files.iter().enumerate() {
+        kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         // WI-745 / WI-953: this pass reports now, so its errors are stamped with
         // the file they came from exactly as sub-pass 2's are.
         let mut file_errors = Vec::new();
@@ -2940,8 +3017,13 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // rule-predicate import resolves like any declared name. (Resolve by
     // symbol, not `rules_by_functor` — rules aren't asserted until the load phase.)
     for p in pending {
+        kb.symbols.set_asking_file(Some(source_ids[p.file_idx]));
+        let origin = match attribution {
+            ImportAttribution::PerFile => ImportOrigin::File(source_ids[p.file_idx]),
+            ImportAttribution::Invocation => ImportOrigin::Invocation,
+        };
         match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
-            Some(sym) => kb.symbols.add_import(p.scope, &p.short, sym),
+            Some(sym) => kb.symbols.add_import(p.scope, &p.short, sym, origin),
             // WI-745: stamp with the file the import was written in (sub-pass 4
             // runs outside the per-file loop, so `p` carries its own provenance).
             None => errors.push(
@@ -2959,6 +3041,9 @@ pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<Lo
     // NOT global-imported. It resolves directly to its reserved qualified home
     // via `kernel_vocab_qualified` in `remap_name_str`, so it never enters the
     // user name namespace — dissolving the collision blocklist WI-476 needed.
+    // WI-995 — the scan is over; nothing after it asks on one file's behalf until
+    // the per-file declaration/load loops set it again.
+    kb.symbols.set_asking_file(None);
     errors
 }
 
@@ -5264,6 +5349,8 @@ struct ImportPass<'a> {
     errors: &'a mut Vec<LoadError>,
     pending: &'a mut Vec<PendingImport>,
     file_idx: usize,
+    /// WI-995 — who this file's imports belong to.
+    origin: ImportOrigin,
 }
 
 impl ScopePass for ImportPass<'_> {
@@ -5281,6 +5368,7 @@ impl ScopePass for ImportPass<'_> {
             self.errors,
             self.pending,
             self.file_idx,
+            self.origin,
         );
         Some(scope)
     }
@@ -5520,6 +5608,7 @@ fn process_imports(
     errors: &mut Vec<LoadError>,
     pending: &mut Vec<PendingImport>,
     file_idx: usize,
+    origin: ImportOrigin,
 ) {
     for imp in imports {
         let raw_path = join_segments(parse_sym, &imp.path.segments);
@@ -5558,16 +5647,17 @@ fn process_imports(
                         imp.path.span,
                         errors,
                     ) {
-                        kb.symbols.add_import(scope_id, short, original_sym);
+                        kb.symbols.add_import(scope_id, short, original_sym, origin);
                     }
                 }
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
-                    kb.symbols.add_parent(
+                    kb.symbols.add_import_parent(
                         scope_id,
                         ScopeInclusion {
                             parent_scope: target_scope,
                             is_enclosing: false,
                         },
+                        origin,
                     );
                 } else if found.is_none() {
                     errors.push(LoadError::UnresolvedImport {
@@ -5622,7 +5712,7 @@ fn process_imports(
                         // WI-369: a selective import of an `internal` name into a
                         // scope that can't see it is a forbidden reference.
                         if !forbid_internal_import(kb, sym, &short, scope_id, name.span, errors) {
-                            kb.symbols.add_import(scope_id, &short, sym);
+                            kb.symbols.add_import(scope_id, &short, sym, origin);
                         }
                     } else {
                         // WI-295: a rule-defined predicate's head-functor symbol
@@ -5642,12 +5732,13 @@ fn process_imports(
             }
             ImportKind::Wildcard => {
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
-                    kb.symbols.add_parent(
+                    kb.symbols.add_import_parent(
                         scope_id,
                         ScopeInclusion {
                             parent_scope: target_scope,
                             is_enclosing: false,
                         },
+                        origin,
                     );
                 } else {
                     errors.push(LoadError::UnresolvedImport {
@@ -5689,7 +5780,8 @@ pub fn register_implicit_prelude_effects(kb: &mut KnowledgeBase) {
     for &short in IMPLICIT_PRELUDE_EFFECTS {
         let qualified = format!("anthill.prelude.{short}");
         if let Some(&sym) = kb.symbols.by_qualified_name.get(&qualified) {
-            kb.symbols.add_import(global_scope, short, sym);
+            kb.symbols
+                .add_import(global_scope, short, sym, ImportOrigin::Builtin);
         }
     }
 }
@@ -6444,7 +6536,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             },
         );
         kb.symbols.by_qualified_name.insert(name.to_string(), sym);
-        kb.symbols.add_import(global_scope, name, sym);
+        kb.symbols
+            .add_import(global_scope, name, sym, ImportOrigin::Builtin);
     }
     // BigInt conversion operations — pre-registered so stdlib body reuses them.
     let bigint_sym = kb.symbols.by_qualified_name["anthill.prelude.BigInt"];
@@ -6919,16 +7012,26 @@ pub fn load(
     resolver: &dyn SourceResolver,
 ) -> Result<LoadResult, Vec<LoadError>> {
     register_prelude(kb);
-    let mut all_errors = scan_definitions(kb, &[parsed]);
+    let source_ids = register_sources(kb, &[parsed]);
+    let mut all_errors =
+        scan_definitions_with_sources(kb, &[parsed], &source_ids, ImportAttribution::PerFile);
     kb.resolve_builtins();
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
     let mut all_fact_ids = Vec::new();
     // WI-936 — declarations before conversion, for the one file this entry point loads.
-    let (source_id, decl_errors) =
-        declare_file_field_types(kb, parsed, resolver, &mut loaded_paths);
-    all_errors.extend(decl_errors);
-    match load_with_visited(kb, parsed, resolver, &mut loaded_paths, source_id) {
+    let source_id = source_ids[0];
+    kb.symbols.set_asking_file(Some(source_id));
+    all_errors.extend(declare_file_field_types(
+        kb,
+        parsed,
+        resolver,
+        &mut loaded_paths,
+        source_id,
+    ));
+    let load_result = load_with_visited(kb, parsed, resolver, &mut loaded_paths, source_id);
+    kb.symbols.set_asking_file(None);
+    match load_result {
         Ok(result) => {
             all_sorts.extend(result.defined_sorts);
             all_fact_ids.extend(result.fact_rule_ids);
@@ -7438,7 +7541,11 @@ fn load_phase_inner(
         };
     }
 
-    let mut all_errors = scan_definitions(kb, files);
+    // WI-995 — one registration per file, before the scan, so the scan can attribute
+    // each import to a file identity the load phase and every span already share.
+    let source_ids = register_sources(kb, files);
+    let mut all_errors =
+        scan_definitions_with_sources(kb, files, &source_ids, ImportAttribution::PerFile);
     // WI-345: non-fatal diagnostics, accumulated parallel to `all_errors`.
     // Lint passes (e.g. WI-346 requires-shadow, below) extend this; it rides
     // out on the merged `LoadResult` when the load succeeds.
@@ -7464,15 +7571,20 @@ fn load_phase_inner(
     // list-literal desugaring, the `Option` wrap and the absent-optional fill)
     // independent of the order the files were handed to the loader; see
     // `Loader::declare_field_types`.
-    let mut source_ids: Vec<SourceId> = Vec::with_capacity(files.len());
-    for parsed in files {
-        let (source_id, decl_errors) =
-            declare_file_field_types(kb, parsed, resolver, &mut loaded_paths);
-        source_ids.push(source_id);
-        all_errors.extend(decl_errors);
+    for (parsed, &source_id) in files.iter().zip(&source_ids) {
+        // WI-995 — this file's declarations resolve on this file's behalf.
+        kb.symbols.set_asking_file(Some(source_id));
+        all_errors.extend(declare_file_field_types(
+            kb,
+            parsed,
+            resolver,
+            &mut loaded_paths,
+            source_id,
+        ));
     }
     mark!("declare_field_types");
     for (parsed, &source_id) in files.iter().zip(&source_ids) {
+        kb.symbols.set_asking_file(Some(source_id));
         match load_with_visited(kb, parsed, resolver, &mut loaded_paths, source_id) {
             Ok(result) => {
                 all_sorts.extend(result.defined_sorts.clone());
@@ -7485,6 +7597,10 @@ fn load_phase_inner(
             }
         }
     }
+    // WI-995 — past this point every pass is whole-KB (duplicate checks, witnesses,
+    // the typer): no ONE file is asking, which is exactly the case the file-local
+    // rule has not yet been given an answer for.
+    kb.symbols.set_asking_file(None);
     mark!(&format!("load_with_visited x {}", files.len()));
     if item_timing {
         print_item_timings(&format!("load_with_visited x {}", files.len()));
@@ -7719,13 +7835,12 @@ fn declare_file_field_types(
     parsed: &ParsedFile,
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
-) -> (SourceId, Vec<LoadError>) {
+    source_id: SourceId,
+) -> Vec<LoadError> {
     let global = kb.global_scope();
-    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, None);
+    let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
     loader.declare_field_types(&parsed.items);
-    let source_id = loader.source_id;
-    let errors = stamped_file_errors(loader.errors, parsed);
-    (source_id, errors)
+    stamped_file_errors(loader.errors, parsed)
 }
 
 /// Internal: load with cycle detection via `loaded_paths`.
@@ -21891,6 +22006,8 @@ end
         register_prelude(&mut kb);
         let file = parsed();
         let global = kb.global_scope();
+        // Registered before `kb` is borrowed by the pass.
+        let source_id = register_source(&mut kb, &file);
         let mut errors = Vec::new();
         let mut pending = Vec::new();
         let mut pass = ImportPass {
@@ -21899,6 +22016,7 @@ end
             errors: &mut errors,
             pending: &mut pending,
             file_idx: 0,
+            origin: ImportOrigin::File(source_id),
         };
         walk_scopes(&mut pass, &file.items, global);
 
@@ -21945,8 +22063,9 @@ end
         let file = parsed();
         let mut loaded_paths = HashSet::new();
 
-        let (source_id, decl_errors) =
-            declare_file_field_types(&mut kb, &file, &NullResolver, &mut loaded_paths);
+        let source_id = register_source(&mut kb, &file);
+        let decl_errors =
+            declare_file_field_types(&mut kb, &file, &NullResolver, &mut loaded_paths, source_id);
         assert_eq!(
             missed(&decl_errors),
             vec!["demo".to_string()],

@@ -1657,12 +1657,27 @@ fn parse_flag_source(origin: &str, text: &str) -> Result<ParsedFile, i32> {
 /// `ParsedFile` was stamped with the path it was read from. A synthesized
 /// source has no path, and a bare `line:col` from one would read as a position
 /// in the query FILE; the flag prefix says which argument it is a position in.
+/// WI-995 — `attribution` says whose imports these are. A real query FILE's imports
+/// are its own (`PerFile`); a `-i` flag's are the INVOCATION's, because the flag is
+/// parsed from a synthetic one-line source and a file-local rule would then hide it
+/// from the very query it was passed to serve.
 fn scan_query_source(
     kb: &mut KnowledgeBase,
     parsed: &ParsedFile,
     origin: Option<&str>,
+    attribution: load::ImportAttribution,
 ) -> Result<(), i32> {
-    let errors = load::scan_definitions(kb, &[parsed]);
+    let source_ids = load::register_sources(kb, &[parsed]);
+    let errors = load::scan_definitions_with_sources(kb, &[parsed], &source_ids, attribution);
+    // WI-995 — the query text that follows resolves on THIS source's behalf, so its own
+    // top-level imports reach it and no other file's do. Only for a real query SOURCE: a
+    // `-i` flag is parsed from a synthetic one-line source that is nobody's text, and
+    // naming it as the asking file would make the next resolution answer on behalf of a
+    // "file" the author never wrote. Its imports do not need it either — they are
+    // `Invocation`-scoped, visible whoever asks.
+    if attribution == load::ImportAttribution::PerFile {
+        kb.set_asking_file(source_ids.first().copied());
+    }
     if errors.is_empty() {
         return Ok(());
     }
@@ -1694,7 +1709,15 @@ fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(),
     for flag in imports {
         let origin = format!("--import `{flag}`");
         match parse_flag_source(&origin, &format!("import {flag}\n")) {
-            Ok(parsed) => failed |= scan_query_source(kb, &parsed, Some(&origin)).is_err(),
+            Ok(parsed) => {
+                failed |= scan_query_source(
+                    kb,
+                    &parsed,
+                    Some(&origin),
+                    load::ImportAttribution::Invocation,
+                )
+                .is_err()
+            }
             Err(_) => failed = true,
         }
     }
@@ -1724,7 +1747,12 @@ fn collect_queries(
     if let Some(ref pattern) = args.pattern {
         // The query IR reaches a pattern term through a `fact`.
         let parsed = parse_flag_source("--pattern", &format!("fact {pattern}"))?;
-        scan_query_source(kb, &parsed, Some("--pattern"))?;
+        scan_query_source(
+            kb,
+            &parsed,
+            Some("--pattern"),
+            load::ImportAttribution::PerFile,
+        )?;
 
         // Extract the fact term and reintern into KB
         let mut var_map = HashMap::new();
@@ -1772,7 +1800,7 @@ fn collect_queries(
             }
         };
 
-        scan_query_source(kb, &parsed, None)?;
+        scan_query_source(kb, &parsed, None, load::ImportAttribution::PerFile)?;
 
         // Extract all fact items as queries
         let mut queries = Vec::new();

@@ -14,14 +14,23 @@
 //! sit in, and the scope its import must enter is `_global`, the one the query
 //! pattern is resolved in.
 //!
-//! SCOPE OF THE IMPORT, stated because it is not the file-local import other
-//! languages have and the difference is observable: a top-level import enters
-//! `_global`, so it is visible from every scope that chains up to `_global` — in
-//! any file of the same load, not only the one that wrote it
-//! (`a_top_level_import_enters_the_shared_global_scope` drives exactly that).
-//! That is the SAME rule top-level DEFINITIONS already follow: a top-level `sort
-//! S` is equally visible KB-wide. The language has no per-file scope to attach a
-//! narrower one to; `_global` is the top.
+//! SCOPE OF THE IMPORT — REVISED BY WI-995, and stated at length because this file
+//! used to teach the opposite. A top-level import enters `_global`, but it is spent in
+//! the FILE that lists it: another file's text does not see it
+//! (`a_top_level_import_does_not_escape_the_file_that_wrote_it` drives exactly that).
+//!
+//! WI-853 originally reasoned that a top-level import must follow the same rule as a
+//! top-level DEFINITION — visible KB-wide — because "the language has no per-file scope
+//! to attach a narrower one to; `_global` is the top". WI-995 supplied the missing
+//! scope: every import records the file that wrote it, so "local to its file" is now
+//! expressible at any address, `_global` included. The two halves have parted company
+//! deliberately: a top-level `sort S` is still KB-wide, an `import` is not, because a
+//! definition ADDS a name to the program while an import only chooses what one file's
+//! text may call it.
+//!
+//! `anthill query -i <name>` is unaffected: a flag belongs to the INVOCATION, not to any
+//! file (`load::ImportAttribution::Invocation`), so it reaches the query it was passed
+//! for. That is the channel a file-less asker uses.
 
 use crate::common::try_load_kb_with_files;
 
@@ -85,15 +94,21 @@ fn every_import_form_is_admitted_at_the_top_level() {
     }
 }
 
-/// The scope semantics, driven rather than asserted in prose: the import is
-/// written in one file and the name is used inside a NAMESPACE in another. It
-/// resolves — `_global` is a shared scope and every namespace chains up to it.
+/// The scope semantics, driven rather than asserted in prose — and INVERTED by WI-995.
 ///
-/// Pinned deliberately. It is the one way a top-level import differs from the
-/// file-local import of most languages, and a reader who assumed file locality
-/// would write code that only works by accident.
+/// The import is written in one file and the name used inside a namespace in ANOTHER.
+/// It does not resolve: an import is spent in the file that lists it. `_global` is still
+/// a shared scope for DEFINITIONS — a top-level `sort S` in one file is visible KB-wide,
+/// as the second half here drives — but an import is not a definition, and sharing it
+/// was the whole-program non-locality WI-995 removed: a file could silently change what
+/// a bare name meant in a file it had never seen.
+///
+/// This test used to assert the opposite, and this suite's header used to teach it as a
+/// deliberate difference from "the file-local import of most languages". Both were
+/// rewritten with the rule rather than deleted, because the SHAPE they pin is what
+/// changed and a reader arriving from WI-853 needs to see which way it went.
 #[test]
-fn a_top_level_import_enters_the_shared_global_scope() {
+fn a_top_level_import_does_not_escape_the_file_that_wrote_it() {
     let other = "\
 namespace wi853.other
   operation use_s(s: S) -> Int64
@@ -104,10 +119,20 @@ end
         "S",
         "the control: `S` is not in scope inside `wi853.other` on its own",
     );
-    assert_loads(
+    assert_unresolved(
         &[LIB, "import wi853.lib\n", other],
-        "an import into `_global` must be visible from a namespace in another file, \
-         the same way a top-level DEFINITION is",
+        "S",
+        "and a THIRD file's top-level import does not put it in scope either — an \
+         import resolves only in the file that lists it (WI-995)",
+    );
+    // The half that did NOT change: a top-level DEFINITION is still KB-wide, so the
+    // refusal above is about imports specifically and not about `_global` going private.
+    assert_loads(
+        &[
+            "sort SGlobal853\n  entity mk(x: Int64)\nend\n",
+            "namespace wi853.def_user\n  operation use_g(s: SGlobal853) -> Int64\nend\n",
+        ],
+        "a top-level DEFINITION is still visible from another file's namespace",
     );
 }
 

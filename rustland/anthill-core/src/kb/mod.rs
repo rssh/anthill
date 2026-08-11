@@ -1824,6 +1824,58 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-995 — the file whose text the following resolutions belong to, so an import
+    /// written in another file is not read on its behalf. The load entry points set it
+    /// per file; the CLI sets it for the source its query text came from. Returns the
+    /// previous value.
+    pub fn set_asking_file(
+        &self,
+        file: Option<crate::span::SourceId>,
+    ) -> Option<crate::span::SourceId> {
+        self.symbols.set_asking_file(file)
+    }
+
+    /// WI-995 — start the import-locality audit before a load, so every name
+    /// resolution is also answered under the proposed file-local rule and the
+    /// disagreements are collected. See [`crate::intern::ImportAudit`]; measurement
+    /// mode only (it roughly doubles resolution cost).
+    pub fn begin_import_audit(&self) {
+        self.symbols.begin_import_audit();
+    }
+
+    /// WI-995 — stop the audit and take its findings.
+    pub fn take_import_audit(&self) -> Option<crate::intern::ImportAudit> {
+        self.symbols.take_import_audit()
+    }
+
+    /// WI-995 — import alias entries written by more than one origin, rendered:
+    /// `(scope qualified name, imported name, [(origin, target qualified name)])`.
+    /// Of two files importing one name into one address the LAST silently wins.
+    pub fn contested_import_entries(
+        &self,
+    ) -> Vec<(String, String, Vec<(crate::intern::ImportOrigin, String)>)> {
+        self.symbols
+            .contested_import_entries()
+            .into_iter()
+            .map(|(scope, name, writes)| {
+                (
+                    self.qualified_name_of(scope.owner()).to_string(),
+                    name.to_string(),
+                    writes
+                        .iter()
+                        .map(|(o, sym)| (*o, self.qualified_name_of(*sym).to_string()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// WI-995 — `(import alias entries, import parent edges)` the origin tables hold.
+    /// The instrument's denominator; see `SymbolTable::import_record_counts`.
+    pub fn import_record_counts(&self) -> (usize, usize) {
+        self.symbols.import_record_counts()
+    }
+
     /// The qualified names behind a [`ResolveResult::Ambiguous`], for a diagnostic that
     /// names what it could not choose between.
     pub fn candidate_names(&self, candidates: &[Symbol]) -> Vec<String> {

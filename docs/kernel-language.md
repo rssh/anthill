@@ -793,6 +793,7 @@ Implicit namespaces merge with explicit namespaces of the same qualified name. T
 - Siblings share a scope: `sort ns.A` and `sort ns.B` in separate files both live in the implicit `ns` namespace and can reference each other without imports.
 - Wildcard imports work naturally: `import anthill.prelude.*` imports all items defined in the `anthill.prelude` scope.
 - Explicit `namespace anthill { ... }` and implicit `anthill` (from `sort anthill.prelude.X`) merge into one scope.
+- **Merging shares definitions, not imports (WI-995).** Two files writing one address contribute their declarations to one scope — that is what the first bullet says — but each file's `import` lines resolve names only in that file. See "An import is file-local" in §Namespaces and imports.
 
 **Qualified names.** Every defined symbol has a `short_name` (last segment) and a `qualified_name` (full path from the global scope). Items nested inside a sort or namespace body have their qualified name constructed by prepending the enclosing scope's qualified path. For example, `operation eq` inside `sort anthill.prelude.Eq` gets `qualified_name = "anthill.prelude.Eq.eq"`. The `by_qualified_name` index serves as a global registry of fully-qualified paths, while scope-aware resolution (`resolve_in_scope`) uses short names and parent scope chains.
 
@@ -861,11 +862,27 @@ import anthill.prelude.*                      -- imports all visible names from 
 **Where an import may be written.** Anywhere a declaration may be: in a namespace
 body, in a sort body, or at a file's **top level**, outside any namespace. The
 import enters the scope it is written in, and a file's top level is the global
-scope — the same one a top-level `sort` / `fact` / `rule` is defined in. So a
-top-level import is **not** file-local: like a top-level definition, it is
-visible from every scope that resolves through the global scope, including
-namespaces in other files of the same load. Write imports inside the namespace
-that needs them when that scope is what you mean.
+scope — the same one a top-level `sort` / `fact` / `rule` is defined in.
+
+**An import is file-local (WI-995).** It resolves names only in the **file that
+lists it**, at every scope including the global one. A scope is an *address*, and
+two files may write one address (`namespace demo` in each, or the file top level);
+before this rule they shared one import table, so a file could silently change what
+a bare name meant in a file it had never seen — whole-program non-locality reachable
+with two ordinary namespaces. Each file now imports what its own text names.
+
+This is the one place an import differs from a **definition**, and the difference is
+deliberate: a top-level `sort S` is still visible KB-wide, because a definition adds
+a name to the *program*, while an import only chooses what one file's *text* may call
+it. It follows that an import is **not a re-export** — `import a.b.{n}` requires `b`
+to *declare* `n`, not merely to have imported it — so name the declaring scope
+(`import anthill.prelude.Numeric.{sub}`, not `…Int64.{sub}`, which has `sub` only
+because `int64.anthill` imported it there).
+
+**A resolution with no file** — a query pattern, or a host-supplied name — reads only
+imports that belong to no file: the implicit prelude, and those supplied by the
+**invocation** (`anthill query -i <name>`). A program file's imports do not reach it,
+having no file to be local to.
 
 **Visibility** is a prefix modifier on declarations. Names are **visible by
 default**; the modifiers adjust that (full algorithm in §8.6):
@@ -2641,7 +2658,11 @@ model) were removed in WI-291.
 **`resolve_in_scope(name, scope)`** — the resolution order:
 
 1. a **local** of `scope` → resolved (a local shadows everything below);
-2. an **imported alias** in `scope` → resolved;
+2. an **imported alias** in `scope` → resolved, **if the asking file wrote it**
+   (WI-995): an alias written by another file is not there at all, and resolution
+   continues to the parents as if the import had never been written. Aliases
+   belonging to no file — the implicit prelude, and `-i` invocation flags — are
+   read by every asker;
 3. otherwise recurse into the **parent** scopes. A *non-enclosing* parent is
    skipped when the name is (a) a type parameter of that parent, (b) marked
    `internal` there, or (c) absent from a non-empty **exposed** set of that
@@ -2743,6 +2764,12 @@ deviating site.
 
 **Import forms.** `import` introduces visibility into the current scope; it does
 not by itself add a sort's contents (use `requires` or wildcard for that):
+
+Every form is scoped to the file that writes it (WI-995), on **both** of the things
+an import writes: the alias, and — for the plain and wildcard forms — the parent
+link. A parent link a `requires`, an enclosing body or variant exposure also
+justifies stays visible, since those belong to a declaration at the address rather
+than to one file's text.
 
 - `import a.b.C` — alias `C`, and include `a.b` as a non-enclosing parent.
 - `import a.b.{C, D}` — alias each name, resolved by: direct `a.b.C`

@@ -180,11 +180,15 @@ fn a_store_policy_named_by_an_unmatched_spelling_is_refused_at_registration() {
 /// Pre-fix this registration was likewise accepted in silence (measured).
 #[test]
 fn a_store_policy_naming_a_contested_functor_is_refused_as_ambiguous() {
+    // WI-995 — the two wildcard imports come from the INVOCATION (`-i <ns>.*`), not from
+    // the program text: a file's import no longer reaches a host-supplied name, which has
+    // no file of its own. What is under test is unchanged — the short name still denotes
+    // two functors at `_global`, and the registration must refuse it as ambiguous.
     let mut interp = interp_for(
         "namespace wi919.alpha\n  entity Widget919\nend\n\
-         namespace wi919.beta\n  entity Widget919\nend\n\
-         import wi919.alpha.*\nimport wi919.beta.*\n",
+         namespace wi919.beta\n  entity Widget919\nend\n",
     );
+    crate::common::supply_invocation_imports(interp.kb_mut(), &["wi919.alpha.*", "wi919.beta.*"]);
 
     let (_store, outcome) = register_declaring(&mut interp, "Widget919");
 

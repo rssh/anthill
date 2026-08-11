@@ -797,6 +797,34 @@ pub fn query_pattern_functor_qn(kb: &mut KnowledgeBase, pattern: &str) -> String
     kb.qualified_name_of(sym).to_string()
 }
 
+/// WI-995 — supply imports the way `anthill query -i <ns>` does: through the
+/// INVOCATION, not through a file.
+///
+/// Since imports became file-local, a top-level `import ns.*` written into a PROGRAM
+/// source is local to that source, so it no longer reaches a query pattern or a
+/// host-supplied name — those have no file to be local to. The `-i` flag is the channel
+/// that does reach them, because it belongs to the run rather than to any file
+/// ([`load::ImportAttribution::Invocation`]). This is the in-process spelling of it, so
+/// a test that means "the query is run with these namespaces in scope" says exactly
+/// that instead of relying on a program file's imports leaking outward.
+///
+/// Each `spec` is a flag body as the CLI takes it — `"wi907.alpha.*"`, `"a.b.{X}"`.
+#[allow(dead_code)]
+pub fn supply_invocation_imports(kb: &mut KnowledgeBase, specs: &[&str]) {
+    for spec in specs {
+        let src = format!("import {spec}\n");
+        let parsed = parse::parse(&src).unwrap_or_else(|e| panic!("parse `-i {spec}`: {e:?}"));
+        let ids = load::register_sources(kb, &[&parsed]);
+        let errs = load::scan_definitions_with_sources(
+            kb,
+            &[&parsed],
+            &ids,
+            load::ImportAttribution::Invocation,
+        );
+        assert!(errs.is_empty(), "`-i {spec}` did not resolve: {errs:?}");
+    }
+}
+
 /// Mount an empty in-memory extent under `name` — the live `resolve_name_in_global`
 /// caller, since `register_extent_owner` resolves every `owned()` name to a `Symbol`.
 /// WI-907: lifted at the second copy (`wi908_global_name_ladder_test` was the first);

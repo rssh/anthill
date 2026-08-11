@@ -54,10 +54,16 @@ use anthill_core::eval::Value;
 /// `ByLength` orders by `length`, `Alphabetical` by the host's string order — chosen so
 /// that on `["zz", "aaa"]` they DISAGREE about the first element (`zz` is shorter,
 /// `aaa` is earlier), which is what makes every value assertion below discriminating.
+///
+/// WI-995 — `sub` is imported from `Numeric`, which DECLARES it (numeric.anthill:12),
+/// and not from `Int64`, where it merely appears because int64.anthill imported it
+/// there. An import is not a re-export once imports are file-local, so importing
+/// through `Int64` resolved only by reaching into another file's import list.
+/// (`length` IS `String`'s own declaration, so that line is unchanged.)
 const BY_LENGTH: &str = r#"
   sort ByLength
     import anthill.prelude.String.{length}
-    import anthill.prelude.Int64.{sub}
+    import anthill.prelude.Numeric.{sub}
     fact Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end

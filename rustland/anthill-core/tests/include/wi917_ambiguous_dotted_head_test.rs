@@ -74,16 +74,21 @@ fn source_citing_dotted(namespaces: &[&str]) -> String {
     src
 }
 
-/// `DECLS` plus TOP-LEVEL wildcard imports — the one way `_global`, the scope a query
-/// pattern and a host name are read in, gains a name it does not declare (WI-853).
-/// Nothing here REFERENCES a contested name, so the program loads clean and the conflict
-/// is live but unreported until a query or a mount names it.
+/// `DECLS` plus wildcard imports — the one way `_global`, the scope a query pattern and
+/// a host name are read in, gains a name it does not declare. Nothing here REFERENCES a
+/// contested name, so the program loads clean and the conflict is live but unreported
+/// until a query or a mount names it.
+///
+/// WI-995 — supplied through the INVOCATION (`-i <ns>.*`), not as a top-level import in
+/// the program source: an import is file-local now, so a program file's cannot reach a
+/// query pattern or a host name, neither of which has a file. See
+/// `common::supply_invocation_imports`.
 fn kb_importing(namespaces: &[&str]) -> KnowledgeBase {
-    let mut src = DECLS.to_owned();
-    for ns in namespaces {
-        src.push_str(&format!("import {ns}.*\n"));
-    }
-    load_kb_with(&src)
+    let mut kb = load_kb_with(DECLS);
+    let specs: Vec<String> = namespaces.iter().map(|ns| format!("{ns}.*")).collect();
+    let refs: Vec<&str> = specs.iter().map(String::as_str).collect();
+    crate::common::supply_invocation_imports(&mut kb, &refs);
+    kb
 }
 
 fn global_scope(kb: &mut KnowledgeBase) -> anthill_core::intern::ScopeId {

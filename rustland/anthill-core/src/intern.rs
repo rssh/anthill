@@ -8,6 +8,8 @@ use smallvec::SmallVec;
 /// resolves references during loading.
 use std::collections::{HashMap, HashSet};
 
+use crate::span::SourceId;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Symbol(u32);
 
@@ -435,6 +437,16 @@ pub struct Scope {
     pub exposed: HashSet<String>,
     /// Parent scope inclusions (enclosing + requires + imports)
     pub parents: Vec<ScopeInclusion>,
+    /// WI-995 — does any parent link of this scope come from a FILE-scoped import?
+    ///
+    /// The file-local rule has to ask, per parent per step of every resolution walk,
+    /// whether an edge is one a foreign file's import contributed. Asking
+    /// `import_parent_origin` directly makes that a `HashMap<(ScopeId, ScopeId)>` probe
+    /// on the hot path for EVERY edge in the KB, since `add_parent` records a
+    /// `Declaration` origin for all of them. Almost no scope has such an edge — 10 in
+    /// the whole stdlib, against hundreds of scopes — so this flag answers "no" with a
+    /// field read and the map is consulted only where the question is live.
+    pub has_file_scoped_import_parent: bool,
     /// Type parameter names (excluded from parent lookups)
     pub type_params: HashSet<String>,
     /// The type parameters DECLARED in this scope, as their own symbols, in
@@ -473,6 +485,113 @@ pub struct SymbolTable {
     /// hides it. Recorded by raw symbol index; the empty set is the all-visible
     /// default, so `public`/unspecified declarations cost nothing here.
     internal_syms: HashSet<u32>,
+    /// WI-995 — WHO WROTE each import ALIAS entry. Keyed exactly as
+    /// [`Scope::imports`] is, but holds EVERY write rather than the surviving one:
+    /// `Scope.imports` is a `HashMap`, so a second file importing the same name into
+    /// the same address silently overwrites the first, and the overwrite is invisible
+    /// to a reader that only sees the winner.
+    import_origin: HashMap<ScopeId, HashMap<String, SmallVec<[(ImportOrigin, Symbol); 2]>>>,
+    /// WI-995 — WHO WROTE each import-contributed PARENT link. `requires` and
+    /// enclosing links are deliberately absent: they belong to a DECLARATION at the
+    /// address, not to one file's text, so they are not file-scoped under any reading
+    /// of the rule. A `Vec` for the same reason as [`Self::import_origin`] — one edge
+    /// can be written by several files and [`Self::add_parent`] dedups them to one.
+    import_parent_origin: HashMap<(ScopeId, ScopeId), SmallVec<[ImportOrigin; 2]>>,
+    /// WI-995 — the file whose text is being resolved right now. `None` outside the
+    /// per-file passes (the typer resolves names with no asking file — measured
+    /// harmless, since every name it resolves is a scope LOCAL, not an import).
+    ///
+    /// AMBIENT ON PURPOSE, and only during the load: a `Loader` IS a file
+    /// (`Loader::source_id` is "fixed for the whole file"), so the asking file is a
+    /// property of the PASS, not of each call. Interior mutability because
+    /// [`Self::resolve_in_scope`] takes `&self`; ATOMIC rather than `Cell` because a
+    /// `SymbolTable` also rides inside `ParsedFile`, which the test suites hold in a
+    /// `LazyLock` static and so must stay `Sync`.
+    ///
+    /// Stored as `SourceId::raw() + 1`, so the `Default` zero is "no asking file" and
+    /// the derived `Default` stays honest — source 0 is a real file.
+    asking_file_plus_one: std::sync::atomic::AtomicU32,
+    /// WI-995 — is [`Self::import_audit`] live? Read on every resolution, so it is a
+    /// relaxed atomic load rather than a mutex acquisition: the audit is off in every
+    /// production load and must cost ~nothing there.
+    auditing: std::sync::atomic::AtomicBool,
+    /// WI-995 — the counterfactual audit, off (`None`) unless
+    /// [`Self::begin_import_audit`] turned it on. While on, every
+    /// [`Self::resolve_in_scope`] is answered TWICE — as today, and again with
+    /// foreign-file imports suppressed — and the disagreements are recorded here.
+    import_audit: std::sync::Mutex<Option<ImportAudit>>,
+}
+
+/// WI-995 — the writer of an import entry.
+///
+/// An import writes into a table keyed by the ADDRESS ([`ScopeId`]), and two files
+/// can write the same address (`namespace demo` in each). This records which file
+/// did, so a resolution can ask whether it is reading its OWN file's import.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ImportOrigin {
+    /// Registered by the loader's bootstrap (prelude / kernel vocab / stdlib scope
+    /// wiring), not written in any file. Visible to every file under any reading of
+    /// the file-local rule — it has no file to be local to.
+    Builtin,
+    /// Written in one file. [`SourceId`] and not a load-slice index because it must
+    /// be stable across load PHASES and outlive the slice: `load_incremental`'s second
+    /// phase, and the CLI's query scan, both index from 0 again, so a slice position
+    /// would silently alias one file onto another. It is also the identity every
+    /// `SourceSpan` already carries, so an occurrence can name its own file without a
+    /// lookup table.
+    File(SourceId),
+    /// Supplied by the INVOCATION rather than written in a file — the
+    /// `anthill query -i <ns>` flags. Local to no file, so visible throughout the run.
+    Invocation,
+    /// Contributed by a DECLARATION at the address rather than by an import — an
+    /// enclosing body, a `requires`, a variant exposure, the prelude wiring. Visible
+    /// under every reading of the rule, and recorded rather than merely omitted
+    /// because a link can have BOTH justifications: with only import writes recorded,
+    /// an edge that a `requires` also justifies would be suppressed on the strength of
+    /// a foreign file's import alone, refusing a name the rule never meant to touch.
+    Declaration,
+}
+
+/// WI-995 — how much of the import machinery a resolution may read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ImportVisibility {
+    /// Every import at the address, whoever wrote it — the behaviour BEFORE WI-995.
+    /// Retained solely so [`ImportAudit`] can answer both ways and report the
+    /// difference; no production path selects it.
+    All,
+    /// The proposed rule: only [`ImportOrigin::Builtin`] imports and those written
+    /// in [`SymbolTable::asking_file`].
+    OwnFileOnly,
+}
+
+/// WI-995 — one name whose resolution DEPENDS on an import written in another file:
+/// the two readings disagree about it.
+#[derive(Clone, Debug)]
+pub struct CrossFileImportUse {
+    pub name: String,
+    /// The scope the name was resolved in.
+    pub scope: ScopeId,
+    /// The file doing the asking; `None` for a resolution with no ambient file (the
+    /// typer and the query path), where the rule has no defined answer yet.
+    pub asking: Option<SourceId>,
+    /// What resolution answered BEFORE WI-995, when an import was visible to every file
+    /// writing its address.
+    pub shared_imports: ResolveResult,
+    /// What it answers now, with the import spent in the file that wrote it.
+    pub file_local: ResolveResult,
+    /// How many times this (name, scope, asking file) triple was resolved.
+    pub hits: u32,
+}
+
+/// WI-995 — the counterfactual measurement. Collects, over a whole load, every
+/// resolution whose answer depends on an import written in a file other than the one
+/// asking. See `wi995_import_file_locality_test`.
+#[derive(Debug, Default)]
+pub struct ImportAudit {
+    /// Deduplicated by `(name, scope, asking file)`; `hits` counts the repeats.
+    pub uses: HashMap<(String, ScopeId, Option<SourceId>), CrossFileImportUse>,
+    /// Total `resolve_in_scope` calls audited, as the denominator.
+    pub resolutions: u64,
 }
 
 impl SymbolTable {
@@ -733,12 +852,235 @@ impl SymbolTable {
 
     /// Record an imported name alias in a scope.
     /// Makes `local_name` resolve to `sym` locally in the given scope.
-    pub fn add_import(&mut self, scope: ScopeId, local_name: &str, sym: Symbol) {
+    ///
+    /// WI-995 — `origin` names the WRITER. It is an explicit parameter and not an
+    /// ambient cursor because the two builtin call sites
+    /// (`register_implicit_prelude_effects`, `register_stdlib_scopes`) are not
+    /// writing on any file's behalf, and that has to be stated at the write rather
+    /// than inferred from whatever the loader last set.
+    pub fn add_import(
+        &mut self,
+        scope: ScopeId,
+        local_name: &str,
+        sym: Symbol,
+        origin: ImportOrigin,
+    ) {
+        // IDEMPOTENT, for the reason [`Self::add_parent`] is (WI-994): `load_incremental`
+        // re-scans files already in the KB, re-running every import, and an unguarded
+        // push would grow this list without bound across reloads.
+        let writes = self
+            .import_origin
+            .entry(scope)
+            .or_default()
+            .entry(local_name.to_owned())
+            .or_default();
+        if !writes.contains(&(origin, sym)) {
+            writes.push((origin, sym));
+        }
         self.scopes
             .entry(scope)
             .or_default()
             .imports
             .insert(local_name.to_owned(), sym);
+    }
+
+    /// WI-995 — [`Self::add_parent`] for a link an IMPORT contributed (a `Plain` or
+    /// `Wildcard` import splices its target in as a resolution parent), recording the
+    /// writer alongside.
+    ///
+    /// A separate entry point rather than a parameter on `add_parent` because the
+    /// distinction is the whole point: of `add_parent`'s 13 call sites only these
+    /// carry a file's import, and the rest — enclosing bodies, `requires`, variant
+    /// exposure, the prelude wiring — are properties of a DECLARATION at the address
+    /// and stay address-scoped under the file-local rule.
+    pub fn add_import_parent(
+        &mut self,
+        scope: ScopeId,
+        inclusion: ScopeInclusion,
+        origin: ImportOrigin,
+    ) {
+        self.record_parent_origin(scope, inclusion.parent_scope, origin);
+        if matches!(origin, ImportOrigin::File(_)) {
+            self.scopes
+                .entry(scope)
+                .or_default()
+                .has_file_scoped_import_parent = true;
+        }
+        self.add_parent_raw(scope, inclusion);
+    }
+
+    /// WI-995 — the file whose text the following resolutions belong to (an index
+    /// into the load phase's `files` slice), or `None` outside the per-file passes.
+    /// Returns the previous value so a caller can restore it.
+    pub fn set_asking_file(&self, file: Option<SourceId>) -> Option<SourceId> {
+        let prev = self.asking_file_plus_one.swap(
+            file.map_or(0, |f| f.raw() + 1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        prev.checked_sub(1).map(SourceId::from_raw)
+    }
+
+    /// WI-995 — the file the current resolutions are asked on behalf of.
+    fn asking_file(&self) -> Option<SourceId> {
+        self.asking_file_plus_one
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .checked_sub(1)
+            .map(SourceId::from_raw)
+    }
+
+    /// WI-995 — start the counterfactual audit, discarding any previous one. While it
+    /// runs, every [`Self::resolve_in_scope`] is answered twice (see [`ImportAudit`]),
+    /// so this roughly doubles resolution cost — it is a measurement mode, not a
+    /// production one.
+    pub fn begin_import_audit(&self) {
+        *self.import_audit.lock().expect("import audit mutex") = Some(ImportAudit::default());
+        self.auditing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// WI-995 — stop the audit and take its findings.
+    pub fn take_import_audit(&self) -> Option<ImportAudit> {
+        self.auditing
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.import_audit.lock().expect("import audit mutex").take()
+    }
+
+    /// WI-995 — every import ALIAS entry written by more than one distinct origin,
+    /// as `(scope, name, writes)`. A collision here is a defect independent of the
+    /// resolution rule: [`Scope::imports`] is a map, so of two files importing the
+    /// same name into one address the LAST loaded silently wins, and the first file's
+    /// text then reads a name it never imported.
+    pub fn contested_import_entries(&self) -> Vec<(ScopeId, &str, &[(ImportOrigin, Symbol)])> {
+        let mut out: Vec<(ScopeId, &str, &[(ImportOrigin, Symbol)])> = self
+            .import_origin
+            .iter()
+            .flat_map(|(scope, by_name)| by_name.iter().map(move |(n, w)| (*scope, n, w)))
+            // CONTESTED means the writes disagree about the SYMBOL — that is what makes
+            // the map's last-write-wins observable. Keying on the ORIGIN instead (as this
+            // did until the WI-995 review) both over- and under-reports: two files
+            // importing the same target are flagged though nothing can go wrong, and one
+            // file importing two different targets under one name is missed entirely.
+            .filter(|(_, _, writes)| {
+                let mut syms = writes.iter().map(|(_, sym)| *sym);
+                let first = syms.next();
+                syms.any(|sym| Some(sym) != first)
+            })
+            .map(|(scope, name, writes)| (scope, name.as_str(), writes.as_slice()))
+            .collect();
+        out.sort_by(|a, b| (a.0.owner().index(), a.1).cmp(&(b.0.owner().index(), b.1)));
+        out
+    }
+
+    /// WI-995 — how much the audit actually RECORDED: `(import alias entries, import
+    /// parent edges)`. The instrument's own denominator — a measured zero cost means
+    /// nothing unless these are non-trivial, since an origin table that stayed empty
+    /// would suppress nothing and agree with today everywhere.
+    pub fn import_record_counts(&self) -> (usize, usize) {
+        // Only edges an IMPORT justified. `import_parent_origin` also holds the
+        // `Declaration` links every `add_parent` records (WI-995), and counting those
+        // would let the self-check pass on a run where no import edge was recorded at
+        // all — which is the exact failure the check exists to catch.
+        // Only entries a FILE wrote. `import_origin` also holds the `Builtin` prelude
+        // aliases, which are there in every load; counting those would let the caller's
+        // "the instrument had something to suppress" guard pass on a run where
+        // `process_imports` recorded nothing at all — the exact failure it exists to
+        // catch. Same exclusion, and same reason, as the edge count below.
+        let alias_entries: usize = self
+            .import_origin
+            .values()
+            .map(|by_name| {
+                by_name
+                    .values()
+                    .filter(|writes| {
+                        writes
+                            .iter()
+                            .any(|(o, _)| matches!(o, ImportOrigin::File(_)))
+                    })
+                    .count()
+            })
+            .sum();
+        let import_edges = self
+            .import_parent_origin
+            .values()
+            .filter(|origins| origins.iter().any(|o| *o != ImportOrigin::Declaration))
+            .count();
+        (alias_entries, import_edges)
+    }
+
+    /// WI-995 — the symbol `name` is imported as in `scope`, as seen by the asking
+    /// file, or `None` if no import of it is visible here.
+    ///
+    /// IT RETURNS THE VISIBLE WRITE'S OWN SYMBOL, and that is the whole point rather
+    /// than a detail. [`Scope::imports`] is a `HashMap`, so of two files importing one
+    /// name into one address the LAST loaded silently wins; asking only "did some
+    /// visible origin write *an* entry under this name" and then handing back the map's
+    /// winner would let file B's `import b.{X}` decide what `X` means in file A — the
+    /// very non-locality this rule removes, surviving inside its own implementation.
+    /// So the answer is read from [`Self::import_origin`], which keeps EVERY write with
+    /// its writer, and the map is consulted only where all writes are visible anyway.
+    ///
+    /// Among several visible writes the LAST wins, preserving the in-file
+    /// last-write-wins the map has always had for a file that imports one name twice.
+    fn visible_import(
+        &self,
+        scope: ScopeId,
+        name: &str,
+        vis: ImportVisibility,
+        data: &Scope,
+    ) -> Option<Symbol> {
+        match vis {
+            ImportVisibility::All => data.imports.get(name).copied(),
+            // Keyed scope-then-name so the lookup BORROWS `name`: this is the
+            // resolution hot path, and a `(ScopeId, String)` key would allocate a
+            // `String` per import probe.
+            ImportVisibility::OwnFileOnly => self
+                .import_origin
+                .get(&scope)
+                .and_then(|by_name| by_name.get(name))
+                .and_then(|writes| {
+                    writes
+                        .iter()
+                        .rev()
+                        .find(|(o, _)| self.origin_visible(*o))
+                        .map(|(_, sym)| *sym)
+                }),
+        }
+    }
+
+    /// WI-995 — the same question for an import-contributed parent link. An edge with
+    /// no entry here was contributed by something OTHER than an import (an enclosing
+    /// body, a `requires`, variant exposure), which the rule does not touch.
+    fn import_parent_visible(
+        &self,
+        scope: ScopeId,
+        parent: ScopeId,
+        vis: ImportVisibility,
+    ) -> bool {
+        match vis {
+            ImportVisibility::All => true,
+            ImportVisibility::OwnFileOnly => {
+                // The flag is the fast negative: a scope no file-scoped import ever
+                // linked cannot have a suppressible edge, so skip the probe entirely.
+                if !self
+                    .scopes
+                    .get(&scope)
+                    .is_some_and(|s| s.has_file_scoped_import_parent)
+                {
+                    return true;
+                }
+                match self.import_parent_origin.get(&(scope, parent)) {
+                    None => true,
+                    Some(origins) => origins.iter().any(|o| self.origin_visible(*o)),
+                }
+            }
+        }
+    }
+
+    fn origin_visible(&self, origin: ImportOrigin) -> bool {
+        match origin {
+            ImportOrigin::Builtin | ImportOrigin::Declaration | ImportOrigin::Invocation => true,
+            ImportOrigin::File(f) => self.asking_file() == Some(f),
+        }
     }
 
     /// Record a parent scope inclusion (from `requires` or `import`).
@@ -761,9 +1103,29 @@ impl SymbolTable {
     /// apart are two no walk could tell apart either. O(P) per push against P in
     /// the tens, paid at load, against an O(P) every lookup pays forever.
     pub fn add_parent(&mut self, scope: ScopeId, inclusion: ScopeInclusion) {
+        // WI-995 — every non-import writer of a parent link says so, so an edge that a
+        // declaration justifies stays visible even when a foreign file's import also
+        // wrote it. See [`ImportOrigin::Declaration`].
+        self.record_parent_origin(scope, inclusion.parent_scope, ImportOrigin::Declaration);
+        self.add_parent_raw(scope, inclusion);
+    }
+
+    fn add_parent_raw(&mut self, scope: ScopeId, inclusion: ScopeInclusion) {
         let parents = &mut self.scopes.entry(scope).or_default().parents;
         if !parents.contains(&inclusion) {
             parents.push(inclusion);
+        }
+    }
+
+    /// WI-995 — note who justified the `scope → parent` link. Idempotent per origin:
+    /// the list answers "is there ANY visible justification", so repeats add nothing.
+    fn record_parent_origin(&mut self, scope: ScopeId, parent: ScopeId, origin: ImportOrigin) {
+        let origins = self
+            .import_parent_origin
+            .entry((scope, parent))
+            .or_default();
+        if !origins.contains(&origin) {
+            origins.push(origin);
         }
     }
 
@@ -794,7 +1156,43 @@ impl SymbolTable {
         // Filtering at collection time also keeps internal names from polluting
         // the candidate set with a spurious ambiguity (the spec's step-3 intent).
         let raw = self.resolve_in_scope_ignoring_internal(name, scope);
-        self.filter_internal_visibility(raw, scope)
+        let today = self.filter_internal_visibility(raw, scope);
+        // WI-995 — the counterfactual, when measuring: the SAME resolution with
+        // foreign-file imports suppressed. Recorded only where the two disagree, so
+        // the audit's size is the cost of the rule, not the size of the corpus.
+        if self.auditing.load(std::sync::atomic::Ordering::Relaxed) {
+            self.audit_cross_file(name, scope, &today);
+        }
+        today
+    }
+
+    /// WI-995 — re-resolve under the PRE-RULE reading ([`ImportVisibility::All`], every
+    /// import at the address whoever wrote it) and record where it disagrees with what
+    /// the rule now answers. Each disagreement is a name that used to reach across a file
+    /// boundary. Split out so the hot path above stays one branch.
+    fn audit_cross_file(&self, name: &str, scope: ScopeId, file_local: &ResolveResult) {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive(name, scope, &mut visited, ImportVisibility::All);
+        let shared_imports = self.filter_internal_visibility(raw, scope);
+        let mut slot = self.import_audit.lock().expect("import audit mutex");
+        let audit = slot.as_mut().expect("audit checked live by the caller");
+        audit.resolutions += 1;
+        if shared_imports == *file_local {
+            return;
+        }
+        let asking = self.asking_file();
+        audit
+            .uses
+            .entry((name.to_owned(), scope, asking))
+            .and_modify(|u| u.hits += 1)
+            .or_insert_with(|| CrossFileImportUse {
+                name: name.to_owned(),
+                scope,
+                asking,
+                shared_imports,
+                file_local: file_local.clone(),
+                hits: 1,
+            });
     }
 
     /// WI-369 diagnostic twin of [`Self::resolve_in_scope`] that does NOT apply
@@ -805,7 +1203,10 @@ impl SymbolTable {
     /// `UnresolvedName`.
     pub fn resolve_in_scope_ignoring_internal(&self, name: &str, scope: ScopeId) -> ResolveResult {
         let mut visited = std::collections::HashSet::new();
-        self.resolve_in_scope_recursive(name, scope, &mut visited)
+        // WI-995 — THE RULE, not a mode: an import resolves only in the file that lists
+        // it. `ImportVisibility::All` survives for the AUDIT, which answers both ways to
+        // report what the rule costs; nothing in production selects it.
+        self.resolve_in_scope_recursive(name, scope, &mut visited, ImportVisibility::OwnFileOnly)
     }
 
     /// WI-369: drop matched symbols not visible from `from_scope` (the entry
@@ -842,6 +1243,7 @@ impl SymbolTable {
         name: &str,
         scope: ScopeId,
         visited: &mut std::collections::HashSet<ScopeId>,
+        vis: ImportVisibility,
     ) -> ResolveResult {
         if !visited.insert(scope) {
             return ResolveResult::NotFound; // cycle
@@ -856,7 +1258,10 @@ impl SymbolTable {
             }
 
             // 1b. Imported name aliases (from selective/plain imports)
-            if let Some(&sym) = data.imports.get(name) {
+            // WI-995: under `OwnFileOnly` an entry written by another file is not here
+            // at all — the resolution continues to the parents as if the import had
+            // never been written.
+            if let Some(sym) = self.visible_import(scope, name, vis, data) {
                 return ResolveResult::Found(sym);
             }
 
@@ -870,6 +1275,14 @@ impl SymbolTable {
             data.parents
                 .iter()
                 .filter_map(|p| {
+                    // WI-995: an IMPORT-contributed parent link written by another file
+                    // is likewise absent under `OwnFileOnly`. Enclosing / `requires` /
+                    // exposure links have no entry in `import_parent_origin` and are
+                    // therefore always eligible — they belong to the declaration at the
+                    // address, not to one file's text.
+                    if !self.import_parent_visible(scope, p.parent_scope, vis) {
+                        return None;
+                    }
                     if !p.is_enclosing {
                         if let Some(parent) = self.scopes.get(&p.parent_scope) {
                             if parent.type_params.contains(name) {
@@ -890,7 +1303,7 @@ impl SymbolTable {
 
         let mut matches = Vec::new();
         for parent_scope in eligible_parents {
-            match self.resolve_in_scope_recursive(name, parent_scope, visited) {
+            match self.resolve_in_scope_recursive(name, parent_scope, visited, vis) {
                 ResolveResult::Found(sym) => matches.push(sym),
                 ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),
                 ResolveResult::NotFound => {}

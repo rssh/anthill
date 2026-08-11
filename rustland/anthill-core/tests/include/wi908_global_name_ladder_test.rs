@@ -29,10 +29,14 @@ namespace wi908.lib
 end
 ";
 
-/// A top-level import — the one way `_global` gains a name whose qualified path is not
-/// its own spelling, and therefore the only place head-qualification and the absolute
-/// reading can disagree at this scope (WI-853).
-const IMPORT_LIB: &str = "import wi908.lib\n";
+/// The import that gives `_global` a name whose qualified path is not its own spelling —
+/// the only way head-qualification and the absolute reading can disagree at this scope.
+///
+/// WI-995 — supplied through the INVOCATION (`-i wi908.lib`), because the name it feeds
+/// is a HOST string and a host has no file. An import written in a program source is
+/// local to that source now, so it could not reach `mount(..)` at all, and the ladder
+/// this suite is about would have nothing to disagree over.
+const IMPORT_LIB_FLAG: &str = "wi908.lib";
 
 const HIDDEN: &str = "\
 namespace wi908.priv
@@ -43,7 +47,9 @@ end
 ";
 
 fn fixture() -> KnowledgeBase {
-    crate::common::load_kb_bare(&[LIB, IMPORT_LIB, HIDDEN])
+    let mut kb = crate::common::load_kb_bare(&[LIB, HIDDEN]);
+    crate::common::supply_invocation_imports(&mut kb, &[IMPORT_LIB_FLAG]);
+    kb
 }
 
 /// `name` must not denote at `_global`, so the mount is refused BY NAME RESOLUTION —
@@ -77,7 +83,7 @@ fn an_imported_name_outranks_a_same_spelled_qualified_only_registration() {
     // was NOT the one taken.
     assert!(
         kb.extent_owner(user_member).is_some(),
-        "a bare `Member` must mount what a top-level `import wi908.lib` puts in scope",
+        "a bare `Member` must mount what `-i wi908.lib` puts in scope",
     );
 }
 

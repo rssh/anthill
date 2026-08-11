@@ -61,18 +61,25 @@ namespace wi907.beta
 end
 "#;
 
-/// A TOP-LEVEL wildcard import is the one way `_global` — the scope a query pattern and a
-/// host name are read in — gains a name it does not declare itself (WI-853). Two of them
-/// is what makes a name ambiguous THERE; `-i <ns>.*` twice is the CLI spelling.
+/// A wildcard import is the one way `_global` — the scope a query pattern and a host
+/// name are read in — gains a name it does not declare itself. Two of them is what makes
+/// a name ambiguous THERE.
+///
+/// WI-995 — supplied through the INVOCATION (`-i <ns>.*`, the CLI spelling this fixture
+/// has always been modelling) rather than written as a top-level import in the program
+/// source. Since imports became file-local, a program file's import is local to that
+/// file and does not reach a query pattern or a host name, which have no file; the `-i`
+/// channel is the one that does. The subject is unchanged — two wildcard imports still
+/// make the short name ambiguous at `_global` — only the channel is named honestly.
 fn kb_importing(namespaces: &[&str]) -> KnowledgeBase {
-    let mut src = DECLS.to_owned();
-    for ns in namespaces {
-        src.push_str(&format!("import {ns}.*\n"));
-    }
     // Panics on a load error, which is half the fixture's claim: nothing here REFERENCES
     // the contested name, so the program loads clean and the ambiguity is live but
     // unreported. That is why the query position had to decide it at all.
-    load_kb_with(&src)
+    let mut kb = load_kb_with(DECLS);
+    let specs: Vec<String> = namespaces.iter().map(|ns| format!("{ns}.*")).collect();
+    let refs: Vec<&str> = specs.iter().map(String::as_str).collect();
+    crate::common::supply_invocation_imports(&mut kb, &refs);
+    kb
 }
 
 /// THE DEFECT. `SortInfo` names two user sorts at `_global` and the implicit tier's
