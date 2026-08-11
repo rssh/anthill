@@ -993,15 +993,23 @@ Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`.
 The intended notion is narrower than the implemented one, and the difference is a
 known gap rather than a subtlety. What *should* decide is whether an operation
 **receives on** a parameter; what is asked is whether one **accepts** it, and the
-two part company for any self-representing spec that takes its own element
-somewhere — `Set.insert(s: Set, x: T)`, `Map.put(m: Map, key: K, value: V)`,
-`LogicalStream.pure(x: T)`. Those still record the accepted parameter, so
-`Relation provides LogicalStream` is filed at the element and infers no default
-row. A carrier-parameterized spec that declares its element *first* and accepts it
-(`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e: Element) }`)
-is the same gap from the other side: the explicit `C = …` binding is discarded.
-**TICKET WI-1077**, which is a language question — the fix is to let a declaration
-*say* which parameter is the carrier.
+two part company for a spec that takes its own element somewhere —
+`Set.insert(s: Set, x: T)`, `Map.put(m: Map, key: K, value: V)` — or for a
+carrier-parameterized spec that declares its element *first* and accepts it
+(`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e: Element) }`),
+where the explicit `C = …` binding is discarded. **TICKET WI-1077**, which is a
+language question — the fix is to let a declaration *say* which parameter is the
+carrier.
+
+**An operation that lifts a value should take its OWN type parameter**, not the
+sort's, and where one does not, the repair is the declaration rather than the
+inference. `LogicalStream.pure` read `pure(x: T) -> LogicalStream`, reusing the
+sort's element parameter for a value it merely injects; written `pure[A](x: A) ->
+LogicalStream[A, {}]` the ambiguity does not arise. The bare return was losing
+information on its own account, too: by the expansion rule above it means
+`LogicalStream[T = ?, E = ?]` with a *fresh* variable, so `pure(1)` produced a
+stream whose element type was unconstrained and a lift of an `Int64` into a
+`String`-element stream was accepted (measured).
 
 Where a spec genuinely has no carrier parameter, **a witness for it cannot
 exist**: dispatch is directed by the receiver value's own sort, there being no

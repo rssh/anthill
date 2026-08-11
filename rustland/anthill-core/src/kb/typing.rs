@@ -23006,17 +23006,21 @@ fn provision_carrier_sort(
 ///
 /// WHAT THIS STILL GETS WRONG, measured and left deliberately — **WI-1077**. "Takes a
 /// parameter of type `P`" does not separate a RECEIVER from an ACCEPTED ARGUMENT, so a
-/// spec that receives on itself AND accepts its own element keeps the old reading:
-/// `LogicalStream.pure(x: T) -> LogicalStream` injects an element and dispatches on
-/// nothing, yet makes `T` answer here, so `Relation provides LogicalStream[T = …]` is
-/// still filed at `T` — the one member of the seven WI-1076 measured that this does not
-/// close. `Set.insert(s: Set, x: T)` and `Map.put(m: Map, key: K, value: V)` are the
-/// same shape and would answer their element too; no stdlib provision of either exists,
-/// so nothing measures it today. Eval separates the two with
-/// [`provision_binds_param_to_carrier`], which is provision-relative and cannot be asked
-/// here without circularity; separating them structurally needs the language to SAY
-/// which parameter is the carrier, which nothing does (059's fact-ban section: no `spec`
-/// keyword, no `SymbolKind::Spec`).
+/// spec that receives on itself AND accepts its own element reads that element as the
+/// carrier. `Set.insert(s: Set, x: T)` and `Map.put(m: Map, key: K, value: V)` are that
+/// shape; no stdlib provision of either exists, so nothing measures it today. Eval
+/// separates the two with [`provision_binds_param_to_carrier`], which is
+/// provision-relative and cannot be asked here without circularity.
+///
+/// ONE INSTANCE OF IT WAS NOT A LIMIT BUT A BUG IN THE DECLARATION, and that is the
+/// preferred repair wherever it applies. `LogicalStream.pure` read `pure(x: T) ->
+/// LogicalStream`, reusing the SORT's parameter for a value it merely lifts, because it
+/// was written 2026-02-23 and stdlib's first OPERATION type parameter landed 2026-06-10
+/// (WI-424) — it could not say "my own parameter" when written. As `pure[A](x: A) ->
+/// LogicalStream[A, {}]` the question stops being asked, and `Relation provides
+/// LogicalStream` reads its provider. Prefer fixing such a declaration over widening
+/// this predicate: it makes the illegal state unrepresentable instead of inferring
+/// around it, and the bare return was independently losing the argument's type.
 ///
 /// THE FAILURE MODE IS THE SAFE ONE, and that is why this predicate was chosen over the
 /// stricter [`spec_is_self_representing`], which closes `LogicalStream` and was

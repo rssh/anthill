@@ -27,17 +27,21 @@
 //! ```
 //!
 //! and the same rows appear as new `self_provides` rows — the inferred-default rows
-//! 058 §3.6 was missing. SIX OF THE SEVEN are closed; `Relation provides LogicalStream`
-//! is not, and `the_producer_argument_case_is_still_filed_at_the_element` pins it as it
-//! actually is. No other row in either relation moved.
+//! 058 §3.6 was missing. ALL SEVEN are closed, but only six of them by this code: the
+//! seventh, `Relation provides LogicalStream`, was closed by fixing the DECLARATION
+//! that misled the reader — `pure(x: T)` reused the sort's type parameter for a value
+//! it merely lifts, and is now `pure[A](x: A) -> LogicalStream[A, {}]`. It predates
+//! operation type parameters by three months and could not have said so when written.
+//! No other row in either relation moved.
 //!
 //! THE FIX ASKS WHICH PARAMETER THE OPERATIONS TAKE (`spec_carrier_param`): the first
 //! declared type parameter some declared operation takes as a parameter, or `None` when
 //! none do. "Takes" is a WIDER test than "receives on", which is what should decide, and
-//! the gap is WI-1077 — pinned by two rows here, one from each side
-//! (`the_producer_argument_case_is_still_filed_at_the_element` and
-//! `an_accepted_element_declared_first_still_wins_over_the_carrier_param`), so the
-//! documented rule and the implemented one cannot drift apart unnoticed.
+//! the gap is WI-1077 — pinned by `an_accepted_element_declared_first_still_wins_over_
+//! the_carrier_param`, so the documented rule and the implemented one cannot drift
+//! apart unnoticed. Where a spec reuses its own type parameter by ACCIDENT the repair
+//! is the declaration, not the predicate
+//! (`the_producer_argument_case_is_closed_by_its_own_type_parameter`).
 //! `provision_carrier_binding` answers `None` for a spec with no such parameter, which every
 //! consumer already reads as "not a witness, the carrier IS the provider" — the
 //! `dispatch_carrier` builtin mints the provider, `defaults.rs` emits the INFERRED
@@ -262,32 +266,74 @@ fn the_stdlib_stream_provisions_read_their_provider() {
     }
 }
 
-/// THE SEVENTH ROW, NOT CLOSED — pinned as it actually is, not as the ticket wished.
+/// THE SEVENTH ROW — closed, and NOT by the classifier. The declaration was wrong.
 ///
-/// `Relation provides LogicalStream[T = T, E = E]` is still filed at `T`, because
-/// `LogicalStream.pure(x: T) -> LogicalStream` takes a bare `T` parameter and
-/// [`spec_carrier_param`]'s "some operation takes a parameter of this type" cannot tell
-/// that argument from a receiver. Closing it needs the language to say which parameter
-/// is the carrier — **WI-1077**.
+/// `LogicalStream.pure` was written `pure(x: T) -> LogicalStream`, reusing the SORT's
+/// type parameter `T` for a value the operation merely lifts. That is what made `T`
+/// answer as a carrier parameter: an operation taking `x: T` is indistinguishable, to
+/// [`spec_carrier_param`], from one receiving on a carrier. It is now `pure[A](x: A) ->
+/// LogicalStream[A, {}]`, with `A` the OPERATION's own bracket parameter, and the
+/// question stops being asked — `LogicalStream` takes none of its own type parameters,
+/// so it has no carrier parameter and its provisions record their provider.
 ///
-/// Asserted rather than omitted for the reason WI-1069 learned the hard way: a
-/// conclusion no wider than its instrument. "Six of seven" is the measured result, and
-/// a test suite that quietly asserted only the six would read as seven.
+/// THE DECLARATION PREDATES THE FEATURE, which is why it read that way and why this is
+/// a fix rather than a workaround: `pure` was written 2026-02-23 (`9e6b81c1`, the
+/// original stdlib-sorts commit) and stdlib's first operation type parameter landed
+/// 2026-06-10 (WI-424). `pure` had no way to say "my own type parameter" and reused the
+/// sort's; every reader since has had to guess what that `T` meant.
+///
+/// This is the shape WI-1077 should prefer wherever it applies — a declaration saying
+/// what it means, rather than a predicate inferring it. What WI-1077 still owns is the
+/// case where the reuse is INTENDED: `Set.insert(s: Set, x: T)` genuinely takes the
+/// sort's element, and `an_accepted_element_declared_first_still_wins_over_the_carrier_param`
+/// below is that face.
 #[test]
-fn the_producer_argument_case_is_still_filed_at_the_element() {
+fn the_producer_argument_case_is_closed_by_its_own_type_parameter() {
     let mut kb = crate::common::load_kb_with(
         "namespace test.wi1076.residue\n  import anthill.prelude.Int64\nend\n",
     );
     assert_eq!(
         carrier_rows(&mut kb, "LogicalStream"),
-        vec!["Relation | LogicalStream | T".to_string()],
-        "KNOWN RESIDUE (WI-1077): `pure(x: T)` makes `T` answer as a carrier parameter, \
-         so this one provision of the seven keeps the old reading. Change this row when \
-         WI-1077 lands — do not delete it"
+        vec!["Relation | LogicalStream | Relation".to_string()],
+        "`pure[A](x: A)` takes the OPERATION's parameter, not the sort's, so \
+         `LogicalStream` has no carrier parameter and `Relation` is its own carrier"
     );
     assert!(
-        !relation_rows(&mut kb, "self_provides", 2).contains(&"Relation | LogicalStream".to_string()),
-        "and its inferred default row is correspondingly still missing"
+        relation_rows(&mut kb, "self_provides", 2).contains(&"Relation | LogicalStream".to_string()),
+        "and the inferred default row 058 §3.6 wants is now present"
+    );
+}
+
+/// THE DECLARATION FIX'S OWN CONTROL, and it is not about carriers at all — reusing the
+/// SORT's type parameter for a value an operation merely lifts also lost the type.
+///
+/// `pure(x: T) -> LogicalStream` returned a BARE `LogicalStream`, which §4.4's expansion
+/// reads as `LogicalStream[T = ?, E = ?]` — a FRESH variable, unrelated to the `T` the
+/// argument was typed at. So `pure(1)` produced a stream whose element type was
+/// unconstrained and unified with anything. MEASURED, by running this case against both
+/// signatures: under the old one an `Int64` lifted into a `String`-element stream LOADS
+/// CLEAN; under `pure[A](x: A) -> LogicalStream[A, {}]` it is refused naming both types.
+///
+/// Fails when the signature is reverted — which is what makes it the control for the
+/// declaration half of this change, the carrier rows being the control for the code
+/// half.
+#[test]
+fn pures_own_type_parameter_threads_its_argument_type() {
+    let src = r#"namespace test.wi1076.purethreads
+  import anthill.prelude.{LogicalStream, Int64, String}
+  import anthill.prelude.LogicalStream.{pure}
+  operation lift() -> LogicalStream[T = String, E = {}] = pure(1)
+end
+"#;
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("LogicalStream[T = String")
+            && e.contains("LogicalStream[T = Int64")),
+        "`pure`'s result must carry its ARGUMENT's type, so lifting an `Int64` into a \
+         `String`-element stream is refused naming both — with the bare `-> \
+         LogicalStream` return this loaded clean: {errs:?}"
     );
 }
 

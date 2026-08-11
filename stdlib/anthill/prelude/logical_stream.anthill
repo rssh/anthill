@@ -55,7 +55,7 @@ sort anthill.prelude.LogicalStream
 
   operation empty() -> LogicalStream[?A]                 -- zero results (failure)
 
-  operation pure(x: T) -> LogicalStream                    -- single result
+  operation pure[A](x: A) -> LogicalStream[A, {}]          -- single result
 
   operation mplus(a: LogicalStream[?A], b: LogicalStream[?A])
     -> LogicalStream[?A]                               -- disjunction
