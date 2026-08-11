@@ -1147,3 +1147,6 @@ mod wi1076_self_representing_spec_carrier_test;
 
 #[path = "include/wi1078_unbound_return_var_test.rs"]
 mod wi1078_unbound_return_var_test;
+
+#[path = "include/wi1079_variable_forms_reflect_test.rs"]
+mod wi1079_variable_forms_reflect_test;

@@ -30143,16 +30143,17 @@ pub(crate) fn extract_type_param<V: TermView>(
 ///
 /// Structural rather than a head test, for the reason [`value_contains_projection`] gives:
 /// the rigid that matters sits in a BINDING (`List[T = ?T]`), never at the head.
+///
+/// WI-1079 — THIS FUNCTION USED TO OPEN WITH ITS OWN CARRIER MATCH, two hand-rolled arms
+/// testing `Value::Term{Var::Rigid}` and `Value::Var(Var::Rigid)` before delegating the rest
+/// to [`extract_type`]. They were there because `extract_type` could not answer: a bare
+/// variable classified as `TypeExtractor::Error`, so the ONE question this predicate asks had
+/// to be asked twice, once per carrier, outside the boundary whose job it is. With
+/// [`TypeExtractor::Skolem`] the arm below IS the answer, on both carriers and at every depth,
+/// and the duplicate is gone. It is the smallest demonstration of what the ticket is for.
 fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
-    if let Value::Term { id, .. } = ty {
-        if matches!(kb.get_term(*id), Term::Var(Var::Rigid(_))) {
-            return true;
-        }
-    }
-    if matches!(ty, Value::Var(Var::Rigid(_))) {
-        return true;
-    }
     match extract_type(kb, ty) {
+        TypeExtractor::Skolem { .. } => true,
         TypeExtractor::Parameterized { bindings, .. } => {
             bindings.iter().any(|(_, v)| value_contains_rigid(kb, v))
         }
@@ -30172,7 +30173,11 @@ fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
         TypeExtractor::EffectsRows(e) => value_contains_rigid(kb, &e),
         TypeExtractor::ExprCarried { value, .. } => value_contains_rigid(kb, &value),
         TypeExtractor::RigidTypeProjection { subject, .. } => value_contains_rigid(kb, &subject),
-        TypeExtractor::Denoted(_)
+        // A FLEX variable is the other half of the distinction this predicate turns on: it is
+        // not a skolem, it is what a skolem is minted INSTEAD of, and a stored tree holding one
+        // is fine.
+        TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Denoted(_)
         | TypeExtractor::SortRef(_)
         | TypeExtractor::TypeVar(_)
         | TypeExtractor::Nothing
@@ -30207,7 +30212,11 @@ fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
             fields.iter().any(|(_, v)| value_contains_projection(kb, v))
         }
         TypeExtractor::EffectsRows(e) => value_contains_projection(kb, &e),
-        TypeExtractor::Denoted(_)
+        // A logical variable of either kind is a LEAF: it has no children to hide a
+        // projection in, and it is not one.
+        TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. }
+        | TypeExtractor::Denoted(_)
         | TypeExtractor::SortRef(_)
         | TypeExtractor::TypeVar(_)
         | TypeExtractor::Nothing
@@ -30422,6 +30431,9 @@ fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Sy
         // WI-428: a rigid type-receiver projection has a TYPE subject, not a value
         // parameter — it contributes no cross-parameter dependency edge.
         TypeExtractor::RigidTypeProjection { .. }
+        // A logical variable is a leaf and carries no receiver.
+        | TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. }
         | TypeExtractor::Denoted(_)
         | TypeExtractor::SortRef(_)
         | TypeExtractor::TypeVar(_)
@@ -40326,7 +40338,30 @@ pub enum TypeExtractor {
     /// as `Parameterized` rather than `Error` — there is no structural type/data
     /// distinction (by design; the caller knows it holds a type). Only a bare
     /// `Fn{f}` with no args, or a non-functor / non-`Ref` shape, is `Error`.
+    ///
+    /// WI-1079 took the two LOGICAL VARIABLE carriers out of here. They were reported as
+    /// malformed input — total in the letter, wrong in the spirit — and a reader could not
+    /// tell an opaque constant from a unifiable hole. See [`TypeExtractor::FlexVar`].
     Error,
+    /// WI-1079 — a still-FLEXIBLE logical variable (`Term::Var(Var::Global)`), which unifies
+    /// with anything: an INSTANTIATED forall, the type `empty()` has at a use before its
+    /// context pins it.
+    ///
+    /// `id` IS THE IDENTITY, `name` IS NOT, and a consumer that compares these must compare
+    /// `id`: a variable's name is what a diagnostic prints, while two variables minted for one
+    /// parameter name are different types that render alike (`?E` vs `?E`, the trap WI-1063
+    /// records). Mirrors `anthill.prelude.TypeExtractor.FlexVar`.
+    FlexVar { name: Symbol, id: u32 },
+    /// WI-1079 — an OPAQUE CONSTANT (`Term::Var(Var::Rigid)`), which unifies with nothing but
+    /// itself: an opened existential (WI-1063's ρ), or a parameter rigidified for the duration
+    /// of a body check (WI-392 / WI-1059). `Var::Rigid`'s own doc names it — "equivalent to
+    /// 'Skolem constant' (resolution literature) or 'eigenvariable' (sequent calculus)".
+    ///
+    /// THE DISTINCTION FROM [`FlexVar`](Self::FlexVar) IS THE WHOLE POINT of this variant
+    /// pair. Converting a skolem into a `TypeVar` — the smaller change — would have kept
+    /// `extract` total AND still lost what makes it a skolem, since `TypeVar(name)` carries a
+    /// name and nothing else. Same `id` rule as its sibling.
+    Skolem { name: Symbol, id: u32 },
 }
 
 /// The structural kind of a type carrier WITHOUT materializing its children —
@@ -40339,6 +40374,15 @@ pub enum TypeExtractor {
 enum TypeHead {
     SortRef(Symbol),
     TypeVar(Symbol),
+    /// WI-1079 — the ENGINE's own logical variables, which had no classification at all
+    /// before: `head.functor_sym()` is `None` for a bare variable, so both fell out of the
+    /// `else` below as [`TypeHead::Error`]. `FlexVar` unifies with anything (an instantiated
+    /// forall); `Skolem` unifies with nothing but itself (an opened existential, or a
+    /// parameter rigidified for a body check). Carried as the `VarId` because that is a
+    /// variable's IDENTITY — two skolems of one parameter name are different types that
+    /// render alike.
+    FlexVar(VarId),
+    Skolem(VarId),
     /// `base` is the base sort symbol. WI-361: a parameterized type is the term
     /// backing `Fn{S, named}` (the base sort IS the functor, bindings ARE the named
     /// args) on both carriers — there is no `parameterized(base, bindings)` wrapper.
@@ -40372,6 +40416,22 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         _ => 0,
     };
     let is_bare_ref = matches!(head, ViewHead::Ref(_));
+    // WI-1079 — A BARE LOGICAL VARIABLE IS A TYPE, and before this arm it was the one form
+    // that reached `Error` while being perfectly well-formed. It has no functor symbol, so it
+    // fell through the `else` below and was reported as malformed input.
+    //
+    // `Var::DeBruijn` STAYS `Error`, and that is a statement rather than an omission: a
+    // DeBruijn index is a RULE's binder, opened to a fresh `Global` before anything type-
+    // checks, so a type carrying one is a rule term being read as a type — not a variable form
+    // this layer represents. The BOUND type variable of a `forall` is a different thing again
+    // and has no carrier yet; it arrives with `PolyType` (WI-1083).
+    if let ViewHead::Var(v) = &head {
+        return match v {
+            Var::Global(vid) => TypeHead::FlexVar(*vid),
+            Var::Rigid(vid) => TypeHead::Skolem(*vid),
+            Var::DeBruijn(_) => TypeHead::Error,
+        };
+    }
     let Some(f) = head.functor_sym() else {
         return TypeHead::Error;
     };
@@ -40445,6 +40505,14 @@ fn type_dispatch_name_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<&'
         TypeHead::NamedTuple => Some("named_tuple"),
         TypeHead::Nothing => Some("nothing"),
         TypeHead::Error => None,
+        // WI-1079 — NO DISPATCH TAG, deliberately, and it is the one place the new forms are
+        // NOT propagated. This tag routes the STRUCTURAL unify/subtype arms, and a variable
+        // never reaches them: unification binds or refuses it first (`resolved_var`, the
+        // rigid-vs-rigid identity compare). Both carriers answered `None` here before this
+        // ticket because they answered `Error` above; giving them a name now would change
+        // ROUTING, which is a typer change nothing asked for and which this ticket's scope —
+        // "reflect cannot SEE these forms" — does not include.
+        TypeHead::FlexVar(_) | TypeHead::Skolem(_) => None,
     }
 }
 
@@ -40457,6 +40525,17 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
         TypeHead::TypeVar(s) => TypeExtractor::TypeVar(s),
         TypeHead::Nothing => TypeExtractor::Nothing,
         TypeHead::Error => TypeExtractor::Error,
+        // WI-1079: the `VarId` splits into the two fields the reflect entity declares —
+        // `id` the identity, `name` the rendering. Nothing else is read; a variable has no
+        // children.
+        TypeHead::FlexVar(vid) => TypeExtractor::FlexVar {
+            name: vid.name(),
+            id: vid.raw(),
+        },
+        TypeHead::Skolem(vid) => TypeExtractor::Skolem {
+            name: vid.name(),
+            id: vid.raw(),
+        },
         TypeHead::Denoted => match view_child_value(kb, ty, "value") {
             Some(v) => TypeExtractor::Denoted(v),
             None => TypeExtractor::Error,
@@ -50961,35 +51040,49 @@ mod wi963_type_var_representation_tests {
         kb.make_sort_ref(s)
     }
 
-    /// A bare logic `Var` in TYPE position is not an unknown type — it is a MALFORMED
-    /// one. `type_head` reads `ViewHead::functor_sym()`, which a `Var` does not have,
-    /// so it classifies as `Error`; `type_var` is a member of the declared vocabulary
-    /// (`entity TypeVar(name: Symbol)` in `stdlib/anthill/prelude/sort.anthill`) and
-    /// classifies as `TypeVar`.
+    /// A bare logic `Var` in TYPE position is a DIFFERENT type form from `type_var`, not a
+    /// malformed one. Both are in the vocabulary and each says its own thing: `type_var` is
+    /// the PLACEHOLDER (`entity TypeVar(name: Symbol)` — a type the extractor could not name,
+    /// minted for an un-annotated lambda binder), while a logic variable is the ENGINE's, and
+    /// its flex/rigid kind is the whole of what it means.
     ///
-    /// CONTROL — the two assertions are OPPOSITE verdicts on two terms built in the
-    /// same test, so neither passes vacuously. The `TypeVar` arm is what fails if the
-    /// stdlib entity is renamed or moved out of `TypeExtractor`. The `Error` arm states
-    /// what a `Var` would classify as; note that the whole-system backout (making
-    /// `make_type_var` return a bare `Var`) does not even reach it — see the measured
-    /// note on [`a_type_var_never_commits_where_a_logic_var_does`].
+    /// WI-1079 REVERSED THIS ROW'S SECOND HALF, and the old text is worth keeping in view:
+    /// "a bare `Var` has no functor, so it is not in the type vocabulary at all". That was
+    /// true of the CODE (`type_head` bailed on `functor_sym()` being `None`) and false of the
+    /// LANGUAGE — a skolem is a perfectly well-formed type, and reporting it through a variant
+    /// whose payload its own doc calls "the offending input" made reflect unable to tell an
+    /// opaque constant from a unifiable hole. The reflect layer's job is to represent the
+    /// language's types, so a form it cannot express is a defect whether or not a corpus
+    /// reaches it.
+    ///
+    /// CONTROL — three verdicts on three terms built in one test, so none passes vacuously,
+    /// and the flex/rigid pair is built from the SAME name so the assertion cannot be
+    /// satisfied by rendering. `TypeVar` fails if the stdlib entity is renamed or moved out of
+    /// `TypeExtractor`; the other two fail on the WI-1079 back-out (deleting the `ViewHead::
+    /// Var` arm in `type_head`), which puts both back to `Error` — that is this file's half of
+    /// the measurement, and `wi1079_variable_forms_reflect_test` carries the rest.
     #[test]
-    fn a_bare_logic_var_in_type_position_is_not_a_type_variable() {
+    fn a_bare_logic_var_is_its_own_type_form_not_a_placeholder() {
         let mut kb = load_stdlib(None);
         let name = kb.intern("?_");
         let tv = kb.make_type_var(name);
-        let vid = kb.fresh_var(name);
-        let var_term = kb.alloc(Term::Var(Var::Global(vid)));
+        let flex_vid = kb.fresh_var(name);
+        let flex_term = kb.alloc(Term::Var(Var::Global(flex_vid)));
+        let rigid_vid = kb.fresh_var(name);
+        let rigid_term = kb.alloc(Term::Var(Var::Rigid(rigid_vid)));
 
         match type_head(&kb, &Value::term(tv)) {
             TypeHead::TypeVar(s) => assert_eq!(kb.local_name_of(s), "?_", "carries its name"),
             _ => panic!("a type_var must classify as TypeHead::TypeVar"),
         }
-        assert!(
-            matches!(type_head(&kb, &Value::term(var_term)), TypeHead::Error),
-            "a bare `Var` has no functor, so it is not in the type vocabulary at all — \
-             substituting one for `type_var` yields an ERROR type, not an unknown one",
-        );
+        match type_head(&kb, &Value::term(flex_term)) {
+            TypeHead::FlexVar(v) => assert_eq!(v.raw(), flex_vid.raw(), "carries its identity"),
+            _ => panic!("a flexible logic var classifies as `TypeHead::FlexVar`"),
+        }
+        match type_head(&kb, &Value::term(rigid_term)) {
+            TypeHead::Skolem(v) => assert_eq!(v.raw(), rigid_vid.raw(), "carries its identity"),
+            _ => panic!("a rigid logic var classifies as `TypeHead::Skolem`"),
+        }
     }
 
     /// THE load-bearing difference. A `type_var` is compatible-with-anything WITHOUT

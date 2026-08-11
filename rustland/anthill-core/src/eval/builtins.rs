@@ -3014,6 +3014,7 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let fields_key = interp.kb.intern("fields");
     let type_key = interp.kb.intern("type");
     let member_key = interp.kb.intern("member");
+    let id_key = interp.kb.intern("id");
 
     // A `Symbol` as the `Ref(s)` term the deep field forms carry.
     let sym_ref = |interp: &mut Interpreter, s| Value::term(interp.kb.alloc(Term::Ref(s)));
@@ -3026,6 +3027,25 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         TypeExtractor::TypeVar(s) => {
             let name = sym_ref(interp, s);
             ti_entity(interp, "TypeVar", vec![(name_key, name)])
+        }
+        // WI-1079: the engine's two variable forms, reified with the IDENTITY (`id`, the
+        // `VarId`) beside the rendering (`name`). `id` rides as an unboxed `Value::Int` — it
+        // is a number, not a term, and the entity declares it `Int64`.
+        TypeExtractor::FlexVar { name, id } => {
+            let name_val = sym_ref(interp, name);
+            ti_entity(
+                interp,
+                "FlexVar",
+                vec![(name_key, name_val), (id_key, Value::Int(i64::from(id)))],
+            )
+        }
+        TypeExtractor::Skolem { name, id } => {
+            let name_val = sym_ref(interp, name);
+            ti_entity(
+                interp,
+                "Skolem",
+                vec![(name_key, name_val), (id_key, Value::Int(i64::from(id)))],
+            )
         }
         TypeExtractor::Nothing => ti_entity(interp, "Nothing", vec![]),
         TypeExtractor::Denoted(v) => ti_entity(interp, "Denoted", vec![(value_key, v)]),

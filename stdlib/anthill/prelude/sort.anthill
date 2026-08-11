@@ -306,7 +306,31 @@ enum anthill.prelude.TypeExtractor
   import anthill.reflect.{Symbol, NodeOccurrence, Term}
 
   entity SortRef(name: Symbol)
+  {< A type the extractor could not NAME — an un-annotated lambda binder (`?param`)
+     or a carrier the effect-row lowering could not read (`?_`). A PLACEHOLDER, not a
+     logical variable: the engine's variables are `FlexVar` / `Skolem` below, and a
+     DECLARED type parameter reads as `SortRef`. WI-1079 kept the three apart rather
+     than adding a rigidity FIELD here, because a flag on this entity would be
+     answering a question this entity does not ask. >}
   entity TypeVar(name: Symbol)
+  {< WI-1079: the engine's own logical variables, which had NO reflect form at all
+     before — `extract` reported both as `Error`, whose payload its own doc calls
+     "the offending input", so a perfectly well-formed type was reported as a
+     malformed term.
+
+     `FlexVar` UNIFIES WITH ANYTHING: an instantiated `forall`, the type `empty()`
+     has at a use before its context pins it. `Skolem` unifies with NOTHING BUT
+     ITSELF: an opened existential (the `rho` `widen(s)`'s row gets at each use,
+     WI-1063), or a parameter rigidified for the duration of a body check (WI-392 /
+     WI-1059). Reflect could not tell an OPAQUE CONSTANT from a UNIFIABLE HOLE, which
+     is the same conflation WI-1078 fixed one level up in the rule.
+
+     `id` IS THE IDENTITY AND `name` IS NOT. Two skolems minted for one parameter name
+     are DIFFERENT TYPES that render alike (`?E` vs `?E`) — the trap WI-1063 records as
+     "these render alike but are not the same type" — so a consumer comparing these
+     must compare `id`. `name` is what a diagnostic prints. >}
+  entity FlexVar(name: Symbol, id: Int64)
+  entity Skolem(name: Symbol, id: Int64)
   entity Parameterized(base: Symbol, bindings: List[TypeBinding])
   {< WI-791: `arity` is the arrow's PARAMETER-LIST LENGTH as written. It is what
      says how to read `param`: at arity one `param` is the sole parameter's TYPE
