@@ -748,6 +748,39 @@ pub enum LoadError {
         /// dependent. Never assume 2.
         facts: usize,
     },
+    /// WI-999 / proposal 059 R4 clause 3 — A DECLARATION MAY NOT CAPTURE A NAME IT
+    /// DOES NOT OVERRIDE. A name can already mean something in a sort's scope
+    /// without being a member of it — reached by an `import`, by an enclosing
+    /// namespace, or through a `requires` link — and a declaration taking that name
+    /// silently repoints every unedited body that was reading it. Measured (059):
+    /// `1` ⇒ `2` for an operation, `1` ⇒ `2` for a const, `100` ⇒ `200` for a nested
+    /// type, each loading clean.
+    ///
+    /// Carries no `span` and is NOT wrapped in [`LoadError::Located`], for
+    /// [`Self::DuplicateOperationDeclaration`]'s reason: the capturing declaration
+    /// and what it captured routinely sit in different files, so one file prefix
+    /// cannot name both and the sites are pre-rendered.
+    NameCapture {
+        /// The sort whose scope the declaration lands in, QUALIFIED. The rule is
+        /// stated over the whole sort SCOPE, so this is the scope's owner and not
+        /// "the entry".
+        sort: String,
+        /// The capturing declaration's keyword AS WRITTEN (`operation`, `const`,
+        /// `sort`, `enum`).
+        construct: &'static str,
+        /// The name taken — the local name, which is the key lookup matched on.
+        name: String,
+        /// The capturing declaration's location, rendered.
+        site: String,
+        /// What the name resolved to before, QUALIFIED. Always available: a
+        /// resolution answers with a symbol, and every symbol has a qualified name
+        /// even when nothing declared it in source.
+        captured: String,
+        /// Where THAT was declared, when a declaration for it was scanned. `None`
+        /// for a name no `.anthill` file declares — a resolver builtin's minted
+        /// symbol, or a declaration from an earlier load phase.
+        captured_site: Option<String>,
+    },
     /// WI-1000 / proposal 059 R3 — A SECONDARY ENTRY MAY ADD MEMBERS AND SPEC
     /// CLAIMS, NEVER IDENTITY. A `namespace X … end` written at the address of a
     /// sort `X` declares into `X`'s own scope (R2), so what it contains is governed
@@ -1960,6 +1993,14 @@ impl LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 duplicate_operation_message(op, sites, *facts)
             }
+            LoadError::NameCapture {
+                sort,
+                construct,
+                name,
+                site,
+                captured,
+                captured_site,
+            } => name_capture_message(sort, construct, name, site, captured, captured_site.as_deref()),
             LoadError::SecondaryEntryContent {
                 sort,
                 construct,
@@ -2205,6 +2246,25 @@ impl std::fmt::Display for LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 write!(f, "{}", duplicate_operation_message(op, sites, *facts))
             }
+            LoadError::NameCapture {
+                sort,
+                construct,
+                name,
+                site,
+                captured,
+                captured_site,
+            } => write!(
+                f,
+                "{}",
+                name_capture_message(
+                    sort,
+                    construct,
+                    name,
+                    site,
+                    captured,
+                    captured_site.as_deref()
+                )
+            ),
             LoadError::SecondaryEntryContent {
                 sort,
                 construct,
@@ -2911,6 +2971,13 @@ pub fn scan_definitions_with_sources(
     // different files (that is what makes the rule worth having), so it is built
     // once here and read after the whole loop rather than per file.
     let mut ledger = DeclLedger::default();
+    // WI-999 — the capture ledger is per SCAN, and this is the pass that fills it.
+    // Clearing here rather than in `load_phase_inner` covers every entry point that
+    // scans (the CLI's query scan, `load_incremental`'s second phase, a test's
+    // hand-built IR), so `check_name_captures` never re-judges a declaration an
+    // earlier phase already ruled on — the same reason WI-1049 resets `op_decl_sites`.
+    kb.decl_sites.clear();
+    kb.scope_text_files.clear();
     for (file_idx, file) in files.iter().enumerate() {
         // WI-995 — every pass below resolves names on ONE file's behalf; say which.
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
@@ -2918,6 +2985,7 @@ pub fn scan_definitions_with_sources(
             kb,
             parse_sym: &file.symbols,
             file_idx,
+            source_id: source_ids[file_idx],
             ledger: &mut ledger,
         };
         walk_scopes(&mut pass, &file.items, global);
@@ -3904,6 +3972,46 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
     )
 }
 
+/// WI-999 — THE 059 R4 CLAUSE 3 SENTENCE, one owner. Same reason
+/// [`duplicate_type_message`] gives: `LoadError` renders through two paths — the
+/// span-resolving `format_with_source` and the bare `Display` — and only one of them
+/// is under test, so a second hand-kept copy would drift.
+///
+/// NAMES BOTH SITES, which is the whole of what makes this refusal actionable: the
+/// two declarations are routinely in different files, and the one the author has
+/// open is the one that did not change.
+///
+/// THE ADVICE IS 059's, AND IT IS NOT "RENAME". "The repair is to delete the
+/// capturing member, not to rename it — whenever the member's own answer does not
+/// read its receiver. A receiver nothing reads is dispatch ceremony, not an
+/// interface: it exists so the name dot-dispatches, and it is also the thing that
+/// captures. Renaming keeps two names for one question; deleting leaves the one the
+/// caller already had."
+fn name_capture_message(
+    sort: &str,
+    construct: &str,
+    name: &str,
+    site: &str,
+    captured: &str,
+    captured_site: Option<&str>,
+) -> String {
+    let declared_at = match captured_site {
+        Some(at) => format!(" (declared at {at})"),
+        None => String::new(),
+    };
+    format!(
+        "`{construct} {name}` at {site} captures a name that already resolves in the \
+         scope of sort '{sort}': '{name}' there means '{captured}'{declared_at}. \
+         Proposal 059 R4: a declaration may not capture a name it does not override, \
+         and '{sort}' neither provides nor requires the sort that owns '{captured}' — \
+         so every unedited body in this scope that reads a bare '{name}' silently \
+         changes meaning. If this member's own answer does not read its receiver, \
+         DELETE it and let callers keep the name they already had; rename it only \
+         where it genuinely answers about its receiver and the collision is \
+         coincidence."
+    )
+}
+
 /// WI-1000 — THE 059 R3 SENTENCE, one owner. Same reason [`duplicate_type_message`]
 /// gives: `LoadError` renders through two paths — the span-resolving
 /// `format_with_source` and the bare `Display` — and only one of them is under test,
@@ -3976,6 +4084,74 @@ struct TypeDecl {
     /// (no `SourceId`), and sources are not registered until the LOAD phase
     /// (`Loader::new`), which runs after every pass here.
     file_idx: usize,
+}
+
+/// WI-999 (proposal 059 R4 clause 3) — WHICH DECLARATION CATEGORY A NAME WAS
+/// WRITTEN AS. 059 states clause 3 "over every declaration category that can win
+/// name lookup", and this is that list, plus the two that can only ever be the
+/// CAPTURED side.
+///
+/// Read from the KEYWORD AS WRITTEN, never re-derived from the finished symbol: a
+/// type parameter and a bodyless type alias are both `Item::AbstractSort` landing
+/// on a `SymbolKind::Sort` in the same scope, and 059 admits one and refuses the
+/// other.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DeclCategory {
+    /// An `operation`, including one entry of an `operation … end` block (059 R3:
+    /// "a block is sugar for its entries and follows them").
+    Operation,
+    /// A `const` — a member, not on the dispatch surface, and 059 measured it
+    /// capturing all the same: `namespace Rec { const LIMIT }` against a body
+    /// reading an imported bare `LIMIT` answered `1` before and `2` after.
+    Const,
+    /// A nested `sort`/`enum` WITH A BODY, or a bodyless type ALIAS `sort A = T` —
+    /// each a new type at its own address. 059 measured the capture and refuted the
+    /// excuse for it: dot dispatch routes straight THROUGH a captured type, the
+    /// receiver being what dispatches against it.
+    Type,
+    /// A TYPE PARAMETER — `sort T = ?` and the per-statement / braced synonyms the
+    /// converter desugars to it (WI-454). A BINDER, so outside the categories R3
+    /// admits: recorded only so the diagnostic can name its line when it is what
+    /// was captured.
+    TypeParam,
+    /// An `entity` variant — identity, which R1/R3 say is written once and never
+    /// added. Recorded for the same reason as [`Self::TypeParam`].
+    Entity,
+}
+
+impl DeclCategory {
+    /// May a declaration of this category CAPTURE? 059 excludes the two binder /
+    /// identity categories by name — "binders and entity variants are outside the
+    /// declaration categories admitted by R3" — and its own 61-site census counts
+    /// 38 of them, every one legitimate.
+    fn can_capture(self) -> bool {
+        match self {
+            DeclCategory::Operation | DeclCategory::Const | DeclCategory::Type => true,
+            DeclCategory::TypeParam | DeclCategory::Entity => false,
+        }
+    }
+}
+
+/// WI-999 — ONE NAMED DECLARATION, AS THE DEFINING PASS MADE IT. See
+/// [`KnowledgeBase::decl_sites`] for why the check reads a ledger rather than the
+/// finished scope table.
+#[derive(Clone, Debug)]
+pub struct DeclSite {
+    /// The symbol the declaration landed on. Not an identity for the DECLARATION —
+    /// `define` merges — which is exactly why the rest of these fields are here.
+    pub(crate) sym: Symbol,
+    /// The scope declared INTO, after `ensure_intermediate_namespaces`: a dotted
+    /// `operation Inner.helper` declares into `Inner`, which is what 059's "only the
+    /// entry's OWN address is classified" requires.
+    pub(crate) scope: ScopeId,
+    /// The name as it enters that scope's `locals` — the key lookup matches on.
+    pub(crate) local: String,
+    pub(crate) category: DeclCategory,
+    /// The keyword actually typed (`operation`, `const`, `sort`, `enum`, `entity`),
+    /// for the diagnostic. [`DeclCategory::Type`] covers two of them and
+    /// [`DeclCategory::TypeParam`] four, so the category cannot spell it.
+    pub(crate) keyword: &'static str,
+    pub(crate) site: SourceSpan,
 }
 
 /// WI-997 / proposal 059 R1 + R4 — THE PASS-1 DECLARATION LEDGER.
@@ -4277,7 +4453,54 @@ struct DefinePass<'a> {
     kb: &'a mut KnowledgeBase,
     parse_sym: &'a crate::intern::SymbolTable,
     file_idx: usize,
+    /// WI-999 — this file's registered identity, so a recorded declaration site is a
+    /// [`SourceSpan`] and the capture refusal (which runs long after `files` is out
+    /// of scope) can render `path:line:col` off `kb.sources` alone. `file_idx` stays
+    /// beside it because [`DeclLedger`]'s R1 refusal renders inside the scan, where
+    /// the slice is still in hand.
+    source_id: SourceId,
     ledger: &'a mut DeclLedger,
+}
+
+/// WI-999 — note that `source_id`'s text opens `scope`, for
+/// [`KnowledgeBase::scope_text_files`]. Called once per `sort`/`enum`/`namespace`
+/// body the defining pass descends into; de-duplicated, since one file may write
+/// several blocks at one address (059's Definitions: they are ONE entry).
+fn record_scope_text_file(kb: &mut KnowledgeBase, scope: ScopeId, source_id: SourceId) {
+    let files = kb.scope_text_files.entry(scope).or_default();
+    if !files.contains(&source_id) {
+        files.push(source_id);
+    }
+}
+
+/// WI-999 — record one named declaration into [`KnowledgeBase::decl_sites`].
+///
+/// EVERY named declaration the defining pass makes, not only the capture-eligible
+/// categories: the diagnostic names the CAPTURED declaration's line off the same
+/// log, and a type parameter or an entity variant is a name a body can be reading.
+///
+/// A free function rather than a [`DefinePass`] method because both call sites have
+/// already reborrowed `self.kb` into a local — `enter_scope` splits the pass into
+/// `(kb, parse_sym, ledger)` so the arms below can hold all three at once.
+#[allow(clippy::too_many_arguments)]
+fn record_decl_site(
+    kb: &mut KnowledgeBase,
+    source_id: SourceId,
+    sym: Symbol,
+    scope: ScopeId,
+    local: &str,
+    category: DeclCategory,
+    keyword: &'static str,
+    span: Span,
+) {
+    kb.decl_sites.push(DeclSite {
+        sym,
+        scope,
+        local: local.to_string(),
+        category,
+        keyword,
+        site: SourceSpan::from_span(source_id, span),
+    });
 }
 
 impl ScopePass for DefinePass<'_> {
@@ -4292,6 +4515,7 @@ impl ScopePass for DefinePass<'_> {
         // is a property of the syntactic nesting, not of the name.
         let (kb, parse_sym, ledger) = (&mut *self.kb, self.parse_sym, &mut *self.ledger);
         let file_idx = self.file_idx;
+        let source_id = self.source_id;
         let scope = site.enclosing;
         let qualified = site.qualified;
         let (short, actual_scope) =
@@ -4319,6 +4543,24 @@ impl ScopePass for DefinePass<'_> {
                             true,
                         )
                     };
+                // WI-999 / 059 R4 clause 3 — the same declaration, in the capture
+                // ledger. A MARKED binder (`sort [F] { … }`) is a type PARAMETER of
+                // the enclosing sort (WI-452), so it is recorded as one: a binder
+                // never captures, and the category is what says so.
+                record_decl_site(
+                    kb,
+                    source_id,
+                    sym,
+                    actual_scope,
+                    &short,
+                    if s.is_type_param {
+                        DeclCategory::TypeParam
+                    } else {
+                        DeclCategory::Type
+                    },
+                    s.kind.keyword(),
+                    s.span,
+                );
                 // WI-979 — recorded from the DECLARATION, not from which arm above
                 // produced the symbol. `define` accumulates categories (WI-926), but
                 // the reuse arm never calls it, so the `sort` keyword's own category
@@ -4414,6 +4656,7 @@ impl ScopePass for DefinePass<'_> {
                 if s.is_type_param && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope, &short, sym);
                 }
+                record_scope_text_file(kb, sort_scope, source_id);
                 Some(sort_scope)
             }
             ScopeDecl::Namespace(_) => {
@@ -4439,6 +4682,7 @@ impl ScopePass for DefinePass<'_> {
                 };
                 // Model C / job 2 (proposal 044): namespace members are visible
                 // by default; the `export` statement was removed (WI-291).
+                record_scope_text_file(kb, ns_scope, source_id);
                 Some(ns_scope)
             }
         }
@@ -4447,6 +4691,7 @@ impl ScopePass for DefinePass<'_> {
     fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str) {
         let (kb, parse_sym, ledger) = (&mut *self.kb, self.parse_sym, &mut *self.ledger);
         let file_idx = self.file_idx;
+        let source_id = self.source_id;
         match item {
             Item::AbstractSort(s) => {
                 let name = join_segments(parse_sym, &s.name.segments);
@@ -4457,6 +4702,33 @@ impl ScopePass for DefinePass<'_> {
                     kb.symbols
                         .define(&short, &qualified, SymbolKind::Sort, actual_scope);
                 record_internal(kb, abstract_sym, s.visibility);
+                // WI-999 / 059 R4 clause 3 — the split this ledger exists to preserve.
+                // `sort T = ?` is a type PARAMETER (a binder, never a capturer);
+                // `sort Alias = Int64` is a bodyless type ALIAS, which WI-1000 admits
+                // as a new type at its own address and which therefore captures like
+                // any other type declaration. Both are `Item::AbstractSort` landing on
+                // a `SymbolKind::Sort` in one scope, so only the DEFINITION tells them
+                // apart — and only here, before the symbol absorbs the difference.
+                //
+                // The `is_sort_scope` gate below is deliberately NOT read: it decides
+                // whether the parameter is REGISTERED as one, which is a question about
+                // the enclosing declaration, while the category here is a question
+                // about this one. A `sort T = ?` at namespace level is still a binder
+                // spelling, and the check filters non-sort scopes out anyway.
+                record_decl_site(
+                    kb,
+                    source_id,
+                    abstract_sym,
+                    actual_scope,
+                    &short,
+                    if matches!(s.definition, TypeExpr::Variable { .. }) {
+                        DeclCategory::TypeParam
+                    } else {
+                        DeclCategory::Type
+                    },
+                    "sort",
+                    s.span,
+                );
                 // `sort T = ?` inside a SortWithBody or EnumDecl = type parameter
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope, &short, abstract_sym);
@@ -4575,6 +4847,21 @@ impl ScopePass for DefinePass<'_> {
                 if in_sort_body && eponymous.is_none() {
                     kb.mark_constructor_symbol(entity_sym);
                 }
+                // WI-999 — an entity variant is IDENTITY, so it can never be the
+                // capturing declaration (059 excludes it by name, and its own census
+                // counts a legitimate one: `TypeExtractor.Error` over `sort Error`).
+                // Recorded so the refusal can name its line when it is what a
+                // capturing declaration took.
+                record_decl_site(
+                    kb,
+                    source_id,
+                    entity_sym,
+                    actual_scope,
+                    &short,
+                    DeclCategory::Entity,
+                    "entity",
+                    e.span,
+                );
             }
             Item::Operation(o) => {
                 let name = join_segments(parse_sym, &o.name.segments);
@@ -4585,6 +4872,16 @@ impl ScopePass for DefinePass<'_> {
                     kb.symbols
                         .define(&short, &qualified, SymbolKind::Operation, actual_scope);
                 record_internal(kb, op_sym, o.visibility);
+                record_decl_site(
+                    kb,
+                    source_id,
+                    op_sym,
+                    actual_scope,
+                    &short,
+                    DeclCategory::Operation,
+                    "operation",
+                    o.span,
+                );
                 let enclosing = actual_scope;
                 scan_operation_params(kb, parse_sym, o, op_sym, enclosing, &qualified);
             }
@@ -4601,6 +4898,16 @@ impl ScopePass for DefinePass<'_> {
                     kb.symbols
                         .define(&short, &qualified, SymbolKind::Const, actual_scope);
                 record_internal(kb, const_sym, c.visibility);
+                record_decl_site(
+                    kb,
+                    source_id,
+                    const_sym,
+                    actual_scope,
+                    &short,
+                    DeclCategory::Const,
+                    "const",
+                    c.span,
+                );
             }
             Item::OperationBlock(ob) => {
                 for op in &ob.entries {
@@ -4610,6 +4917,13 @@ impl ScopePass for DefinePass<'_> {
                         .symbols
                         .define(&name, &qualified, SymbolKind::Operation, scope);
                     record_internal(kb, op_sym, op.visibility);
+                    // 059 R3: "an `operation` block is sugar for its entries and
+                    // follows them" — so each entry is an operation declaration here
+                    // exactly as a free-standing one is.
+                    record_decl_site(
+                        kb, source_id, op_sym, scope, &name, DeclCategory::Operation,
+                        "operation", op.span,
+                    );
                     let enclosing = scope;
                     scan_operation_params(kb, parse_sym, op, op_sym, enclosing, &qualified);
                 }
@@ -7778,6 +8092,18 @@ fn load_phase_inner(
     // was still going to declare or index is already there.
     all_errors.extend(check_rule_body_goals(kb));
     mark!("check_rule_body_goals");
+    // WI-999 (059 R4 clause 3): a declaration may not capture a name it does not
+    // override. AFTER `eq_derive::run` + `build_provides_index`, because its exclusion
+    // is a relation between sorts and the provider relation is not complete until
+    // then. Load-blocking: the capture repoints an unedited body and nothing fails at
+    // run time, which is precisely why there is no later site to be loud at.
+    //
+    // It does NOT subsume WI-346's lint below, and that is a decision rather than an
+    // accident: a requires-shadow is EXCUSED here (see `capture_is_excused`), so the
+    // population WI-346 warns about stays exactly its own, advisory as its evidence
+    // supports.
+    all_errors.extend(check_name_captures(kb));
+    mark!("check_name_captures");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
@@ -9875,6 +10201,235 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
             site.span.end
         ),
     }
+}
+
+/// WI-999 / proposal 059 R4 CLAUSE 3 — A DECLARATION MAY NOT CAPTURE A NAME IT
+/// DOES NOT OVERRIDE. Load-blocking.
+///
+/// THE HAZARD, and why the two clauses above it do not reach it. Clause 1 is keyed
+/// on two DECLARATIONS colliding, and a name can already mean something in a scope
+/// without anything having declared it there. Measured (059): a main entry's body
+/// calls a bare `f(…)` that resolves through `import lib.f` and answers `1`; add a
+/// declaration of `f` in the shared sort scope and the SAME UNEDITED BODY answers
+/// `2`. Nothing named `f` was a member, so the freshness and body rules admit it.
+///
+/// OVER THE WHOLE SORT SCOPE, not over secondary entries: 059 measured the identical
+/// flip when the capturing operation is written in the MAIN entry, so an entry-local
+/// rule would patch the wrong object and would split the one scope R2 rests on.
+/// §6.3 already records the hazard for the long form as a caution (WI-935); this
+/// makes it a check, for both spellings at once.
+///
+/// OVER EVERY DECLARATION CATEGORY THAT CAN WIN LOOKUP, not over operations and not
+/// over members — both narrowings are refuted by measurement. A `const` captures
+/// without ever joining the dispatch surface (`1` ⇒ `2`, loads clean), and a nested
+/// `sort` captures the type a receiver then dispatches against (`100` ⇒ `200`).
+/// [`DeclCategory::can_capture`] is that list; a binder and an entity variant are
+/// outside it, and 059's own 61-site census is 38 of exactly those.
+///
+/// TWO SHAPES 059's CENSUS MISSED, EXCLUDED BY THE AMENDED CLAUSE (WI-999). The
+/// census classified five shapes summing to 61 and reported ZERO no-override
+/// captures; measured over the same corpora this check finds three, all of two shapes
+/// the census never reached. Each is excluded where it arises, with its own reason:
+/// a sibling type's CONSTRUCTOR, in [`crate::intern::SymbolTable::resolve_captured_name`]
+/// (members and constructors are named per TYPE), and an enclosing NAMESPACE, in
+/// [`captured_is_namespace_only`] (a namespace has no answer to change). The residual
+/// corpus cost is zero, which is what 059 claimed and now holds for stated reasons
+/// rather than by an incomplete count.
+///
+/// WHY IT RUNS HERE, after pass 2 and beside the other whole-KB checks: the
+/// exclusion is a RELATION between sorts, and the provider relation is not complete
+/// until `eq_derive` has run. A pass-1 reading would also be order-dependent — the
+/// scope a `namespace X` is classified into depends on a `sort X` that may be
+/// declared in a later file (the WI-321 invariant).
+///
+/// WHICH ENTRY POINTS RUN IT, stated because the boundary is inherited rather than
+/// chosen: every whole-KB check lives in [`load_phase_inner`], which [`load_all`] /
+/// [`load_incremental`] reach and the single-file [`load`] does not. So `load` sees
+/// no capture refusal, exactly as it sees no duplicate-operation refusal (WI-1049) —
+/// one boundary for the whole family, not a gap this check opened.
+///
+/// WHAT IT DOES NOT ASSUME ABOUT THE CAPTURED NAME. `register_builtin_tag` mints a
+/// symbol for a name nothing declares, so a resolver builtin can be an operation by
+/// KIND with no declaration behind it (`anthill.kernel.find_dictionary`); and the
+/// tag on `anthill.reflect.Expr.ho_apply` rides an ENTITY symbol, so a check keyed on
+/// `kind == Operation` misses it. This reads neither: the excuse is the override
+/// RELATION, which such a name simply lacks, and the captured declaration's line is
+/// looked up in the ledger and rendered only if it is there.
+fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let decls = &kb.decl_sites;
+    // Where each SYMBOL was declared, for the captured half of the message. First
+    // write wins: a symbol two declarations merged onto is clause 1's business
+    // (WI-1049 / WI-997 already refused it by then), and naming the first line is
+    // what this message needs — it names ONE other place, not a census.
+    let mut sites: HashMap<Symbol, &DeclSite> = HashMap::new();
+    // Which files' text can read a name at each address (see
+    // `KnowledgeBase::scope_text_files` for why the union of two records).
+    let mut askers: HashMap<ScopeId, Vec<SourceId>> = HashMap::new();
+    for d in decls {
+        sites.entry(d.sym).or_insert(d);
+        let files = askers.entry(d.scope).or_default();
+        if !files.contains(&d.site.source) {
+            files.push(d.site.source);
+        }
+    }
+    for (scope, files) in &kb.scope_text_files {
+        let entry = askers.entry(*scope).or_default();
+        for f in files {
+            if !entry.contains(f) {
+                entry.push(*f);
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    // WI-995 — the ambient asking file is `None` by here (every whole-KB pass runs
+    // outside the per-file loops). Restored after the sweep so nothing downstream
+    // inherits one of ours.
+    let saved_asker = kb.symbols.set_asking_file(None);
+    for decl in decls {
+        if !decl.category.can_capture() {
+            continue;
+        }
+        // 059's classification, and the same reading WI-956/WI-979 settled for the
+        // gates: `has_kind`, because `namespace X` and `sort X` share one symbol and
+        // which keyword heads its category list is source order. An ordinary
+        // namespace is untouched — "nothing in R3 or R4 reaches it".
+        let sort = decl.scope.owner();
+        if !kb.has_kind(sort, SymbolKind::Sort) {
+            continue;
+        }
+        // ONE DECLARATION, ONE DIAGNOSTIC. Asked once per file that writes at this
+        // address, because an import resolves only in the file that wrote it (WI-995),
+        // so there is no single answer to ask for — and stopping at the first
+        // unexcused candidate keeps one root cause to one refusal, whether the
+        // candidates come from two files or from one `Ambiguous` answer.
+        //
+        // The loop can never run ZERO times, which is what keeps `flatten()` from
+        // being a silent skip: `askers` is built from `decls` itself, so every
+        // declaration's own file is in its scope's entry by construction.
+        let mut hit: Option<Symbol> = None;
+        'files: for &asker in askers.get(&decl.scope).into_iter().flatten() {
+            kb.symbols.set_asking_file(Some(asker));
+            let captured = match kb.symbols.resolve_captured_name(&decl.local, decl.scope) {
+                crate::intern::ResolveResult::NotFound => continue,
+                crate::intern::ResolveResult::Found(sym) => smallvec::smallvec![sym],
+                // An AMBIGUITY is captured too: the name meant several things and the
+                // declaration silently makes it mean one, so every candidate has to be
+                // excused for the declaration to stand.
+                crate::intern::ResolveResult::Ambiguous(cands) => {
+                    SmallVec::<[Symbol; 2]>::from_vec(cands)
+                }
+            };
+            for other in captured {
+                // The declaration reaching ITSELF through a parent path is not a
+                // capture. Routine rather than defensive: a sort's scope is a
+                // non-enclosing parent of the scope that declares it, so a name
+                // re-exported that way comes straight back.
+                if other == decl.sym {
+                    continue;
+                }
+                if captured_is_namespace_only(kb, other) || capture_is_excused(kb, sort, other) {
+                    continue;
+                }
+                hit = Some(other);
+                break 'files;
+            }
+        }
+        kb.symbols.set_asking_file(None);
+        if let Some(other) = hit {
+            errors.push(LoadError::NameCapture {
+                sort: kb.qualified_name_of(sort).to_string(),
+                construct: decl.keyword,
+                name: decl.local.clone(),
+                site: render_decl_site(kb, decl.site),
+                captured: kb.qualified_name_of(other).to_string(),
+                captured_site: sites.get(&other).map(|d| render_decl_site(kb, d.site)),
+            });
+        }
+    }
+    kb.symbols.set_asking_file(saved_asker);
+    errors
+}
+
+/// WI-999 — is the captured name a NAMESPACE and nothing else? Then it is not a
+/// capture 059 R4 clause 3 governs (amended, WI-999).
+///
+/// A namespace denotes no value and no type: it can appear only as the head of a
+/// QUALIFIED PATH, so it has no answer for a body to silently get a different one
+/// of. What a capture does to it is break or re-point the path, and MEASURED that
+/// belongs to the dotted ladder rather than to the declaration:
+///
+/// | written | result |
+/// |---|---|
+/// | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` |
+/// | + a member `Box.inner` | **loud** `unknown functor` |
+/// | + a member `Box.inner`, and a TOP-LEVEL `namespace inner` also exists | loads clean, silently calling the TOP-LEVEL `inner.g` |
+///
+/// The third row is [`dotted_absolute`] recovering a shadowed head at the bare
+/// global twin because the ladder has no scope-relative rung between
+/// [`dotted_by_head`] and it — WI-751's own stated principle ("scope-relative beats
+/// bare global") with the rung for a shadowed head missing. Tracked as its own
+/// ticket; refusing the declaration would close one route into a defect reachable
+/// without any declaration at all.
+///
+/// `has_kind`, not `kind_of`, and the value/type kinds are named rather than
+/// negated: `namespace X` beside `sort X` is ONE symbol carrying both categories
+/// (WI-926/956), and that one IS a type — 059 R2's own secondary-entry shape.
+fn captured_is_namespace_only(kb: &KnowledgeBase, captured: Symbol) -> bool {
+    kb.has_kind(captured, SymbolKind::Namespace)
+        && ![
+            SymbolKind::Sort,
+            SymbolKind::Entity,
+            SymbolKind::Operation,
+            SymbolKind::Const,
+        ]
+        .iter()
+        .any(|&k| kb.has_kind(captured, k))
+}
+
+/// WI-999 — is this capture one 059 R4 clause 3 admits? The exclusion is a RELATION
+/// between the declaring sort and the sort that owns the captured name, and it never
+/// reads the route the name resolved by.
+///
+/// **PROVIDES** — the declaring sort provides, transitively as `sort_provides` reads
+/// it, the spec that owns the captured name. That is how a sort implements what it
+/// provides, and it is 23 of the corpus's 61 shadowing declarations. Keyed on the
+/// relation and not on the route deliberately: 4 of those 23 reach the spec's member
+/// through an `import` rather than through the `requires` link, so a route-based rule
+/// refuses exactly the wrong four.
+///
+/// **REQUIRES** — likewise excused, which is 059's second stated option for this
+/// clause ("or drop the narrow exclusion") and the one taken. The alternative was to
+/// admit a requires-shadow only where [`super::typing::requires_shadow_is_confusable`]
+/// proves the signatures distinguishable; MEASURED, that predicate falls open to
+/// "confusable" whenever the requirement binds the spec to a TYPE PARAMETER rather
+/// than to a carrier — `sort Polynom { requires Ring[R]; operation add(p1: Polynom[R],
+/// p2: Polynom[R]) }`, where σ maps `Ring.T ↦ R` and a parameter is a wildcard, so no
+/// leg can carry a proof of difference. Falling open is right for a WARNING and wrong
+/// for a REFUSAL: it would reject the ordinary way to give a sort an operator beside
+/// a requirement on its element type. WI-346's lint keeps that population, where
+/// being advisory is what its evidence supports.
+///
+/// TRANSITIVE, matching `sort_provides`: resolution follows the `requires` parent
+/// links transitively, so a name reached through a required spec's OWN requirement is
+/// reached by the same clause the author wrote one level up.
+fn capture_is_excused(kb: &KnowledgeBase, sort: Symbol, captured: Symbol) -> bool {
+    // The sort that owns the captured name, if one does. A name declared in a
+    // namespace (the plain `import lib.f` hazard), or minted by a builtin tag with no
+    // declaring scope at all, has no relation to stand in — and no excuse. This is
+    // where "do not assume the captured symbol has a declaration, or an Operation
+    // kind" is honoured: neither is read.
+    let Some(spec) = kb
+        .symbols
+        .declaring_scope(captured)
+        .map(|s| s.owner())
+        .filter(|&owner| kb.has_kind(owner, SymbolKind::Sort))
+    else {
+        return false;
+    };
+    super::typing::sort_provides(kb, sort, spec)
+        || super::typing::requires_chain_flat(kb, sort)
+            .iter()
+            .any(|e| e.required_sort == spec)
 }
 
 /// WI-346 — requires-shadow lint. A sort that `requires` a spec and declares a

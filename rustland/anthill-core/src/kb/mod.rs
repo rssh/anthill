@@ -810,6 +810,48 @@ pub struct KnowledgeBase {
     /// presented, whether they sit in one file or in two files with identical text.
     pub(crate) op_decl_sites: HashMap<Symbol, Vec<crate::span::SourceSpan>>,
 
+    /// WI-999 (proposal 059 R4 clause 3) — EVERY NAMED DECLARATION THIS SCAN WROTE,
+    /// as written: the scope it declares into, its local name, the symbol it landed
+    /// on and its site. `load::check_name_captures` reads it to ask, per declaration,
+    /// whether the name it takes already resolved in that scope.
+    ///
+    /// A LEDGER AND NOT A SYMBOL WALK, for one half of `DeclLedger`'s reason and one
+    /// of its own. `SymbolTable::define` merges a declaration onto an existing symbol,
+    /// so the scope's finished `locals` map says which name won but not where it was
+    /// written — and a refusal that cannot name the line is not actionable. It also
+    /// cannot say WHICH KEYWORD was written, and 059's category list turns on exactly
+    /// that: `sort T = ?` (a binder, excluded) and `sort Alias = T` (a type, checked)
+    /// both define a `SymbolKind::Sort` in the same scope.
+    ///
+    /// EVERY declaration, including the two categories that can never CAPTURE (a type
+    /// parameter, an entity variant): they can still BE captured, and the diagnostic
+    /// names the captured declaration's line off this same log.
+    ///
+    /// PER SCAN, cleared at the top of `load::scan_definitions_with_sources` — the
+    /// pass that fills it — so a `load_incremental` second phase, or a standalone
+    /// query scan, starts from empty rather than re-checking declarations an earlier
+    /// phase already ruled on.
+    pub(crate) decl_sites: Vec<load::DeclSite>,
+
+    /// WI-999 — WHICH FILES HAVE TEXT AT EACH ADDRESS: one entry per
+    /// `sort`/`enum`/`namespace` body the defining pass descends into, keyed by the
+    /// scope that body opens.
+    ///
+    /// `load::check_name_captures` asks the capture question once per such file,
+    /// because under WI-995 an import resolves only in the file that wrote it: a name
+    /// can have meant something else *for one file* and nothing at all for another, so
+    /// there is no single answer to ask for. The alternative — the union over every
+    /// file — refuses programs no file could have misread.
+    ///
+    /// SEPARATE FROM [`Self::decl_sites`], which records declarations INTO an address.
+    /// The two differ in both directions and the check reads their union: a file may
+    /// hold a sort body containing only rules (text here, no declaration here), and a
+    /// DOTTED declaration — `operation Rec.f` written at namespace level — declares
+    /// into `Rec` from a file that never descended into it.
+    ///
+    /// PER SCAN, cleared beside `decl_sites` and by the same pass.
+    pub(crate) scope_text_files: HashMap<crate::intern::ScopeId, Vec<crate::span::SourceId>>,
+
     /// WI-727 (proposal 056) — the VARIADIC CAPTURE parameter of each operation that
     /// declares one: `op_sym → the name symbol of its `...args: R` capture parameter`.
     /// Populated by the loader, read O(1) by the typer's argument matching
@@ -1382,6 +1424,8 @@ impl KnowledgeBase {
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
             op_decl_sites: HashMap::new(),
+            decl_sites: Vec::new(),
+            scope_text_files: HashMap::new(),
             op_capture_params: HashMap::new(),
             named_requirement_slots: HashMap::new(),
             type_param_canonical_var: HashMap::new(),

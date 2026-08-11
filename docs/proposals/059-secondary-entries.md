@@ -249,11 +249,34 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
   | a **type parameter** shadowing a type (`IndexedSeq.Effect` — `sort Effect = ?`) | part of 38 | also a binder; R3 refuses `sort T = ?` in a secondary entry outright, so it can never be the capturing declaration there |
   | an **entity variant** shadowing a type (`TypeExtractor.Error`, over `effects.anthill`'s `sort Error`) | rest of 38 | a constructor is identity — R3 refuses an `entity` in a secondary entry, same as above |
   | a member **overriding a spec operation** (`List.length` over `IndexedSeq.length`) | 23 | this is how a sort implements what it provides |
-  | **no override relationship** | **0** | the hazard, and the corpus no longer contains one |
+  | **no override relationship** | **0 by this census; 3 in fact** | the hazard — and the census did not reach two of its shapes. See "What the census missed" below |
 
   The middle two rows are worth keeping apart, because read together as "a type name shadowing a type" they look like nested type declarations and neither is: `IndexedSeq.Effect` is a type parameter, `TypeExtractor.Error` an entity variant of `enum anthill.prelude.TypeExtractor`. R3 already refuses both spellings in a secondary entry, so widening the clause to types costs **no migration** — and the shape that does capture, a nested `sort` with a body inside a secondary entry, occurs **zero** times in the corpus.
 
-  So on the *no-override* hazard the clause bites **nothing in the corpus**. Its whole migration is the two sites the narrowed exclusion below stops covering — which WI-1048 has since measured as a deliberate refinement, so they are two sites clause 3 must NOT touch rather than two it must migrate (see below). Census: WI-981, less the two WI-982 removed.
+  Census: WI-981, less the two WI-982 removed.
+
+  **WHAT THE CENSUS MISSED, and the two exclusions that answer it (WI-999).** The five classes above sum to 61, and the clause as first written refuses **three** corpus sites none of them names. Both missing shapes are captures of a name the declaring scope's own text never asked for, and each is excluded on its own ground rather than by a count.
+
+  | the captured name | sites | why it is not a capture |
+  |---|---|---|
+  | a **sibling type's CONSTRUCTOR**, reached through §8.6's variant-exposure link — `prelude.SortedSet.merge` over `EffectExpression.merge`; `reflect.Substitution.apply` over `Expr.apply` | 2 | **Members and constructors are named per TYPE.** §8.6 leaks an enum's constructors to the *enclosing namespace* so they can be written unqualified **there**; that is not a statement that the bare name is in use at any address inside it. Two types in one namespace may name their members and constructors freely against one another — the alternative makes every constructor name in a namespace a reserved word for every sort in it, which is not a name space anyone can work in. Stated in kernel-language.md §8.6 and §8.7 as well |
+  | an enclosing **NAMESPACE** — `reflect.KB.reflect` over `anthill.reflect` | 1 | A namespace denotes no value and no type: it can appear only as the head of a qualified path, so there is no answer for a body to silently get a different one of. What a capture does to a path belongs to the dotted ladder — measured below |
+
+  **THE EXPOSURE EXCLUSION IS SPENT BY AN IMPORT, and it is a property of the PATH rather than of one edge.** §8.6's leak is excused because it is *automatic*; an `import` of the leaking type, or of the namespace it leaks into, is the author asking for those bare names, so a declaration taking one captures it and stays refused. Both spellings reach the same `add_import_parent`, so the discriminator is the edge's WRITER, not its shape — and it must be carried down the walk, not tested at one hop: `import wilib.*` makes the first edge an import and leaves `wilib → Colour` an ordinary exposure edge, so an edge-local test admits the import and then skips the very name it brought into view. Measured on that shape, an edge-local reading loads clean while an unedited `Red(x: 7)` rebinds to a new `Box.Red`.
+
+  **AND IT IS ASKED PER FILE, not over their union.** An import resolves only in the file that wrote it, so a name can have meant something else *for one file* and nothing at all for another; the question is put once for each file that has text at the address. Asking under the union instead refuses programs no file could have misread — measured, an `import wins.f` in a file that never mentions `Rec` blocks a `Rec.f` written in another, with no body anywhere reading a bare `f` there and the only repair in someone else's text. The per-file reading still catches what the union was there for: 059's motivating case is a secondary entry written by a *third party*, where the harmed body is in the file that wrote the import and the capturing declaration's own file resolves the name to nothing.
+
+  Neither missed shape is excused by "it would fail loudly", which this clause refuses everywhere else. The constructor shape is silent: measured, a sibling enum's `entity m(left, right)` and a sort member `m(left, right)` of the same return type load clean and the unedited body calls the member. The namespace shape is silent too, and that is why it is the *ladder's*:
+
+  | written | measured |
+  |---|---|
+  | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` |
+  | + a member `Box.inner` | **loud** `unknown functor` |
+  | + a member `Box.inner`, and a **top-level** `namespace inner` also exists | **loads clean**, silently calling the TOP-LEVEL `inner.g` |
+
+  The third row is the recovery rung WI-751 added for a shadowed head, re-rooting at the bare global twin because the ladder has no *scope-relative* rung between head-qualification and it — WI-751's own stated principle ("scope-relative beats bare global") with that rung missing. Reachable with no capturing declaration anywhere, so refusing the declaration would close one route into a defect that has others. Tracked as **WI-1075**.
+
+  So on the *no-override* hazard the clause bites **nothing in the corpus** — which is what the census claimed, now holding for stated reasons rather than by an incomplete count. Its whole migration is the two sites the exclusion below stops covering, which WI-1048 measured as a deliberate refinement, so they are two sites clause 3 must NOT touch rather than two it must migrate (see below).
 
   **The repair is to delete the capturing member, not to rename it** — whenever the member's own answer does not read its receiver. A receiver nothing reads is dispatch ceremony, not an interface: it exists so the name dot-dispatches, and it is also the thing that captures. Renaming keeps two names for one question; deleting leaves the one the caller already had. Reach for a rename only when the member genuinely answers about its receiver and the collision is coincidence.
 
@@ -261,22 +284,32 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
 
   **The instrument is a refusal**, like the two clauses above it. The only argument for a warning was blast radius, and the corpus holds none.
 
-  **THE EXCLUSION IS `provides` ALONE.** A sort that merely *requires* a spec earns no permission to rebind that spec's operations — §8.7 is explicit that such an operation "is **not** overriding it: that operation is unrelated", and a name one has not overridden is a name one may not capture. The wider `requires`-or-`provides` reading is tempting because 19 of the legitimate cases reach the spec's member through the `requires` link, but that is the **route** the name resolved by, the very quantity the paragraph below says the check must not key on. Keyed on the **relation**, measured over the 183 sorts that declare operations:
+  **THE EXCLUSION IS `requires` OR `provides`, KEYED ON THE RELATION.** Measured over the 183 sorts that declare operations, counted per *triple* rather than per declaration (so it does not sum to the 23 above: `List.collect` shadows both `FiniteCollection.collect` and `FiniteStream.collect` — one declaration there, two rows here):
 
   | the sort's relation to the spec whose op it shadows | sites |
   |---|---|
   | **provides** it (transitively, as `sort_provides` reads it) | **40** |
   | **requires** it only | **2** — `FiniteCollection.filter` / `.map` over `Iterable.filter` / `.map` |
 
-  Counted per *triple*, not per declaration, so it does not sum to the 23 above: `List.collect` shadows both `FiniteCollection.collect` and `FiniteStream.collect` — one declaration in that census, two rows here.
+  `provides` is uncontroversial: that is how a sort implements what it provides. **The `requires` half was argued both ways and is settled by measurement (WI-999).**
 
-  So the narrow exclusion costs **2 sites**, and the clause uses the spec's word with the spec's meaning rather than against it.
+  The case against it is §8.7: a sort that merely *requires* a spec earns no permission to rebind that spec's operations, since such an operation "is **not** overriding it: that operation is unrelated", and a name one has not overridden is a name one may not capture. Under that reading clause 3 admits a requires-shadow only where its signature is a deliberate **refinement** — the 2 sites above, which WI-1048 established are exactly that: they differ in RETURN TYPE (`FiniteCollection[…]` vs `Stream[…]`), which is the whole of proposal library/003 + WI-599's THIN design; on a `List` dispatch picks the finite one deterministically by §8.7's `requires`-refinement tie-break, not by `HashMap` order, and a call expecting the other is a type error naming both types. So the narrow reading needs a gate — `typing::requires_shadow_is_confusable` — or it refuses a design §8.7 prescribes.
 
-  **And the 2 are a genuine refinement — measured, WI-1048.** This paragraph used to read "the 2 are already flagged", on the ground that WI-346's `check_requires_shadows` computed this same set by the same predicate and emitted exactly two warnings. It no longer emits them, and the question it left open — genuine refinement, or the coin flip `ordered.anthill` warns of (*"a carrier that provides BOTH specs two `sort_ops` entries for one short name, and which one wins is HashMap-iteration order"*) — is answered: **refinement**. The two differ in RETURN TYPE (`FiniteCollection[…]` vs `Stream[…]`), which is the whole of proposal library/003 + WI-599's THIN design; on a `List` dispatch picks the finite one deterministically by §8.7's `requires`-refinement tie-break, not by iteration order, and a call expecting the other is a type error naming both types. WI-346 now warns only where a shadow is not confidently distinguishable from what it shadows, so these two are silent and the stdlib loads warning-free.
+  **That gate cannot carry a refusal, and this is what decides it.** It warns unless the two operations are *confidently distinguishable*, and every leg it cannot decide falls open to "confusable" — correct for a warning, since a lint may only get quieter where a difference is proven. Measured, it falls open whenever the requirement binds the spec to a **type parameter** rather than to a carrier:
 
-  **Clause 3 must therefore carry the same gate.** It does not upgrade a warning any more; as written it would **refuse a design §8.7 prescribes**. Either exclude a shadow that refines the signature — reusing `typing::requires_shadow_is_confusable` — or drop the narrow exclusion. Its cost is no longer "2 sites to migrate"; it is "2 sites it must not touch".
+  ```
+  sort Polynom
+    sort R = ?
+    requires Ring[R]
+    operation add(p1: Polynom[R], p2: Polynom[R]) -> Polynom[R]
+  end
+  ```
 
-  A caution on measuring this: no test helper surfaces load warnings. `try_load_kb_with_files` discards `load_all`'s `Ok(_)`, and `load_stdlib_kb_with_source` returns the result of loading the *probe source* against an already-built stdlib. Both report zero warnings for a corpus that emits two.
+  σ maps `Ring.T ↦ R`, and a type parameter is a **wildcard** — `R` is not provably different from `Polynom[R]`, so no leg carries a proof and the pair reads as confusable. Under the narrow reading that is a **load error** on the ordinary way to give a sort an operator beside a requirement on its *element* type. The requirement is not about `Polynom` at all; the spec's `add` is `R`'s.
+
+  **So the narrow exclusion is dropped, which is this clause's own second stated option.** A requires-shadow is excused, and WI-346's lint keeps exactly that population — advisory, which is what a predicate that falls open to "warn" can support. Clause 3 and the lint are then two questions rather than one: the lint asks whether the author believed `requires` overrides, and clause 3 asks whether a name silently changed meaning.
+
+  A caution on measuring the lint: no test helper surfaces load warnings. `try_load_kb_with_files` discards `load_all`'s `Ok(_)`, and `load_stdlib_kb_with_source` returns the result of loading the *probe source* against an already-built stdlib. Both report zero warnings for a corpus that emits some.
 
   Unlike the secondary-entry body requirement, this clause is stated over the whole **sort scope**: measured, the same flip happens when the capturing operation is written in the main entry, so an entry-local rule would patch the wrong object and would split the one scope R2 rests on. §6.3 records the hazard for the long form as a caution already (WI-935); this makes it a check, for both spellings at once.
 
@@ -286,15 +319,17 @@ For a **foreign** type there is no remedy, deliberately. Adding a requirement to
 |---|---|---|
 | 1 — a second operation declaration under one name | **0; delivered (WI-1049)** | the per-load operation-declaration log, keyed by symbol |
 | 2 — a body-less operation introduced by a secondary entry | **0; delivered (WI-1000)** | the R3 entry classifier plus the operation's written body presence |
-| 3 — capturing a name it does not override | **2** (the `requires`-only pair; **0** on the no-override hazard, was 2 before WI-982) | the override relation, after pass 2 |
+| 3 — capturing a name it does not override | **0; delivered (WI-999)** | the pass-1 declaration ledger, then the `provides`/`requires` relation after pass 2 |
 
 Clause 1 cannot be checked by walking symbols: `define` **merges** two same-named declarations in one scope into one symbol, so by the time symbols exist the duplication is gone. WI-1049 therefore records every written `Item::Operation` during one load phase and refuses a symbol with two declaration sites. The check already crosses main/secondary and file boundaries and is deliberately independent of bodies and host backing. Measured over the corpus, no operation name is declared twice in one scope.
 
 Clause 2 asks only about the declaration as written in the secondary entry: does it have a runnable Anthill body? It deliberately does **not** inspect `OperationMapping` facts or builtin registries. Those are backing for the one declaration; they do not decide who owns its name. This removes the old post-pass-2 "is already implemented" branch entirely.
 
-Clause 3 must key on the **override relation** — does the declaring sort *provide* the spec whose operation it shadows — and **not** on the route by which the name was reached. The measurement is why: 4 of the legitimate overrides arrive through an `import` of the spec's member rather than through the `requires` link, so a route-based rule refuses exactly the wrong four. That relation is known only after pass 2, so the check runs there, not in pass 1 beside the ledger. `sort_provides` already computes it, transitively, and is what WI-346 uses.
+Clause 3 must key on the **relation** — does the declaring sort provide or require the sort that owns the captured name — and **not** on the route by which the name was reached. The measurement is why: 4 of the legitimate overrides arrive through an `import` of the spec's member rather than through the `requires` link, so a route-based rule refuses exactly the wrong four. That relation is known only after pass 2, so the check runs there, not in pass 1 beside the ledger. `sort_provides` and `requires_chain_flat` already compute it, transitively.
 
-It must also not assume the captured name has a **declaration**, nor that it is an operation. `register_builtin_tag` mints a symbol for a name nothing declares — `symbols.define(short, qualified, SymbolKind::Operation, scope)` — so a resolver builtin can be an operation by *kind* with no declaration behind it: measured, `anthill.kernel.find_dictionary` carries kinds `["Operation"]` and appears in no `.anthill` file. Nor is `Operation` even the reliable kind: the tag on `anthill.reflect.Expr.ho_apply` rides an **Entity** symbol, so a check keyed on `kind == Operation` misses it. The check reads the override relation, which such a name simply lacks; it must not reach for a declaration, or for a kind, to read.
+The **capturing** side needs the pass-1 ledger, and for a reason the exclusions do not share. `define` merges a declaration onto an existing symbol, so a finished scope's `locals` map says which name won but neither where it was written — and a refusal that cannot name the line is not actionable — nor which KEYWORD was written, which is what the category list turns on: `sort T = ?` (a binder, excluded) and `sort Alias = T` (a type, checked) both define a `SymbolKind::Sort` in one scope. Every named declaration is recorded, including the two categories that can never capture, because a type parameter and an entity variant can still BE captured and the diagnostic names their line from the same log.
+
+The check must also not assume the captured name has a **declaration**, nor that it is an operation. `register_builtin_tag` mints a symbol for a name nothing declares — `symbols.define(short, qualified, SymbolKind::Operation, scope)` — so a resolver builtin can be an operation by *kind* with no declaration behind it: measured, `anthill.kernel.find_dictionary` carries kinds `["Operation"]` and appears in no `.anthill` file. Nor is `Operation` even the reliable kind: the tag on `anthill.reflect.Expr.ho_apply` rides an **Entity** symbol, so a check keyed on `kind == Operation` misses it. The check reads the override relation, which such a name simply lacks; it must not reach for a declaration, or for a kind, to read.
 
 Operation redeclaration is loud today (WI-1049), and a fresh body-less operation in a secondary entry is loud since WI-1000. Refusing that shape prevents a secondary entry from reserving a host-facing slot on a sort it is extending. Note that a sort's own member does **not** outrank the other supply routes at dispatch: WI-842 **refuses** a tie between a member, an instance fact's binding, and a witness sort's member, naming each by its route, and it deleted the ranking that used to prefer the member. That is the same standard here — a second supplier is refused rather than settled by route order.
 

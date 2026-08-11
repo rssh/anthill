@@ -1074,6 +1074,9 @@ mod wi995_import_file_locality_test;
 #[path = "include/wi997_declaration_ledger_test.rs"]
 mod wi997_declaration_ledger_test;
 
+#[path = "include/wi999_name_capture_test.rs"]
+mod wi999_name_capture_test;
+
 #[path = "include/wi1000_secondary_entry_content_test.rs"]
 mod wi1000_secondary_entry_content_test;
 

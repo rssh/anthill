@@ -964,6 +964,41 @@ the enclosing sort as the provider, silently (WI-1069). Written in a namespace
 that names no type it is refused. To claim that some other carrier satisfies a
 spec, write `fact Spec[Carrier]`, whose carrier does come from the bindings.
 
+**A declaration may not capture a name it does not override** (proposal 059 R4
+clause 3; `check_name_captures`, `kb/load.rs`). A name can already mean something
+in a sort's scope without being a member of it, and a declaration taking that
+name silently repoints every unedited body that was reading it: measured, a body
+calling a bare `f(…)` that resolves through `import lib.f` answers `1`, and a
+declaration of `f` in the sort's scope makes the same text answer `2`. The load
+is refused, naming the capturing declaration's line and what the name meant.
+
+- **Over the whole sort SCOPE**, main entry and secondary entries alike — the
+  flip is identical for both spellings, so this is not a rule about entries.
+  Nothing here reaches an *ordinary* namespace, one at an address no type
+  occupies.
+- **Over every declaration category that can win lookup**: an `operation`, a
+  `const`, and a nested type (a `sort`/`enum` with a body, or an alias
+  `sort A = T`). A `const` captures without ever joining the dispatch surface,
+  and a nested type captures the very type a receiver then dispatches against —
+  so the rule is stated over *lookup*, not over membership. A binder and an
+  entity variant are identity, not additions, and never capture.
+- **Excluded when the declaring sort `provides` or `requires` the sort that owns
+  the captured name** — a relation, never the route the name was reached by, and
+  transitive on both legs. `provides` is how a sort implements what it provides.
+  `requires` is excluded because the two operations may be genuine refinements
+  (§8.7's `requires`-refinement tie-break) and because a requirement bound to a
+  *type parameter* — `sort Polynom { requires Ring[R]; operation add(…) }` — is
+  about the element type, not about the declaring sort. A requires-shadow that is
+  merely suspicious is WI-346's advisory warning, not this refusal.
+- **Not asked of a name reached only through §8.6's variant exposure**, nor of a
+  captured **namespace**: see §8.6 and §8.7's *members and constructors are named
+  per type*. An `import` anywhere along the path spends the first exemption — a
+  name an import put in view is one the author asked for.
+- **Asked once per file that has text at the address**, not over their union: an
+  import resolves only in the file that wrote it (§8.6), so a name may have meant
+  something else for one file and nothing at all for another. The union reading
+  refuses programs no file could have misread.
+
 ### 5.2 Sort
 
 A type declaration. Sort has three forms — **unspecified** (declared, carrier unknown), **type alias** (equated to another type), and **sort with body** (inhabitants enumerated as a closed ADT, or algebra with operations/rules):
@@ -2786,6 +2821,21 @@ names. So bare `Open` resolves to `WorkStatus.Open`, while the sort's
 `requires`, or wildcard). Two sorts exposing the same variant name make that
 bare name **ambiguous** rather than letting one silently win.
 
+**Exposure reaches the enclosing scope, not the types inside it.** A constructor
+leaked this way is written unqualified *in that namespace*; it does not reserve
+its short name against the **members** of the other types declared there. Two
+types in one namespace may name their operations, consts and constructors freely
+against one another — see §8.7, *members and constructors are named per type*.
+This is why 059 R4's capture rule does not follow the exposure link: the leak is
+automatic, so the presence of an exposed `merge` says nothing about whether any
+body inside a sibling sort reads a bare `merge` (WI-999).
+
+An **import** spends that exemption. `import a.Colour` or `import a.*` is the
+author asking for those bare names at this address, so a declaration taking one
+*is* a capture and is refused. This holds along the whole path, not just at the
+imported hop: `import a.*` brings in the namespace, and the constructor arrives
+one exposure hop further on — it is still a name the import put in view.
+
 **Constructor patterns resolve against the scrutinee, not the scope.** A
 constructor name in a `match` case (`case Red`, `case some(?x)`, `case nil()`) is
 **not** resolved through the general scope order above. It is resolved
@@ -2904,6 +2954,8 @@ Since facts are scoped to namespaces, different namespaces can provide different
 *One carrier declaring one spec twice.* A carrier may provide a spec many times at **different applications** — `sort Console` provides `Effect` for each of `ConsoleOutput` / `ConsoleError` / `ConsoleInput`. What is refused, at **load**, is two provisions of one spec that agree on the spec's carrier parameter (the same application) and disagree about another parameter: every reader of a carrier's provider view takes the first match, so admitting the pair would let the *order the provisions are written* decide the program's meaning. Provisions that agree are merged into one view, so a parameter bound by a later provision and omitted by an earlier one is still read. The dispatch side follows the same rule (WI-1032): two provisions that agree in everything dispatch consults — the carrier and the spec's *type*-parameter bindings — are **one candidate**, not a tie. A carrier writing `provides Spec[…]` in its own body beside a namespace-level `fact Spec[…]` for itself has said one thing twice, and a call on it resolves rather than being refused. An *operation* binding is not a type-parameter binding and so does not make two provisions differ here; when such a binding rivals an implementation the carrier already supplies, the conflict is reported as the supplier tie above — naming each by its supply route — rather than as two providers.
 
 **One name, one operation (WI-1049).** An operation name is declared at most once per scope, and the loader refuses a second declaration, naming both. Anthill has no signature-keyed overloading: a scope maps a name to one symbol, so a second `operation` of that name does not introduce a second operation — it merges into the first and its signature is lost, leaving *which* signature the kernel reports to depend on which was written first. Same-named operations on **different** sorts are not overloading and stay legal: they are distinct symbols chosen by carrier, per the ladder below. A `rule` whose head names an operation is not a second declaration either — for an operation with a body the equational and relational views are *derived* from that body (WI-580), and for a body-less one the rules are what give it meaning (WI-818, WI-881).
+
+**Members and constructors are named per type (WI-999).** *Per scope* above means per **type**, and a namespace is not one flat name space for every member of every sort in it. Two types declared in one namespace may name their operations, consts and constructors freely against one another — `sort SortedSet` may declare `merge` while a sibling `enum EffectExpression` declares an `entity merge`, and those are different declarations, chosen by carrier at the call site. §8.6's *variant exposure* does not change this: it leaks a constructor's short name to the **enclosing** namespace so it can be written unqualified there, and reserves nothing inside the sibling types declared alongside. The alternative would make every constructor name in a namespace a reserved word for every sort in it, which is why proposal 059 R4's capture rule stops at the exposure link.
 
 **Operation coherence across *different* specs.** The ambiguity rule above is about two providers of the *same* spec for one carrier. A distinct question is when a carrier provides several *different* specs that each define an operation of the same short name (e.g. a `List` provides both `FiniteCollection`, which defines a finite `map`, and — transitively — `Iterable`, which defines a lazy `map`). The kernel resolves this in two stages (`find_spec_op_for_provided_sort`):
 

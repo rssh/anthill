@@ -564,6 +564,25 @@ pub enum ImportVisibility {
     OwnFileOnly,
 }
 
+/// WI-999 — may step 1 of the resolution ladder (the ENTRY scope's own
+/// declarations) answer? `Visible` everywhere except
+/// [`SymbolTable::resolve_captured_name`], whose doc carries the reason.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OwnLocals {
+    Visible,
+    Skipped,
+}
+
+/// WI-999 — may the walk cross the §8.6 VARIANT-EXPOSURE link, by which a sort leaks
+/// its entity constructors' short names to the ENCLOSING namespace? `Followed`
+/// everywhere except [`SymbolTable::resolve_captured_name`], whose doc carries the
+/// reason (059's amended R4 clause 3: members and constructors are named per TYPE).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExposureLinks {
+    Followed,
+    Skipped,
+}
+
 /// WI-995 — one name whose resolution DEPENDS on an import written in another file:
 /// the two readings disagree about it.
 #[derive(Clone, Debug)]
@@ -1076,6 +1095,24 @@ impl SymbolTable {
         }
     }
 
+    /// WI-999 — did an `import` justify the `scope → parent` edge, as opposed to a
+    /// declaration at the address (an enclosing body, a `requires`, §8.6's variant
+    /// exposure)? Only [`Self::add_import_parent`] files a `File`/`Invocation` origin;
+    /// [`Self::add_parent`] files `Declaration` for every other edge (WI-995).
+    ///
+    /// Asked WHO WROTE THE EDGE, not whether it is visible: an import written in
+    /// another file still makes the name one somebody asked for at this address, which
+    /// is the whole reading `resolve_captured_name` takes of imports.
+    fn parent_edge_is_imported(&self, scope: ScopeId, parent: ScopeId) -> bool {
+        self.import_parent_origin
+            .get(&(scope, parent))
+            .is_some_and(|origins| {
+                origins
+                    .iter()
+                    .any(|o| matches!(o, ImportOrigin::File(_) | ImportOrigin::Invocation))
+            })
+    }
+
     fn origin_visible(&self, origin: ImportOrigin) -> bool {
         match origin {
             ImportOrigin::Builtin | ImportOrigin::Declaration | ImportOrigin::Invocation => true,
@@ -1238,12 +1275,87 @@ impl SymbolTable {
         }
     }
 
+    /// WI-999 (proposal 059 R4 clause 3) — WHAT `name` MEANT IN `scope` BEFORE A
+    /// DECLARATION THERE CAPTURED IT, over the names the scope's own text has brought
+    /// into view. Two departures from [`Self::resolve_in_scope`], each one of 059's
+    /// clauses rather than an optimisation.
+    ///
+    /// (1) STEP 1 IS SKIPPED AT THE ENTRY SCOPE, and only there. A declaration wins
+    /// lookup in its own scope by shadowing whatever the ladder would otherwise have
+    /// reached, so the capture question cannot be asked of [`Self::resolve_in_scope`]:
+    /// that answers with the capturing declaration itself. A parent's locals still
+    /// answer, because those are exactly what it shadows.
+    ///
+    /// (2) THE §8.6 VARIANT-EXPOSURE LINK IS NOT FOLLOWED. An enum's constructors are
+    /// leaked to the ENCLOSING namespace so they can be written unqualified there;
+    /// that is not a statement that the bare name is in use at any address inside it.
+    /// 059's amended clause: members and constructors are named PER TYPE, and two
+    /// types in one namespace may name theirs freely against one another. MEASURED
+    /// (WI-999) — with this leg removed the STDLIB ITSELF is refused, at
+    /// `prelude.SortedSet.merge` over `EffectExpression.merge` and
+    /// `reflect.Substitution.apply` over `Expr.apply`, two sibling constructors the
+    /// corpus never writes bare; the unamended clause makes every constructor name in
+    /// a namespace a reserved word for every sort in it. A `requires` hop is NOT this
+    /// link and stays followed — it is a clause the author wrote, and R4's exclusions
+    /// govern it by relation.
+    ///
+    /// ORDINARY [`ImportVisibility::OwnFileOnly`], on the AMBIENT ASKING FILE — so the
+    /// caller must set one, and must ask once per file that has text at this address.
+    /// A declaration enters the scope's `locals` and is visible to every file, while
+    /// an import written in file A is visible to A alone (WI-995), so the capture
+    /// question is really "did this name mean something else FOR SOME FILE THAT WRITES
+    /// HERE". Asking under `All` instead — the union over every file — refuses a
+    /// program no file could have misread: measured, an `import wins.f` in a file that
+    /// never mentions `Rec` blocks a `Rec.f` written in another, with no body anywhere
+    /// reading a bare `f` in that scope and the only repair in someone else's text.
+    /// `load::check_name_captures` owns the per-file loop and the set it runs over.
+    ///
+    /// NOT audited (see [`ImportAudit`]): these are questions the load itself never
+    /// asks, so counting them would inflate the WI-995 counterfactual's denominator
+    /// with resolutions no program performs.
+    pub fn resolve_captured_name(&self, name: &str, scope: ScopeId) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Skipped,
+            ExposureLinks::Skipped,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
     fn resolve_in_scope_recursive(
         &self,
         name: &str,
         scope: ScopeId,
         visited: &mut std::collections::HashSet<ScopeId>,
         vis: ImportVisibility,
+    ) -> ResolveResult {
+        self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            visited,
+            vis,
+            OwnLocals::Visible,
+            ExposureLinks::Followed,
+        )
+    }
+
+    /// [`Self::resolve_in_scope_recursive`], plus WI-999's two switches.
+    /// `own_locals` applies to THIS scope only — every recursive call below passes
+    /// [`OwnLocals::Visible`], because a parent's declarations are not what a
+    /// declaration here shadows. `exposure` applies at EVERY hop: the link it names is
+    /// reached one step OUT from the declaring scope, never at it.
+    fn resolve_in_scope_recursive_with_mode(
+        &self,
+        name: &str,
+        scope: ScopeId,
+        visited: &mut std::collections::HashSet<ScopeId>,
+        vis: ImportVisibility,
+        own_locals: OwnLocals,
+        exposure: ExposureLinks,
     ) -> ResolveResult {
         if !visited.insert(scope) {
             return ResolveResult::NotFound; // cycle
@@ -1253,8 +1365,10 @@ impl SymbolTable {
         // the borrow on self.scopes, then drop it before recursing.
         let eligible_parents: SmallVec<[ScopeId; 4]> = if let Some(data) = self.scopes.get(&scope) {
             // 1. Local: check locals defined in this scope — O(1) lookup
-            if let Some(&sym) = data.locals.get(name) {
-                return ResolveResult::Found(sym);
+            if own_locals == OwnLocals::Visible {
+                if let Some(&sym) = data.locals.get(name) {
+                    return ResolveResult::Found(sym);
+                }
             }
 
             // 1b. Imported name aliases (from selective/plain imports)
@@ -1291,6 +1405,39 @@ impl SymbolTable {
                             if !parent.exposed.is_empty() && !parent.exposed.contains(name) {
                                 return None;
                             }
+                            // WI-999 — the §8.6 VARIANT-EXPOSURE hop, and only it. The
+                            // line above already says a non-empty `exposed` admits its
+                            // members and nothing else, so a hop that reaches here on a
+                            // name IN that set is justified by the exposure — UNLESS an
+                            // import also justifies it. A `requires` hop into a spec
+                            // (whose `exposed` is empty — a spec declares no variants)
+                            // never reaches this test at all, which is what keeps R4's
+                            // relation exclusions the thing that governs it.
+                            //
+                            // THE IMPORT TEST IS NOT REDUNDANT. `import a.b` (plain) and
+                            // `import a.b.*` (wildcard) both splice `a.b` in as a
+                            // non-enclosing parent, and where `a.b` is a sort with
+                            // variants that edge is indistinguishable from an exposure
+                            // edge by `exposed` alone. An import IS the author asking
+                            // for those bare names, so a declaration taking one captures
+                            // it and must stay refused. `add_import_parent` records a
+                            // `File`/`Invocation` origin for exactly those edges, and
+                            // `add_parent` a `Declaration` one for the rest (WI-995) —
+                            // so the WRITER is the discriminator, not the shape.
+                            //
+                            // Its population is not "wildcard imports" (of which the
+                            // corpus has none): `ImportKind::Plain` reaches the same
+                            // `add_import_parent`, and the corpus holds ~10 plain
+                            // imports of variant-bearing sorts (`anthill.prelude.List`,
+                            // `.Option`, `.Stream`, `.Iteration`, `.Iterable`). Those
+                            // edges are live here on every load.
+                            if exposure == ExposureLinks::Skipped
+                                && !parent.exposed.is_empty()
+                                && parent.exposed.contains(name)
+                                && !self.parent_edge_is_imported(scope, p.parent_scope)
+                            {
+                                return None;
+                            }
                         }
                     }
                     Some(p.parent_scope)
@@ -1303,7 +1450,34 @@ impl SymbolTable {
 
         let mut matches = Vec::new();
         for parent_scope in eligible_parents {
-            match self.resolve_in_scope_recursive(name, parent_scope, visited, vis) {
+            // `OwnLocals::Visible`, always: that switch is the ENTRY scope's alone.
+            //
+            // `exposure` is a PATH property, not an edge one, and this is where it can
+            // be spent. Crossing an IMPORT-contributed edge means the author asked for
+            // everything reachable beneath it, so §8.6's leak is no longer automatic
+            // down there: `import wilib.*` (a NAMESPACE) is one hop, and the exposure
+            // edge `wilib → Colour` the NEXT — an edge-local test admits that edge and
+            // the check never sees `Red`, though the author's own import is what put it
+            // in view. Found by `/code-review`, with the silent flip driven: a body
+            // reading `Red(x: 7)` rebinds to a `Box.Red` member and loads clean.
+            //
+            // The probe runs only in `Skipped` mode — the WI-999 capture check — so
+            // ordinary resolution pays nothing for it.
+            let below = match exposure {
+                ExposureLinks::Followed => ExposureLinks::Followed,
+                ExposureLinks::Skipped if self.parent_edge_is_imported(scope, parent_scope) => {
+                    ExposureLinks::Followed
+                }
+                ExposureLinks::Skipped => ExposureLinks::Skipped,
+            };
+            match self.resolve_in_scope_recursive_with_mode(
+                name,
+                parent_scope,
+                visited,
+                vis,
+                OwnLocals::Visible,
+                below,
+            ) {
                 ResolveResult::Found(sym) => matches.push(sym),
                 ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),
                 ResolveResult::NotFound => {}
