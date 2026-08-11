@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind, BuiltinTag}
-import anthill.intern.{SymbolKind, TermSymbol}
+import anthill.intern.{SymbolKind, TermSymbol, ImportOrigin}
 
 /** Register prelude sorts and builtins into the KB. */
 object Prelude:
@@ -179,10 +179,12 @@ object Prelude:
     val typedExprScope = defineSort("TypedExpr", reflectScope)
     defineEntity("typed", typedExprScope)
 
-    // Global imports for reflect entities
+    // Global imports for reflect entities. WI-1074 — Builtin: registered by the
+    // bootstrap, written in no file, so local to none — this is scaland's `_global`
+    // ruling, mirroring rustland's `register_implicit_prelude_effects`.
     val globalScope = kb.globalScope
     for (name, sym) <- metadataEntities ++ literalEntities do
-      kb.symbols.addImport(globalScope, name, sym)
+      kb.symbols.addImport(globalScope, name, sym, ImportOrigin.Builtin)
 
   /** A kernel operation is DEFINED in its namespace scope, always (WI-990).
     *

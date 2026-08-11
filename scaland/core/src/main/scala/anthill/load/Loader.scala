@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ResolveResult}
+import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ResolveResult, ImportOrigin}
 import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.parse.*
 import anthill.span.Span
@@ -83,8 +83,15 @@ object Loader:
   def scanDefinitions(kb: KnowledgeBase, files: IndexedSeq[ParsedFile]): ArrayBuffer[LoadError] =
     val errors = ArrayBuffer.empty[LoadError]
 
+    // WI-1074 — one FileId per file, minted ahead of every pass so the scan and the
+    // load phase (which re-asks [[SymbolTable.fileIdOf]] on the same instance) share
+    // one id per file. Every per-file loop below says whose text it resolves on
+    // behalf of; the scan clears the cursor on the way out.
+    val fileIds = files.map(kb.symbols.fileIdOf)
+
     // Pass 1: Define all names
-    for file <- files do
+    for (file, fid) <- files.zip(fileIds) do
+      kb.symbols.setAskingFile(Some(fid))
       walkScopes(DefinePass(kb, file.symbols), file.items)
 
     // Pass 2: Process requires and imports (all sorts exist now). A Selective
@@ -92,8 +99,9 @@ object Loader:
     // symbol is not registered until pass 3 — so such names are deferred into
     // `pending` and retried below (WI-295).
     val pending = ArrayBuffer.empty[PendingImport[kb.ScopeId]]
-    for file <- files do
-      walkScopes(ImportPass(kb, file.symbols, errors, pending), file.items)
+    for (file, fid) <- files.zip(fileIds) do
+      kb.symbols.setAskingFile(Some(fid))
+      walkScopes(ImportPass(kb, file.symbols, errors, pending, ImportOrigin.File(fid)), file.items)
 
     // Post-pass: auto-import prelude sort contents into global scope. BEFORE pass 3,
     // and that ordering is load-bearing: pass 3's mint guard asks whether a head's
@@ -105,15 +113,19 @@ object Loader:
     autoImportPrelude(kb)
 
     // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898).
-    for file <- files do
+    for (file, fid) <- files.zip(fileIds) do
+      kb.symbols.setAskingFile(Some(fid))
       walkScopes(RuleHeadPass(kb, file.symbols, file.terms, errors), file.items)
 
     // Pass 4 (WI-295): retry the deferred predicate imports. Pass 3's head-functor
     // symbols are in `byQualifiedName` now, so a cross-namespace rule-predicate
     // import resolves like any declared name — erroring only if it is still unbound.
+    // WI-1074: the retry runs outside the per-file loop, so each pending import
+    // carries its own provenance and re-asks as the file that wrote it.
     for p <- pending do
+      kb.symbols.setAskingFile(Some(p.origin.id))
       resolveSelectiveImport(kb, p.target, p.path, p.short) match
-        case Some(sym) => kb.symbols.addImport(p.scope, p.short, sym)
+        case Some(sym) => kb.symbols.addImport(p.scope, p.short, sym, p.origin)
         // WI-962: the scope name comes off the SYMBOL, like the other two raise sites, and
         // not off `p.path` — the written import spelling. The two agree (a `define` writes
         // one qualified name into both the `byQualifiedName` key and the `SymbolDef`, and
@@ -123,11 +135,30 @@ object Loader:
         case None =>
           errors += LoadError.UnresolvedName(p.short, p.span, kb.qualifiedNameOf(p.target))
 
+    // WI-1074 — the scan is over; nothing after it asks on one file's behalf until the
+    // load phase sets the cursor again.
+    kb.symbols.setAskingFile(None)
     errors
 
-  /** Load a parsed file into the KB (Phase 2 — after scanDefinitions). */
+  /** Load a parsed file into the KB (Phase 2 — after scanDefinitions).
+    *
+    * WI-1074 — sets the asking file and LEAVES it set: the shipped shape is
+    * load-then-resolve on that file's behalf (a test loads a fixture and then asks the
+    * KB about the names its text imported), so clearing here would make every import
+    * the file itself wrote invisible to the resolution that follows — a name imported
+    * one line earlier answering `NotFound`, with nothing to distinguish "not yours"
+    * from "no such name". Mirrors rustland's `scan_definitions`, which leaves the
+    * cursor on its last source for the query path.
+    *
+    * THE COROLLARY, stated because a caller can only see it by tracing this method:
+    * after [[loadAll]] the cursor is the LAST file's, so a post-load `resolveInScope`
+    * answers as that file — which is what the load-a-fixture-then-ask tests mean, and
+    * an ORDER ARTIFACT for any other caller. A caller resolving on a different file's
+    * behalf (or on none) sets the cursor itself via
+    * [[anthill.intern.SymbolTable.setAskingFile]]. */
   def load(kb: KnowledgeBase, file: ParsedFile): ArrayBuffer[LoadError] =
     val errors = ArrayBuffer.empty[LoadError]
+    kb.symbols.setAskingFile(Some(kb.symbols.fileIdOf(file)))
     walkScopes(LoadPass(kb, file.symbols, file.terms, errors), file.items)
     errors
 
@@ -521,7 +552,12 @@ object Loader:
     val kb: KnowledgeBase,
     val fileSym: SymbolTable,
     errors: ArrayBuffer[LoadError],
-    pending: ArrayBuffer[PendingImport[kb.ScopeId]]
+    pending: ArrayBuffer[PendingImport[kb.ScopeId]],
+    /** WI-1074 — who this file's imports belong to. `ImportOrigin.File`, not the full
+      * enum: a written import always has a writing file, and the narrower type is what
+      * lets the pass-4 retry read `origin.id` with no dead arm for origins no producer
+      * builds. */
+    origin: ImportOrigin.File
   ) extends ScopePass:
 
     // The import list attached to a `namespace` and to a `sort … end` body go through
@@ -530,7 +566,7 @@ object Loader:
       decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: kb.ScopeId
     ): Option[kb.ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors).map { scope =>
-        processImports(kb, decl.imports, fileSym, scope, errors, pending)
+        processImports(kb, decl.imports, fileSym, scope, errors, pending, origin)
         scope
       }
 
@@ -568,8 +604,13 @@ object Loader:
         // Only ever the top level: inside a namespace / sort body the parser's
         // `bodyContent` consumes an `import` before `declaration` is tried, so it
         // lands in that body's `imports` list and never reaches this arm as an Item.
+        //
+        // WI-1074 — `_global` is ONE address every file writes, which made a top-level
+        // import the widest reach a file had into text it never saw. It carries the
+        // same file origin as any other import now: global in PLACE, local in WHO SEES
+        // IT. (Rustland's wi853 test was inverted by WI-995 the same way.)
         case Item.ImportItem(imp) =>
-          processImports(kb, Seq(imp), fileSym, scope, errors, pending)
+          processImports(kb, Seq(imp), fileSym, scope, errors, pending, origin)
 
         case _ =>
 
@@ -709,7 +750,10 @@ object Loader:
     * [[LoadError]] says is derived from a scope; the retry now reads that off `target`
     * instead. */
   private case class PendingImport[S](
-    scope: S, short: String, target: TermSymbol, span: Span, path: String)
+    scope: S, short: String, target: TermSymbol, span: Span, path: String,
+    /** WI-1074 — whose import this is; the pass-4 retry runs outside the per-file loop,
+      * so the provenance rides with the deferral. */
+    origin: ImportOrigin.File)
 
   /** Resolve one name of a `Selective` import against the imported symbol `target`
     * (whose qualified name is `pathStr`). THE one resolution both pass 2 and the
@@ -743,7 +787,8 @@ object Loader:
     fileSym: SymbolTable,
     scope: kb.ScopeId,
     errors: ArrayBuffer[LoadError],
-    pending: ArrayBuffer[PendingImport[kb.ScopeId]]
+    pending: ArrayBuffer[PendingImport[kb.ScopeId]],
+    origin: ImportOrigin.File
   ): Unit =
     for imp <- imports do
       val pathStr = joinSegments(fileSym, imp.path.segments)
@@ -752,25 +797,27 @@ object Loader:
           imp.kind match
             case ImportKind.Plain =>
               val short = fileSym.name(imp.path.last)
-              kb.symbols.addImport(scope, short, sym)
+              kb.symbols.addImport(scope, short, sym, origin)
             case ImportKind.Selective(names) =>
               for n <- names do
                 val name = joinSegments(fileSym, n.segments)
                 resolveSelectiveImport(kb, sym, pathStr, name) match
-                  case Some(s) => kb.symbols.addImport(scope, name, s)
+                  case Some(s) => kb.symbols.addImport(scope, name, s, origin)
                   // WI-295: a RULE-INTRODUCED predicate's head-functor symbol is not
                   // registered until pass 3, which runs AFTER imports — so a selective
                   // import of one (`import anthill.prelude.Bool.{ite}`, stdlib
                   // int64/ordered) cannot resolve here. Defer instead of erroring; the
                   // post-pass-3 retry re-resolves it and errors only if still unbound.
                   case None =>
-                    pending += PendingImport(scope, name, sym, n.span, pathStr)
+                    pending += PendingImport(scope, name, sym, n.span, pathStr, origin)
             case ImportKind.Wildcard =>
               // WI-988: a wildcard brings a scope's CONTENTS in, so the path has to name
               // something with contents — a namespace, or a sort (§5.1 names both).
+              // WI-1074: through [[SymbolTable.addImportParent]] — this link is one
+              // file's import, not a property of the address.
               parentScopeOf(kb, sym, Set(SymbolKind.Namespace, SymbolKind.Sort),
                 s"the wildcard import `$pathStr.*`", imp.path.span, errors)
-                .foreach(p => kb.symbols.addParent(scope, p, isEnclosing = false))
+                .foreach(p => kb.symbols.addImportParent(scope, p, isEnclosing = false, origin))
         case None =>
           errors += LoadError.UnresolvedImport(pathStr, imp.path.span)
 
