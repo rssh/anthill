@@ -13567,6 +13567,15 @@ fn check_apply_iter(
     // block, so the opening runs here as well — a callee with a recorded return but no full
     // `OperationInfo` is still a callee, and a rule that holds only on the path the typer
     // usually takes is not a rule.
+    //
+    // WI-1078 REACHES THIS SITE AND CANNOT FIRE ON IT, which is stated rather than left to be
+    // rediscovered. Path 1 is entered iff `lookup_operation_info_full` succeeded, so anything
+    // arriving here has NO decodable signature — and that is the exact condition on which
+    // `unbound_return_var_openings` returns an empty map, because "bound" is a question about a
+    // signature it cannot read. So the anonymous/omitted spellings still open here and a NAMED
+    // unbound one does not: this path keeps WI-1063's rule, deliberately, since the evidence
+    // WI-1078 runs on is absent. `fn_sym` is passed anyway so the site cannot silently drift
+    // out of the set if the Path-1 gate is ever widened.
     lookup_operation_return_type(kb, fn_sym)
         .map(|ty| {
             let ret = Value::term(ty);
@@ -43574,7 +43583,8 @@ fn unbound_return_var_openings(
     // every call in the corpus stops here, which is what keeps the signature read off the hot
     // path.
     let mut in_result: Vec<VarId> = Vec::new();
-    collect_type_vars_value(kb, ret, &mut in_result);
+    let mut seen = HashSet::new();
+    super::node_occurrence::collect_value_type(kb, ret, &mut in_result, &mut seen);
     if in_result.is_empty() {
         return HashMap::new();
     }
@@ -43584,14 +43594,23 @@ fn unbound_return_var_openings(
         // when the evidence the rule runs on is absent.
         return HashMap::new();
     };
+    // ONE WALK ANSWERS BOTH SIDES, and it is the walk the `close`/`open`/σ rewriters already
+    // use ([`collect_value_type`], WI-378). The first cut hand-rolled a second one over the
+    // `TypeNode` arms and lost two carriers it does not look like it would: a `NamedTuple`'s
+    // `fields` ride a `Value::Entity` cons-list, and a `Denoted` payload is an Expr spine. A
+    // variable missed in the RETURN merely leaves that slot alone, but one missed in a
+    // PARAMETER reads a BOUND variable as existential and skolemizes it — so the two must not
+    // be able to disagree, and now they cannot.
     let mut candidates: Vec<VarId> = Vec::new();
-    collect_type_vars_value(kb, &op.return_type, &mut candidates);
+    let mut seen = HashSet::new();
+    super::node_occurrence::collect_value_type(kb, &op.return_type, &mut candidates, &mut seen);
     let mut bound: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
     for (_, ty) in &op.params {
-        collect_type_vars_value(kb, ty, &mut bound);
+        super::node_occurrence::collect_value_type(kb, ty, &mut bound, &mut seen);
     }
     for r in &op.requires {
-        collect_type_vars_value(kb, r, &mut bound);
+        super::node_occurrence::collect_value_type(kb, r, &mut bound, &mut seen);
     }
     for (_, v) in &op.type_params {
         if let Var::Global(vid) = v {
@@ -43615,13 +43634,19 @@ fn unbound_return_var_openings(
         if bound.iter().any(|b| b.raw() == vid.raw()) {
             continue;
         }
+        // Only a variable that actually SURVIVES into this call's result can reach a slot, so
+        // one that the elimination already substituted away costs no mint. A rigid is interned
+        // for the KB's lifetime, and this runs per call.
+        if !in_result.iter().any(|r| r.raw() == vid.raw()) {
+            continue;
+        }
         // An ANONYMOUS carrier keeps its per-SLOT mint below — `?` names nothing and ties
         // nothing, so giving it a per-VARIABLE entry here would be the one case where the
         // sharing this map exists for is wrong. (It would also be invisible on the parser's
         // carrier, where every bare `?` is already its own `VarId`; it is `?_`, a scope-SHARED
         // var the parser and [`value_is_anonymous_wildcard`] both read as anonymous, that the
-        // distinction is actually about.)
-        if matches!(kb.local_name_of(vid.name()), "_" | "?" | "?_") {
+        // distinction is actually about.) Shared predicate, for the reason stated there.
+        if anonymous_var_name(kb, vid.name()) {
             continue;
         }
         let fresh = kb.fresh_var(vid.name());
@@ -43629,86 +43654,6 @@ fn unbound_return_var_openings(
         opened.insert(vid.raw(), Value::term(rigid));
     }
     opened
-}
-
-/// WI-1078 — every logical variable occurring in a declared type, on EITHER carrier. Deduping
-/// is the caller's business (both readers only ever ask "is this var in here?").
-///
-/// The `Value::Node` arm mirrors [`rewrite_type_occ_deep`]'s traversal exactly, and for the
-/// same reason: a Node-carried type keeps its variables in `TypeChild::Ground` leaves, so
-/// walking the leaves and recursing the nodes finds them all. The arms it declines to descend
-/// into are the ones that arm declines too — a `Denoted` payload is a VALUE occurrence, which
-/// carries no type var.
-///
-/// Under-collecting HERE is not symmetric between this function's two callers: a variable
-/// missed in the RETURN merely leaves that slot as it is (WI-1063's behaviour), while one
-/// missed in a PARAMETER would read a bound variable as existential and open it. So the
-/// `TypeNode` and `EffectExprNode` matches are written out in full rather than defaulted — a
-/// new arm there is a compile error, not a silent miss.
-fn collect_type_vars_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<VarId>) {
-    match v {
-        Value::Term { id, .. } => out.extend(kb.collect_vars(*id)),
-        Value::Var(Var::Global(vid)) => out.push(*vid),
-        Value::Node(occ) => collect_type_vars_occ(kb, occ, out),
-        _ => {}
-    }
-}
-
-/// The `Value::Node` half of [`collect_type_vars_value`].
-fn collect_type_vars_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, out: &mut Vec<VarId>) {
-    fn child(kb: &KnowledgeBase, c: &TypeChild, out: &mut Vec<VarId>) {
-        match c {
-            TypeChild::Ground(t) => out.extend(kb.collect_vars(*t)),
-            TypeChild::Node(n) => collect_type_vars_occ(kb, n, out),
-        }
-    }
-    match &occ.kind {
-        NodeKind::Type(node) => match node {
-            TypeNode::Arrow {
-                param,
-                result,
-                effects,
-                arity,
-            } => {
-                child(kb, param, out);
-                child(kb, result, out);
-                child(kb, effects, out);
-                child(kb, arity, out);
-            }
-            TypeNode::Parameterized { base, bindings } => {
-                child(kb, base, out);
-                for (_, c) in bindings {
-                    child(kb, c, out);
-                }
-            }
-            TypeNode::EffectsRows { effects_expr } => child(kb, effects_expr, out),
-            TypeNode::ExprCarried { value, member } => {
-                child(kb, value, out);
-                child(kb, member, out);
-            }
-            TypeNode::NamedTuple { fields } => collect_type_vars_value(kb, fields, out),
-            TypeNode::Denoted { .. } => {}
-        },
-        NodeKind::EffectExpr(node) => match node {
-            EffectExprNode::Merge { left, right } => {
-                child(kb, left, out);
-                child(kb, right, out);
-            }
-            EffectExprNode::Present { label } | EffectExprNode::Absent { label } => {
-                child(kb, label, out)
-            }
-            EffectExprNode::Guarded { label, guard } => {
-                child(kb, label, out);
-                collect_type_vars_value(kb, guard, out);
-            }
-            EffectExprNode::Open { tail } => child(kb, tail, out),
-            EffectExprNode::EmptyRow => {}
-        },
-        // `Expr` / `RuleHead` / `Pattern` are not type carriers. One reaches a type slot only
-        // as a `Denoted` payload — a VALUE occurrence, which the arm above declines for the
-        // same reason `rewrite_type_occ_deep` does.
-        NodeKind::Expr { .. } | NodeKind::RuleHead { .. } | NodeKind::Pattern { .. } => {}
-    }
 }
 
 /// WI-1063 — WHICH POSITION [`rigidify_unwritten_sort_params`] is walking. The walk itself is
@@ -43982,6 +43927,19 @@ fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool {
             _ => return false,
         },
     };
+    anonymous_var_name(kb, name)
+}
+
+/// The NAME half of [`value_is_anonymous_wildcard`], for the one reader that already holds a
+/// variable rather than a carrier ([`unbound_return_var_openings`]).
+///
+/// ONE PREDICATE BECAUSE A DIVERGENCE HERE IS SILENT AND ONE-DIRECTIONAL. WI-1078 keys a
+/// per-VARIABLE opening on this test and the slot walk keys a per-SLOT one on the function
+/// above; a spelling added to only one of them would give a variable BOTH answers, and the
+/// per-variable entry wins ([`SlotPosition::opened_named_var`] is consulted before
+/// [`UnwrittenFill::mint`]). Two independent `?`s in one return would then share one ρ — the
+/// exact tie the map's own doc says must never be invented.
+fn anonymous_var_name(kb: &KnowledgeBase, name: Symbol) -> bool {
     matches!(kb.local_name_of(name), "_" | "?" | "?_")
 }
 

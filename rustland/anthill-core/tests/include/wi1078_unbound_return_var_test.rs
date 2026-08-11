@@ -39,23 +39,35 @@
 //! Counted at the mint over all six loadable tiers (`rustland/anthill-stl/anthill`,
 //! `rustland/anthill-todo/anthill`, `rustland/anthill-cpp-gen/anthill`, `examples/`,
 //! `anthill-todo/`, `anthill-testcases/` — the stdlib rides along with each), the opening
-//! fires **zero** times and every tier loads with byte-identical fact and rule totals. Over
-//! the workspace suite AS IT STOOD BEFORE THIS FILE it fires exactly **once**:
-//! `test.wi1063.named.mk_named`, the row in `wi1063_existential_return_test` that pinned the
-//! exemption, which this ticket rewrites to the opposite verdict. So "the corpus is clean" is
-//! evidence that nothing broke and NOT evidence that anything works — every claim below is
-//! driven here or it is not driven at all.
+//! fires **zero** times and every tier loads with byte-identical fact and rule totals. A
+//! declaration is not a use: the stdlib DECLARES the shape and no corpus program calls one.
+//!
+//! Over the pre-existing suite it fires **twice**, and the second one is worth knowing:
+//! `test.wi1063.named.mk_named` (the row that pinned the exemption, rewritten here to the
+//! opposite verdict) and `anthill.prelude.LogicalStream.empty`, whose `?A` IS classified
+//! unbound and IS given a ρ — which the SELF gate then discards before it reaches a slot, so
+//! `empty` behaves exactly as before. That is the measurement behind the `empty` paragraph
+//! above: the rule reaches it and the self gate, not the exemption, is what carries it.
+//!
+//! COUNT WITH `--nocapture`. libtest prints a passing test's output nowhere, so an
+//! `eprintln!` census run without it reports only the mints of tests that FAILED — which is
+//! how the first version of this paragraph came to claim "once". The corpus figures above are
+//! from the `anthill` CLI and are unaffected.
 //!
 //! ## `empty` DID NOT HAVE TO MOVE, which the ticket predicted it would
 //!
 //! `LogicalStream.empty() -> LogicalStream[?A]` was WI-1063's stated justification for the
-//! exemption, and the ticket expected this rule to bite it. It does not, and the reason is
-//! worth keeping: `empty` is a member of the sort its return names, so the return is a SELF
-//! reference and `SlotPosition::CallResult` never opens one at all (WI-1063's §3 parametricity
-//! tie) — the same hatch that carries `List.empty`. The named variable was never what was
-//! holding it up. Driven from two sides: [`a_self_sort_return_is_not_opened_in_either_spelling`]
-//! here, and `wi1076_self_representing_spec_carrier_test::mplus_unifies_an_empty_stream_with_-
-//! a_non_empty_one`, which calls `empty()` for real and stays green.
+//! exemption, and the ticket expected this rule to bite it. It does not, and the reason
+//! retires that justification: `empty` is a member of the sort its return names, so the return
+//! is a SELF reference and `SlotPosition::CallResult` never opens one at all (WI-1063's §3
+//! parametricity tie) — the same hatch that carries `List.empty`. Measured at the mint, its
+//! `?A` IS classified unbound and IS given a ρ, which the self gate then throws away. So the
+//! named-variable exemption was protecting something the self gate already protected, and the
+//! OTHER half of WI-1063's justification — `FilteredStream.splitFirst`'s own `[Elem]` — is the
+//! one that was load-bearing (16 tests, below). Driven from two sides:
+//! [`a_self_sort_return_is_not_opened_in_either_spelling`] here, and
+//! `wi1076_self_representing_spec_carrier_test::mplus_unifies_an_empty_stream_with_a_non_-
+//! empty_one`, which calls `empty()` for real and stays green.
 //!
 //! ## What fails when each piece is backed out — DRIVEN, one revert each, whole suite per row
 //!
@@ -68,6 +80,7 @@
 //! | candidates read off the CALL's result instead of the DECLARED return | **1**: `wi714_relation_reference_test::wi714_cross_sort_rule_body_subgoal` (`expected List[T = Int64], got List[T = ?x]`) — and [`an_eliminated_projection_is_not_a_candidate`], once rebuilt on the cross-sort form that reproduces it |
 //! | the mint keyed per SLOT instead of per VARIABLE | **3**: [`the_tie_survives_the_opening`] on the VERDICT, plus `wi1063_…::every_spelling_…` and [`a_named_variable_…_data_parameter_too`] on the DIAGNOSTIC — a per-slot rigid is named after the SLOT (`?T`), so the message stops naming the variable the author wrote (`?A`) |
 //! | the ENCLOSING SORT's parameters dropped | **0** — which is why that entry is not in the code; see above |
+//! | the shared [`collect_value_type`]'s `Entity`/`Tuple` arm dropped (the gap a hand-rolled collector had) | [`a_node_carried_parameter_binds_its_variable_too`]'s first half, REFUSED at `want_ints.l`, while its plain-tuple half still loads |
 //!
 //! Each was run alone against the whole `anthill-core` suite. Two rows here pass under EVERY
 //! revert, by design, and say so at their own sites:
@@ -373,6 +386,44 @@ fn the_bare_nullary_name_and_the_eta_lift_open_it_too() {
     assert!(
         eta.contains("apply_it.f") && eta.contains("E = ?E"),
         "the eta arrow's RESULT is a use of the declared return and opens once per lift: {eta}",
+    );
+}
+
+/// THE TWO SIDES MUST BE READ BY ONE WALK, and a carrier missed on the PARAMETER side is the
+/// dangerous direction: it reads a bound variable as existential and skolemizes it, refusing a
+/// correct program. This row holds the carrier that is easiest to miss — a tuple parameter with
+/// a `Modify`-carrying field rides the `Value::Node` `NamedTuple` form, whose `fields` are a
+/// `Value::Entity` cons-list rather than type children, so a walk over the `TypeNode` arms
+/// alone never sees the `?T` inside it.
+///
+/// CONTROL, and it is the reason this row exists rather than a doc note: with that one carrier
+/// dropped from the collector, the first half is REFUSED at `want_ints.l` (`expected List[T =
+/// Int64], got List[T = ?T]`) while the plain-tuple second half still loads — the gap is real,
+/// reachable, and invisible on the ordinary term carrier. The first cut of this ticket had it,
+/// having hand-rolled a second collector; the delivered code calls the shared
+/// `collect_value_type` the σ rewriters use, so the two cannot disagree.
+#[test]
+fn a_node_carried_parameter_binds_its_variable_too() {
+    crate::common::load_kb_with(
+        "namespace test.wi1078.nodetuple\n\
+         \x20 import anthill.prelude.{Unit, Int64, Cell, Modify, List}\n\
+         \x20 operation run(c: Cell[V = Int64], \
+         t: (f: (x: Int64) -> Unit @ {Modify[c]}, y: List[T = ?T])) -> List[T = ?T]\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         \x20 operation use_it(c: Cell[V = Int64], \
+         t: (f: (x: Int64) -> Unit @ {Modify[c]}, y: List[T = Int64])) -> Int64 = \
+         want_ints(run(c, t))\n\
+         end\n",
+    );
+    // The same shape on the ordinary hash-consed term carrier — never at risk, and here so the
+    // row above cannot pass for a reason that has nothing to do with the carrier.
+    crate::common::load_kb_with(
+        "namespace test.wi1078.plaintuple\n\
+         \x20 import anthill.prelude.{Int64, List}\n\
+         \x20 operation run2(t: (n: Int64, y: List[T = ?T])) -> List[T = ?T]\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         \x20 operation use_it(t: (n: Int64, y: List[T = Int64])) -> Int64 = want_ints(run2(t))\n\
+         end\n",
     );
 }
 

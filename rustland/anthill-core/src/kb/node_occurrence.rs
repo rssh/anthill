@@ -2835,7 +2835,13 @@ fn collect_expr_termid_field_vars(
 /// Type/EffectExpr spine; a `Value::Entity`/`Tuple` (the `NamedTuple.fields`
 /// `List[TypeField]` cons-list) recurses into its element field types; scalars /
 /// other carriers contribute nothing.
-fn collect_value_type(
+///
+/// `pub(super)` for WI-1078, which asks this exact question of a declared signature
+/// (which variables does this type mention?) and must get the SAME answer the
+/// rewriters do. Its first cut hand-rolled a second walk and lost the `Entity`/`Tuple`
+/// arm and the `Denoted` payload — an under-collection that reads a bound variable as
+/// existential and skolemizes it. One walk, one answer.
+pub(super) fn collect_value_type(
     kb: &KnowledgeBase,
     v: &Value,
     vars: &mut Vec<VarId>,
