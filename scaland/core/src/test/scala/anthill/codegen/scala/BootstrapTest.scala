@@ -2454,13 +2454,43 @@ class BootstrapTest extends munit.FunSuite:
       "refusing more than is fixed would show up here")
   }
 
-  test("WI-1080: the WHOLE prelude closure compiles but for WI-1081's four errors") {
-    // THE LADDER, ASSERTED. Every row of the peel ladder recorded in the refusal-set
-    // test above was measured by hand and written down as prose, so the closure — the
-    // number that actually moved when WI-1062 / WI-1065 / this ticket landed — was the
-    // one claim in this file nothing checked. It costs ONE `dotc` run over the whole
-    // emitted prelude (the refusal-set test above spends 40-odd on standalone files),
-    // and it is the assertion that a ticket claiming to grow the tree grew it.
+  test("WI-1020: the WHOLE prelude closure compiles but for WI-1081's four errors") {
+    // WI-1020'S DELIVERABLE: `docs/scala-forward-mapping.md` §2.3 promises "the
+    // generated file compiles as-is", and until this test the whole-closure claim was
+    // measured by hand and written into the prose ladder below. It costs ONE `dotc` run
+    // over the whole emitted prelude (the refusal-set test above spends 40-odd on
+    // standalone files), and it is the assertion that a ticket claiming to grow the
+    // tree grew it.
+    //
+    // WHAT IT SUBSUMES — NO INDIVIDUAL TEST, AND THAT IS THE HONEST ANSWER (WI-1020
+    // asks for this statement explicitly). Every string-match test below asserts a
+    // SPECIFIC spelling; a compile asserts only that SOME spelling type-checks, so the
+    // two measure different things and the compile is not the stronger of the two:
+    //   * WI-1054's `def zeroVal(): T` — the compile catches the OLD emission (`def
+    //     zero-val()` is not Scala and was a parse error on the ladder) but would
+    //     accept `zeroval` or `zero_val` equally. The string match is what pins §5.
+    //   * WI-1066's Set / Map / VectorSpace supertrait removal — its own test site
+    //     records that all three COMPILED before and after. A wrong-but-well-formed
+    //     claim is invisible here by construction.
+    //   * §6.3 eponymy (WI-940) — `enum Pair: case Pair(…)` compiles perfectly well
+    //     (measured, and stated in `ScalaCompile`'s doc). Not caught, not catchable.
+    // What it DOES subsume is a CLASS of defect no string match can express: output
+    // that is not Scala at all, and output that names a declaration nothing in the
+    // closure emits. Both shipped green under string matching — the `Iterable` cascade
+    // (WI-1062, 6 errors), the `Modifiable` cascade (WI-1080, 3), `class Fmapped needs
+    // to be abstract` (WI-1064) — and each was found by a compile, never by a match.
+    //
+    // NO FILE IS EXCLUDED from this compile (WI-1020's "no silent skips"): every
+    // prelude file's emission goes in, including the four errors, which are pinned
+    // rather than peeled. The REFUSED DECLARATIONS — the ones that emit nothing to
+    // compile — are named one by one in the refusal-set test above.
+    //
+    // WI-1020's third open question ("what to do about files that legitimately cannot
+    // compile yet — a `TypeExpr.Variable` renders as `?`, Denoted/EffectRow as `Any`")
+    // needed no exclusion list in the end: WI-1055 turned all three into refusals, so
+    // they emit nothing and there is no half-Scala file to except. The question was
+    // real when it was asked — `?` is not a Scala type and would have failed this
+    // compile in every file that reached it.
     val emitted = StdlibFixture.preludeByName.flatMap { case (_, pf) =>
       Bootstrap.generate(pf, scalaTypes).files
     }
@@ -2495,6 +2525,94 @@ class BootstrapTest extends munit.FunSuite:
     // WHEN WI-1081 LANDS this test fails at `assertEquals(errs.length, 4)`, which is
     // intended: the ladder row is a measurement, and the ticket that moves it records
     // the new one here.
+  }
+
+  test("WI-1020: widening the closure to anthill.reflect places NOTHING — the answer is a map") {
+    // THE SCOPING DECISION WI-1020 RESERVED FOR ITSELF, settled by measurement rather
+    // than opinion. Its brief was: "either widen the closure to include
+    // stdlib/anthill/reflect.anthill, or keep effects.anthill in the exclusion list and
+    // accept that its dependents go with it." WI-1080 removed the second horn — a
+    // refusal costs one declaration, so no dependent goes with anything — and this
+    // drives the first, which turns out not to be a horn at all.
+    //
+    // TWO INDEPENDENT REASONS, and either alone is decisive. Both are asserted below
+    // because a fix for one would leave a reader believing the other had moved.
+    val reflect = parseStdlib("anthill/reflect/reflect.anthill")
+    val wide = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles ++ IndexedSeq(reflect))
+    val effects = parseStdlib("anthill/prelude/effects.anthill")
+
+    // THE TABLE REALLY IS WIDER, asserted FIRST because everything below is a negative
+    // result and a negative result over an unchanged input measures nothing. Without
+    // this line the test would keep passing if `resolve` regressed to ignoring the extra
+    // files outright — the very thing that would make "widening changes nothing" true
+    // for the wrong reason. `Monotonicity` is one of the six declarations reflect.anthill
+    // DOES emit, and the narrow table cannot see it.
+    assert(wide.packagePlacement("anthill.reflect", "Monotonicity").isDefined,
+      "the wide table must actually carry anthill.reflect's emitted declarations")
+    assert(scalaTypes.packagePlacement("anthill.reflect", "Monotonicity").isEmpty,
+      "the narrow table must not, or the two inputs are the same input")
+
+    // ONE: the refusal never consulted the closure. `TypeScope.shadowsThePrelude`
+    // answers on the IMPORT — a name imported from another package cannot be reached by
+    // a bare mention, because Bootstrap emits no Scala `import` — and that is true
+    // whatever the table holds. Nor could the table have answered: a name mentioned in
+    // `anthill.prelude` is looked up in that package and its dotted ANCESTORS, and
+    // `anthill.reflect` is a sibling of `anthill.prelude`, not an ancestor. So the two
+    // emissions are identical: adding reflect.anthill to the closure changes nothing.
+    val narrowOut = Bootstrap.generate(effects, scalaTypes)
+    val wideOut = Bootstrap.generate(effects, wide)
+    assertEquals(wideOut.refusals.map(_.getMessage), narrowOut.refusals.map(_.getMessage),
+      "the refusals differ, so widening the closure IS observable — the conclusion " +
+      "below is stale and the scoping decision needs re-taking")
+    // CONTENTS and not `relPath`: `ScalaTypes.resolve` passes the whole supplied closure
+    // to `specMemberNames`, so `specMembers` genuinely differs between these two tables,
+    // and a WI-1065 supertrait demotion flipping under the wider one would leave the
+    // path list identical.
+    assertEquals(wideOut.files.map(_.contents), narrowOut.files.map(_.contents),
+      "the emitted TEXT differs under the wider spec-member table")
+
+    // TWO: there is nothing to widen TO. Asserted off the promise table rather than off
+    // whichever refusal happens to fire first — `emittedTypes` is what a use site would
+    // consult, so this is the question in the form the emitter asks it. `Term`,
+    // `Symbol` and `NodeOccurrence` — the three the prelude names — are declared
+    // `sort X = ?`, and Bootstrap emits no Scala declaration for an abstract sort. Even
+    // with the import half solved, the qualified `_root_.anthill.reflect.Term` a use
+    // site would emit names a type its own declaring file does not produce.
+    val reflectPkg = Bootstrap.emittedTypes(IndexedSeq(reflect)).in("anthill.reflect")
+    val named = Seq("Term", "Symbol", "NodeOccurrence")
+    assert(named.forall(reflectPkg.declaredNotEmitted.contains),
+      s"the prelude's three reflect types must be declared-and-not-emitted: " +
+      s"${reflectPkg.declaredNotEmitted.toVector.sorted}")
+    assert(named.forall(n => !reflectPkg.types.contains(n)),
+      s"and must not ALSO be promised as emitted: ${reflectPkg.types.keys.toVector.sorted}")
+    // The same fact seen from the emitter: reflect.anthill refuses its own declarations
+    // for naming them, which is the identical refusal one file earlier.
+    val own = Bootstrap.generate(reflect, wide)
+    val abstractRefusals = own.refusals.map(_.getMessage)
+      .filter(_.contains("emits no Scala type for"))
+    assert(abstractRefusals.length >= 6,
+      s"reflect.anthill must refuse its own abstract sorts:\n${own.refusals.map(_.getMessage).mkString("\n")}")
+
+    // THE ANSWER, therefore: placing an `anthill.reflect` type is a MAPPING question
+    // (a `type_map` entry naming a host carrier, or an emission for abstract sorts),
+    // not a closure-scope question. Six of the eleven refused prelude declarations wait
+    // on it — MatchFailed, RelationFloundered, Meta, ProofResult, guarded_of,
+    // TypeExtractor — and none of them is blocked on which files a caller supplies.
+    //
+    // CONTROL, and it is what keeps the conclusion from being "reflect emits nothing":
+    // the six declarations of reflect.anthill that name no abstract sort DO emit, and
+    // they compile. The file is not opaque to Bootstrap; its abstract sorts are.
+    assert(own.files.length >= 6,
+      s"reflect.anthill's concrete declarations must still emit: ${own.files.map(_.relPath)}")
+    ScalaCompile.assertCompiles("reflect.anthill's own concrete emission", own.files)
+
+    // FAILS WHEN BACKED OUT: there is no code change to back out — this test records a
+    // measurement, and it fails the day either reason stops holding. Teach
+    // `shadowsThePrelude` to place an imported name from a closure package and the
+    // refusal comparison fails; give abstract sorts an emission and the promise-table
+    // assertions do. Both are results WI-1020 would want to hear about, which is why
+    // they are pinned rather than written down.
   }
 
   test("WI-1080: a refusal costs ONE DECLARATION — effects.anthill's nine siblings emit") {
