@@ -37,10 +37,12 @@
 //!
 //! THE FIX ASKS WHICH PARAMETER THE OPERATIONS TAKE (`spec_carrier_param`): the first
 //! declared type parameter some declared operation takes as a parameter, or `None` when
-//! none do. "Takes" is a WIDER test than "receives on", which is what should decide, and
-//! the gap is WI-1077 — pinned by `an_accepted_element_declared_first_still_wins_over_
-//! the_carrier_param`, so the documented rule and the implemented one cannot drift
-//! apart unnoticed. Where a spec reuses its own type parameter by ACCIDENT the repair
+//! none do. "Takes" is a WIDER test than "receives on" — and WI-1077 DECIDED that the
+//! wider one is the rule (option (c)), so the two shapes where they differ are intended
+//! behaviour rather than a gap owed a fix. Pinned here by
+//! `an_accepted_element_declared_first_still_wins_over_the_carrier_param` and, for the
+//! self-receiving face, by `wi1077_accepts_vs_receives_test`, so the documented rule and
+//! the implemented one cannot drift apart unnoticed. Where a spec reuses its own type parameter by ACCIDENT the repair
 //! is the declaration, not the predicate
 //! (`the_producer_argument_case_is_closed_by_its_own_type_parameter`).
 //! `provision_carrier_binding` answers `None` for a spec with no such parameter, which every
@@ -290,10 +292,12 @@ fn the_stdlib_stream_provisions_read_their_provider() {
 /// Types are terms and they unify, so operation-level polymorphism was always
 /// expressible here; `pure` simply reached for the sort's parameter instead.
 ///
-/// This is the shape WI-1077 should prefer wherever it applies — a declaration saying
-/// what it means, rather than a predicate inferring it. What WI-1077 still owns is the
-/// case where the reuse is INTENDED: `Set.insert(s: Set, x: T)` genuinely takes the
-/// sort's element, and `an_accepted_element_declared_first_still_wins_over_the_carrier_param`
+/// This is the repair WI-1077 settled on preferring wherever it applies — a declaration
+/// saying what it means, rather than a predicate inferring it. Where the reuse is
+/// INTENDED there is nothing to repair: `Set.insert(s: Set, x: T)` genuinely takes the
+/// sort's element, its provision files THERE by the rule, and that face is driven by
+/// `wi1077_accepts_vs_receives_test` while
+/// `an_accepted_element_declared_first_still_wins_over_the_carrier_param`
 /// below is that face.
 #[test]
 fn the_producer_argument_case_is_closed_by_its_own_type_parameter() {

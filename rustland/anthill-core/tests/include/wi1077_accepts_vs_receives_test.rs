@@ -121,9 +121,14 @@ end
 /// stdlib actually relies on. `Relation provides LogicalStream` is the live case — it is why
 /// WI-1076 existed — so it is asserted here against the real stdlib rather than a fixture.
 ///
-/// CONTROL: passes with the ticket backed out (WI-1076 delivered it). It is here because
-/// WI-1077's acceptance names it: whatever (c) documents must not have moved the case the
-/// predicate was fixed FOR.
+/// A DELIBERATE RE-ASSERTION, not independent coverage — `wi1076_…_test`'s
+/// `the_stdlib_stream_provisions_read_their_provider` already asserts this exact row through
+/// this exact helper, and the two cannot diverge. It is repeated because WI-1077's acceptance
+/// names it: whatever (c) documents must not have moved the case the predicate was fixed FOR,
+/// and a reader of THIS file should be able to see that bound without leaving it. If the two
+/// ever need to differ, delete this one rather than letting them drift.
+///
+/// CONTROL: passes with the ticket backed out (WI-1076 delivered it).
 #[test]
 fn a_spec_taking_none_of_its_parameters_still_records_the_provider() {
     let mut kb = crate::common::load_kb_with("");

@@ -22997,8 +22997,11 @@ fn provision_carrier_sort(
 /// is a spec with no carrier parameter at all — `Stream`, whose operations receive on
 /// `Stream` itself and whose `T` appears only in return and callback types.
 ///
-/// "TAKES" IS WIDER THAN "RECEIVES ON", and that is the shipped approximation rather
-/// than the intended rule; see the WI-1077 paragraph below for what it costs.
+/// "TAKES" IS WIDER THAN "RECEIVES ON", AND IT IS THE RULE — decided, not shipped as an
+/// approximation of something narrower (WI-1077 option (c), user 2026-08-11). Every
+/// reader of this predicate should treat its answer as the language's, and the two
+/// shapes where the wider reading shows (below) as intended behaviour rather than as a
+/// fix someone owes. `docs/kernel-language.md` §5.1 and proposal 058 §3.6 say the same.
 ///
 /// THE PREDICATE IS "RECEIVES ON A PARAMETER", NOT "RECEIVES ON ITSELF", and the
 /// difference is a real program. [`spec_is_self_representing`] asks whether ANY
@@ -23017,13 +23020,22 @@ fn provision_carrier_sort(
 /// again, MEASURED. That is the same gap as the paragraph below, reached from the
 /// carrier-parameterized side.
 ///
-/// WHAT THIS STILL GETS WRONG, measured and left deliberately — **WI-1077**. "Takes a
-/// parameter of type `P`" does not separate a RECEIVER from an ACCEPTED ARGUMENT, so a
-/// spec that receives on itself AND accepts its own element reads that element as the
-/// carrier. `Set.insert(s: Set, x: T)` and `Map.put(m: Map, key: K, value: V)` are that
-/// shape; no stdlib provision of either exists, so nothing measures it today. Eval
+/// WHERE THE WIDER READING SHOWS, and it is the rule rather than a defect (WI-1077).
+/// "Takes a parameter of type `P`" does not separate a RECEIVER from an ACCEPTED
+/// ARGUMENT, so a spec that receives on itself AND accepts its own element reads that
+/// element as the carrier and files its provisions there. `Set.insert(s: Set, x: T)` and
+/// `Map.put(m: Map, key: K, value: V)` are that shape. No stdlib provision of either
+/// exists — `wi1077_accepts_vs_receives_test` supplies the fixture, against a `Feeder`
+/// twin that differs ONLY in returning its element instead of taking one and therefore
+/// files at the provider.
+///
+/// NARROWING IT IS NOT AVAILABLE, which is why the decision went the way it did. Eval
 /// separates the two with [`provision_binds_param_to_carrier`], which is
-/// provision-relative and cannot be asked here without circularity.
+/// provision-relative and cannot be asked here without circularity; asking
+/// [`spec_is_self_representing`] instead refuses a program that loads (the paragraph
+/// above); and a declaration that SAYS which parameter is the carrier — a marker, or a
+/// `spec` keyword — is new surface that is not being added. Where the reuse is
+/// ACCIDENTAL the repair is the declaration, as the next paragraph describes.
 ///
 /// ONE INSTANCE OF IT WAS NOT A LIMIT BUT A BUG IN THE DECLARATION, and that is the
 /// preferred repair wherever it applies. `LogicalStream.pure` read `pure(x: T) ->
