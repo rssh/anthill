@@ -2731,6 +2731,20 @@ that root (WI-751). Neither rung admits a name without a dot — a short name is
 not a path, and resolving one that way would reinstate the global short-name
 scan removed in WI-476.
 
+**Rung 2 gives a fully-qualified path immunity from shadowing, and the same rung
+can silently re-root a RELATIVE one.** Measured: with both `outer` and `inner`
+shadowed by members of the enclosing sort, `outer.inner.g(…)` still binds
+`outer.inner.g` — an FQN needs no `import` and survives shadowing of even its
+outermost segment. But a *relative* `inner.g` in that same body, where a
+top-level `inner.g` also exists, binds the **top-level** one; with the two
+returning the same type nothing complains. The two cases are indistinguishable
+at the point of decision — head resolves locally, rung 1 misses, rung 2 hits —
+so no rule over the present syntax separates them. Giving the absolute reading
+its own spelling (`::a.b.c`) and making a bare path purely relative is
+**WI-1075**; measured over stdlib, `anthill-stl`, the examples and
+`anthill-todo`, rung 2 fires **zero** times, so the hazard is currently
+unreachable and the change would cost no migration.
+
 **An ambiguity ends the ladder.** The rungs below `resolve_in_scope` — the dotted
 readings, then the implicit prelude / reserved kernel vocab — are for a name that
 means *nothing* at this scope. A name that means *several* things has an answer
