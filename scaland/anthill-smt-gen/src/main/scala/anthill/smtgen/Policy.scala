@@ -1,7 +1,7 @@
 package anthill.smtgen
 
-import anthill.kb.KnowledgeBase
-import anthill.term.{Term, TermId, Literal}
+import anthill.kb.{Facts, KnowledgeBase}
+import anthill.term.{Term, TermId}
 import anthill.intern.TermSymbol
 
 /** Per-predicate translation policy lookup (proposal 030 phase δ).
@@ -37,36 +37,24 @@ object Policy:
         else PredicatePolicy.Inline
 
   /** Walk `TranslationPolicy` facts looking for an exact (predicate,
-    * backend) match. Returns the first found policy, or None.
+    * backend) match. Returns the first found policy, or None. A
+    * malformed record (non-string `predicate` / `backend` field) fails
+    * the string reads and is skipped — see `Facts.getNamedStringArg`.
     */
   private def lookupExplicitPolicy(
     kb: KnowledgeBase,
     predicate: String,
     backend: String
   ): Option[PredicatePolicy] =
-    val policySym = kb.tryResolveSymbol("anthill.realization.policy.TranslationPolicy") match
-      case Some(s) => s
-      case None    => return None
-    val rids = kb.byFunctor(policySym)
-    var i = 0
-    while i < rids.length do
-      val rid = rids(i)
-      i += 1
-      if kb.ruleBody(rid).isEmpty then
-        kb.getTerm(kb.ruleHead(rid)) match
-          case f: Term.Fn =>
-            val pred = readStringField(kb, f.namedArgs, "predicate")
-            val bk   = readStringField(kb, f.namedArgs, "backend")
-            // Skip the synthetic schema-declaration fact (whose
-            // `predicate` / `backend` fields are sort references,
-            // not string literals) and any other malformed records.
-            if pred.contains(predicate) && bk.contains(backend) then
-              getNamedArg(kb, f.namedArgs, "policy")
-                .flatMap(t => decodePolicyTerm(kb, t)) match
-                  case Some(p) => return Some(p)
-                  case None    => ()
-          case _ => ()
-    None
+    Facts.bodylessFacts(kb, "anthill.realization.policy.TranslationPolicy")
+      .flatMap { f =>
+        val pred = Facts.getNamedStringArg(kb, f, "predicate")
+        val bk   = Facts.getNamedStringArg(kb, f, "backend")
+        if pred.contains(predicate) && bk.contains(backend) then
+          Facts.getNamedArg(kb, f, "policy").flatMap(t => decodePolicyTerm(kb, t))
+        else None
+      }
+      .nextOption()
 
   private def decodePolicyTerm(kb: KnowledgeBase, tid: TermId): Option[PredicatePolicy] =
     val functor: TermSymbol = kb.getTerm(tid) match
@@ -82,29 +70,3 @@ object Policy:
       case "DeclareFun"  => Some(PredicatePolicy.DeclareFun)
       case "LiftedAxiom" => Some(PredicatePolicy.LiftedAxiom)
       case _             => None
-
-  private def readStringField(
-    kb: KnowledgeBase,
-    named: IArray[(TermSymbol, TermId)],
-    key: String
-  ): Option[String] =
-    getNamedArg(kb, named, key).flatMap { tid =>
-      kb.getTerm(tid) match
-        case Term.Const(Literal.StringLit(s)) => Some(s)
-        case _ => None
-    }
-
-  /** Locate a named-arg value by field name. Mirrors
-    * `anthill_core::kb::typing::get_named_arg`.
-    */
-  private[smtgen] def getNamedArg(
-    kb: KnowledgeBase,
-    named: IArray[(TermSymbol, TermId)],
-    key: String
-  ): Option[TermId] =
-    var i = 0
-    while i < named.length do
-      val (sym, tid) = named(i)
-      if kb.resolveSym(sym) == key then return Some(tid)
-      i += 1
-    None

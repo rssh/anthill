@@ -1,8 +1,8 @@
 package anthill.codegen.scala
 
-import anthill.intern.TermSymbol
-import anthill.kb.KnowledgeBase
-import anthill.term.{Literal, Term, TermId}
+import anthill.kb.{Facts, KnowledgeBase}
+import anthill.kb.Facts.OptionArg
+import anthill.term.{Term, TermId}
 
 /** What a `LanguageMapping`'s `language_version` field says.
   *
@@ -71,16 +71,16 @@ object ScalaProfile:
   private def versionOf(
     kb: KnowledgeBase, fn: Term.Fn, language: String, profile: String
   ): LanguageVersion =
-    getNamedArg(kb, fn, "language_version") match
+    Facts.getNamedArg(kb, fn, "language_version") match
       case None => LanguageVersion.FieldOmitted
       case Some(tid) =>
-        optionArg(kb, tid) match
+        Facts.optionArg(kb, tid) match
           case OptionArg.Absent      => LanguageVersion.DeclaredAbsent
           case OptionArg.NotAnOption =>
             malformed(language, profile, "language_version",
               "not an Option term; the schema declares Option[T = String]")
           case OptionArg.Wrapped(inner) =>
-            stringOf(kb, inner) match
+            Facts.stringOf(kb, inner) match
               case Some(v) => LanguageVersion.Declared(v)
               case None =>
                 malformed(language, profile, "language_version",
@@ -115,7 +115,7 @@ object ScalaProfile:
     findMapping(kb, language, profile) match
       case None => HostTypeMap.NoSuchMapping
       case Some(fn) =>
-        getNamedArg(kb, fn, "type_map") match
+        Facts.getNamedArg(kb, fn, "type_map") match
           case None      => HostTypeMap.FieldOmitted
           case Some(tid) => HostTypeMap.Declared(entriesOf(kb, tid, language, profile))
 
@@ -123,7 +123,7 @@ object ScalaProfile:
     kb: KnowledgeBase, tid: TermId, language: String, profile: String
   ): Map[String, String] =
     val elems = kb.getTerm(tid) match
-      case fn: Term.Fn if nameOf(kb, fn.functor) == "ListLiteral" => fn.posArgs
+      case fn: Term.Fn if kb.resolveSym(fn.functor) == "ListLiteral" => fn.posArgs
       case _ => malformed(language, profile, "type_map", "not a list literal")
     var acc = Map.empty[String, String]
     var i = 0
@@ -142,7 +142,7 @@ object ScalaProfile:
   ): (String, String) =
     def bad(what: String): Nothing = malformed(language, profile, "type_map", what)
     kb.getTerm(tid) match
-      case fn: Term.Fn if nameOf(kb, fn.functor) == "TypeMapping" =>
+      case fn: Term.Fn if kb.resolveSym(fn.functor) == "TypeMapping" =>
         // FOUR OF `TypeMapping`'S SIX FIELDS MUST BE ABSENT for an entry this reader can
         // honour, and they fail the same two ways, so there is one reader of "an
         // Option-typed field that must not be written" and two messages for it. A junk
@@ -150,7 +150,7 @@ object ScalaProfile:
         // plain rename, which is the one thing these checks exist to stop — so
         // `NotAnOption` is refused and never folded into `Absent`.
         def mustBeAbsent(field: String, present: TermId => String): Unit =
-          getNamedArg(kb, fn, field).map(optionArg(kb, _)).foreach {
+          Facts.getNamedArg(kb, fn, field).map(Facts.optionArg(kb, _)).foreach {
             case OptionArg.Wrapped(inner) => bad(present(inner))
             case OptionArg.NotAnOption =>
               bad(s"a `$field` that is not an Option term; the schema declares " +
@@ -173,12 +173,12 @@ object ScalaProfile:
         // here emits the webots host type everywhere.
         IndexedSeq("lang", "key").foreach(qualifier =>
           mustBeAbsent(qualifier, inner =>
-            s"a `$qualifier`-QUALIFIED entry (${stringOf(kb, inner).getOrElse("?")}); " +
+            s"a `$qualifier`-QUALIFIED entry (${Facts.stringOf(kb, inner).getOrElse("?")}); " +
             "that is WI-089's flat keyed form, and a nested type_map is already " +
             "selected by its LanguageMapping's own language and profile"))
-        val anthillType = getNamedArg(kb, fn, "anthill_type").flatMap(stringOf(kb, _))
+        val anthillType = Facts.getNamedStringArg(kb, fn, "anthill_type")
           .getOrElse(bad("an entry with no `anthill_type` string literal"))
-        val hostType = getNamedArg(kb, fn, "host_type").flatMap(stringOf(kb, _))
+        val hostType = Facts.getNamedStringArg(kb, fn, "host_type")
           .getOrElse(bad(s"`$anthillType` mapped to no `host_type` string literal"))
         (anthillType, hostType)
       case _ => bad("an element that is not a `TypeMapping` application")
@@ -191,78 +191,19 @@ object ScalaProfile:
       s"has a `$field` that is $what")
 
   /** The `Term.Fn` head of the body-less `LanguageMapping` fact for this
-    * (language, profile), if one is loaded.
+    * (language, profile), if one is loaded. Bodied clauses are skipped by
+    * [[Facts.bodylessFacts]]; a malformed record whose selector slots are not string
+    * literals fails the string reads and is skipped — the same filter `smtgen.Policy`
+    * relies on (see [[Facts.getNamedStringArg]]).
     */
   private def findMapping(
     kb: KnowledgeBase, language: String, profile: String
   ): Option[Term.Fn] =
-    val sym = kb.tryResolveSymbol("anthill.realization.LanguageMapping") match
-      case Some(s) => s
-      case None    => return None
-    val rids = kb.byFunctor(sym)
-    var i = 0
-    while i < rids.length do
-      val rid = rids(i)
-      i += 1
-      // Facts only. A BODIED `LanguageMapping` rule is a conditional mapping whose
-      // conditions this reader cannot discharge, and treating its head as a fact would
-      // read a mapping that may not hold. cpp-gen resolves those properly (WI-760);
-      // until scala-gen needs to, skipping them is the honest half-answer.
-      if kb.ruleBody(rid).isEmpty then
-        kb.getTerm(kb.ruleHead(rid)) match
-          case fn: Term.Fn =>
-            val lang = getNamedArg(kb, fn, "language").flatMap(stringOf(kb, _))
-            val prof = getNamedArg(kb, fn, "profile")
-              .flatMap(t => optionArg(kb, t).wrapped).flatMap(stringOf(kb, _))
-            // The schema-declaration fact the loader synthesises for the entity itself
-            // carries sort REFERENCES in these slots, not string literals, so it fails
-            // this test and is skipped — the same filter `smtgen.Policy` relies on.
-            if lang.contains(language) && prof.contains(profile) then return Some(fn)
-          case _ => ()
-    None
-
-  /** An anthill `Option[T]` value as it sits in the KB.
-    *
-    * `NotAnOption` is what earns this its own type: folding it into `Absent` is what
-    * would let a malformed field read as a deliberate `none`, and every arm below would
-    * then be dead code returning what a catch-all already returns.
-    */
-  private enum OptionArg:
-    case Wrapped(inner: TermId)
-    case Absent
-    case NotAnOption
-
-    def wrapped: Option[TermId] = this match
-      case Wrapped(t) => Some(t)
-      case _          => None
-
-  /** Decode `some(x)` / `none`. A nullary constructor reaches the KB as a bare name
-    * (`none`) or as a zero-argument application (`none()`), and the stdlib ships both
-    * spellings, so both are accepted. */
-  private def optionArg(kb: KnowledgeBase, tid: TermId): OptionArg =
-    kb.getTerm(tid) match
-      case fn: Term.Fn if nameOf(kb, fn.functor) == "some" && fn.posArgs.length == 1 =>
-        OptionArg.Wrapped(fn.posArgs(0))
-      case fn: Term.Fn if nameOf(kb, fn.functor) == "none" && fn.arity == 0 => OptionArg.Absent
-      case Term.Ident(s) if nameOf(kb, s) == "none"                        => OptionArg.Absent
-      case Term.Ref(s) if nameOf(kb, s) == "none"                          => OptionArg.Absent
-      case _ => OptionArg.NotAnOption
-
-  private def stringOf(kb: KnowledgeBase, tid: TermId): Option[String] =
-    kb.getTerm(tid) match
-      case Term.Const(Literal.StringLit(s)) => Some(s)
-      case _ => None
-
-  /** A symbol's scope-local short name — the same reading `getNamedArg` uses for field
-    * names, so this file asks the question one way. */
-  private def nameOf(kb: KnowledgeBase, sym: TermSymbol): String = kb.resolveSym(sym)
-
-  private def getNamedArg(kb: KnowledgeBase, fn: Term.Fn, key: String): Option[TermId] =
-    var i = 0
-    while i < fn.namedArgs.length do
-      val (sym, tid) = fn.namedArgs(i)
-      if kb.resolveSym(sym) == key then return Some(tid)
-      i += 1
-    None
+    Facts.bodylessFacts(kb, "anthill.realization.LanguageMapping").find { fn =>
+      val lang = Facts.getNamedStringArg(kb, fn, "language")
+      val prof = Facts.getNamedArg(kb, fn, "profile")
+        .flatMap(t => Facts.optionArg(kb, t).wrapped).flatMap(Facts.stringOf(kb, _))
+      lang.contains(language) && prof.contains(profile)
+    }
 
 end ScalaProfile

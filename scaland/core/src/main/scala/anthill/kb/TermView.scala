@@ -180,6 +180,8 @@ object TermView:
         if i >= 0 && i < fn.posArgs.length then Some(Value.Term(fn.posArgs(i))) else None
       case Term.Const(_) | Term.Var(_) | Term.Ref(_) | Term.Ident(_) | Term.Bottom => None
 
+    // Core's other keyed named-arg reader is `Facts.getNamedArg`, which keys on the
+    // resolved STRING name; a change to named-arg semantics must visit both (WI-1053).
     def namedArg(a: TermId, kb: KnowledgeBase, sym: TermSymbol): Option[Value] =
       kb.getTerm(a) match
         case fn: Term.Fn =>

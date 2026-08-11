@@ -2,7 +2,7 @@ package anthill.smtgen
 
 import scala.collection.mutable.ArrayBuffer
 
-import anthill.kb.KnowledgeBase
+import anthill.kb.{Facts, KnowledgeBase}
 import anthill.term.{Term, TermId, Literal}
 import anthill.intern.TermSymbol
 
@@ -70,11 +70,9 @@ object TacticEmit:
     argPairs: IndexedSeq[(Option[TermSymbol], TermId)]
   ): String =
     if name == "raw" then
-      argPairs.headOption match
-        case Some((_, first)) => kb.getTerm(first) match
-          case Term.Const(Literal.StringLit(s)) => s
-          case _ => "smt"
-        case None => "smt"
+      argPairs.headOption
+        .flatMap((_, first) => Facts.stringOf(kb, first))
+        .getOrElse("smt")
     else if argPairs.isEmpty then name
     else emitAppTerm(kb, name, argPairs)
 
@@ -142,6 +140,9 @@ object TacticEmit:
       nameOpt.foreach { sym =>
         val key = kb.resolveSym(sym)
         if key != "logic" && key != "timeout" then
+          // A literal RENDERER over three literal kinds, not a string-field decode —
+          // routing only the string arm through `Facts.stringOf` split one decision
+          // across two idioms (WI-1053 review), so the single match stays.
           val valOpt = kb.getTerm(t) match
             case Term.Const(Literal.StringLit(s)) => Some(s"\"$s\"")
             case Term.Const(Literal.IntLit(n))    => Some(n.toString)

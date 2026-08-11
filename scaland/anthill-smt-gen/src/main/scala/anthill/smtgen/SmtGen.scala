@@ -2,7 +2,7 @@ package anthill.smtgen
 
 import scala.collection.mutable.{ArrayBuffer, TreeMap, TreeSet}
 
-import anthill.kb.{KnowledgeBase, RuleId}
+import anthill.kb.{Facts, KnowledgeBase, RuleId}
 import anthill.term.{Term, TermId, Literal, VarId}
 import anthill.intern.TermSymbol
 
@@ -480,35 +480,29 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
 
   /** For each entity referenced in the rule body, find its (single)
     * ground fact and resolve every field to a Real value.
+    * `Facts.bodylessFacts` (WI-1053) keeps a bodied clause's head from
+    * being read as a ground fact — its body is a condition this
+    * reader cannot discharge.
     */
   def collectFactsForReferencedEntities(): Unit =
     val snapshot = referencedEntities.toVector
     for entityQn <- snapshot do
-      kb.tryResolveSymbol(entityQn).foreach { sym =>
-        val rids = kb.byFunctor(sym)
-        var found = false
-        var i = 0
-        while !found && i < rids.length do
-          kb.getTerm(kb.ruleHead(rids(i))) match
-            case f: Term.Fn =>
-              val anyConcrete = f.namedArgs.exists { case (_, t) =>
-                SmtGen.literalAsReal(kb.getTerm(t)).isDefined
+      Facts.bodylessFacts(kb, entityQn)
+        .find(f => f.namedArgs.exists { case (_, t) =>
+          SmtGen.literalAsReal(kb.getTerm(t)).isDefined
+        })
+        .foreach { f =>
+          var j = 0
+          while j < f.namedArgs.length do
+            val (fieldSym, valTerm) = f.namedArgs(j)
+            val fieldName = kb.resolveSym(fieldSym)
+            val constName = SmtGen.sanitizeSmtId(fieldName)
+            if fieldConsts.contains(constName) then
+              SmtGen.literalAsReal(kb.getTerm(valTerm)).foreach { v =>
+                fieldConsts(constName) = v
               }
-              if anyConcrete then
-                var j = 0
-                while j < f.namedArgs.length do
-                  val (fieldSym, valTerm) = f.namedArgs(j)
-                  val fieldName = kb.resolveSym(fieldSym)
-                  val constName = SmtGen.sanitizeSmtId(fieldName)
-                  if fieldConsts.contains(constName) then
-                    SmtGen.literalAsReal(kb.getTerm(valTerm)).foreach { v =>
-                      fieldConsts(constName) = v
-                    }
-                  j += 1
-                found = true
-            case _ => ()
-          i += 1
-      }
+            j += 1
+        }
 
   def renderUpperBoundWith(obligation: Obligation, config: ProofConfig): String =
     val logic = config.logic.getOrElse("QF_LRA")

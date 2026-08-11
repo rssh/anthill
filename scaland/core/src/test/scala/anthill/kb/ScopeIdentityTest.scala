@@ -1,8 +1,6 @@
 package anthill.kb
 
 import anthill.intern.{SymbolDef, SymbolTable}
-import anthill.load.{Loader, Prelude}
-import anthill.parse.Parser
 import anthill.resolve.SearchStream
 import anthill.term.{Term, TermId, Var}
 
@@ -89,15 +87,7 @@ import scala.compiletime.testing.typeCheckErrors
   */
 class ScopeIdentityTest extends munit.FunSuite:
 
-  private def loaded(src: String): KnowledgeBase =
-    val pf = Parser.parse(src, "<scope>") match
-      case Right(p) => p
-      case Left(errs) => fail(s"parse failed: ${errs.map(_.render).mkString("; ")}")
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    val errs = Loader.loadAll(kb, IndexedSeq(pf))
-    assert(errs.isEmpty, s"load errors: $errs")
-    kb
+  private def loaded(src: String): KnowledgeBase = LoadFixture.loaded(src, "<scope>")
 
   private val src =
     """namespace demo
