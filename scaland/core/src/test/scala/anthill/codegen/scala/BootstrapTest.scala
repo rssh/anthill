@@ -91,13 +91,26 @@ class BootstrapTest extends munit.FunSuite:
     * scalars read out of the KB, and the prelude's own parsed files for every other
     * name. Resolved ONCE — it is the project's answer, not a per-test knob — and the
     * suite emits through [[gen]] so no test can quietly render against a different one.
-    * The tests that DO vary it (the mutation tests below) call `Bootstrap.generate`
-    * directly, which is how they read as the exception they are. */
+    * The tests that DO vary it (the mutation tests below) name their table at
+    * [[genWith]], which is how they read as the exception they are. */
   private lazy val scalaTypes: ScalaTypes =
     ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles)
 
-  private def gen(pf: ParsedFile): IndexedSeq[GeneratedFile] =
-    Bootstrap.generate(pf, scalaTypes)
+  /** The suite's emission funnel: the emitted files, with the FIRST refusal raised
+    * (WI-1080).
+    *
+    * `Bootstrap.generate` refuses per declaration and returns both halves, so a test has
+    * to say which half it means. Raising the first is exactly what the whole call did
+    * before that ticket, so every `intercept[BootstrapError]` below still pins the
+    * refusal it always pinned — and a test whose fixture refuses nothing is unaffected
+    * either way. The tests that assert on the SURVIVING siblings of a refusal call
+    * `Bootstrap.generate` directly and read both halves by name. */
+  private def genWith(pf: ParsedFile, types: ScalaTypes): IndexedSeq[GeneratedFile] =
+    val out = Bootstrap.generate(pf, types)
+    out.refusals.headOption.foreach(e => throw e)
+    out.files
+
+  private def gen(pf: ParsedFile): IndexedSeq[GeneratedFile] = genWith(pf, scalaTypes)
 
   private def parseStdlib(rel: String) =
     val src = scala.io.Source.fromFile(s"$stdlibDir/$rel")
@@ -2122,10 +2135,10 @@ class BootstrapTest extends munit.FunSuite:
     // different leaves never meet there, and a last-writer-wins tree compiles green
     // with one declaration silently absent.
     //
-    // FAILS WHEN BACKED OUT: drop the `refuseColliding(files)` call in
-    // `Bootstrap.generate` and this returns two `GeneratedFile`s at one relPath with
-    // no error at all.
-    val err = intercept[BootstrapError](gen(parseSource(
+    // FAILS WHEN BACKED OUT: drop the `refuseColliding` call in `Bootstrap.generate`
+    // and `refusals` is empty — `intercept` fails — while `files` carries two
+    // `GeneratedFile`s at one relPath.
+    val colliding = parseSource(
       """namespace my-lib
         |  sort foo-bar
         |    entity foo-bar(v: Int64)
@@ -2135,9 +2148,22 @@ class BootstrapTest extends munit.FunSuite:
         |    entity foo_bar(v: Int64)
         |  end
         |end
-        |""".stripMargin, "collide.anthill")))
+        |""".stripMargin, "collide.anthill")
+    val err = intercept[BootstrapError](gen(colliding))
     assert(err.getMessage.contains("src/main/scala/my_lib/FooBar.scala"),
       s"the refusal must name the path that collides: ${err.getMessage}")
+
+    // NEITHER SIDE SHIPS (WI-1080). A refusal is per declaration now, so `generate`
+    // returns files alongside it and the survivor filter is what keeps the collision
+    // out of them — the emitter cannot choose between two declarations, and keeping
+    // one would be the last-writer-wins above, merely decided earlier. Read from
+    // `Bootstrap.generate` and not [[gen]], which raises the refusal and never reaches
+    // the files: with the filter removed, THIS assertion is the only one in the suite
+    // that fails (measured).
+    val out = Bootstrap.generate(colliding, scalaTypes)
+    assertEquals(out.files, IndexedSeq.empty[GeneratedFile],
+      s"a colliding path must ship neither declaration: ${out.files.map(_.relPath)}")
+    assertEquals(out.refusals.length, 1, out.refusals.map(_.getMessage).mkString("\n"))
 
     // THE CONTROL, and it is the point of the whole ticket: the SAME two spellings in
     // ONE declaration are one name, not a collision. Passes with and without
@@ -2257,6 +2283,7 @@ class BootstrapTest extends munit.FunSuite:
     //   after  WI-1066   4 -> 3 (the same) -> 2 -> 4 -> clean   (unchanged)
     //   after  WI-1054        3 (Modifiable) -> 2 -> 4 -> clean
     //   after  WI-1065        3 (Modifiable, mutable_collection.anthill) -> clean at 36 files
+    //   after  WI-1080        4 (Symbol/Term, sort.anthill) -> clean at 44 files
     // WI-1054 removed the FIRST rung outright rather than shortening one: the round
     // of 4 was 3 Modifiable errors plus the `zero-val` parse error, and with the
     // parse error gone that round IS the old second rung. The remaining ladder is
@@ -2281,6 +2308,26 @@ class BootstrapTest extends munit.FunSuite:
     // went are `class Fmapped needs to be abstract` / the `Ffiltered` twin. The two
     // that were left were the shadowing redeclaration (`error overriding method map
     // in trait Iterable`), WI-1065's — taken since, see its ladder row above.
+    //
+    // WI-1080 REMOVED THE MODIFIABLE RUNG AND GREW THE CLEAN SET BY EIGHT, which is
+    // one fix: a refusal is scoped to a DECLARATION, so effects.anthill's nine
+    // reflect-free sorts — `Modifiable` among them — emit beside its two refused ones,
+    // and `MutableCollection`'s supertrait names a type that is now in the tree. The
+    // clean set grew by more than the two files that rung was about because peeling
+    // mutable_collection.anthill used to take its dependents with it.
+    //
+    // THE ROUND OF 4 IS NEW, AND IT IS UNCOVERED RATHER THAN CAUSED. sort.anthill was
+    // refused WHOLE before, so its six emittable declarations were never compiled;
+    // two of them — `entity anthill.prelude.TypeBinding(param: anthill.reflect.Symbol,
+    // value: anthill.reflect.Term)` and its `NamedTupleElement` twin — write a
+    // QUALIFIED type name, and `TypeGen.named` reads only `n.last`, so the written
+    // `anthill.reflect` prefix is dropped and the leaf re-anchored to the declaring
+    // package (`type Symbol is not a member of anthill.prelude`, twice per file). That
+    // is a placement defect of its own — the source said exactly where the type lives
+    // and the emitter emitted somewhere else — filed as WI-1081, which expects to end
+    // this ladder at `clean at 45 files` with no peel round at all. The whole-closure
+    // compile reports it precisely, which is the granularity contract working: one
+    // wrong declaration, named, in a file whose other four are correct.
     //
     // WI-1066 MOVED NOTHING HERE, and that is the expected result rather than a fix
     // that failed. The three emissions it corrects (`Set` / `Map` / `VectorSpace`) all
@@ -2319,14 +2366,36 @@ class BootstrapTest extends munit.FunSuite:
     //     the application's shape is judged before its parts. Both diagnoses are
     //     true of the same line; the `?A` arm is driven by a fixture instead
     //     (WI-1055 B2 above), for exactly the reason the other B2 arms are.
+    //
+    // EVERY REFUSED DECLARATION AND NOT THE FIRST ONE PER FILE (WI-1080). A refusal is
+    // scoped to a declaration now, so a file has a LIST and the entries after the first
+    // were never absent — they were SHADOWED, unreachable behind the throw that ended
+    // the file. Four of the seven files had a second refusal waiting: delay's
+    // `delayPure` is `pure`'s twin, effects' `RelationFloundered` is `MatchFailed`'s,
+    // meta declares `ProofResult` beside its `Meta` entity, and sort.anthill's
+    // `TypeExtractor` is a SECOND and unrelated construct — an `anthill.reflect` import
+    // where `EffectExpression` was an abstract sort with no emitted type. Pinning only
+    // the head would let a file's other refusals move, multiply or vanish unnoticed,
+    // which is the granularity this list exists to report.
     val expectedRefusals = Map(
-      "delay.anthill" -> ("operation `pure`", "ORDINARY type-parameter slot"),
-      "effects.anthill" -> ("sort `MatchFailed`", "imported from `anthill.reflect`"),
-      "logical_stream.anthill" -> ("operation `empty`", "declares 2 type parameter(s)"),
-      "meta.anthill" -> ("entity `Meta`", "imported from `anthill.reflect`"),
-      "relation.anthill" -> ("operation `guarded_of`", "imported from `anthill.reflect`"),
-      "sort.anthill" -> ("sort `EffectExpression`", "emits no Scala type for"),
-      "sortedset.anthill" -> ("sort `SortedSet`", "named requirement slot"),
+      "delay.anthill" -> Seq(
+        ("operation `pure`", "ORDINARY type-parameter slot"),
+        ("operation `delayPure`", "ORDINARY type-parameter slot")),
+      "effects.anthill" -> Seq(
+        ("sort `MatchFailed`", "imported from `anthill.reflect`"),
+        ("sort `RelationFloundered`", "imported from `anthill.reflect`")),
+      "logical_stream.anthill" -> Seq(
+        ("operation `empty`", "declares 2 type parameter(s)")),
+      "meta.anthill" -> Seq(
+        ("entity `Meta`", "imported from `anthill.reflect`"),
+        ("sort `ProofResult`", "imported from `anthill.reflect`")),
+      "relation.anthill" -> Seq(
+        ("operation `guarded_of`", "imported from `anthill.reflect`")),
+      "sort.anthill" -> Seq(
+        ("sort `EffectExpression`", "emits no Scala type for"),
+        ("sort `TypeExtractor`", "imported from `anthill.reflect`")),
+      "sortedset.anthill" -> Seq(
+        ("sort `SortedSet`", "named requirement slot")),
     )
     // THE SAME SET `scalaTypes` WAS BUILT FROM (WI-1060), and not a second listing of
     // the same directory: the table places every name these files emit, so a walk that
@@ -2335,29 +2404,253 @@ class BootstrapTest extends munit.FunSuite:
     val sources = StdlibFixture.preludeByName
     assert(sources.length >= 44, s"expected the measured prelude, got ${sources.length} files")
 
-    val refused = scala.collection.mutable.Map.empty[String, String]
+    // `Bootstrap.generate` and NOT [[gen]]: the funnel raises the first refusal, and a
+    // file's other refusals are exactly what this test now reports.
+    val refused = scala.collection.mutable.Map.empty[String, IndexedSeq[String]]
     var compiled = 0
     sources.foreach { case (name, pf) =>
-      try
-        val files = gen(pf)
-        // unit.anthill declares no sort/entity, so it emits nothing and is neither
-        // refused nor compiled — counted as neither rather than as a pass.
-        if files.nonEmpty && ScalaCompile.errors(files).isEmpty then compiled += 1
-      catch case e: BootstrapError => refused(name) = e.getMessage
+      val out = Bootstrap.generate(pf, scalaTypes)
+      if out.refusals.nonEmpty then refused(name) = out.refusals.map(_.getMessage)
+      // unit.anthill declares no sort/entity, so it emits nothing and is neither
+      // refused nor compiled — counted as neither rather than as a pass. A file with a
+      // refusal CAN still be counted, and that is WI-1080: its surviving declarations
+      // are ordinary output and stand or fall on their own.
+      if out.files.nonEmpty && ScalaCompile.errors(out.files).isEmpty then compiled += 1
     }
 
     assertEquals(refused.keySet.toVector.sorted, expectedRefusals.keySet.toVector.sorted,
       "the refusal set changed; an exclusion must be named here with its reason, " +
       "not left for a reader to discover from a shrinking output tree")
-    expectedRefusals.foreach { case (file, (decl, construct)) =>
-      assert(refused(file).contains(construct),
-        s"$file is refused for a different reason than recorded: ${refused(file)}")
-      assert(refused(file).contains(decl),
-        s"$file is refused at a different DECLARATION than recorded: ${refused(file)}")
+    expectedRefusals.foreach { case (file, expected) =>
+      val actual = refused(file)
+      assertEquals(actual.length, expected.length,
+        s"$file refuses a different NUMBER of declarations than recorded " +
+        s"(WI-1080 makes every one of them reachable):\n${actual.mkString("\n")}")
+      expected.zip(actual).foreach { case ((decl, construct), message) =>
+        assert(message.contains(construct),
+          s"$file is refused for a different reason than recorded: $message")
+        assert(message.contains(decl),
+          s"$file is refused at a different DECLARATION than recorded: $message")
+      }
     }
-    assert(compiled >= 16,
-      s"only $compiled prelude files compile standalone; 16 did before WI-1055, and " +
+    // 20 SINCE WI-1080 (measured), from 18. The two are effects.anthill and
+    // meta.anthill: each has a refused declaration and SELF-CONTAINED survivors
+    // (effects' nine reflect-free sorts, meta's `Trust`), so each went from emitting
+    // NOTHING to emitting a set that compiles alone. That is the ticket's whole claim
+    // in this counter — back the granularity out and both are refused whole again,
+    // taking the count to 18 and failing this line.
+    //
+    // THE OTHER FIVE REFUSED FILES DO NOT MOVE IT, and for two different reasons worth
+    // separating: delay / logical_stream / relation / sortedset refuse the only
+    // declaration they have to emit, so their survivor set is empty and this counter
+    // skips them; sort.anthill emits SIX survivors that do not compile alone, because
+    // two of them (`TypeBinding`, `NamedTupleElement`) write the qualified name
+    // `anthill.reflect.Symbol` and Bootstrap drops a written prefix, re-anchoring the
+    // leaf to the declaring package. That is a placement defect this ticket UNCOVERED
+    // rather than caused — its file emitted nothing before — and it is the one rung
+    // left in the peel ladder below. Filed as WI-1081.
+    assert(compiled >= 20,
+      s"only $compiled prelude files compile standalone; 20 did at WI-1080, and " +
       "refusing more than is fixed would show up here")
+  }
+
+  test("WI-1080: the WHOLE prelude closure compiles but for WI-1081's four errors") {
+    // THE LADDER, ASSERTED. Every row of the peel ladder recorded in the refusal-set
+    // test above was measured by hand and written down as prose, so the closure — the
+    // number that actually moved when WI-1062 / WI-1065 / this ticket landed — was the
+    // one claim in this file nothing checked. It costs ONE `dotc` run over the whole
+    // emitted prelude (the refusal-set test above spends 40-odd on standalone files),
+    // and it is the assertion that a ticket claiming to grow the tree grew it.
+    val emitted = StdlibFixture.preludeByName.flatMap { case (_, pf) =>
+      Bootstrap.generate(pf, scalaTypes).files
+    }
+    assert(emitted.length >= 55,
+      s"expected the measured emission, got ${emitted.length} scala files")
+
+    // FOUR ERRORS, ALL WI-1081's, and the file they are in is named: sort.anthill's
+    // `TypeBinding` / `NamedTupleElement` write `anthill.reflect.Symbol` and
+    // `anthill.reflect.Term` QUALIFIED, and `TypeGen.named` reads only `n.last`, so
+    // both are re-anchored to `anthill.prelude` and name nothing.
+    val errs = ScalaCompile.errors(emitted)
+    assertEquals(errs.length, 4, s"the closure moved:\n${errs.map(_.render).mkString("\n")}")
+    assert(errs.forall(d => d.message.contains("Symbol is not a member") ||
+        d.message.contains("Term is not a member")),
+      s"a NEW kind of closure error appeared:\n${errs.map(_.render).mkString("\n")}")
+    assert(errs.map(_.file).toSet == Set("TypeBinding.scala", "NamedTupleElement.scala"),
+      s"the errors moved out of WI-1081's two files:\n${errs.map(_.render).mkString("\n")}")
+
+    // PEELING THOSE TWO IS THE WHOLE REMAINING LADDER: drop the one anthill file that
+    // emits them and the rest of the prelude compiles as one closure. Before WI-1080
+    // this took a second round and ended eight files short, because effects.anthill
+    // emitted nothing and `MutableCollection` — a file with nothing wrong with it —
+    // named `Modifiable`.
+    val peeled = StdlibFixture.preludeByName.filterNot(_._1 == "sort.anthill")
+      .flatMap { case (_, pf) => Bootstrap.generate(pf, scalaTypes).files }
+    ScalaCompile.assertCompiles("the prelude closure less sort.anthill", peeled)
+
+    // FAILS WHEN BACKED OUT: with the refusal scoped to the file, the four assertions
+    // above cannot even be reached — `Bootstrap.generate` throws on the first refused
+    // prelude file. Restore the throw only for effects.anthill and the count becomes 7
+    // (these four plus the three `Modifiable` errors on record at the ladder).
+    // WHEN WI-1081 LANDS this test fails at `assertEquals(errs.length, 4)`, which is
+    // intended: the ladder row is a measurement, and the ticket that moves it records
+    // the new one here.
+  }
+
+  test("WI-1080: a refusal costs ONE DECLARATION — effects.anthill's nine siblings emit") {
+    // THE CORPUS INSTANCE the ticket was filed on. effects.anthill declares eleven
+    // sorts in `namespace anthill.prelude`; exactly two name `anthill.reflect`
+    // (`MatchFailed`'s fields are NodeOccurrence/Term, `RelationFloundered` carries a
+    // Term), and refusing at the FILE took the other nine out with them.
+    val out = Bootstrap.generate(parseStdlib("anthill/prelude/effects.anthill"), scalaTypes)
+
+    val emitted = out.files.map(f => f.relPath.substring(f.relPath.lastIndexOf('/') + 1))
+    assertEquals(emitted.sorted, IndexedSeq(
+      "Branch.scala", "DivisionByZero.scala", "Effect.scala", "EmptyStream.scala",
+      "Error.scala", "Modifiable.scala", "Modify.scala", "ModifyRuntime.scala",
+      "Suspension.scala").sorted,
+      "the nine reflect-free sorts are what survives a refusal of the other two")
+    // BOTH refusals, which is the multiplicity half: the second was never absent
+    // before this ticket, it was unreachable behind the first throw.
+    assertEquals(out.refusals.length, 2, out.refusals.map(_.getMessage).mkString("\n"))
+    assert(out.refusals.head.getMessage.contains("sort `MatchFailed`"),
+      out.refusals.head.getMessage)
+    assert(out.refusals(1).getMessage.contains("sort `RelationFloundered`"),
+      out.refusals(1).getMessage)
+    // A refused declaration emits NOTHING — not a stub, not a half-file.
+    assert(!out.files.exists(_.relPath.contains("MatchFailed")),
+      s"a refused sort must leave no file behind: ${out.files.map(_.relPath)}")
+
+    // FAILS WHEN BACKED OUT: with the refusal scoped to the file, `generate` throws on
+    // `MatchFailed` and this test dies at its first line. Every assertion here is
+    // about the file's OTHER declarations, so none of them is reachable without the
+    // granularity — there is no arm of this test that passes either way.
+    //
+    // THE CONTROL WAS RUN (WI-1080): with `Bootstrap.attempt` reduced to a plain call
+    // that lets the `BootstrapError` escape, exactly FIVE of this suite's 91 tests fail
+    // — the four WI-1080 tests and the refusal-set list. The other 86 pass both ways by
+    // design; they pin rules about what a single declaration emits, which is the same
+    // question under either scope.
+    ScalaCompile.assertCompiles("effects.anthill's surviving nine", out.files)
+  }
+
+  test("WI-1080 CORPUS: `MutableCollection`'s Modifiable supertrait names an emitted type") {
+    // THE CASCADE THE TICKET IS ABOUT, driven end to end. mutable_collection.anthill
+    // has nothing wrong with it — `requires Modifiable[T = C]` emits the supertrait
+    // WI-1065 pinned — but `Modifiable` is declared in effects.anthill, so a
+    // file-scoped refusal left the emitted `extends _root_.anthill.prelude.Modifiable[C]`
+    // naming a type no file in the tree declared. Those were the last three errors in
+    // the whole-prelude closure (peel ladder above).
+    val effects = Bootstrap.generate(
+      parseStdlib("anthill/prelude/effects.anthill"), scalaTypes).files
+    assert(effects.exists(_.relPath.endsWith("/Modifiable.scala")),
+      s"effects.anthill must emit Modifiable: ${effects.map(_.relPath)}")
+
+    val consumer = gen(parseStdlib("anthill/prelude/mutable_collection.anthill"))
+    assert(consumer.head.contents.contains("_root_.anthill.prelude.Modifiable[C]"),
+      s"the supertrait under test must still be written:\n${consumer.head.contents}")
+
+    // FAILS WHEN BACKED OUT: `effects` is empty, `Modifiable.scala` is absent, and the
+    // compile below reports `type Modifiable is not a member of anthill.prelude` — the
+    // exact error on record at the ladder. The first assertion fails first.
+    ScalaCompile.assertCompiles("mutable_collection over a partially refused effects.anthill",
+      effects ++ consumer ++ preludeClosure("iterable", "stream", "combinators",
+        "option", "pair", "list"))
+  }
+
+  test("WI-1080: a same-file consumer of a refused type breaks at the CLOSURE COMPILE") {
+    // THE PROMISE-BREAK, stated as a fixture because the corpus has no instance: no
+    // prelude signature names `MatchFailed` or `RelationFloundered` (measured at the
+    // ticket — every occurrence is inside an `Error[...]` row, and rows erase), which
+    // is why the corpus closure above comes out clean.
+    //
+    // WHAT IS PINNED: a refused declaration still gets a `fileTypes` entry — the name
+    // table is built before emission and cannot see the refusal — so a sibling that
+    // names it emits an ordinary reference to a type that never arrives. `emittedTypes`
+    // makes the same promise for a consumer in another file. The break is therefore
+    // REAL and the design choice is where it surfaces: at the mandatory Scala compile,
+    // naming the ONE missing type, instead of the whole file vanishing.
+    val fixture = parseSource(
+      """
+      namespace wi1076.promise
+        import anthill.reflect.{Term}
+
+        sort Refused
+          entity refused(t: Term)
+        end
+
+        sort Consumer
+          entity consumer(r: Refused)
+        end
+
+        sort Unrelated
+          sort T = ?
+        end
+      end
+      """, "wi1076_promise.anthill")
+    val out = Bootstrap.generate(fixture, scalaTypes)
+
+    assertEquals(out.refusals.length, 1, out.refusals.map(_.getMessage).mkString("\n"))
+    assert(out.refusals.head.getMessage.contains("sort `Refused`"),
+      out.refusals.head.getMessage)
+    val emitted = out.files.map(_.relPath)
+    assert(emitted.exists(_.endsWith("/Consumer.scala")) &&
+      emitted.exists(_.endsWith("/Unrelated.scala")),
+      s"both siblings must emit, the naming one included: $emitted")
+
+    // THE BREAK ITSELF, and it names the ONE missing type rather than the file.
+    val errs = ScalaCompile.errors(out.files)
+    assert(errs.nonEmpty, "a reference to a refused type must not compile green")
+    assert(errs.forall(_.message.contains("Refused")),
+      s"the compile must name the missing type and nothing else: ${errs.map(_.render)}")
+    assert(errs.forall(_.file == "Consumer.scala"),
+      s"only the naming sibling may fail: ${errs.map(_.render)}")
+    // CONTROL, and it is the half that says the blast radius really did shrink:
+    // `Unrelated` mentions nothing refused and compiles on its own.
+    ScalaCompile.assertCompiles("the sibling that names nothing refused",
+      out.files.filter(_.relPath.endsWith("/Unrelated.scala")))
+
+    // FAILS WHEN BACKED OUT: file-scoped, `generate` throws and there is no `out` to
+    // read — the first assertion dies. Nothing here passes both ways.
+  }
+
+  test("WI-1080: a refused namespace operation costs the Ops trait, not the sorts beside it") {
+    // The OTHER staged unit. A namespace's operations emit as ONE `<Ns>Ops` trait, so
+    // an operation Bootstrap cannot render still costs all of them — that is one file's
+    // worth of refusal and is unchanged. What changed is that it no longer costs the
+    // SORTS declared in the same namespace, which is the shape delay.anthill,
+    // logical_stream.anthill and relation.anthill all have; none of those three
+    // declares a sort beside the refused operation, so the corpus cannot drive it.
+    val fixture = parseSource(
+      """
+      namespace wi1076.ops
+        import anthill.reflect.{Term}
+
+        sort Kept
+          sort T = ?
+        end
+
+        operation refusedOp(t: Term) -> Bool
+      end
+      """, "wi1076_ops.anthill")
+    val out = Bootstrap.generate(fixture, scalaTypes)
+
+    assertEquals(out.refusals.length, 1, out.refusals.map(_.getMessage).mkString("\n"))
+    // Located at the OPERATION even though the unit refused is the trait: the scope is
+    // narrowed per operation while the trait renders, so the diagnostic still names the
+    // construct that defeated the emitter rather than the file it cost.
+    assert(out.refusals.head.getMessage.contains("operation `refusedOp`"),
+      out.refusals.head.getMessage)
+    assertEquals(out.files.map(_.relPath),
+      IndexedSeq("src/main/scala/wi1076/ops/Kept.scala"),
+      "the sort emits; the Ops trait carrying the refused operation does not")
+
+    // FAILS WHEN BACKED OUT: `Kept.scala` is not emitted at all — the throw from the
+    // Ops trait ends the file — and the last assertion sees an empty list. It does NOT
+    // drive `attempt`'s staging, and nothing can today: every emitter appends its one
+    // `GeneratedFile` after the last thing that can refuse, so staged and unstaged
+    // agree. The staging is stated at its own site as the guard it is.
+    ScalaCompile.assertCompiles("the sort beside a refused namespace operation", out.files)
   }
 
   test("scala-forward-mapping §1: ??? must never appear in generated output") {
@@ -2567,7 +2860,7 @@ class BootstrapTest extends munit.FunSuite:
     val mutant = ScalaTypes.resolve(
       kb, StdlibFixture.preludeFiles, language = "scala", profile = "mutant")
 
-    val moved = Bootstrap.generate(scalarFixture, mutant).head.contents
+    val moved = genWith(scalarFixture, mutant).head.contents
     assert(moved.contains("def add(a: _root_.my.own.Fixnum, b: _root_.my.own.Fixnum): " +
       "_root_.my.own.Fixnum"),
       s"the emission must carry the profile's host type verbatim:\n$moved")
@@ -2602,7 +2895,7 @@ class BootstrapTest extends munit.FunSuite:
       """, "no_scalars.anthill"))
     val scalarless = ScalaTypes.resolve(
       kb, StdlibFixture.preludeFiles, language = "scala", profile = "scalarless")
-    val src = Bootstrap.generate(scalarFixture, scalarless).head.contents
+    val src = genWith(scalarFixture, scalarless).head.contents
     assert(src.contains("def add(a: _root_.anthill.prelude.Int64"),
       s"with no entry, `Int64` must fall to the sort the prelude declares:\n$src")
   }
@@ -2652,17 +2945,17 @@ class BootstrapTest extends munit.FunSuite:
          |""".stripMargin, "user.anthill")
 
     val withDecl = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles :+ declaring)
-    val src = Bootstrap.generate(consumer("[A = X, B = Y]"), withDecl).head.contents
+    val src = genWith(consumer("[A = X, B = Y]"), withDecl).head.contents
     assert(src.contains("def use(b: _root_.anthill.prelude.Boxy[X, Y]): X"),
       s"a derived entry must name the type the declaring file emits:\n$src")
-    val err = intercept[BootstrapError](Bootstrap.generate(consumer("[A = X]"), withDecl))
+    val err = intercept[BootstrapError](genWith(consumer("[A = X]"), withDecl))
     assert(err.getMessage.contains("declares 2 type parameter(s)"),
       s"the arity checked must be the declaration's: ${err.getMessage}")
 
     // CONTROL. Same consumer, same profile, declaration NOT in the set: no entry, so
     // `Placement.Ambient` — a package-qualified guess with no arity check, and the
     // one-argument form that was refused above now emits.
-    val ambient = Bootstrap.generate(consumer("[A = X]"), scalaTypes).head.contents
+    val ambient = genWith(consumer("[A = X]"), scalaTypes).head.contents
     assert(ambient.contains("def use(b: my.app.Boxy[X]): X"),
       s"without the declaration nothing checks the arity:\n$ambient")
   }
@@ -2883,7 +3176,7 @@ class BootstrapTest extends munit.FunSuite:
 
     val nested = ScalaTypes.resolve(
       stdlibKb, StdlibFixture.preludeFiles :+ declaring("anthill.prelude.algebra"))
-    val src = Bootstrap.generate(consumer, nested).head.contents
+    val src = genWith(consumer, nested).head.contents
     assert(src.contains("def use(r: my.app.Ringy[X]): X"),
       s"a nested namespace's sort must not be placed by a bare mention:\n$src")
 
@@ -2892,7 +3185,7 @@ class BootstrapTest extends munit.FunSuite:
     // above would pass against an `emittedTypes` that saw nothing in the file at all.
     val direct = ScalaTypes.resolve(
       stdlibKb, StdlibFixture.preludeFiles :+ declaring("anthill.prelude"))
-    val placed = Bootstrap.generate(consumer, direct).head.contents
+    val placed = genWith(consumer, direct).head.contents
     assert(placed.contains("def use(r: _root_.anthill.prelude.Ringy[X]): X"),
       s"the same sort in `anthill.prelude` must be placed by the table:\n$placed")
   }
@@ -3000,9 +3293,7 @@ class BootstrapTest extends munit.FunSuite:
     //
     // FAILS WHEN BACKED OUT, in both directions: return `"Unit"` instead of throwing
     // and the `intercept` fails; throw an unlocated `IllegalStateException` (where it
-    // lived before this review) and the located assertion fails — and the refusal-set
-    // test would stop recording it as a refusal at all, since it catches
-    // `BootstrapError` alone.
+    // lived before this review) and the located assertion fails.
     val unitFixture = parseSource(
       """namespace my.app
         |  sort Sink
@@ -3032,11 +3323,39 @@ class BootstrapTest extends munit.FunSuite:
       """, "unitless.anthill"))
     val unitless = ScalaTypes.resolve(
       kb, StdlibFixture.preludeFiles, language = "scala", profile = "unitless")
-    val err = intercept[BootstrapError](Bootstrap.generate(unitFixture, unitless))
+    // A `ProfileError` AND NOT A `BootstrapError` (WI-1080 review): a missing entry is
+    // a fact about the profile, so it is FATAL where a declaration's refusal is
+    // collected. Read straight off `Bootstrap.generate` — nothing catches it on the way
+    // out, which is the assertion.
+    val err = intercept[ProfileError](Bootstrap.generate(unitFixture, unitless))
     assert(err.getMessage.contains("declares no `Unit` entry"),
       s"the refusal must name the missing entry: ${err.getMessage}")
     assert(err.getMessage.contains("drop") && err.getMessage.contains("sink.anthill:"),
       s"the refusal must name the declaration and be located: ${err.getMessage}")
+
+    // AND NO PARTIAL TREE, which is what the classification buys. Backing it out is
+    // deliberately not a one-line edit: `Bootstrap.attempt` catches `BootstrapError`,
+    // and widening that `catch` alone does not COMPILE, because `refusals` is an
+    // `ArrayBuffer[BootstrapError]` — the element type is where the distinction is
+    // enforced. Widen the buffer, `Generated.refusals` and the catch to `GenError`
+    // together (measured) and `generate` RETURNS instead of throwing: it hands back
+    // Scala built against a profile it already knows is broken, reporting the same
+    // configuration fault once per empty tuple in the file. Both intercepts in this
+    // test fail under that backout, and no other test in the suite does.
+    val fatal = intercept[ProfileError](
+      Bootstrap.generate(parseSource(
+        """namespace my.app
+          |  sort Sink
+          |    operation drop(a: Int64) -> ()
+          |  end
+          |
+          |  sort Other
+          |    operation alsoDrop(a: Int64) -> ()
+          |  end
+          |end
+          |""".stripMargin, "two_sinks.anthill"), unitless))
+    assert(fatal.getMessage.contains("drop") && !fatal.getMessage.contains("alsoDrop"),
+      s"the run must end at the FIRST declaration, not survey them: ${fatal.getMessage}")
   }
 
   // ── WI-1067: package-keyed local/project type lookup ─────────────────────
@@ -3130,7 +3449,7 @@ class BootstrapTest extends munit.FunSuite:
 
     val shadowed = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
       projectFiles = IndexedSeq(ancestor, nearer, consumer))
-    val err = intercept[BootstrapError](Bootstrap.generate(consumer, shadowed))
+    val err = intercept[BootstrapError](genWith(consumer, shadowed))
     assert(err.getMessage.contains("`Shadow` is declared in package `a.b`") &&
            err.getMessage.contains("emits no Scala type"), err.getMessage)
     assert(err.getMessage.contains("shadow_user.anthill:"),
@@ -3140,8 +3459,8 @@ class BootstrapTest extends munit.FunSuite:
     // selected type, stays qualified in package a.b.c, and the real closure compiles.
     val reachable = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
       projectFiles = IndexedSeq(ancestor, consumer))
-    val files = Bootstrap.generate(ancestor, reachable) ++
-      Bootstrap.generate(consumer, reachable)
+    val files = genWith(ancestor, reachable) ++
+      genWith(consumer, reachable)
     val user = files.find(_.relPath.endsWith("/a/b/c/User.scala")).get.contents
     assert(user.contains("def use(x: _root_.a.Shadow): _root_.a.Shadow"), user)
     ScalaCompile.assertCompiles("ancestor package after removing a nearer negative", files)
@@ -3217,7 +3536,7 @@ class BootstrapTest extends munit.FunSuite:
     val project = IndexedSeq(ownPair, consumer)
     val projectTypes = ScalaTypes.resolve(
       stdlibKb, StdlibFixture.preludeFiles, projectFiles = project)
-    val projectOut = project.flatMap(Bootstrap.generate(_, projectTypes))
+    val projectOut = project.flatMap(genWith(_, projectTypes))
     val user = projectOut.find(_.relPath.endsWith("/User.scala")).get.contents
     assert(user.contains("def use(p: _root_.my.app.Pair[X, Y]): X"),
       s"the same-package sibling must beat the prelude:\n$user")
@@ -3228,11 +3547,11 @@ class BootstrapTest extends munit.FunSuite:
     // names a real declaration rather than merely producing the expected substring.
     val fallbackTypes = ScalaTypes.resolve(
       stdlibKb, StdlibFixture.preludeFiles, projectFiles = IndexedSeq(consumer))
-    val fallback = Bootstrap.generate(consumer, fallbackTypes)
+    val fallback = genWith(consumer, fallbackTypes)
     val fallbackUser = fallback.head.contents
     assert(fallbackUser.contains("def use(p: _root_.anthill.prelude.Pair[X, Y]): X"),
       s"without the sibling the prelude must remain the fallback:\n$fallbackUser")
-    val preludePair = Bootstrap.generate(
+    val preludePair = genWith(
       parseStdlib("anthill/prelude/pair.anthill"), fallbackTypes)
     ScalaCompile.assertCompiles("prelude Pair fallback plus its consumer",
       preludePair ++ fallback)

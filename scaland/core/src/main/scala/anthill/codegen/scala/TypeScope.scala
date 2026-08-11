@@ -368,10 +368,18 @@ case class TypeScope(
     * drops the entry has broken a rendering path, and the fallback is how that would
     * ship looking emitted. LOCATED like every other refusal, and on [[TypeScope]]
     * rather than on [[ScalaTypes]] for that reason alone — the table has no
-    * declaration and no span, and an unlocated throw from here would also escape
-    * `generate`'s one documented failure channel. */
+    * declaration and no span, and an unlocated throw would say only that the profile
+    * is wrong, not which emission asked it for what.
+    *
+    * A [[ProfileError]] AND NOT A [[BootstrapError]] (WI-1080 review): a missing entry
+    * is a fact about the PROFILE, so it is fatal rather than collected as this
+    * declaration's refusal. `decl` is in the message because it says which rendering
+    * path the broken entry defeated first, not because the declaration is at fault —
+    * every other one that renders an empty tuple would fail the same way, and
+    * reporting the same configuration fault once per declaration while returning a
+    * tree built against it is exactly the "emit anyway" this backend refuses. */
   def requiredScalar(anthillLeaf: String, why: String): String =
-    types.hostScalars.getOrElse(anthillLeaf, throw BootstrapError(
+    types.hostScalars.getOrElse(anthillLeaf, throw ProfileError(
       s"$decl: the profile's type_map declares no `$anthillLeaf` entry, and $why " +
       s"needs one; known scalars: ${types.hostScalars.keys.toVector.sorted.mkString(", ")}",
       declSpan))

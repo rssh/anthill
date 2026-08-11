@@ -9,8 +9,8 @@ import scala.collection.mutable.ArrayBuffer
 /** A single Scala source file emitted by the bootstrap codegen. */
 case class GeneratedFile(relPath: String, contents: String)
 
-/** A declaration Bootstrap REFUSES, because no Scala spelling of it would mean
-  * what the anthill declaration means (WI-940).
+/** What the scala-gen emitter raises. Two kinds, and the SPLIT IS THE SCOPE OF THE
+  * FAULT (WI-1080) — which is what decides whether the run can continue.
   *
   * `(message, span)` and `render = span.render(message)`, the shape
   * [[anthill.parse.ParseError]] and [[anthill.load.LoadError]] already have: the
@@ -18,17 +18,33 @@ case class GeneratedFile(relPath: String, contents: String)
   * location reads (WI-947). `render` is also `getMessage`/`toString`, for the
   * reason it is on those two — nothing in this tree calls a renderer by name, so
   * one reachable only by name is a seam with no user.
-  *
-  * THROWN rather than collected, which is the one place it differs from them:
-  * `generate` returns `IndexedSeq[GeneratedFile]` and has no production caller
-  * yet (only tests), so a diagnostic channel would be a signature invented for
-  * nobody. What matters is that the case is loud — emitting the nearest legal
-  * Scala instead is exactly the silent-wrong-output this ticket removes.
   */
-case class BootstrapError(message: String, span: Span) extends RuntimeException:
+sealed abstract class GenError(message: String, span: Span) extends RuntimeException:
   def render: String = span.render(message)
   override def getMessage: String = render
   override def toString: String = render
+
+/** A DECLARATION Bootstrap refuses, because no Scala spelling of it would mean what
+  * the anthill declaration means (WI-940).
+  *
+  * COLLECTED, not fatal (WI-1080): the fault is about this declaration, so its
+  * siblings are unaffected and `generate` records it in [[Bootstrap.Generated]].
+  * What matters is that the case stays loud — emitting the nearest legal Scala
+  * instead is exactly the silent-wrong-output the refusals exist to remove.
+  */
+case class BootstrapError(message: String, span: Span) extends GenError(message, span)
+
+/** The PROFILE is broken, which is not a fact about any declaration (WI-1080 review).
+  *
+  * `scala_std.anthill`'s `type_map` dropping the `Unit` entry breaks a rendering path
+  * for every declaration that reaches it, and there is no source the user could fix at
+  * the span it points to. FATAL — [[Bootstrap.attempt]] catches `BootstrapError` and
+  * this is deliberately not one, so it escapes `generate` and no partial tree is built
+  * against a profile already known to be broken. Recording it per declaration instead
+  * would report one configuration fault N times and return output regardless, which is
+  * the "emit anyway" this backend refuses everywhere else.
+  */
+case class ProfileError(message: String, span: Span) extends GenError(message, span)
 
 /** Anthill → Scala bootstrap codegen (parse-IR-driven, no KB).
   *
@@ -52,6 +68,28 @@ case class BootstrapError(message: String, span: Span) extends RuntimeException:
   */
 object Bootstrap:
 
+  /** What one file's emission produced: the declarations that EMITTED, and the ones
+    * that were REFUSED (WI-1080).
+    *
+    * BOTH HALVES ARE RETURNED because a refusal is scoped to ONE DECLARATION, and a
+    * throw can carry only one of them. This deliberately revisits WI-1055's
+    * abort-the-file choice, which was right about LOUDNESS and wrong about BLAST
+    * RADIUS: `effects.anthill` declares eleven sorts in one namespace and exactly two
+    * of them name `anthill.reflect`, so refusing at the file took the other nine with
+    * them. `Modifiable` was among the nine, which left `MutableCollection`'s emitted
+    * supertrait naming a type no file in the tree declared — a cascade into a file with
+    * nothing wrong with it, and the last error in the whole-prelude closure.
+    *
+    * The failure MODE is unchanged and only its scope narrows. A refused declaration
+    * emits nothing; [[emittedTypes]] still promises it (that walk renders no types, so
+    * it cannot see the refusal); and the promise breaks at the consumer's mandatory
+    * Scala compile — now naming the one missing `_root_` type instead of every type the
+    * refused declaration's FILE happened to declare. Dropping `refusals` on the floor
+    * is the one way to make this quiet, and nothing here does that for a caller.
+    */
+  case class Generated(
+    files: IndexedSeq[GeneratedFile], refusals: IndexedSeq[BootstrapError])
+
   /** Generate Scala files from one parsed `.anthill` file. The package
     * path and per-file output is determined by the file's top-level
     * namespace (or sort/entity name when no namespace is present).
@@ -63,9 +101,17 @@ object Bootstrap:
     * caller forgot to ask — which is exactly how the hardcoded table this replaced
     * came to disagree with the fact for two releases. [[ScalaTypes.resolve]] is the
     * one way to build it; Bootstrap still reads no KB (proposal 034).
+    *
+    * STILL THROWS, for the two faults that are not about a declaration. `fileTypes`
+    * refuses a leaf this file declares twice in one Scala package — a file whose own
+    * name table contradicts itself can place nothing, so no declaration of it could
+    * emit anyway — and a [[ProfileError]] says the profile is broken for every
+    * declaration at once. Everything a DECLARATION does wrong rides in
+    * [[Generated.refusals]].
     */
-  def generate(pf: ParsedFile, types: ScalaTypes): IndexedSeq[GeneratedFile] =
+  def generate(pf: ParsedFile, types: ScalaTypes): Generated =
     val files = ArrayBuffer.empty[GeneratedFile]
+    val refusals = ArrayBuffer.empty[BootstrapError]
     // The shadow table gets the same same-file complement `decls` gives the type
     // table: a required spec declared in THIS file is not in the resolved closure's
     // `specMembers` unless the caller listed the file there, and the rendering half
@@ -73,15 +119,70 @@ object Bootstrap:
     // disagreeing about what the file declares (WI-1065 review).
     val env = FileEnv(fileTypes(pf.symbols, pf.items, ""), types,
       specMemberNames(Seq(pf), base = types.specMembers))
-    pf.items.foreach {
-      case Item.NamespaceItem(ns) => emitNamespace(pf.symbols, ns, "", env, Map.empty, files)
-      case Item.SortWithBodyItem(s) => emitSort(pf.symbols, s, "", env, Map.empty, files)
+    emitItems(pf.symbols, pf.items, "", env, Map.empty, files, refusals)
+    // SEQUENCED, not inlined into the constructor call: `refuseColliding` APPENDS to
+    // `refusals`, so building `Generated` from both in one expression would be correct
+    // only under left-to-right argument evaluation. Swapping the two arguments — or
+    // reordering `Generated`'s fields — would drop every collision refusal from the
+    // result with nothing to compile-fail on.
+    val survivors = refuseColliding(files, refusals)
+    Generated(survivors, refusals.toIndexedSeq)
+
+  /** The declaration walk, shared by the file top level and every `namespace` body.
+    *
+    * ONE WALK because [[fileTypes]] mirrors these arms to record where each emitted type
+    * lands, and it could only ever mirror one of them — held apart, the top-level loop
+    * and the namespace loop were the same three cases written twice, and the type table
+    * was hand-coupled to whichever copy a reader found first.
+    */
+  private def emitItems(
+    sym: SymbolTable, items: Iterable[Item], packagePath: String, env: FileEnv,
+    imports: Map[String, String], out: ArrayBuffer[GeneratedFile],
+    refusals: ArrayBuffer[BootstrapError]
+  ): Unit =
+    items.foreach {
+      case Item.NamespaceItem(ns) =>
+        // NOT wrapped: a namespace is a CONTAINER, not a declaration. Its members each
+        // stage their own emission through this same walk, and its `<Ns>Ops` trait
+        // stages separately — wrapping the whole thing would discard members that
+        // already emitted, which is the file-scoped bug one level down.
+        emitNamespace(sym, ns, packagePath, env, imports, out, refusals)
+      case Item.SortWithBodyItem(s) =>
+        attempt(out, refusals)(emitSort(sym, s, packagePath, env, imports, _))
       case Item.EntityItem(e) =>
-        emitStandaloneEntity(pf.symbols, e, "", env, Map.empty, files)
-      case _ =>
+        attempt(out, refusals)(emitStandaloneEntity(sym, e, packagePath, env, imports, _))
+      case _ => // facts/rules — TODO in KB-driven gen
     }
-    refuseColliding(files)
-    files.toIndexedSeq
+
+  /** Emit ONE declaration, or record its refusal and leave its siblings alone (WI-1080).
+    *
+    * STAGED rather than emitted straight into `out`, so that "refused" and "emitted
+    * nothing" are the same state by construction. NO EMITTER NEEDS THIS TODAY — every
+    * one of them appends its single `GeneratedFile` after the last thing that can
+    * refuse, so a staged and an unstaged commit agree, and no test drives the
+    * difference. It is here because the invariant is what a caller reads (`files` are
+    * complete declarations) and the alternative failure is silent: an emitter that
+    * grows a second `out +=` before its refusal would ship a half-emitted declaration,
+    * which is worse than a refused one because it looks complete.
+    *
+    * `BootstrapError` ALONE and not `NonFatal`, nor its [[GenError]] parent: a refusal
+    * is the emitter saying it cannot spell THIS CONSTRUCT, which is a fact about one
+    * declaration. A [[ProfileError]] is a fact about the profile and stays fatal, and
+    * any other throwable is a defect in the emitter — both must take the whole run
+    * down rather than be recorded as if the source had asked for something impossible.
+    *
+    * The `refusals` ELEMENT TYPE is what enforces that, not this `catch`: widening the
+    * catch to `GenError` on its own does not compile, so the distinction cannot be
+    * eroded one site at a time.
+    */
+  private def attempt(
+    out: ArrayBuffer[GeneratedFile], refusals: ArrayBuffer[BootstrapError]
+  )(emit: ArrayBuffer[GeneratedFile] => Unit): Unit =
+    val staged = ArrayBuffer.empty[GeneratedFile]
+    try
+      emit(staged)
+      out ++= staged
+    catch case e: BootstrapError => refusals += e
 
   /** Two emissions at ONE path is a refusal, not a last-writer-wins (WI-1054 review).
     *
@@ -98,20 +199,30 @@ object Bootstrap:
     * namespace's `<Ns>Ops` trait each build their own `relPath`, and a check on any one
     * of them would miss the other two.
     *
+    * OVER THE SURVIVORS and BOTH SIDES DROPPED (WI-1080): it runs on what actually
+    * emitted, so a declaration whose colliding twin was refused for its own reason no
+    * longer collides with anything and ships. When the collision is real, neither side
+    * ships — the emitter cannot choose between them, and keeping one would be the
+    * last-writer-wins this exists to prevent, merely decided earlier.
+    *
     * `Span.empty` AND NOT A BORROWED ONE, which is what that value is for ("a
     * diagnostic that genuinely has nowhere to point"): the fault is a RELATION between
     * two declarations, so neither of them is where a reader should be sent, and
     * pointing at one would say the wrong thing more confidently than saying nothing.
     * The path it names is what identifies both.
     */
-  private def refuseColliding(files: ArrayBuffer[GeneratedFile]): Unit =
+  private def refuseColliding(
+    files: ArrayBuffer[GeneratedFile], refusals: ArrayBuffer[BootstrapError]
+  ): IndexedSeq[GeneratedFile] =
     val collisions = files.groupBy(_.relPath).filter(_._2.length > 1).keys.toVector.sorted
-    if collisions.nonEmpty then
-      throw BootstrapError(
-        s"two declarations emit to one path (${collisions.mkString(", ")}). Scala " +
+    collisions.foreach { path =>
+      refusals += BootstrapError(
+        s"two declarations emit to one path ($path). Scala " +
         "names are converted many-to-one (§5: `-` normalizes to `_`, then snake_case " +
         "camelCases), so distinct anthill names can converge — rename one of them",
         Span.empty)
+    }
+    files.filterNot(f => collisions.contains(f.relPath)).toIndexedSeq
 
   /** What one Scala package is promised by a parsed file set (WI-1067).
     *
@@ -156,10 +267,12 @@ object Bootstrap:
     *
     * THIS IS A PROMISE, not a second emission pass. Building the table by calling
     * `generate` would be circular (`generate` needs this table), so a caller must emit
-    * the same parsed closure it supplies here. A refused declaring file then breaks the
-    * promise loudly: no declaration reaches the output closure and its mandatory Scala
-    * compilation reports the missing `_root_` type. The refusal-set test names today's
-    * seven such prelude files; this table does not pretend it successfully emitted them.
+    * the same parsed closure it supplies here. A REFUSED DECLARATION then breaks its own
+    * promise loudly: it reaches no output closure, and a consumer's mandatory Scala
+    * compilation reports that one missing `_root_` type. Since WI-1080 the break is
+    * exactly that narrow — the refused declaration's siblings emit, so a file is no
+    * longer promised whole and delivered empty. The refusal-set test names every refused
+    * declaration; this table does not pretend it successfully emitted them.
     */
   def emittedTypes(files: Iterable[ParsedFile]): EmittedTypes =
     val all = files.foldLeft(FileTypes.empty) { (acc, pf) =>
@@ -382,12 +495,13 @@ object Bootstrap:
     * twice. A same-package duplicate is rejected while two packages may carry the same
     * leaf; no namespace merge can silently overwrite either.
     *
-    * COUPLED TO THE EMIT WALK BY HAND: the three arms here are the same three
-    * `generate`/`emitNamespace` dispatch on, and the `case _` means `-Wconf:id=E029`
-    * cannot catch them drifting. An `Item` kind that gains an emission without
-    * being taught here would fall through to `Placement.Ambient`, which performs no
-    * arity check — quietly losing the guarantee WI-1055 exists for, on exactly the
-    * type it should cover.
+    * COUPLED TO THE EMIT WALK BY HAND: the three arms here are the three [[emitItems]]
+    * dispatches on, and the `case _` means `-Wconf:id=E029` cannot catch them drifting.
+    * An `Item` kind that gains an emission without being taught here would fall through
+    * to `Placement.Ambient`, which performs no arity check — quietly losing the
+    * guarantee WI-1055 exists for, on exactly the type it should cover. (One walk to
+    * mirror rather than two since WI-1080; before that the emitter dispatched in
+    * `generate` AND in `emitNamespace`, and this comment could only name one of them.)
     */
   private def fileTypes(
     sym: SymbolTable, items: Iterable[Item], packagePath: String
@@ -574,35 +688,39 @@ object Bootstrap:
         if packagePath.isEmpty then parent else s"$packagePath.$parent",
         segs.last, written.last)
 
+  /** A namespace emits its members and, if it declares operations, ONE `<Ns>Ops` trait.
+    *
+    * The prologue is deliberately outside [[attempt]]'s reach: `namespacePath` and
+    * `importedNames` are `Names` conversions and symbol lookups, and neither has a
+    * refusal to raise. Nothing here can fail in a way that should cost the file, so
+    * every failing path below is inside a staged unit and this function does not throw.
+    */
   private def emitNamespace(
     sym: SymbolTable, ns: Namespace, packagePath: String, env: FileEnv,
-    outerImports: Map[String, String], out: ArrayBuffer[GeneratedFile]
+    outerImports: Map[String, String], out: ArrayBuffer[GeneratedFile],
+    refusals: ArrayBuffer[BootstrapError]
   ): Unit =
     val here = namespacePath(sym, ns, packagePath)
     val nsParentPkg = here.parentPkg
-    val nsLeaf = here.leaf
-    val childPath = here.childPath
     val imports = importedNames(sym, ns.imports, outerImports)
-    ns.items.foreach {
-      case Item.NamespaceItem(child) =>
-        emitNamespace(sym, child, childPath, env, imports, out)
-      case Item.SortWithBodyItem(s) => emitSort(sym, s, childPath, env, imports, out)
-      case Item.EntityItem(e) => emitStandaloneEntity(sym, e, childPath, env, imports, out)
-      case _ => // facts/rules at namespace level — TODO in KB-driven gen
-    }
-    // Top-level operations inside a namespace land in a <NsName>Ops trait.
+    emitItems(sym, ns.items, here.childPath, env, imports, out, refusals)
+    // Top-level operations inside a namespace land in a <NsName>Ops trait. ONE staged
+    // unit for the lot of them, because they emit as one file: an operation Bootstrap
+    // cannot render costs the whole trait (delay.anthill's `pure`, WI-1055) but not,
+    // since WI-1080, the sorts declared beside it.
     val nsOps = declaredOps(ns.items)
-    if nsOps.nonEmpty then
-      val typeName = Names.scalaTypeName(nsLeaf) + "Ops"
+    if nsOps.nonEmpty then attempt(out, refusals) { staged =>
+      val typeName = Names.scalaTypeName(here.leaf) + "Ops"
       val scope = env.scopeAt(
         s"namespace `${here.anthillLeaf}`", ns.name.span, nsParentPkg, imports)
       val sb = StringBuilder()
       if nsParentPkg.nonEmpty then sb ++= s"package $nsParentPkg\n\n"
       sb ++= s"trait $typeName:\n"
       nsOps.foreach(op => sb ++= s"  ${OpGen.renderAbstract(op, scope, sym)}\n")
-      out += GeneratedFile(
+      staged += GeneratedFile(
         relPath = s"src/main/scala/${pathToDir(nsParentPkg)}$typeName.scala",
         contents = sb.toString)
+    }
 
   // ── Sort (trait or enum) ────────────────────────────────────────
 
