@@ -8502,6 +8502,18 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         });
         kb.retract(rid);
         kb.assert_metadata_fact(fact_term, clause_kind, domain, meta);
+        // WI-1076 — THE ONE PLACE A SORT'S OPERATION LIST CHANGES AFTER LOAD, so it is
+        // the one place `spec_carrier_param`'s memo can go stale. That answer is derived
+        // from the operations this pass just rewrote: a secondary entry adding an
+        // operation which takes a type parameter can turn a spec with no carrier
+        // parameter into one that has it. Without this, a KB loaded in two batches
+        // (`load_incremental` / `load_all_per_file`, which re-run this phase on an
+        // already-populated KB) would answer from a memo taken before the entry existed,
+        // and the same program would classify differently depending on how it was
+        // loaded. Cleared wholesale rather than per sort: this pass is gated on a
+        // program HAVING a secondary entry, which today is none of the corpus, so the
+        // cost is zero where it is zero and a rebuild where it is not.
+        kb.spec_carrier_param_cache.borrow_mut().clear();
     }
 }
 

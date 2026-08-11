@@ -968,28 +968,49 @@ guarantee.
 by its bindings** — two questions, and the provision records both (WI-1069). The
 provider is the enclosing sort, or a secondary entry at that sort's address; it
 is whose member set becomes the dictionary. The carrier is the value bound to the
-spec's **carrier parameter**, its first declared type parameter, and it is what
-the provision dispatches at. Where the two coincide the clause is an ordinary
+spec's **carrier parameter** (which parameter that is, the next paragraph
+settles), and it is what the provision dispatches at. Where the two coincide the
+clause is an ordinary
 self-provision (`sort Set provides Eq[T = Set]`). Where they differ it is a
 **witness** — `sort ListOrd provides Ord[T = List[T = E]]` says `ListOrd`
 supplies the `Ord` dictionary *for* `List` — which is the shape proposal 058
 §3.6's defaults, `DefaultProvider` and witness dispatch are all built on. One
 owner decides this for every reader (`provision_carrier_binding` /
 `witness_dispatch_carrier_value`), so the load checks, the coherence grouping and
-dispatch cannot disagree about what a witness is. **The carrier parameter is
-identified POSITIONALLY**, and that is a heuristic rather than a declaration —
-nothing marks a sort as a spec or a parameter as its carrier. A **self-carried**
-spec, whose carrier is the spec sort itself and which therefore declares no
-carrier parameter, does not satisfy it: `sort List provides Stream[T, {}]` names
-`Stream`'s *element* parameter first, so the provision is recorded at carrier `T`
-and `List` does not `self_provides` `Stream` (measured). Provider admissibility is
-unaffected, because it reads the PROVIDER and not the dispatch carrier — the
-`provides()` rule joins on `SortProvidesInfo(sort_ref:)` — so a `List` is still
-usable where a `Stream` is expected; and a provision with an explicit carrier
-parameter is right either way (`List provides FiniteCollection[C = List[T]]`
-records `List`). What has the hole is the defaults substrate, which reads the
-dispatch carrier and so infers no default row for a self-carried spec.
-**TICKET WI-1076.**
+dispatch cannot disagree about what a witness is.
+
+**Which parameter is the carrier is read off the operations** (WI-1076), because
+nothing in the surface language says: no keyword declares a sort to be a spec, or
+a parameter to be its carrier. The rule as implemented is *the first declared type
+parameter that some declared operation takes as a parameter* —
+`Iterable.iterator(c: C)` makes `C` the carrier, and a provision's binding for it
+is what that provision dispatches at. A spec **none** of whose operations takes any
+of its type parameters has no carrier parameter, and its provisions record **the
+provider** as their carrier: `Stream`'s operations all receive on `Stream` itself
+and its `T` appears only in return and callback types, so `sort List provides
+Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`.
+
+The intended notion is narrower than the implemented one, and the difference is a
+known gap rather than a subtlety. What *should* decide is whether an operation
+**receives on** a parameter; what is asked is whether one **accepts** it, and the
+two part company for any self-representing spec that takes its own element
+somewhere — `Set.insert(s: Set, x: T)`, `Map.put(m: Map, key: K, value: V)`,
+`LogicalStream.pure(x: T)`. Those still record the accepted parameter, so
+`Relation provides LogicalStream` is filed at the element and infers no default
+row. A carrier-parameterized spec that declares its element *first* and accepts it
+(`sort Holder { sort Element = ?; sort C = ?; operation has(c: C, e: Element) }`)
+is the same gap from the other side: the explicit `C = …` binding is discarded.
+**TICKET WI-1077**, which is a language question — the fix is to let a declaration
+*say* which parameter is the carrier.
+
+Where a spec genuinely has no carrier parameter, **a witness for it cannot
+exist**: dispatch is directed by the receiver value's own sort, there being no
+parameter position that could name a carrier, so a sort claiming such a spec is
+claiming to *be* one. Taking the first parameter unconditionally filed seven stdlib
+provisions at the type variable `T` and left the defaults substrate (§3.6) with no
+inferred row for any of them, while provider admissibility — which joins on
+`SortProvidesInfo(sort_ref:)`, the provider, not the dispatch carrier — kept
+working, which is why it stayed silent.
 
 **Inside a sort body, `provides Spec[…]` and `fact Spec[…]` record the same
 PROVISION** — both take the provider from the scope and the carrier from the

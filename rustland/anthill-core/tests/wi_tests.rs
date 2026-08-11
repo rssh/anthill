@@ -1141,3 +1141,6 @@ mod wi1069_provides_binding_carrier_test;
 
 #[path = "include/wi1075_absolute_path_test.rs"]
 mod wi1075_absolute_path_test;
+
+#[path = "include/wi1076_self_representing_spec_carrier_test.rs"]
+mod wi1076_self_representing_spec_carrier_test;

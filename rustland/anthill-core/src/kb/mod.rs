@@ -1218,6 +1218,25 @@ pub struct KnowledgeBase {
     // stale within a session.
     pub(crate) sort_param_pairs_cache: RefCell<HashMap<Symbol, Rc<Vec<(Symbol, TermId)>>>>,
 
+    // WI-1076 — memoized `typing::spec_carrier_param`: which declared type
+    // parameter of a spec its operations RECEIVE ON, i.e. which one is its
+    // carrier, or `None` for a self-representing spec that receives on itself.
+    // Keyed by CANONICAL sort symbol, so a twin copy of a spec answers with the
+    // declaration's own parameters rather than falling through to an empty op
+    // list. Cached for the same reason the pairs above are: it is read per
+    // provision on the dot-call receiver probe, and computing it builds an
+    // `OperationInfoFull` per declared operation.
+    //
+    // NOT stale-free the way `sort_param_pairs_cache` is, and the difference is
+    // real: a sort's type PARAMETERS are fixed at load (059 R3 refuses a binder
+    // in a secondary entry), but its OPERATIONS are not — 059 R2 lets a
+    // secondary entry add one, which is what `merge_secondary_entry_operations`
+    // exists to fold in, and `load_incremental` re-runs that phase on an
+    // already-populated KB. That pass therefore CLEARS this map; it is the only
+    // writer of a sort's operation list after load, so it is the only
+    // invalidation point.
+    pub(crate) spec_carrier_param_cache: RefCell<HashMap<Symbol, Option<Symbol>>>,
+
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(op_short, SortGoal, scope)`. Saves re-walking `SortProvidesInfo`
     // for repeated spec-op calls at the same (spec, bindings, scope) —
@@ -1454,6 +1473,7 @@ impl KnowledgeBase {
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
+            spec_carrier_param_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             sort_ops: SortOpsTable::default(),
             host_mapped_ops: std::collections::HashSet::new(),

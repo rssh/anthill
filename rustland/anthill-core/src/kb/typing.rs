@@ -7557,8 +7557,13 @@ fn find_spec_op_for_required_sort(
 /// spec itself, with the type-params as elements) has no carrier PARAM for a required spec to
 /// bind to, so every requires it carries is constraint-style ⟹ rejected. A CARRIER-PARAM
 /// receiver (`FiniteCollection`, members take `c: C`) preserves the carrier iff the required
-/// spec's carrier binds to its carrier param (its first type-param — the
-/// [`provision_carrier_sort`] convention, shared with the provides resolver).
+/// spec's carrier binds to its carrier param — and WHICH parameter that is has one owner,
+/// [`spec_carrier_param`], asked here and by [`provision_carrier_binding`] on the other
+/// side of the comparison (WI-1076). Both sides used to read "the first type-param"
+/// independently; when the provides side stopped, a receiver declaring its element first
+/// (`sort Coll { sort Element = ?; sort C = ?; operation get(c: C) }`) would have compared
+/// `Element` against the required spec's `C` and silently judged a carrier-preserving edge
+/// constraint-style, lending none of the required spec's members.
 fn requires_edge_is_carrier_preserving(
     kb: &KnowledgeBase,
     recv_sort: Symbol,
@@ -7567,7 +7572,7 @@ fn requires_edge_is_carrier_preserving(
     if spec_is_self_representing(kb, recv_sort) {
         return false;
     }
-    let Some((s_carrier, _)) = sort_type_params_as_pairs(kb, recv_sort).first().copied() else {
+    let Some(s_carrier) = spec_carrier_param(kb, recv_sort) else {
         return false;
     };
     provision_carrier_sort(kb, entry.required_sort, &entry.spec)
@@ -10439,10 +10444,13 @@ pub(crate) fn classify_pin_or_apply_within(
 ///     to close cannot occur at this site whatever it reads;
 ///   * the question is narrower: which member's RETURN to thread, gated on a
 ///     self-receiver parameter typed by the carrier;
-///   * for a SELF-RECEIVER spec no route-2/3 supplier reaches the carrier at all
-///     today — `provision_carrier_sort` files such a provision under the spec's FIRST
-///     TYPE PARAM (058 §12's recorded limit, WI-450's carrier-as-artifact problem), so
-///     widening this would be inert as well as unmotivated.
+///   * for a SELF-RECEIVER spec a route-2 supplier now DOES reach the carrier, and this
+///     site is still route-1 by choice rather than by unreachability. WI-1076 retired
+///     the premise this bullet used to state — that `provision_carrier_sort` files such
+///     a provision under the spec's FIRST TYPE PARAM, so nothing reached it (058 §12,
+///     WI-450's carrier-as-artifact problem). It now answers `None` for a
+///     self-representing spec and the provision keys at its provider, i.e. at the
+///     carrier. The two reasons above stand on their own; only the "inert" one is gone.
 fn concrete_self_receiver_override(
     kb: &mut KnowledgeBase,
     carrier_sym: Symbol,
@@ -12251,16 +12259,31 @@ fn check_apply_iter(
                 // the suppliers once. Read its doc for why the count is bare here and
                 // clause-narrowed in the body-less sibling.
                 //
-                // REACH, stated because it is narrower than the block around it and nothing
-                // else records it: the refusal can only fire on the CARRIER-PARAM shape
-                // (`describe(x: T)`). For a SELF-RECEIVER spec (`head(s: Stream)`)
-                // `provision_carrier_sort` files every provision under the spec's FIRST TYPE
-                // PARAM — `Stream`'s `T`, the element — so no route-2/3 supplier reaches
-                // such a carrier and `cands` never holds two. That is WI-450's
-                // carrier-as-artifact limit (058 §12), and closing it would silently widen a
-                // LOAD refusal over the stdlib's largest defaulted-op family; it must be a
-                // decision taken there, not a side effect. IT IS PROSE, NOT A CLAUSE — the
-                // moment it becomes one it belongs in the shared helper, not here.
+                // REACH — WI-1076 CLOSED THE LIMIT THIS PARAGRAPH USED TO RECORD, and took
+                // the decision it demanded. It used to read: the refusal can only fire on
+                // the CARRIER-PARAM shape (`describe(x: T)`), because for a SELF-RECEIVER
+                // spec (`head(s: Stream)`) `provision_carrier_sort` filed every provision
+                // under the spec's FIRST TYPE PARAM — `Stream`'s `T`, the element — so no
+                // route-2/3 supplier reached such a carrier and `cands` never held two
+                // (WI-450's carrier-as-artifact limit, 058 §12). It warned that closing it
+                // would "silently widen a LOAD refusal over the stdlib's largest
+                // defaulted-op family; it must be a decision taken there, not a side
+                // effect."
+                //
+                // THE DECISION, taken deliberately and measured: the refusal now reaches
+                // the self-representing shape too, and that is right. A provision keying at
+                // its provider means a carrier's OWN member and its provision's op binding
+                // are both visible for one op — before, one of the two was invisible and
+                // route order picked the other SILENTLY, which is the exact defect this
+                // whole family of refusals exists to prevent (WI-1010's rule that a written
+                // implementation is never shadowed). The stdlib is unaffected: the full
+                // workspace is green, no library provision writing an op binding beside its
+                // carrier's own member exists. `wi1076_self_representing_spec_carrier_test::
+                // a_supplier_tie_on_a_self_representing_spec_is_now_refused` pins the
+                // widening so it cannot be undone by accident.
+                //
+                // IT IS PROSE, NOT A CLAUSE — the moment it becomes one it belongs in the
+                // shared helper, not here.
                 //
                 // WI-1027 built the BODY-LESS half's guard out of the same construction
                 // ([`supplier_tie_error`]), which is where the `NameableWitness` repair this
@@ -22955,6 +22978,91 @@ fn provision_carrier_sort(
     provision_carrier_binding(kb, spec_sort, spec_view).map(|(_, base)| base)
 }
 
+/// WI-1076 — WHICH declared type parameter of `spec_sort` is its CARRIER: the first one
+/// in declaration order that some declared operation TAKES AS A PARAMETER
+/// (`Iterable.iterator(c: C)` ⇒ `C`). `None` when no operation takes any of them, which
+/// is a spec with no carrier parameter at all — `Stream`, whose operations receive on
+/// `Stream` itself and whose `T` appears only in return and callback types.
+///
+/// "TAKES" IS WIDER THAN "RECEIVES ON", and that is the shipped approximation rather
+/// than the intended rule; see the WI-1077 paragraph below for what it costs.
+///
+/// THE PREDICATE IS "RECEIVES ON A PARAMETER", NOT "RECEIVES ON ITSELF", and the
+/// difference is a real program. [`spec_is_self_representing`] asks whether ANY
+/// operation self-receives, which is the right question for its own callers and the
+/// wrong one here: a spec may do BOTH — declare a carrier parameter its operations
+/// receive on AND take itself in some other operation (`peek(c: C)` beside
+/// `joinTwo(a: Holder, b: Holder)`). Gating on self-representation discarded such a
+/// spec's explicit `C = Box` binding, filed its witness's dictionary under the witness
+/// instead of the carrier, and refused a program that had loaded — measured on exactly
+/// that fixture, which is why the question is asked of the PARAMETER.
+///
+/// It DOES weaken the positional assumption it replaced — a spec whose carrier parameter
+/// is not written first (`sort S { sort Element = ?; sort C = ?; operation f(c: C) }`)
+/// now answers `C`, where the old read answered `Element` — but only while no operation
+/// takes the earlier parameter. Add `has(c: C, e: Element)` and it answers `Element`
+/// again, MEASURED. That is the same gap as the paragraph below, reached from the
+/// carrier-parameterized side.
+///
+/// WHAT THIS STILL GETS WRONG, measured and left deliberately — **WI-1077**. "Takes a
+/// parameter of type `P`" does not separate a RECEIVER from an ACCEPTED ARGUMENT, so a
+/// spec that receives on itself AND accepts its own element keeps the old reading:
+/// `LogicalStream.pure(x: T) -> LogicalStream` injects an element and dispatches on
+/// nothing, yet makes `T` answer here, so `Relation provides LogicalStream[T = …]` is
+/// still filed at `T` — the one member of the seven WI-1076 measured that this does not
+/// close. `Set.insert(s: Set, x: T)` and `Map.put(m: Map, key: K, value: V)` are the
+/// same shape and would answer their element too; no stdlib provision of either exists,
+/// so nothing measures it today. Eval separates the two with
+/// [`provision_binds_param_to_carrier`], which is provision-relative and cannot be asked
+/// here without circularity; separating them structurally needs the language to SAY
+/// which parameter is the carrier, which nothing does (059's fact-ban section: no `spec`
+/// keyword, no `SymbolKind::Spec`).
+///
+/// THE FAILURE MODE IS THE SAFE ONE, and that is why this predicate was chosen over the
+/// stricter [`spec_is_self_representing`], which closes `LogicalStream` and was
+/// MEASURED to refuse a program that loads: a spec declaring BOTH a carrier parameter
+/// and a self-receiving operation had its explicit `C = Box` binding discarded and the
+/// load failed with a `requires Holder[…]` mismatch. Answering "carrier parameter" when
+/// the truth is "self-representing" leaves a provision where it already was; answering
+/// "self-representing" when the spec HAS a carrier parameter throws a written binding
+/// away. Only one of those can break a working program.
+///
+/// Keyed and computed on the CANONICAL sort symbol: `operations_of_sort` re-filters on
+/// raw symbol equality and answers empty for a twin copy, where the parameter list
+/// beside it (`sort_type_params_as_pairs` → `type_param_syms_of`) canonicalizes — so an
+/// uncanonicalized read would give one relation two answers depending on which spelling
+/// a provision was written with. Memoized on `kb.spec_carrier_param_cache`, since the
+/// walk builds an `OperationInfoFull` per declared operation.
+fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
+    let canon = kb.canonical_sort_sym(spec_sort);
+    if let Some(cached) = kb.spec_carrier_param_cache.borrow().get(&canon) {
+        return *cached;
+    }
+    // Every type-param VarId any declared operation receives on, in one pass over the
+    // operations — the dual of `self_receiver_param_index`, which matches a parameter
+    // typed as the SORT where this matches one typed as a PARAMETER of it.
+    let received: std::collections::HashSet<VarId> = super::op_requirements::operations_of_sort(
+        kb, canon,
+    )
+    .iter()
+    .filter_map(|&op| lookup_operation_info_full(kb, op))
+    .flat_map(|info| {
+        info.params
+            .iter()
+            .filter_map(|(_, pty)| declared_type_param_vid(kb, pty))
+            .collect::<Vec<_>>()
+    })
+    .collect();
+    let answer = sort_type_params_as_pairs(kb, canon)
+        .iter()
+        .map(|(s, _)| *s)
+        .find(|&p| type_param_global_var(kb, p).is_some_and(|v| received.contains(&v)));
+    kb.spec_carrier_param_cache
+        .borrow_mut()
+        .insert(canon, answer);
+    answer
+}
+
 /// [`provision_carrier_sort`] before it throws the WRITTEN term away: the value bound to
 /// the spec's carrier param AND the sort-like base that value names, as one answer.
 ///
@@ -22970,20 +23078,47 @@ fn provision_carrier_sort(
 /// [`witness_dispatch_carrier_value`] records. Only the binding — the view's SortView
 /// discriminant and the bound value's base still go through the shared owners
 /// ([`view_is_sort_view`], [`spec_view_base`]), which read the same on both carriers.
+///
+/// WI-1076 — THE CARRIER PARAMETER IS THE ONE THE OPERATIONS RECEIVE ON, asked through
+/// [`spec_carrier_param`]; `None` when there is none, which is a SELF-REPRESENTING spec
+/// (`Stream.splitFirst(s: Stream)`) whose first parameter is the ELEMENT type. Taking
+/// the first parameter unconditionally filed seven stdlib provisions —
+/// `List`/`FiniteStream`/`MappedStream`/`FilteredStream`/`LogicalStream` `provides
+/// Stream[T]`, `List provides FiniteStream[T]`, `Relation provides LogicalStream[T]` —
+/// at the type VARIABLE `T`, classifying each carrier as a WITNESS for it, so
+/// `self_provides(List, Stream)` was false and 058 §3.6 inferred no default row from any
+/// of them. Loading clean throughout, which is why it needed its own ticket.
+///
+/// `None` is the right answer rather than "the provider": this function reports the
+/// CARRIER-PARAM BINDING, of which a self-representing spec has none. A witness for one
+/// is not merely absent from the corpus but UNSAYABLE — dispatch is directed by the
+/// receiver value's own sort, there being no parameter position that could name a
+/// carrier, so a sort claiming such a spec is claiming to BE one.
+///
+/// WHAT EACH CALLER MAKES OF `None`, audited rather than assumed: the `dispatch_carrier`
+/// builtin mints the PROVIDER, [`witness_dispatch_carrier_value`] declines the witness
+/// kind (so 058 §3.6 infers the default row), and the dot-call witness match declines.
+/// [`requires_edge_is_carrier_preserving`] is the one that reads it differently — as
+/// "not carrier-preserving" — and that is correct for the same reason: an edge
+/// `requires SelfRepSpec[…]` has no carrier parameter to bind the receiver's carrier to,
+/// which is exactly the constraint-style case that function rejects. It already applies
+/// the same rule from the other side, refusing outright when the RECEIVER is
+/// self-representing.
 fn provision_carrier_binding(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     spec_view: &Value,
 ) -> Option<(Value, Symbol)> {
-    let params = sort_type_params_as_pairs(kb, spec_sort);
-    let carrier_param = params.first()?.0;
-    let carrier_short = short_name_of(kb.local_name_of(carrier_param));
     // Bindings live on the `SortView(base, …named)` wrapper alone, asked through the one
     // owner of that discriminant: a bare spec reference (`provides Store`) carries named
     // args nowhere, and reading them off some other functor would invent a carrier.
+    // FIRST because it is the cheap gate: this is read per provision on the dot-call
+    // receiver probe, and the carrier-param question below walks the spec's operations.
     if !view_is_sort_view(kb, spec_view) {
         return None;
     }
+    let carrier_param = spec_carrier_param(kb, spec_sort)?;
+    let carrier_short = short_name_of(kb.local_name_of(carrier_param));
     // The param's OWN symbol first, short name only as the fallback — `goal_binding_value`'s
     // two-rung ladder, and here it is also what keeps the common case allocation-free:
     // `named_keys` collects a `Vec`, `named_arg` does not.

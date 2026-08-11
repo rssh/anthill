@@ -47,18 +47,20 @@
 //! So the answer is (b): the shape is legal, it is THE witness spelling, and what
 //! needed fixing was the prose that said otherwise.
 //!
-//! ONE RESIDUE, SPUN OUT AS **WI-1076** because it is a different question with a far
-//! wider blast radius. The ticket said identifying the carrier parameter "is itself
-//! unsettled", and it was right: `provision_carrier_binding` picks it POSITIONALLY
-//! (`sort_type_params_as_pairs(spec).first()`), which is correct for every spec that
-//! HAS a carrier parameter and wrong for a SELF-CARRIED one. Measured over the loaded
-//! stdlib — `List | Stream | T`, and `self_provides` answers `FiniteCollection`,
-//! `IndexedSeq`, `Iteration`, `PersistentCollection` for `List` but NOT `Stream` — so
-//! six stdlib provisions are classified as witnesses for a type VARIABLE and
-//! contribute no inferred default row. Nothing in the suite fails today, which is
-//! exactly why it needed a ticket rather than a passing mention. It is NOT what this
-//! file asserts: the fixtures below use a spec with an explicit carrier parameter, so
-//! every row here is unaffected by whatever WI-1076 decides.
+//! ONE RESIDUE, SPUN OUT AS **WI-1076** and since DELIVERED. The ticket said
+//! identifying the carrier parameter "is itself unsettled", and it was right:
+//! `provision_carrier_binding` picked it POSITIONALLY, which is correct for a spec that
+//! HAS a carrier parameter and wrong for a SELF-REPRESENTING one, whose operations
+//! receive on the spec sort itself and which declares none. Seven stdlib provisions
+//! were filed at a type VARIABLE and contributed no inferred default row.
+//! `spec_carrier_param` now decides it by asking which parameter the operations take —
+//! NOT `spec_is_self_representing`, which was measured to refuse a program that loads
+//! and was rejected. Six of the seven are closed; see
+//! `wi1076_self_representing_spec_carrier_test` for the residue and both controls.
+//!
+//! It never touched this file's rows: the fixtures below use `Desc`, a
+//! carrier-parameterized spec (`describe(x: T)` receives on the parameter), so every
+//! assertion here reads the same before and after WI-1076.
 //!
 //! WHAT THIS FILE PINS, and none of it was under test before: the relation answers
 //! the FOREIGN carrier (nothing else asserts where the carrier comes from), and the
