@@ -858,7 +858,7 @@ namespace anthill {              -- implicit, created if not present
 
 Implicit namespaces merge with explicit namespaces of the same qualified name. This means:
 - Siblings share a scope: `sort ns.A` and `sort ns.B` in separate files both live in the implicit `ns` namespace and can reference each other without imports.
-- Wildcard imports work naturally: `import anthill.prelude.*` imports all items defined in the `anthill.prelude` scope.
+- Wildcard imports work naturally: `import anthill.prelude.*` imports all items defined in the `anthill.prelude` scope — that scope's own items, not those of the `anthill` around it (§8.6, WI-1089).
 - Explicit `namespace anthill { ... }` and implicit `anthill` (from `sort anthill.prelude.X`) merge into one scope.
 - **Merging shares definitions, not imports (WI-995).** Two files writing one address contribute their declarations to one scope — that is what the first bullet says — but each file's `import` lines resolve names only in that file. See "An import is file-local" in §Namespaces and imports.
 
@@ -913,7 +913,7 @@ rule CanModify[?r] :- Effect[T = Modify[?r]]   -- extract modifiable resources
 
 Binding across the term is *all* the name buys. In an operation signature it is what §8.1's return rule reads to tell a bound universal from an unbound existential (WI-1078): a variable a declaration uses in a parameter, an `[A]` binder or a `requires` bound is instantiated by the caller, while one used only in the return is opened at each use — the same verdict the anonymous `?` gets there.
 
-Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible. To access a sort's contents, use `requires Eq[T]` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name[bindings]`), not at import time.
+Import makes names from another namespace visible in the current scope as local aliases. It does **not** add the imported sort's scope as a parent — importing `Eq` does not make `eq`/`neq` directly accessible (WI-1089; the resolution rule is §8.6, *Import forms*). To access a sort's contents, use `requires Eq[T]` (sort composition) or wildcard import. Sort parameters remain unspecified — they are instantiated separately via inline type expressions (`Name[bindings]`), not at import time.
 
 Three import forms:
 
@@ -3036,23 +3036,31 @@ deviating site.
 not by itself add a sort's contents (use `requires` or wildcard for that):
 
 Every form is scoped to the file that writes it (WI-995), on **both** of the things
-an import writes: the alias, and — for the plain and wildcard forms — the parent
-link. A parent link a `requires`, an enclosing body or variant exposure also
-justifies stays visible, since those belong to a declaration at the address rather
-than to one file's text.
+an import writes: the alias, and — for the wildcard form — the parent link. A parent
+link a `requires`, an enclosing body or variant exposure also justifies stays
+visible, since those belong to a declaration at the address rather than to one
+file's text.
 
-- `import a.b.C` — alias `C`. `rustland` also includes `C`'s **own** scope as a
-  non-enclosing parent when `C` is a namespace or a sort, which — since the walk
-  re-enters that scope's enclosing chain — makes `a.b` visible too; `scaland`
-  adds the alias alone. The rule this text used to state ("include `a.b`") is a
-  third answer, implemented by neither. **Undecided**, and WI-1089 owns the
-  ruling and the corpus measurement; until it lands, write the import you mean
-  rather than relying on what a parent link happens to reach.
+- `import a.b.C` — alias `C`, and **nothing else** (WI-1089). Not `a.b`, and not
+  `C`'s members: the line binds the one name it writes, exactly as it does in
+  Scala, Java and Rust. `C.member` reaches through the bound name; `import
+  a.b.C.*` or `requires` brings `C`'s contents in.
 - `import a.b.{C, D}` — alias each name, resolved by: direct `a.b.C`
   qualified lookup, then `resolve_in_scope(C, a.b)`, then a one-level nested
   lookup (`a.b.<segment>.C`, taken only if unique) so an entity declared inside
   a sort/enum of `a.b` is importable by its short name.
 - `import a.b.*` — include `a.b` as a non-enclosing parent (every visible name).
+
+**An import opens what it names, and not the module around it** (WI-1089). The
+parent walk of step 3 above does not leave an import-contributed parent through
+that scope's *enclosing* links, and stays stopped for the rest of the path. So
+`import a.b.*` brings `a.b`'s names and not `a`'s, and `import a.b.C.*` brings
+`C`'s and not `a.b`'s. The other links out of an imported scope — a `requires`,
+a variant exposure, the scope's own imports — are contents of the thing imported
+and stay reachable. Without this stop every import also delivered the whole
+declaration chain above its target, which is what made the plain form *look*
+like "include `a.b`": the reach was an artifact of the walk, and it disappeared
+whenever the imported name had no scope of its own (WI-993).
 
 **A parent link needs a scope to link.** The wildcard form's path must name a
 **namespace** (§5.1) or a **sort** (§5.2) — the two declarations that *can have*
@@ -3074,8 +3082,8 @@ make the same program load or not depending on declaration order — a sort's
 rule-introduced members are registered *after* imports are wired, and a
 `namespace X … end` secondary entry may add members from another file entirely.
 
-A **plain** import of a refused path keeps its alias — that is what the line was
-written for — and contributes no parent.
+Since WI-1089 the plain form links no parent at all, so this refusal is the
+wildcard form's and the `requires` clause's.
 
 **Variant exposure.** A sort that declares entity constructors exposes **only
 those constructor (variant) names** to its enclosing scope, by linking its
@@ -3094,9 +3102,11 @@ This is why 059 R4's capture rule does not follow the exposure link: the leak is
 automatic, so the presence of an exposed `merge` says nothing about whether any
 body inside a sibling sort reads a bare `merge` (WI-999).
 
-An **import** spends that exemption. `import a.Colour` or `import a.*` is the
+An **import** spends that exemption. `import a.Colour.*` or `import a.*` is the
 author asking for those bare names at this address, so a declaration taking one
-*is* a capture and is refused. This holds along the whole path, not just at the
+*is* a capture and is refused. The PLAIN `import a.Colour` is not: since WI-1089
+it binds the name `Colour` and brings no variant into view, so nothing at this
+address was asking for a bare `Red`. This holds along the whole path, not just at the
 imported hop: `import a.*` brings in the namespace, and the constructor arrives
 one exposure hop further on — it is still a name the import put in view.
 

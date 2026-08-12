@@ -323,8 +323,18 @@ class SymbolTable:
     val visited = HashSet.empty[ScopeId]
     resolveRecursive(name, scopeId, visited)
 
+  /** WI-1089 — `enclosingStopped` is set once the walk has crossed a link an IMPORT
+    * contributed, and stays set for the rest of that path: an import opens what it
+    * NAMES, and not the module around it. `import a.b.*` splices `a.b` in, and `a.b`
+    * sits inside `a` — so a walk that re-enters the enclosing chain answers with every
+    * name of `a`, and of whatever encloses THAT, from a line that named one namespace.
+    * §8.6 has never said an import means that.
+    *
+    * It applies to the ENCLOSING link alone. A `requires`, a variant exposure and the
+    * imported scope's own imports are contents of the thing imported, and stay
+    * reachable. Rustland's twin is `EnclosingLinks` in `intern.rs`. */
   private def resolveRecursive(
-    name: String, scopeId: ScopeId, visited: HashSet[ScopeId]
+    name: String, scopeId: ScopeId, visited: HashSet[ScopeId], enclosingStopped: Boolean = false
   ): ResolveResult =
     if !visited.add(scopeId) then return ResolveResult.NotFound // cycle
 
@@ -349,17 +359,36 @@ class SymbolTable:
         // carries [[ImportOrigin.Declaration]] and is always eligible.
         val eligibleParents = scope.parents.filter { p =>
           originVisible(p.origin) &&
+          // WI-1089: below an import edge the ENCLOSING chain is not re-entered.
+          !(enclosingStopped && p.isEnclosing) &&
           (if p.isEnclosing then true
           else scopes.get(p.parent) match
             case None => true
             case Some(parent) =>
               !parent.typeParams.contains(name) &&
               (parent.exposed.isEmpty || parent.exposed.contains(name)))
-        }.map(_.parent)
+        }
+
+        // WI-1089 — ONE VISIT PER PARENT SCOPE, with the mode decided over ALL the
+        // inclusions that reach it. Two clauses can link one parent (`requires X` and
+        // `import X.*` write separate inclusions here, an enclosing body and an import
+        // of that same namespace likewise), and `visited` admits the parent once — so
+        // deciding the mode from whichever inclusion happened to be traversed first
+        // made the answer depend on the ORDER the clauses were written in. An import
+        // stops the enclosing chain only where it is the edge's SOLE justification:
+        // a link a declaration also justifies keeps that declaration's reach, and
+        // adding a strictly-additive `import` line must not take a name away.
+        val perParent = eligibleParents.groupBy(_.parent).toIndexedSeq.sortBy(kv =>
+          TermSymbol.raw(symbolOf(kv._1))
+        )
 
         val matches = ArrayBuffer.empty[TermSymbol]
-        for parentScope <- eligibleParents do
-          resolveRecursive(name, parentScope, visited) match
+        for (parent, inclusions) <- perParent do
+          val importOnly = inclusions.forall(i => i.origin match
+            case ImportOrigin.File(_) => true
+            case _                    => false)
+          val stoppedBelow = enclosingStopped || importOnly
+          resolveRecursive(name, parent, visited, stoppedBelow) match
             case ResolveResult.Found(sym) => matches += sym
             case ResolveResult.Ambiguous(candidates) => matches ++= candidates
             case ResolveResult.NotFound =>

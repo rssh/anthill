@@ -1595,9 +1595,12 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
 
 #[test]
 fn mutual_reference_two_namespaces() {
-    // File 1: namespace X references sort from namespace Y (via import)
+    // File 1: namespace X references sort from namespace Y (via import).
+    // WI-1089: the import names the SORT it uses. `import Units` binds the
+    // namespace name alone — reaching `Measure` through it takes `Units.Measure`,
+    // `import Units.Measure`, or `import Units.*`.
     let file_x = r#"namespace Geometry
-  import Units
+  import Units.Measure
   sort Shape {
     entity circle(radius: Int64)
     entity rect(w: Int64, h: Int64)
@@ -1607,7 +1610,7 @@ end
 "#;
     // File 2: namespace Y references sort from namespace X (via import)
     let file_y = r#"namespace Units
-  import Geometry
+  import Geometry.Shape
   sort Measure {
     entity meters(n: Int64)
     entity pixels(n: Int64)

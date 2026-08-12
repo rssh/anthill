@@ -583,6 +583,28 @@ enum ExposureLinks {
     Skipped,
 }
 
+/// WI-1089 — may the walk leave a scope through an ENCLOSING parent (the lexical
+/// sort/namespace body it sits in)? `Followed` until the walk crosses a link an
+/// `import` contributed; below one it is `Stopped`.
+///
+/// `import a.b.C` puts `C` in scope. `C`'s scope is enclosed by `a.b`, so a walk that
+/// re-enters the enclosing chain answers with every name of `a.b` — and of the
+/// namespace above THAT — from a line that named one sort. §8.6 has never said an
+/// import means that; it said the opposite ("`import` introduces visibility into the
+/// current scope; it does not by itself add a sort's contents"), and the reach
+/// existed because the walk treats every parent alike, not because any rule chose it.
+///
+/// A PATH property, not an edge one, for the reason [`ExposureLinks`] is: the leak is
+/// one hop further on than the edge that licenses it. It applies to the ENCLOSING
+/// link alone — a `requires`, a variant exposure and the imported scope's own imports
+/// are contents of the thing imported, and stay reachable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EnclosingLinks {
+    Followed,
+    /// Below an import edge: what was imported is in scope, its container is not.
+    StoppedByImport,
+}
+
 /// WI-995 — one name whose resolution DEPENDS on an import written in another file:
 /// the two readings disagree about it.
 #[derive(Clone, Debug)]
@@ -1113,6 +1135,36 @@ impl SymbolTable {
             })
     }
 
+    /// WI-1089 — is an import the edge's ONLY justification? The question
+    /// [`EnclosingLinks`] is decided by, and NOT the same as
+    /// [`Self::parent_edge_is_imported`], which asks whether an import is AMONG them.
+    ///
+    /// The two differ exactly where a link has more than one writer, and the origin
+    /// list exists because that is routine (see [`ImportOrigin::Declaration`]). An
+    /// edge a DECLARATION also justifies — an enclosing body, a `requires`, variant
+    /// exposure — keeps the reach that declaration gives it, so it is not stopped:
+    ///
+    /// - `namespace a.b { import a.* … }`: the pair `(a.b, a)` is the ENCLOSING edge
+    ///   AND the imported one. Stopping it cut everything above `a`, `_global` and the
+    ///   prelude included, so a bare `Int64` in that namespace stopped resolving —
+    ///   found by `/code-review`, driven by `an_import_of_the_enclosing_namespace_is_not_a_stop`.
+    /// - `sort U { requires Spec  import Spec.* }`: one inclusion, two writers. Adding
+    ///   the second, strictly-additive line REMOVED the names `requires` reaches.
+    ///
+    /// Neither is a scope an import brought into view, so neither is this rule's
+    /// business. Only an edge whose sole justification is a file's `import` opens
+    /// something the author asked for by importing it.
+    fn parent_edge_is_import_only(&self, scope: ScopeId, parent: ScopeId) -> bool {
+        self.import_parent_origin
+            .get(&(scope, parent))
+            .is_some_and(|origins| {
+                !origins.is_empty()
+                    && origins
+                        .iter()
+                        .all(|o| matches!(o, ImportOrigin::File(_) | ImportOrigin::Invocation))
+            })
+    }
+
     fn origin_visible(&self, origin: ImportOrigin) -> bool {
         match origin {
             ImportOrigin::Builtin | ImportOrigin::Declaration | ImportOrigin::Invocation => true,
@@ -1322,6 +1374,7 @@ impl SymbolTable {
             ImportVisibility::OwnFileOnly,
             OwnLocals::Skipped,
             ExposureLinks::Skipped,
+            EnclosingLinks::Followed,
         );
         self.filter_internal_visibility(raw, scope)
     }
@@ -1340,6 +1393,7 @@ impl SymbolTable {
             vis,
             OwnLocals::Visible,
             ExposureLinks::Followed,
+            EnclosingLinks::Followed,
         )
     }
 
@@ -1348,6 +1402,7 @@ impl SymbolTable {
     /// [`OwnLocals::Visible`], because a parent's declarations are not what a
     /// declaration here shadows. `exposure` applies at EVERY hop: the link it names is
     /// reached one step OUT from the declaring scope, never at it.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_in_scope_recursive_with_mode(
         &self,
         name: &str,
@@ -1356,6 +1411,7 @@ impl SymbolTable {
         vis: ImportVisibility,
         own_locals: OwnLocals,
         exposure: ExposureLinks,
+        enclosing: EnclosingLinks,
     ) -> ResolveResult {
         if !visited.insert(scope) {
             return ResolveResult::NotFound; // cycle
@@ -1389,6 +1445,11 @@ impl SymbolTable {
             data.parents
                 .iter()
                 .filter_map(|p| {
+                    // WI-1089: below an import edge, the ENCLOSING chain is not
+                    // re-entered — `import a.b.C` opens `C`, not the `a.b` around it.
+                    if enclosing == EnclosingLinks::StoppedByImport && p.is_enclosing {
+                        return None;
+                    }
                     // WI-995: an IMPORT-contributed parent link written by another file
                     // is likewise absent under `OwnFileOnly`. Enclosing / `requires` /
                     // exposure links have no entry in `import_parent_origin` and are
@@ -1414,23 +1475,28 @@ impl SymbolTable {
                             // never reaches this test at all, which is what keeps R4's
                             // relation exclusions the thing that governs it.
                             //
-                            // THE IMPORT TEST IS NOT REDUNDANT. `import a.b` (plain) and
-                            // `import a.b.*` (wildcard) both splice `a.b` in as a
-                            // non-enclosing parent, and where `a.b` is a sort with
-                            // variants that edge is indistinguishable from an exposure
-                            // edge by `exposed` alone. An import IS the author asking
-                            // for those bare names, so a declaration taking one captures
-                            // it and must stay refused. `add_import_parent` records a
-                            // `File`/`Invocation` origin for exactly those edges, and
-                            // `add_parent` a `Declaration` one for the rest (WI-995) —
-                            // so the WRITER is the discriminator, not the shape.
+                            // THE IMPORT TEST IS NOT REDUNDANT. `import a.b.*` splices
+                            // `a.b` in as a non-enclosing parent, and where `a.b` is a
+                            // sort with variants that edge is indistinguishable from an
+                            // exposure edge by `exposed` alone. An import IS the author
+                            // asking for those bare names, so a declaration taking one
+                            // captures it and must stay refused. `add_import_parent`
+                            // records a `File`/`Invocation` origin for exactly those
+                            // edges, and `add_parent` a `Declaration` one for the rest
+                            // (WI-995) — so the WRITER is the discriminator, not the
+                            // shape.
                             //
-                            // Its population is not "wildcard imports" (of which the
-                            // corpus has none): `ImportKind::Plain` reaches the same
-                            // `add_import_parent`, and the corpus holds ~10 plain
-                            // imports of variant-bearing sorts (`anthill.prelude.List`,
-                            // `.Option`, `.Stream`, `.Iteration`, `.Iterable`). Those
-                            // edges are live here on every load.
+                            // WI-1089 EMPTIED ITS CORPUS POPULATION, and that is a
+                            // narrowing of the RULE, not a dead branch. The population
+                            // used to be ~10 plain imports of variant-bearing sorts
+                            // (`anthill.prelude.List`, `.Option`, `.Stream`, …), because
+                            // `ImportKind::Plain` reached the same `add_import_parent`;
+                            // a plain import now binds its name and links nothing, so
+                            // only the wildcard form asks for bare variants. The corpus
+                            // writes none today — the rule is driven by
+                            // `wi999_name_capture_test`'s wildcard row and its plain
+                            // control, which is where a reader should look for what
+                            // each spelling means.
                             if exposure == ExposureLinks::Skipped
                                 && !parent.exposed.is_empty()
                                 && parent.exposed.contains(name)
@@ -1470,6 +1536,20 @@ impl SymbolTable {
                 }
                 ExposureLinks::Skipped => ExposureLinks::Skipped,
             };
+            // WI-1089 — an import edge is where the enclosing chain stops, and it stays
+            // stopped for the rest of the path: what the author imported is in scope,
+            // and the module it was taken from is not.
+            //
+            // `import_ONLY`, not `is_imported`: an edge a declaration also justifies
+            // keeps that declaration's reach, and this is the same edge — the origin
+            // list is per `(scope, parent)`, so a pair that is BOTH the enclosing edge
+            // and an imported one answers `is_imported` and must not be stopped. The
+            // predicate's doc carries the two programs that proved it.
+            let enclosing_below = if self.parent_edge_is_import_only(scope, parent_scope) {
+                EnclosingLinks::StoppedByImport
+            } else {
+                enclosing
+            };
             match self.resolve_in_scope_recursive_with_mode(
                 name,
                 parent_scope,
@@ -1477,6 +1557,7 @@ impl SymbolTable {
                 vis,
                 OwnLocals::Visible,
                 below,
+                enclosing_below,
             ) {
                 ResolveResult::Found(sym) => matches.push(sym),
                 ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),

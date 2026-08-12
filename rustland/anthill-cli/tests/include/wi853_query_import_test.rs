@@ -60,7 +60,10 @@ fn an_import_flag_puts_the_name_in_query_scope() {
         without.stdout
     );
 
-    let with = query(&["-i", "wi853.kb", "mk(x: ?v)"]);
+    // WI-1089: the WILDCARD form. `-i wi853.kb` binds the namespace name
+    // `kb` — an invocation import reads exactly as the same line in source — and
+    // what this test needs in scope is a name the namespace CONTAINS.
+    let with = query(&["-i", "wi853.kb.*", "mk(x: ?v)"]);
     assert_eq!(
         with.code, 0,
         "the query must succeed; stderr:\n{}",
@@ -85,7 +88,7 @@ fn an_import_flag_puts_the_name_in_query_scope() {
 #[test]
 fn an_import_flag_reaches_a_query_file() {
     let q = fixture("query.anthill");
-    let with = query(&["-i", "wi853.kb", "--query-file", q.to_str().unwrap()]);
+    let with = query(&["-i", "wi853.kb.*", "--query-file", q.to_str().unwrap()]);
     assert_eq!(
         with.code, 0,
         "the query must succeed; stderr:\n{}",

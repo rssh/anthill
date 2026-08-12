@@ -278,7 +278,9 @@ struct QueryArgs {
     #[arg(long)]
     query_file: Option<PathBuf>,
 
-    /// Import names into query scope (e.g. -i anthill.prelude.List)
+    /// Import names into query scope (e.g. -i anthill.prelude.List, or
+    /// -i anthill.prelude.* for every name in it — an `-i` flag reads exactly as
+    /// the same `import` line in source does, WI-1089)
     #[arg(short = 'i', long = "import")]
     imports: Vec<String>,
 
@@ -1978,8 +1980,9 @@ fn report_unresolved_name(
     }
     eprintln!(
         "error: '{name}' in {position} does not resolve to a known {noun} — no \
-         rule, fact, or declaration is in scope for it. Qualify the name, or \
-         bring its namespace into scope with -i."
+         rule, fact, or declaration is in scope for it. Qualify the name, \
+         import it with `-i <ns>.{name}`, or bring the whole namespace into scope \
+         with `-i <ns>.*`."
     );
 }
 

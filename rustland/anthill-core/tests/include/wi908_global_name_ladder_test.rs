@@ -36,7 +36,10 @@ end
 /// is a HOST string and a host has no file. An import written in a program source is
 /// local to that source now, so it could not reach `mount(..)` at all, and the ladder
 /// this suite is about would have nothing to disagree over.
-const IMPORT_LIB_FLAG: &str = "wi908.lib";
+/// WI-1089: the WILDCARD form. `-i wi908.lib` binds the name `lib` and nothing
+/// else — an invocation import reads exactly as the same line in source does — and
+/// this fixture is about names `wi908.lib` CONTAINS being mountable at `_global`.
+const IMPORT_LIB_FLAG: &str = "wi908.lib.*";
 
 const HIDDEN: &str = "\
 namespace wi908.priv

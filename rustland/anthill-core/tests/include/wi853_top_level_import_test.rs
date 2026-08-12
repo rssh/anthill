@@ -72,8 +72,30 @@ fn a_top_level_import_brings_a_name_into_the_top_level_scope() {
         "the control: without an import, a bare `S` at the top level names nothing",
     );
     assert_loads(
+        &[LIB, "import wi853.lib.S\n\noperation use_s(s: S) -> Int64\n"],
+        "a top-level import must bind its name at the top level",
+    );
+}
+
+/// WI-1089, and the reason the test above imports `wi853.lib.S` rather than
+/// `wi853.lib`: an import binds THE NAME IT WRITES. `import wi853.lib` puts `lib`
+/// in scope, not `lib`'s contents — the same line means the same thing in Scala,
+/// Java and Rust, and §8.6's own lead sentence says so ("does not by itself add a
+/// sort's contents"). The two ways to reach inside are both driven below.
+#[test]
+fn importing_a_namespace_binds_the_namespace_name_not_its_contents() {
+    assert_unresolved(
         &[LIB, "import wi853.lib\n\noperation use_s(s: S) -> Int64\n"],
-        "a top-level import must make `wi853.lib`'s contents resolvable at the top level",
+        "S",
+        "`import wi853.lib` binds `lib`; a bare `S` is not in scope through it",
+    );
+    assert_loads(
+        &[LIB, "import wi853.lib.*\n\noperation use_s(s: S) -> Int64\n"],
+        "the wildcard form is how a scope's contents come in",
+    );
+    assert_loads(
+        &[LIB, "import wi853.lib\n\noperation use_s(s: lib.S) -> Int64\n"],
+        "and the bound name qualifies the path to what it contains",
     );
 }
 
@@ -82,8 +104,10 @@ fn a_top_level_import_brings_a_name_into_the_top_level_scope() {
 /// more place, not a second spelling that could accept a different language.
 #[test]
 fn every_import_form_is_admitted_at_the_top_level() {
+    // WI-1089: each form spelled so that it BINDS `S`, since that is what `use_s`
+    // reads — the plain form binds the name it writes, so here it writes `S`.
     for form in [
-        "import wi853.lib\n",
+        "import wi853.lib.S\n",
         "import wi853.lib.{S}\n",
         "import wi853.lib.*\n",
     ] {

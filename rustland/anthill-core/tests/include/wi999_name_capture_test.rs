@@ -74,7 +74,7 @@
 //!
 //! The exposure skip's three narrowings each have their own failing row, measured the
 //! same way. Drop the edge-local `parent_edge_is_imported` conjunct ⇒
-//! [`plain_import_of_a_variant_bearing_sort_is_a_capture`] alone fails. Drop the
+//! [`wildcard_import_of_a_variant_bearing_sort_is_a_capture`] alone fails. Drop the
 //! subtree flip that spends the skip after an imported edge ⇒
 //! [`wildcard_import_of_the_leaked_into_namespace_is_a_capture`] alone fails. Ask only
 //! for the capturing declaration's own file instead of every file with text at the
@@ -411,16 +411,22 @@ end
 // AUTOMATIC; an import of the leaking type, or of the namespace it leaks into, is
 // the author asking for those bare names, and a declaration taking one captures it.
 
+/// `import wi999.ilib.Colour.*` splices `Colour`'s scope in as a non-enclosing
+/// parent, so `Red` is in view in `wi999.iwild` because THIS FILE asked. One hop:
+/// the imported edge IS the exposure-looking edge.
+///
+/// BACKED OUT (the `parent_edge_is_imported` conjunct): this test FAILS — the
+/// fixture loads clean.
+///
+/// WI-1089 CHANGED WHICH FORM THIS IS. It was written on the PLAIN spelling
+/// (`import wi999.ilib.Colour`), which then spliced the sort's scope in and made
+/// `Red` bare — the shape the stdlib's ~10 plain imports of variant-bearing sorts
+/// were live on. A plain import now binds the name it writes and links nothing, so
+/// that spelling is no longer the author asking for `Red`; the wildcard is, and
+/// [`a_plain_import_of_a_variant_bearing_sort_is_not_a_capture`] holds the other
+/// half of the pair.
 #[test]
-fn plain_import_of_a_variant_bearing_sort_is_a_capture() {
-    // `import wi999.ilib.Colour` splices `Colour`'s scope in as a non-enclosing
-    // parent, so `Red` is in view in `wi999.iplain` because THIS FILE asked. One hop:
-    // the imported edge IS the exposure-looking edge.
-    //
-    // BACKED OUT (the `parent_edge_is_imported` conjunct): this test FAILS — the
-    // fixture loads clean. This is the corpus-live shape, not a hypothetical: the
-    // stdlib holds ~10 plain imports of variant-bearing sorts (`anthill.prelude.List`,
-    // `.Option`, `.Stream`, `.Iteration`, `.Iterable`).
+fn wildcard_import_of_a_variant_bearing_sort_is_a_capture() {
     let errs = refusal(
         r#"
 namespace wi999.ilib
@@ -429,8 +435,8 @@ namespace wi999.ilib
     entity Blue(x: Int64)
   end
 end
-namespace wi999.iplain
-  import wi999.ilib.Colour
+namespace wi999.iwild
+  import wi999.ilib.Colour.*
   sort Box
     entity box(v: Int64)
     operation Red(n: Int64) -> Int64 = 2
@@ -438,7 +444,38 @@ namespace wi999.iplain
 end
 "#,
     );
-    assert_names_both(&errs, "operation Red", "wi999.iplain.Box", "wi999.ilib.Colour.Red");
+    assert_names_both(&errs, "operation Red", "wi999.iwild.Box", "wi999.ilib.Colour.Red");
+}
+
+/// THE CONTROL FOR THE PAIR, and the WI-1089 rule driven where it bites: the SAME
+/// program with the plain spelling is not a capture, because `import a.b.Colour`
+/// puts `Colour` in scope and not `Colour`'s variants. Nothing here asked for a bare
+/// `Red`, so `Box`'s own `Red` takes a name that meant nothing at this address.
+///
+/// It loads AND runs — a capture check that refused this would be refusing a program
+/// no reading of §8.6 objects to, and a load-only assertion would not notice which
+/// `Red` the body reached.
+#[test]
+fn a_plain_import_of_a_variant_bearing_sort_is_not_a_capture() {
+    let src = r#"
+namespace wi999.iplain
+  import anthill.prelude.{Int64}
+  enum Colour
+    entity Red(x: Int64)
+    entity Blue(x: Int64)
+  end
+end
+namespace wi999.iplain2
+  import anthill.prelude.{Int64}
+  import wi999.iplain.Colour
+  sort Box
+    entity box(v: Int64)
+    operation Red(n: Int64) -> Int64 = 2
+  end
+  operation drive() -> Int64 = Box.Red(1)
+end
+"#;
+    assert_eq!(eval_int(src, "wi999.iplain2.drive"), 2);
 }
 
 #[test]

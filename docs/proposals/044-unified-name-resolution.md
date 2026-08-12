@@ -172,14 +172,14 @@ Each scope holds: `locals` (short_name → Symbol), `imports` (alias short_name 
 
 1. `scope.locals[name]` → Found (shadows everything below).
 2. `scope.imports[name]` → Found.
-3. Else recurse into parent scopes. A **non-enclosing** parent is skipped if `name` is one of its `type_params`, or if the parent has a non-empty `exports` set that doesn't contain `name`. **Enclosing** parents (sort/namespace body nesting) bypass the export filter.
+3. Else recurse into parent scopes. A **non-enclosing** parent is skipped if `name` is one of its `type_params`, or if the parent has a non-empty `exports` set that doesn't contain `name`. **Enclosing** parents (sort/namespace body nesting) bypass the export filter. Below a parent an **import** contributed, enclosing links are not followed for the rest of the walk: an import opens what it names, not the module around it (WI-1089, kernel-language.md §8.6).
 4. Collect, dedup → 0 NotFound / 1 Found / ≥2 Ambiguous.
 
 ### Import forms
 
-- **Plain** `import a.b.C` → alias `C` locally + add `a.b` as a non-enclosing parent.
+- **Plain** `import a.b.C` → alias `C` locally, and nothing else: no parent link, so neither `a.b` nor `C`'s members come into scope (WI-1089 — as in Scala, Java and Rust; `C.member`, `import a.b.C.*` or `requires` reaches inside).
 - **Selective** `import a.b.{C}` → alias only; resolved by a 3-step fallback: (1) `by_qualified_name["a.b.C"]`, (2) `resolve_in_scope(C, a.b)`, (3) `find_in_nested_scope` (`a.b.<one-segment>.C`, unique match — resolves an entity defined one scope deeper, e.g. `…platform.ExecutionPlatform.execution_platform`).
-- **Wildcard** `import a.b.*` → add `a.b` as a non-enclosing parent.
+- **Wildcard** `import a.b.*` → add `a.b` as a non-enclosing parent. The path must name a namespace or a sort — a declaration with contents — and anything else is refused naming its kind (WI-988/WI-993).
 
 ### What `export` actually does
 

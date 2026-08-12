@@ -299,7 +299,11 @@ fn a_body_less_builtin_spec_op_behaves_exactly_as_the_check_only_spelling() {
     let ns = "test.wi1040.bodyless";
     let src = format!(
         r#"namespace {ns}
-  import anthill.prelude.Int64
+  -- WI-1089: an import binds the name it writes, so the spec names and the body's
+  -- `eq` are each imported. `import anthill.prelude.Int64` no longer carries the
+  -- rest of the prelude in with it.
+  import anthill.prelude.{{Int64, PartialEq, Eq}}
+  import anthill.prelude.PartialEq.eq
   sort Witheq
     entity we(v: Int64)
   end

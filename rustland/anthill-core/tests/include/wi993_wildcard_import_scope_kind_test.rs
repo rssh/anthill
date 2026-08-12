@@ -33,10 +33,19 @@
 //! WHAT FAILS WHEN EACH LEVEL IS BACKED OUT — run one at a time, not predicted.
 //! Level 1, the kind check in `load::find_scope_by_name` plus the wildcard arm's
 //! three-way split in `process_imports`:
-//!   - `wildcard_import_of_an_operation_is_refused_naming_the_kind`,
-//!     `the_refused_link_reached_the_enclosing_namespace_too` and
-//!     `a_plain_import_keeps_its_alias_and_stops_leaking_the_siblings` LOAD CLEAN
-//!     without it — each drives a name only the bogus link could reach.
+//!   - `wildcard_import_of_an_operation_is_refused_naming_the_kind` LOADS CLEAN
+//!     without it — it drives a name only the bogus link could reach.
+//!   - `the_refused_link_reached_the_enclosing_namespace_too` loses its refusal, and
+//!     ONLY that: WI-1089's stop now cuts the very chain this row was written to
+//!     exhibit (`op1 → Host → lib` is reached through an import-only edge), so with
+//!     level 1 backed out `Neighbour` stays unresolved on its own account. The row is
+//!     still a refusal test; what it no longer measures is the REACH, which
+//!     `wi1089_import_binds_one_name_test` owns. Found by `/code-review`.
+//!     (`a_plain_import_keeps_its_alias_and_stops_leaking_the_siblings` was a third
+//!     row of this level when the plain form still linked a parent. WI-1089 removed
+//!     that link outright — a plain import binds its name and opens nothing — so the
+//!     row now holds against BOTH levels, and its subject moved to
+//!     `wi1089_import_binds_one_name_test`.)
 //!   - `wildcard_import_of_an_entity_names_the_entity_kind` keeps its use-site error
 //!     and LOSES the refusal: one error instead of two. That difference is the whole
 //!     ticket — an import that contributes nothing must not also say nothing.
@@ -166,10 +175,15 @@ end
 }
 
 /// The PLAIN form's parent link rode on the same unchecked helper, so it leaked the
-/// same chain. Both halves in one fixture: the sibling `op2` is now out of reach
-/// (this errors; without the change it loaded clean), while the ALIAS the author
-/// wrote the import for is untouched — `op1` is still callable bare, which is the
-/// half a blanket refusal would have broken.
+/// same chain. Both halves in one fixture: the sibling `op2` is out of reach (this
+/// errors; before WI-993 it loaded clean), while the ALIAS the author wrote the
+/// import for is untouched — `op1` is still bound, which is the half a blanket
+/// refusal would have broken.
+///
+/// WI-1089 SETTLED THE PLAIN FORM ENTIRELY — it binds its name and links no parent at
+/// all, for any target kind — so this row no longer distinguishes the WI-993 gate.
+/// It is kept as a control on the pair that still matters here: the alias survives
+/// and the sibling does not.
 #[test]
 fn a_plain_import_keeps_its_alias_and_stops_leaking_the_siblings() {
     let src = r#"namespace wi993e.lib

@@ -5984,24 +5984,27 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
 /// success path.
 ///
 /// WI-988 measured the scaland twin as a silent NO-OP — there `addParent` never
-/// creates the parent's record, so the walk finds nothing. Rustland has that shape
+/// creates the parent's record, so the walk finds nothing. Rustland had that shape
 /// AND a worse one, keyed on the target's kind (both measured in
 /// `wi993_wildcard_import_scope_kind_test`, by backing this check out):
 ///
 /// - an OPERATION's scope is real and carries an ENCLOSING link to the sort that
-///   declared it (`scan_operation_params`), and the parent walk is transitive — so
-///   naming one member spliced in the whole chain above it. After
-///   `import lib.Host.op1.*` in a second namespace, a bare `op2` (a sibling member of
-///   `Host`) and a bare `Neighbour` (a SORT of the enclosing namespace `lib`) both
-///   resolved, each a hard error without the import. Names the author never wrote,
-///   from a line that named one operation.
+///   declared it (`scan_operation_params`) — so naming one member spliced in the whole
+///   chain above it. After `import lib.Host.op1.*` in a second namespace, a bare `op2`
+///   (a sibling member of `Host`) and a bare `Neighbour` (a SORT of the enclosing
+///   namespace `lib`) both resolved, each a hard error without the import. Names the
+///   author never wrote, from a line that named one operation. (WI-1089 has since cut
+///   the second half of that reach at the walk: an import edge no longer re-enters the
+///   linked scope's enclosing chain. The kind check remains the first half.)
 /// - an ENTITY's scope carries no such link, so there it really is WI-988's no-op.
 ///
 /// One question answers both: does this path name a declaration that HAS contents.
 ///
-/// The wildcard caller REFUSES the non-scope case ([`LoadError::WildcardImportOfNonScope`]);
-/// the plain caller simply adds no parent, because there the alias is the import's
-/// point and the parent link was never what the author asked for.
+/// TWO CALLERS since WI-1089, both of them forms that ASK for contents: the wildcard
+/// import, which REFUSES the non-scope case ([`LoadError::WildcardImportOfNonScope`]),
+/// and the selective form's base-path lookup. The plain form binds its name and links
+/// nothing, so it no longer asks this question at all; the `requires` clause asks it
+/// through [`parent_scope_of`] with a narrower admitted set.
 ///
 /// WI-1028 — a [`ScopeId`], never the scope's nullary `Fn` term: the owner
 /// projection is total off the symbol and was not off the term.
@@ -6198,33 +6201,22 @@ fn process_imports(
                         kb.symbols.add_import(scope_id, short, original_sym, origin);
                     }
                 }
-                // WI-993: the parent link rides on the target HAVING contents, which
-                // `find_scope_by_name` now decides. A plain import of an operation or
-                // an entity keeps its alias (that is what the author wrote the line
-                // for) and contributes no parent — where before it spliced in the
-                // target's whole enclosing chain. Nothing is dropped silently: the
-                // link brought only names the author never named, and a body that was
-                // reaching one now says so at its own use site. MEASURED over stdlib +
-                // `anthill-stl` + every example and fixture corpus the suite loads: 12
-                // plain imports name a non-scope (`anthill.prelude.Option.some`,
-                // `…FiniteCollection.foldLeft`, …) out of 31,067, and all 12 still
-                // load — their ALIAS is what they were written for.
+                // WI-1089 — `import a.b.C` BINDS THE NAME `C`, and nothing else.
+                // The alias above is the whole of it. That is what §8.6's own lead
+                // sentence says ("`import` introduces visibility into the current
+                // scope; it does not by itself add a sort's contents — use `requires`
+                // or wildcard for that"), what scaland does, and what the same line
+                // means in Scala, Java and Rust: `use a::b::C` binds `C`, and reaching
+                // into `C` takes `use a::b::C::*`.
                 //
-                // WHAT THIS LINK IS remains undecided, and WI-1089 owns it: §8.6 says
-                // the parent is `a.b` where rustland links `a.b.C`'s own scope and
-                // scaland links nothing, and none of the three texts says whether the
-                // link is re-entered through the target's own enclosing parents (it
-                // is, here — which is how a sort import reaches its namespace).
-                if let Some(target_scope) = find_scope_by_name(kb, &path) {
-                    kb.symbols.add_import_parent(
-                        scope_id,
-                        ScopeInclusion {
-                            parent_scope: target_scope,
-                            is_enclosing: false,
-                        },
-                        origin,
-                    );
-                } else if found.is_none() {
+                // It used to also splice `C`'s SCOPE in as a resolution parent, so a
+                // plain import made `C`'s members bare-callable — and, because the walk
+                // re-enters an imported scope's enclosing chain, every name of `a.b`
+                // and of the namespace above THAT (measured in WI-993). Neither was a
+                // rule anything stated; both fell out of treating the target's scope as
+                // a parent. The forms that DO bring contents are still there and still
+                // say so: `import a.b.C.*` and `requires`.
+                if found.is_none() {
                     errors.push(LoadError::UnresolvedImport {
                         path: path.clone(),
                         span: imp.path.span,

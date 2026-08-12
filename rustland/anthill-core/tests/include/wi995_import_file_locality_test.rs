@@ -93,9 +93,16 @@ fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
         audit.resolutions
     ));
     // A zero cost is only evidence if the instrument had something to suppress.
+    //
+    // WI-1089 narrowed which half that is on a CORPUS. An import parent edge is now
+    // written by the wildcard form alone — a plain `import a.b.C` binds the name and
+    // links nothing — and the corpus writes no wildcard imports, so `parent_edges` is
+    // legitimately 0 here. The alias half is what these groups exercise, and the
+    // parent-edge half keeps its own control in `the_instrument_is_not_vacuous`
+    // below, which writes `import lib.*` precisely so the second predicate is driven.
     assert!(
-        alias_entries > 0 && parent_edges > 0,
-        "{label}: the origin tables are empty — the instrument suppressed nothing, \
+        alias_entries > 0,
+        "{label}: the alias origin table is empty — the instrument suppressed nothing, \
          so its verdict measures nothing"
     );
     if !load_errors.is_empty() {

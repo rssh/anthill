@@ -67,7 +67,10 @@ fn try_load_with(extra: &str) -> Result<KnowledgeBase, Vec<String>> {
 
 const SRC: &str = r#"
     namespace test.wi300
-      import anthill.prelude.Int64
+      import anthill.prelude.{Int64, PartialEq, Eq}
+      -- WI-1089: `eq` is imported by name. `import anthill.prelude.Int64` binds
+      -- `Int64` and nothing else, so the bare body call needs its own import.
+      import anthill.prelude.PartialEq.eq
       -- A carrier that DECLARES it provides Eq …
       sort Witheq
         entity we(v: Int64)
@@ -189,7 +192,8 @@ fn ungroundable_requires_is_a_loud_error() {
     // error (loud, not a silent skip), not left to fail quietly at resolution.
     let src = r#"
         namespace test.wi300.bad
-          import anthill.prelude.Int64
+          import anthill.prelude.{Int64, PartialEq, Eq}
+          import anthill.prelude.PartialEq.eq
           sort Thing
             entity thing(v: Int64)
           end
@@ -213,7 +217,8 @@ fn two_requires_on_same_spec_is_a_loud_error() {
     // discharge. It must fail loudly instead (attribution is Tier B).
     let src = r#"
         namespace test.wi300.dup
-          import anthill.prelude.Int64
+          import anthill.prelude.{Int64, PartialEq, Eq}
+          import anthill.prelude.PartialEq.eq
           sort Thing
             entity thing(v: Int64)
           end

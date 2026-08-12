@@ -1068,6 +1068,9 @@ mod wi984_scope_identity_test;
 #[path = "include/wi993_wildcard_import_scope_kind_test.rs"]
 mod wi993_wildcard_import_scope_kind_test;
 
+#[path = "include/wi1089_import_binds_one_name_test.rs"]
+mod wi1089_import_binds_one_name_test;
+
 #[path = "include/wi994_variant_exposure_test.rs"]
 mod wi994_variant_exposure_test;
 
