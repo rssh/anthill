@@ -285,9 +285,25 @@ case class TypeScope(
     * own (an anonymous type variable, a written effect row). A construct that
     * DOES have a name is located at that name instead, which is tighter. */
   declSpan: Span,
-  /** The Scala package this declaration is emitted into. What makes an import
-    * from ELSEWHERE provably unreachable by a bare mention. */
-  pkg: String,
+  /** The Scala-converted anthill NAMESPACE this declaration's names are WRITTEN in —
+    * which is what every lookup asks: the package chain a bare name walks, the scope a
+    * written path's head resolves in, what an `import` of one's own namespace is
+    * compared against, and what an [[Placement.Ambient]] guess qualifies with.
+    *
+    * NOT THE SAME QUESTION AS [[emittedPkg]], and a namespace's `<Ns>Ops` trait is where
+    * they part (WI-1081): `namespace my.app`'s top-level operations emit into package
+    * `my` as `AppOps`, while the names they write were written inside `my.app`. Held as
+    * one field, lookups were anchored one package too high — a bare mention of a sort
+    * `my.app` declares missed the package chain and fell to `Placement.Ambient` (`my.Foo`,
+    * naming nothing), and a written path's head was read from `my`. The prelude never
+    * showed it: `anthill.prelude`'s own sorts are reached through the AUTO-IMPORT rung,
+    * which is package-blind. */
+  writtenIn: String,
+  /** The Scala package this declaration is EMITTED into — the file's own `package`
+    * clause. Exactly one question needs it, and it is a Scala fact rather than an
+    * anthill one: whether a selected declaration can be spelled BARE. Only a
+    * declaration in this very package can. */
+  emittedPkg: String,
   enclosing: Option[EnclosingSort],
   /** Anthill leaf name → how this declaration binds it: a Scala type parameter,
     * or an erased effect row (WI-1062). */
@@ -439,7 +455,7 @@ case class TypeScope(
       .orElse(types.hostScalar(anthillLeaf))
       .orElse(enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_)))
       .orElse(filePlacement(anthillLeaf))
-      .orElse(types.packagePlacement(pkg, anthillLeaf))
+      .orElse(types.packagePlacement(writtenIn, anthillLeaf))
       .orElse(shadowsThePrelude(anthillLeaf))
       .orElse(types.preludeSort(anthillLeaf))
       .orElse(types.preludeNotEmitted(anthillLeaf))
@@ -560,7 +576,7 @@ case class TypeScope(
     */
   private def placeQualified(prefix: IndexedSeq[String], anthillLeaf: String): Placement =
     val written = (prefix :+ anthillLeaf).mkString(".")
-    val headReadings = (PackageNesting.from(pkg).map(owner =>
+    val headReadings = (PackageNesting.from(writtenIn).map(owner =>
       if owner.isEmpty then prefix.head else s"$owner.${prefix.head}") :+ prefix.head).distinct
     headReadings.find(packageExists) match
       case None => Placement.Unplaceable(
@@ -604,7 +620,7 @@ case class TypeScope(
     * against a declaration the source did not name. */
   private def inPackage(owner: String, anthillLeaf: String): Option[Placement] =
     Option.when(owner == types.autoImportPackage)(types.hostScalar(anthillLeaf)).flatten
-      .orElse(Option.when(owner == pkg)(
+      .orElse(Option.when(owner == writtenIn)(
         enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_))).flatten)
       .orElse(fileTypes.get(owner -> anthillLeaf))
       .orElse(Option.when(declaredNotEmitted.contains(owner -> anthillLeaf))(
@@ -624,14 +640,22 @@ case class TypeScope(
     * unreachable declarations with one leaf are ambiguous and refused. A
     * default-package declaration cannot be named from a named package even with
     * qualification in Scala 3, so that case is refused too.
+    *
+    * THE TWO PACKAGES ARE ASKED TWO DIFFERENT QUESTIONS (WI-1081). The WALK is over the
+    * namespace the mention is written in — anthill's own lookup chain — while "may this
+    * be spelled BARE" is about the package the FILE declares, which is a Scala fact.
+    * They coincide for every sort and entity and part for a namespace's `<Ns>Ops` trait;
+    * asking `emittedPkg == owner` rather than "distance 0" is what states that, and it
+    * keeps a trait emitted one package up from spelling a name bare that its own
+    * `package` clause does not reach.
     */
   private def filePlacement(anthillLeaf: String): Option[Placement] =
-    PackageNesting.from(pkg).zipWithIndex.iterator.flatMap { case (owner, distance) =>
+    PackageNesting.from(writtenIn).iterator.flatMap { owner =>
       fileTypes.get(owner -> anthillLeaf).map { known =>
-        // Only the exact package is bare. An ancestor selected by Anthill's package
-        // chain deliberately retains its fully-qualified Scala spelling: top-level
-        // Scala package clauses do not create a lexical enclosing scope.
-        if distance == 0 then
+        // Only the exact EMITTED package is bare. An ancestor selected by Anthill's
+        // package chain deliberately retains its fully-qualified Scala spelling:
+        // top-level Scala package clauses do not create a lexical enclosing scope.
+        if owner == emittedPkg then
           Placement.Known(Names.scalaTypeName(anthillLeaf), known.kinds): Placement
         else known: Placement
       }.orElse {
@@ -648,17 +672,17 @@ case class TypeScope(
       }.toVector.sortBy(_._1)
       elsewhere match
         case Vector() => None
-        case Vector((owner, _)) if owner.isEmpty && pkg.nonEmpty =>
+        case Vector((owner, _)) if owner.isEmpty && emittedPkg.nonEmpty =>
           Some(Placement.Unplaceable(
             s"this file declares `$anthillLeaf` in the empty package, but this " +
-            s"declaration is emitted into named package `$pkg`; Scala 3 does not make " +
+            s"declaration is emitted into named package `$emittedPkg`; Scala 3 does not make " +
             "default-package members reachable from a named package"))
         case Vector((_, known)) => Some(known)
         case many =>
           Some(Placement.Unplaceable(
             s"this file declares `$anthillLeaf` in several packages " +
             s"(${many.map(_._1).map(p => if p.isEmpty then "<empty>" else p).mkString(", ")}), " +
-            s"none visible from `$pkg`; a bare mention cannot choose one"))
+            s"none visible from `$writtenIn`; a bare mention cannot choose one"))
     }
 
   /** What THIS FILE says about the name, where that displaces the auto-imported
@@ -678,7 +702,7 @@ case class TypeScope(
       // declaration the auto-import would have found, and half the prelude writes
       // one (`cell.anthill`'s `import anthill.prelude.{Unit, Modifiable, …}`). Only
       // an import from ELSEWHERE displaces the table, and then it is unreachable.
-      case Some(from) if from != pkg && from != types.autoImportPackage =>
+      case Some(from) if from != writtenIn && from != types.autoImportPackage =>
         // Provably wrong: the import says the name lives in ANOTHER package, and
         // Bootstrap emits no Scala `import`, so the bare mention cannot reach it.
         // `Term` / `NodeOccurrence` from `anthill.reflect` are this case, and
@@ -686,7 +710,7 @@ case class TypeScope(
         // namespace is outside the generated closure.
         Some(Placement.Unplaceable(
           s"`$anthillLeaf` is imported from `$from`, but this declaration is emitted " +
-          s"into package `$pkg` and Bootstrap emits no Scala `import`, so a bare " +
+          s"into package `$emittedPkg` and Bootstrap emits no Scala `import`, so a bare " +
           "mention cannot reach it"))
       case _ => None
 
@@ -694,7 +718,7 @@ case class TypeScope(
     * is wrong: it rides out qualified with this declaration's own package. */
   private def ambient(anthillLeaf: String): Placement =
     val scalaName = Names.scalaTypeName(anthillLeaf)
-    Placement.Ambient(if pkg.isEmpty then scalaName else s"$pkg.$scalaName")
+    Placement.Ambient(if writtenIn.isEmpty then scalaName else s"$writtenIn.$scalaName")
 
   /** The host type for a scalar the RENDERER needs BY NAME — today only `Unit`, for
     * the empty tuple, which has no written occurrence to place.

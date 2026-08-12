@@ -459,13 +459,18 @@ object Bootstrap:
     def scopeAt(
       decl: String, declSpan: Span, pkg: String, imports: Map[String, String],
       enclosing: Option[EnclosingSort] = None,
-      params: Map[String, ParamBinding] = Map.empty
+      params: Map[String, ParamBinding] = Map.empty,
+      /** Where the declaration's names are WRITTEN, when that is not where the file
+        * GOES (WI-1081) — a namespace's `<Ns>Ops` trait, and nothing else so far. The
+        * default is the honest one for every other declaration: a sort and an entity
+        * are emitted into the package they are declared in. */
+      writtenIn: Option[String] = None
     ): TypeScope =
       // NO VALUES: only an operation signature binds one, and [[OpGen]] adds its own
       // parameters through `withValues` (WI-1081). A sort's `requires`, an entity's
       // fields and a namespace's scope have no value to project off.
-      TypeScope(decl, declSpan, pkg, enclosing, params, Map.empty, fileTypePlacements,
-        imports, decls.declaredNotEmitted.keySet, scalaTypes)
+      TypeScope(decl, declSpan, writtenIn.getOrElse(pkg), pkg, enclosing, params,
+        Map.empty, fileTypePlacements, imports, decls.declaredNotEmitted.keySet, scalaTypes)
 
   /** The name environment of one parsed file, in ONE walk.
     *
@@ -747,17 +752,16 @@ object Bootstrap:
     val nsOps = declaredOps(ns.items)
     if nsOps.nonEmpty then attempt(out, refusals) { staged =>
       val typeName = Names.scalaTypeName(here.leaf) + "Ops"
-      // `nsParentPkg` IS WHERE THE FILE GOES AND NOT WHERE ITS NAMES RESOLVE, and
-      // [[TypeScope]] has one field for both — a standing defect, PRE-EXISTING and not
-      // WI-1081's, surfaced by its review. `namespace my.app`'s operations emit into
-      // package `my` as `AppOps`, so a bare mention of a sort `my.app` declares is looked
-      // up from `my` and falls to [[Placement.Ambient]] (`my.Foo`), and a written path's
-      // head is anchored there too. The prelude does not show it: `anthill.prelude`'s own
-      // sorts are reached through the AUTO-IMPORT rung, which is package-blind. Splitting
-      // the field is a change to every placement rung and wants its own measurement —
-      // WI-1084.
+      // THE ONE PLACE THE TWO PACKAGES PART (WI-1081). The trait GOES into the parent
+      // package — `namespace my.app` emits `my/AppOps.scala` — while the names its
+      // operations write were written INSIDE `my.app` and must be looked up there. Held
+      // as one field, a bare mention of a sort `my.app` declares missed the package chain
+      // and fell to `Placement.Ambient` (`my.Foo`, naming nothing) and a written path's
+      // head was read from `my`. Invisible in the prelude, whose names come back through
+      // the package-blind auto-import rung, which is why it survived to here.
       val scope = env.scopeAt(
-        s"namespace `${here.anthillLeaf}`", ns.name.span, nsParentPkg, imports)
+        s"namespace `${here.anthillLeaf}`", ns.name.span, nsParentPkg, imports,
+        writtenIn = Some(here.childPath))
       val sb = StringBuilder()
       if nsParentPkg.nonEmpty then sb ++= s"package $nsParentPkg\n\n"
       sb ++= s"trait $typeName:\n"
@@ -1038,7 +1042,7 @@ object Bootstrap:
           // wrong carrier — silently, since both answers emit. No corpus sort writes
           // the shape; a fixture drives it.
           val witnesses = requires.flatMap(_.decl.binder).map(b => sym.name(b.last)).toSet
-          val carrier = carrierOf(sym, sortLeaf, scope.pkg,
+          val carrier = carrierOf(sym, sortLeaf, scope.writtenIn,
             typeParams.filterNot(p => witnesses.contains(p.anthillName)), ops)
           val (overCarrier, notOverCarrier) =
             anonymous.partition(r => isOverCarrier(sym, r, carrier))

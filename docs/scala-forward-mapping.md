@@ -390,6 +390,15 @@ sort-scoped member path) is a third reading the kernel defines and this mapping 
 implement — a sort's abstract members are emitted as Scala *type parameters*, which have
 no member syntax to project off.
 
+**Which package a name is looked up in is the namespace it is WRITTEN in**, and that is
+not always the package the file is emitted into. A namespace's operations emit into the
+*parent* package (§2.1: `namespace my.app` gives `my/AppOps.scala`), while the names in
+their signatures were written inside `my.app`. Every lookup — the bare package chain, a
+written path's head, an `import`-of-one's-own-namespace comparison, an ambient
+qualification — uses the written namespace; the emitted package answers exactly one
+question, and it is a Scala one: whether a selected declaration may be spelled **bare**,
+which only a declaration in the file's own package may.
+
 ### 2.2 Sort with Operations (No Constructors) → Trait
 
 A sort whose body contains operations but no entity constructors maps to a Scala trait. Operations become abstract methods. Abstract sub-sorts (no body, just `sort T = ?`) become type parameters.

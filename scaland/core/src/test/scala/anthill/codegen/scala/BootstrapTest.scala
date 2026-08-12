@@ -4469,6 +4469,57 @@ class BootstrapTest extends munit.FunSuite:
       s"a projection in an effect position must not claim the operation's own `E`:\n$src")
   }
 
+  test("WI-1081: a namespace's Ops trait resolves names where they are WRITTEN, not where it is EMITTED") {
+    // `TypeScope` answered two different questions from one `pkg` field, and a namespace's
+    // `<Ns>Ops` trait is where they part: `namespace my.app`'s top-level operations emit
+    // into package `my` as `AppOps` — that is where the FILE goes — while the names they
+    // write were written inside `my.app` and must be looked up there.
+    //
+    // TWO FILES, and that is what makes the bare face reachable at all: `filePlacement`
+    // has an `elsewhere` fallback that finds a unique same-FILE declaration whatever the
+    // package walk says, so a one-file fixture passes either way. Declaring `Thing` in a
+    // sibling file puts it in the resolved package table instead, where only the walk
+    // can reach it.
+    //
+    // FAILS WHEN BACKED OUT, both faces, and they fail differently — MEASURED one at a
+    // time, since the qualified refusal costs the whole trait and would otherwise hide
+    // the other. With the trait's scope anchored at `my`: the bare mention misses the
+    // package chain and falls to `Placement.Ambient`, emitting `def useBare(t: my.Thing)`
+    // — a package-qualified guess naming nothing; and the qualified mention's head is
+    // read as `my.sub` then top-level `sub`, neither of which exists, so it is refused.
+    val declaring = parseSource(
+      """namespace my.app
+        |  sort Thing
+        |    operation tag(x: Int64) -> Int64
+        |  end
+        |  namespace sub
+        |    sort Nested
+        |      operation tag(x: Int64) -> Int64
+        |    end
+        |  end
+        |end
+        |""".stripMargin, "declaring.anthill")
+    val consumer = parseSource(
+      """namespace my.app
+        |  operation useBare(t: Thing) -> Int64
+        |  operation useQualified(n: sub.Nested) -> Int64
+        |end
+        |""".stripMargin, "consumer.anthill")
+    val types = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles, projectFiles = IndexedSeq(declaring, consumer))
+    val ops = genWith(consumer, types)
+    assertEquals(ops.map(_.relPath), IndexedSeq("src/main/scala/my/AppOps.scala"),
+      "the trait is still EMITTED into the parent package — that half is unchanged")
+    val src = ops.head.contents
+    assert(src.contains("package my\n"), s"and its package clause says so:\n$src")
+    assert(src.contains("def useBare(t: _root_.my.app.Thing)"),
+      s"a bare mention must reach the namespace the operation is written in:\n$src")
+    assert(src.contains("def useQualified(n: _root_.my.app.sub.Nested)"),
+      s"a written path's head must resolve in that namespace too:\n$src")
+    ScalaCompile.assertCompiles("a namespace Ops trait over its own namespace's types",
+      ops ++ genWith(declaring, types))
+  }
+
   test("WI-1081: a projection is answered the same way in an ARGUMENT slot as in a type") {
     // `TypeScope.isEffectArgument` is the fallback half of WI-1062's erasure rule, used
     // where the target's declaration is unreadable — a `Placement.Ambient` head, whose
