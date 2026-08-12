@@ -459,6 +459,18 @@ labels, not in the value's source order — the same discipline destructuring fo
 (§"Destructuring binds by LABEL"), and what makes an operation and a lambda
 interchangeable in the slot.
 
+**Two `Function` slots must agree on `A`'s order.** A `Function[A, B, E]` states no arity,
+so *both* readings above stay open for any value standing in it — and the mapping a spread
+uses is fixed where the value is **minted**, not where it is later re-typed. So when a
+`Function`-typed value flows into another `Function` parameter, the two `A`s owe the
+*intersection* of the two readings: by name, **and** in the same order. A pairing whose two
+`A`s are permutations of each other is refused (WI-1088). Without it,
+`inner(g: Function[A = (x, acc), B])` accepted an `f: Function[A = (acc, x), B]` and
+`inner`'s declared `A` was silently not the mapping used — one program answering `7` called
+directly and `-7` through the second slot, on a clean load. The refusal is on the **order**
+axis alone; width and names are unchanged, and the whole-`A` reading still admits a
+permuted argument at a single slot.
+
 None of this relates a named tuple to a positional one as **data**: rule 4 stands, and
 `A` in the spread reading is a parameter list rather than a data tuple.
 

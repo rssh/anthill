@@ -27787,7 +27787,9 @@ fn validate_arrow_param_result(
         }
         // EVERY MIXED PAIRING — all three of `Function`/`Function`, `Function` slot given an
         // arrow, and an ARROW SLOT GIVEN A `Function`. BY NAME, on the component AS WRITTEN,
-        // and both halves are unchanged from WI-775/WI-1084 deliberately.
+        // and both halves are unchanged from WI-775/WI-1084 deliberately — except that
+        // WI-1088 additionally requires the `Function`/`Function` pairing's two `A`s to agree
+        // on ORDER, which by-name alone does not (see the arm's own comment below).
         //
         // So YES, an arrow slot's parameter LIST is compared by name here — that is not the
         // arm above leaking, it is the only relation available when the other side has no
@@ -27814,8 +27816,7 @@ fn validate_arrow_param_result(
         None => {
             let d_param_r = walk_type_deep_value(kb, subst, &d_param);
             let a_param_r = walk_type_deep_value(kb, subst, &a_param);
-            if resolved_type_is_ground(kb, &d_param_r) && resolved_type_is_ground(kb, &a_param_r)
-            {
+            if resolved_type_is_ground(kb, &d_param_r) && resolved_type_is_ground(kb, &a_param_r) {
                 // The SAME predicate the ground path consults, so the two cannot drift into
                 // reading `A` differently — the drift WI-1087 exists to close.
                 //
@@ -27834,9 +27835,18 @@ fn validate_arrow_param_result(
                 // `whole(t: (Int64, Int64))`. That is the load-clean-then-trap class
                 // WI-782/791/792/801 exist to remove.
                 //
-                // So the mirror keeps the by-name reading WI-1085 left it with, and
-                // `Function`/`Function` does too — neither side states an arity there, so
-                // both `A`s are read as the data types they are.
+                // So the mirror keeps the by-name reading WI-1085 left it with.
+                //
+                // WI-1088 CORRECTED THE OTHER HALF OF THAT SENTENCE. `Function`/`Function`
+                // used to be listed here as taking the by-name reading for the same reason —
+                // "neither side states an arity, so both `A`s are read as the data types they
+                // are". The premise is right and the conclusion did not follow: neither side
+                // stating an arity means BOTH readings stay open, not that the data one wins,
+                // and a value's spread mapping is pinned at its MINT. So that pairing owes the
+                // INTERSECTION of the two readings, which on the order axis is
+                // order-preserving — see [`function_pairing_permutes_a`], which the arm below
+                // asks and which the ground route asks at
+                // [`parameterized_compatible_view`].
                 let list_arity = match (d_arity, a_arity) {
                     (None, Some(n)) => {
                         function_slot_reads_a_as_param_list(kb, &d_param_r, n).then_some(n)
@@ -27845,7 +27855,19 @@ fn validate_arrow_param_result(
                 };
                 let ok = match list_arity {
                     Some(n) => arrow_params_compatible(kb, subst, &d_param_r, &a_param_r, n),
-                    None => types_compatible(kb, subst, &d_param_r, &a_param_r),
+                    // WI-1088: the `Function`/`Function` half of this arm, through the SAME
+                    // predicate the ground path consults — the two must not come to hold
+                    // different opinions about one pairing, which is the drift WI-1087 closed
+                    // for the spread reading and this closes for the order axis.
+                    // Asked FIRST, and it costs nothing when it does not apply: it returns on
+                    // the two arities before reading either type. The operands are already
+                    // σ-walked here; the predicate walks its own, which is an identity on
+                    // these and is what lets the OTHER call site hand it raw bindings.
+                    None => {
+                        !function_pairing_permutes_a(
+                            kb, subst, d_arity, a_arity, &d_param_r, &a_param_r,
+                        ) && types_compatible(kb, subst, &d_param_r, &a_param_r)
+                    }
                 };
                 if !ok {
                     return Some(mismatch(kb, subst));
@@ -30056,6 +30078,120 @@ fn function_slot_spread_labels(
     // The predicate above already agreed on the count; the equality is what lets the
     // reader zip without a length test of its own.
     (fields.len() == arity).then(|| fields.into_iter().map(|(s, _)| s).collect())
+}
+
+/// WI-1088: at a `Function`/`Function` pairing, do the two `A`s name the SAME
+/// components in a DIFFERENT ORDER?
+///
+/// WHY A PERMUTATION MUST BE REFUSED HERE AND ONLY HERE. A `Function[A, B, E]` slot
+/// admits TWO readings of `A` (WI-801) and the VALUE at it may be applied under
+/// either, at a call site this pairing cannot see:
+///
+///  * the WHOLE-`A` reading — `A` is one argument's DATA type, related BY NAME and
+///    order-free since WI-803, because the consumer reads components by label;
+///  * the SPREAD reading — `A` IS the callback's parameter list, applied
+///    POSITIONALLY, where order is identity (WI-782, §4.5).
+///
+/// `A` at a `Function` slot has to satisfy BOTH, so the admissible relation is their
+/// INTERSECTION, and on the ORDER axis that intersection is
+/// [`TupleOrder::Preserved`]. The by-name relation alone took the first reading's
+/// answer for a pairing the second also has an opinion about.
+///
+/// WHAT IT COST, measured on the WI-1087 tree, loading clean and running:
+///
+/// ```text
+/// operation inner(g: Function[A = (x: Int64, acc: Int64), B = Int64]) -> Int64 = g((acc: 3, x: 10))
+/// operation outer(f: Function[A = (acc: Int64, x: Int64), B = Int64]) -> Int64 = inner(f)
+/// inner(sub2) => 7      -- `inner`'s own `A` says parameter 1 <- `x`
+/// outer(sub2) => -7     -- the MINT site's `A` won; `inner`'s declared `A` is not the mapping used
+/// ```
+///
+/// The mapping a spread reads is pinned where the value is MINTED
+/// ([`Value::OpRef::spread_labels`], and `Pattern::Tuple.labels` for the lambda
+/// spelling — both spellings measured identically, so WI-784 holds and this is not a
+/// WI-1087 regression). Re-typing at a second slot cannot move it: an `OpRef` in
+/// flight is a value, and the slot it flows through is not a re-mint. So either the
+/// second slot's `A` agrees with the first on order, or one of the two declarations
+/// is silently not the mapping used — which is the class of wrong answer WI-1087 was
+/// filed to close, one hop away.
+///
+/// ONLY `Function` vs `Function`, which is what the two `None` arities gate. Every
+/// other pairing already answers the order question elsewhere and must not be moved:
+/// an ARROW states its arity, so at the spread arity [`arrow_params_compatible`]
+/// relates the lists under [`TupleAlign::PARAM_LIST`] (order Preserved already), and
+/// at arity 1 the whole-`A` reading is the only one the value admits — a
+/// one-parameter callable receives the tuple and reads it by label, so order-free is
+/// correct there. The arrow-SLOT mirror keeps the by-name reading WI-1085 measured.
+///
+/// AND A PERMUTATION ONLY — not "the labels differ". A label SET disagreement is the
+/// by-name relation's own refusal and renders as the ordinary mismatch; this
+/// predicate speaks for the one case that relation ACCEPTS and the parameter-list
+/// reading does not. Width and names are left exactly as WI-775/§4.5 have them: the
+/// order axis is the one the measurement above names, and tightening the other two
+/// on this pairing would refuse programs nothing has measured.
+///
+/// THE CALLER READS `A` THROUGH [`function_spec_parts`], which yields nothing for a
+/// `Function` that binds no `B` — and that is the right reader here rather than a hole
+/// this predicate should route around. MEASURED: a `Function[A = …]` slot with no `B` is
+/// not a callback slot at all, so the spread this guard protects cannot occur behind it.
+/// `inner(g: Function[A = (x, acc)]) -> Int64 = g(…)` is refused with `expected Int64,
+/// got g.B`, and passing a 2-parameter operation into such a slot is refused before that
+/// with `expected Function[A = (x: Int64, acc: Int64)], got Int64` — the eta lift needs
+/// the result type. So the pairing this skips is one that cannot reach a spread, and
+/// asking a SECOND, `B`-free question about what a `Function` is would be the one-name-
+/// two-questions defect rather than a widening.
+fn function_pairing_permutes_a(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    d_arity: Option<usize>,
+    a_arity: Option<usize>,
+    declared_a: &Value,
+    actual_a: &Value,
+) -> bool {
+    if d_arity.is_some() || a_arity.is_some() {
+        return false;
+    }
+    // σ-RESOLVED HERE, so the two call sites cannot hand this different operands while
+    // both claim to consult "the same predicate" — the drift a review caught before it
+    // was live. [`validate_arrow_param_result`] had already walked its pair;
+    // [`parameterized_compatible_view`] passes the `A` bindings as `extract_type` read
+    // them, and `named_tuple_fields` answers EMPTY for a variable, so an `A` that σ has
+    // bound to a named tuple would have made this answer `false` — an under-refusal, and
+    // a silent one. Owning the walk is what makes the two sites' claim true rather than
+    // nearly true; walking an already-walked value is an identity.
+    let labels = |kb: &mut KnowledgeBase, ty: &Value| -> Vec<Symbol> {
+        let resolved = walk_type_deep_value(kb, subst, ty);
+        named_tuple_fields(kb, &resolved)
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect()
+    };
+    // A non-tuple `A` (and one σ leaves unknown) has NO fields, so the sequence test
+    // answers `false` on its own — no second gate to keep in step with
+    // [`function_param_component_count`]. Likewise `|A| <= 1`: a sequence of at most one
+    // label cannot differ from itself by order alone. The DECLARED side is read first
+    // and short-circuits, so a `Function` slot whose `A` is a bare type (the common
+    // higher-order shape) pays one walk rather than two.
+    let d = labels(kb, declared_a);
+    if d.is_empty() {
+        return false;
+    }
+    let a = labels(kb, actual_a);
+    if d == a {
+        return false;
+    }
+    // BY `Symbol` IDENTITY, which is what [`align_named_tuple_slots`] compares labels by
+    // — deliberately the same keying as the relation this narrows, not a second opinion
+    // about when two labels are one label. Two `A`s whose labels interned to DIFFERENT
+    // symbols never reach here as a permutation, because that walk would not have matched
+    // them up either and the pairing is refused by name (see [`TupleOrder::Free`] on the
+    // Symbol-vs-short-name split, which predates this and bounds both sides alike).
+    let sorted = |v: &[Symbol]| {
+        let mut k: Vec<u32> = v.iter().map(|s| s.index()).collect();
+        k.sort_unstable();
+        k
+    };
+    sorted(&d) == sorted(&a)
 }
 
 /// WI-801: the ONE renderer for "`actual` does not conform to `declared`" at a
@@ -38335,6 +38471,41 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         return false;
     }
 
+    // WI-1088: `Function`/`Function`, where BOTH readings of `A` are still open and the
+    // relation owed is their INTERSECTION — order-preserving. The per-binding loop below
+    // relates the two `A`s with the ordinary `types_compatible`, which is the whole-`A`
+    // (data) reading and order-free since WI-803; the spread reading also has an opinion
+    // and it is the one a value's already-pinned mapping obeys. See
+    // [`function_pairing_permutes_a`] for the two programs that measured it.
+    //
+    // HERE, and not at [`arrow_function_compatible`]: that function is reached only from
+    // the `(arrow, parameterized)` dispatch arms, so it never sees two `Function`s. This
+    // is the ONE site both carrier routes decompose a `Function`-vs-`Function` pairing at
+    // (`types_compatible_term_dispatch` and `types_compatible_view_structural` both land
+    // here), so the guard is stated once.
+    //
+    // Through [`function_spec_parts`], the WI-802 owner, on the base + bindings already in
+    // hand — so a `Function` is recognized the one way the rest of the file recognizes it
+    // and no binding is re-extracted. The EXPECTED side is asked first: it is one
+    // `qualified_name_of` compare, and a non-`Function` slot (every other parameterized
+    // comparison in the corpus) stops there.
+    // The two `A`s are CLONED out of the borrows before the call: `function_spec_parts`
+    // borrows `bindings`, the predicate needs `&mut kb` to σ-resolve them, and a binding is
+    // an `Rc`-carried `Value`, so the clone is a refcount bump rather than a deep copy.
+    let permuting_as = function_spec_parts(kb, expected_base, &expected_bindings)
+        .and_then(|(d_a, _, _)| Some(d_a?.clone()))
+        .zip(
+            function_spec_parts(kb, actual_base, &actual_bindings)
+                .and_then(|(a_a, _, _)| Some(a_a?.clone())),
+        );
+    if let Some((d_a, a_a)) = permuting_as {
+        // Neither side is an `arrow` — both are parameterized types this arm decoded —
+        // so the arities the predicate gates on are `None` by construction.
+        if function_pairing_permutes_a(kb, subst, None, None, &d_a, &a_a) {
+            return false;
+        }
+    }
+
     // WI-764: how to compare the two sides' binding KEYS — see [`binding_for_param`].
     let key_match = BindingKeyMatch::for_bases(kb, actual_base, expected_base);
     // WI-387 FIX 2: the actual's cross-sort provider view (`List` provides
@@ -38603,6 +38774,12 @@ fn arrow_function_compatible<A: TermView, E: TermView>(
             (Some(n), None) if function_slot_reads_a_as_param_list(kb, bp, n) => {
                 arrow_params_compatible(kb, subst, bp, ap, n)
             }
+            // NO `Function`/`Function` ARM HERE, and WI-1088 measured why rather than
+            // leaving it to be re-derived: this function is reached only from the
+            // `(arrow, parameterized)` dispatch arms, so one side is always an `arrow`
+            // and an arrow always carries an `arity` child. The pairing WI-1088 refuses
+            // decomposes through [`parameterized_compatible_view`] instead, which is
+            // where its guard lives.
             _ => types_compatible(kb, subst, bp, ap),
         },
         _ => true,

@@ -25,7 +25,7 @@
 -- (two-type split). WI-577.
 namespace anthill.realization.runtime
   import anthill.reflect.Symbol
-  import anthill.prelude.{Option, Int64, FiniteStream}
+  import anthill.prelude.{Option, Int64, FiniteStream, List}
 
   -- The runtime requirement dictionary: a resolved spec impl, materialized as
   -- `Dictionary(sub0 .. subN, impl: S)` — an ordinary first-order value.
@@ -97,5 +97,19 @@ namespace anthill.realization.runtime
     -- `op` and `dict` but not on this are different values (WI-1019). Without it
     -- the accessor set did not, in fact, expose everything the value holds.
     operation named(r: OpRef) -> Option[T = Symbol]
+
+    -- The eta-site PARAMETER MAPPING: `A`'s component labels in the order the
+    -- `Function[A = ...]` slot this reference was lifted into declares them, so
+    -- label `i` names the argument component parameter `i` wants. none() at every
+    -- other mint — `A` is read as the callback's parameter list only where the
+    -- callback SPREADS it (WI-1087), and `resolveOp` / `ops` mint from a dictionary,
+    -- with no slot to read one off.
+    --
+    -- Declared for the same reason `named` is, and by the same rule: it is part of
+    -- the value's IDENTITY. Two OpRefs to one op lifted at `Function[A = (acc, x)]`
+    -- and at `Function[A = (x, acc)]` answer DIFFERENTLY from the same argument, so a
+    -- representation omitting it would merge two distinct values — and that
+    -- representation feeds fact dedup, where merging DROPS A FACT (WI-815, WI-1088).
+    operation spreadLabels(r: OpRef) -> Option[T = List[T = Symbol]]
   end
 end

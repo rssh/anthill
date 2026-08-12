@@ -27,6 +27,7 @@
 //! | `Value::head`'s `Entity` arm → `Opaque` | `a_dictionary_views_as_its_impl_and_sub_dictionaries`, `two_dictionaries_over_different_impls_are_not_equal`, `two_oprefs_differing_only_in_their_dictionary_…` (and most of the suite — after WI-1045 a dictionary IS an entity, so this back-out is no longer narrow) |
 //! | drop `dict` from `opref_shape` | `two_oprefs_differing_only_in_their_dictionary_are_distinct` |
 //! | drop `named` from `opref_shape` | `the_named_spec_op_half_is_part_of_the_identity` |
+//! | drop `spread` from `opref_shape` (WI-1088) | `wi1088…::two_oprefs_differing_only_in_their_spread_mapping_are_distinct` |
 //! | delete the `(Opaque, Opaque)` arm | `kb::tests::a_factref_is_an_identity_not_a_shape` (unit) |
 //!
 //! The last row is the one that shows the two halves are INDEPENDENT: deleting
@@ -112,17 +113,17 @@ fn the_named_spec_op_half_is_part_of_the_identity() {
     let (eq, same_key) = eq_and_key(
         kb,
         &Value::OpRef {
-        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
-        // a parameter-list mapping off.
-        spread_labels: None,
+            // WI-1087: a hand-built value, not minted at an eta site — no slot to
+            // read a parameter-list mapping off.
+            spread_labels: None,
             op: a,
             dict: None,
             named: None,
         },
         &Value::OpRef {
-        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
-        // a parameter-list mapping off.
-        spread_labels: None,
+            // WI-1087: a hand-built value, not minted at an eta site — no slot to
+            // read a parameter-list mapping off.
+            spread_labels: None,
             op: a,
             dict: None,
             named: Some(b),
@@ -176,9 +177,9 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
         kb,
         &with(d_int),
         &Value::OpRef {
-        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
-        // a parameter-list mapping off.
-        spread_labels: None,
+            // WI-1087: a hand-built value, not minted at an eta site — no slot to
+            // read a parameter-list mapping off.
+            spread_labels: None,
             op,
             dict: None,
             named: None,
@@ -306,9 +307,9 @@ fn an_opref_key_is_payload_bearing() {
     let key = goal_fingerprint(
         interp.kb(),
         &Value::OpRef {
-        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
-        // a parameter-list mapping off.
-        spread_labels: None,
+            // WI-1087: a hand-built value, not minted at an eta site — no slot to
+            // read a parameter-list mapping off.
+            spread_labels: None,
             op,
             dict: None,
             named: None,

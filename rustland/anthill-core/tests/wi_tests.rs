@@ -1165,3 +1165,6 @@ mod wi1085_arrow_param_relation_test;
 
 #[path = "include/wi1087_function_slot_spread_test.rs"]
 mod wi1087_function_slot_spread_test;
+
+#[path = "include/wi1088_spread_labels_identity_test.rs"]
+mod wi1088_spread_labels_identity_test;

@@ -320,6 +320,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
         "anthill.realization.runtime.OpRef.named",
         opref_named,
     )?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.OpRef.spreadLabels",
+        opref_spread_labels,
+    )?;
 
     // WI-876 — last, because it is the KB-DRIVEN half: everything above is a
     // hardcoded qualified name, this reads what the loaded binding blocks asked
@@ -4318,6 +4323,37 @@ fn opref_named(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
             Some(sym) => option_some(some_sym, value_key, symbol_value(sym)),
             None => option_none(none_sym),
         }),
+        other => Err(type_mismatch("OpRef", &other, None)),
+    }
+}
+
+/// `OpRef.spreadLabels(r) -> Option[List[Symbol]]` — the eta-site parameter mapping
+/// (`A`'s component labels in declared order); none() at every non-eta mint.
+///
+/// WI-1088 declared it for the reason WI-1019 declared `named`: it is part of the
+/// value's identity ([`crate::kb::term_view`]'s `opref_shape`), and the accessor set
+/// claimed to expose everything the value holds while omitting it.
+///
+/// The STRUCTURAL VIEW spells the same field as a positional TUPLE of symbols and this
+/// accessor as a `List` — two renderings of one field, not two representations of the
+/// mapping. Neither is derived from the other and they never meet: the view is internal
+/// machinery (equality, `goal_fingerprint`, discrim keys), where a `cons` chain would be
+/// an allocation per child read on the hot path; the `List` is the anthill surface, where
+/// a tuple of statically-unknown width is not a type that can be declared.
+fn opref_spread_labels(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r] = expect_args::<1>("OpRef.spreadLabels", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    match r {
+        Value::OpRef { spread_labels, .. } => match spread_labels {
+            Some(labels) => {
+                let elems: Vec<Value> = labels.iter().copied().map(symbol_value).collect();
+                let list = build_value_list(interp, elems)?;
+                Ok(option_some(some_sym, value_key, list))
+            }
+            None => Ok(option_none(none_sym)),
+        },
         other => Err(type_mismatch("OpRef", &other, None)),
     }
 }

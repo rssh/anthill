@@ -117,23 +117,34 @@ pub enum Value {
         /// This is that channel for the operation spelling, which WI-784 requires to be
         /// interchangeable with it.
         ///
-        /// TWO EDGES, both found by review and both held open by **WI-1088** rather
-        /// than left to a reader to discover:
+        /// TWO EDGES, found by review of WI-1087 and both DECIDED by **WI-1088**. The
+        /// verdicts are here rather than only at the sites, because this field is where
+        /// a reader meets them:
         ///
-        ///  * this field is NOT part of the value's structural identity — `opref_shape`
-        ///    (kb/term_view.rs) lists `op`/`dict`/`named`, so two `OpRef`s to one op
+        ///  * IT IS PART OF THE VALUE'S STRUCTURAL IDENTITY, and `opref_shape`
+        ///    (kb/term_view.rs) now lists it as the fourth key. Two `OpRef`s to one op
         ///    eta'd at `Function[A = (acc, x)]` and at `Function[A = (x, acc)]` answer
-        ///    differently from one argument yet compare equal and share a fingerprint.
-        ///    Listing it means declaring a fourth reflect accessor on the `OpRef`
-        ///    entity, which is a stdlib surface decision;
-        ///  * the mapping is pinned HERE, at the mint, and survives re-typing. A value
-        ///    re-typed at a second `Function` slot whose `A` orders the same labels
-        ///    differently keeps the FIRST slot's reading — `Function`/`Function`
-        ///    conformance is by name and order-free (WI-803). Measured, load-clean and
-        ///    running: `inner(sub2)` = 7 while `outer(sub2)` = -7 for the same `inner`.
-        ///    The LAMBDA spelling answered that way BEFORE this field existed, so the
-        ///    two spellings agree (WI-784 holds) and what changed is that the operation
-        ///    now reaches the shape too.
+        ///    differently from one argument, so a representation dropping it merges two
+        ///    distinct values — and that representation feeds fact dedup, where merging
+        ///    DROPS A FACT (WI-815). The pair is REACHABLE, which is what settled it:
+        ///    two independent slots ordering `A`'s labels differently mint exactly it,
+        ///    and the refusal below does not touch them (it relates a slot to a value
+        ///    flowing INTO it, and two independent slots are never so related). The keys
+        ///    are DECLARED accessors, so the shape cost a fourth operation on the
+        ///    reflect `OpRef` sort — `spreadLabels`, +2 facts on every corpus tier;
+        ///  * THE MAPPING IS PINNED HERE, AT THE MINT, AND SURVIVES RE-TYPING — so a
+        ///    second `Function` slot ordering the same labels differently is now
+        ///    REFUSED, rather than silently overridden by the first slot's reading. It
+        ///    was admitted because `Function`/`Function` conformance took the whole-`A`
+        ///    (by-name, order-free since WI-803) reading alone; a `Function` slot's `A`
+        ///    must satisfy the SPREAD reading too, where it is a parameter list and
+        ///    order is identity, so the relation owed is the intersection
+        ///    (`function_pairing_permutes_a`, kb/typing.rs). Measured before that,
+        ///    load-clean and running: `inner(sub2)` = 7 while `outer(sub2)` = -7 for the
+        ///    same `inner`. The LAMBDA spelling answered that way BEFORE this field
+        ///    existed — its mint-time mapping is `Pattern::Tuple.labels` — so the two
+        ///    spellings agreed throughout (WI-784 holds), which is why the fix is on the
+        ///    RELATION and covers both.
         spread_labels: Option<Rc<[Symbol]>>,
     },
     Stream(StreamHandle),

@@ -2356,6 +2356,7 @@ fn opref_key(kb: &KnowledgeBase, k: &str) -> Symbol {
         "op" => "anthill.realization.runtime.OpRef.op",
         "dict" => "anthill.realization.runtime.OpRef.dict",
         "named" => "anthill.realization.runtime.OpRef.named",
+        "spread" => "anthill.realization.runtime.OpRef.spreadLabels",
         other => unreachable!("opref_key: `{other}` is not an OpRef accessor"),
     };
     accessor_key(kb, OPREF_QNAME, accessor, "OpRef")
@@ -2401,42 +2402,64 @@ pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol
 /// An `OpRef`'s named keys, in accessor-declaration order.
 ///
 /// CONDITIONAL on the optional halves being present — the `Expr::Proof`
-/// precedent: an absent key and a `none()` payload carry the same information,
-/// and the arity difference keeps the two shapes distinct, so no `Option` wrapper
-/// has to be synthesized on every child read.
+/// precedent: an absent key and a `none()` payload carry the same information, and the
+/// shapes stay distinct without one, so no `Option` wrapper has to be synthesized on
+/// every child read.
 ///
-/// `dict` AND `named` are both here because both are IDENTITY. Two `OpRef`s with
-/// the same `op` but different dictionaries dispatch under different requirement
-/// environments, and `named` records the op the call NAMED when that differs from
-/// the resolved `op` (WI-857). Dropping either would make two distinct values
-/// compare equal and share a key — a false positive, and this feeds fact dedup,
-/// where merging DROPS A FACT (WI-815).
+/// WHAT KEEPS THEM DISTINCT IS THE KEY SET, NOT THE ARITY, and WI-1088 had to correct
+/// this sentence when it added the third optional payload. With two of them the two
+/// readings coincided and the doc said "the arity difference"; with three they part
+/// company — `{op, dict}`, `{op, named}` and `{op, spread}` all report `named_arity: 2`.
+/// The distinction is carried by the KEY SYMBOLS: [`views_structurally_equal`] looks
+/// each of `a`'s keys up on `b` BY SYMBOL, and [`goal_fingerprint`] emits a
+/// `StructToken::NamedKey(sym)` before each child. Reading it as an arity claim is
+/// exactly how a fourth optional payload would ship the WI-815 false-equality this doc
+/// exists to prevent.
 ///
-/// WI-1087 ADDED A FOURTH PAYLOAD AND DID NOT LIST IT, which by the rule above is a
-/// known false-equality rather than a considered exemption: `spread_labels` decides
-/// which of `A`'s components fills which parameter, so two `OpRef`s to one op eta'd
-/// at `Function[A = (acc, x)]` and at `Function[A = (x, acc)]` answer differently from
-/// the same argument and yet compare equal here. Listing it means declaring a fourth
-/// accessor on the reflect `OpRef` entity — the keys below ARE declared accessors
-/// (`opref_key`) — which exposes an internal dispatch mapping through reflect and
-/// moves every corpus tier's fact totals. That is a surface decision, and **WI-1088**
-/// holds it along with the measurement.
-fn opref_shape(has_dict: bool, has_named: bool) -> &'static [&'static str] {
-    let keys: &'static [&'static str] = match (has_dict, has_named) {
-        (false, false) => &["op"],
-        (true, false) => &["op", "dict"],
-        (false, true) => &["op", "named"],
-        (true, true) => &["op", "dict", "named"],
+/// ALL THREE OPTIONAL PAYLOADS ARE HERE BECAUSE ALL THREE ARE IDENTITY. Two `OpRef`s
+/// with the same `op` but different dictionaries dispatch under different requirement
+/// environments; `named` records the op the call NAMED when that differs from the
+/// resolved `op` (WI-857); and `spread` decides which of `A`'s components fills which
+/// parameter, so two `OpRef`s to one op eta'd at `Function[A = (acc, x)]` and at
+/// `Function[A = (x, acc)]` answer DIFFERENTLY from the same argument. Dropping any of
+/// them would make two distinct values compare equal and share a key — a false
+/// positive, and this feeds fact dedup, where merging DROPS A FACT (WI-815).
+///
+/// `spread` IS WI-1088's DELIVERY, and the reason WI-1087 could not take it is worth
+/// keeping: the keys here ARE declared accessors (`opref_key`), so listing a fourth
+/// means declaring a fourth operation on the reflect `OpRef` sort — a stdlib surface
+/// decision that moves every corpus tier's fact totals, which WI-1087's acceptance held
+/// fixed. Measured on this ticket's tree, the whole seven-tier corpus moved by exactly
+/// **+2 facts per tier**, zero rules and zero errors — one declared operation's own
+/// load facts, uniform across tiers because the declaration is in the stdlib every tier
+/// loads.
+///
+/// THE ALTERNATIVE — establishing that the two values cannot both exist and be compared
+/// — was REFUTED rather than declined: two such `OpRef`s co-exist under one KB whenever
+/// one operation is eta'd at two slots that order `A`'s labels differently. WI-1088's
+/// refusal does not reach them, because it relates a declared slot to a value flowing
+/// INTO it and two independent slots are never so related, and
+/// `views_structurally_equal` compares whatever it is handed.
+fn opref_shape(has_dict: bool, has_named: bool, has_spread: bool) -> &'static [&'static str] {
+    let keys: &'static [&'static str] = match (has_dict, has_named, has_spread) {
+        (false, false, false) => &["op"],
+        (true, false, false) => &["op", "dict"],
+        (false, true, false) => &["op", "named"],
+        (true, true, false) => &["op", "dict", "named"],
+        (false, false, true) => &["op", "spread"],
+        (true, false, true) => &["op", "dict", "spread"],
+        (false, true, true) => &["op", "named", "spread"],
+        (true, true, true) => &["op", "dict", "named", "spread"],
     };
     debug_assert_keys_distinct(OPREF_QNAME, keys);
     keys
 }
 
-fn opref_head(has_dict: bool, has_named: bool, kb: &KnowledgeBase) -> ViewHead {
+fn opref_head(has_dict: bool, has_named: bool, has_spread: bool, kb: &KnowledgeBase) -> ViewHead {
     ViewHead::Functor {
         functor: Some(reflect_ctor_sym(kb, OPREF_QNAME, "OpRef")),
         pos_arity: 0,
-        named_arity: opref_shape(has_dict, has_named).len(),
+        named_arity: opref_shape(has_dict, has_named, has_spread).len(),
     }
 }
 
@@ -2482,7 +2505,12 @@ impl TermView for Value {
             Value::SymbolRef(s) => ViewHead::Ref(*s),
             // WI-1019 — the two RESOLVED values read structurally; see the
             // section above for why these two and not the rest.
-            Value::OpRef { dict, named, .. } => opref_head(dict.is_some(), named.is_some(), kb),
+            Value::OpRef {
+                dict,
+                named,
+                spread_labels,
+                ..
+            } => opref_head(dict.is_some(), named.is_some(), spread_labels.is_some(), kb),
             // WHAT IS STILL `Opaque`, AND WHY — a payload-free head is the right
             // answer for a carrier with no shape to present, NOT a gap. Equality
             // is carrier identity ([`Value::opaque_carrier_eq`]) and the key stays
@@ -2549,9 +2577,14 @@ impl TermView for Value {
             // WI-1019 — resolved by NAME against the same shape `named_keys`
             // lists, so a key the head counted always has a child and no other
             // key does. The `Some` unwraps below cannot fire: `opref_shape`
-            // emits `dict`/`named` only when that half is present.
-            Value::OpRef { op, dict, named, .. } => {
-                let keys = opref_shape(dict.is_some(), named.is_some());
+            // emits `dict`/`named`/`spread` only when that half is present.
+            Value::OpRef {
+                op,
+                dict,
+                named,
+                spread_labels,
+            } => {
+                let keys = opref_shape(dict.is_some(), named.is_some(), spread_labels.is_some());
                 let idx = keys.iter().position(|k| opref_key(kb, k) == sym)?;
                 Some(ViewItem::Owned(match keys[idx] {
                     "op" => Value::SymbolRef(*op),
@@ -2563,6 +2596,24 @@ impl TermView for Value {
                     "named" => {
                         Value::SymbolRef(named.expect("opref_shape listed `named` without one"))
                     }
+                    // WI-1088: the labels as a POSITIONAL TUPLE of symbols, which is
+                    // what makes ORDER the identity it has to be — `(acc, x)` and
+                    // `(x, acc)` are two tuples, not one set. The anthill accessor
+                    // renders the same field as a `List` instead
+                    // (`builtins::opref_spread_labels` says why the two spellings are
+                    // not two representations); a `cons` chain HERE would be an
+                    // allocation per child read on the equality / `goal_fingerprint` /
+                    // discrim path this view exists to serve.
+                    "spread" => Value::Tuple {
+                        pos: spread_labels
+                            .as_ref()
+                            .expect("opref_shape listed `spread` without one")
+                            .iter()
+                            .copied()
+                            .map(Value::SymbolRef)
+                            .collect(),
+                        named: Vec::new().into(),
+                    },
                     other => unreachable!("opref named_arg: no arm for key `{other}`"),
                 }))
             }
@@ -2582,7 +2633,12 @@ impl TermView for Value {
             // WI-1019 — the SAME shape the head counted and `named_arg` resolves
             // against, so head arity, keys and children cannot drift apart (the
             // WI-814 discipline).
-            Value::OpRef { dict, named, .. } => opref_shape(dict.is_some(), named.is_some())
+            Value::OpRef {
+                dict,
+                named,
+                spread_labels,
+                ..
+            } => opref_shape(dict.is_some(), named.is_some(), spread_labels.is_some())
                 .iter()
                 .map(|k| opref_key(kb, k))
                 .collect(),
