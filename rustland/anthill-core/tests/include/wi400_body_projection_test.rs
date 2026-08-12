@@ -320,30 +320,41 @@ end
     );
 }
 
-/// An UNSTABLE let value (a call) does NOT alias — `y` stays its OWN neutral receiver, so
+/// An UNSTABLE let value (a call) does NOT alias — `y` stays its OWN receiver, so
 /// `y.K ≢ p.K`. The §4.1 stability rule: only a value-reference / field-access path
 /// canonicalizes (immutable `let` ⟹ one runtime value); `let y = pick(p)` mints a fresh
 /// value. So `let m: y.K = k` (`k : p.K`) is REJECTED — the alias did not silently equate
 /// `y.K` with `p.K`. Contrast `let_alias_canonicalizes_receiver` (same shape, stable value).
+///
+/// WI-1082 — `pick` IS DECLARED FREE, and that is load-bearing rather than incidental. As a
+/// MEMBER of `DataProvider` its return would name its own sort, which §3 bullet 1 ties to
+/// *this* instance — so `y.K` really would be `p.K` and there would be nothing for the
+/// stability rule to decide. Declared outside the sort, its parameter and return are two
+/// FOREIGN references, which §3 keeps independent. What the rejection reads has changed with
+/// it: WI-1063 opens the foreign return's unwritten `K` to a fresh ρ per call, so the message
+/// names that skolem (`?K`) where it used to name `y.K`. The row still drives THIS rule — were
+/// the alias wrongly applied, `y.K` would canonicalize to `p.K` and the annotation conform.
 #[test]
 fn let_unstable_value_does_not_alias() {
     let bad = r#"
 namespace test.wi400.let_unstable
   sort DataProvider
     sort K = ?
-    operation pick(p: DataProvider) -> DataProvider
   end
+  operation pick(p: DataProvider) -> DataProvider
   operation g(p: DataProvider, k: p.K) -> p.K =
-    let y = p.pick()
+    let y = pick(p)
     let m: y.K = k
     m
 end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("y.K") && e.contains("p.K")),
+        errs
+            .iter()
+            .any(|e| e.contains("m.annotation") && e.contains("p.K")),
         "let y = pick(p) is unstable, so y.K does NOT alias p.K; `let m: y.K = k` must be \
-         rejected (k : p.K ≢ y.K); got: {errs:?}",
+         rejected (k : p.K ≢ y.K, the latter WI-1063's fresh ρ); got: {errs:?}",
     );
 }
 
@@ -352,24 +363,29 @@ end
 /// old alias — otherwise `let m: y.K = k` would canonicalize `y.K` to `p.K` and wrongly
 /// accept, even though the shadowing `y` is a fresh value whose `y.K ≢ p.K`. (Regression
 /// for a /code-review-found false-accept.)
+///
+/// WI-1082 — `pick` is FREE for the reason stated on [`let_unstable_value_does_not_alias`],
+/// and the rejection reads the opened ρ for the same reason.
 #[test]
 fn let_alias_cleared_on_unstable_rebind() {
     let bad = r#"
 namespace test.wi400.let_rebind
   sort DataProvider
     sort K = ?
-    operation pick(p: DataProvider) -> DataProvider
   end
+  operation pick(p: DataProvider) -> DataProvider
   operation g(p: DataProvider, k: p.K) -> p.K =
     let y = p
-    let y = p.pick()
+    let y = pick(p)
     let m: y.K = k
     m
 end
 "#;
     let errs = load_errors(&[bad]);
     assert!(
-        errs.iter().any(|e| e.contains("y.K") && e.contains("p.K")),
+        errs
+            .iter()
+            .any(|e| e.contains("m.annotation") && e.contains("p.K")),
         "the shadowing `let y = pick(p)` must clear the stale `y → p` alias, so `y.K ≢ p.K` \
          and `let m: y.K = k` is rejected; got: {errs:?}",
     );

@@ -350,6 +350,18 @@ arm equates them. `unify_types` stays env-free (the WI-399 invariant): canonical
 runs entirely at the site. An **unstable** value (`let y = pick(p)`) records no alias — `y`
 stays its own neutral receiver (the §4.1 stability rule).
 
+**No alias is not the same as no equality (WI-1082).** The stability rule decides only whether
+the *receivers* are canonicalized to one path; the two projections can still be equal because
+the callee's signature says so. When `pick` is a **member of the sort it returns**, §3's
+parametricity tie makes its return this instance's parameter — `pick(p: DataProvider) ->
+DataProvider` means `-> DataProvider[K = K]` — so `y.K` and `p.K` denote one type even though
+`y` records no alias and is a distinct value. Independence needs a **foreign** reference: a
+`pick` declared *outside* the sort has a parameter and a return that §3 keeps apart, and the
+return's elided slot is then the existential WI-1063 opens to a fresh ρ per call.
+`wi400_body_projection_test::let_unstable_value_does_not_alias` drives the foreign form;
+`wi1082_self_return_tie_test::a_self_returning_member_result_shares_the_receivers_parameter`
+drives the member one.
+
 Two enabling fixes: `stable_receiver_path` reads the `Expr::VarRef` form a param/let
 reference actually takes; and the loader's `try_expr_carried_projection` is now
 **local-aware** (consults `lookup_local_name` before the static scope, mirroring

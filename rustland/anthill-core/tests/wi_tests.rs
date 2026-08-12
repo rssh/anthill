@@ -1151,5 +1151,8 @@ mod wi1078_unbound_return_var_test;
 #[path = "include/wi1079_variable_forms_reflect_test.rs"]
 mod wi1079_variable_forms_reflect_test;
 
+#[path = "include/wi1082_self_return_tie_test.rs"]
+mod wi1082_self_return_tie_test;
+
 #[path = "include/wi1077_accepts_vs_receives_test.rs"]
 mod wi1077_accepts_vs_receives_test;

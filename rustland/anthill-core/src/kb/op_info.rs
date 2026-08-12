@@ -221,6 +221,15 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
     // codegen) hit the fast path above. Ground truth — behaviour-identical to the
     // pre-WI-656 code, only slower — so the index is a pure accelerator, never a
     // correctness change.
+    //
+    // WI-1082 IS THE ONE EXCEPTION to that last sentence, and it is deliberate.
+    // `typing::elaborate_self_ties` rewrites the CACHED signature — an elided slot
+    // on a reference to the operation's own sort becomes that sort's parameter,
+    // which is what §3's tie says it already meant — so after a type-check the two
+    // tiers answer differently: the cache carries the elaborated signature, the
+    // fact scan the declaration as written. Every reader that matters takes the
+    // cache; the scan is reached only during load and on a KB that never
+    // type-checks, neither of which asks about a return type's slots.
     let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     for rid in kb.rules_by_functor(op_info_sym) {
         if !kb.is_fact(rid) {

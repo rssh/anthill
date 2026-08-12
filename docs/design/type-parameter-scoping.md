@@ -110,6 +110,26 @@ picks one); (b) when you want no new surface.
   List[T = ?t])` ties, `List[T = ?x]` / `List[T = ?y]` splits, `List[Int64]` /
   `List[String]` fixes.
 
+**The tie is written down, not left implicit (WI-1082).** Every position named
+above is a *rewrite*, applied once per declaration before any body check or call
+site reads the signature: a self-sort reference that elides a slot is rewritten to
+name this sort's own parameter. `cons(head: T, tail: List)` becomes `tail: List[T =
+T]`; `append(xs: List, ys: List) -> List` gets `-> List[T = T]`; and a parameter
+that *partially* writes the sort — `widen(s: MyStream[T = Int64])` — becomes `s:
+MyStream[T = Int64, E = E]`. Leaving the slot *absent* was not equivalent to naming
+it: an absent binding is width-**ignored** by unification, so nothing was claimed
+about it and no consumer demand could be refuted — `docs/kernel-language.md` §8.1
+carries the exploit that closed, and the parameter position is what closes it for a
+member with no body to check.
+
+Two exceptions, both measured. A **written** slot is never rewritten. A **bare**
+self parameter is not either: `unify_parameterized_with_sort_ref` already binds the
+sort's parameters when one side is a bare reference, and writing the tie in makes
+that binding strict enough that the WI-424 sibling-call seeding refuses a member
+called at a different instance (`List.mapElems` calls `reverse` at `Dst`). And an
+operation with no parameter naming its own sort (`List.empty() -> List`) is left
+alone, since nothing at a call could bind the parameter this would write.
+
 The member/foreign split is decided by the **declaration context** of the type
 expression — where it was *written*, not where a unification later runs. That
 context is exported into the term *before* the unify boundary (the loader

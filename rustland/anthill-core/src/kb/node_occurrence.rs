@@ -5857,8 +5857,11 @@ fn pop_n(results: &mut Vec<Rc<NodeOccurrence>>, n: usize) -> Vec<Rc<NodeOccurren
     out
 }
 
+/// WI-1082 — the "no recorded location" span. `SourceId(0)` is a REAL sequential id (the
+/// first loaded file), not a sentinel, so anything rendered off this reports that file's
+/// start; it is for synthesized nodes that no diagnostic should point at.
 #[inline]
-fn empty_span() -> SourceSpan {
+pub(crate) fn empty_span() -> SourceSpan {
     SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0)
 }
 

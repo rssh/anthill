@@ -84,9 +84,10 @@
 //!
 //! Each was run alone against the whole `anthill-core` suite. Two rows here pass under EVERY
 //! revert, by design, and say so at their own sites:
-//! [`a_self_sort_return_is_not_opened_in_either_spelling`] and
-//! [`the_enclosing_sorts_parameter_is_threaded_from_the_receiver`]. They are non-regressions
-//! and boundary records, not measurements of this rule.
+//! [`a_self_sort_return_is_not_opened_in_either_spelling`] (now carrying **WI-1082**'s verdict
+//! — the two spellings are refused alike at the DECLARATION, where they used to load alike)
+//! and [`the_enclosing_sorts_parameter_is_threaded_from_the_receiver`]. They are
+//! non-regressions and boundary records, not measurements of this rule.
 //!
 //! REFERENCE: WI-1063 (the polarity rule, the call as mint site, and the ANONYMOUS-only
 //! exemption this ticket retires); WI-1061/WI-1059 (the parameter polarity); WI-1079 (the
@@ -329,15 +330,23 @@ fn the_tie_survives_the_opening() {
 /// omitted `E` are alike there exactly as they are now alike on a foreign one. This is the
 /// hatch `LogicalStream.empty` and `List.empty` both ride, and it is why neither had to move.
 ///
-/// BOTH HALVES LOAD, AND THE FIRST OF THEM LAUNDERS — this fixture hands `{Error}` to a
-/// parameter declaring `E = {}` and is accepted, which is §8.1's headline exploit surviving on
-/// the self side. It is asserted as a LOAD deliberately: the two spellings agreeing is what
-/// proves the route belongs to the self gate (WI-1063's foreign-only scope) and not to a second
-/// named-variable seam — if it were about the spelling, the halves would disagree. Closing it
-/// is **WI-1082**, which also carries why the two fillers WI-1063 tried are both wrong and what
-/// the untried third one is; when it lands, this row is rewritten to its verdict.
+/// BOTH HALVES ARE NOW REFUSED, AND AT THE SAME PLACE — WI-1082 landed and this row carries its
+/// verdict. The fixture used to LOAD, handing `{Error}` to a parameter declaring `E = {}`,
+/// which was §8.1's headline exploit surviving on the self side. WI-1082 writes §3's tie into
+/// the declaration: `-> MyStream[T = Int64]` inside `sort MyStream` means "at THIS instance's
+/// `E`", within a member body that parameter is rigid (WI-424), and `= s` — pinned to `{Error}`
+/// by its own parameter — does not hold for every `E`. So the refusal is at `widen_self.return`,
+/// the declaration, not at the consumer.
 ///
-/// PASSES UNDER EVERY REVERT of this ticket, by design. It measures the boundary, not the rule.
+/// THE AGREEMENT IS STILL THE ASSERTION, and it is why this row stayed rather than moving to
+/// the WI-1082 file: `-> MyStream[T = Int64]` and `-> MyStream[T = Int64, E = ?E]` must be ONE
+/// type. WI-1082 keeps them so by reading `unbound_return_vars` — WI-1078's own classification
+/// — at the declaration, and answering the SELF case with the tie where the call answers the
+/// FOREIGN case with a fresh ρ. Elaborating only the omitted spelling would have reopened this
+/// ticket's gap from the other end, so the two halves are compared message-for-message.
+///
+/// PASSES UNDER EVERY REVERT of this ticket, by design — it measures the boundary between the
+/// two rules, not either one. Back out WI-1082 instead and BOTH halves load again.
 #[test]
 fn a_self_sort_return_is_not_opened_in_either_spelling() {
     const SELF: &str = "namespace test.wi1078.selfsort\n\
@@ -353,10 +362,33 @@ fn a_self_sort_return_is_not_opened_in_either_spelling() {
         \x20 operation use_it(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure_s(MyStream.widen_self(s))\n\
         end\n";
-    crate::common::load_kb_with(SELF);
+    let named = refusal_of(SELF);
     // The omitted spelling of the same return — `-> MyStream[T = Int64]`, WI-1063's row A on a
-    // self reference. It loads too, and that agreement is the whole assertion.
-    crate::common::load_kb_with(&SELF.replace(", E = ?E] = s", "] = s").replace("selfsort", "selfomit"));
+    // self reference. Refused identically, and that agreement is the whole assertion.
+    let omitted = refusal_of(
+        &SELF
+            .replace(", E = ?E] = s", "] = s")
+            .replace("selfsort", "selfomit"),
+    );
+    assert!(
+        named.contains("widen_self.return") && named.contains("E = ?E"),
+        "WI-1082: the self-sort return means THIS instance's `E`, which the body's `= s` \
+         (pinned to {{Error}}) does not satisfy — and the refusal names the DECLARATION: {named}",
+    );
+    assert_eq!(
+        named.replace("selfsort", "X"),
+        omitted.replace("selfomit", "X"),
+        "`E = ?E` and an omitted `E` are ONE type on a self reference too — the two spellings \
+         must be refused by the same rule with the same message",
+    );
+}
+
+/// The single load error `src` raises, with the namespace left in so the two spellings above
+/// can be compared after normalizing it away.
+fn refusal_of(src: &str) -> String {
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert_eq!(errs.len(), 1, "expected exactly one refusal, got {errs:?}");
+    errs[0].clone()
 }
 
 /// The other two USE sites WI-1063 had to wire, read at the named spelling — a nullary

@@ -393,9 +393,15 @@ end
 end
 "#;
     let errs = crate::common::try_load_kb_with(bad).err().unwrap_or_default();
+    // WI-1082 — matched on the ELEMENT bindings rather than on `LogicalStream[T = …`, because
+    // the order bindings render in is not part of the type. `mplus`'s parameter partially
+    // writes the sort (`LogicalStream[T = ?A]`), so the tie now materializes its elided `E`
+    // and `rigidify_unwritten_sort_params` rebuilds the application in the SORT's declared
+    // parameter order — the message reads `LogicalStream[E = {empty_row}, T = Int64]`. It
+    // still names both elements, which is the whole of what this control asserts.
     assert!(
-        errs.iter().any(|e| e.contains("LogicalStream[T = Int64")
-            && e.contains("LogicalStream[T = String")),
+        errs.iter()
+            .any(|e| e.contains("T = Int64") && e.contains("T = String")),
         "`mplus` shares ONE element variable, so two different element types are \
          refused naming both — this is the control for the arm above: {errs:?}"
     );
