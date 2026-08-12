@@ -64,6 +64,11 @@ pub fn setup_project(tmp: &tempfile::TempDir, workitems: &str) -> PathBuf {
     for f in ["domain.anthill", "rules.anthill"] {
         fs::copy(src_root.join(f), inner.join(f)).expect("copy project file");
     }
+    fs::write(
+        inner.join("project.anthill"),
+        "fact Project(\n  name: \"test-project\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n",
+    )
+    .expect("write project config");
     fs::write(inner.join("workitems.anthill"), workitems).expect("write workitems");
     proj
 }

@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use crate::common::{read_combined, setup_project};
+use crate::common::{read_combined, setup_domainless_project, setup_project};
 
 const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 
@@ -162,5 +162,29 @@ fn insert_unknown_before_errors() {
     assert!(
         stderr.contains("error: --before target 'WI-999' not found"),
         "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn insert_default_resolution_failure_does_not_rewire_target() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = setup_domainless_project(&tmp, THREE_ITEMS);
+    let workitems_path = proj.join("anthill-todo/workitems.anthill");
+    let before = std::fs::read_to_string(&workitems_path).expect("read workitems before");
+
+    let stderr = err(&run_bundle(
+        &proj,
+        &["insert", "must not persist", "--before", "WI-002"],
+    ));
+    assert!(
+        stderr.contains("default acceptance requires exactly one Project fact"),
+        "stderr: {stderr}"
+    );
+    let after = std::fs::read_to_string(&workitems_path).expect("read workitems after");
+    // WI-1068 CONTROL for insert: backing out the pre-resolution sequencing
+    // rewires WI-002 before discovering that no acceptance can be produced.
+    assert_eq!(
+        after, before,
+        "failed default resolution must leave both the target and new item untouched"
     );
 }

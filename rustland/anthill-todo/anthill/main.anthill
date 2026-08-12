@@ -13,8 +13,8 @@ namespace anthill.todo
   import anthill.prelude.{Cell}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
-  import anthill.stage0.{Feedback, WorkItem, ToolPasses, AcceptanceCriterion,
-                         WorkStatus, StoreFormat}
+  import anthill.stage0.{Project, Feedback, WorkItem, ToolPasses,
+                         AcceptanceCriterion, WorkStatus, StoreFormat}
   import anthill.stage0.WorkStatus.{Open, PreOpened, Draft}
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
@@ -197,8 +197,8 @@ namespace anthill.todo
       parent: none())
 
   -- `add <description>` creates a new Open WorkItem. --depends and
-  -- --acceptance are repeatable; absent --acceptance defaults to
-  -- ToolPasses("cargo-test").
+  -- --acceptance are repeatable; absent --acceptance embeds the single
+  -- Project fact's complete `tools` list.
   operation spec_add() -> OperationSpec =
     OperationSpec(
       name: "add",
@@ -220,7 +220,7 @@ namespace anthill.todo
               name: "acceptance",
               kind: flag(),
               required: false,
-              description: "Acceptance tool name (repeatable, default: cargo-test)"),
+              description: "Acceptance tool name (repeatable, default: Project.tools)"),
             cons(
               ParamSpec(
                 name: "tag",
@@ -1806,8 +1806,8 @@ namespace anthill.todo
     -- `add <description> [--depends ID]* [--acceptance tool]*`
     -- creates a fresh WorkItem with status Open. The next id is
     -- computed by walking existing WorkItem facts and bumping the
-    -- max WI-NNN suffix. Acceptance defaults to ToolPasses("cargo-test")
-    -- when no --acceptance flag is supplied.
+    -- max WI-NNN suffix. Acceptance defaults to every tool named by the
+    -- single Project fact when no --acceptance flag is supplied.
 
     -- Collect every Binding whose name matches `name`, in caller order.
     -- parse_argv conses args front-most-recent, so the last flag the
@@ -1832,8 +1832,7 @@ namespace anthill.todo
       collect_all_args_acc(args, name, nil())
 
     -- Wrap each tool name as ToolPasses(tool: <name>) for the WorkItem
-    -- acceptance field. Default fallback when the user supplies no
-    -- --acceptance flag is a single cargo-test entry.
+    -- acceptance field.
     operation tool_to_acceptance(tool: String) -> AcceptanceCriterion =
       ToolPasses(tool: tool)
 
@@ -1864,21 +1863,24 @@ namespace anthill.todo
                      depends_on: List[String],
                      raw_acceptance: List[String],
                      tags: List[String]) -> Int64
-      effects {ConsoleOutput, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      let id = WorkItemStore.next_id(s)
-      let _ = WorkItemStore.commit(s, WorkItem(
-        id: id,
-        description: description,
-        acceptance: resolve_acceptance(raw_acceptance),
-        depends_on: depends_on,
-        status: Open()))
-      let _ = apply_tags(s, id, tags)
-      let _ = println(console(),
-                      concat("added: ",
-                        concat(id, concat(" — ",
-                          concat(description, tag_note(tags))))))
-      0
+      match resolve_acceptance(raw_acceptance)
+        case none() -> 1
+        case some(acceptance) ->
+          let id = WorkItemStore.next_id(s)
+          let _ = WorkItemStore.commit(s, WorkItem(
+            id: id,
+            description: description,
+            acceptance: acceptance,
+            depends_on: depends_on,
+            status: Open()))
+          let _ = apply_tags(s, id, tags)
+          let _ = println(console(),
+                          concat("added: ",
+                            concat(id, concat(" — ",
+                              concat(description, tag_note(tags))))))
+          0
 
     -- ` [tags: a, b]` suffix on add/insert output; empty for no tags.
     operation tag_note(tags: List[String]) -> String =
@@ -1945,31 +1947,36 @@ namespace anthill.todo
                 concat(d, " would create a cycle")))))
           1
         case none() ->
-          -- Native ordering: allocate the id and rewrite the --before
-          -- target's depends_on FIRST, so a failing rewrite can't leave
-          -- an orphaned, unlinked item behind.
-          let id = WorkItemStore.next_id(s)
-          let current = deps_of_w(before_wi)
-          let new_deps =
-            if list_contains_string(current, id) then current
-            else append_string(current, id)
-          let _ = WorkItemStore.replace(s, before,
-                    with_deps(before_wi, new_deps))
-          let _ = WorkItemStore.commit(s, WorkItem(
-            id: id,
-            description: description,
-            acceptance: resolve_acceptance(raw_acceptance),
-            depends_on: depends_on,
-            status: Open()))
-          let _ = apply_tags(s, id, tags)
-          let _ = println(console(),
-            concat("inserted: ",
-              concat(id, concat(" before ",
-                concat(before, concat(tag_note(tags),
-                  concat(" (", concat(before,
-                    concat(" now depends on ",
-                      concat(id, ")"))))))))))
-          0
+          -- Resolve the default BEFORE rewriting the --before target. A
+          -- malformed/missing Project must leave both facts untouched.
+          match resolve_acceptance(raw_acceptance)
+            case none() -> 1
+            case some(acceptance) ->
+              -- Native ordering: allocate the id and rewrite the --before
+              -- target's depends_on FIRST, so a failing rewrite can't leave
+              -- an orphaned, unlinked item behind.
+              let id = WorkItemStore.next_id(s)
+              let current = deps_of_w(before_wi)
+              let new_deps =
+                if list_contains_string(current, id) then current
+                else append_string(current, id)
+              let _ = WorkItemStore.replace(s, before,
+                        with_deps(before_wi, new_deps))
+              let _ = WorkItemStore.commit(s, WorkItem(
+                id: id,
+                description: description,
+                acceptance: acceptance,
+                depends_on: depends_on,
+                status: Open()))
+              let _ = apply_tags(s, id, tags)
+              let _ = println(console(),
+                concat("inserted: ",
+                  concat(id, concat(" before ",
+                    concat(before, concat(tag_note(tags),
+                      concat(" (", concat(before,
+                        concat(" now depends on ",
+                          concat(id, ")"))))))))))
+              0
 
     -- The first --depends entry that equals the --before target or
     -- transitively reaches it (closing a cycle once the target depends
@@ -2009,12 +2016,76 @@ namespace anthill.todo
           else if reaches_dep(s, d, target, seen) then true
           else any_dep_reaches(s, rest, target, seen)
 
-    -- Default acceptance to a single `cargo-test` tool when no
-    -- --acceptance flag is supplied; otherwise lift each tool name.
-    operation resolve_acceptance(raw: List[String]) -> List[AcceptanceCriterion] =
+    -- WI-1068: an omitted --acceptance embeds the WHOLE project-wide tool set.
+    -- This is deliberately conservative for a multi-module project: a ticket
+    -- may carry an irrelevant gate, but it cannot silently omit the gate that
+    -- observes its module. We do not infer ownership from description prose,
+    -- and Project.tools already contains acceptance-tool names, so no
+    -- Module.build -> tool-name convention is invented here. Explicit flags
+    -- remain an exact override.
+    operation resolve_acceptance(raw: List[String])
+      -> Option[T = List[T = AcceptanceCriterion]]
+      effects ConsoleError
+    =
       match raw
-        case nil() -> tools_to_acceptance(cons("cargo-test", nil()))
-        case cons(_, _) -> tools_to_acceptance(raw)
+        case nil() -> project_acceptance(facts_of(kb(), Project))
+        case cons(_, _) -> some(tools_to_acceptance(raw))
+
+    -- A project-wide default is meaningful only with one source of truth.
+    -- Explicit --acceptance bypasses this reader, so an old/malformed project
+    -- can still make a deliberate write while its Project fact is repaired.
+    operation project_acceptance(projects: List[Term])
+      -> Option[T = List[T = AcceptanceCriterion]]
+      effects ConsoleError
+    =
+      match projects
+        case nil() ->
+          let _ = eprintln(console(),
+            "error: default acceptance requires exactly one Project fact; pass --acceptance explicitly")
+          none()
+        case cons(project, rest) ->
+          match rest
+            case cons(_, _) ->
+              let _ = eprintln(console(),
+                "error: default acceptance found multiple Project facts; pass --acceptance explicitly")
+              none()
+            case nil() ->
+              match term_field(project, "tools")
+                case none() ->
+                  let _ = eprintln(console(),
+                    "error: Project.tools is missing; pass --acceptance explicitly")
+                  none()
+                case some(tool_list) ->
+                  match term_list_items(tool_list)
+                    case nil() ->
+                      let _ = eprintln(console(),
+                        "error: Project.tools must contain at least one tool; pass --acceptance explicitly")
+                      none()
+                    case cons(tool, rest_tools) ->
+                      acceptance_from_terms(cons(tool, rest_tools))
+
+    operation acceptance_from_terms(tools: List[Term])
+      -> Option[T = List[T = AcceptanceCriterion]]
+      effects ConsoleError
+    =
+      match tools
+        case nil() -> some(nil())
+        case cons(tool, rest) ->
+          match term_as_string(tool)
+            case none() ->
+              let _ = eprintln(console(),
+                "error: every Project.tools entry must be a String; pass --acceptance explicitly")
+              none()
+            case some(name) ->
+              if eq(name, "") then
+                let _ = eprintln(console(),
+                  "error: Project.tools entries must not be empty; pass --acceptance explicitly")
+                none()
+              else
+                match acceptance_from_terms(rest)
+                  case none() -> none()
+                  case some(acceptance) ->
+                    some(cons(tool_to_acceptance(name), acceptance))
 
     -- Reconstruct a WorkItem with a new status field, preserving every
     -- other field as the materialized entity carried them. Factored as
