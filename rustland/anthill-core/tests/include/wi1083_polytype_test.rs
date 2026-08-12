@@ -28,16 +28,24 @@
 //! no dispatch dictionary was captured on the `OpRef` and the operation's `__req_*` was
 //! unbound when the HOF applied it.
 //!
-//! ## WHAT DOES NOT CHANGE, and it is stated because two of the six rows below say so
+//! ## WHAT THIS TICKET DID NOT CLOSE, and WI-1084 did
 //!
-//! A RESULT-type disagreement and an EFFECT-ROW disagreement are still not refused for a
-//! type-parameterized operation, while both are refused for its monomorphic twin. That is the
-//! WI-385 groundness discipline, not this ticket's gate: `validate_arg_against_param` hands a
-//! NON-GROUND pair to `validate_arrow_param_result`, which compares only components that are
-//! themselves ground — and an instantiated `∀A. (x: A) -> A` is `(x: ?A1) -> ?A1`, whose
-//! result is a variable. [`a_result_type_disagreement_is_a_known_gap`] and
-//! [`an_effect_row_disagreement_is_a_known_gap`] pin those verdicts so the day one closes is
-//! visible; they load the same either way and are boundary records, not measurements.
+//! As delivered, a RESULT-type and an EFFECT-ROW disagreement were still not refused for a
+//! type-parameterized operation while both were refused for the monomorphic twin — pinned
+//! here as two known-gap rows. WI-1084 found the root and it was NOT the WI-385 groundness
+//! discipline this header first blamed: `unify_types` had no `arrow` ↔ `Function[A, B, E]`
+//! arm at all, so the pair fell to the subtype fallback, which decomposes but cannot BIND,
+//! and answered `false` with ZERO bindings whether the pair agreed or not. Nothing pinned
+//! `A`, so the groundness gate downstream had nothing to compare. TWO fixes were needed —
+//! the missing arm, and `validate_arrow_param_result` resolving the RESULT through σ before
+//! testing it for groundness — each measured separately at
+//! `kb::typing::wi1084_arrow_function_unify_tests`, whose header carries the three-level
+//! back-out table. [`a_result_type_disagreement_is_refused`] now holds the refusal.
+//!
+//! [`an_effect_row_disagreement_is_refused`] needed a THIRD and independent fix on top of
+//! those two: `validate_callback_effect_row` discarded the row check for any `Function[A, B,
+//! E]` slot, because such a parameter registers no binder PLACES and the alignment guard
+//! bailed on the length mismatch. All three landed on WI-1084.
 //!
 //! ## WHO GENERALIZES, AND WHEN — the question WI-1079 handed over
 //!
@@ -78,8 +86,7 @@
 //! test, on a stdlib operation, at a value.
 //!
 //! Rows that pass BOTH ways, by design, and say so at their sites:
-//! [`an_arity_disagreement_is_refused_for_a_monomorphic_operation`] and the two known-gap
-//! rows. [`two_element_types_in_one_program`] is half and half — its values pass either way
+//! [`an_arity_disagreement_is_refused_for_a_monomorphic_operation`]. [`two_element_types_in_one_program`] is half and half — its values pass either way
 //! (the `?A` fallback already unified with anything, and eval mints an `OpRef` by arity), its
 //! classification assertion does not.
 //!
@@ -261,66 +268,97 @@ fn an_arity_disagreement_is_refused_for_a_monomorphic_operation() {
     assert!(msg.contains("1-parameter") && msg.contains("2-parameter"), "{msg}");
 }
 
-/// KNOWN GAP — `∀A. (x: A) -> A` in a `Function[A = Int64, B = String]` slot still LOADS,
-/// while the monomorphic `Int64 -> Int64` in the same slot is refused. The disagreement is
-/// only visible THROUGH the shared variable (the parameter pins `?A1 := Int64`, and the result
-/// is then `Int64` where `String` is demanded), and `validate_arg_against_param` never asks:
-/// the pair is non-ground, so it routes to `validate_arrow_param_result`, which compares a
-/// component only when that component is itself ground.
+/// A RESULT-TYPE DISAGREEMENT IS REFUSED — closed by WI-1084, and this row was a
+/// known-gap pin until it was. `∀A. (x: A) -> A` cannot be `Int64 -> String`: the parameter
+/// pins `A := Int64` and the result then contradicts `String`. It is visible only THROUGH
+/// the shared variable, which is why it needed two fixes — unification had no
+/// `arrow` ↔ `Function[A, B, E]` arm to make the binding with, and
+/// `validate_arrow_param_result` then tested the result for groundness without resolving it
+/// through σ.
 ///
-/// NOT this ticket's gate — the same withholding applies to any polymorphic callback — and not
-/// silently accepted either: this row FAILS the day the groundness discipline learns to relate
-/// components through a shared variable, which is when the pin should be deleted.
-///
-/// CONTROL: loads under the back-out too, and is asserted together with its monomorphic twin
-/// so "both load" cannot pass for a verdict.
+/// CONTROL: on WI-1083 as delivered this LOADED, and `use_it()` — declared `-> String` —
+/// returned `Int(3)`. Its monomorphic twin was refused throughout, which is what said the
+/// polymorphic verdict was wrong rather than the rule being lax.
 #[test]
-fn a_result_type_disagreement_is_a_known_gap() {
-    let poly = "namespace test.wi1083.res\n\
+fn a_result_type_disagreement_is_refused() {
+    let msg = refusal(
+        "namespace test.wi1083.res\n\
          \x20 import anthill.prelude.{Int64, String, Function}\n\
          \x20 operation idp[A](x: A) -> A = x\n\
          \x20 operation callit(f: Function[A = Int64, B = String, E = {}]) -> String = f(3)\n\
          \x20 operation use_it() -> String = callit(idp)\n\
-         end\n";
-    crate::common::load_kb_with(poly);
-    let mono = "namespace test.wi1083.resm\n\
+         end\n",
+    );
+    assert!(
+        msg.contains("callit.f") && msg.contains("String"),
+        "the disagreement is refused at the argument, naming the slot and the contradicted \
+         result: {msg}",
+    );
+    // THE MONOMORPHIC TWIN, kept beside it: the identical mismatch with no type parameter,
+    // refused before this cluster and after it. Without it this row passes under any
+    // regression that refuses `Function`-typed callbacks MORE broadly — which is the reading
+    // the twin exists to exclude, and which the WI-1084 rewrite briefly dropped.
+    let mono = refusal(
+        "namespace test.wi1083.resm\n\
          \x20 import anthill.prelude.{Int64, String, Function}\n\
          \x20 operation idm(x: Int64) -> Int64 = x\n\
          \x20 operation callit(f: Function[A = Int64, B = String, E = {}]) -> String = f(3)\n\
          \x20 operation use_it() -> String = callit(idm)\n\
-         end\n";
-    let msg = refusal(mono);
-    assert!(
-        msg.contains("callit.f"),
-        "the monomorphic twin IS refused — which is what makes the row above a gap rather \
-         than a rule: {msg}",
+         end\n",
     );
+    assert!(mono.contains("callit.f"), "the monomorphic twin stays refused: {mono}");
 }
 
-/// KNOWN GAP, the effect-row half of the row above, and it is worth its own row because an
-/// effect leak is what WI-1063 / WI-1078 exist about: `bang[A](x: A) -> A effects {Error}` in a
-/// slot declaring `E = {}` still loads. Two separate withholdings meet here —
-/// `validate_callback_effect_row` bails because a `Function[A, B, E]` parameter declares no
-/// binder places to align the actual's against, and `validate_arg_against_param` withholds the
-/// whole-type check because the instantiated arrow is non-ground.
+/// AN EFFECT-ROW DISAGREEMENT IS REFUSED — the effect-row half, closed by WI-1084, and it
+/// is worth its own row because an effect leak is what WI-1063 / WI-1078 exist about.
+/// `bang[A](x: A) -> A effects {Error}` in a slot declaring `E = {}` used to load.
 ///
-/// CONTROL: the monomorphic twin is refused, and loads under neither. Same pin discipline as
-/// the row above.
+/// It needed a THIRD fix beyond the two the result-type row needed:
+/// `validate_callback_effect_row` discarded the row check entirely for any `Function[A, B,
+/// E]` slot, because such a parameter registers NO argument places and the binder-alignment
+/// guard bailed on the length mismatch. There is nothing to align when neither side names a
+/// place, and `{Error}` versus `{}` is decidable without one.
+///
+/// CONTROL: on WI-1083 as delivered this LOADED, and the raising variant below TRAPPED
+/// `Raised { payload: Str("boom") }` at runtime — out of a `use_it() -> Int64` that declares
+/// no effects, through a slot that declares `E = {}`. Its monomorphic twin was refused
+/// throughout.
 #[test]
-fn an_effect_row_disagreement_is_a_known_gap() {
-    let poly = "namespace test.wi1083.eff\n\
+fn an_effect_row_disagreement_is_refused() {
+    let msg = refusal(
+        "namespace test.wi1083.eff\n\
          \x20 import anthill.prelude.{Int64, Function, Error}\n\
          \x20 operation bang[A](x: A) -> A effects {Error} = x\n\
          \x20 operation callit(f: Function[A = Int64, B = Int64, E = {}]) -> Int64 = f(3)\n\
          \x20 operation use_it() -> Int64 = callit(bang)\n\
-         end\n";
-    crate::common::load_kb_with(poly);
-    let mono = "namespace test.wi1083.effm\n\
+         end\n",
+    );
+    assert!(
+        msg.contains("closed row does not admit") && msg.contains("Error"),
+        "the refusal must name the effect the closed row does not admit: {msg}",
+    );
+    // The same program with a body that ACTUALLY raises — the one that reached a runtime
+    // `Raised` through two declarations that both promised purity. Refused at LOAD now.
+    let raising = refusal(
+        "namespace test.wi1083.effr\n\
+         \x20 import anthill.prelude.{Int64, String, Function, Error}\n\
+         \x20 operation bang[A](x: A) -> A effects {Error[T = String]} = Error.raise(\"boom\")\n\
+         \x20 operation callit(f: Function[A = Int64, B = Int64, E = {}]) -> Int64 = f(3)\n\
+         \x20 operation use_it() -> Int64 = callit(bang)\n\
+         end\n",
+    );
+    assert!(
+        raising.contains("closed row does not admit") && raising.contains("Error[T = String]"),
+        "{raising}",
+    );
+    // The monomorphic twin, for the reason given on the result-type row above.
+    let mono = refusal(
+        "namespace test.wi1083.effm\n\
          \x20 import anthill.prelude.{Int64, Function, Error}\n\
          \x20 operation bangm(x: Int64) -> Int64 effects {Error} = x\n\
          \x20 operation callit(f: Function[A = Int64, B = Int64, E = {}]) -> Int64 = f(3)\n\
          \x20 operation use_it() -> Int64 = callit(bangm)\n\
-         end\n";
-    let msg = refusal(mono);
-    assert!(msg.contains("callit.f"), "{msg}");
+         end\n",
+    );
+    assert!(mono.contains("callit.f"), "the monomorphic twin stays refused: {mono}");
 }

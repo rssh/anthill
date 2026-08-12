@@ -5058,6 +5058,9 @@ fn check_bare_ref(
     if let Some(exp) = expected {
         if arrow_parts(kb, exp).is_some() {
             if let Some(fn_ty) = operation_as_function_value(kb, sym, occ) {
+                // WI-1083: kept because the ∀-elimination below SHADOWS `fn_ty`, while the
+                // dictionary pin must still see the un-instantiated one.
+                let original_fn_ty = fn_ty.clone();
                 // WI-700: a NULLARY op reference in an arrow-typed slot is AMBIGUOUS —
                 // the eta reading `() -> ret` competes with the zero-arg-call reading
                 // `ret`. When `ret` itself already conforms to the expected arrow
@@ -5071,11 +5074,6 @@ fn check_bare_ref(
                         types_compatible(kb, &mut Substitution::new(), &TermIdView(ret), exp)
                     });
                 if !eta_shadows_return_type {
-                    // WI-420: resolve + attach the op's requirement dispatch dict
-                    // (the `expected` arrow pins its element type) so eval captures
-                    // it on the OpRef. A cross-sort unsatisfiable requirement is a
-                    // loud error here.
-                    attach_eta_dispatch_dict(kb, env, sym, occ, &fn_ty, exp)?;
                     // WI-1083 — ∀-ELIMINATION AT THE REFERENCE, and this is the ONE site:
                     // §5.6 says an operation's type parameter is "the CALLER's to
                     // instantiate", and a bare reference IS the caller. `fn_ty` is the
@@ -5087,16 +5085,23 @@ fn check_bare_ref(
                     // MEASURED wrong: instantiating inside `unify_types` /
                     // `types_compatible` gives each RELATION its own fresh variables, so
                     // the binding the argument-unify loop makes (`?A := Int64`) lands on a
-                    // variable the conformance check that follows has never seen — and all
-                    // three holes below stayed open. One instantiation per occurrence is
-                    // what lets the two steps agree.
+                    // variable the conformance check that follows has never seen — and the
+                    // holes below stayed open. One instantiation per occurrence is what
+                    // lets the two steps agree.
                     //
                     // A ∀ THAT FAILS TO ELIMINATE IS AN ERROR, not a value type. The head
                     // says `PolyType` and the elimination declined, which means the node is
-                    // malformed (an unreadable child, an empty binder list — see
-                    // `extract_type`'s arm). Returning the schema instead would hand the
-                    // author a mismatch against a form they never wrote, in place of the
-                    // loud failure this repo prefers.
+                    // malformed (an unreadable child, an empty binder list, a binder that is
+                    // not a variable — see `extract_type`'s arm and
+                    // [`instantiate_poly_type`]). Returning the schema instead would hand
+                    // the author a mismatch against a form they never wrote.
+                    //
+                    // AND IT IS RAISED BEFORE `attach_eta_dispatch_dict`, which is an
+                    // ORDERING that matters (code review): that function reads the ∀'s BODY
+                    // (`poly_type_body`), which is likewise `None` for a malformed node, so
+                    // its element-type pin silently would not happen and a `requires`-
+                    // carrying op would report `UnsatisfiableRequirement` (WI-420) instead
+                    // of the malformed-∀ error written here for it.
                     let fn_ty = match instantiate_poly_type(kb, &fn_ty) {
                         Some(inst) => inst,
                         None if matches!(type_head(kb, &fn_ty), TypeHead::PolyType) => {
@@ -5116,6 +5121,15 @@ fn check_bare_ref(
                         }
                         None => fn_ty,
                     };
+                    // WI-420: resolve + attach the op's requirement dispatch dict
+                    // (the `expected` arrow pins its element type) so eval captures
+                    // it on the OpRef. A cross-sort unsatisfiable requirement is a
+                    // loud error here.
+                    //
+                    // WI-1083: handed the ORIGINAL `fn_ty` — the ∀ — not the instantiation
+                    // above, because the dictionary's dependencies are keyed by the
+                    // declaring sort's canonical variables. See [`poly_type_body`].
+                    attach_eta_dispatch_dict(kb, env, sym, occ, &original_fn_ty, exp)?;
                     return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
                 }
             }
@@ -6370,13 +6384,18 @@ fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<
         // dropped, because a dropped binder does not fail: it leaves that variable SHARED
         // between two references, which is exactly the aliasing this function exists to
         // retire, and it would show up as an unrelated type error somewhere else.
+        // A binder that is not a flexible variable term is a malformed ∀ — the one mint
+        // ([`generalize_eta_arrow`]) builds nothing else. DECLINE THE WHOLE ELIMINATION
+        // rather than skip the binder: a skipped one does not fail, it leaves that variable
+        // SHARED between two references — the aliasing this function exists to retire — and
+        // surfaces later as an unrelated type error. `None` routes to [`check_bare_ref`]'s
+        // loud `TypeError`, which is the channel that already exists for exactly this.
+        // (Was `debug_assert!` + `continue`, i.e. silent in a release build.)
         let Value::Term { id, .. } = b else {
-            debug_assert!(false, "poly_type binder is not a term: {b:?}");
-            continue;
+            return None;
         };
         let Term::Var(Var::Global(vid)) = kb.get_term(*id) else {
-            debug_assert!(false, "poly_type binder is not a flexible variable");
-            continue;
+            return None;
         };
         let vid = *vid;
         let new_vid = kb.fresh_var(vid.name());
@@ -27624,21 +27643,51 @@ fn validate_arrow_param_result(
     if let Some(err) = function_slot_arity_error(kb, declared, actual, span, context) {
         return Some(err);
     }
+    // WI-1084 — RESOLVE EACH COMPONENT THROUGH σ BEFORE ASKING WHETHER IT IS GROUND. The
+    // groundness gates below are what defer a genuinely polymorphic component to dispatch,
+    // and they were reading the component AS WRITTEN: a variable the argument-unify loop had
+    // already pinned still read as non-ground, so the comparison was skipped and the
+    // disagreement was never seen. This is WI-836's correction one level down — "pairs the
+    // predicate with a resolution of matching depth" — and it is the SECOND of the two
+    // levels WI-1084 needed, the first being that unification had no arm to make the binding
+    // with (see [`unify_arrow_function_view`]).
+    //
+    // WHAT THIS DOES NOT DO is re-open the WI-836 carve-out one frame up. That one withholds
+    // the WHOLE-TYPE `types_compatible` for a callable, because it would refuse the WI-775
+    // pairing (a `Function[A = (a, b)]` slot admitting a 2-parameter eta arrow). Here the
+    // relation is unchanged — still component-wise, still by name — and only the operand of
+    // the groundness test moves. A component that σ leaves non-ground is deferred exactly as
+    // before.
     // Contravariant param: `declared.param <: actual.param`.
     // WI-775: BY NAME. `arrow_parts` decomposes a `Function[A = …]` too, so a
     // positional bridge here would reopen the hole on that surface (see
     // `arrow_function_compatible`); the genuine arrow-vs-arrow param relation
     // is `arrow_compatible_view`'s, which does align positionally.
+    //
+    // WI-1084 — THE PARAM IS DELIBERATELY *NOT* σ-RESOLVED, and this is a measurement
+    // rather than an oversight. Resolving it makes both sides ground for an ordinary
+    // higher-order call, and the BY-NAME comparison then refuses a pairing WI-782 REQUIRES:
+    // `foldLeft(f: (acc: Acc, x: Element) -> Acc)` given an operation's eta arrow
+    // `(_1: Int64, _2: Int64) -> Int64` is `expected (acc: ?Acc, x: Element), got (_1, _2)`
+    // — 38 tests across WI-064/278/411/424/492/493/585 and the stdlib combinators. The
+    // by-name rule is right for the `Function[A = …]` spelling this function also serves and
+    // WRONG for a genuine arrow-vs-arrow parameter LIST, which must align positionally
+    // (`arrow_params_compatible`); the groundness gate has been hiding that disagreement.
+    // Splitting the two readings is a separate change with its own measurement, so the param
+    // keeps the reading it had and only the RESULT — a single type, with no naming
+    // convention to get wrong — is resolved.
     if resolved_type_is_ground(kb, &d_param)
         && resolved_type_is_ground(kb, &a_param)
         && !types_compatible(kb, subst, &d_param, &a_param)
     {
         return Some(mismatch());
     }
+    let d_result_r = walk_type_deep_value(kb, subst, &d_result);
+    let a_result_r = walk_type_deep_value(kb, subst, &a_result);
     // Covariant result: `actual.result <: declared.result`.
-    if resolved_type_is_ground(kb, &d_result)
-        && resolved_type_is_ground(kb, &a_result)
-        && !types_compatible(kb, subst, &a_result, &d_result)
+    if resolved_type_is_ground(kb, &d_result_r)
+        && resolved_type_is_ground(kb, &a_result_r)
+        && !types_compatible(kb, subst, &a_result_r, &d_result_r)
     {
         return Some(mismatch());
     }
@@ -28363,8 +28412,33 @@ fn validate_callback_effect_row(
     // Positional alignment is meaningful only for EQUAL arities — a mismatch
     // (which the generic arg validation rejects on the param type) must not
     // silently truncate the map and mis-align the surviving places.
-    if actual_places.len() != declared_places.len() {
-        return None;
+    //
+    // WI-1084 — EXCEPT WHEN THERE ARE NO DECLARED PLACES AND NOTHING NEEDS ONE, which is a
+    // real population rather than a corner: a `Function[A, B, E]` parameter registers NO
+    // argument places (it names no binders — its `A` is one argument's data type), so this
+    // bail discarded the row check ENTIRELY for every `Function`-typed callback slot. That
+    // is one of the two levels behind the measured leak `operation bang[A](x: A) -> A
+    // effects {Error[T = String]}` reaching a slot declaring `E = {}` and RAISING at
+    // runtime out of a `use_it() -> Int64` that declares no effects at all.
+    //
+    // THE MAP IS ONLY EVER CONSULTED FOR A BINDER-RELATIVE LABEL — `labels_match_aligned`
+    // tries structural equality FIRST and reaches `place_map` only for an applied effect
+    // whose resource is a place (`Modify[x]`). So when the actual's present labels are all
+    // place-FREE there is nothing to align and the empty map costs nothing; `{Error}` versus
+    // `{}` is decidable without knowing any correspondence. When the actual DOES name one of
+    // its own places, the bail stands unchanged — a `Function` slot cannot express a
+    // binder-relative effect, so there is no correspondence to establish and refusing on an
+    // absent one would be inventing a verdict rather than reaching it.
+    let aligned = actual_places.len() == declared_places.len();
+    if !aligned {
+        let names_own_place = actual_places.iter().flatten().any(|place| {
+            a_present
+                .iter()
+                .any(|la| extract_effect_resource_sym(kb, la) == Some(*place))
+        });
+        if !declared_places.is_empty() || names_own_place {
+            return None;
+        }
     }
     let place_map: HashMap<Symbol, Symbol> = actual_places
         .iter()
@@ -33003,6 +33077,11 @@ fn unify_view_structural<A: TermView, B: TermView>(
             unify_parameterized_with_sort_ref(kb, subst, b, a)
         }
         (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
+        // WI-1084: the two spellings of ONE type — see [`unify_arrow_function_view`]. Without
+        // these two arms the pair fell to the `_ =>` subtype fallback below, which decomposes
+        // but cannot BIND, so unification through a `Function[…]`-typed slot learned nothing.
+        (Some("arrow"), Some("parameterized")) => unify_arrow_function_view(kb, subst, a, b),
+        (Some("parameterized"), Some("arrow")) => unify_arrow_function_view(kb, subst, b, a),
         (Some("named_tuple"), Some("named_tuple")) => unify_named_tuple(kb, subst, a, b),
         // WI-441 (was the weaker WI-320 structural unify): a top-level row
         // pair takes the FULL row algorithm — the structural inner-unify was
@@ -33262,6 +33341,106 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
 /// here). `param`/`result` unify via the generic [`unify_types`]; `effects` via
 /// the carrier-agnostic [`unify_effect_rows`]. A missing effects field is
 /// treated as the empty row.
+/// WI-1084 — UNIFY across the TWO SPELLINGS OF ONE TYPE: an `arrow` against a
+/// `Function[A, B, E]`. `docs/kernel-language.md` §4.4 says outright that these are the
+/// same type (`A` = param, `B` = result, `E` = effects); SUBTYPING has honoured that since
+/// WI-289 via [`arrow_function_compatible`], and unification did not.
+///
+/// WHAT WENT WRONG WITHOUT IT, and it is not that the pair was refused — it is that it was
+/// never DECOMPOSED. `unify_types`' dispatch had only `(arrow, arrow)`, so the pair took the
+/// `_ =>` fallback to [`types_compatible`], which decomposes correctly but CANNOT BIND: it is
+/// a subtype check, and a component pair like `Int64` vs a flexible `?A1` has no arm there
+/// (WI-1079 deliberately gives a variable no dispatch tag, on the grounds that "unification
+/// binds or refuses it first" — which is exactly what did not happen here). So the whole-type
+/// unify answered `false` with ZERO bindings, for a correct pair as readily as a wrong one,
+/// and every caller inferring through a `Function[…]`-typed slot learned nothing.
+///
+/// MEASURED, `idp[A](x: A) -> A` instantiated to `(x: ?A1) -> ?A1` against four slots — the
+/// arrow spellings are the control, and they were always right:
+///
+/// | slot | before | after |
+/// |---|---|---|
+/// | `(v: Int64) -> Int64` | true, binds `?A1 := Int64` | unchanged |
+/// | `(v: Int64) -> String` | false, binds `?A1 := Int64` | unchanged |
+/// | `Function[A = Int64, B = Int64, E = {}]` | **false, 0 bindings** | true, binds `?A1` |
+/// | `Function[A = Int64, B = String, E = {}]` | false, **0 bindings** | false, binds `?A1` |
+///
+/// BY WHOLE `A`, NOT POSITIONALLY, which is the one rule this must not get wrong: WI-775
+/// settled that a `Function[A = …]`'s `A` is the ARGUMENT's data type — what flows to
+/// `apply(f, x: A)` — so a named-tuple `A` is ONE tuple-typed argument, not a parameter list.
+/// Routing this through [`unify_arrow_view`] would apply `unify_arrow_params`' positional
+/// alignment and bridge `(acc, x)` to `(_1, _2)`, re-opening precisely the unsoundness WI-775
+/// closed. Each component is unified WHOLE.
+///
+/// ARITY IS READ, BUT NO ARITY VERDICT IS RETURNED — the distinction matters. This function
+/// consults the arrow's arity only to decide whether its `param` and the `Function`'s `A` are
+/// the same KIND of thing (see the comment at the param component); it never refuses a pair
+/// FOR its arity, because a `Function` states none and cannot ([`arrow_function_compatible`]'s
+/// reason). Deciding arity stays with the checkers — [`arrow_function_compatible`] on the
+/// ground path, [`validate_arrow_param_result`] / [`function_slot_arity_error`] on the
+/// non-ground one.
+///
+/// ITS JOB IS TO BIND. The arg-unify loop discards this boolean by design (unify is equality,
+/// argument passing is subtyping, and a unify-false would over-reject the legitimate
+/// conversions), so what this contributes is the SUBSTITUTION the deciders then read — which
+/// is why "answered false having bound nothing" was a defect and "answers false having bound
+/// `?A1`" is the fix.
+fn unify_arrow_function_view<AR: TermView, FN: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    arrow: &AR,
+    function: &FN,
+) -> bool {
+    let (Some(a_parts), Some(f_parts)) = (arrow_parts(kb, arrow), arrow_parts(kb, function)) else {
+        return false;
+    };
+    let (a_param, a_result, a_eff) = a_parts;
+    let (f_param, f_result, f_eff) = f_parts;
+    // A missing param is POLYMORPHIC, not empty — a bare `Function` without an `A` binding
+    // constrains nothing, exactly as it constrains nothing in the subtype twin.
+    //
+    // AND THE PARAM COMPONENT IS UNIFIED ONLY AT ARROW ARITY 1, which is where the two sides
+    // are the SAME KIND OF THING. WI-791: an arrow's `param` is the sole parameter's TYPE at
+    // arity 1 and the parameter LIST at any other arity, while a `Function`'s `A` is always
+    // ONE argument's data type. At arity 1 those are one category and unify outright — that
+    // is the case this arm exists for, `Function[A = Int64, …]` pinning an instantiated
+    // `∀A. A -> A`'s `?A1`, and it binds var-to-var as readily as var-to-concrete.
+    //
+    // At any other arity they are related by the WI-775/WI-787 SPREAD convention — a
+    // named-tuple `A` admits a 2-parameter operation's eta arrow, because `f(3, 10)` and
+    // `f((3, 10))` are both legal at that slot — and a convention about how a CALL is
+    // written is not a type identity. Unifying anyway BINDS `A` to the positional `(_1: …,
+    // _2: …)` spelling, and that binding is then read by the callee's OTHER parameters,
+    // where a data tuple is name-keyed (WI-788/WI-803) and `(x: Int64, acc: Int64)` no
+    // longer matches. MEASURED: `wi787_eta_spread_named_tuple_test`, 4 rows, failing at a
+    // SIBLING argument with `expected (_1: Int64, _2: Int64), got (x: Int64, acc: Int64)`.
+    //
+    // NOT a groundness gate, which was the first cut and was wrong for the reason it is
+    // worth recording: it also refused `A ~ ?X`, a var-to-var unification the substitution
+    // handles natively (`bind_compressed`'s path compression IS the equality class), and so
+    // threw away legitimate inference to dodge a problem that is not about variables at all.
+    let a_arity = kb.intern("arity");
+    let spread_shaped = arrow_arity(kb, arrow, a_arity) != Some(1);
+    if let (Some(x), Some(y)) = (&a_param, &f_param) {
+        if !spread_shaped && !unify_types(kb, subst, x, y) {
+            return false;
+        }
+    }
+    if !unify_types(kb, subst, &a_result, &f_result) {
+        return false;
+    }
+    // Same reading of a missing `E`: polymorphic. The arrow side always synthesizes an
+    // `effects` child, so only the `Function` side can be `None` in practice.
+    match (a_eff, f_eff) {
+        (None, _) | (_, None) => true,
+        (Some(ae), Some(ee)) => {
+            let ae = canonical_effects_row(kb, &ae);
+            let ee = canonical_effects_row(kb, &ee);
+            unify_effect_rows(kb, subst, &ae, &ee)
+        }
+    }
+}
+
 fn unify_arrow_view<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -33383,7 +33562,8 @@ pub(crate) fn value_list_elements<V: TermView>(kb: &KnowledgeBase, list: &V) -> 
 }
 
 /// Is this view a `List.cons` cell? The spine test [`value_list_elements`] and
-/// [`decode_cons_cell`] both walk on.
+/// [`decode_cons_cell`] both walk on — ONE owner, so the two decoders cannot come to
+/// disagree about what a list cell is.
 fn is_list_cons_cell<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
     match v.head(kb) {
         ViewHead::Functor {
@@ -33405,11 +33585,8 @@ fn decode_cons_cell<V: TermView>(
     val_key: &str,
     out: &mut Vec<(Symbol, Value)>,
 ) -> Option<Value> {
-    match cell.head(kb) {
-        ViewHead::Functor {
-            functor: Some(f), ..
-        } if kb.qualified_name_of(f) == "anthill.prelude.List.cons" => {}
-        _ => return None,
+    if !is_list_cons_cell(kb, cell) {
+        return None;
     }
     if let Some(rec) = named_child_value(kb, cell, head_key) {
         if let (Some(s), Some(v)) = (
@@ -33826,6 +34003,19 @@ fn unify_term_dispatch(
         (Some("arrow"), Some("arrow")) => {
             unify_arrow_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
+        // WI-1084: the term-dispatch twin of the view arms — one type, two spellings.
+        (Some("arrow"), Some("parameterized")) => unify_arrow_function_view(
+            kb,
+            subst,
+            &TermIdView(a_resolved),
+            &TermIdView(b_resolved),
+        ),
+        (Some("parameterized"), Some("arrow")) => unify_arrow_function_view(
+            kb,
+            subst,
+            &TermIdView(b_resolved),
+            &TermIdView(a_resolved),
+        ),
         (Some("named_tuple"), Some("named_tuple")) => {
             unify_named_tuple(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
@@ -52901,6 +53091,155 @@ mod wi1083_poly_type_tests {
             leaked.is_empty(),
             "every binder must be freshened, including the ones inside the parameter LIST \
              (a `named_tuple` on the Node carrier); leaked {leaked:?} of {binder_ids:?}",
+        );
+    }
+}
+
+/// WI-1084 — UNIFICATION ACROSS THE TWO SPELLINGS OF ONE TYPE, driven at the relation
+/// itself. `docs/kernel-language.md` §4.4 says `Function[A, B, E]` and `arrow` ARE the same
+/// type; `unify_types` had an arm for `(arrow, arrow)` only, so the mixed pair fell to the
+/// `_ =>` subtype fallback — which decomposes but cannot BIND — and answered `false` with
+/// ZERO bindings whether the pair agreed or not.
+///
+/// THE ARROW ROWS ARE THE CONTROL and were always correct. They are asserted beside the
+/// `Function` rows so "false" cannot pass for a verdict: the whole finding is that one of
+/// these four answers was false where the truth is TRUE, which is only visible as a
+/// disagreement between two spellings of one question.
+///
+/// ## THREE LEVELS, each independently load-bearing — DRIVEN, one revert each, whole crate
+///
+/// | revert | cost |
+/// |---|---|
+/// | the two `unify_types` dispatch arms | **2** — this row, and `wi1083_polytype_test::a_result_type_disagreement_is_refused` (nothing binds `?A1`, so the result comparison has nothing to see) |
+/// | `validate_arrow_param_result`'s σ-resolution of the RESULT | **1** — `…::a_result_type_disagreement_is_refused` (the binding exists but the groundness test reads the component as written) |
+/// | `validate_callback_effect_row`'s no-places-to-align widening | **1** — `…::an_effect_row_disagreement_is_refused` |
+///
+/// So the RESULT-type hole needed the first two TOGETHER and the EFFECT-ROW hole needed the
+/// third ALONE — three withholdings stacked over one root, which is why the first fix
+/// changed no end-to-end verdict at all and why measuring each level separately was the only
+/// way to know that.
+///
+/// NOTHING THE SUITE OR THE SEVEN CORPUS TIERS REACH MOVES under any of the three. That is
+/// weaker than "nothing moves", deliberately — see
+/// [`the_arms_make_unify_stricter_than_the_subtype_fallback_it_replaced`], which pins the one
+/// judgement that genuinely CHANGES.
+#[cfg(test)]
+mod wi1084_arrow_function_unify_tests {
+    use super::{instantiate_poly_type, operation_as_function_value, unify_types};
+    use crate::kb::node_occurrence::{empty_span, Expr, NodeOccurrence};
+    use crate::kb::subst::Substitution;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::KnowledgeBase;
+    use std::rc::Rc;
+
+    const SRC: &str = "namespace test.wi1084\n\
+        \x20 import anthill.prelude.{Int64, String, Function}\n\
+        \x20 operation idp[A](x: A) -> A = x\n\
+        \x20 operation arrowOk(f: (v: Int64) -> Int64) -> Int64 = f(3)\n\
+        \x20 operation arrowBad(f: (v: Int64) -> String) -> String = f(3)\n\
+        \x20 operation funOk(f: Function[A = Int64, B = Int64, E = {}]) -> Int64 = f(3)\n\
+        \x20 operation funBad(f: Function[A = Int64, B = String, E = {}]) -> String = f(3)\n\
+        end\n";
+
+    /// `(verdict, bindings)` of unifying a fresh instance of `idp`'s ∀ against `callee`'s
+    /// sole declared parameter type.
+    fn unify_against_param(kb: &mut KnowledgeBase, callee: &str) -> (bool, usize) {
+        let idp = kb.try_resolve_symbol("test.wi1084.idp").expect("idp");
+        let occ: Rc<NodeOccurrence> = NodeOccurrence::new_expr(Expr::Ref(idp), empty_span(), None);
+        let poly = operation_as_function_value(kb, idp, &occ).expect("idp eta-lifts");
+        let inst = instantiate_poly_type(kb, &poly).expect("a ∀ instantiates");
+        let sym = kb
+            .try_resolve_symbol(callee)
+            .unwrap_or_else(|| panic!("{callee}"));
+        let param = crate::kb::op_info::lookup_operation_info(kb, sym)
+            .expect("op info")
+            .params[0]
+            .1
+            .clone();
+        let mut subst = Substitution::new();
+        let verdict = unify_types(kb, &mut subst, &inst, &param);
+        (verdict, subst.bindings.len())
+    }
+
+    /// THE HEADLINE, all four rows in one test so none can pass vacuously. Before this
+    /// ticket the two `Function` rows were `(false, 0)` — indistinguishable from each other
+    /// and both wrong about the agreeing one.
+    #[test]
+    fn the_two_spellings_of_one_slot_answer_alike() {
+        let mut kb = load_stdlib(Some(SRC));
+        assert_eq!(
+            unify_against_param(&mut kb, "test.wi1084.arrowOk"),
+            (true, 1),
+            "CONTROL: the arrow spelling of an AGREEING slot unifies and binds `A := Int64`",
+        );
+        assert_eq!(
+            unify_against_param(&mut kb, "test.wi1084.arrowBad"),
+            (false, 1),
+            "CONTROL: the arrow spelling of a DISAGREEING slot binds `A := Int64` from the \
+             parameter and then refuses on the result",
+        );
+        assert_eq!(
+            unify_against_param(&mut kb, "test.wi1084.funOk"),
+            (true, 1),
+            "the `Function` spelling of the SAME agreeing slot must answer the same — it \
+             answered `(false, 0)` before, which is not a verdict but a fall-through",
+        );
+        assert_eq!(
+            unify_against_param(&mut kb, "test.wi1084.funBad"),
+            (false, 1),
+            "and the disagreeing one must refuse HAVING BOUND `A` — the binding is what lets \
+             the checks downstream see that the result contradicts the parameter",
+        );
+    }
+
+    /// THE ONE JUDGEMENT THAT CHANGES, pinned because it is a real tightening and not a
+    /// side effect. Before these arms `(arrow, parameterized)` was a form MISMATCH and took
+    /// `unify_types`' `_ =>` fallback — which is [`types_compatible`], the SUBTYPE relation.
+    /// So for this pair unify was literally equal to subtyping, and effects were compared
+    /// COVARIANTLY: a pure arrow "unified" with a slot declaring `E = {Error}`.
+    ///
+    /// With an arm, unification means what it means everywhere else — EQUALITY, the same
+    /// reading the `(arrow, arrow)` arm has always had (`unify_effect_rows`, not
+    /// `subtype_effect_rows`). Subtyping is unchanged and still says yes, which is also
+    /// right: a pure function IS usable where an effectful one is expected.
+    ///
+    /// WHY IT IS WORTH A ROW: three callers act on the verdict rather than discarding it —
+    /// `constrain_vid` (which marks the substitution CONTRADICTORY on a false),
+    /// `hint_instantiation_subst` (which drops the pin) and `unify_parameterized_view`
+    /// (which fails a whole binding set). The argument path is not among them; it discards
+    /// the boolean by design. Nothing in the suite or the corpus reaches the difference —
+    /// which is exactly why it needs asserting here rather than left to be discovered.
+    #[test]
+    fn the_arms_make_unify_stricter_than_the_subtype_fallback_it_replaced() {
+        let src = "namespace test.wi1084b\n\
+            \x20 import anthill.prelude.{Int64, Function, Error}\n\
+            \x20 operation idm(x: Int64) -> Int64 = x\n\
+            \x20 operation wider(f: Function[A = Int64, B = Int64, E = {Error}]) -> Int64 \
+             effects {Error} = f(3)\n\
+            end\n";
+        let mut kb = load_stdlib(Some(src));
+        let idm = kb.try_resolve_symbol("test.wi1084b.idm").expect("idm");
+        let occ: Rc<NodeOccurrence> = NodeOccurrence::new_expr(Expr::Ref(idm), empty_span(), None);
+        let arrow = operation_as_function_value(&mut kb, idm, &occ).expect("idm eta-lifts");
+        let sym = kb.try_resolve_symbol("test.wi1084b.wider").expect("wider");
+        let param = crate::kb::op_info::lookup_operation_info(&kb, sym)
+            .expect("op info")
+            .params[0]
+            .1
+            .clone();
+        let mut s1 = Substitution::new();
+        assert!(
+            !unify_types(&mut kb, &mut s1, &arrow, &param),
+            "UNIFY is equality: a pure arrow is not the same type as an `E = {{Error}}` slot. \
+             This answered TRUE before the arms, because the pair fell through to the subtype \
+             relation",
+        );
+        let mut s2 = Substitution::new();
+        assert!(
+            super::types_compatible(&mut kb, &mut s2, &arrow, &param),
+            "SUBTYPING is unchanged and still accepts it — a pure function is usable where an \
+             effectful one is expected. Asserted beside the row above so the two relations \
+             are seen to DISAGREE on purpose rather than one of them being broken",
         );
     }
 }
