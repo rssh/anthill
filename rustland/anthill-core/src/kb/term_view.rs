@@ -2411,6 +2411,16 @@ pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol
 /// the resolved `op` (WI-857). Dropping either would make two distinct values
 /// compare equal and share a key — a false positive, and this feeds fact dedup,
 /// where merging DROPS A FACT (WI-815).
+///
+/// WI-1087 ADDED A FOURTH PAYLOAD AND DID NOT LIST IT, which by the rule above is a
+/// known false-equality rather than a considered exemption: `spread_labels` decides
+/// which of `A`'s components fills which parameter, so two `OpRef`s to one op eta'd
+/// at `Function[A = (acc, x)]` and at `Function[A = (x, acc)]` answer differently from
+/// the same argument and yet compare equal here. Listing it means declaring a fourth
+/// accessor on the reflect `OpRef` entity — the keys below ARE declared accessors
+/// (`opref_key`) — which exposes an internal dispatch mapping through reflect and
+/// moves every corpus tier's fact totals. That is a surface decision, and **WI-1088**
+/// holds it along with the measurement.
 fn opref_shape(has_dict: bool, has_named: bool) -> &'static [&'static str] {
     let keys: &'static [&'static str] = match (has_dict, has_named) {
         (false, false) => &["op"],
@@ -2540,7 +2550,7 @@ impl TermView for Value {
             // lists, so a key the head counted always has a child and no other
             // key does. The `Some` unwraps below cannot fire: `opref_shape`
             // emits `dict`/`named` only when that half is present.
-            Value::OpRef { op, dict, named } => {
+            Value::OpRef { op, dict, named, .. } => {
                 let keys = opref_shape(dict.is_some(), named.is_some());
                 let idx = keys.iter().position(|k| opref_key(kb, k) == sym)?;
                 Some(ViewItem::Owned(match keys[idx] {

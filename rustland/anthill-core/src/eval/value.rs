@@ -95,6 +95,46 @@ pub enum Value {
         /// requires chain as its prefix, and reading the layout off `op` alone
         /// measures a spec dictionary against the provider's chain.
         named: Option<Symbol>,
+        /// WI-1087 — the LABELS of the `Function[A = …]` slot this reference was
+        /// eta-lifted INTO, in `A`'s declared order, when that slot reads `A` as the
+        /// callback's PARAMETER LIST (the spread reading; see
+        /// `function_slot_reads_a_as_param_list`). `None` at every other eta site.
+        ///
+        /// It rides on the VALUE for the same reason `dict` does: the mapping is
+        /// mint-time STATIC information the apply site cannot re-derive. When the
+        /// whole-`A` call form `f(t)` spreads a tuple across this operation's
+        /// parameters, parameter `i` is `A`'s component `i` (that is what the
+        /// conformance relation established), while the VALUE conforms to `A` by NAME
+        /// and may present its components in another order (WI-803 made `<:` on a data
+        /// tuple order-free). Reading the value in source order therefore hands
+        /// parameter `i` the `i`-th WRITTEN component — measured, `f((x: 10, acc: 3))`
+        /// at `A = (acc, x)` with `sub2(a, b) = a - b` answering 7 where the labels say
+        /// 3 - 10. These labels are what `spread_eta_args` reads it by.
+        ///
+        /// The LAMBDA spelling of the same call has never needed them: an unannotated
+        /// lambda ADOPTS `A` as its param type, so `Pattern::Tuple.labels` already
+        /// carries `A`'s own names and `match_tuple_pattern` reads by them (WI-803).
+        /// This is that channel for the operation spelling, which WI-784 requires to be
+        /// interchangeable with it.
+        ///
+        /// TWO EDGES, both found by review and both held open by **WI-1088** rather
+        /// than left to a reader to discover:
+        ///
+        ///  * this field is NOT part of the value's structural identity — `opref_shape`
+        ///    (kb/term_view.rs) lists `op`/`dict`/`named`, so two `OpRef`s to one op
+        ///    eta'd at `Function[A = (acc, x)]` and at `Function[A = (x, acc)]` answer
+        ///    differently from one argument yet compare equal and share a fingerprint.
+        ///    Listing it means declaring a fourth reflect accessor on the `OpRef`
+        ///    entity, which is a stdlib surface decision;
+        ///  * the mapping is pinned HERE, at the mint, and survives re-typing. A value
+        ///    re-typed at a second `Function` slot whose `A` orders the same labels
+        ///    differently keeps the FIRST slot's reading — `Function`/`Function`
+        ///    conformance is by name and order-free (WI-803). Measured, load-clean and
+        ///    running: `inner(sub2)` = 7 while `outer(sub2)` = -7 for the same `inner`.
+        ///    The LAMBDA spelling answered that way BEFORE this field existed, so the
+        ///    two spellings agree (WI-784 holds) and what changed is that the operation
+        ///    now reaches the shape too.
+        spread_labels: Option<Rc<[Symbol]>>,
     },
     Stream(StreamHandle),
     /// First-class substitution — reference into an arena owned by the
@@ -528,8 +568,13 @@ impl<'a> TupleComponents<'a> {
     /// with "records no parameter names to bind a label to", since an arrow drops
     /// its binder names (WI-783). If arrows ever learn their parameter names, that
     /// barrier goes and this invariant has to be re-established rather than
-    /// assumed. See `spread_eta_args` (eval/eval.rs) for the same dependency on the
-    /// operation-spelling side.
+    /// assumed.
+    ///
+    /// WI-1087: the OPERATION-spelling side no longer rests on it. `spread_eta_args`
+    /// used to share this dependency and now spreads through the labels the eta site
+    /// attached (`Value::OpRef::spread_labels`), so a permuted value reaches the right
+    /// parameter by name rather than by an order the carrier happened to hold. This
+    /// arm keeps the dependency; the two spellings are no longer symmetric in it.
     pub fn is_name_keyed(&self) -> bool {
         !self.named.is_empty()
     }

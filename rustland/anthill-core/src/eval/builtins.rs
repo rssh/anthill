@@ -4223,6 +4223,9 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // reading it off `target` alone measures a spec dictionary against the provider's
     // own chain, which for a chain-free witness is 0 and rejects a valid dict.
     Ok(Value::OpRef {
+        // WI-1087: not an ETA site — `Dictionary.resolveOp` mints this from a
+        // dictionary, with no `Function[A]` slot to read a parameter-list mapping off.
+        spread_labels: None,
         op: target,
         dict: Some(Rc::new(h)),
         named: Some(spec_op_sym),
@@ -4261,6 +4264,8 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
         .map(|target| {
             resolve_op_target_checked(&interp.kb, impl_sym, target)
                 .map(|resolved| Value::OpRef {
+                    // WI-1087: not an eta site — see the sibling mint above.
+                    spread_labels: None,
                     op: resolved,
                     dict: Some(h.clone()),
                     // The table row IS the op named here, pre-resolution.

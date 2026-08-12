@@ -435,16 +435,32 @@ parameter; the same rule that makes two `List[T = X]` arguments agree, WI-836).
 **Arity** is decided regardless, since a parameter count is not something
 instantiation can change.
 
-The positional rule above relates two parameter *lists*, so it applies when **both**
-sides are arrows — whether or not either was reached through a variable. Every mixed
-pairing with a `Function[A, B, E]` is compared **by name** instead, in both
-directions: `A` is one argument's data type and not a list, and zipping a parameter
-list onto it is the same bridge whichever side the list is on. **One exemption**, and
-it is open rather than settled: a `Function` slot's `A` is compared *as written*, not
-through σ, so an `A` that is a variable is not compared at all and `apT[T](f:
-Function[A = T, B = R], t: T)` accepts a two-parameter operation under the spread
-convention above — while the same slot written out concretely refuses it. Which of
-those two verdicts is right is **WI-1087**.
+The positional rule above relates two parameter *lists*, so it applies when both sides
+are arrows — whether or not either was reached through a variable. It applies to a
+`Function[A, B, E]` too, but only at the **spread** reading: when the callback's arity
+is `A`'s component count (and not 1), `A`'s components *are* that callback's parameter
+list, so they align positionally with the synthetic `_1.._n` escape (WI-1087). At the
+**whole-`A`** reading — arity 1 — `A` is one argument's data type and is compared by
+name, which is what keeps a permuted `(b, a)` conforming to `(a, b)` there.
+
+That distinction is forced. An operation's eta arrow always spells its parameter list
+`_1, _2, …` (an arrow drops its binder names), so a by-name comparison would refuse
+*every* spread the arity rule admits, leaving the second reading reachable only for a
+lambda — which adopts `A` as its parameter type and matches it by construction. It
+would also make the verdict depend on how `A`'s components were *labelled*:
+`Function[A = (Int64, Int64), B]` admitted a two-parameter operation and
+`Function[A = (acc: Int64, x: Int64), B]` did not, though the runtime spreads either
+and reads no label.
+
+**The reader spreads by label.** Under the spread reading the callee's parameter `i` is
+`A`'s component `i` positionally, while the *value* conforms to `A` by name and may
+present its components in another order. So the components are handed over by `A`'s
+labels, not in the value's source order — the same discipline destructuring follows
+(§"Destructuring binds by LABEL"), and what makes an operation and a lambda
+interchangeable in the slot.
+
+None of this relates a named tuple to a positional one as **data**: rule 4 stands, and
+`A` in the spread reading is a parameter list rather than a data tuple.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 

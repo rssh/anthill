@@ -1082,6 +1082,7 @@ mod tests {
                 named: Rc::from(vec![]),
             },
             Value::OpRef {
+                spread_labels: None,
                 op: s,
                 dict: None,
                 named: None,

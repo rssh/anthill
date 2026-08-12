@@ -136,18 +136,26 @@ fn mixed_keying_tuple_literal_is_refused_by_the_parser() {
 
 /// Arity strictness must survive the widening: presenting named components
 /// alongside positional ones must not let an N-component tuple spread across M
-/// parameters. A 3-component tuple against a 2-parameter operation stays a loud
-/// `ArityMismatch`, not a silent take-two-and-drop-one.
+/// parameters. A 3-component tuple against a 2-parameter operation is refused.
+///
+/// WI-1087 MOVED THIS FROM EVAL TO LOAD, which is the direction WI-792/WI-801 have been
+/// moving it all along — "the typer's accepted set is a subset of the evaluator's". The
+/// count was always decidable here; what hid it is that `A` is spelled as the VARIABLE
+/// `T`, and `function_slot_arity_error` read the slot AS WRITTEN, where a variable states
+/// no component count. Resolving it through σ first — `T` is pinned to the 3-component
+/// tuple by the sibling argument — hands WI-801's decider the count it needed, and it
+/// renders the disagreement as ITSELF rather than as a structural type mismatch (WI-795:
+/// report the pair that actually differs).
 #[test]
-fn arity_mismatch_still_raises() {
+fn arity_mismatch_is_refused_at_load() {
     let src = poly_src("test.wi787arity", "(a: 1, b: 2, c: 3)");
-    let mut interp = interp_for(&src);
-    let err = interp
-        .call("test.wi787arity.drive", &[])
-        .expect_err("a 3-component tuple must not spread across 2 parameters");
+    let errs = crate::common::try_load_kb_with(&src)
+        .err()
+        .expect("a 3-component tuple must not spread across 2 parameters");
+    let msg = errs.join(" | ");
     assert!(
-        format!("{err:?}").contains("ArityMismatch"),
-        "expected a loud ArityMismatch, got {err:?}",
+        msg.contains("1 parameter") && msg.contains("or 3") && msg.contains("2 parameters"),
+        "the refusal must name BOTH admissible counts and the one supplied; got: {msg}",
     );
 }
 

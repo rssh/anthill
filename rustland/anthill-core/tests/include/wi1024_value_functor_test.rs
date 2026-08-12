@@ -170,6 +170,9 @@ fn value_functor_answers_by_what_the_head_denotes() {
         (
             "opref",
             Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
                 op: sym,
                 dict: None,
                 named: None,
@@ -182,6 +185,9 @@ fn value_functor_answers_by_what_the_head_denotes() {
         (
             "node-spliced-op",
             node(Expr::Spliced(Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
                 op: sym,
                 dict: None,
                 named: None,
@@ -197,6 +203,9 @@ fn value_functor_answers_by_what_the_head_denotes() {
     {
         use anthill_core::kb::term_view::{TermView, ViewHead};
         let spliced = node(Expr::Spliced(Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
             op: sym,
             dict: None,
             named: None,
@@ -267,6 +276,9 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
         (
             "opref",
             Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
                 op: sym,
                 dict: None,
                 named: None,
@@ -373,6 +385,9 @@ fn facts_of_reads_the_sort_through_every_naming_carrier() {
     // And the handle: loud, with the message only `value_functor`'s `None` branch
     // mints — so this is coupled to THIS reader, not to any `TypeMismatch`.
     let opref = Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
         op: sym,
         dict: None,
         named: None,

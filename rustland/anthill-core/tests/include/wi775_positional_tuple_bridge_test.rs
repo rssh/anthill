@@ -147,17 +147,32 @@ end
     );
 }
 
-/// The SAME hole on the `Function[A, B]` surface, which `arrow_parts` decomposes
-/// like an arrow. A `Function[A = (acc: Int64, x: Int64), B = Int64]` slot given
-/// a two-param op's eta arrow `(_1, _2)` used to load and then trap at eval with
-/// `ArityMismatch { expected: 2, got: 1 }` — `A` is the ARGUMENT's data type (it
-/// is what flows to `apply(f, x: A)`), not an applied-positionally parameter
-/// list, so it aligns by name. Measured on the pre-fix tree; this is why
-/// `arrow_function_compatible` deliberately stays on the data-tuple relation.
+/// INVERTED BY WI-1087 — this program now LOADS AND RUNS, and the row asserts the
+/// value. WI-775 refused it, and this file's other rows still stand; what changed is
+/// that this one was never this ticket's defect.
+///
+/// WI-775 filed ONE defect in ONE direction: a NAME-keyed value at a slot declared
+/// `(_1: T)`, where the callee's `t._1` read `Value::Tuple.pos` — empty for a
+/// name-keyed carrier — and raised `field_access: tuple has no component '_1'`. That
+/// is the row above, and it is untouched. This row was an EXTENSION onto the
+/// `Function[A, B]` surface, justified by a DIFFERENT trap: `ArityMismatch { expected:
+/// 2, got: 1 }`, measured on the pre-WI-775 tree. WI-784/WI-787 have since taught the
+/// runtime to spread a tuple — name-keyed included — across a multi-parameter
+/// operation, so that trap no longer happens and the justification went with it.
+///
+/// WI-1087 settled which of two rules owns the pairing. WI-801 says this slot admits
+/// exactly TWO call counts — one whole `A`, or `A`'s components SPREAD — and under the
+/// second `A`'s components ARE the callback's parameter list, so they align
+/// POSITIONALLY with the synthetic `_1.._n` escape. The by-name reading refused every
+/// spread WI-801 admits, which made the verdict turn on a property the runtime never
+/// reads: the byte-identical program with `A` written `(Int64, Int64)` loaded and ran
+/// throughout, because THOSE labels are `_1, _2` and coincide with the escape.
+///
+/// Driven to a VALUE, not a load: "it is refused" was this row's whole content, so
+/// only an answer shows the spread actually happens.
 #[test]
-fn function_sort_argument_type_does_not_bridge_keyings() {
-    assert_arg_mismatch(
-        r#"
+fn function_sort_argument_type_takes_a_two_parameter_operation() {
+    let src = r#"
 namespace test.wi775f
   import anthill.prelude.{Int64, Function}
   operation add2(a: Int64, b: Int64) -> Int64
@@ -167,10 +182,13 @@ namespace test.wi775f
   operation drive() -> Int64
     = apply2(add2)
 end
-"#,
-        "Function[A = (acc: Int64, x: Int64), B = Int64]",
-        "(_1: Int64, _2: Int64) -> Int64",
+"#;
+    assert!(
+        try_load_kb_with(src).is_ok(),
+        "a 2-parameter operation is one of the two callbacks this slot admits; got: {:?}",
+        try_load_kb_with(src).err(),
     );
+    assert_eq!(run_int(&mut interp_for(src), "test.wi775f.drive"), 3);
 }
 
 /// `Function` against `Function`, which reaches the alignment through the

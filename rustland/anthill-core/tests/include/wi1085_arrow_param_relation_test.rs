@@ -51,9 +51,9 @@
 //! |---|---|
 //! | the ARROW arm's relation back to `types_compatible` (σ-resolution KEPT) | **35** — WI-064/278/411/413/424/492/493/585/588/714/775/782/783/784/791/792/793 plus [`an_operations_eta_arrow_still_fills_a_named_binder_slot`] here, which is their compact twin. Every one reads `expected (acc: …), got (_1: …)`. A wider spread than WI-1084's 38-row measurement named, and a different tree: the two counts are not the same set |
 //! | the ARROW arm's σ-resolution (positional relation KEPT) | **2** — [`a_parameter_disagreement_is_refused_for_a_polymorphic_callback`] here and `wi836…::two_callback_arguments_sharing_a_type_var_must_agree`, both back to loading clean. NOTHING else in the crate notices, and that is the honest shape of the hole: it is reachable only where σ pins a callback's parameter from somewhere else, so no existing program was relying on the check either way |
-//! | σ-resolving the `Function` arm TOO (the half deliberately NOT taken) | **6** — all four `wi787_eta_spread_named_tuple_test` rows, [`a_function_slot_still_spreads_an_operation_across_its_components`] here, and `wi1083…::a_requires_carrying_member_runs_as_a_function_value`. Every one a program that EVALUATES; the last is WI-1083's headline, which reaches its dictionary through a `Function`-typed slot. WI-1087 holds the decision |
+//! | σ-resolving the `Function` arm TOO (the half deliberately NOT taken HERE) | **6** — all four `wi787_eta_spread_named_tuple_test` rows, [`a_function_slot_still_spreads_an_operation_across_its_components`] here, and `wi1083…::a_requires_carrying_member_runs_as_a_function_value`. Every one a program that EVALUATES; the last is WI-1083's headline, which reaches its dictionary through a `Function`-typed slot. **WI-1087 has since taken it**, and the six survive: they are all the SPREAD reading, which that ticket relates positionally instead of refusing, so the resolution no longer costs them. Measured on THIS ticket's tree, where the by-name relation was still unconditional |
 //! | rendering the verdict AS WRITTEN instead of through σ | **5** — `wi791…::generic_callback_arrow_arity_is_conformance_checked`, `wi792…`'s two arity rows (all three printing `?T` where σ has pinned it), and this file's two refusal rows, which assert the resolved rendering. A message change only: no verdict moves |
-//! | selecting the relation from the DECLARED spelling alone (this ticket's first cut) | **1** — [`a_function_typed_argument_at_an_arrow_slot_is_not_zipped_positionally`], newly refused. The MIRROR pairing is real and reachable: keying on `declared` gives the positional relation to a `Function`-typed ARGUMENT at an arrow slot, which is the same WI-775 hole from the other side. Found by review; nothing else in the crate notices |
+//! | selecting the relation from the DECLARED spelling alone (this ticket's first cut) | **1** — [`a_function_typed_argument_at_an_arrow_slot_is_refused_whatever_the_labels`], newly refused. The MIRROR pairing is real and reachable: keying on `declared` gives the positional relation to a `Function`-typed ARGUMENT at an arrow slot, which is the same WI-775 hole from the other side. Found by review; nothing else in the crate notices |
 //!
 //! Rows that pass BOTH ways, by design, and say so at their sites:
 //! [`a_parameter_disagreement_is_refused_for_a_monomorphic_callback`].
@@ -63,7 +63,9 @@
 //! `_1.._n` convention and the positional zip), WI-791 (arity selects WHICH relation),
 //! WI-836 (the carve-out one frame up, and the gap this closes), WI-801 (the arity a
 //! `Function` slot CAN decide), WI-442/WI-790 (`TupleAlign::PARAM_LIST` and what makes a
-//! label synthetic), WI-1087 (the `Function`-arm coherence question this hands over).
+//! label synthetic), WI-1087 (the `Function`-arm coherence question this handed over, since
+//! decided — `A` at the spread arity IS a parameter list, so the two spellings of `A` agree
+//! and this file's `Function`-arm rows moved with it).
 
 use crate::wi1012_static_supplier_tie_test::refusal;
 
@@ -149,30 +151,55 @@ fn a_parameter_disagreement_is_refused_for_a_monomorphic_callback() {
     assert!(msg.contains("myfoldm.f"), "{msg}");
 }
 
-/// THE MIRROR PAIRING — a `Function`-typed ARGUMENT arriving at an `arrow` SLOT — which the
-/// positional relation must decline for the same reason it declines the other direction: one
-/// side is a parameter LIST and the other is one argument's data type. It reaches this
-/// checker rather than the ground path because `take`'s slot carries `?Acc`.
+/// THE MIRROR PAIRING — a `Function`-typed ARGUMENT arriving at an `arrow` SLOT — is
+/// refused, and NOT because of the labels. WI-1085 refused it by name; WI-1087 kept it
+/// refused for the reason that actually governs it, after briefly getting this wrong.
 ///
-/// The relation is therefore selected from BOTH spellings, not the declared one alone. Found
-/// by review of this ticket's own first cut, which keyed on `declared` because that is where
-/// the discriminator was named, and so handed the positional relation to exactly this pair.
+/// AN ARROW SLOT STATES A HARD ARITY and applies its value with exactly that many
+/// arguments. A `Function`-typed VALUE states none — WI-801: it may be the whole-`A`
+/// reading (arity 1) or the spread one (arity `|A|`), and nothing in the type says which.
+/// So matching the slot's `n` against `|A|` proves nothing about the callable inside. The
+/// OTHER direction is sound for the mirror-image reason and is what WI-1087 delivered: a
+/// `Function` SLOT admits both counts, and the arrow VALUE states which one it is.
 ///
-/// CONTROL, measured with only the actual-side spelling test removed: this is newly REFUSED
-/// with `expected (p: Int64, q: Int64) -> Int64, got Function[E = {empty_row}, A = (a: Int64,
-/// b: Int64), B = Int64]` — `p`/`q` zipped against `A`'s `a`/`b`. It loads at HEAD and it
-/// loads as delivered. Asserted as a LOAD verdict and not driven to a value on purpose: a
-/// caller supplying `f` concretely is WI-775's refused pairing, so the accepting verdict is
-/// the only observable this pair has.
+/// MEASURED (review) when WI-1087's first cut made this arm symmetric — this loaded clean
+/// and trapped `ArityMismatch { expected: 1, got: 2 }` at eval, which is the
+/// load-clean-then-trap class WI-782/791/792/801 exist to remove:
+///
+/// ```text
+/// operation whole(t: (Int64, Int64)) -> Int64 = t._1        -- ONE parameter
+/// operation pass(f: Function[A = (Int64, Int64), …]) = take(f, 1)
+/// operation take[Acc](g: (p: Acc, q: Int64) -> Int64, …) = g(z, 2)   -- applies TWO
+/// ```
+///
+/// BOTH label shapes are asserted, because the labels are exactly what does NOT decide it:
+/// the second fixture's `A` is written positionally, so its `_1, _2` line up with the
+/// slot's parameter list under the synthetic escape and it would be ACCEPTED if the
+/// positional relation reached here. It is refused all the same.
 #[test]
-fn a_function_typed_argument_at_an_arrow_slot_is_not_zipped_positionally() {
-    let src = "namespace test.wi1085.mirror\n\
-        \x20 import anthill.prelude.{Int64, Function}\n\
-        \x20 operation take[Acc](g: (p: Acc, q: Int64) -> Int64, z: Acc) -> Int64 = g(z, 2)\n\
-        \x20 operation pass(f: Function[A = (a: Int64, b: Int64), B = Int64, E = {}]) \
-           -> Int64 = take(f, 1)\n\
-        end\n";
-    crate::common::load_kb_with(src);
+fn a_function_typed_argument_at_an_arrow_slot_is_refused_whatever_the_labels() {
+    let case = |ns: &str, a_ty: &str| {
+        format!(
+            "namespace {ns}\n\
+             \x20 import anthill.prelude.{{Int64, Function}}\n\
+             \x20 operation take[Acc](g: (p: Acc, q: Int64) -> Int64, z: Acc) -> Int64 \
+                = g(z, 2)\n\
+             \x20 operation pass(f: Function[A = {a_ty}, B = Int64, E = {{}}]) -> Int64 \
+                = take(f, 1)\n\
+             end\n"
+        )
+    };
+    for (ns, a_ty) in [
+        ("test.wi1085.mirror", "(a: Int64, b: Int64)"),
+        ("test.wi1085.mirrorpos", "(Int64, Int64)"),
+    ] {
+        let msg = refusal(&case(ns, a_ty));
+        assert!(
+            msg.contains("take.g"),
+            "a `Function` value states no arity, so it cannot satisfy a slot that does \
+             (A = {a_ty}): {msg}",
+        );
+    }
 }
 
 /// THE HALF DELIBERATELY NOT TAKEN, driven so the decision has a program under it rather

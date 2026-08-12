@@ -276,8 +276,13 @@ end
 /// whole-`A` form (one argument) nor a spread (`A` has no components) — so the
 /// argument is refused at LOAD now, which is the direction the repo wants.
 ///
-/// The matcher's own binder-count guard is still exercised at eval, by
-/// `a_callback_arity_the_typer_cannot_decide_still_fails_in_the_matcher` below.
+/// The matcher's own binder-count guard is NO LONGER exercised by any row in this
+/// file. It was, by the row below, until WI-1087 σ-resolved the slot and moved that
+/// verdict to load too. Reaching it now needs an `A` that NOTHING pins — a genuinely
+/// rigid one, not a variable a sibling argument fixes — and this file has no such
+/// fixture. Stated rather than left implied: the guard is not gone, its last driver
+/// here is, and a reader looking for one should not be sent to a row that now refuses
+/// at load.
 #[test]
 fn nullary_thunk_called_with_an_argument_is_refused_at_load() {
     let src = r#"
@@ -299,15 +304,23 @@ end
     );
 }
 
-/// THE RESIDUAL EVAL-STAGE GUARD, which the load-time gate must not swallow.
+/// WI-1087 MOVED THIS TO LOAD, and the row is inverted rather than deleted because the
+/// program is the same one and the verdict is the ticket's subject.
 ///
-/// WI-801 refuses a callback whose arity fits neither reading of `Function[A, …]`
-/// — but only where `A`'s component count is KNOWN. At a RIGID `A` it is not, and
-/// must not be guessed: a component count is exactly what instantiation supplies.
-/// So this loads, reaches eval, and fails in the matcher — the path
-/// `nullary_thunk_called_with_an_argument_is_refused_at_load` used to cover.
+/// The premise was that `A` here states no component count and must not be guessed — "a
+/// component count is exactly what instantiation supplies". True of a variable NOBODY has
+/// instantiated; false of this one. `T` is pinned to `Int64` by the SIBLING argument
+/// `x: T` = 5, and WI-801's decider was reading the slot AS WRITTEN, where a variable
+/// states nothing however firmly σ has pinned it. Resolving it first is the same
+/// correction WI-836/WI-1084/WI-1085 made one rung at a time: pair the predicate with a
+/// resolution of matching depth.
+///
+/// So the typer now decides it, which is the direction this whole cluster moves in — "the
+/// typer's accepted set is a subset of the evaluator's". A GENUINELY rigid `A` — one no
+/// argument pins — still states no count and is still left alone; this fixture is no
+/// longer an example of that, and none of the rows here is.
 #[test]
-fn a_callback_arity_the_typer_cannot_decide_still_fails_in_the_matcher() {
+fn a_callback_arity_pinned_by_a_sibling_argument_is_refused_at_load() {
     let src = r#"
 namespace test.wi784.rigidarity
   import anthill.prelude.{Int64, Function}
@@ -317,18 +330,14 @@ namespace test.wi784.rigidarity
   operation drive() -> Int64 = ap(lambda (p, q) -> p, 5)
 end
 "#;
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("`T` is pinned to Int64 by `x`, so the 2-binder callback is decidable");
+    let msg = errs.join(" | ");
     assert!(
-        try_load_kb_with(src).is_ok(),
-        "a RIGID `A` states no component count, so no arity may be required of the callback",
-    );
-    let err = interp_for(src)
-        .call("test.wi784.rigidarity.drive", &[])
-        .expect_err("a 2-binder pattern must not match the scalar it is handed");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("Raised"),
-        "the single argument is passed through to the MATCHER, so the 2-binder tuple \
-         pattern fails against Int(5) and surfaces as a raised Error[MatchFailed]; got: {msg}",
+        msg.contains("1 parameter") && msg.contains("no components to spread"),
+        "a scalar `A` admits ONE reading only, and the refusal must say so rather than \
+         offer a spread that has nothing to spread; got: {msg}",
     );
 }
 
@@ -349,10 +358,10 @@ end
 /// diagnostic names the BINDER-derived count (2), not a hardcoded 1, alongside
 /// the actual 3. Only the STAGE changed, which is the direction the repo wants —
 /// a load error beats a run-time trap. WI-801 then moved the two remaining
-/// eval-stage cases the same way; the matcher's own binder-count arity guard is
-/// still exercised at eval by
-/// `a_callback_arity_the_typer_cannot_decide_still_fails_in_the_matcher` here,
-/// which reaches it through a RIGID `A` no static check may decide.
+/// eval-stage cases the same way, and WI-1087 moved the LAST one — see
+/// `a_callback_arity_pinned_by_a_sibling_argument_is_refused_at_load` below, whose
+/// `A` reads as unknown only until σ is consulted. No row here reaches the matcher's
+/// own binder-count guard any more.
 #[test]
 fn wrong_arity_application_is_still_refused_with_the_binder_count() {
     let src = r#"

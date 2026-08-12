@@ -476,6 +476,10 @@ impl Interpreter {
                     op: sym,
                     dict: dict.map(std::rc::Rc::new),
                     named: None,
+                    // WI-1087: captured at MINT for the same reason `dict` is — the
+                    // apply site cannot re-derive which of `A`'s components each
+                    // parameter wants.
+                    spread_labels: Self::eta_spread_labels(occ),
                 }));
             }
         }
@@ -835,13 +839,33 @@ impl Interpreter {
     /// Shared by `occ_is_eta_marked` (`.is_some()`) and `eta_dispatch_dict`
     /// (`.flatten()`), so the classification read lives in one place.
     fn eta_marker(occ: &Rc<NodeOccurrence>) -> Option<Option<TermId>> {
+        Self::eta_classification(occ).map(|(dict, _)| dict)
+    }
+
+    /// WI-1087: the whole `EtaOpRef` payload — `(dict, spread_labels)`. The read that
+    /// [`Self::eta_marker`] and [`Self::eta_spread_labels`] share, so the two halves of
+    /// one classification are never fetched by two different matches.
+    #[allow(clippy::type_complexity)]
+    fn eta_classification(
+        occ: &Rc<NodeOccurrence>,
+    ) -> Option<(Option<TermId>, Option<Rc<[crate::intern::Symbol]>>)> {
         match &occ.kind {
             NodeKind::Expr { classification, .. } => match classification.borrow().as_deref() {
-                Some(crate::kb::typing::CallClass::EtaOpRef { dict }) => Some(*dict),
+                Some(crate::kb::typing::CallClass::EtaOpRef {
+                    dict,
+                    spread_labels,
+                }) => Some((*dict, spread_labels.clone())),
                 _ => None,
             },
             _ => None,
         }
+    }
+
+    /// WI-1087: the slot's `A`-component labels the typer attached at this eta site, if
+    /// any — captured on the minted `OpRef` so the apply path can spread by NAME. See
+    /// `Value::OpRef::spread_labels`.
+    fn eta_spread_labels(occ: &Rc<NodeOccurrence>) -> Option<Rc<[crate::intern::Symbol]>> {
+        Self::eta_classification(occ).and_then(|(_, labels)| labels)
     }
 
     /// WI-700: true iff the typer marked this occurrence as an eta-lift. `reduce_var`
@@ -1797,12 +1821,17 @@ impl Interpreter {
                 drop(type_args);
                 return self.enter_closure(handle, arg_values);
             }
-            Some(Value::OpRef { op, dict, named }) => {
+            Some(Value::OpRef {
+                op,
+                dict,
+                named,
+                spread_labels,
+            }) => {
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
                 // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
                 // the typer's `Function[(A, B), R]` ⇒ `op(a, b)` eta convention.
-                let spread = self.spread_eta_args(op, arg_values)?;
+                let spread = self.spread_eta_args(op, arg_values, spread_labels.as_deref())?;
                 // WI-420: a `requires`-carrying op captured its dispatching dict
                 // at mint (evaluated in the eta-site frame). Install THAT into
                 // the callee frame — not the caller's (empty / wrong-scope)
@@ -2187,6 +2216,7 @@ impl Interpreter {
         &mut self,
         op: Symbol,
         arg_values: Vec<Value>,
+        spread_labels: Option<&[crate::intern::Symbol]>,
     ) -> Result<Vec<Value>, EvalError> {
         // Eta-expansion (`reduce_var`) mints an `OpRef` for a body-having op, so
         // its arity comes from the body. WI-577's reflect `Dictionary.resolveOp`
@@ -2227,30 +2257,91 @@ impl Interpreter {
                 // the spread never fired — and a relation ROW is built all-named,
                 // which is how mapping a two-parameter OPERATION over rows trapped
                 // while the byte-identical `lambda (p, q) -> …` spelling evaluated.
-                // WI-803, THE LATENT TWIN of the destructuring reader — this spread
-                // reads a name-keyed tuple in SOURCE order and does NOT go through
-                // `TupleComponents::by_label`, even though `<:` now admits a
-                // PERMUTED value. That is the shape that made binder `i` receive a
-                // component the typer typed from a different field (WI-788), here in
-                // its operation spelling rather than its lambda one.
+                // WI-803 CALLED THIS "THE LATENT TWIN of the destructuring reader" and
+                // WI-1087 CASHED THE PREDICTION — it is worth keeping the shape of that
+                // note, because it was right about the mechanism and about what would
+                // make it live. It read a name-keyed tuple in SOURCE order and did not go
+                // through `TupleComponents::by_label`, even though `<:` admits a PERMUTED
+                // value, which is the shape that made binder `i` receive a component the
+                // typer typed from a different field (WI-788), here in its operation
+                // spelling rather than its lambda one.
                 //
-                // Currently UNREACHABLE, and only incidentally: an eta'd operation's
-                // arrow carries the synthetic `_1/_2` labels (an arrow drops its
-                // binder names, WI-783), so it can never conform to a
-                // `Function[A = (a: …, b: …)]` slot — the mismatch reports
-                // `got (_1: Int64, _2: Int64) -> Int64`. Probed, not assumed.
+                // It was UNREACHABLE, "and only incidentally": an eta'd operation's arrow
+                // carries the synthetic `_1/_2` labels (an arrow drops its binder names,
+                // WI-783), so it could not conform to a `Function[A = (a: …, b: …)]` slot
+                // at all — the mismatch reported `got (_1: Int64, _2: Int64) -> Int64`.
+                // That barrier was a consequence of WI-783, not a stated invariant, and
+                // WI-1087 removed it deliberately: `A` at the spread arity IS the
+                // callback's parameter list, so the synthetic labels zip against it and
+                // the pairing is admitted. MEASURED at the moment the relation changed and
+                // before this read did: `f((x: 10, acc: 3))` at `A = (acc, x)` with
+                // `sub2(a, b) = a - b` answering 7 where the labels say `3 - 10`.
                 //
-                // The barrier is a consequence of WI-783, not a stated invariant, and
-                // WI-784's rule is that a lambda and an operation must be
-                // INTERCHANGEABLE. So if arrows ever learn their parameter names this
-                // becomes a live silent-wrong-answer on day one, and it must be
-                // routed through `by_label` at that point.
-                match arg_values[0].tuple_components() {
-                    Some(components) if components.len() == arity => {
-                        Ok(components.iter().cloned().collect())
-                    }
-                    _ => Err(mismatch()),
+                // So the note's own remedy is what is below — route through the labels —
+                // and WI-784's rule that a lambda and an operation are INTERCHANGEABLE is
+                // the reason it is not optional.
+                let Some(components) = arg_values[0].tuple_components() else {
+                    return Err(mismatch());
+                };
+                if components.len() != arity {
+                    return Err(mismatch());
                 }
+                // WI-1087: BY LABEL when the slot supplied a mapping. `spread_labels`
+                // is `A`'s components in DECLARED order, so label `i` names the
+                // component parameter `i` wants — and the value may present them in
+                // another order, since `<:` on a data tuple is order-free (WI-803).
+                // This is the operation spelling of `match_tuple_pattern`'s by-label
+                // arm, which the lambda spelling has read since WI-803; WI-784's rule
+                // is that the two are interchangeable, and until this they were not.
+                let Some(labels) = spread_labels else {
+                    return Ok(components.iter().cloned().collect());
+                };
+                // NO `is_name_keyed` GATE, unlike `match_tuple_pattern`'s by-label arm,
+                // and the difference is that this reader cannot be handed the shape that
+                // gate exists for. A POSITIONAL carrier reaches a labelled `A` only if it
+                // conforms to it, and proposal 004 rule 4 keeps a positional tuple out of a
+                // name-keyed type entirely (WI-1087 left that standing) — so `labels` here
+                // are `_1.._n` whenever the carrier is positional, which `by_label` resolves
+                // through its own `_N` arm. Tried as a gate first and it could not be
+                // driven: every fixture reaching it was refused at load. What is left is a
+                // LOUD raise if the two ever disagree, which is the right answer for a
+                // conformance the checker claimed to have made.
+                // THROUGH `by_label_index`, NOT `by_label`, and for the reason its own doc
+                // gives: a caller resolving SEVERAL labels against one tuple has to know
+                // whether two of them landed on the SAME component, which a returned
+                // `&Value` cannot answer. Two labels collide either by being equal or — since
+                // the scan compares SHORT names — by being distinct qualified names sharing a
+                // last segment. Serving one component to two parameters while never reading
+                // another is a WRONG ANSWER rather than a failed spread, and only half of it
+                // would surface as the raise below. `match_tuple_pattern`, the reader this
+                // arm mirrors, uses the index form for exactly this.
+                let mut taken: Vec<usize> = Vec::with_capacity(labels.len());
+                let mut out = Vec::with_capacity(labels.len());
+                for l in labels {
+                    let name = self.kb.local_name_of(*l).to_string();
+                    let idx = components.by_label_index(&self.kb, &name).ok_or_else(|| {
+                        EvalError::Internal(format!(
+                            "spread_eta_args: the argument has no component '{name}' to \
+                             fill this operation's parameter — the slot's `A` and the \
+                             value disagreed after conformance accepted them (WI-1087)"
+                        ))
+                    })?;
+                    if taken.contains(&idx) {
+                        return Err(EvalError::Internal(format!(
+                            "spread_eta_args: two of this slot's `A` components resolve to \
+                             the same argument component ('{name}'), so one parameter would \
+                             be fed twice and another never read (WI-1087)"
+                        )));
+                    }
+                    taken.push(idx);
+                    out.push(
+                        components
+                            .component_at(idx)
+                            .expect("by_label_index answers an in-range component")
+                            .clone(),
+                    );
+                }
+                Ok(out)
             }
             // WI-801: a gather needs the component LABELS, which live in the
             // static `A` and are gone by now. At a slot whose type was known the

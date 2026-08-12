@@ -1162,3 +1162,6 @@ mod wi1083_polytype_test;
 
 #[path = "include/wi1085_arrow_param_relation_test.rs"]
 mod wi1085_arrow_param_relation_test;
+
+#[path = "include/wi1087_function_slot_spread_test.rs"]
+mod wi1087_function_slot_spread_test;

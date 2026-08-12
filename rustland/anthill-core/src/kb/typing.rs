@@ -6601,11 +6601,19 @@ fn attach_eta_dispatch_dict(
     fn_ty: &Value,
     expected: &Value,
 ) -> Result<(), TypeError> {
+    // WI-1087: computed ONCE, ahead of the five classification branches below, so the
+    // mapping cannot be attached on some eta paths and dropped on others. Every branch
+    // marks the occurrence; a branch that forgot these labels would silently give the
+    // operation spelling a source-order spread while its lambda twin read by name.
+    let spread_labels = function_slot_spread_labels(kb, sym, expected);
     let Some(parent) = impl_parent_of_op(kb, sym) else {
         // Namespace-level op — no enclosing sort `requires`. WI-700: still MARK the
         // eta (dict None) so a nullary eta mints an `OpRef` at eval (a namespace op
         // like `poke` reaches only this arm).
-        occ.set_classification(CallClass::EtaOpRef { dict: None });
+        occ.set_classification(CallClass::EtaOpRef {
+            dict: None,
+            spread_labels,
+        });
         return Ok(());
     };
     // WI-869: the same "does this callee read requirement slots" question the three
@@ -6615,7 +6623,10 @@ fn attach_eta_dispatch_dict(
     if !sort_reads_requirement_slots(kb, parent) {
         // Requires-free op — eval forwards the caller's reqs. WI-700: MARK the eta
         // (dict None) regardless, so a nullary eta mints an `OpRef` at eval.
-        occ.set_classification(CallClass::EtaOpRef { dict: None });
+        occ.set_classification(CallClass::EtaOpRef {
+            dict: None,
+            spread_labels,
+        });
         return Ok(());
     }
     if env.enclosing_sort() == Some(parent) {
@@ -6627,12 +6638,18 @@ fn attach_eta_dispatch_dict(
         // `__req_self` (the sort's own dispatching dict, identical to what this
         // op needs) at mint via a `var_ref`, and install it at apply. (WI-420)
         let Some(syms) = ProjectionSyms::resolve(kb) else {
-            occ.set_classification(CallClass::EtaOpRef { dict: None });
+            occ.set_classification(CallClass::EtaOpRef {
+                dict: None,
+                spread_labels,
+            });
             return Ok(());
         };
         let req_self = kb.intern("__req_self");
         let dict = build_req_var_ref(kb, &syms, req_self);
-        occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
+        occ.set_classification(CallClass::EtaOpRef {
+            dict: Some(dict),
+            spread_labels,
+        });
         return Ok(());
     }
     // Pin the op's element type(s) by unifying its eta arrow against the
@@ -6709,7 +6726,10 @@ fn attach_eta_dispatch_dict(
         &selected,
     ) {
         Ok(Some(dict)) => {
-            occ.set_classification(CallClass::EtaOpRef { dict: Some(dict) });
+            occ.set_classification(CallClass::EtaOpRef {
+                dict: Some(dict),
+                spread_labels,
+            });
             Ok(())
         }
         // WI-828: the σ-refusal signature (a σ-refused cover / an Ambiguous
@@ -18855,7 +18875,14 @@ pub enum CallClass {
     /// call" at eval — an arity-≥1 bare ref is unambiguously a function value, but
     /// a bare `poke` is not, so `None` here is the load-bearing "this occurrence
     /// is an eta, not a call" signal.
-    EtaOpRef { dict: Option<TermId> },
+    EtaOpRef {
+        dict: Option<TermId>,
+        /// WI-1087: `A`'s component labels, in declared order, when the slot this
+        /// reference is lifted into reads `A` as the callback's PARAMETER LIST — see
+        /// [`Value::OpRef`](crate::eval::Value)'s field of the same name for what the
+        /// runtime does with them and why the value cannot re-derive them.
+        spread_labels: Option<std::rc::Rc<[Symbol]>>,
+    },
 }
 
 /// WI-210 — dispatch result for a spec-op call.
@@ -27600,7 +27627,7 @@ fn validate_arg_against_param(
 /// one. Keying on the declared spelling alone was this ticket's first cut and gave
 /// the positional relation to a `Function`-typed ARGUMENT at an arrow slot — the
 /// same WI-775 bridge from the other side, pinned by
-/// `wi1085…::a_function_typed_argument_at_an_arrow_slot_is_not_zipped_positionally`.
+/// `wi1085…::a_function_typed_argument_at_an_arrow_slot_is_refused_whatever_the_labels`.
 /// The arms at the site state each, along with which side σ resolves and why they
 /// differ on that too.
 fn validate_arrow_param_result(
@@ -27683,7 +27710,19 @@ fn validate_arrow_param_result(
     // [`arrow_function_compatible`]. Reported through
     // [`function_slot_arity_error`] rather than `mismatch()`, which would render
     // the two sides identically — see that function's doc.
-    if let Some(err) = function_slot_arity_error(kb, declared, actual, span, context) {
+    //
+    // WI-1087: σ-RESOLVED, for the same reason the components below are and with a sharper
+    // consequence — this decider reads `A`'s COMPONENT COUNT, and an `A` written as a
+    // variable states none, so a genuine arity disagreement reached the structural relation
+    // instead and was rendered as a type mismatch. MEASURED on `apT[T](f: Function[A = T, B
+    // = Int64], t: T)` given a 2-parameter operation and a 3-component tuple: `expected
+    // Function[A = (a, b, c), …], got (_1, _2) -> Int64`, true and useless, where the
+    // resolved read says `a callback of 1 parameter (taking the whole argument type) or 3
+    // (its components spread), got a callback of 2 parameters`. Which is WI-795's rule —
+    // report the pair that actually differs — and WI-801's, that this disagreement renders
+    // as itself.
+    let declared_r = walk_type_deep_value(kb, subst, declared);
+    if let Some(err) = function_slot_arity_error(kb, &declared_r, actual, span, context) {
         return Some(err);
     }
     // Contravariant param: `declared.param <: actual.param`.
@@ -27757,29 +27796,60 @@ fn validate_arrow_param_result(
         // whichever side the list is on. The ground-path twin is
         // [`arrow_function_compatible`], which applies this same relation to this same pair
         // and carries the measurement. `wi1085…::a_function_typed_argument_at_an_arrow_slot_-
-        // is_not_zipped_positionally` drives the arrow-slot direction.
+        // is_refused_whatever_the_labels` drives the arrow-slot direction.
         //
-        // NOT σ-RESOLVED, and that is this arm's decision rather than an oversight carried
-        // over. Resolving would not merely widen a groundness gate here: it would extend
-        // WI-775's refusal to a pairing only a VARIABLE `A` can present — `apT[T](f:
-        // Function[A = T, B = Int64], t: T)` given a 2-parameter operation, where `T` is
-        // pinned by the SIBLING argument `t` — and those programs load and RUN today under
-        // the WI-775/WI-787 spread convention (`f(3, 10)` and `f((3, 10))` are both legal at
-        // the slot, and WI-801 admits both arities at it). MEASURED: σ-resolving this arm
-        // costs SIX rows, every one a program that evaluates — all four of
+        // AND σ-RESOLVED SINCE WI-1087, which is the change that ticket's decision made SAFE
+        // rather than merely consistent. WI-1085 left this operand AS WRITTEN and recorded
+        // why: resolving it extended WI-775's by-name refusal to a pairing only a VARIABLE
+        // `A` can present — `apT[T](f: Function[A = T, B = Int64], t: T)` given a
+        // 2-parameter operation, where `T` is pinned by the SIBLING argument `t` — costing
+        // SIX rows, every one a program that evaluates (all four of
         // `wi787_eta_spread_named_tuple_test`, `wi1085…::a_function_slot_still_spreads_an_-
         // operation_across_its_components`, and WI-1083's headline
-        // `a_requires_carrying_member_runs_as_a_function_value`, which reaches its dispatch
-        // dictionary through a `Function`-typed slot. Whether a written-out `A` and a
-        // σ-pinned one should be decided alike is a question about who owns `Function`
-        // conformance — WI-775's by-name relation or WI-801's two-admitted-arities rule —
-        // and not about a walk depth; WI-1087 holds it.
+        // `a_requires_carrying_member_runs_as_a_function_value`). Those six are exactly the
+        // SPREAD reading, which the relation above now applies positionally instead of
+        // refusing, so σ-resolution no longer costs them — it is what lets the σ-pinned `A`
+        // reach the same verdict as the written-out one, which is what WI-1087 was filed
+        // about. The two spellings now agree instead of one of them being invisible.
         None => {
-            if resolved_type_is_ground(kb, &d_param)
-                && resolved_type_is_ground(kb, &a_param)
-                && !types_compatible(kb, subst, &d_param, &a_param)
+            let d_param_r = walk_type_deep_value(kb, subst, &d_param);
+            let a_param_r = walk_type_deep_value(kb, subst, &a_param);
+            if resolved_type_is_ground(kb, &d_param_r) && resolved_type_is_ground(kb, &a_param_r)
             {
-                return Some(mismatch(kb, subst));
+                // The SAME predicate the ground path consults, so the two cannot drift into
+                // reading `A` differently — the drift WI-1087 exists to close.
+                //
+                // ONE DIRECTION ONLY: the `Function` is the DECLARED SLOT and the arrow is
+                // the VALUE. The pairing is not symmetric, and giving the mirror this
+                // relation is a soundness hole rather than a tidiness question. A
+                // `Function[A]` SLOT admits arity 1 OR `|A|` (WI-801) and the arrow VALUE
+                // states which of the two it is, so the slot's obligation is discharged. An
+                // ARROW SLOT states a hard arity `n` and will apply its value with exactly
+                // `n` arguments, while a `Function`-typed VALUE states no arity at all —
+                // matching `n` against `|A|` proves nothing about the callable inside, which
+                // may equally be the whole-`A` reading. MEASURED (review), loading clean and
+                // trapping `ArityMismatch { expected: 1, got: 2 }` at eval when this arm was
+                // symmetric: `pass(f: Function[A = (Int64, Int64), …]) = take(f, 1)` with
+                // `take[Acc](g: (p: Acc, q: Int64) -> Int64, …)`, given a ONE-parameter
+                // `whole(t: (Int64, Int64))`. That is the load-clean-then-trap class
+                // WI-782/791/792/801 exist to remove.
+                //
+                // So the mirror keeps the by-name reading WI-1085 left it with, and
+                // `Function`/`Function` does too — neither side states an arity there, so
+                // both `A`s are read as the data types they are.
+                let list_arity = match (d_arity, a_arity) {
+                    (None, Some(n)) => {
+                        function_slot_reads_a_as_param_list(kb, &d_param_r, n).then_some(n)
+                    }
+                    _ => None,
+                };
+                let ok = match list_arity {
+                    Some(n) => arrow_params_compatible(kb, subst, &d_param_r, &a_param_r, n),
+                    None => types_compatible(kb, subst, &d_param_r, &a_param_r),
+                };
+                if !ok {
+                    return Some(mismatch(kb, subst));
+                }
             }
         }
     }
@@ -29904,6 +29974,88 @@ fn function_slot_arity_counts_for(
         return None;
     }
     Some((components, a_arity))
+}
+
+/// WI-1087: at a `Function[A, B, E]` slot given a callback of `a_arity` parameters,
+/// is `A` being read as the callback's PARAMETER LIST rather than as one argument's
+/// DATA type?
+///
+/// A `Function` slot admits exactly two call counts (WI-801,
+/// [`arity_admitted_at_function_slot`]): ONE whole `A`, or `A`'s components SPREAD.
+/// Under the first, `A` is the argument's data type and relates BY NAME — WI-775's
+/// rule, and the reason a permuted `(b, a)` still satisfies `(a, b)` there. Under
+/// the SECOND, `A`'s components ARE the callback's parameters, applied positionally,
+/// and the relation owed is [`TupleAlign::PARAM_LIST`]'s.
+///
+/// The two rules were in outright conflict before this ticket, and the by-name one
+/// won by default at both conformance sites. An operation's eta arrow always spells
+/// its parameter list with the synthetic `_1.._n` (an arrow drops its binder names,
+/// WI-783), so a by-name comparison refuses EVERY spread WI-801 admits — leaving that
+/// second reading reachable only for a LAMBDA, which ADOPTS `A` as its param type and
+/// so matches it by construction. Measured: two programs byte-identical but for
+/// whether `A`'s components carry user labels, `Function[A = (Int64, Int64)]` given a
+/// 2-parameter operation evaluating to -7 while `Function[A = (acc: …, x: …)]` was
+/// refused. The positional spelling passed only because its labels COINCIDE with the
+/// synthetic escape, and eval reads no label at all.
+///
+/// ARITY 1 IS NOT THIS READING even when `A` has one component: there the two call
+/// counts coincide, `A` is the sole parameter's TYPE, and a tuple in that position is
+/// DATA (WI-791). Kept out explicitly rather than left to fall out of the count, so
+/// this predicate answers the same question [`unify_arrow_params`] and
+/// [`arrow_params_compatible`] ask of an arrow.
+///
+/// NARROW BY DECISION (user, 2026-08-12). This does not make a named tuple relatable
+/// to a positional one in general — proposal 004 rule 4 and §4.5 stand. It says only
+/// that `A` in the spread reading is not a data tuple in the first place.
+fn function_slot_reads_a_as_param_list(kb: &mut KnowledgeBase, a: &Value, a_arity: usize) -> bool {
+    a_arity != 1 && function_param_component_count(kb, a) == Some(Some(a_arity))
+}
+
+/// WI-1087: the mapping an eta'd operation needs to be SPREAD correctly at the slot
+/// it is lifted into — `A`'s component labels in declared order, or `None` when the
+/// slot does not read `A` as a parameter list.
+///
+/// WHY THE VALUE CANNOT DERIVE THIS. In the spread call form `f(t)`, the callee's
+/// parameter `i` is `A`'s component `i` — that is what
+/// [`function_slot_reads_a_as_param_list`] established, positionally — while the
+/// tuple `t` conforms to `A` BY NAME and may present its components in another order,
+/// since WI-803 made `<:` on a data tuple order-free. The operation's own parameter
+/// names are unrelated to `A`'s (`sub2(a, b)` at `A = (acc, x)`), so nothing at the
+/// apply site can recover which component each parameter wants. Measured without it:
+/// `f((x: 10, acc: 3))` answering 7 where the labels say `3 - 10`.
+///
+/// ONLY AT A `Function` SLOT, and that is not a narrowing but the whole reachable set:
+/// an `arrow` slot states its arity, so a one-argument call against a 2-parameter one
+/// is an arity error long before any spread. The spread call form exists only where
+/// the slot states no arity.
+///
+/// READ AS WRITTEN, not through σ, and the case that makes the difference is the one
+/// that needs nothing: an `A` spelled as a VARIABLE (`apT[T](f: Function[A = T], t:
+/// T)`) binds to the argument's OWN tuple type, so `A`'s declared order IS the value's
+/// source order and reading it in source order is already right — `wi787_eta_spread_-
+/// named_tuple_test` is four rows of exactly that. What a written-out `A` adds is an
+/// order INDEPENDENT of the value's, which is precisely when the mapping is needed.
+fn function_slot_spread_labels(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    expected: &Value,
+) -> Option<std::rc::Rc<[Symbol]>> {
+    let arity_key = kb.intern("arity");
+    // An `arrow` slot states an arity and never spreads — see above.
+    if arrow_arity(kb, expected, arity_key).is_some() {
+        return None;
+    }
+    let (Some(a), _, _) = arrow_parts(kb, expected)? else {
+        return None;
+    };
+    let arity = lookup_operation_info_full(kb, sym)?.params.len();
+    if !function_slot_reads_a_as_param_list(kb, &a, arity) {
+        return None;
+    }
+    let fields = named_tuple_fields(kb, &a);
+    // The predicate above already agreed on the count; the equality is what lets the
+    // reader zip without a length test of its own.
+    (fields.len() == arity).then(|| fields.into_iter().map(|(s, _)| s).collect())
 }
 
 /// WI-801: the ONE renderer for "`actual` does not conform to `declared`" at a
@@ -38421,14 +38573,38 @@ fn arrow_function_compatible<A: TermView, E: TermView>(
     // covariant — matching `arrow_compatible`. A missing param on either side
     // (a bare `Function` without an `A` binding, polymorphic) is unconstrained.
     let params_ok = match (&a_param, &b_param) {
-        // WI-775: BY NAME, deliberately — NOT `arrow_params_compatible`. A
-        // `Function[A = …]`'s `A` is the argument's DATA type (it is what flows
-        // to `apply(f, x: A)`), not an applied-positionally parameter list, so
-        // bridging `(acc, x)` to `(_1, _2)` here is the very unsoundness this
-        // ticket closes: measured on the pre-WI-775 tree, `apply2(add2)` with
-        // `f: Function[A = (acc: Int64, x: Int64), B = Int64]` loaded clean and
-        // trapped at eval with `ArityMismatch { expected: 2, got: 1 }`.
-        (Some(ap), Some(bp)) => types_compatible(kb, subst, bp, ap),
+        // WI-775: BY NAME at the WHOLE-`A` reading — a `Function[A = …]`'s `A` is the
+        // argument's DATA type (it is what flows to `apply(f, x: A)`), so bridging
+        // `(acc, x)` to `(_1, _2)` THERE is the unsoundness that ticket closed:
+        // measured on the pre-WI-775 tree, `apply2(add2)` with `f: Function[A = (acc:
+        // Int64, x: Int64), B = Int64]` loaded clean and trapped at eval with
+        // `ArityMismatch { expected: 2, got: 1 }`.
+        //
+        // WI-1087: AND POSITIONALLY AT THE SPREAD READING, which is the OTHER of the two
+        // call counts WI-801 admits at this slot and which the by-name rule was silently
+        // refusing outright — see [`function_slot_reads_a_as_param_list`] for the
+        // conflict and its measurement. The WI-775 trap above is not reachable through
+        // this arm: it was an `ArityMismatch` at eval, and WI-784/WI-787 have since
+        // taught the runtime to spread a tuple — name-keyed included — across a
+        // multi-parameter operation. The arity SET is still enforced, one block up.
+        //
+        // ONE DIRECTION ONLY — the `Function` must be the EXPECTED slot and the arrow the
+        // ACTUAL value. This function is routed here from both dispatch orders, so the
+        // mirror (a `Function`-typed ARGUMENT at an `arrow` slot) reaches it too, and it must
+        // NOT take this relation: an arrow slot states a hard arity and applies its value
+        // with exactly that many arguments, while a `Function`-typed value states no arity
+        // and may be either reading, so matching the slot's `n` against `|A|` proves nothing
+        // about the callable inside. See `validate_arrow_param_result`'s `None` arm for the
+        // program that measured it — load-clean, `ArityMismatch` at eval.
+        (Some(ap), Some(bp)) => match (
+            arrow_arity(kb, actual, arity_key),
+            arrow_arity(kb, expected, arity_key),
+        ) {
+            (Some(n), None) if function_slot_reads_a_as_param_list(kb, bp, n) => {
+                arrow_params_compatible(kb, subst, bp, ap, n)
+            }
+            _ => types_compatible(kb, subst, bp, ap),
+        },
         _ => true,
     };
     if !params_ok {

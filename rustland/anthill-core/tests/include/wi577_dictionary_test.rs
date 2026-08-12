@@ -250,6 +250,9 @@ fn opref_backed_by_builtin_is_callable() {
     let abs = resolve(&interp, "anthill.prelude.Int64.abs");
     // `named: None` — a bare ref names its own op (WI-857).
     let opref = Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
         op: abs,
         dict: None,
         named: None,
@@ -332,6 +335,9 @@ fn opref_dict_none_for_dictless_ref() {
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     // A bare op-ref with no captured dict (a requires-free / namespace-level op).
     let opref = Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
         op: eq_eq,
         dict: None,
         named: None,
@@ -406,6 +412,9 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     // of the contract, so the `some(...)` above is not merely "always some".
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     let bare = Value::OpRef {
+        // WI-1087: a hand-built value, not minted at an eta site — no slot to read
+        // a parameter-list mapping off.
+        spread_labels: None,
         op: eq_eq,
         dict: None,
         named: None,
