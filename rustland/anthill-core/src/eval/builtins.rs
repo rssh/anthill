@@ -3124,6 +3124,20 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 ti_build_records(interp, fields, "NamedTupleElement", name_key, type_key)?;
             ti_entity(interp, "NamedTuple", vec![(fields_key, new_fields)])
         }
+        // WI-1083: `binders` is a `List[Term]` of BARE variable terms — no wrapper
+        // record, so it builds through `build_value_list` directly rather than through
+        // `ti_build_records` (a binder IS a term, and giving it a one-field record
+        // would invent structure the entity does not declare).
+        TypeExtractor::PolyType { binders, body } => {
+            let binder_list = build_value_list(interp, binders)?;
+            let binders_key = interp.kb.intern("binders");
+            let body_key = interp.kb.intern("body");
+            ti_entity(
+                interp,
+                "PolyType",
+                vec![(binders_key, binder_list), (body_key, body)],
+            )
+        }
         TypeExtractor::Error => ti_entity(interp, "Error", vec![(term_key, ty)]),
     }
 }

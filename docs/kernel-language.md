@@ -349,6 +349,23 @@ ArrowType ::= TupleType '->' Type                        -- pure function
 
 Arrow sorts associate to the right: `(A) -> (B) -> C` is `(A) -> ((B) -> C)`.
 
+**A UNIVERSALLY QUANTIFIED type has no production here, and that is deliberate** (WI-1083).
+`∀A. (x: A) -> A` is a type the language *has* — it is what a type-parameterized operation's
+name denotes when it is used as a function value — but nothing writes one: every binder in
+anthill attaches to a **declaration** (`operation map[Dst, EffP](…)`, `sort [F] { … }`,
+`sort T = ?`), never to a free-floating type. A bare `[A]` prefix could not be the spelling in
+any case: types are terms, so a leading bare `[…]` is the collection literal of §4.6, and the
+form would need a keyword like every other binder the language has. The quantified form is
+therefore **inferred, never written**: it is minted where an operation first becomes a value
+(§5.4, "as a FUNCTION VALUE") and eliminated at the reference that names it. Its structural
+form is `TypeExtractor.PolyType(binders, body)` — `binders` a list of the bound **variables**
+(so `id` links each to its occurrences in `body`, per §8.1's rule that a variable's identity is
+its `id` and not its name), `body` the arrow they quantify. It is **∀ by construction** and
+stores no quantifier: the polarity rule of §8.1 already makes the quantifier a function of
+*position*, so a per-binder one could disagree with the position it sat in; and the existential
+needs no binder node at all, being implied by the return position at a declaration and already
+opened to a `Skolem` at a use.
+
 **Parameter lists correspond slot by slot** (WI-782). A parameter list is
 *applied positionally*, so one arrow conforms to another only when the two lists
 have the **same arity** and their slots correspond by **position**. Binder names
@@ -1487,6 +1504,24 @@ ordinary lexical binding rules. This delivered widening is proposal 041 /
 WI-261.
 
 **Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int64, String](args)`) or named (`foo[T1 = Int64, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
+
+**A type-parameterized operation as a FUNCTION VALUE** (WI-1083). A bare operation name in a
+function-typed slot denotes the operation as a value — its eta expansion, `inc(n: Int64) ->
+Int64` becoming `(Int64) -> Int64` (§4.4 "Arrow types"). When the operation declares type
+parameters, or its signature otherwise binds a logical variable, the value's type is the **∀**
+over them: `idp[A](x: A) -> A` denotes `∀A. (x: A) -> A`, whose structural form is
+`TypeExtractor.PolyType(binders, body)` (§4.4). The **reference** is where the ∀ is eliminated,
+which is §5.6's rule read at a value rather than at a call — a type parameter is the caller's
+to instantiate — so two references to one operation are instantiated separately and share no
+variable, and the operation may serve two element types in one program.
+
+**Which variables the ∀ quantifies** is the same set §8.1 uses to decide which *return*
+variables are existential, read positively: a variable named in a **parameter** type, in a
+**`requires`** clause, by the operation's own **`[A]`**, or by its declaring sort's parameter.
+So an operation that writes no brackets at all still generalizes — `mplus(a: LogicalStream[?A],
+b: LogicalStream[?A]) -> LogicalStream[?A]` binds `?A` for exactly the reason §8.1 does not open
+it — and the two rules partition a signature's variables between them rather than competing for
+one. The quantification happens at the lift; nothing about it is stored on the declaration.
 
 **A declared type parameter is a BARE name** (WI-850). A *default* on the declaration — `operation foo[T = Int64](x: T) -> T` — is **refused**, with a diagnostic naming the operation, the parameter and the type written. The grammar parses the `= Type` form precisely so the diagnostic can name it; the refusal is taken when the source is converted, before load, so every consumer of a parsed file (including the parse-only Rust codegen) is covered by the one rule. Nothing read it: a declared parameter becomes one fresh logical variable minted from its **name**, so `[T = Int64]` meant exactly `[T]` and the default was dropped in silence — and then a call that left `T` otherwise unconstrained reported "unconstrained type parameter", advising the author to pin `T` at the call when they had written that pin on the *declaration*. A type parameter is bound at the **call**: from the argument types, from the expected type, or explicitly (`foo[T = Int64](…)`). Proposal 042 OQ3 admitted the form grammatically and left its semantics unadopted for want of a driver; *honouring* a default — consulting it at exactly the point the unconstrained-parameter error is raised — remains available, and would need the default carried beside the minted variable through the operation's record plus an explicit verdict on whether a default may mention an earlier parameter (`[T, U = List[T]]`).
 
@@ -2673,11 +2708,11 @@ The parameter position is what makes the rule hold for a member with **no body**
 
 Two consequences are worth stating outright. First, **for a member with a body the refusal moves to the declaration.** Within a member body the sort's parameters are rigid — the tie read as parametricity — so `widen`'s body must hold for *every* `E`, and `= s`, pinned to `{Error}` by its own parameter, does not. The error names `widen.return`. (A body-less member has nothing to check, so its refusal stays at the consumer, where the argument's row now reaches it.) The rule: *a member may not pin its own sort's parameter to a constant and still elide it in the return*; writing the return out (`-> MyStream[T = Int64, E = {}]`) is unaffected, since a **written** slot is never rewritten. Second, **all the spellings still agree**: `-> S[E = ?E]` is rewritten exactly when WI-1078's classification calls `?E` unbound, so the named and omitted spellings remain one type — the self case answers with the tie where the foreign case answers with a fresh ρ.
 
-An operation with **no parameter naming its own sort** is left alone: `List.empty() -> List` has nothing at a call that could bind the sort's parameter, so writing it there would put an unbindable variable in the result. Its slot stays open and the caller's expected type determines it — right for `empty`, whose body holds for every `T`, and not expressible-otherwise until the universal spelling (`empty[T]() -> List[T = T]`) arrives with `PolyType`.
+An operation with **no parameter naming its own sort** is left alone: `List.empty() -> List` has nothing at a call that could bind the sort's parameter, so writing it there would put an unbindable variable in the result. Its slot stays open and the caller's expected type determines it — right for `empty`, whose body holds for every `T`, and not expressible-otherwise. `PolyType` (WI-1083) does **not** change that: it is inferred where an operation becomes a **value** (§5.4) and there is still no way to *write* a ∀ in a return, so `empty[T]() -> List[T = T]` — which loads today — remains the only spelling of the universal here, and it says it with a **declaration's** binder rather than with a quantified type.
 
 Opening is what erasure *is*. A consumer may rely only on what the type carries, so a value whose element type the signature never wrote cannot have it recovered downstream, not even by an annotation: `makeList() -> List` is `∃T. List[T]`, and `let l : List[T = Int64] = makeList()` is refused.
 
-**How the opened slot is REPRESENTED (WI-1079).** The ρ an opening mints is a logical variable of the *rigid* kind, and reflect names it: `anthill.reflect.extract` reports it as `TypeExtractor.Skolem(name, id)`, beside `FlexVar(name, id)` for a still-flexible one. The two are separate forms because they answer opposite questions — a skolem unifies with **nothing but itself** (it is the opaque constant a consumer may assume nothing about, which is what makes the opening sound), while a flex variable unifies with **anything** (an instantiated `∀`, the type `empty()` has before its context pins it). `id` is the identity and `name` is only what a diagnostic prints: two skolems minted for one parameter name render alike (`?E` vs `?E`) and are different types, so a consumer comparing them must compare `id`. Distinguish all three from `TypeVar(name)`, which is neither — it is the *placeholder* for a type the extractor could not name (an un-annotated lambda binder), carries no identity, and is not a variable at all. The **bound** variable of a `∀` has no form yet; it arrives with the binder that introduces it.
+**How the opened slot is REPRESENTED (WI-1079).** The ρ an opening mints is a logical variable of the *rigid* kind, and reflect names it: `anthill.reflect.extract` reports it as `TypeExtractor.Skolem(name, id)`, beside `FlexVar(name, id)` for a still-flexible one. The two are separate forms because they answer opposite questions — a skolem unifies with **nothing but itself** (it is the opaque constant a consumer may assume nothing about, which is what makes the opening sound), while a flex variable unifies with **anything** (an instantiated `∀`, the type `empty()` has before its context pins it). `id` is the identity and `name` is only what a diagnostic prints: two skolems minted for one parameter name render alike (`?E` vs `?E`) and are different types, so a consumer comparing them must compare `id`. Distinguish all three from `TypeVar(name)`, which is neither — it is the *placeholder* for a type the extractor could not name (an un-annotated lambda binder), carries no identity, and is not a variable at all. The **bound** variable of a `∀` arrived with WI-1083's binder: it is an element of a `TypeExtractor.PolyType`'s `binders` list (§4.4, §5.4), which is a list of variables precisely so that `id` says which occurrences of the quantified body it binds. Instantiating a `PolyType` turns each binder into a fresh `FlexVar`; opening an existential turns a slot into a `Skolem`. The three forms are one lifecycle.
 
 The language already implements this rule for the *carrier* of an existential return, explicitly spelled: `ensures Spec[C]` (§"path-dependent types", WI-402) has the body witness `C` while the caller sees only the spec. The **members** are opened by the same rule as a bare return's, and had to be: the loader rewrites `-> C ensures Spec[C]` to a bare `-> Spec`, so before WI-1063 the same `openOne(m) -> C ensures KVStore[C]` whose witness binds `K = String` satisfied a demand for `K = Int64`. Writing `ensures` bought nothing there — it was one gap in two spellings, not a bare-return quirk. `docs/design/type-parameter-scoping.md` §5's informal "erased" is this existential said without the word.
 

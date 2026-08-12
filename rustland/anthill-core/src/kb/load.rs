@@ -6568,6 +6568,18 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         SymbolKind::Entity,
         type_extractor_sort_scope,
     );
+    // WI-1083 — the ∀ the eta lift mints (`KnowledgeBase::make_poly_type_occ`). Here for
+    // the block's own rule: a form the ENGINE builds is pre-registered, and only the
+    // computed-only ones are left to the stdlib declaration. Without it
+    // `type_functor_sym(kb, "PolyType")` answers `None` on a KB that has not loaded
+    // `sort.anthill`, the node never classifies as `TypeHead::PolyType`, and — worse —
+    // `type_node_to_term`'s `resolve_symbol` on the same name PANICS.
+    kb.symbols.define(
+        "PolyType",
+        "anthill.prelude.TypeExtractor.PolyType",
+        SymbolKind::Entity,
+        type_extractor_sort_scope,
+    );
     // WI-320 — variant-7 substrate: the EffectExpression-into-Type bridge.
     kb.symbols.define(
         "EffectsRows",

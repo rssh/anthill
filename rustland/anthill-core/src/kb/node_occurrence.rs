@@ -181,6 +181,10 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             // the `Value::Entity` cons spine is shallow (tuple arity) — so there is
             // nothing to hoist onto the work stack here.
         }
+        // WI-1083: the `body` is the deep child and is hoisted; `binders` is a
+        // `Value`-carried list of bare variable terms — no `Value::Node` leaves at
+        // all — so it needs no hoist, for `NamedTuple`'s reason one step stronger.
+        TypeNode::PolyType { binders: _, body } => drain_type_child(body, stack),
     }
 }
 
@@ -1425,6 +1429,23 @@ pub enum TypeNode {
     /// `Value::Node` — so `TermView` reads this carrier and its term twin
     /// identically (one `fields` child; no special-cased reader).
     NamedTuple { fields: Value },
+    /// WI-1083 — `poly_type(binders, body)`, a UNIVERSALLY quantified type. `body` is
+    /// the quantified type (an `Arrow`, at the one mint site there is); `binders` is a
+    /// `Value`-carried `List[Term]` of the bound VARIABLES — mirroring
+    /// [`TypeNode::NamedTuple`]'s `fields`, so a binder rides as `Value::Term` and
+    /// `TermView` reads this child the same way on either carrier.
+    ///
+    /// THE BINDERS ARE VARIABLES, NOT NAMES, and the reason is WI-1079's rule read one
+    /// level up: `id` is a variable's identity and `name` is not, so a name-keyed
+    /// binder list could not say WHICH occurrences of `body` it binds — which is a
+    /// binder's whole content. See the `PolyType` entity doc in
+    /// `stdlib/anthill/prelude/sort.anthill`.
+    ///
+    /// ALWAYS A `Value::Node`, never a hash-consed term: the body is an arrow, and
+    /// `make_arrow_value` mints one unconditionally as an occurrence (the
+    /// representation note disclaims hash-consing for binders). There is deliberately
+    /// no term twin to keep in step.
+    PolyType { binders: Value, body: TypeChild },
     /// `expr_carried(value, member)` — the Node carrier for an expression-carried
     /// type projection whose receiver is COMPOUND (a field path `a.b`, not a single
     /// value ref). The ground single-ref form `s.T` rides a hash-consed
@@ -2422,6 +2443,28 @@ fn map_type_node<R: TypeChildRewrite>(
             let (nf, ch) = map_value_type(r, kb, fields);
             (TypeNode::NamedTuple { fields: nf }, ch)
         }
+        // WI-1083 — BINDERS AND BODY ARE MAPPED TOGETHER, which is what keeps the
+        // node well-formed under a rewrite: a binder's content is that it names
+        // occurrences of `body`, so rewriting one list without the other would leave
+        // a binder naming nothing. Under the rewriters that reach here (close / open
+        // / σ, all of which act on FREE variables) that is an alpha-rename.
+        //
+        // It is NOT capture-avoiding, and no producer reaches it today: the one mint
+        // site is the eta lift and every consumer instantiates the ∀ away
+        // (`instantiate_poly_type`) before a rewriter can see it. A σ that mapped a
+        // binder onto a variable already free in `body` would capture; that is the
+        // case to handle if a PolyType ever survives into a rewritten position.
+        TypeNode::PolyType { binders, body } => {
+            let (nb, c1) = map_value_type(r, kb, binders);
+            let (nbody, c2) = map_type_child(r, kb, body);
+            (
+                TypeNode::PolyType {
+                    binders: nb,
+                    body: nbody,
+                },
+                c1 || c2,
+            )
+        }
     }
 }
 
@@ -2931,6 +2974,31 @@ fn collect_type_node_vars(
             collect_type_child(kb, member, vars, seen);
         }
         TypeNode::NamedTuple { fields } => collect_value_type(kb, fields, vars, seen),
+        // WI-1083 — A BOUND VARIABLE IS NOT A FREE ONE, and that is the whole content
+        // of the binder list. This walk answers "which variables does this type leave
+        // for someone else to bind" (WI-378's σ rewriters, WI-1078's bound-vs-unbound
+        // classification), so the body's occurrences of a binder must NOT be reported:
+        // a `∀A. (x: A) -> A` constrains nobody about `A`.
+        //
+        // Collected into a LOCAL accumulator with its own `seen` so the filter can run
+        // before anything reaches the caller's — pushing then removing would corrupt
+        // `seen` for a variable the caller had already recorded from a sibling.
+        TypeNode::PolyType { binders, body } => {
+            let mut bound: Vec<VarId> = Vec::new();
+            let mut bound_seen = std::collections::HashSet::new();
+            collect_value_type(kb, binders, &mut bound, &mut bound_seen);
+            let mut inner: Vec<VarId> = Vec::new();
+            let mut inner_seen = std::collections::HashSet::new();
+            collect_type_child(kb, body, &mut inner, &mut inner_seen);
+            for vid in inner {
+                if bound.iter().any(|b| b.raw() == vid.raw()) {
+                    continue;
+                }
+                if seen.insert(vid.raw()) {
+                    vars.push(vid);
+                }
+            }
+        }
     }
 }
 
@@ -3461,6 +3529,29 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
                 pos_args: smallvec::SmallVec::new(),
                 named_args,
             })
+        }
+        // WI-1083 — a faithful twin, built the way the `NamedTuple` arm above builds
+        // its own, so a materializing consumer (`occurrence_to_term`) gets the ∀ and
+        // not a silently unwrapped body. There is NO `make_poly_type` term builder to
+        // mirror, deliberately: a PolyType always rides the occurrence carrier (its
+        // body is an arrow, which `make_arrow_value` mints as a `Value::Node`
+        // unconditionally), so this lowering is the only place the term shape exists
+        // and canonicalization has nothing to agree with.
+        TypeNode::PolyType { binders, body } => {
+            let binders_t = value_to_term(kb, binders).unwrap_or_else(|e| {
+                debug_assert!(false, "poly_type binders not term-representable: {e:?}");
+                kb.alloc(Term::Bottom)
+            });
+            let body_t = type_child_to_term(kb, body);
+            let pt_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.PolyType");
+            let binders_key = kb.intern("binders");
+            let body_key = kb.intern("body");
+            let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
+            named.push((binders_key, binders_t));
+            named.push((body_key, body_t));
+            // Through the same declared-field-order funnel the `ExprCarried` fallback
+            // above uses (WI-299), so the two spellings of one type hash-cons alike.
+            kb.make_entity_term(pt_sym, smallvec::SmallVec::new(), named)
         }
     }
 }
@@ -4568,6 +4659,13 @@ pub(crate) fn substitute_ref_syms_occ(
                     value: rewrite_ref_child(value, map),
                     member: rewrite_ref_child(member, map),
                 },
+                // WI-1083: this rewrite re-keys `Ref(sym)` effect labels, which a
+                // binder (a bare variable term) never is — so `binders` passes
+                // through and only `body` is walked.
+                TypeNode::PolyType { binders, body } => TypeNode::PolyType {
+                    binders: binders.clone(),
+                    body: rewrite_ref_child(body, map),
+                },
             };
             NodeOccurrence::new_type(rebuilt, occ.span, occ.owner)
         }
@@ -4719,7 +4817,19 @@ fn subst_type_args(
 /// delegate to the shared [`map_value_type`] (a `Value::Node` descends the type
 /// spine; a `NamedTuple.fields` cons-list recurses), the σ twin of
 /// `close_value_type` / `open_value_type`.
-fn subst_value_type(kb: &mut KnowledgeBase, v: &Value, subst: &Substitution) -> (Value, bool) {
+///
+/// `pub(crate)` for WI-1083's ∀-instantiation, which needs exactly this walk and NOT
+/// `typing::walk_type_deep_value`: that one routes a `Value::Node` through
+/// `rewrite_type_occ_deep`, whose `NamedTuple` arm answers "unchanged" — so a binder
+/// sitting in a Node-carried parameter LIST (any multi-parameter operation with an arrow
+/// or `denoted`-bearing parameter) was left un-freshened, which is the aliasing the whole
+/// design exists to retire. This walk has a real `NamedTuple` arm because close / open /
+/// σ share ONE definition of "rewrite the vars of a type Value".
+pub(crate) fn subst_value_type(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    subst: &Substitution,
+) -> (Value, bool) {
     map_value_type(&SubstTypeRewrite { subst }, kb, v)
 }
 

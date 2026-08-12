@@ -1522,6 +1522,9 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         // WI-397: the Node carrier for a compound-receiver projection reads as the
         // same `ExprCarried(value, member)` head/arity as its single-ref term twin.
         TypeNode::ExprCarried { .. } => (type_functor_sym(kb, "ExprCarried"), 2),
+        // WI-1083: two children — `binders` (a `Value`-carried `List[Term]`, read
+        // like `NamedTuple`'s `fields`) and `body`.
+        TypeNode::PolyType { .. } => (type_functor_sym(kb, "PolyType"), 2),
     };
     match functor {
         Some(f) => ViewHead::Functor {
@@ -1546,6 +1549,7 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         // WI-361: the single `fields` child (the `List[TypeField]` Value).
         TypeNode::NamedTuple { .. } => &["fields"],
         TypeNode::ExprCarried { .. } => &["value", "member"],
+        TypeNode::PolyType { .. } => &["binders", "body"],
     };
     short_keys
         .iter()
@@ -1598,6 +1602,17 @@ fn type_node_named<'a>(tn: &'a TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Opt
                 Some(type_child_view_item(value))
             } else if Some(sym) == key("member") {
                 Some(type_child_view_item(member))
+            } else {
+                None
+            }
+        }
+        // WI-1083: `binders` is borrowed as a `Value` (the `List[Term]`, read the way
+        // `NamedTuple`'s `fields` is); `body` is an ordinary type child.
+        TypeNode::PolyType { binders, body } => {
+            if Some(sym) == key("binders") {
+                Some(ViewItem::Value(binders))
+            } else if Some(sym) == key("body") {
+                Some(type_child_view_item(body))
             } else {
                 None
             }

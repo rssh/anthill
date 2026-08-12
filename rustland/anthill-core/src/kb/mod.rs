@@ -7112,6 +7112,45 @@ impl KnowledgeBase {
         self.alloc(Term::Const(crate::kb::term::Literal::Int(arity as i64)))
     }
 
+    /// WI-1083 — `poly_type(binders, body)` carried as a Type occurrence: a
+    /// UNIVERSALLY quantified type, ∀ by construction (nothing stores the
+    /// quantifier — see the `PolyType` entity doc in
+    /// `stdlib/anthill/prelude/sort.anthill`).
+    ///
+    /// NO `make_poly_type_type` TERM PEER, unlike every builder around it, and that
+    /// is deliberate rather than missing: the body is an arrow and
+    /// `make_arrow_value` mints one unconditionally as an occurrence (WI-470), so a
+    /// hash-consed spelling of this node could never be the primary form and a
+    /// second builder would only be a shape for the two to disagree over. The one
+    /// place the term shape exists is `type_node_to_term`'s lowering, which builds
+    /// it through the shared entity funnel.
+    ///
+    /// `binders` is a `Value`-carried `List[Term]` of the bound VARIABLES, mirroring
+    /// [`Self::make_named_tuple_occ`]'s `fields` — the caller builds it with
+    /// [`crate::kb::load::build_value_list`].
+    /// `&mut` FOR THE CHILD-KEY INTERN, which is load-bearing rather than incidental:
+    /// the reader side resolves `binders` / `body` through `lookup_symbol`, which
+    /// answers `None` for a string this KB has never interned — and `extract_type`
+    /// would then report a perfectly well-formed ∀ as `Error`, silently. Interning at
+    /// the MINT makes that unrepresentable instead of leaving it to whether the stdlib
+    /// declaration happens to have been loaded (the failure mode `extract_callable_type`
+    /// works around for `param`/`result`/`effects` from the reader side).
+    pub fn make_poly_type_occ(
+        &mut self,
+        binders: crate::eval::value::Value,
+        body: node_occurrence::TypeChild,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        self.intern("binders");
+        self.intern("body");
+        NodeOccurrence::new_type(
+            node_occurrence::TypeNode::PolyType { binders, body },
+            span,
+            owner,
+        )
+    }
+
     /// `effects_rows(effects_expr: EffectExpression)` carried as a Type
     /// occurrence. Occurrence peer of [`Self::make_effects_rows_type`].
     pub fn make_effects_rows_occ(

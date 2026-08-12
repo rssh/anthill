@@ -256,6 +256,24 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 }
                 buf.push(')');
             }
+            // WI-1083: `forall A, B. <body>` — the quantifier is rendered even though
+            // it is not stored (a PolyType is ∀ by construction), because the whole
+            // point of the node is that the ∀ used to be invisible. `binders` is a
+            // `Value`-carried `List[Term]` of bare variables.
+            TypeNode::PolyType { binders, body } => {
+                buf.push_str("forall ");
+                for (i, b) in crate::kb::typing::value_list_elements(self.view, binders)
+                    .iter()
+                    .enumerate()
+                {
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
+                    self.write_type_value(b, buf);
+                }
+                buf.push_str(". ");
+                self.write_type_child(body, buf);
+            }
         }
     }
 

@@ -3562,9 +3562,18 @@ fn rewrite_type_occ_deep(
                 let e = child(kb, subst, effects_expr, ground, &mut changed);
                 Some(NodeKind::Type(TypeNode::EffectsRows { effects_expr: e }))
             }
+            // WI-1083 — σ DOES NOT WALK UNDER A ∀, and that is a decision rather than
+            // an omission: a `PolyType`'s binders are bound, so a σ that happened to
+            // carry one of them would substitute under its own binder (capture). The
+            // body's genuinely free variables lose nothing by it, because every
+            // consumer instantiates the ∀ away first
+            // ([`instantiate_poly_type`]) and what a σ walk meets downstream is the
+            // instantiated body. Joins `Denoted` / `NamedTuple` / `ExprCarried`, which
+            // decline for their own reasons.
             TypeNode::Denoted { .. }
             | TypeNode::NamedTuple { .. }
-            | TypeNode::ExprCarried { .. } => None,
+            | TypeNode::ExprCarried { .. }
+            | TypeNode::PolyType { .. } => None,
         },
         NodeKind::EffectExpr(node) => match node {
             EffectExprNode::Merge { left, right } => {
@@ -5067,6 +5076,46 @@ fn check_bare_ref(
                     // it on the OpRef. A cross-sort unsatisfiable requirement is a
                     // loud error here.
                     attach_eta_dispatch_dict(kb, env, sym, occ, &fn_ty, exp)?;
+                    // WI-1083 — ∀-ELIMINATION AT THE REFERENCE, and this is the ONE site:
+                    // §5.6 says an operation's type parameter is "the CALLER's to
+                    // instantiate", and a bare reference IS the caller. `fn_ty` is the
+                    // OPERATION's type (a ∀ whenever its signature binds anything); what
+                    // this occurrence has is one INSTANCE of it, freshened here so two
+                    // references to the same operation share no variable.
+                    //
+                    // HERE RATHER THAN AT THE CONSUMERS, which the first cut tried and
+                    // MEASURED wrong: instantiating inside `unify_types` /
+                    // `types_compatible` gives each RELATION its own fresh variables, so
+                    // the binding the argument-unify loop makes (`?A := Int64`) lands on a
+                    // variable the conformance check that follows has never seen — and all
+                    // three holes below stayed open. One instantiation per occurrence is
+                    // what lets the two steps agree.
+                    //
+                    // A ∀ THAT FAILS TO ELIMINATE IS AN ERROR, not a value type. The head
+                    // says `PolyType` and the elimination declined, which means the node is
+                    // malformed (an unreadable child, an empty binder list — see
+                    // `extract_type`'s arm). Returning the schema instead would hand the
+                    // author a mismatch against a form they never wrote, in place of the
+                    // loud failure this repo prefers.
+                    let fn_ty = match instantiate_poly_type(kb, &fn_ty) {
+                        Some(inst) => inst,
+                        None if matches!(type_head(kb, &fn_ty), TypeHead::PolyType) => {
+                            return Err(TypeError::Other {
+                                site: TypeError::here(),
+                                span,
+                                context: TypeErrorContext::OperationAsFunctionValue {
+                                    op_name: sym,
+                                },
+                                expected: "a well-formed quantified type for this operation \
+                                           used as a function value"
+                                    .to_string(),
+                                actual: "a `PolyType` whose binders could not be read \
+                                         (WI-1083)"
+                                    .to_string(),
+                            });
+                        }
+                        None => fn_ty,
+                    };
                     return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
                 }
             }
@@ -6225,6 +6274,152 @@ pub(crate) fn resolve_relation_arg_columns(
 /// bare sort name denotes the sort itself (`is_modifiable(Cell)`). Resolving
 /// `anthill.prelude.Type` can fail on a partial-stdlib KB; that yields `false`
 /// (no `Type` slot exists to admit the reading), never a vacuous match against an
+/// WI-1083 — ∀-INTRODUCTION for an eta lift: wrap `arrow` in a
+/// [`TypeExtractor::PolyType`] over the variables `op`'s signature binds, or hand it
+/// back unwrapped when there are none.
+///
+/// UNWRAPPED WHEN THE SET IS EMPTY, deliberately: `PolyType([], arrow)` and `arrow` are
+/// the same type, and minting the wrapper anyway would put a form every reader has to
+/// see through on the path of a lift that quantifies nothing. "A `PolyType` has at least one
+/// binder" is therefore an invariant, not a convention.
+///
+/// THE SET IS WIDER THAN "DECLARES `[A]`", which is the widest consequence of this change and
+/// is worth stating here rather than leaving to be discovered: [`signature_bound_vars`] also
+/// counts a free logical variable written in a parameter type or a `requires`, and the
+/// DECLARING SORT's canonical parameter. So a member of a parameterized sort — `SortedSet.
+/// insert(s: SortedSet[T = T, O = O], x: T)`, which declares no brackets at all — now lifts to
+/// a ∀ where it used to lift to a bare arrow, and each reference gets its own `T`/`O` instead
+/// of writing into the sort's canonical channel. That is the intended reading (§5.6: the
+/// caller instantiates), and the one place it must NOT be applied is the dictionary pin — see
+/// [`poly_type_body`], with the test that measures it.
+///
+/// The binders come from [`signature_bound_vars`], the one owner — see its doc for why
+/// generalizing here rather than at load or at instantiation is what makes this SUBSUME
+/// WI-1078's rule instead of contradicting it.
+fn generalize_eta_arrow(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    op: &OperationInfoFull,
+    arrow: Value,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    let binders = signature_bound_vars(kb, sym, op);
+    if binders.is_empty() {
+        return arrow;
+    }
+    let binder_terms: Vec<Value> = binders
+        .iter()
+        .map(|v| Value::term(type_param_var_term(kb, Var::Global(*v))))
+        .collect();
+    let binder_list = super::load::build_value_list(kb, binder_terms);
+    let body = value_to_type_child(kb, &arrow);
+    Value::Node(kb.make_poly_type_occ(binder_list, body, span, owner))
+}
+
+/// WI-1083 — ∀-ELIMINATION: if `ty` is a [`TypeExtractor::PolyType`], return its body
+/// with every binder replaced by a FRESH variable; otherwise `None`, so a caller reads
+/// "not a ∀" as an answer rather than as a failure.
+///
+/// PER REFERENCE, WHICH IS THE WHOLE MECHANISM. The eta gate excluded a
+/// type-parameterized operation because "its arrow would carry unfreshened type-param
+/// vars that alias across multiple eta-lifts of the same op" — true of an arrow, which
+/// has nowhere to write a binder, and false of a ∀, whose binders say exactly which
+/// variables to freshen. Each elimination mints its own, so two references to one
+/// operation cannot see each other's bindings.
+///
+/// ONE CALLER, [`check_bare_ref`], and that is a decision the first cut got wrong.
+/// Eliminating inside the type RELATIONS (`unify_types` / `types_compatible`) reads as the
+/// tidier place and is measurably useless: each relation would mint its own instantiation,
+/// so the binding the argument-unify loop makes lands on a variable the conformance check
+/// that follows has never seen, and every disagreement stays invisible. The reference is
+/// where §5.6's "the caller instantiates" actually happens, and it is the one site where a
+/// single instantiation serves every later step. [`poly_type_body`] is the deliberate
+/// exception — one reader must see the un-freshened body, and says why.
+///
+/// The substitution is applied by [`super::node_occurrence::subst_value_type`] under a
+/// scratch [`Substitution`] holding `binder ↦ fresh` — the shared close/open/σ walk, so the
+/// freshening reaches every child a σ would rather than a hand-rolled walk that would have
+/// to be kept in step with it.
+///
+/// NOT [`walk_type_deep_value`], which is what the first cut used and which is WRONG HERE:
+/// it routes a `Value::Node` through [`rewrite_type_occ_deep`], whose `NamedTuple` arm
+/// answers "unchanged". An eta arrow's parameter LIST is a `named_tuple`, and it rides the
+/// Node carrier whenever any parameter's type does (an arrow parameter always does) — so
+/// every multi-parameter higher-order operation had its parameter-position binders left
+/// SHARED between references, which is precisely the aliasing the deleted gate existed to
+/// prevent. MEASURED on the loaded stdlib before the fix: `MappedStream.map` leaked four of
+/// its eight binders (`?S`, `?EffS` and the sort's own two), `Iterable.map` two,
+/// `FilteredStream.filter` three. Found by review; the unit rows use a ONE-parameter
+/// operation, whose parameter is a bare `Term`, and stayed green throughout.
+fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> {
+    // HEAD FIRST, then the children: `type_head` reads at most the functor symbol, while
+    // `extract_type` materializes a fresh child vector with every bound type cloned into it
+    // (the cost this file's WI-798 notes exist to keep off hot paths). Every bare-reference
+    // check pays the head classify; only an actual ∀ pays the rest.
+    if !matches!(type_head(kb, ty), TypeHead::PolyType) {
+        return None;
+    }
+    let TypeExtractor::PolyType { binders, body } = extract_type(kb, ty) else {
+        return None;
+    };
+    let mut fresh = Substitution::new();
+    for b in &binders {
+        // A binder that is not a flexible variable term is a malformed ∀ — the one mint
+        // ([`generalize_eta_arrow`]) builds nothing else. LOUD in dev rather than silently
+        // dropped, because a dropped binder does not fail: it leaves that variable SHARED
+        // between two references, which is exactly the aliasing this function exists to
+        // retire, and it would show up as an unrelated type error somewhere else.
+        let Value::Term { id, .. } = b else {
+            debug_assert!(false, "poly_type binder is not a term: {b:?}");
+            continue;
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(*id) else {
+            debug_assert!(false, "poly_type binder is not a flexible variable");
+            continue;
+        };
+        let vid = *vid;
+        let new_vid = kb.fresh_var(vid.name());
+        let new_term = kb.alloc(Term::Var(Var::Global(new_vid)));
+        fresh.bind(kb, vid, new_term);
+    }
+    let (instantiated, _) = super::node_occurrence::subst_value_type(kb, &body, &fresh);
+    Some(instantiated)
+}
+
+/// WI-1083 — a ∀'s BODY WITHOUT FRESHENING, for the one reader that must see the
+/// operation's OWN variables: [`attach_eta_dispatch_dict`]'s element-type pin.
+///
+/// That pin unifies the eta arrow's parameter against the expected one to learn what to
+/// build a dictionary for (`List.T := Int64`), and the dictionary's dependencies name
+/// the DECLARING SORT's canonical parameters. Handing it an instantiation would bind
+/// fresh variables the dependency lookup has never heard of, so a resolvable requirement
+/// would go unresolved and the eta would be refused as unsatisfiable — a new refusal for
+/// programs that work today.
+///
+/// Sound because that σ is LOCAL and discarded: it exists to select a witness, never to type
+/// the value. The value's type is instantiated separately at the reference
+/// ([`check_bare_ref`]) — so the two readings share no bindings and the aliasing the
+/// per-reference rule exists to prevent cannot come back through here.
+///
+/// DRIVEN by `wi844_sorted_set_driver_test::an_etad_op_takes_its_ordering_from_the_expected_-
+/// arrow`, which is the ONE test in the suite that fails when this is replaced by
+/// [`instantiate_poly_type`]: `SortedSet.insert(s: SortedSet[T = T, O = O], x: T)` names its
+/// own sort's parameters, `Ord[T = T]` is keyed by the same canonical variables, and a pin made
+/// on fresh ones leaves the requirement "unsatisfiable … (WI-420)". The WI-1083 test file's own
+/// attempt at this row does NOT catch it and says so at its site — worth knowing, because the
+/// widest consequence of this ticket is exactly the case that row was aimed at: a member of a
+/// PARAMETERIZED sort now lifts to a ∀ whether or not it declares `[A]` of its own.
+fn poly_type_body<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> {
+    if !matches!(type_head(kb, ty), TypeHead::PolyType) {
+        return None;
+    }
+    match extract_type(kb, ty) {
+        TypeExtractor::PolyType { body, .. } => Some(body),
+        _ => None,
+    }
+}
+
 /// `expected` whose own head sort is likewise unresolvable.
 fn expects_reflect_type(kb: &KnowledgeBase, expected: Option<&Value>) -> bool {
     let Some(exp) = expected else { return false };
@@ -6234,32 +6429,32 @@ fn expects_reflect_type(kb: &KnowledgeBase, expected: Option<&Value>) -> bool {
     extract_sort_ref_sym(kb, exp) == Some(type_sym)
 }
 
-/// WI-275: the arrow type of an operation referenced as a first-class function
-/// value (eta-expansion). `inc(n: Int) -> Int` becomes `Int -> Int`; a
+/// WI-275: the type of an operation referenced as a first-class function value
+/// (eta-expansion). `inc(n: Int) -> Int` becomes `Int -> Int`; a
 /// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional
 /// `_1`/`_2` named-tuple param (the WI-355 tuple convention) so it unifies
 /// against a `Function[(T, T), Bool]` slot, matching how a `lambda (a, b) -> ...`
 /// is typed and an `f((a, b))` applied. Returns `None` when `sym` is not an eta
-/// candidate (no operation, nullary, body-less, or type-parameterized) so the
-/// caller falls back to the return-type reading. A `requires`-carrying op's
+/// candidate (no operation, or body-less) so the caller falls back to the
+/// return-type reading. A `requires`-carrying op's
 /// dispatch dict is resolved + attached separately by `attach_eta_dispatch_dict`
 /// (WI-420), which has the `expected` arrow that pins the element type.
+///
+/// WI-1083 — AN ARROW, OR A ∀ OVER ONE. Whenever the signature binds a variable, the
+/// arrow is wrapped by [`generalize_eta_arrow`] and each USE instantiates it, so
+/// nothing here is shared between two lifts of one operation.
 fn operation_as_function_value(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<Value> {
     // Only eta-lift an operation the runtime can actually run as a function
-    // value, keeping the typer's accepted set a subset of the evaluator's:
-    //   * it must have a runnable anthill body — the evaluator's `reduce_var`
-    //     mints a `Value::OpRef` only for body-having ops, so a body-less
-    //     builtin / spec declaration would type-check here yet crash at eval as
-    //     a zero-arg call (`ArityMismatch`);
-    //   * it must be monomorphic — a type-parameterized op's arrow would carry
-    //     its type-param vars verbatim (no per-use freshening), which alias
-    //     across multiple eta-lifts of the same op.
-    // A reference that fails either gate stays a loud type error, not a silent
-    // runtime failure.
+    // value, keeping the typer's accepted set a subset of the evaluator's: it must
+    // have a runnable anthill body — the evaluator's `reduce_var` mints a
+    // `Value::OpRef` only for body-having ops, so a body-less builtin / spec
+    // declaration would type-check here yet crash at eval as a zero-arg call
+    // (`ArityMismatch`). A reference that fails that gate stays a loud type error,
+    // not a silent runtime failure.
     if !op_has_runnable_body(kb, sym) {
         return None;
     }
@@ -6268,12 +6463,23 @@ fn operation_as_function_value(
     // (empty-`NamedTuple`) param produced by the builder below — so a bare nullary
     // op passed into a callback slot carries its DECLARED effect row into the
     // WI-440/469 conformance checks instead of collapsing to its return type (the
-    // pre-WI-700 hole: `ty=Int64 effects=[]`, arrow + row both dropped). Only a
-    // type-parameterized op stays excluded: its arrow would carry unfreshened
-    // type-param vars that alias across multiple eta-lifts of the same op.
-    if !op.type_params.is_empty() {
-        return None;
-    }
+    // pre-WI-700 hole: `ty=Int64 effects=[]`, arrow + row both dropped).
+    //
+    // WI-1083 DELETED THE SECOND CLAUSE, which read `if !op.type_params.is_empty() {
+    // return None }` on the grounds that "its arrow would carry unfreshened type-param
+    // vars that alias across multiple eta-lifts of the same op". True of an ARROW, which
+    // has nowhere to write a binder; the ∀ this function now mints says which variables
+    // to freshen and every use freshens them.
+    //
+    // AND IT WAS A SOUNDNESS HOLE, NOT ONLY A MISSING CAPABILITY, which is what the
+    // clause's own wording hides: refusing the lift did not refuse the PROGRAM, it fell
+    // through to `check_bare_ref`'s zero-arg-call reading, which types a bare `idp[A](x:
+    // A) -> A` as its return type `?A` — a bare flexible variable that unifies with any
+    // expected type at all. MEASURED, each against its monomorphic twin, which is
+    // REFUSED in every row: a result-type mismatch (`A -> A` into an `Int64 -> String`
+    // slot), an arity mismatch (a 2-parameter operation into a 1-parameter slot) and an
+    // effect-row mismatch (`effects {Error}` into `E = {}`) all LOADED CLEAN for a
+    // type-parameterized operation. `wi1083_polytype_test` holds all six rows.
     let (span, owner) = (occ.span, occ.owner);
     // WI-1063: the eta arrow's RESULT is a use of the operation's declared return, so it
     // OPENS like every other one. Without this the lift laundered the existential — DRIVEN,
@@ -6282,10 +6488,16 @@ fn operation_as_function_value(
     //
     // ONE SKOLEM PER LIFT, NOT PER APPLICATION, and that is a real limit rather than an
     // oversight: an arrow type has nowhere to write `∃`, so whatever goes in the result
-    // position is fixed for the VALUE and every application of it reads the same ρ. It is
-    // sound for the monomorphic arrow this function builds — the gate above admits only ops
-    // with no type parameters, so the argument types are pinned and the result really is one
-    // type — and it is why that gate cannot simply be widened to admit them.
+    // position is fixed for the VALUE and every application of it reads the same ρ.
+    //
+    // WI-1083 DID NOT MOVE IT, and the ∀ this function now mints is why the limit is
+    // narrower than it looks rather than why it is gone. The two quantifiers are opened by
+    // different machinery: a ∀'s binders are WRITTEN (the `PolyType` below carries them)
+    // so `instantiate_poly_type` can freshen them per application; an ∃ has no binder node
+    // at all (WI-1079 — at a declaration it is implied by the return POSITION), so the ρ
+    // minted here is the one this value has. An unbound return variable is exactly a
+    // variable `signature_bound_vars` does NOT list, so the two rules partition the
+    // signature's variables between them and neither can claim one twice.
     //
     // REFUSING THE LIFT INSTEAD IS REFUTED, and the measurement is worth keeping because the
     // clause above makes it look like the obvious answer (it refuses a type-parameterized op
@@ -6320,7 +6532,7 @@ fn operation_as_function_value(
     // arity, whatever its sole parameter's type happens to look like. `get_a(t: (a,
     // b))` mints arity 1 even though `param` is a 2-field `named_tuple`, so it no
     // longer passes for the genuinely 2-parameter `(p: A, q: B) -> R`.
-    Some(make_arrow_value(
+    let arrow = make_arrow_value(
         kb,
         &param,
         &return_type,
@@ -6328,7 +6540,10 @@ fn operation_as_function_value(
         op.params.len(),
         span,
         owner,
-    ))
+    );
+    // WI-1083: ∀ over whatever the signature binds — and the bare arrow unchanged when it
+    // binds nothing, which is every operation this function could lift before.
+    Some(generalize_eta_arrow(kb, sym, &op, arrow, span, owner))
 }
 
 /// WI-700: is `sym` a NULLARY (zero-parameter) operation? Only a nullary op has both
@@ -6413,7 +6628,16 @@ fn attach_eta_dispatch_dict(
     // expected param pins the element (`List.T := Int`) — mirroring the direct
     // call's arg-first unify order.
     let exp_param = arrow_parts(kb, expected).and_then(|(p, _, _)| p);
-    let fn_param = arrow_parts(kb, fn_ty).and_then(|(p, _, _)| p);
+    // WI-1083: read THROUGH a ∀ to its body, un-freshened — see [`poly_type_body`] for
+    // why this one reader must see the operation's own variables rather than an
+    // instantiation. Without it `arrow_parts` answers `None` for every
+    // type-parameterized operation (a ∀ is not an arrow), the pin silently does not
+    // happen, and the dictionary build is handed an empty σ.
+    let fn_body = poly_type_body(kb, fn_ty);
+    let fn_param = match &fn_body {
+        Some(body) => arrow_parts(kb, body).and_then(|(p, _, _)| p),
+        None => arrow_parts(kb, fn_ty).and_then(|(p, _, _)| p),
+    };
     if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
         unify_types(kb, &mut subst, &ep, &fp);
     }
@@ -13207,6 +13431,19 @@ fn check_apply_iter(
     // both flow through `extract_function_type_parts`, the occurrence never
     // re-grounded.
     if let Some(fn_type) = env.lookup_var(fn_sym) {
+        // WI-1083 — NO ∀-ELIMINATION HERE, and the absence is a decision. A function
+        // VALUE has only a type, so this looks like the site that should eliminate;
+        // measured, no ∀ can arrive. The only route into `env` for an operation's type is
+        // a `let`: an UNANNOTATED one is already refused ("expected known operation or
+        // arrow-typed variable" — for a MONOMORPHIC operation too, so this is not a gap
+        // this ticket opened), and an ANNOTATED one supplies a monotype, against which
+        // `check_bare_ref` has already instantiated. Adding an eliminator here would be a
+        // second answer to a question `check_bare_ref` owns — and per-relation
+        // instantiation is measurably the WRONG shape (see that site).
+        //
+        // What would make it reachable is let-polymorphism: a bare reference eta-lifting
+        // with NO expectation, so `let f = idp` binds the ∀ itself. That is the capability
+        // the PolyType makes expressible and this ticket does not deliver.
         // WI-798: the callee is classified ONCE for the whole path — the
         // result/effects read here, the WI-792 positional argument check, and the
         // WI-783 named-label resolution below all read THIS extraction. They used
@@ -26937,6 +27174,13 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
                 .iter()
                 .all(|(_, t)| resolved_type_is_ground_g(kb, t, rigid_ok)),
+            // WI-1083 — A ∀ IS A SCHEMA, NOT A DETERMINED TYPE, so it is not ground:
+            // this gate asks "is enough of this type known to judge it", and a
+            // `PolyType` answers "not until it is instantiated". Every consumer DOES
+            // instantiate first ([`instantiate_poly_type`]), so this arm reports on a
+            // carrier that escaped instantiation, where withholding a verdict is the
+            // conservative answer rather than a skipped check.
+            TypeNode::PolyType { .. } => false,
         },
         NodeKind::EffectExpr(en) => match en {
             EffectExprNode::Merge { left, right } => child_ground(left) && child_ground(right),
@@ -29230,6 +29474,10 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
                 .iter()
                 .any(|(_, t)| type_contains_callable(kb, t)),
+            // WI-1083: quantifying a callable does not stop it being one — `∀A. (x: A)
+            // -> A` IS the type of a function value, which is the whole reason the
+            // form exists. The binders are variables and carry no callable.
+            TypeNode::PolyType { body, .. } => child(body),
         },
         // An effect row's labels are not callables; recurse anyway so the walk stays
         // total over the node's children rather than assuming a shape.
@@ -30185,6 +30433,9 @@ fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
         TypeExtractor::EffectsRows(e) => value_contains_rigid(kb, &e),
         TypeExtractor::ExprCarried { value, .. } => value_contains_rigid(kb, &value),
         TypeExtractor::RigidTypeProjection { subject, .. } => value_contains_rigid(kb, &subject),
+        // WI-1083: a ∀'s binders are flexible by construction (a binder is what gets
+        // INSTANTIATED, never skolemized), so only the body can hold a rigid.
+        TypeExtractor::PolyType { body, .. } => value_contains_rigid(kb, &body),
         // A FLEX variable is the other half of the distinction this predicate turns on: it is
         // not a skolem, it is what a skolem is minted INSTEAD of, and a stored tree holding one
         // is fine.
@@ -30224,6 +30475,10 @@ fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
             fields.iter().any(|(_, v)| value_contains_projection(kb, v))
         }
         TypeExtractor::EffectsRows(e) => value_contains_projection(kb, &e),
+        // WI-1083: an eta'd member's ∀ body carries its receiver projections
+        // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`), so the body IS walked — this
+        // gate is what routes it to the elimination that rebuilds the ∀.
+        TypeExtractor::PolyType { body, .. } => value_contains_projection(kb, &body),
         // A logical variable of either kind is a LEAF: it has no children to hide a
         // projection in, and it is not one.
         TypeExtractor::FlexVar { .. }
@@ -30451,6 +30706,10 @@ fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Sy
         | TypeExtractor::TypeVar(_)
         | TypeExtractor::Nothing
         | TypeExtractor::Error => {}
+        // WI-1083: the receivers a ∀ projects are its body's — quantifying a type
+        // hides no projection, and `value_contains_projection` above descends the same
+        // child, so the gate and the collector agree on what they can see.
+        TypeExtractor::PolyType { body, .. } => collect_projection_receivers(kb, &body, out),
     }
 }
 
@@ -30742,6 +31001,20 @@ fn eliminate_node_projections(
                     reduced.push((name, f));
                 }
                 Ok(named_tuple_value(kb, &reduced, sp, owner))
+            }
+            // WI-1083: eliminate inside the quantified body and REBUILD the ∀ —
+            // the eta arrow of a member whose signature projects its receiver
+            // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`) carries projections under
+            // the binders. Elimination rewrites TYPES, never binders, so the binder
+            // list crosses unchanged.
+            TypeNode::PolyType { binders, body } => {
+                let b = elim_child(kb, body, arg_types, arg_syms, ctx, span)?;
+                Ok(Value::Node(kb.make_poly_type_occ(
+                    binders.clone(),
+                    b,
+                    sp,
+                    owner,
+                )))
             }
         },
         NodeKind::EffectExpr(node) => match node {
@@ -33073,6 +33346,53 @@ pub(crate) fn list_records_to_pairs<V: TermView>(
     out
 }
 
+/// WI-1083 — decode a `List[T]` of BARE elements, carrier-agnostic over [`TermView`]:
+/// the element sibling of [`list_records_to_pairs`], which decodes a list whose cells
+/// hold two-field RECORDS. A `PolyType`'s `binders` is a `List[Term]` of variables —
+/// there is no record to unpack, so reusing the pair decoder would have meant giving
+/// each binder a wrapper record it does not have.
+///
+/// Same cons/nil spine and the same tolerance: a non-`cons` cell simply ends the walk,
+/// so a `nil` (or a malformed list) reads as the empty list rather than an error. The
+/// one producer is [`crate::kb::load::build_value_list`], whose output this reverses.
+pub(crate) fn value_list_elements<V: TermView>(kb: &KnowledgeBase, list: &V) -> Vec<Value> {
+    let (Some(head_key), Some(tail_key)) = (kb.lookup_symbol("head"), kb.lookup_symbol("tail"))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if !is_list_cons_cell(kb, list) {
+        return out;
+    }
+    let Some(first) = named_child_value(kb, list, head_key) else {
+        return out;
+    };
+    out.push(first);
+    let mut cell = named_child_value(kb, list, tail_key);
+    while let Some(c) = cell {
+        if !is_list_cons_cell(kb, &c) {
+            break;
+        }
+        match named_child_value(kb, &c, head_key) {
+            Some(h) => out.push(h),
+            None => break,
+        }
+        cell = named_child_value(kb, &c, tail_key);
+    }
+    out
+}
+
+/// Is this view a `List.cons` cell? The spine test [`value_list_elements`] and
+/// [`decode_cons_cell`] both walk on.
+fn is_list_cons_cell<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => kb.qualified_name_of(f) == "anthill.prelude.List.cons",
+        _ => false,
+    }
+}
+
 /// One step of [`list_records_to_pairs`]: if `cell` is a `cons` record, push its
 /// `head` record's `(sym_key, val_key)` pair into `out` and return its `tail` as a
 /// [`Value`]; otherwise (nil / non-cons) `None`.
@@ -33431,6 +33751,13 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             TypeNode::NamedTuple { fields } => occurs_in_view(kb, vid, fields),
             // WI-397: the receiver occurrence + the ground `member` ref.
             TypeNode::ExprCarried { value, member } => child(kb, value) || child(kb, member),
+            // WI-1083: an occurs-check asks whether binding `vid` here would build a
+            // cycle, so BOTH lists are searched — a bound occurrence is still an
+            // occurrence, and reporting it is the conservative direction (a missed
+            // occurrence is an infinite type, a spurious one only refuses a binding).
+            TypeNode::PolyType { binders, body } => {
+                occurs_in_view(kb, vid, binders) || child(kb, body)
+            }
         };
     }
     if let Some(en) = occ.as_effect_expr() {
@@ -40317,6 +40644,22 @@ pub enum TypeExtractor {
         effects: Value,
         arity: usize,
     },
+    /// WI-1083 — a UNIVERSALLY QUANTIFIED type, `∀ binders. body`: the type of an
+    /// operation that declares type parameters, taken as a function VALUE. Mirrors
+    /// `anthill.prelude.TypeExtractor.PolyType`; ∀ by construction, so no quantifier
+    /// is stored (see that entity's doc for why a per-binder one would make an
+    /// illegal state representable).
+    ///
+    /// `binders` ARE VARIABLES, NOT NAMES — each is the bound variable's own term,
+    /// classifying as [`TypeExtractor::FlexVar`]. WI-1079's rule is why: `id` is a
+    /// variable's identity and `name` is not, so a `Symbol` could not say which
+    /// occurrences of `body` a binder binds — which is a binder's whole content.
+    ///
+    /// EVERY CONSUMER INSTANTIATES ([`instantiate_poly_type`]) rather than reading
+    /// this directly: a ∀ is a schema, and comparing one against a monotype without
+    /// ∀-elimination is the aliasing the eta gate used to exclude these operations
+    /// over.
+    PolyType { binders: Vec<Value>, body: Value },
     /// A value standing in a type-argument position (`Modify[c]`) —
     /// `denoted(value)`; carries the value occurrence.
     Denoted(Value),
@@ -40402,6 +40745,10 @@ enum TypeHead {
         base: Symbol,
     },
     Arrow,
+    /// WI-1083 — `∀ binders. body`, the type an eta-lifted type-parameterized
+    /// operation has. Classified by head like every other form; the children are
+    /// read only by [`extract_type`].
+    PolyType,
     Denoted,
     ExprCarried,
     /// WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`).
@@ -40469,6 +40816,7 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         "anthill.prelude.TypeExtractor.RigidTypeProjection" => TypeHead::RigidProjection,
         "anthill.prelude.TypeExtractor.EffectsRows" => TypeHead::EffectsRows,
         "anthill.prelude.TypeExtractor.Arrow" => TypeHead::Arrow,
+        "anthill.prelude.TypeExtractor.PolyType" => TypeHead::PolyType,
         "anthill.prelude.TypeExtractor.NamedTuple" => TypeHead::NamedTuple,
         // WI-425: a bare DotApply expression carrier (`s.cell` outside an
         // ExprCarried wrapper) is NOT a type — without this arm the named_arity>0
@@ -40510,6 +40858,15 @@ fn type_dispatch_name_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<&'
         TypeHead::TypeVar(_) => Some("type_var"),
         TypeHead::Parameterized { .. } => Some("parameterized"),
         TypeHead::Arrow => Some("arrow"),
+        // WI-1083 — NAMED, unlike the two variable forms beside it, and for the
+        // opposite reason. A ∀ should never reach the structural arms at all
+        // (`check_bare_ref` eliminates it at the reference, which is the one mint's one
+        // consumer), and what it must never do if it somehow does is MATCH `arrow` —
+        // comparing a schema to a monotype is exactly the aliasing the eta gate used to
+        // exist for. Naming it makes that a mismatch no arm accepts; leaving it `None`
+        // would file it under `Error`, which is reserved for malformed USER input
+        // (WI-391) and would say the opposite of what a well-formed ∀ is.
+        TypeHead::PolyType => Some("poly_type"),
         TypeHead::Denoted => Some("denoted"),
         TypeHead::ExprCarried => Some("expr_carried"),
         TypeHead::RigidProjection => Some("rigid_type_projection"),
@@ -40597,6 +40954,30 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
                 effects,
                 arity,
             },
+            _ => TypeExtractor::Error,
+        },
+        // WI-1083: the binder list is a `List[Term]` of BARE elements (not the
+        // two-field records `Parameterized`/`NamedTuple` carry), so it decodes through
+        // [`value_list_elements`]. A missing child is `Error`, keeping `extract_type` total
+        // exactly as a child-less `Arrow` is — AND SO IS AN EMPTY BINDER LIST, which is the
+        // half that matters more: `value_list_elements` cannot distinguish `nil` from a
+        // list it could not decode, and a ∀ read with no binders is not an unreadable type
+        // but the WRONG one (its body's bound variables would read as free, and
+        // `instantiate_poly_type` would hand the body back with nothing freshened).
+        // [`generalize_eta_arrow`] never mints one — "a `PolyType` has at least one binder"
+        // is its stated invariant — so rejecting here enforces it rather than assuming it.
+        TypeHead::PolyType => match (
+            view_child_value(kb, ty, "binders"),
+            view_child_value(kb, ty, "body"),
+        ) {
+            (Some(bs), Some(body)) => {
+                let binders = value_list_elements(kb, &bs);
+                if binders.is_empty() {
+                    TypeExtractor::Error
+                } else {
+                    TypeExtractor::PolyType { binders, body }
+                }
+            }
             _ => TypeExtractor::Error,
         },
         TypeHead::NamedTuple => TypeExtractor::NamedTuple(named_tuple_fields(kb, ty)),
@@ -44071,37 +44452,7 @@ fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Ve
     let mut candidates: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
     super::node_occurrence::collect_value_type(kb, &op.return_type, &mut candidates, &mut seen);
-    let mut bound: Vec<VarId> = Vec::new();
-    let mut seen = HashSet::new();
-    for (_, ty) in &op.params {
-        super::node_occurrence::collect_value_type(kb, ty, &mut bound, &mut seen);
-    }
-    for r in &op.requires {
-        super::node_occurrence::collect_value_type(kb, r, &mut bound, &mut seen);
-    }
-    for (_, v) in &op.type_params {
-        if let Var::Global(vid) = v {
-            bound.push(*vid);
-        }
-    }
-    // THE DECLARING SORT'S OWN PARAMETERS ARE A FOURTH ENTRY, and WI-1082 is what put them
-    // there. WI-1078 measured this list as unreachable and dropped it, correctly at the time: a
-    // sort parameter a HUMAN writes in a type is a `Ref` to its own symbol, never a
-    // `Var::Global`, so `to_pair(h: Holder) -> Pair[A = T, B = T]` arrived variable-free. But
-    // WI-1082 rewrites an elided self slot to that sort's canonical VAR, so every elaborated
-    // member now reaches here with one — and it is bound by construction: it is the §3 tie, the
-    // thing this call's arguments pin through the canonical channel, not an existential. Left
-    // out, every call to `List.insert` / `Map.put` / a `cons` would mint a `Var::Rigid` — which
-    // is interned for the KB's LIFETIME — that `SlotPosition::fill_self` then discards unused,
-    // and the cheap `in_result.is_empty()` gate that keeps this whole signature read off the hot
-    // path would stop firing for them.
-    if let Some(parent) = impl_parent_sort_of_op(kb, callee_op) {
-        for (_, canonical) in sort_type_params_as_pairs(kb, parent).iter() {
-            if let Term::Var(Var::Global(vid)) = kb.get_term(*canonical) {
-                bound.push(*vid);
-            }
-        }
-    }
+    let bound = signature_bound_vars(kb, callee_op, &op);
     let mut unbound = Vec::new();
     for vid in candidates {
         if bound.iter().any(|b| b.raw() == vid.raw()) {
@@ -44125,6 +44476,84 @@ fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Ve
         unbound.push(vid);
     }
     unbound
+}
+
+/// WI-1078's BOUND SET, given its own name by WI-1083 because a second consumer arrived
+/// and the two must not be able to disagree: the variables `callee_op`'s SIGNATURE binds
+/// — the ones the CALLER supplies or instantiates, as opposed to the existentials
+/// [`unbound_return_vars`] opens.
+///
+/// THE TWO QUESTIONS ARE ONE QUESTION, AND THAT IS THE POINT. Read negatively it says
+/// which return variables are existential (WI-1078). Read positively it says which
+/// variables a ∀ over this signature quantifies — the binder list of the [`TypeExtractor
+/// ::PolyType`] the eta lift mints. WI-1079's hand-over to WI-1083 asked exactly this
+/// ("WHO GENERALIZES, AND WHEN"), and warned that a binder list read as *only* an
+/// operation's own `[A]` would classify `mplus(a: LogicalStream[?A], b: LogicalStream[?A])
+/// -> LogicalStream[?A]` — whose `type_params` is EMPTY — as unbound and refuse a program
+/// that loads today. It does not, because the ∀'s binders ARE this set: generalization
+/// happens HERE, at the eta lift that consumes it, and nowhere else.
+///
+/// FOUR SOURCES, each measured on WI-1078 / WI-1082 and documented in
+/// [`unbound_return_vars`]'s own header: a PARAMETER type, a `requires` clause, the
+/// operation's own `[A]` binders, and — since WI-1082 elaborates an elided self slot to
+/// it — the DECLARING SORT's canonical parameter. The declared EFFECTS are deliberately
+/// not a fifth: a row the operation incurs sits on the same side of the arrow as the
+/// return and binds nothing.
+///
+/// A VARIABLE SHARED ACROSS TWO DECLARATIONS costs this function nothing, which is the
+/// other half of WI-1079's question. The set is per-operation and its consumers only ever
+/// build a substituted COPY (`instantiate_poly_type` maps each binder to a fresh var
+/// rather than binding it), so a `VarId` another declaration also mentions is never
+/// written through. Measured anyway: the loader mints a distinct `VarId` per declaration
+/// even for one spelling — `idp[A]` and `pair2[A, B]` get different ids for the same
+/// `Symbol`.
+fn signature_bound_vars(
+    kb: &KnowledgeBase,
+    callee_op: Symbol,
+    op: &OperationInfoFull,
+) -> Vec<VarId> {
+    let mut bound: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, ty) in &op.params {
+        super::node_occurrence::collect_value_type(kb, ty, &mut bound, &mut seen);
+    }
+    for r in &op.requires {
+        super::node_occurrence::collect_value_type(kb, r, &mut bound, &mut seen);
+    }
+    // DEDUPED THROUGH THE SAME `seen` the walks above use, which the WI-1078 reading did not
+    // need and this one does: `idp[A](x: A) -> A` reaches both sources with ONE variable, and
+    // a MEMBERSHIP test cannot tell a doubled entry from a single one while a BINDER LIST can
+    // — `∀A, A. …` is not a type. Driven by
+    // `wi1083_poly_type_tests::a_type_parameterized_operation_lifts_to_a_forall…`, which
+    // asserts the binder count.
+    for (_, v) in &op.type_params {
+        if let Var::Global(vid) = v {
+            if seen.insert(vid.raw()) {
+                bound.push(*vid);
+            }
+        }
+    }
+    // THE DECLARING SORT'S OWN PARAMETERS ARE A FOURTH ENTRY, and WI-1082 is what put them
+    // there. WI-1078 measured this list as unreachable and dropped it, correctly at the time: a
+    // sort parameter a HUMAN writes in a type is a `Ref` to its own symbol, never a
+    // `Var::Global`, so `to_pair(h: Holder) -> Pair[A = T, B = T]` arrived variable-free. But
+    // WI-1082 rewrites an elided self slot to that sort's canonical VAR, so every elaborated
+    // member now reaches here with one — and it is bound by construction: it is the §3 tie, the
+    // thing this call's arguments pin through the canonical channel, not an existential. Left
+    // out, every call to `List.insert` / `Map.put` / a `cons` would mint a `Var::Rigid` — which
+    // is interned for the KB's LIFETIME — that `SlotPosition::fill_self` then discards unused,
+    // and the cheap `in_result.is_empty()` gate that keeps this whole signature read off the hot
+    // path would stop firing for them.
+    if let Some(parent) = impl_parent_sort_of_op(kb, callee_op) {
+        for (_, canonical) in sort_type_params_as_pairs(kb, parent).iter() {
+            if let Term::Var(Var::Global(vid)) = kb.get_term(*canonical) {
+                if seen.insert(vid.raw()) {
+                    bound.push(*vid);
+                }
+            }
+        }
+    }
+    bound
 }
 
 /// WI-1063 — WHICH POSITION [`rigidify_unwritten_sort_params`] is walking. The walk itself is
@@ -52269,6 +52698,209 @@ end
             None,
             "an entity that merely SHARES a type param's local name has no canonical \
              var, and must not borrow one",
+        );
+    }
+}
+
+/// WI-1083 — THE ∀ ITSELF, driven where it is minted. The integration rows
+/// (`wi1083_polytype_test`) drive the CAPABILITY: a type-parameterized operation passed as a
+/// function value and run. They cannot see the ∀, because `check_bare_ref` eliminates it at
+/// the reference and each of their programs has one reference per operation — so a build that
+/// skipped the wrapper entirely and freshened nothing would still pass every one of them.
+/// These rows are what makes the form load-bearing rather than decorative: the binder list is
+/// asserted to BE the signature-bound set, and two instantiations of one operation are
+/// asserted to share no variable.
+#[cfg(test)]
+mod wi1083_poly_type_tests {
+    use super::{
+        extract_type, instantiate_poly_type, operation_as_function_value, type_head, TypeExtractor,
+        TypeHead,
+    };
+    use crate::eval::value::Value;
+    use crate::kb::node_occurrence::{empty_span, Expr, NodeOccurrence};
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::KnowledgeBase;
+    use std::rc::Rc;
+
+    const SRC: &str = "namespace test.wi1083.unit\n\
+        \x20 import anthill.prelude.{Int64, List}\n\
+        \x20 operation idp[A](x: A) -> A = x\n\
+        \x20 operation mono(x: Int64) -> Int64 = x\n\
+        end\n";
+
+    fn eta(kb: &mut KnowledgeBase, qn: &str) -> Value {
+        let sym = kb
+            .try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("no symbol {qn}"));
+        let occ: Rc<NodeOccurrence> =
+            NodeOccurrence::new_expr(Expr::Ref(sym), empty_span(), None);
+        operation_as_function_value(kb, sym, &occ)
+            .unwrap_or_else(|| panic!("{qn} must be an eta candidate"))
+    }
+
+    /// A type-parameterized operation's function-value type is a ∀; a MONOMORPHIC one's is the
+    /// bare arrow it always was. Both halves together, because either alone is satisfied by a
+    /// build that wraps everything or nothing — and wrapping everything would put a form every
+    /// reader must see through on the path of every eta lift in the corpus.
+    ///
+    /// The binder is asserted by IDENTITY (`id`), never by name: WI-1079's rule is that two
+    /// variables minted for one parameter name are different types that render alike, so a
+    /// name comparison here could be satisfied by an unrelated `?A`.
+    #[test]
+    fn a_type_parameterized_operation_lifts_to_a_forall_and_a_monomorphic_one_does_not() {
+        let mut kb = load_stdlib(Some(SRC));
+        let poly = eta(&mut kb, "test.wi1083.unit.idp");
+        let TypeExtractor::PolyType { binders, body } = extract_type(&kb, &poly) else {
+            panic!("a type-parameterized operation's value type must be a PolyType");
+        };
+        assert_eq!(binders.len(), 1, "exactly the operation's own `[A]`");
+        let sym = kb.try_resolve_symbol("test.wi1083.unit.idp").expect("idp");
+        let declared = crate::kb::op_info::lookup_operation_info(&kb, sym)
+            .expect("op info")
+            .type_params
+            .clone();
+        let crate::kb::term::Var::Global(want) = declared[0].1 else {
+            panic!("an operation's `[A]` is a Global var");
+        };
+        match type_head(&kb, &binders[0]) {
+            TypeHead::FlexVar(got) => assert_eq!(
+                got.raw(),
+                want.raw(),
+                "the binder IS the variable the signature declares, by identity",
+            ),
+            _ => panic!("a binder is a variable"),
+        }
+        assert!(
+            matches!(type_head(&kb, &body), TypeHead::Arrow),
+            "and it quantifies an ARROW",
+        );
+
+        let mono = eta(&mut kb, "test.wi1083.unit.mono");
+        assert!(
+            matches!(type_head(&kb, &mono), TypeHead::Arrow),
+            "a signature that binds nothing keeps the bare arrow — `PolyType([], …)` and the \
+             arrow are the same type, and minting the wrapper anyway would cost every \
+             monomorphic lift a form to see through",
+        );
+    }
+
+    /// TWO INSTANTIATIONS SHARE NO VARIABLE — the property the deleted gate said an arrow could
+    /// not have ("unfreshened type-param vars that alias across multiple eta-lifts of the same
+    /// op"). Asserted on the parameter's variable IDENTITY, and against the DECLARED variable
+    /// as a third value, so neither instantiation can pass by accidentally being the original.
+    #[test]
+    fn two_instantiations_of_one_operation_share_no_variable() {
+        let mut kb = load_stdlib(Some(SRC));
+        let poly = eta(&mut kb, "test.wi1083.unit.idp");
+        let a = instantiate_poly_type(&mut kb, &poly).expect("a ∀ instantiates");
+        let b = instantiate_poly_type(&mut kb, &poly).expect("a ∀ instantiates");
+        let param_var = |kb: &KnowledgeBase, t: &Value| -> u32 {
+            let TypeExtractor::Arrow { param, .. } = extract_type(kb, t) else {
+                panic!("an instantiated ∀ over an arrow is an arrow");
+            };
+            match type_head(kb, &param) {
+                TypeHead::FlexVar(v) => v.raw(),
+                _ => panic!("the parameter is the instantiated variable"),
+            }
+        };
+        let result_var = |kb: &KnowledgeBase, t: &Value| -> u32 {
+            let TypeExtractor::Arrow { result, .. } = extract_type(kb, t) else {
+                panic!("an instantiated ∀ over an arrow is an arrow");
+            };
+            match type_head(kb, &result) {
+                TypeHead::FlexVar(v) => v.raw(),
+                _ => panic!("the result is the instantiated variable"),
+            }
+        };
+        let (ia, ib) = (param_var(&kb, &a), param_var(&kb, &b));
+        assert_ne!(ia, ib, "each instantiation mints its own variable");
+        // AND THE TIE SURVIVES: `idp`'s parameter and result are ONE variable, so an
+        // instantiation that minted a fresh variable per OCCURRENCE instead of per BINDER
+        // would break the very thing the signature says — that the result is the argument's
+        // type. Asserted inside each instantiation, so it cannot be satisfied by the two
+        // instantiations happening to agree.
+        assert_eq!(
+            ia,
+            result_var(&kb, &a),
+            "one binder, one fresh variable — `∀A. (x: A) -> A` instantiates to `(x: ?A1) -> \
+             ?A1`, not to two unrelated variables",
+        );
+        assert_eq!(ib, result_var(&kb, &b));
+        let TypeExtractor::PolyType { binders, .. } = extract_type(&kb, &poly) else {
+            unreachable!("asserted a PolyType above");
+        };
+        let declared = match type_head(&kb, &binders[0]) {
+            TypeHead::FlexVar(v) => v.raw(),
+            _ => panic!("a binder is a variable"),
+        };
+        assert_ne!(ia, declared, "and neither of them is the declared one");
+        assert_ne!(ib, declared);
+    }
+
+    /// NO BINDER SURVIVES INTO AN INSTANTIATION — asserted over the WHOLE type rather than
+    /// at one position, on a MULTI-PARAMETER, HIGHER-ORDER operation, because that is the
+    /// shape the sibling rows above cannot see.
+    ///
+    /// `idp` has ONE parameter, so its eta arrow's `param` is a bare `Term` and every
+    /// rewriter reaches it. A parameter LIST is a `named_tuple`, and it rides the
+    /// `Value::Node` carrier as soon as one field's type does — which a callback declaring
+    /// `@ {EffP, -Modify[x]}` always does, because a `denoted`-bearing label cannot
+    /// hash-cons. The first cut instantiated through `walk_type_deep_value`, whose
+    /// `NamedTuple` arm answers "unchanged", so every binder in a PARAMETER position was
+    /// left SHARED between references while the result position was correctly freshened —
+    /// and both rows above stayed green throughout.
+    ///
+    /// ON THE STDLIB'S OWN `Iterable.map`, not a fixture: a hand-written
+    /// `hof[A, B](x: A, f: (v: A) -> B)` does NOT reproduce it (its declared arrow field
+    /// hash-conses, so the tuple stays Term-carried and the old walk reaches it), and a row
+    /// built on one passed under the back-out. The corpus operation is the shape that
+    /// actually leaks.
+    ///
+    /// CONTROL: with the walk put back to `walk_type_deep_value` this fails with
+    /// `leaked [452, 453] of [452, 453, 51, 52, 53]` — `Dst` and `EffP`, the operation's own
+    /// two binders, surviving into what is supposed to be a fresh instance. It asserts an
+    /// ABSENCE, so it is paired with the positive assertion that the instantiation carries
+    /// variables at all — an empty collect would otherwise satisfy it vacuously.
+    #[test]
+    fn no_declared_binder_survives_into_an_instantiation() {
+        let mut kb = load_stdlib(Some(SRC));
+        let poly = eta(&mut kb, "anthill.prelude.Iterable.map");
+        let TypeExtractor::PolyType { binders, .. } = extract_type(&kb, &poly) else {
+            panic!("a multi-parameter type-parameterized operation lifts to a PolyType");
+        };
+        let binder_ids: Vec<u32> = binders
+            .iter()
+            .map(|b| match type_head(&kb, b) {
+                TypeHead::FlexVar(v) => v.raw(),
+                _ => panic!("a binder is a variable"),
+            })
+            .collect();
+        assert!(
+            binder_ids.len() >= 2,
+            "`map[Dst, EffP]` binds at least its own two: {binder_ids:?}",
+        );
+        let inst = instantiate_poly_type(&mut kb, &poly).expect("a ∀ instantiates");
+        let mut seen_in_inst: Vec<crate::kb::term::VarId> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        crate::kb::node_occurrence::collect_value_type(
+            &kb,
+            &inst,
+            &mut seen_in_inst,
+            &mut seen,
+        );
+        assert!(
+            !seen_in_inst.is_empty(),
+            "the instantiation carries variables — without this the absence below is vacuous",
+        );
+        let leaked: Vec<u32> = seen_in_inst
+            .iter()
+            .map(|v| v.raw())
+            .filter(|v| binder_ids.contains(v))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "every binder must be freshened, including the ones inside the parameter LIST \
+             (a `named_tuple` on the Node carrier); leaked {leaked:?} of {binder_ids:?}",
         );
     }
 }

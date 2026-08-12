@@ -1156,3 +1156,6 @@ mod wi1082_self_return_tie_test;
 
 #[path = "include/wi1077_accepts_vs_receives_test.rs"]
 mod wi1077_accepts_vs_receives_test;
+
+#[path = "include/wi1083_polytype_test.rs"]
+mod wi1083_polytype_test;

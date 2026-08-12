@@ -341,6 +341,33 @@ enum anthill.prelude.TypeExtractor
      encoding a type variable can bind to is one substitution can introduce and
      erase; a ground count sibling is not. >}
   entity Arrow(param: Term, result: Term, effects: Term, arity: Int64)
+  {< WI-1083: a UNIVERSALLY QUANTIFIED type — `forall A. (x: A) -> A`. FORALL BY
+     CONSTRUCTION, storing no quantifier: in anthill every binder is attached to a
+     DECLARATION (`operation map[Dst, EffP](…)`, `sort [F] { … }`, `sort T = ?`) and
+     never to a free-floating type, so a mixed binder list has no position in which to
+     arise; and §5.6's "a type parameter is the CALLER's to instantiate" makes the
+     quantifier a function of POSITION, so a per-binder quantifier would let a binder
+     tagged `exists` sit in a `forall` position and the two disagree. The EXISTENTIAL
+     needs no binder node at all — at a declaration it is implied by the return
+     position, and at a use it has already been OPENED into a `Skolem` (WI-1063).
+
+     A BINDER CARRIES NO BOUND. §5.4 says `TypeParam ::= Name` and WI-850 refuses the
+     `= default` arm the grammar parses only for its diagnostic, so neither binder form
+     can carry one. Bounds live at SORT level as `requires` clauses and are already
+     reflected as `SortRequiresInfo`; duplicating one here would give it two owners.
+
+     `binders` IS A LIST OF VARIABLES, NOT OF NAMES, and that is the one place this
+     departs from the shape sketched on WI-1079 (`binders: List[Symbol]`). A binder's
+     whole content is WHICH OCCURRENCES OF THE BODY IT BINDS, and a `Symbol` cannot say
+     that: WI-1079 delivered the rule in the entity right above — `id` IS THE IDENTITY
+     AND `name` IS NOT — so two variables minted for one parameter name are different
+     types that render alike, and a name-keyed binder list would bind whichever of them
+     the reader guessed. Each element therefore extracts as a `FlexVar`, whose `id`
+     links it to its occurrences in `body`.
+
+     INSTANTIATING one yields `FlexVar`s (∀-elimination, at each APPLICATION); that is
+     the lifecycle the two variable entities above already name. >}
+  entity PolyType(binders: List[Term], body: Term)
   entity Denoted(value: NodeOccurrence)
   {< WI-376: an expression-carried type projection `s.T` / `s.Sort`. `value` is the
      RECEIVER occurrence (a param/local ref, or any typed expression); `member` is the

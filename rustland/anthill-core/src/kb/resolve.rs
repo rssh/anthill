@@ -8760,6 +8760,26 @@ impl KnowledgeBase {
             TypeNode::NamedTuple { fields } => {
                 self.collect_type_value_unbound_vars(fields, subst, out)
             }
+            // WI-1083 — a BOUND variable is not an unbound one, so the binders are
+            // subtracted from the body's contribution. Same rule as the loader twin
+            // `collect_type_node_vars`, and the two must not disagree: this walk
+            // decides which vars a resolve-time close/open acts on, and reporting a
+            // ∀-bound variable would let one be closed over from outside its binder.
+            //
+            // Subtraction happens on the LOCAL result rather than by filtering `out`,
+            // which may already hold the same VarId legitimately from a sibling
+            // position (a variable free THERE and bound HERE is still free overall).
+            TypeNode::PolyType { binders, body } => {
+                let mut bound: Vec<VarId> = Vec::new();
+                self.collect_type_value_unbound_vars(binders, subst, &mut bound);
+                let mut inner: Vec<VarId> = Vec::new();
+                self.collect_type_child_unbound_vars(body, subst, &mut inner);
+                out.extend(
+                    inner
+                        .into_iter()
+                        .filter(|v| !bound.iter().any(|b| b.raw() == v.raw())),
+                );
+            }
         }
     }
 
