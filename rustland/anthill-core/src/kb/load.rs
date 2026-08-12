@@ -207,6 +207,48 @@ pub enum LoadError {
         path: String,
         span: Span,
     },
+    /// WI-993 — `import a.b.op.*` where the path names a declaration that HAS no
+    /// contents (an operation, an entity, a const, …). §8.6 gives the wildcard form
+    /// one meaning — "include `a.b` as a non-enclosing parent (every visible name)" —
+    /// and only a namespace or a sort has names to include.
+    ///
+    /// Refused rather than ignored because ignoring it was never the behaviour:
+    /// linking a non-scope's scope as a parent splices in whatever that scope's OWN
+    /// parents reach, which for an operation is the sort that declared it and the
+    /// namespace above that (see [`find_scope_by_name`] for the measurement, and for
+    /// the entity case, where the link really does reach nothing). The author gets
+    /// names they never wrote, or a line that does nothing. Neither is a diagnosis,
+    /// so this says which KIND the path actually named.
+    WildcardImportOfNonScope {
+        path: String,
+        /// The kind the path's symbol actually carries — `primary_kind`, the
+        /// keyword its declaration opened with, which is exactly the DISPLAY
+        /// reading that projection is for. `None` for a symbol interned without a
+        /// declaration.
+        kind: Option<SymbolKind>,
+        span: Span,
+    },
+    /// WI-993 — `requires X` where `X` is not a SORT. The other half of WI-988, whose
+    /// rustland twin that ticket's note said did not exist: `load_requires_decl` does
+    /// emit a `SortRequiresInfo` fact rather than a link, but [`ImportPass::at_item`]
+    /// wires a scope parent from the same declaration one pass earlier, and it asked
+    /// nothing about kind. DRIVEN: `requires lib.Host.op1` on an operation loaded
+    /// clean and made `Host`'s OTHER member resolve bare in the requiring sort.
+    ///
+    /// A sort alone, not a namespace: a `requires` names a SPEC (§5.2), which is what
+    /// the requiring sort's dispatch is written against. That is also scaland's rule
+    /// (WI-988's `parentScopeOf`), so the two implementations refuse the same
+    /// programs.
+    RequiresNamesNonSort {
+        /// The name as WRITTEN in the clause — the base of its type expression, which
+        /// is the text the author must change.
+        written: String,
+        /// The QUALIFIED name it resolved to. The two differ whenever the clause was
+        /// written short, and the qualified one is what says which declaration won.
+        resolved: String,
+        kind: Option<SymbolKind>,
+        span: Span,
+    },
     /// A name reachable by two or more paths. Dispatch has no sound choice, so
     /// loading would silently pick a referent the author never named.
     AmbiguousSymbol {
@@ -1409,6 +1451,8 @@ impl LoadError {
         match self {
             LoadError::UnresolvedName { span, .. }
             | LoadError::UnresolvedImport { span, .. }
+            | LoadError::WildcardImportOfNonScope { span, .. }
+            | LoadError::RequiresNamesNonSort { span, .. }
             | LoadError::AmbiguousSymbol { span, .. }
             | LoadError::ArrowTermInExprPosition { span }
             | LoadError::PatternAnnotatedTwice { span }
@@ -1550,6 +1594,25 @@ impl LoadError {
             }
             LoadError::UnresolvedImport { path, span } => {
                 format!("{}: unresolved import '{}'", loc.format_start(*span), path)
+            }
+            LoadError::WildcardImportOfNonScope { path, kind, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    wildcard_non_scope_message(path, *kind)
+                )
+            }
+            LoadError::RequiresNamesNonSort {
+                written,
+                resolved,
+                kind,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    requires_non_sort_message(written, resolved, *kind)
+                )
             }
             LoadError::AmbiguousSymbol {
                 name,
@@ -2294,6 +2357,29 @@ impl std::fmt::Display for LoadError {
                     f,
                     "unresolved import '{}' at {}..{}",
                     path, span.start, span.end
+                )
+            }
+            LoadError::WildcardImportOfNonScope { path, kind, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    wildcard_non_scope_message(path, *kind),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::RequiresNamesNonSort {
+                written,
+                resolved,
+                kind,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    requires_non_sort_message(written, resolved, *kind),
+                    span.start,
+                    span.end
                 )
             }
             LoadError::AmbiguousSymbol {
@@ -4065,6 +4151,58 @@ fn provides_needs_sort_message(namespace: &str) -> String {
     )
 }
 
+/// WI-993 — the sentence for [`LoadError::WildcardImportOfNonScope`]. One owner,
+/// for the reason [`provides_needs_sort_message`] states: two rendering paths, one
+/// of them under test.
+///
+/// It names the KIND because "this import did nothing" (or, here, "did something
+/// else") is not a diagnosis a reader can act on — the repair depends entirely on
+/// what the path turned out to name, so both repairs are spelled out.
+fn wildcard_non_scope_message(path: &str, kind: Option<SymbolKind>) -> String {
+    format!(
+        "wildcard import '{path}.*': '{path}' is {}, which has no contents to \
+         import — §8.6 gives the form one meaning, 'include {path} as a \
+         non-enclosing parent (every visible name)', and only a namespace or a \
+         sort has names to include. Write `import {path}` for the name itself, or \
+         wildcard-import the sort/namespace that declares it.",
+        declaration_of_kind(kind)
+    )
+}
+
+/// WI-993 — the sentence for [`LoadError::RequiresNamesNonSort`]. Its own owner
+/// rather than a parameter of [`wildcard_non_scope_message`]: the two clauses admit
+/// different sets (§5.2's sort alone here) and take different repairs, which is the
+/// whole content of the message.
+fn requires_non_sort_message(written: &str, resolved: &str, kind: Option<SymbolKind>) -> String {
+    let names = if written == resolved {
+        format!("'{written}'")
+    } else {
+        format!("'{written}' ('{resolved}')")
+    };
+    format!(
+        "`requires {written}`: {names} is {}, and a `requires` names a SPEC — only a \
+         sort (§5.2) has the operations a requiring sort dispatches against, so this \
+         clause would wire in a scope the author never named. Name the spec sort \
+         itself; to refer to one of its members, import that member.",
+        declaration_of_kind(kind)
+    )
+}
+
+/// The kind half of both sentences above, so the two agree on how an undeclared
+/// symbol is described (WI-993).
+///
+/// The `None` arm is for a symbol carrying NO category — a `SymbolDef::Unresolved`,
+/// which has no kinds and so fails both gates. Believed unreachable from either
+/// raise site (both take their symbol from `by_qualified_name` or from a scope
+/// table, and every writer of those goes through `define`, which records a
+/// category), but it is a rendering rather than a decision: a sentence is cheaper
+/// than an `expect` that would abort a load to say a name has no kind.
+fn declaration_of_kind(kind: Option<SymbolKind>) -> String {
+    kind.map_or("not a declaration at all".to_owned(), |k| {
+        format!("a declaration of kind {}", k.reflect_name())
+    })
+}
+
 /// WI-997 — the QUALIFIED name of a scope the ledger keys on. Qualified rather
 /// than local because R1's key is `(scope, local name)` and a bare `Rec` in the
 /// message would not say WHICH `Rec` — the whole point of the pair.
@@ -5701,7 +5839,7 @@ impl ScopePass for ImportPass<'_> {
     }
 
     fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
-        let (kb, parse_sym) = (&mut *self.kb, self.parse_sym);
+        let (kb, parse_sym, errors) = (&mut *self.kb, self.parse_sym, &mut *self.errors);
         match item {
             Item::RequiresDecl(r) => {
                 let req_sort_name = type_expr_base_name(parse_sym, &r.type_expr);
@@ -5744,14 +5882,32 @@ impl ScopePass for ImportPass<'_> {
                                 Some(sym) => ResolveResult::Found(sym),
                                 None => ResolveResult::NotFound,
                             });
+                    // WI-993: and the same kind question the wildcard import asks —
+                    // this clause links a parent too, so it can link a scope with no
+                    // contents just as easily. WI-988's note said rustland had no twin
+                    // here because `load_requires_decl` records a fact instead; that
+                    // reads the LOAD phase, and this is sub-pass 2, which does link.
+                    // DRIVEN: `requires lib.Host.op1` on an operation loaded clean and
+                    // made `Host`'s OTHER member resolve bare in the requiring sort.
+                    // MEASURED before gating: of 64,445 `requires` links across the
+                    // stdlib, `anthill-stl` and every fixture the suite loads, all
+                    // 64,445 name a `Sort` — the refusal costs the corpus nothing.
                     if let ResolveResult::Found(sym) = resolved {
-                        kb.symbols.add_parent(
-                            scope,
-                            ScopeInclusion {
-                                parent_scope: kb.symbols.scope_id(sym),
-                                is_enclosing: false,
-                            },
-                        );
+                        match parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
+                            Some(parent_scope) => kb.symbols.add_parent(
+                                scope,
+                                ScopeInclusion {
+                                    parent_scope,
+                                    is_enclosing: false,
+                                },
+                            ),
+                            None => errors.push(LoadError::RequiresNamesNonSort {
+                                written: req_sort_name.clone(),
+                                resolved: kb.qualified_name_of(sym).to_string(),
+                                kind: kb.symbols.get(sym).primary_kind(),
+                                span: r.span,
+                            }),
+                        }
                     }
                 }
             }
@@ -5819,14 +5975,79 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
     }
 }
 
-/// The scope a qualified name names, if the symbol table has that name at all.
+/// The scope a qualified name names — `None` unless the name is defined AND its
+/// declaration is one that HAS contents: §5.1's namespace or §5.2's sort.
 ///
-/// WI-1028 — this used to reconstruct the nullary `Fn` term and hand THAT back as
-/// "the scope", so both callers that only wanted an existence test allocated a term
-/// to throw away, and the two that wanted a scope projected straight back out of it.
+/// WI-993 — THE KIND CHECK IS THE FUNCTION'S NAME, and until now it asked nothing
+/// about kind: a bare `by_qualified_name` hit, whose scope every caller then linked
+/// as a resolution parent. So `import demo.Host.op1.*` on an OPERATION took the
+/// success path.
+///
+/// WI-988 measured the scaland twin as a silent NO-OP — there `addParent` never
+/// creates the parent's record, so the walk finds nothing. Rustland has that shape
+/// AND a worse one, keyed on the target's kind (both measured in
+/// `wi993_wildcard_import_scope_kind_test`, by backing this check out):
+///
+/// - an OPERATION's scope is real and carries an ENCLOSING link to the sort that
+///   declared it (`scan_operation_params`), and the parent walk is transitive — so
+///   naming one member spliced in the whole chain above it. After
+///   `import lib.Host.op1.*` in a second namespace, a bare `op2` (a sibling member of
+///   `Host`) and a bare `Neighbour` (a SORT of the enclosing namespace `lib`) both
+///   resolved, each a hard error without the import. Names the author never wrote,
+///   from a line that named one operation.
+/// - an ENTITY's scope carries no such link, so there it really is WI-988's no-op.
+///
+/// One question answers both: does this path name a declaration that HAS contents.
+///
+/// The wildcard caller REFUSES the non-scope case ([`LoadError::WildcardImportOfNonScope`]);
+/// the plain caller simply adds no parent, because there the alias is the import's
+/// point and the parent link was never what the author asked for.
+///
+/// WI-1028 — a [`ScopeId`], never the scope's nullary `Fn` term: the owner
+/// projection is total off the symbol and was not off the term.
 fn find_scope_by_name(kb: &KnowledgeBase, qualified: &str) -> Option<ScopeId> {
     let sym = *kb.symbols.by_qualified_name.get(qualified)?;
-    Some(kb.symbols.scope_id(sym))
+    parent_scope_of(kb, sym, IMPORT_PARENT_ADMITS)
+}
+
+/// §5.1's namespace and §5.2's sort — what an IMPORT may splice in as a resolution
+/// parent (WI-993).
+const IMPORT_PARENT_ADMITS: &[SymbolKind] = &[SymbolKind::Namespace, SymbolKind::Sort];
+
+/// A `requires` names a SPEC, and only §5.2's sort is one — a namespace declares no
+/// operations to dispatch against (WI-993, matching scaland's WI-988 rule).
+const REQUIRES_PARENT_ADMITS: &[SymbolKind] = &[SymbolKind::Sort];
+
+/// The scope a SYMBOL names, when its declaration is one that HAS contents — the
+/// twin of scaland's `parentScopeOf` (WI-988/WI-993), and the one place the two
+/// parent-linking clauses ask that question.
+///
+/// `scope_id` is total over the table's symbols on purpose (the scope graph is open,
+/// so the mint requires nothing of a kind), which leaves "can this name hold contents
+/// at all" to the sites that LINK a parent — and both of rustland's used to skip it.
+///
+/// `has_kind`, not `primary_kind`: §6.3's eponymous constructor is one name playing
+/// both `Sort` and `Entity`, and which of the two leads is an accident of the
+/// declaration's keyword (WI-926). It has a sort's contents either way.
+///
+/// A KIND TEST, DELIBERATELY, AND NOT A CONTENT TEST — the distinction a reader is
+/// most likely to challenge, since an admitted scope may be EMPTY (a namespace with
+/// nothing in it, a spec with no operations, and §6.3's top-level `entity Point(…)`,
+/// whose sort scope holds no citable name at all). Such a link resolves nothing,
+/// which is the very shape this gate is named for. It is admitted anyway because
+/// "does this scope hold anything" is not a question with a stable answer HERE: this
+/// runs in sub-pass 2, and a sort's rule-introduced members are minted in sub-pass 3,
+/// while a 059 R2 secondary entry can add members from a file loaded later still. A
+/// content test would make the same program load or not by declaration order. What a
+/// KIND settles is whether the path could ever have had contents — which is the
+/// author's error when it could not, and no error at all when they simply imported
+/// something empty.
+fn parent_scope_of(kb: &KnowledgeBase, sym: Symbol, admits: &[SymbolKind]) -> Option<ScopeId> {
+    let def = kb.symbols.get(sym);
+    admits
+        .iter()
+        .any(|&k| def.has_kind(k))
+        .then(|| kb.symbols.scope_id(sym))
 }
 
 /// Walk one level of nested scopes under `base_path` looking for a symbol
@@ -5977,6 +6198,23 @@ fn process_imports(
                         kb.symbols.add_import(scope_id, short, original_sym, origin);
                     }
                 }
+                // WI-993: the parent link rides on the target HAVING contents, which
+                // `find_scope_by_name` now decides. A plain import of an operation or
+                // an entity keeps its alias (that is what the author wrote the line
+                // for) and contributes no parent — where before it spliced in the
+                // target's whole enclosing chain. Nothing is dropped silently: the
+                // link brought only names the author never named, and a body that was
+                // reaching one now says so at its own use site. MEASURED over stdlib +
+                // `anthill-stl` + every example and fixture corpus the suite loads: 12
+                // plain imports name a non-scope (`anthill.prelude.Option.some`,
+                // `…FiniteCollection.foldLeft`, …) out of 31,067, and all 12 still
+                // load — their ALIAS is what they were written for.
+                //
+                // WHAT THIS LINK IS remains undecided, and WI-1089 owns it: §8.6 says
+                // the parent is `a.b` where rustland links `a.b.C`'s own scope and
+                // scaland links nothing, and none of the three texts says whether the
+                // link is re-entered through the target's own enclosing parents (it
+                // is, here — which is how a sort import reaches its namespace).
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
                     kb.symbols.add_import_parent(
                         scope_id,
@@ -6010,6 +6248,12 @@ fn process_imports(
                 //    is an entity inside `enum ParseResult`) fails, since its
                 //    qualified name is `anthill.cli.parse.ParseResult.parse_ok`
                 //    rather than `anthill.cli.parse.parse_ok`.
+                // WI-993: strategy 2 asks the base path's scope, so a base with no
+                // contents (an operation, an entity) now offers none — its scope
+                // would have answered out of the enclosing chain above it, resolving
+                // `{X}` against a scope the path never named. Strategies 1 and 3 read
+                // the qualified index and are untouched, and the miss below still
+                // reports through the existence test rather than through this.
                 let base_scope = find_scope_by_name(kb, &path);
                 if base_scope.is_none() && !kb.symbols.by_qualified_name.contains_key(&path) {
                     // The base path itself doesn't resolve
@@ -6067,6 +6311,17 @@ fn process_imports(
                         },
                         origin,
                     );
+                } else if let Some(&sym) = kb.symbols.by_qualified_name.get(&path) {
+                    // WI-993: the path DOES name something — it just names something
+                    // with no contents. Two different repairs, so two different
+                    // diagnostics: this one names the kind it got, where
+                    // `UnresolvedImport` below would send the author looking for a
+                    // typo in a path that resolved perfectly well.
+                    errors.push(LoadError::WildcardImportOfNonScope {
+                        path: path.clone(),
+                        kind: kb.symbols.get(sym).primary_kind(),
+                        span: imp.path.span,
+                    });
                 } else {
                     errors.push(LoadError::UnresolvedImport {
                         path: path.clone(),

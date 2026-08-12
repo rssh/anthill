@@ -3041,12 +3041,41 @@ link. A parent link a `requires`, an enclosing body or variant exposure also
 justifies stays visible, since those belong to a declaration at the address rather
 than to one file's text.
 
-- `import a.b.C` — alias `C`, and include `a.b` as a non-enclosing parent.
+- `import a.b.C` — alias `C`. `rustland` also includes `C`'s **own** scope as a
+  non-enclosing parent when `C` is a namespace or a sort, which — since the walk
+  re-enters that scope's enclosing chain — makes `a.b` visible too; `scaland`
+  adds the alias alone. The rule this text used to state ("include `a.b`") is a
+  third answer, implemented by neither. **Undecided**, and WI-1089 owns the
+  ruling and the corpus measurement; until it lands, write the import you mean
+  rather than relying on what a parent link happens to reach.
 - `import a.b.{C, D}` — alias each name, resolved by: direct `a.b.C`
   qualified lookup, then `resolve_in_scope(C, a.b)`, then a one-level nested
   lookup (`a.b.<segment>.C`, taken only if unique) so an entity declared inside
   a sort/enum of `a.b` is importable by its short name.
 - `import a.b.*` — include `a.b` as a non-enclosing parent (every visible name).
+
+**A parent link needs a scope to link.** The wildcard form's path must name a
+**namespace** (§5.1) or a **sort** (§5.2) — the two declarations that *can have*
+contents — and a `requires` must name a **sort**, since it names a spec and a
+namespace declares no operations to dispatch against. A path naming anything
+else (an operation, a const, an entity declared *inside* a sort) is **refused,
+naming the kind it turned out to name** (WI-988, WI-993), because neither thing
+it would otherwise do is what the author asked for: the link either resolves
+nothing at all, or — where the named declaration's own scope is enclosed by the
+sort that declared it — brings in every name of that sort and of the namespace
+above it, none of which the author wrote. "This line did nothing" is not a
+diagnosis a reader can act on, so the kind is part of the message.
+
+The test is on the **kind**, not on whether the scope currently holds anything:
+an empty namespace, a spec with no operations, and §6.3's eponymous constructor
+(`entity Point(…)` at top level, which *is* a sort, so it passes on either of
+the two roles its one name plays) are all admitted. Refusing on emptiness would
+make the same program load or not depending on declaration order — a sort's
+rule-introduced members are registered *after* imports are wired, and a
+`namespace X … end` secondary entry may add members from another file entirely.
+
+A **plain** import of a refused path keeps its alias — that is what the line was
+written for — and contributes no parent.
 
 **Variant exposure.** A sort that declares entity constructors exposes **only
 those constructor (variant) names** to its enclosing scope, by linking its
