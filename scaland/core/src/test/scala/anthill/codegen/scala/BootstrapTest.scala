@@ -779,7 +779,12 @@ class BootstrapTest extends munit.FunSuite:
       .head.contents
     assert(src.contains("trait FiniteCollection[C, Element]:"),
       s"the corpus instance must erase the same way as the fixture:\n$src")
-    assert(src.contains("def map[Dst](c: C, f: (Element) => Dst): " +
+    // The `using` clause is WI-1022's — the shadowed `requires` is evidence, and
+    // evidence is what an emitted signature demands — and it is quoted here rather
+    // than matched around because a signature this test read PAST would be one it
+    // stopped pinning.
+    assert(src.contains("def map[Dst](c: C, f: (Element) => Dst)" +
+      "(using _root_.anthill.prelude.Iterable[C, Element]): " +
       "FiniteCollection[_root_.anthill.prelude.FiniteMappedStream[C, Element, Dst], Dst]"),
       s"an operation's row-only type parameter must erase like a sort's:\n$src")
     val fmapped = gen(parseStdlib("anthill/prelude/finite_combinators.anthill"))
@@ -1251,31 +1256,97 @@ class BootstrapTest extends munit.FunSuite:
       s"the type map must still fire for a compatible arity:\n${files.head.contents}")
   }
 
-  test("WI-1055: a NAMED requirement slot is refused, at sort level and at operation level") {
-    // WI-840 (proposal 058 §4.7): a named slot — `requires O: Ord[T]` — is a type
-    // parameter of the sort whose value is a chosen WITNESS, and §2.7 maps a
-    // requires to "either a type-class supertrait or a `using` context parameter".
-    // A named slot is unambiguously the second, and Bootstrap emits no `using`
-    // clause. `sortedset.anthill` shipped `SortedSet[T, O]` with a phantom `O` that
-    // no member could bind, and every use of the type inside it was
-    // `Too many type arguments for SortedSet[T]`.
-    //
-    // BOTH LEVELS in one test because it is one decision. The operation-level arm
-    // has no stdlib instance and would otherwise be unreachable code.
-    //
-    // FAILS WHEN BACKED OUT: delete the sort-level throw and sortedset.anthill
-    // emits again; delete the operation-level throw and the second `intercept`
-    // finds no throw (the slot silently becomes a lowercase type parameter).
-    val sortLevel = intercept[BootstrapError](
-      gen(parseStdlib("anthill/prelude/sortedset.anthill")))
-    assert(sortLevel.getMessage.contains("`SortedSet`") &&
-           sortLevel.getMessage.contains("`O`"),
-      s"refusal must name the sort and the slot: ${sortLevel.getMessage}")
-    assert(sortLevel.getMessage.contains("sortedset.anthill:"),
-      s"refusal must be located: ${sortLevel.getMessage}")
+  // ── WI-1022: §2.7's `using` half ──────────────────────────────────────────
 
+  test("WI-1022: a NAMED requirement slot is a BOUNDED type parameter carrying its witness") {
+    // WI-840 (proposal 058 §4.7): a named slot — `requires O: Ord[T]` — is a type
+    // PARAMETER of the sort whose value is a chosen WITNESS, which is how the
+    // comparator enters the type: `SortedSet[T = String, O = ByLength]` and
+    // `SortedSet[T = String, O = Alphabetical]` are DIFFERENT types, and merging one
+    // into the other is a type error before it is a wrong answer. Both halves of that
+    // have to reach Scala, and they are two different Scala constructs:
+    //   * the DISTINCTION is the type parameter — asserted by the binder below;
+    //   * the WITNESS is a value a body dispatches through, which a type parameter is
+    //     not — asserted by the `using O` clauses.
+    // Emitting only the first is what `sortedset.anthill` shipped before WI-840
+    // refused it: `SortedSet[T, O]` against a `SortedSet[T]` binder, i.e. `Too many
+    // type arguments`, and no member able to bind `O` even had the arity agreed.
+    //
+    // THE BOUND IS THE THIRD PIECE and is what makes the parameter a witness slot
+    // rather than a phantom: `O <: Ord[T]` is the requirement itself, stated where
+    // §2.7a says an is-a claim belongs — on the type. It is also this data sort's
+    // DISCHARGE (`checkDischarged` would otherwise refuse a requirement no
+    // constructor field carries, and `items: List[T]` does not carry `Ord[T]`).
+    val files = gen(parseStdlib("anthill/prelude/sortedset.anthill"))
+    val src = files.find(_.relPath.endsWith("/SortedSet.scala"))
+      .getOrElse(fail(s"expected SortedSet.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("enum SortedSet[T, O <: _root_.anthill.prelude.Ord[T]]:"),
+      s"the named slot must bind as a parameter bounded by its spec:\n$src")
+    assert(src.contains("def insert(s: SortedSet[T, O], x: T)(using O): SortedSet[T, O]"),
+      s"the witness must reach the body as a `using` parameter:\n$src")
+    // EVERY operation, not the ones a reader guesses need it: a sort-level `requires`
+    // "supplies every body's evidence" (kernel §8.7), so the signature that omitted it
+    // would be the one an implementor cannot write. `SortedSet` has six.
+    assertEquals(src.linesIterator.count(_.contains("(using O)")), 6,
+      s"every operation of the sort takes the dictionary:\n$src")
+    // The parameter is a BINDER here and an ARGUMENT at every use, so the bound must
+    // appear on the declaration and nowhere else — `SortedSet[T, O <: Ord[T]]` in a
+    // return position is not Scala.
+    assert(src.contains("def toList(s: SortedSet[T, O])(using O): " +
+      "_root_.anthill.prelude.List[T]"),
+      s"a USE of the sort writes arguments, not bounds:\n$src")
+
+    // THE ENUM CASE'S PARENT IS QUALIFIED, and this is the one file in the corpus
+    // that shows why: anthill's `sort SortedSet` and its constructor `sorted_set` are
+    // two symbols — which is why `shapeOf`, keyed on the ANTHILL name, correctly says
+    // Sum — and §5 sends both to the Scala name `SortedSet`, where the case shadows
+    // the enum. MEASURED under dotc with the bare parent: `Cyclic inheritance: class
+    // SortedSet extends itself`, then `enum case does not extend its enum class`.
+    assert(src.contains("case SortedSet[T, O <: _root_.anthill.prelude.Ord[T]]" +
+      "(items: _root_.anthill.prelude.List[T]) extends _root_.anthill.prelude.SortedSet[T, O]"),
+      s"a case that shadows its enum must name the parent qualified:\n$src")
+
+    // DRIVEN, not read: the closure compiles. `Ord` and `List` are siblings, and
+    // their own closures come with them.
+    ScalaCompile.assertCompiles("sortedset.anthill's emission",
+      files ++ preludeClosure("ordered", "eq", "list", "option", "pair"))
+
+    // WHAT THE SLOT COSTS A CONSUMER, stated because it is a limit and not a rule
+    // (found in review): `SortedSet` is now published as a TWO-parameter type, so
+    // `SortedSet[T = String]` — which this file's own header documents as meaningful,
+    // "takes BOTH of the above" — is a partial application and WI-1055 B3 refuses it,
+    // although Scala can spell it (`SortedSet[String, ?]`). Not narrowed here: that
+    // rule spans every multi-parameter sort and the wildcard's meaning is the
+    // existential question sortedset.anthill itself defers (WI-402). Unreachable
+    // today — measured, every occurrence in the corpus writes both slots.
+
+    // FAILS WHEN BACKED OUT, one assertion per piece, each MEASURED by backing it
+    // out: drop the `RequiresDeclItem` arm from `sortTypeParams` and `gen` throws
+    // before the first assert — `operation `empty`: `SortedSet` is the enclosing
+    // sort, which declares 1 type parameter(s), but 2 argument(s) were written`;
+    // drop `TypeParamDecl.declWith` and the FIRST assertion fails on a bare
+    // `enum SortedSet[T, O]:` (not `checkDischarged`, which is asked only about the
+    // ANONYMOUS requirements and so has nothing to say either way); drop the named
+    // arm of `requiresMapping`'s evidence and the `using` count is 0; drop
+    // `enumParent`'s qualification and the compile reports the cyclic inheritance.
+  }
+
+  test("WI-1022: a named requirement slot on an OPERATION is still refused") {
+    // The asymmetry with the sort level, and it is about what Bootstrap can READ
+    // rather than a second decision about what a named slot MEANS. A sort's
+    // `requires` carries a `TypeExpr`, so the spec renders like any other type and
+    // becomes the slot's bound; an operation's is a GOAL — `Operation.requires` is
+    // `IndexedSeq[IndexedSeq[TermId]]`, since the same clause also admits value
+    // preconditions (`requires neq(b, 0)`, WI-539) — and `TypeParam.requirementSlot`
+    // is only its INDEX among them. There is no term → type path here and proposal
+    // 034 gives Bootstrap no KB to get one from, so the bound cannot be spelled at
+    // all. No stdlib operation declares one; this fixture is the whole coverage.
+    //
+    // FAILS WHEN BACKED OUT: delete `OpGen.refuseNamedSlot`'s throw and the slot
+    // silently becomes a lowercase type parameter `def biFold[lo](x: T): T`, which
+    // compiles and binds nothing.
     val opLevel = intercept[BootstrapError](gen(parseSource(
-      """namespace anthill.wi1055
+      """namespace anthill.wi1022
         |  sort Bag
         |    sort T = ?
         |    operation biFold(x: T) -> T
@@ -1285,8 +1356,226 @@ class BootstrapTest extends munit.FunSuite:
         |""".stripMargin, "bag.anthill")))
     assert(opLevel.getMessage.contains("`biFold`") && opLevel.getMessage.contains("`lo`"),
       s"refusal must name the operation and the slot: ${opLevel.getMessage}")
+    assert(opLevel.getMessage.contains("goal term"),
+      s"refusal must say what defeated it: ${opLevel.getMessage}")
     assert(opLevel.getMessage.contains("bag.anthill:"),
       s"refusal must be located: ${opLevel.getMessage}")
+  }
+
+  test("WI-1022: an enum case that shadows its enum in the EMPTY package is refused") {
+    // The one place the qualified parent has no spelling: a top-level type in the
+    // empty package is not a member of `_root_` (MEASURED: `type RootSet is not a
+    // member of <root>`), so the emission would be the cyclic inheritance the
+    // qualification exists to escape. Loud instead — the same trade every other
+    // unspellable construct here gets.
+    //
+    // A FIXTURE, and it has to be: every stdlib file declares a namespace, so no
+    // corpus file reaches this arm. The `O` slot is what leaves the case's parameter
+    // UNCOVERED — a case whose fields cover every parameter writes no `extends` at
+    // all, which is why `enum Pair: case Pair(…)` compiles and this does not.
+    //
+    // FAILS WHEN BACKED OUT: return `sortName` unconditionally and this emits
+    // `case RootSet[...](...) extends RootSet[T, O]`, which `intercept` reports as no
+    // exception thrown.
+    val err = intercept[BootstrapError](gen(parseSource(
+      """enum RootSet
+        |  sort T = ?
+        |  requires O: Ord[T]
+        |  entity root_set(items: T)
+        |end
+        |""".stripMargin, "rootset.anthill")))
+    assert(err.getMessage.contains("`RootSet`"),
+      s"refusal must name the colliding declaration: ${err.getMessage}")
+    assert(err.getMessage.contains("empty package"),
+      s"refusal must say why there is no spelling: ${err.getMessage}")
+    assert(err.getMessage.contains("rootset.anthill:"),
+      s"refusal must be located: ${err.getMessage}")
+  }
+
+  test("WI-1022: a DEMOTED requirement becomes the dictionary every operation takes") {
+    // The other half of §2.7, and the one the corpus exercises four times. WI-1066
+    // and WI-1065 decided WHICH requirements are not supertraits — over an element /
+    // key / scalar, or shadowed by a redeclared member — and recorded each in a
+    // comment saying the `using` that would carry it was unemitted. This is that
+    // `using`. The emitted trait is no longer weaker than the anthill sort: an
+    // implementor is asked for exactly the dictionaries kernel §8.7 says the bodies
+    // have.
+    //
+    // ALL FOUR corpus demotions, because the rule is one rule and a test naming one
+    // of them would not notice a partition that lost the others: Set (carrier is the
+    // sort, requirement over the ELEMENT), Map (over the KEY), VectorSpace (over the
+    // SCALAR) and FiniteCollection (over the carrier, demoted for shadowing `map` /
+    // `filter`).
+    val set = preludeClosure("set").head.contents
+    assert(set.contains("def insert(s: Set[T], x: T)" +
+      "(using _root_.anthill.prelude.Eq[T]): Set[T]"),
+      s"Set's element equality must reach its bodies:\n$set")
+    val map = preludeClosure("map").head.contents
+    assert(map.contains("(using _root_.anthill.prelude.Eq[K])"),
+      s"Map's key equality must reach its bodies:\n$map")
+    val vectorSpace = preludeClosure("algebra")
+      .find(_.relPath.endsWith("/VectorSpace.scala"))
+      .getOrElse(fail("expected VectorSpace.scala")).contents
+    assert(vectorSpace.contains("def vecScale(c: F, v: V)(using Ring[F]): V"),
+      s"VectorSpace's scalar ring must reach its bodies:\n$vectorSpace")
+    val finite = preludeClosure("finite_collection").head.contents
+    assert(finite.contains("def collect(c: C)" +
+      "(using _root_.anthill.prelude.Iterable[C, Element]): "),
+      s"a SHADOWED requirement is evidence too:\n$finite")
+
+    // THE NOTE STILL SAYS WHY there is no supertrait, and now says where the
+    // requirement went instead. It is the same frame for both demotion reasons.
+    assert(set.contains("//   it is §2.7's `using` context parameter, " +
+      "which every operation below takes."),
+      s"the note must name what carries the requirement:\n$set")
+
+    // FAILS WHEN BACKED OUT: return `IndexedSeq.empty` for the algebra shape's
+    // evidence and every one of these four finds a bare `: Set[T]` signature. The
+    // closure COMPILE does not fail — a trait tolerates a missing context parameter
+    // as readily as a missing supertrait, which is the same blindness WI-1066 records
+    // at its site, and is why this test asserts on the emitted text.
+  }
+
+  test("WI-1022: a WITNESS slot is not a carrier candidate, wherever it is written") {
+    // `carrierOf` reads the first type parameter of a sort with no self-receiver, and
+    // a named slot is now one of those parameters — so a slot written BEFORE the
+    // sort's own `sort T = ?` would be the head and would be taken for the carrier.
+    // It never is: 058 §4.7 makes it the author's slot for a chosen PROVIDER, and the
+    // carrier is what the operations are an algebra over.
+    //
+    // WHAT MAKES IT OBSERVABLE is the anonymous requirement beside it: `requires
+    // Eq[T]` mentions `T`, so with the carrier read correctly it is over the carrier
+    // and becomes the supertrait. Read as `O`, it mentions nothing of `O` and is
+    // demoted to a dictionary instead — a `using` clause where an `extends` belongs,
+    // and both emissions compile, which is why this needs an assertion rather than a
+    // compiler. No stdlib sort writes the order; this fixture is the whole coverage.
+    //
+    // FAILS WHEN BACKED OUT: drop the `filterNot(witnesses)` and the emission is
+    // `trait Weighted[O <: …Ord[T], T]:` with `def pick(a: T, b: T)(using O, …Eq[T])`.
+    val src = gen(parseSource(
+      """namespace anthill.wi1022
+        |  sort Weighted
+        |    requires O: Ord[T]
+        |    sort T = ?
+        |    requires Eq[T]
+        |    operation pick(a: T, b: T) -> T
+        |  end
+        |end
+        |""".stripMargin, "weighted.anthill")).head.contents
+    assert(src.contains("trait Weighted[O <: _root_.anthill.prelude.Ord[T], T] " +
+      "extends _root_.anthill.prelude.Eq[T]:"),
+      s"the carrier must be read past the witness slot:\n$src")
+    assert(src.contains("def pick(a: T, b: T)(using O): T"),
+      s"the witness is the only dictionary here — `Eq[T]` is inherited:\n$src")
+    ScalaCompile.assertCompiles("a witness slot written first",
+      IndexedSeq(GeneratedFile("src/main/scala/anthill/wi1022/Weighted.scala", src)) ++
+        preludeClosure("ordered", "eq"))
+  }
+
+  test("WI-1022: with NO operation to carry it, the note says so instead of promising a clause") {
+    // WHERE THE PARTITION STOPS MEANING ANYTHING, found in review. `extends` and
+    // `using` partition the requirements, but the `using` half lives on a signature —
+    // and `renderMainSort`'s `ops.isEmpty` arm emits a bare `trait S[…]` with no
+    // member to hang a clause on. The evidence is computed and reaches nothing.
+    //
+    // NOT A REFUSAL, because nothing is lost that the emission ever carried: no
+    // operation means no body for the dictionary to reach, and what the requirement
+    // does condition — the `provides` clauses and the laws — has no bootstrap emission
+    // at all. What WOULD be wrong is the promise: "which every operation below takes"
+    // over an empty body is vacuous and reads as a guarantee.
+    //
+    // `Container`'s carrier is `C` (rule 2 — no self-receiver, first parameter), so
+    // `requires Eq[Element]` is over the ELEMENT and is demoted, exactly as `Map`'s
+    // key equality is. No prelude sort has this shape: `Eq` and `NonEq` declare no
+    // operations either, but their `requires PartialEq[T]` IS over the carrier and
+    // stays a supertrait, which is why the arm was reachable and unnoticed.
+    //
+    // FAILS WHEN BACKED OUT: make `evidenceNote` take `carriedByUsing`
+    // unconditionally and the emitted trait promises a `using` clause on operations
+    // that do not exist — the second assertion below.
+    val src = gen(parseSource(
+      """namespace anthill.wi1022
+        |  sort Container
+        |    sort C = ?
+        |    sort Element = ?
+        |    requires Eq[Element]
+        |  end
+        |end
+        |""".stripMargin, "container.anthill")).head.contents
+    assert(src.contains("trait Container[C, Element]\n"),
+      s"a sort with no operations takes no body at all:\n$src")
+    assert(src.contains("//   it is NOTHING here: this sort declares no operation"),
+      s"the note must report the drop rather than promise a clause:\n$src")
+    assert(!src.contains("every operation below takes"),
+      s"there are no operations below:\n$src")
+    ScalaCompile.assertCompiles("an operation-less sort with evidence",
+      IndexedSeq(GeneratedFile("src/main/scala/anthill/wi1022/Container.scala", src)) ++
+        preludeClosure("eq"))
+  }
+
+  test("WI-1022: ONE binder per name — a slot colliding with a parameter is refused") {
+    // The two sources of a type parameter can now collide: `sortTypeParams` collects a
+    // `sort O = ?` and a named requirement slot into one list, and nothing relates the
+    // spellings. MEASURED without the check, on this fixture:
+    //
+    //   enum Box[T, O <: …Eq[T], O <: …Eq[T]]:
+    //     case Boxed[T, O <: …Eq[T], O <: …Eq[T]](items: T) extends Box[T, O, O]
+    //
+    // — not Scala, AND the `Ord` requirement is silently gone: `emitSort` keys the
+    // bounds by anthill name, so the later slot's bound is printed at both binders.
+    // A duplicate binder is the one Scala would report; a lost requirement is not.
+    //
+    // TWO SLOTS is the fixture; a slot against a `sort O = ?` is the same list and the
+    // same check. Refused at the SECOND binder, which is the one to edit.
+    //
+    // FAILS WHEN BACKED OUT: drop the `refuseDuplicateParams` call and `intercept`
+    // finds no throw — the emission above ships.
+    val err = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi1022
+        |  enum Box
+        |    sort T = ?
+        |    requires O: Ord[T]
+        |    requires O: Eq[T]
+        |    entity boxed(items: T)
+        |  end
+        |end
+        |""".stripMargin, "box.anthill")))
+    assert(err.getMessage.contains("`Box`") && err.getMessage.contains("`O`"),
+      s"refusal must name the sort and the repeated binder: ${err.getMessage}")
+    assert(err.getMessage.contains("silently take the first's bound"),
+      s"refusal must say what shipping it would cost: ${err.getMessage}")
+    // AT THE SECOND binder: `requires O: Eq[T]` is line 5 of the fixture.
+    assert(err.getMessage.contains("box.anthill:5:"),
+      s"refusal must point at the REPEAT: ${err.getMessage}")
+  }
+
+  test("WI-1022 CONTROL: a SUPERTRAIT requirement takes no `using` clause") {
+    // The partition's other side, and the assertion that pins it: a requirement is a
+    // supertrait or it is evidence, never both. `Ord` keeps `extends Eq[T],
+    // PartialOrd[T]` (WI-1066's control) and its operations must stay bare — an
+    // inherited member needs no dictionary passed to it, and a `using Eq[T]` beside
+    // the `extends` would demand at every call site what the type already provides.
+    //
+    // PASSES WITH AND WITHOUT the evidence emission BY DESIGN in one direction: no
+    // `using` is also what an unimplemented WI-1022 emitted. What it CANNOT survive
+    // is the partition being widened to "every requirement is evidence", which is the
+    // simplest wrong version of this ticket.
+    val ord = preludeClosure("ordered")
+      .find(_.relPath.endsWith("/Ord.scala"))
+      .getOrElse(fail("expected Ord.scala")).contents
+    // `PartialOrd` bare and `Eq` qualified is this file's own name table doing its
+    // job (WI-1055 B1 CONTROL): ordered.anthill declares `PartialOrd` itself.
+    assert(ord.contains("trait Ord[T] extends _root_.anthill.prelude.Eq[T], PartialOrd[T]:"),
+      s"the supertrait control must be unchanged:\n$ord")
+    assert(!ord.contains("using"),
+      s"a supertrait requirement must not ALSO be passed as a dictionary:\n$ord")
+    // The data shape's control, for the same partition: `FiniteMappedStream`'s
+    // requirement is discharged by the constructor FIELD typed by it (WI-1064), which
+    // is a stronger position than a context parameter — it constrains the constructed
+    // value — so its `<Sort>Ops` operations stay bare too.
+    val fmapped = preludeClosure("finite_combinators").head.contents
+    assert(!fmapped.contains("using"),
+      s"a field-discharged requirement must not also be a dictionary:\n$fmapped")
   }
 
   test("WI-1055: the enclosing sort written with the WRONG number of arguments is refused") {
@@ -1496,13 +1785,16 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-1064: a data sort's `requires` that NO field carries is REFUSED, not dropped") {
     // The omission above is admissible only because the emitted tree still carries
     // the requirement through a field's declared type. Where it would not, omitting
-    // it is a real loss — the emitted `Boxed` says nothing of `Ordering[T]` — and
-    // that is §2.7's other half, the `using` context parameter WI-1022 owns and
-    // Bootstrap does not emit. No prelude file has this shape, which is exactly why
-    // emitting `""` for every data sort unconditionally would have looked right.
+    // it is a real loss — the emitted `Boxed` says nothing of `Ordering[T]`. It stays
+    // a refusal after WI-1022 emitted §2.7's `using` half, and the message says why:
+    // a DATA sort's requirement constrains the constructed VALUE, which a context
+    // parameter on the operations does not reach. The remedy it points at is the one
+    // that does — NAME the slot (§2.7b) and the bound rides on the declaration. No
+    // prelude file has this shape, which is exactly why emitting `""` for every data
+    // sort unconditionally would have looked right.
     //
     // FAILS WHEN BACKED OUT: delete the `checkDischarged` call and this `intercept`
-    // finds no throw — the bound is silently gone from the emitted declaration.
+    // finds no throw — the requirement is silently gone from the emitted declaration.
     val err = intercept[BootstrapError](gen(parseSource(
       """namespace anthill.wi1064
         |  sort Ordering
@@ -1527,6 +1819,12 @@ class BootstrapTest extends munit.FunSuite:
       s"refusal must say what a sort-level `requires` IS: ${err.getMessage}")
     assert(err.getMessage.contains("has no field typed by it"),
       s"refusal must say why it cannot be carried: ${err.getMessage}")
+    // The remedy, and it must be the one that WORKS for this shape (WI-1022): a
+    // `using` clause on the operations is what an algebra sort's demotion becomes,
+    // and pointing a data sort at it would send the reader to a construct that does
+    // not constrain what their requirement is about.
+    assert(err.getMessage.contains("NAME the slot"),
+      s"refusal must name the remedy that fits a data sort: ${err.getMessage}")
     assert(err.getMessage.contains("boxed.anthill:"),
       s"refusal must be located: ${err.getMessage}")
   }
@@ -1771,11 +2069,11 @@ class BootstrapTest extends munit.FunSuite:
     //
     // WHAT THE OMITTED CLAUSE BECOMES is asserted here too, and it is a RECORD rather
     // than a refusal: the requirement is named in the emitted source with what it is
-    // over and what would carry it (§2.7's `using`, WI-1022). A data sort's
+    // over and what carries it instead (§2.7's `using` context parameter, emitted
+    // since WI-1022 — the dictionary itself is that ticket's test). A data sort's
     // undischarged requirement is refused instead (WI-1064) because its only possible
-    // home — a constructor field's type — is genuinely absent; an algebra sort's has a
-    // Scala home that Bootstrap has not implemented, and refusing would delete three
-    // prelude files from the tree to punish that.
+    // home — a constructor field's type — is genuinely absent, and a context parameter
+    // on the operations would not reach the constructed value.
     //
     // FAILS WHEN BACKED OUT: with the Algebra arm unconditional the three emissions are
     // `trait Set[T] extends _root_.anthill.prelude.Eq[T]:`, `trait Map[K, V] extends
@@ -1794,14 +2092,16 @@ class BootstrapTest extends munit.FunSuite:
       assert(src.contains(decl), s"$sort must carry no supertrait:\n$src")
       assert(src.contains(named), s"$sort must still NAME what it requires:\n$src")
       assert(src.contains(carrier), s"$sort must say what its carrier is:\n$src")
-      assert(src.contains("WI-1022"), s"$sort must say what would carry it:\n$src")
+      assert(src.contains("`using` context parameter"),
+        s"$sort must say what carries it instead:\n$src")
     }
   }
 
   test("WI-1066 CORPUS CONTROL: every other prelude supertrait is unchanged") {
     // THE OTHER SIDE OF THE SAME MEASUREMENT, and the complete one: fourteen prelude
-    // algebra sorts carry a `requires` (sortedset.anthill's fifteenth is refused
-    // earlier, for its named requirement slot). Three lose the clause to WI-1066's
+    // algebra sorts carry a `requires` (sortedset.anthill's is the fifteenth and is
+    // not one of them — it is a DATA sort, and its named slot is a bounded type
+    // parameter rather than any kind of clause, WI-1022). Three lose the clause to WI-1066's
     // carrier rule, and a fourth — `FiniteCollection`, WI-1066's own named control —
     // lost it later to WI-1065's shadow rule (its `requires Iterable[C = C, …]` IS
     // over its own carrier, but the sort redeclares `map`/`filter`; pinned in the
@@ -2284,6 +2584,16 @@ class BootstrapTest extends munit.FunSuite:
     //   after  WI-1054        3 (Modifiable) -> 2 -> 4 -> clean
     //   after  WI-1065        3 (Modifiable, mutable_collection.anthill) -> clean at 36 files
     //   after  WI-1080        4 (Symbol/Term, sort.anthill) -> clean at 44 files
+    //   after  WI-1022        4 (the same) -> clean at 45 files
+    //
+    // WI-1022 MOVED THE CLEAN COUNT AND NOT THE LADDER, which is what a ticket that
+    // adds a file rather than fixing an error looks like: sortedset.anthill leaves the
+    // refusal set (its named slot is a bounded type parameter now, not an unspellable
+    // construct), so `SortedSet.scala` joins the closure and compiles in it. The four
+    // errors are WI-1081's, untouched. The `using` clauses it adds to Set / Map /
+    // VectorSpace / FiniteCollection change no count here at all — a trait's abstract
+    // member takes a context parameter as readily as it does not, which is the same
+    // blindness WI-1066 records.
     // WI-1054 removed the FIRST rung outright rather than shortening one: the round
     // of 4 was 3 Modifiable errors plus the `zero-val` parse error, and with the
     // parse error gone that round IS the old second rung. The remaining ladder is
@@ -2367,10 +2677,15 @@ class BootstrapTest extends munit.FunSuite:
     //     true of the same line; the `?A` arm is driven by a fixture instead
     //     (WI-1055 B2 above), for exactly the reason the other B2 arms are.
     //
+    // ONE FILE LEFT (WI-1022): sortedset.anthill's `requires O: Ord[T]` is a NAMED
+    // requirement slot, and a named slot is a type PARAMETER whose value is a chosen
+    // witness (058 §4.7) — which §2.7 now spells as a parameter bounded by the spec,
+    // so there is no unspellable construct left to refuse. Six files, from seven.
+    //
     // EVERY REFUSED DECLARATION AND NOT THE FIRST ONE PER FILE (WI-1080). A refusal is
     // scoped to a declaration now, so a file has a LIST and the entries after the first
     // were never absent — they were SHADOWED, unreachable behind the throw that ended
-    // the file. Four of the seven files had a second refusal waiting: delay's
+    // the file. Four of the then-seven files had a second refusal waiting: delay's
     // `delayPure` is `pure`'s twin, effects' `RelationFloundered` is `MatchFailed`'s,
     // meta declares `ProofResult` beside its `Meta` entity, and sort.anthill's
     // `TypeExtractor` is a SECOND and unrelated construct — an `anthill.reflect` import
@@ -2394,8 +2709,6 @@ class BootstrapTest extends munit.FunSuite:
       "sort.anthill" -> Seq(
         ("sort `EffectExpression`", "emits no Scala type for"),
         ("sort `TypeExtractor`", "imported from `anthill.reflect`")),
-      "sortedset.anthill" -> Seq(
-        ("sort `SortedSet`", "named requirement slot")),
     )
     // THE SAME SET `scalaTypes` WAS BUILT FROM (WI-1060), and not a second listing of
     // the same directory: the table places every name these files emit, so a walk that
@@ -2440,17 +2753,27 @@ class BootstrapTest extends munit.FunSuite:
     // in this counter — back the granularity out and both are refused whole again,
     // taking the count to 18 and failing this line.
     //
-    // THE OTHER FIVE REFUSED FILES DO NOT MOVE IT, and for two different reasons worth
-    // separating: delay / logical_stream / relation / sortedset refuse the only
-    // declaration they have to emit, so their survivor set is empty and this counter
+    // THE OTHER FOUR REFUSED FILES DO NOT MOVE IT, and for two different reasons worth
+    // separating: delay / logical_stream / relation refuse the only declaration they
+    // have to emit, so their survivor set is empty and this counter
     // skips them; sort.anthill emits SIX survivors that do not compile alone, because
     // two of them (`TypeBinding`, `NamedTupleElement`) write the qualified name
     // `anthill.reflect.Symbol` and Bootstrap drops a written prefix, re-anchoring the
-    // leaf to the declaring package. That is a placement defect this ticket UNCOVERED
+    // leaf to the declaring package. That is a placement defect WI-1080 UNCOVERED
     // rather than caused — its file emitted nothing before — and it is the one rung
     // left in the peel ladder below. Filed as WI-1081.
-    assert(compiled >= 20,
-      s"only $compiled prelude files compile standalone; 20 did at WI-1080, and " +
+    //
+    // 19 SINCE WI-1022 (measured, and the ONLY file that moved): set.anthill leaves
+    // the self-contained set because `_root_.anthill.prelude.Eq[T]` is back in its
+    // emission — as the `using` dictionary its operations take, which is the position
+    // §2.7a says the requirement belongs in. WI-1066's row above recorded the same
+    // file arriving for the mirror-image reason when its wrong `extends` was deleted,
+    // and said then that the counter measures SELF-CONTAINEDNESS and not correctness;
+    // this is that sentence collecting. sortedset.anthill left the refusal set in the
+    // same ticket and does not offset it — `SortedSet.scala` names `Ord` and `List`,
+    // so it emits and needs its siblings, the state most of this directory is in.
+    assert(compiled >= 19,
+      s"only $compiled prelude files compile standalone; 19 did at WI-1022, and " +
       "refusing more than is fixed would show up here")
   }
 

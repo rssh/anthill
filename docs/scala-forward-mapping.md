@@ -102,7 +102,8 @@ hyphens in identifiers become underscores (§5).
 | `effects (Error)` or `effects (Error E)` | `Either[E, R]` return (default profile) |
 | `effects (Requires Cap)` | `(using Cap)` context parameter |
 | `sort T` (abstract sub-sort = type parameter) | `[T]` type parameter |
-| `requires Eq[T]` | supertrait when it is over the sort's carrier AND the sort redeclares none of the spec's members, else `using Eq[T]` evidence — see §2.7a |
+| `requires Eq[T]` | supertrait when it is over the sort's carrier AND the sort redeclares none of the spec's members, else `using Eq[T]` evidence on every operation — see §2.7a |
+| `requires O: Ord[T]` (NAMED slot) | type parameter bounded by the spec, `[T, O <: Ord[T]]`, plus `using O` on every operation — see §2.7b |
 | `fact SortName` (inside sort body) | `extends SortName` |
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
 | `Int64` / `Float` / `Bool` / `String` / `BigInt` / `Unit` / `Nothing` | `scala.Long` / `scala.Double` / `scala.Boolean` / `java.lang.String` / `scala.math.BigInt` / `scala.Unit` / `scala.Nothing` — see §2.1a |
@@ -363,6 +364,16 @@ polymorphic — a `List[T]` for every `T` — and an anthill sort declares no va
 COVERAGE, not arity: `entity left(v: L)` in a two-parameter `sort Either[L, R]` has a field and
 still leaves `R` uninferable, so it takes the explicit form too (WI-1055).
 
+**A parent named by a case that shadows it is written qualified** (WI-1022). §5 converts identifiers
+many-to-one, so a constructor whose anthill name merely *differs* from its sort's can still reach
+Scala as the same identifier: `sortedset.anthill` declares `sort SortedSet` with the constructor
+`sorted_set`, two symbols in anthill — which is why the sort classifies as an enum and not as §2.4's
+eponymous case, a test keyed on the *anthill* name — and both become `SortedSet`. Inside the enum
+body the case's name wins, so the bare form is `Cyclic inheritance: class SortedSet extends itself`
+(measured). Only the explicit-parent form above is affected: a case whose fields cover every
+parameter writes no `extends` at all. In the **empty package** there is no qualified spelling of a
+top-level type (`_root_.RootSet` is `not a member of <root>`), so that shape is refused.
+
 When the enum sort also has operations, those become **abstract methods on a companion `trait`** (e.g. `LogicalStreamOps[T]`), not implemented methods on the companion object. Concrete implementations come from `Implementation` facts or `Quoted` terms; rules in the spec become ScalaCheck properties that verify any implementation.
 
 ```
@@ -484,6 +495,13 @@ sort PolynomOps {                           trait PolynomOps {
     zipWith(?a, ?b, Ring.add)               // → src/test/scala/.../PolynomOpsLaws.scala
 }
 ```
+
+**Every operation of the sort takes it, in one clause, anonymously** (WI-1022). A sort-level
+`requires` "supplies **every** body's evidence" (kernel §8.7), so the signature that omitted the
+dictionary would be the one an implementor cannot write; the clause is anonymous because Scala
+resolves a `using` parameter by type, which also keeps two requirements of one spec at different
+arguments (`Eq[A]`, `Eq[B]`) distinguishable. A namespace's `<Ns>Ops` trait takes none — a
+namespace declares no carrier for a `requires` to condition.
 
 #### 2.7a A sort-level `requires` is evidence, not an is-a claim
 
@@ -618,16 +636,17 @@ is the whole of what a signature-only emission can say about it. The check is pe
 and matches the requirement nested inside a field type (`sources: List[T = Walk[…]]` carries
 `Walk[…]`). A constructor that carries it **nowhere** is **refused** rather than emitted short.
 
-An **algebra** sort's has no such place — a trait's abstract members carry no evidence — so it
-is **recorded** in the emitted source instead, as a comment naming the requirement, the carrier
-it is not over, and what would carry it:
+An **algebra** sort's has no such place — a trait's abstract *type* carries no evidence — so it
+becomes §2.7's `using` context parameter on every operation, and the demotion is additionally
+**recorded** as a comment naming the requirement, the carrier it is not over, and what carries it:
 
 ```scala
 // `requires _root_.anthill.prelude.Eq[T]`
 //   is EVIDENCE, not a supertype claim (§2.7a, kernel §8.7). This sort's carrier is
 //   `Set` itself (self-representing), and the requirement is not over it. What carries
-//   it is §2.7's `using` context parameter, which Bootstrap does not emit (WI-1022).
+//   it is §2.7's `using` context parameter, which every operation below takes.
 trait Set[T]:
+  def insert(s: Set[T], x: T)(using _root_.anthill.prelude.Eq[T]): Set[T]
 ```
 
 A **shadowed** requirement (over the carrier, demoted for the redeclared members) is
@@ -639,22 +658,82 @@ recorded the same way, naming the members instead of the carrier:
 //   `map`, `filter`, and a redeclared member of a merely-required spec is a DISTINCT
 //   operation shadowing it, not an override — a relation one Scala override
 //   group cannot hold (WI-1065). What carries
-//   it is §2.7's `using` context parameter, which Bootstrap does not emit (WI-1022).
+//   it is §2.7's `using` context parameter, which every operation below takes.
 trait FiniteCollection[C, Element]:
 ```
 
-The asymmetry is deliberate. A data sort's requirement has exactly one possible home and a
-constructor that lacks it is a loss with no remedy, so it is refused. An algebra sort's *has*
-a Scala home — §2.7's `using` context parameter, which WI-1022 owns — so refusing would take
-`set` / `map` / `algebra` out of the emitted tree to punish a gap that is already ticketed,
-and would delete the three emissions this rule exists to correct rather than correct them.
-Until WI-1022 lands the emitted trait is **genuinely weaker** than the anthill declaration,
-and the comment is what says so.
+The asymmetry is deliberate, and it is about *what the requirement constrains*. A data sort's
+constrains the constructed **value**, which a context parameter on the operations does not reach, so
+a constructor that carries it nowhere is refused (or the slot is named, §2.7b, and the bound carries
+it). An algebra sort's constrains only the **bodies**, which is exactly what a context parameter
+supplies — so the emitted trait is not weaker than the anthill declaration: an implementor is asked
+for precisely the dictionaries kernel §8.7 says the bodies have. The `extends` clause and the `using`
+clause **partition** the requirements: one or the other, never both (a supertrait's members are
+inherited and need nothing passed) and never neither.
 
-*(WI-1064 for the data half, WI-1066 for the carrier reading, WI-1065 for the shadow rule.
-The `provides` clause has no bootstrap emission of its own — a `given` instance would need
-the bodies proposal 034 assigns to the KB-driven gen — so today it is read for nothing; what
-these rules fix is that the `requires` was being read in its place.)*
+Nothing in the emitted closure reports the difference either way — a trait tolerates a missing
+context parameter as readily as a missing supertrait — so this rule and WI-1066's are both pinned by
+assertions on the emitted **text**, not by the closure compile.
+
+#### 2.7b A named requirement slot is a bounded type parameter
+
+`requires O: Ord[T]` is a **named** slot (proposal 058 §4.7), and a named slot **is** a type
+parameter whose value is a chosen *witness* — which is how the comparator enters the type:
+`SortedSet[T = String, O = ByLength]` and `SortedSet[T = String, O = Alphabetical]` are different
+types, and merging one into the other is a type error before it is a wrong answer. Two Scala
+constructs carry the two halves of that:
+
+```
+enum SortedSet {                            enum SortedSet[T, O <: Ord[T]] {
+  sort T = ?                                  case SortedSet[T, O <: Ord[T]](
+  requires O: Ord[T]                            items: List[T])
+  entity sorted_set(             →              extends _root_.….SortedSet[T, O]
+    items: List[T = T])                     }
+  operation insert(
+    s: SortedSet[T = T, O = O],             trait SortedSetOps[T, O <: Ord[T]] {
+    x: T) -> SortedSet[…]                     def insert(s: SortedSet[T, O], x: T)
+}                                                        (using O): SortedSet[T, O]
+                                            }
+```
+
+The parameter is the *distinction*; the **bound** is the requirement itself, stated where §2.7a says
+an is-a claim belongs — on the type — and `using O` is the *witness*, because a body dispatches
+through a value and a type parameter is not one. The bound is also how a **data** sort discharges the
+requirement (§2.7a's "no silent drop"): it is on the emitted declaration, so no constructor field has
+to carry it, and the field check is asked only about the anonymous ones.
+
+**A consumer must write the slot**, and that is a limit rather than a rule (found in review). The
+slot joins the sort's published parameter count (§2.1a's table is built from the same walk), so
+`SortedSet[T = String]` — which `sortedset.anthill`'s own header documents as meaningful, "takes
+BOTH of the above" — is a partial application, and §2.7's WI-1055 B3 rule refuses those: *"anthill
+leaves a sort's parameters implicit where they are in scope and allows a PARTIAL named binding;
+Scala has no bare type constructor in this position"*. For a partial *named* binding Scala does have
+one — `SortedSet[String, ?]` — so the refusal is stricter than it needs to be here. It is not
+narrowed in this section because the rule spans every multi-parameter sort, not the named slots, and
+the wildcard's meaning is the existential question `sortedset.anthill` itself defers (WI-402).
+Nothing in the corpus writes a partial application (they are all refused, so nothing can), and every
+occurrence in `sortedset.anthill` writes both slots.
+
+It is **not** a carrier candidate, wherever it is written. §2.7a's rule 2 reads the first declared
+type parameter, and a named slot is one of them — written before the sort's own, it would be the
+head and every anonymous requirement of that sort would then be judged against the wrong carrier
+(silently: both answers emit). A slot holds a chosen *provider*; the carrier is what the operations
+are an algebra over, so the witness slots are skipped before that reading.
+
+A named slot on an **operation** (`requires plus: Monoid[T]`) is **refused**. That is an asymmetry in
+what the bootstrap mapper can *read*, not a second decision about what a named slot means: a sort's
+`requires` carries a type expression, while an operation's is a *goal* — the same clause also admits
+value preconditions (`requires neq(b, 0)`) — so the spec to bound the parameter by cannot be spelled
+without a term → type path the parse-IR-only mapper does not have.
+
+*(WI-1064 for the data half, WI-1066 for the carrier reading, WI-1065 for the shadow rule,
+WI-1022 for both `using` halves. The `provides` clause has no bootstrap emission of its own —
+a `given` instance would need the bodies proposal 034 assigns to the KB-driven gen — so today
+it is read for nothing; what these rules fix is that the `requires` was being read in its place.
+The `O <: Ord[T]` bound above is the one place that gap is visible from the outside: a witness
+sort writing `provides Ord[T = String]` **is** an `Ord[String]` by §2.7a's own rule, so the bound
+is the right claim, but nothing bootstrap emits satisfies it yet. Nothing instantiates a
+`SortedSet` in the emitted prelude, so no closure reports it.)*
 
 ### 2.8 Effects → Method Shape
 

@@ -1,7 +1,7 @@
 package anthill.codegen.scala
 
 import anthill.intern.SymbolTable
-import anthill.parse.{Effect, Operation, TypeExpr}
+import anthill.parse.{Effect, Operation, TypeExpr, TypeParam}
 
 /** Operation → abstract `def`. v1 emits trait-member signatures only;
   * concrete companion objects are deferred to the KB-driven gen.
@@ -13,7 +13,20 @@ import anthill.parse.{Effect, Operation, TypeExpr}
   */
 object OpGen:
 
-  def renderAbstract(op: Operation, enclosingScope: TypeScope, sym: SymbolTable): String =
+  /** One operation's abstract signature.
+    *
+    * `evidence` is the enclosing sort's requirement dictionaries (WI-1022): the
+    * `requires` declarations that did NOT become the sort's `extends` clause, already
+    * rendered, which every body of the sort has by kernel §8.7 and every emitted
+    * signature therefore demands. It is a PARAMETER and has no default, for the reason
+    * `Bootstrap.generate`'s `types` has none — a namespace's `<Ns>Ops` trait passes
+    * empty because a namespace declares no carrier to require anything of, and a
+    * default would make that silence look like the decision it is not.
+    */
+  def renderAbstract(
+    op: Operation, evidence: IndexedSeq[String], enclosingScope: TypeScope,
+    sym: SymbolTable
+  ): String =
     val name = Names.scalaMethodName(sym.name(op.name.last))
     // WI-1055 A1: an operation's OWN type parameters. `Operation.typeParams` has
     // been in the parse IR since WI-269 and nothing here read it, so
@@ -21,14 +34,7 @@ object OpGen:
     // unbound — every operation carrying its own parameters emitted a signature
     // that does not compile.
     val declared = op.typeParams.map { tp =>
-      // WI-840: a NAMED requirement slot (`requires plus: Monoid[T]`) rides in
-      // `typeParams` but names a WITNESS, not a type — the same decision the sort
-      // level makes, so the same refusal. No stdlib operation declares one today;
-      // refusing keeps `def f[plus]` from becoming silently wrong output the day
-      // one does.
-      if tp.requirementSlot.isDefined then
-        Bootstrap.refuseNamedRequirementSlot(
-          s"operation `${sym.name(op.name.last)}`", sym.name(tp.name), tp.span)
+      if tp.requirementSlot.isDefined then refuseNamedSlot(op, tp, sym)
       sym.name(tp.name)
     }
     // WI-1062: ONE partition of the declared parameters, not two filters — the
@@ -49,8 +55,41 @@ object OpGen:
       val pTy = TypeGen.render(sym, p.ty, scope)
       s"$pName: $pTy"
     }.mkString("(", ", ", ")")
+    // ONE clause for every dictionary and not one clause each: they are the sort's
+    // requirement set, supplied together at a call site, and Scala resolves an
+    // anonymous `using` parameter by TYPE — so the clause needs no names and two
+    // requirements of one spec at different arguments (`Eq[A]`, `Eq[B]`) stay
+    // distinguishable. ANONYMOUS also keeps the emitted name space free of a binder
+    // the anthill declaration never wrote.
+    val using = if evidence.isEmpty then "" else evidence.mkString("(using ", ", ", ")")
     val ret = renderReturn(op, scope, sym)
-    s"def $name$tpStr$params: $ret"
+    s"def $name$tpStr$params$using: $ret"
+
+  /** WI-840: a NAMED requirement slot on an OPERATION (`requires plus: Monoid[T]`)
+    * rides in `typeParams` but names a WITNESS, not a type.
+    *
+    * THE SORT-LEVEL TWIN IS IMPLEMENTED AND THIS IS NOT, which is an asymmetry in
+    * what Bootstrap can READ rather than a second decision about what a named slot
+    * MEANS (WI-1022). A sort's `requires` is a `RequiresDecl` carrying a `TypeExpr`,
+    * so the spec renders like any other type and becomes the slot's upper bound; an
+    * operation's is a GOAL — `Operation.requires` is `IndexedSeq[IndexedSeq[TermId]]`,
+    * conjunctions of terms, since the same clause also admits value preconditions
+    * (`requires neq(b, 0)`, WI-539) — and `TypeParam.requirementSlot` is only its
+    * INDEX among them. Bootstrap has no term → type path and proposal 034 gives it no
+    * KB to get one from, so the spec this slot is bounded by cannot be spelled at all.
+    *
+    * Refusing keeps `def f[plus]` from becoming silently wrong output: a phantom
+    * parameter nothing binds, in the one position where the anthill declaration says
+    * a specific witness was chosen. No stdlib operation declares one today.
+    */
+  private def refuseNamedSlot(op: Operation, tp: TypeParam, sym: SymbolTable): Nothing =
+    throw BootstrapError(
+      s"operation `${sym.name(op.name.last)}` declares the named requirement slot " +
+      s"`${sym.name(tp.name)}`; §2.7 maps that to a `using` context parameter bounded " +
+      "by the required spec, and an operation's `requires` is a goal term rather than " +
+      "a type expression, so Bootstrap cannot spell the spec — a plain type parameter " +
+      "would be a phantom nothing binds",
+      tp.span)
 
   /** Every name this operation's OWN signature writes in an effect-row position
     * (WI-1062).
