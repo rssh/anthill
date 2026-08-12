@@ -461,8 +461,11 @@ object Bootstrap:
       enclosing: Option[EnclosingSort] = None,
       params: Map[String, ParamBinding] = Map.empty
     ): TypeScope =
-      TypeScope(decl, declSpan, pkg, enclosing, params, fileTypePlacements, imports,
-        decls.declaredNotEmitted.keySet, scalaTypes)
+      // NO VALUES: only an operation signature binds one, and [[OpGen]] adds its own
+      // parameters through `withValues` (WI-1081). A sort's `requires`, an entity's
+      // fields and a namespace's scope have no value to project off.
+      TypeScope(decl, declSpan, pkg, enclosing, params, Map.empty, fileTypePlacements,
+        imports, decls.declaredNotEmitted.keySet, scalaTypes)
 
   /** The name environment of one parsed file, in ONE walk.
     *
@@ -744,6 +747,15 @@ object Bootstrap:
     val nsOps = declaredOps(ns.items)
     if nsOps.nonEmpty then attempt(out, refusals) { staged =>
       val typeName = Names.scalaTypeName(here.leaf) + "Ops"
+      // `nsParentPkg` IS WHERE THE FILE GOES AND NOT WHERE ITS NAMES RESOLVE, and
+      // [[TypeScope]] has one field for both — a standing defect, PRE-EXISTING and not
+      // WI-1081's, surfaced by its review. `namespace my.app`'s operations emit into
+      // package `my` as `AppOps`, so a bare mention of a sort `my.app` declares is looked
+      // up from `my` and falls to [[Placement.Ambient]] (`my.Foo`), and a written path's
+      // head is anchored there too. The prelude does not show it: `anthill.prelude`'s own
+      // sorts are reached through the AUTO-IMPORT rung, which is package-blind. Splitting
+      // the field is a change to every placement rung and wants its own measurement —
+      // WI-1084.
       val scope = env.scopeAt(
         s"namespace `${here.anthillLeaf}`", ns.name.span, nsParentPkg, imports)
       val sb = StringBuilder()
@@ -778,15 +790,19 @@ object Bootstrap:
     // list cannot drift out of positional sync.
     val kinds = paramKinds(written)
     val typeParams = kinds.keepTypeArgs(written)
+    // ONE binder list, read three ways (WI-1081): `EnclosingSort` derives the emitted
+    // names, the erasure kinds and the by-anthill-name lookup from it, and the
+    // declaration's `params` map is the same list keyed. Built once here, so the
+    // sort's own view and the rendering scope's cannot drift.
+    val binders = written.map(p =>
+      p.anthillName ->
+        (if p.isEffect then ParamBinding.Effect
+         else ParamBinding.Scala(p.scalaName, p.members.length)))
     val scope = env.scopeAt(
       s"sort `${sym.name(sort.name.last)}`", sort.name.span, effectivePkg,
       importedNames(sym, sort.imports, outerImports),
-      enclosing = Some(EnclosingSort(
-        sym.name(sort.name.last), sortName, written.map(_.scalaName), kinds)),
-      params = written.map(p =>
-        p.anthillName ->
-          (if p.isEffect then ParamBinding.Effect
-           else ParamBinding.Scala(p.scalaName, p.members.length))).toMap)
+      enclosing = Some(EnclosingSort(sym.name(sort.name.last), sortName, binders)),
+      params = binders.toMap)
     val requires = sort.items.collect {
       case Item.RequiresDeclItem(r) =>
         SortRequirement(r,
@@ -1022,8 +1038,8 @@ object Bootstrap:
           // wrong carrier — silently, since both answers emit. No corpus sort writes
           // the shape; a fixture drives it.
           val witnesses = requires.flatMap(_.decl.binder).map(b => sym.name(b.last)).toSet
-          val carrier = carrierOf(
-            sym, sortLeaf, typeParams.filterNot(p => witnesses.contains(p.anthillName)), ops)
+          val carrier = carrierOf(sym, sortLeaf, scope.pkg,
+            typeParams.filterNot(p => witnesses.contains(p.anthillName)), ops)
           val (overCarrier, notOverCarrier) =
             anonymous.partition(r => isOverCarrier(sym, r, carrier))
           val (shadowed, kept) = overCarrier.partitionMap { r =>
@@ -1121,19 +1137,47 @@ object Bootstrap:
     * See [[isOverCarrier]].
     */
   private def carrierOf(
-    sym: SymbolTable, sortLeaf: String,
+    sym: SymbolTable, sortLeaf: String, sortPkg: String,
     typeParams: IndexedSeq[TypeParamDecl], ops: IndexedSeq[Operation]
   ): Carrier =
-    val selfReceiver = ops.exists(_.params.exists(p => headName(sym, p.ty).contains(sortLeaf)))
+    val selfReceiver = ops.exists(_.params.exists(p => isSelfType(sym, p.ty, sortLeaf, sortPkg)))
     if selfReceiver then Carrier.TheSort(sortLeaf)
     else
       typeParams.headOption match
         case Some(p) => Carrier.Param(p.anthillName)
         case None => Carrier.TheSort(sortLeaf)
 
-  /** The sort a written type APPLIES, or `None` where it names no sort at all (an
-    * arrow, a tuple). Deliberately blind to the arguments — `s: Set` and a
-    * hypothetical `s: Set[T = X]` are both a receiver of `Set`. */
+  /** Does this written parameter type name the DECLARING sort? (WI-1081)
+    *
+    * A WRITTEN PREFIX IS HONOURED HERE TOO. The leaf alone used to answer, and once
+    * `TypeGen` started honouring the prefix the two readers disagreed: `sort app.Payload`
+    * with `operation use(p: app.model.Payload)` emitted a parameter typed
+    * `_root_.app.model.Payload` while this read the operation as SELF-receiving, which
+    * flips WI-1022's `extends`/`using` partition for the whole sort. A qualified mention
+    * counts only when its prefix spells this sort's own package — the case that really
+    * is the sort — and a RELATIVE prefix does not, since a relative path names something
+    * beneath the enclosing namespace and the sort is not beneath itself.
+    *
+    * NOT `TypeScope.placeName`, and the reason is at [[carrierOf]]: placement answers
+    * about the EMISSION, so `sort String`'s `s: String` places as a host scalar though
+    * the operation plainly receives the sort.
+    */
+  private def isSelfType(
+    sym: SymbolTable, te: TypeExpr, sortLeaf: String, sortPkg: String
+  ): Boolean =
+    def matches(n: anthill.parse.Name) =
+      sym.name(n.last) == sortLeaf &&
+        (n.isSimple || Names.scalaPackagePath(n.segments.dropRight(1).map(sym.name)) == sortPkg)
+    te match
+      // Deliberately blind to the ARGUMENTS — `s: Set` and `s: Set[T = X]` are both a
+      // receiver of `Set`.
+      case TypeExpr.Simple(n) => matches(n)
+      case TypeExpr.Parameterized(n, _) => matches(n)
+      case _ => false
+
+  /** The sort a written type APPLIES, by LEAF, or `None` where it names no sort at all
+    * (an arrow, a tuple). Leaf-keyed because its readers are: [[specMemberNames]] and
+    * the `requires` mapping index the spec-member table by leaf. */
   private def headName(sym: SymbolTable, te: TypeExpr): Option[String] = te match
     case TypeExpr.Simple(n) => Some(sym.name(n.last))
     case TypeExpr.Parameterized(n, _) => Some(sym.name(n.last))

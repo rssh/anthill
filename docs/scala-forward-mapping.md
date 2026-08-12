@@ -108,6 +108,8 @@ hyphens in identifiers become underscores (§5).
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
 | `Int64` / `Float` / `Bool` / `String` / `BigInt` / `Unit` / `Nothing` | `scala.Long` / `scala.Double` / `scala.Boolean` / `java.lang.String` / `scala.math.BigInt` / `scala.Unit` / `scala.Nothing` — see §2.1a |
 | `List[X]` / `Option[X]` / `Pair[A, B]` / `Set[X]` / `Map[K, V]` / `Stream[T, E]` | the prelude's OWN emitted type: `anthill.prelude.List[X]` … — see §2.1a |
+| `a.b.C` in a type position (head is not a value in scope) | placed by the package the head BINDS, which is relative to the enclosing namespace before it is top-level — see §2.1b |
+| `xs.T` in a type position (head names a value in scope) | the receiver's own written argument, or the enclosing sort's parameter — see §2.1b |
 | `rule` (law) | ScalaCheck property in `src/test/scala/.../<Sort>Laws.scala` |
 | `Quoted("scala", source)` | verbatim Scala code inserted as-is |
 | `constraint` (denial) | property in `src/test/scala/.../<Sort>Laws.scala` |
@@ -289,6 +291,104 @@ not a deletion. Its own ticket.
 > transcripts: real output carries the `_root_.` anchoring above, so the emitted
 > form of `def eq(a: T, b: T): Boolean` is
 > `def eq(a: T, b: T): _root_.scala.Boolean`.
+
+### 2.1b A DOTTED Type Occurrence (WI-1081)
+
+Everything in §2.1a is about a **bare** written name. Anthill spells two further,
+unrelated constructs with one dotted syntax, and which one a written `a.b` is turns on
+what its **head segment** names — the same question anthill's own resolver asks of a
+dotted path (kernel §"A dotted path ends the ladder the same way, on its head
+segment"). A **value** binding wins there, so it is asked first:
+
+| the head names | the occurrence is | example |
+|---|---|---|
+| a value in scope (an operation's own parameter) | a **path-dependent projection** | `xs.T` in `operation head(xs: List) -> xs.T` |
+| anything else | a **package-qualified type** | `anthill.reflect.Symbol` |
+
+Reading only the last segment — which is what codegen did — collapses the two into
+one query and gets the second wrong every time: `anthill.reflect.Symbol` written in
+`anthill.prelude` was re-anchored to the *declaring* package and emitted as
+`anthill.prelude.Symbol`, a type nothing declares. The source had said exactly where
+the type lives and the emitter emitted somewhere else.
+
+**A qualified name places by the package its HEAD binds.** The kernel calls this
+head-qualification (§"`a.b.c` — **relative**, and only relative"): resolve the *first*
+segment in scope, append the remaining segments to what it denotes, and look that up.
+So the search is over the **head segment alone** — `<enclosing>.a` for each enclosing
+package, nearest first, then a top-level `a`, which is where `anthill.reflect.Symbol`
+written inside `anthill.prelude` binds its `anthill` — and once the head binds, the leaf
+is looked up in exactly one package. **A miss under the bound package is loud**; the
+same section says the path "is never re-anchored elsewhere". Searching for the *leaf*
+instead would let a nearer package that merely lacks it hand the name to a farther one,
+which is re-anchoring by another route: `util.text.Escaper` written in `app` where
+`app.util` exists means `app.util.text.Escaper` and nothing else, even with a top-level
+`util.text.Escaper` in the closure.
+
+That is the difference from the bare chain of §2.1a, which searches for a *leaf* up the
+mentioning declaration's ancestors and has no prefix to honour. (The `..a.b.c` absolute
+spelling is a separate reading the kernel defines and the `scaland` grammar does not yet
+accept, so no occurrence reaching this rule is one.)
+
+What the qualified reading consults, in order, within the package it settled on:
+
+* the **scalars**, but only in the package that declares them — a profile's `type_map`
+  names prelude sorts, so `anthill.prelude.Int64` is `_root_.scala.Long` for the same
+  reason the bare `Int64` is (§2.1a). A project's own `my.app.Int64` is its own type,
+  which is one thing a written prefix can say and a bare name cannot;
+* the **enclosing sort**, which re-attaches its parameters exactly as a bare
+  self-mention does (§2.6) — in anthill they are in scope whichever way the sort is
+  spelled;
+* the declarations **this file** emits into that package, then those the supplied
+  project/prelude closure promises there, including its negative entries.
+
+It does **not** consult the type parameters (a parameter has no package) and no
+`import` can shadow it (the occurrence says which package it means).
+
+**Absent is a refusal, not a guess.** A bare mention that nothing places gets
+`Placement.Ambient` — qualified with the declaration's own package — because a sibling
+in a file the caller did not supply is indistinguishable from a typo, and refusing
+every such name was measured at thirteen prelude files. A qualified name is not that
+case: codegen can *prove* the emitted spelling would name a different type than the
+source wrote, so it says which readings it tried and stops. This is what took the
+whole-prelude closure to zero compile errors.
+
+**A projection is read off the receiver's declared type**, and there are exactly two
+ways that type can answer:
+
+* the receiver's occurrence **writes** the slot — `r1: Relation[T = L]` makes `r1.T`
+  be `L`. relation.anthill's `join` exists to write them: its two operands carry
+  independent schemas, so `r1.T` and `r2.T` are `L` and `R`, not one shared `T`. The
+  binding is self-contained, so a **qualified** receiver type reads the same way as a
+  bare one;
+* the receiver's occurrence is **bare** *and names the enclosing sort*, and then the
+  projection is that sort's parameter of that name — within a sort's own definition a
+  bare self reference participates in the parametricity tie
+  (`docs/design/type-parameter-scoping.md` §3), so `xs: List` inside `sort List[T]`
+  makes `xs.T` this sort's `T`. The **sort's** parameters, not the operation's: `b.U`
+  for an operation's own `[U]` is not a member of the sort at all.
+
+Everything else is refused, and the list is closed:
+
+| shape | why |
+|---|---|
+| a bare occurrence of some **other** sort | it takes a fresh skolem (kernel §"How the slot is named"); Scala has no term for it |
+| an **unwritten** slot of an applied receiver (`r1.E` against `r1: Relation[T = L]`) | that slot is the receiver's *own* skolem, not the enclosing sort's parameter — tying them would collapse `join`'s `{r1.E, r2.E}` into one row |
+| a **positional** argument | it names no slot, and no table here carries a per-slot parameter name |
+| a **repeated** binding (`Box[T = L, T = R]`) | no one binding answers; last-wins would pick silently |
+| a receiver declared as an arrow, tuple, type variable, value-in-type or effect row | there is no sort occurrence to read a member off |
+| a projection off a projection (`s.T.U`) | the tail is appended to what the head denotes and never looked up on its own |
+
+Each of these used to be answered by whatever the member *name* happened to mean at the
+site, with nothing tying that answer to the receiver.
+
+**Two positions this rule does not reach**, stated because the refusal a reader gets
+there names a package rather than the real cause. `values` is populated only from an
+**operation's** parameters, so a projection written in an entity field, a sort's
+`requires` or a namespace-level scope has no value in scope and falls to the qualified
+reading. And a head naming a **sort** rather than a package or a value (`Box.T`, a
+sort-scoped member path) is a third reading the kernel defines and this mapping does not
+implement — a sort's abstract members are emitted as Scala *type parameters*, which have
+no member syntax to project off.
 
 ### 2.2 Sort with Operations (No Constructors) → Trait
 

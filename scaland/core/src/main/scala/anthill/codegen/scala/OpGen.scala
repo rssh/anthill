@@ -48,6 +48,11 @@ object OpGen:
       .withParams(
         emitted.map((n, s) => n -> ParamBinding.Scala(s, 0)) ++
           effectParams.map(_ -> ParamBinding.Effect))
+      // WI-1081: the operation's own value parameters, which is what a
+      // path-dependent projection (`xs.T`) in this signature is read off. Installed
+      // BEFORE the parameter types are rendered, since a later parameter may project
+      // off an earlier one — `f: (x: xs.T) -> Acc` is list.anthill's `foldLeft`.
+      .withValues(op.params.map(p => sym.name(p.name) -> ReceiverType.of(sym, p.ty)))
     val tpStr =
       if emitted.isEmpty then "" else emitted.map(_._2).mkString("[", ", ", "]")
     val params = op.params.map { p =>
@@ -149,7 +154,13 @@ object OpGen:
 
   /** The row variables of one effect-position expression. */
   private def rowVariablesOf(te: TypeExpr, sym: SymbolTable): Set[String] = te match
-    case TypeExpr.Simple(n) => Set(sym.name(n.last))
+    // A SIMPLE name only (WI-1081). A dotted one in an effect position is a
+    // path-dependent projection — `effects s.E` — and its MEMBER is a parameter of the
+    // receiver's sort, not of this operation. Reading the last segment made `effects
+    // s.E` claim an operation's own `[E]` as a row variable and erase the binder while
+    // every use of it still rendered, which is the "IT CANNOT OVER-COLLECT" claim above
+    // being false. No stdlib file has the shape (all write `EffP`).
+    case TypeExpr.Simple(n) if n.isSimple => Set(sym.name(n.last))
     case TypeExpr.EffectRow(effects) => effects.flatMap(rowVariablesOf(_, sym)).toSet
     case TypeExpr.EffectGuarded(label, _) => rowVariablesOf(label, sym)
     case _ => Set.empty

@@ -152,18 +152,31 @@ case class ScalaTypes(
     * over a nearer abstract `Foo`, silently defeating normal shadowing.
     */
   def packagePlacement(pkg: String, anthillLeaf: String): Option[Placement] =
-    PackageNesting.from(pkg).iterator.flatMap { owner =>
-      packageTypes.get(owner).flatMap { table =>
-        table.types.get(anthillLeaf).map(k => k: Placement).orElse {
-          Option.when(table.declaredNotEmitted.contains(anthillLeaf)) {
-            Placement.Unplaceable(
-              s"`$anthillLeaf` is declared in package `$owner` by the supplied project " +
-              "files in a position Bootstrap emits no Scala type for (an abstract sort " +
-              "has no declaration in the output), so the name is not in the emitted tree")
-          }
+    PackageNesting.from(pkg).iterator.flatMap(exactPlacement(_, anthillLeaf)).nextOption()
+
+  /** What ONE package says about a leaf, with no walk at all — what a QUALIFIED
+    * occurrence asks (WI-1081), and the single rung [[packagePlacement]]'s chain is
+    * built from, so a bare name and a written prefix cannot come to disagree about
+    * what one package holds. */
+  def exactPlacement(owner: String, anthillLeaf: String): Option[Placement] =
+    packageTypes.get(owner).flatMap { table =>
+      table.types.get(anthillLeaf).map(k => k: Placement).orElse {
+        Option.when(table.declaredNotEmitted.contains(anthillLeaf)) {
+          Placement.Unplaceable(
+            s"`$anthillLeaf` is declared in package `$owner` by the supplied project " +
+            "files in a position Bootstrap emits no Scala type for (an abstract sort " +
+            "has no declaration in the output), so the name is not in the emitted tree")
         }
       }
-    }.nextOption()
+    }
+
+  /** Does the supplied closure put any declaration in this package or below it? — the
+    * "does this namespace exist" question a written path's HEAD segment asks
+    * ([[TypeScope.placeQualified]], WI-1081). Prefix-closed: `anthill` is a real package
+    * whenever `anthill.prelude` holds a declaration, though nothing is declared in
+    * `anthill` itself. */
+  def packageExists(owner: String): Boolean =
+    packageTypes.keysIterator.exists(p => p == owner || p.startsWith(s"$owner."))
 
   /** The refusal half of the same table: an auto-imported file declares the name and
     * emits nothing for it, so no spelling reaches it from anywhere. */

@@ -104,11 +104,49 @@ object TypeGen:
   private def named(
     sym: SymbolTable, n: Name, args: IndexedSeq[TypeExpr], scope: TypeScope
   ): String =
-    val leaf = sym.name(n.last)
+    // THE WRITTEN SPELLING, not the leaf (WI-1081): a refusal about
+    // `anthill.reflect.Symbol` that names only `Symbol` sends the reader to look for a
+    // bare name the source never wrote. Identical to the leaf for a simple name, which
+    // is every message this changed nothing about.
+    val written = n.segments.map(sym.name).mkString(".")
+    scope.placeName(sym, n) match
+      // WI-1081. A path-dependent projection the receiver's own occurrence answers —
+      // `r1.T` against `r1: Relation[T = L]` IS `L`. The substitute is rendered with the
+      // receiver dropped from scope, which is what bounds the expansion.
+      case NamePlacement.Substituted(sub, receiver) =>
+        // A ROW SUBSTITUTE HAS ITS OWN REFUSAL, and needs one: `s: Stream[T = Int64,
+        // E = {}]` makes `s.E` the written `{}`, and re-rendering that reaches the
+        // EffectRow arm above, whose every clause is false here — the row stands in an
+        // `effects E = ?` slot, which is §2.8a's erasable case, and no graded monad is
+        // involved. Located at the PROJECTION, which is the text to change.
+        if isRow(sub) then throw BootstrapError(
+          s"${scope.decl}: `$written` projects the effect row `$receiver` was given " +
+          "for that slot, and a row has no Scala form in a TYPE position. scala_std " +
+          "erases effects (§2.8); the projection is emittable only in a slot that " +
+          "erases with it, and this slot is declared to hold a type",
+          n.span)
+        if args.nonEmpty then throw BootstrapError(
+          s"${scope.decl}: `$written` projects `$receiver`'s written argument and " +
+          s"${args.length} type argument(s) were applied to it. Bootstrap has no arity " +
+          "for that argument — it is an expression the receiver's occurrence wrote, not " +
+          "a declaration it can count parameters on — so the application cannot be " +
+          "checked. (A projection off a BARE self receiver names a declared parameter " +
+          "and does carry one, which is why `b.M[A = X]` against a higher-kinded `M` is " +
+          "emitted rather than refused.)",
+          n.span)
+        render(sym, sub, scope.withoutValue(receiver))
+      case NamePlacement.Direct(placement) => placed(sym, n, written, args, scope, placement)
+
+  /** The name, once [[TypeScope.placeName]] has said where it goes. `written` is the
+    * spelling the source wrote, which every refusal here names. */
+  private def placed(
+    sym: SymbolTable, n: Name, written: String, args: IndexedSeq[TypeExpr],
+    scope: TypeScope, placement: Placement
+  ): String =
     def rendered(as: IndexedSeq[TypeExpr]): IndexedSeq[String] = as.map(render(sym, _, scope))
     // The argument-side rule. Reached only where nothing declares the slots.
     def erasedByArgument: IndexedSeq[TypeExpr] = args.filterNot(scope.isEffectArgument(sym, _))
-    scope.place(leaf) match
+    placement match
       // The two placements whose argument COUNT passes through unchecked. A proper
       // type parameter has no arity to check against (a higher-kinded `M[A]` takes
       // arguments, a proper `V` does not) and an ambient name's lives in a file
@@ -147,7 +185,7 @@ object TypeGen:
         if args.isEmpty then self.scalaName + brackets(self.params)
         else if args.length != self.kinds.written then
           throw BootstrapError(
-            s"${scope.decl}: `$leaf` is the enclosing sort, which declares " +
+            s"${scope.decl}: `$written` is the enclosing sort, which declares " +
             s"${self.kinds.written} type parameter(s)${erasureNote(self.kinds)}, but " +
             s"${args.length} argument(s) were written. The parameters Bootstrap emits " +
             "and the ones the declaration writes have diverged",
@@ -170,7 +208,7 @@ object TypeGen:
           // names, and since WI-1060 it is the declaring file's own count rather
           // than a hand-copy of it.
           throw BootstrapError(
-            s"${scope.decl}: `$leaf` maps to Scala `$scalaName` and declares " +
+            s"${scope.decl}: `$written` maps to Scala `$scalaName` and declares " +
             s"${kinds.written} type parameter(s)${erasureNote(kinds)}, but " +
             s"${args.length} were written. anthill leaves a " +
             "sort's parameters implicit where they are in scope and allows a PARTIAL " +
@@ -194,10 +232,18 @@ object TypeGen:
         // nothing in the emitted tree. This is how `Term`, `NodeOccurrence` and
         // `Type` shipped: not as a typo Bootstrap could not rule out, but as a
         // reference Bootstrap could already show unreachable and emitted anyway.
-        throw BootstrapError(s"${scope.decl}: cannot emit the type `$leaf` — $reason", n.span)
+        throw BootstrapError(s"${scope.decl}: cannot emit the type `$written` — $reason", n.span)
 
   private def brackets(args: IndexedSeq[String]): String =
     if args.isEmpty then "" else args.mkString("[", ", ", "]")
+
+  /** Is this written expression an effect ROW? — the SPELLING question alone, which is
+    * the only half a projection's substitute needs answered (WI-1081).
+    * [[TypeScope.isEffectArgument]] asks the wider question ("should this ARGUMENT be
+    * dropped") and reaches this same pair of cases first. */
+  private def isRow(te: TypeExpr): Boolean = te match
+    case TypeExpr.EffectRow(_) | TypeExpr.EffectGuarded(_, _) => true
+    case _ => false
 
   /** The clause an arity refusal needs once erasure exists (WI-1062): a reader
     * counting the parameters of the EMITTED Scala type would otherwise get a

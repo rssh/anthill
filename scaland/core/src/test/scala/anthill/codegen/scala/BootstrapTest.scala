@@ -2585,6 +2585,15 @@ class BootstrapTest extends munit.FunSuite:
     //   after  WI-1065        3 (Modifiable, mutable_collection.anthill) -> clean at 36 files
     //   after  WI-1080        4 (Symbol/Term, sort.anthill) -> clean at 44 files
     //   after  WI-1022        4 (the same) -> clean at 45 files
+    //   after  WI-1081        clean at 45 files, NO peel round
+    //
+    // WI-1081 ENDED THE LADDER, which is what "the last rung was one defect" looks like
+    // when it is true: those four errors were `type Symbol is not a member of
+    // anthill.prelude` and its `Term` twin, twice each, and all four came from ONE rule —
+    // a written package prefix dropped before placement. Placing a qualified name by the
+    // package it NAMES refuses the two declarations that reach outside this closure and
+    // leaves nothing behind that does not compile. There is no rung left to record, so
+    // the whole-closure test below asserts zero errors and peels nothing.
     //
     // WI-1022 MOVED THE CLEAN COUNT AND NOT THE LADDER, which is what a ticket that
     // adds a file rather than fixing an error looks like: sortedset.anthill leaves the
@@ -2626,18 +2635,16 @@ class BootstrapTest extends munit.FunSuite:
     // clean set grew by more than the two files that rung was about because peeling
     // mutable_collection.anthill used to take its dependents with it.
     //
-    // THE ROUND OF 4 IS NEW, AND IT IS UNCOVERED RATHER THAN CAUSED. sort.anthill was
-    // refused WHOLE before, so its six emittable declarations were never compiled;
-    // two of them — `entity anthill.prelude.TypeBinding(param: anthill.reflect.Symbol,
-    // value: anthill.reflect.Term)` and its `NamedTupleElement` twin — write a
-    // QUALIFIED type name, and `TypeGen.named` reads only `n.last`, so the written
-    // `anthill.reflect` prefix is dropped and the leaf re-anchored to the declaring
-    // package (`type Symbol is not a member of anthill.prelude`, twice per file). That
-    // is a placement defect of its own — the source said exactly where the type lives
-    // and the emitter emitted somewhere else — filed as WI-1081, which expects to end
-    // this ladder at `clean at 45 files` with no peel round at all. The whole-closure
-    // compile reports it precisely, which is the granularity contract working: one
-    // wrong declaration, named, in a file whose other four are correct.
+    // THAT ROUND OF 4 WAS UNCOVERED RATHER THAN CAUSED, and WI-1080 is why it appeared
+    // at all: sort.anthill was refused WHOLE before, so its six emittable declarations
+    // were never compiled; two of them — `entity anthill.prelude.TypeBinding(param:
+    // anthill.reflect.Symbol, value: anthill.reflect.Term)` and its `NamedTupleElement`
+    // twin — write a QUALIFIED type name, and `TypeGen.named` read only `n.last`, so the
+    // written `anthill.reflect` prefix was dropped and the leaf re-anchored to the
+    // declaring package (`type Symbol is not a member of anthill.prelude`, twice per
+    // file). WI-1081 took it. The whole-closure compile reported it precisely, which is
+    // the granularity contract working: one wrong declaration, named, in a file whose
+    // other four are correct.
     //
     // WI-1066 MOVED NOTHING HERE, and that is the expected result rather than a fix
     // that failed. The three emissions it corrects (`Set` / `Map` / `VectorSpace`) all
@@ -2706,8 +2713,17 @@ class BootstrapTest extends munit.FunSuite:
         ("sort `ProofResult`", "imported from `anthill.reflect`")),
       "relation.anthill" -> Seq(
         ("operation `guarded_of`", "imported from `anthill.reflect`")),
+      // FOUR SINCE WI-1081, and the two in the middle are the ticket's whole corpus
+      // instance: `entity anthill.prelude.TypeBinding(param: anthill.reflect.Symbol, …)`
+      // and its `NamedTupleElement` twin write the field type QUALIFIED, and the written
+      // prefix used to be dropped — so both emitted `anthill.prelude.Symbol`, a type
+      // nothing declares, and both compiled files were the whole of the closure's error
+      // count. A qualified name is now placed by the package it NAMES, `anthill.reflect`
+      // is not in this closure, and Bootstrap says so instead of emitting elsewhere.
       "sort.anthill" -> Seq(
         ("sort `EffectExpression`", "emits no Scala type for"),
+        ("entity `TypeBinding`", "declares `Symbol` in `anthill.reflect`"),
+        ("entity `NamedTupleElement`", "declares `Symbol` in `anthill.reflect`"),
         ("sort `TypeExtractor`", "imported from `anthill.reflect`")),
     )
     // THE SAME SET `scalaTypes` WAS BUILT FROM (WI-1060), and not a second listing of
@@ -2753,15 +2769,9 @@ class BootstrapTest extends munit.FunSuite:
     // in this counter — back the granularity out and both are refused whole again,
     // taking the count to 18 and failing this line.
     //
-    // THE OTHER FOUR REFUSED FILES DO NOT MOVE IT, and for two different reasons worth
-    // separating: delay / logical_stream / relation refuse the only declaration they
-    // have to emit, so their survivor set is empty and this counter
-    // skips them; sort.anthill emits SIX survivors that do not compile alone, because
-    // two of them (`TypeBinding`, `NamedTupleElement`) write the qualified name
-    // `anthill.reflect.Symbol` and Bootstrap drops a written prefix, re-anchoring the
-    // leaf to the declaring package. That is a placement defect WI-1080 UNCOVERED
-    // rather than caused — its file emitted nothing before — and it is the one rung
-    // left in the peel ladder below. Filed as WI-1081.
+    // THE OTHER THREE REFUSED FILES DO NOT MOVE IT: delay / logical_stream / relation
+    // refuse the only declaration they have to emit, so their survivor set is empty and
+    // this counter skips them.
     //
     // 19 SINCE WI-1022 (measured, and the ONLY file that moved): set.anthill leaves
     // the self-contained set because `_root_.anthill.prelude.Eq[T]` is back in its
@@ -2772,12 +2782,20 @@ class BootstrapTest extends munit.FunSuite:
     // this is that sentence collecting. sortedset.anthill left the refusal set in the
     // same ticket and does not offset it — `SortedSet.scala` names `Ord` and `List`,
     // so it emits and needs its siblings, the state most of this directory is in.
-    assert(compiled >= 19,
-      s"only $compiled prelude files compile standalone; 19 did at WI-1022, and " +
+    //
+    // 20 SINCE WI-1081, and sort.anthill is the file that moved — by REFUSING MORE, not
+    // less, which is the one direction this counter is not built to reward and is worth
+    // reading carefully. It emitted six survivors before, two of which named
+    // `anthill.prelude.Symbol` / `anthill.prelude.Term` (the re-anchored qualified
+    // names), so the set did not compile. Refusing those two leaves four — `Concat`,
+    // `Without`, `FieldOf`, `Project` — which name nothing but scalars and each other.
+    // Self-containedness went UP because a wrong emission left the tree.
+    assert(compiled >= 20,
+      s"only $compiled prelude files compile standalone; 20 did at WI-1081, and " +
       "refusing more than is fixed would show up here")
   }
 
-  test("WI-1020: the WHOLE prelude closure compiles but for WI-1081's four errors") {
+  test("WI-1020: the WHOLE prelude closure compiles, with nothing peeled and nothing excused") {
     // WI-1020'S DELIVERABLE: `docs/scala-forward-mapping.md` §2.3 promises "the
     // generated file compiles as-is", and until this test the whole-closure claim was
     // measured by hand and written into the prose ladder below. It costs ONE `dotc` run
@@ -2804,9 +2822,8 @@ class BootstrapTest extends munit.FunSuite:
     // to be abstract` (WI-1064) — and each was found by a compile, never by a match.
     //
     // NO FILE IS EXCLUDED from this compile (WI-1020's "no silent skips"): every
-    // prelude file's emission goes in, including the four errors, which are pinned
-    // rather than peeled. The REFUSED DECLARATIONS — the ones that emit nothing to
-    // compile — are named one by one in the refusal-set test above.
+    // prelude file's emission goes in. The REFUSED DECLARATIONS — the ones that emit
+    // nothing to compile — are named one by one in the refusal-set test above.
     //
     // WI-1020's third open question ("what to do about files that legitimately cannot
     // compile yet — a `TypeExpr.Variable` renders as `?`, Denoted/EffectRow as `Any`")
@@ -2817,37 +2834,29 @@ class BootstrapTest extends munit.FunSuite:
     val emitted = StdlibFixture.preludeByName.flatMap { case (_, pf) =>
       Bootstrap.generate(pf, scalaTypes).files
     }
-    assert(emitted.length >= 55,
+    // 60 SINCE WI-1081 (measured; 62 before), and this floor is re-measured with the
+    // ladder for a reason the `>= 55` it replaced makes plain: it sat five files below
+    // the emission it claimed to state, so it absorbed this ticket's own drop of two
+    // silently. A refused declaration emits NOTHING to compile, so the closure compile
+    // below stays green however many go — this line is the only thing that notices.
+    assert(emitted.length >= 60,
       s"expected the measured emission, got ${emitted.length} scala files")
 
-    // FOUR ERRORS, ALL WI-1081's, and the file they are in is named: sort.anthill's
-    // `TypeBinding` / `NamedTupleElement` write `anthill.reflect.Symbol` and
-    // `anthill.reflect.Term` QUALIFIED, and `TypeGen.named` reads only `n.last`, so
-    // both are re-anchored to `anthill.prelude` and name nothing.
-    val errs = ScalaCompile.errors(emitted)
-    assertEquals(errs.length, 4, s"the closure moved:\n${errs.map(_.render).mkString("\n")}")
-    assert(errs.forall(d => d.message.contains("Symbol is not a member") ||
-        d.message.contains("Term is not a member")),
-      s"a NEW kind of closure error appeared:\n${errs.map(_.render).mkString("\n")}")
-    assert(errs.map(_.file).toSet == Set("TypeBinding.scala", "NamedTupleElement.scala"),
-      s"the errors moved out of WI-1081's two files:\n${errs.map(_.render).mkString("\n")}")
+    // CLEAN SINCE WI-1081, with NOTHING PEELED — the ladder above ends here. The four
+    // errors this test used to pin were sort.anthill's `TypeBinding` /
+    // `NamedTupleElement` writing `anthill.reflect.Symbol` / `.Term` QUALIFIED against a
+    // `TypeGen.named` that read only `n.last`; the prefix is honoured now, those two
+    // declarations are refused (named in the refusal-set test above), and every
+    // declaration that DOES emit type-checks together.
+    ScalaCompile.assertCompiles("the whole prelude closure", emitted)
 
-    // PEELING THOSE TWO IS THE WHOLE REMAINING LADDER: drop the one anthill file that
-    // emits them and the rest of the prelude compiles as one closure. Before WI-1080
-    // this took a second round and ended eight files short, because effects.anthill
-    // emitted nothing and `MutableCollection` — a file with nothing wrong with it —
-    // named `Modifiable`.
-    val peeled = StdlibFixture.preludeByName.filterNot(_._1 == "sort.anthill")
-      .flatMap { case (_, pf) => Bootstrap.generate(pf, scalaTypes).files }
-    ScalaCompile.assertCompiles("the prelude closure less sort.anthill", peeled)
-
-    // FAILS WHEN BACKED OUT: with the refusal scoped to the file, the four assertions
-    // above cannot even be reached — `Bootstrap.generate` throws on the first refused
-    // prelude file. Restore the throw only for effects.anthill and the count becomes 7
-    // (these four plus the three `Modifiable` errors on record at the ladder).
-    // WHEN WI-1081 LANDS this test fails at `assertEquals(errs.length, 4)`, which is
-    // intended: the ladder row is a measurement, and the ticket that moves it records
-    // the new one here.
+    // FAILS WHEN BACKED OUT, in two independent directions, which is what makes this one
+    // assertion worth the `dotc` run:
+    //   * restore `scope.place(sym.name(n.last))` in `TypeGen.named` and the four
+    //     `type Symbol is not a member of anthill.prelude` errors are back;
+    //   * restore the file-scoped refusal (WI-1080) and this line is never reached —
+    //     `Bootstrap.generate` throws on the first refused prelude file — while
+    //     `Modifiable`'s three-error cascade returns behind it.
   }
 
   test("WI-1020: widening the closure to anthill.reflect places NOTHING — the answer is a map") {
@@ -4016,4 +4025,489 @@ class BootstrapTest extends munit.FunSuite:
     assert(files.head.contents.startsWith("package anthill.prelude\n"),
       files.head.contents)
     ScalaCompile.assertCompiles("a repeated fully-qualified declaration prefix", files)
+  }
+
+  // ── WI-1081: a DOTTED type occurrence ─────────────────────────────────────
+  //
+  // Anthill spells two different constructs with one syntax — a package-qualified type
+  // (`anthill.reflect.Term`) and a path-dependent projection off a value (`xs.T`) — and
+  // `TypeGen` read only the last segment of both. The tests below drive the split and
+  // then each side of it.
+  //
+  // THE CONTROL WAS RUN over the whole ticket: with `TypeScope.placeName`'s dotted branch
+  // reduced to `Direct(place(segments.last))` — the old reading, exactly — SEVEN of this
+  // suite's tests fail: the first five below, the refusal-set list, and the whole-prelude
+  // closure compile. The rest pass both ways by design; they pin rules about SIMPLE
+  // names, which this ticket does not touch.
+  //
+  // AND ONE PER FIX, each measured by backing that fix out alone (the rows /code-review
+  // asked for). Every one names the single test that catches it:
+  //   * the head-binding walk → leaf search: the head-binding test stops refusing at all
+  //     (it emits `_root_.util.text.Escaper`, the silent wrong package) AND the
+  //     refusal-set message moves — 2 failures.
+  //   * the tie reading `params` instead of the sort's own binders: `b.U` for an
+  //     operation's `[U]` emits instead of refusing — the refusal test.
+  //   * a dotted receiver back to `ReceiverType.Other`: the qualified-receiver test.
+  //   * `carrierOf` back to a leaf comparison: the self-receiver test.
+  //   * `rowVariablesOf` back to reading `n.last`: the effect-position test.
+
+  test("WI-1081: a QUALIFIED occurrence places by the package it NAMES") {
+    // THE FIXTURE IS BUILT SO THAT THE LEAF ALONE ANSWERS DIFFERENTLY, which is the
+    // whole control: `Payload` is declared TWICE — in `app` and in `app.model` — so a
+    // consumer emitted into `app` that writes the qualified name must reach the
+    // `app.model` one, while dropping the prefix reaches the `app` one at distance 0 and
+    // emits it BARE. The two spellings are `_root_.app.model.Payload` and `Payload`.
+    //
+    // FAILS WHEN BACKED OUT: restore `scope.place(sym.name(n.last))` in `TypeGen.named`
+    // and both `use` assertions read `Payload`. The `Near` control passes either way BY
+    // DESIGN — it writes the bare name and must keep the near declaration.
+    val fixture = parseSource(
+      """namespace app
+        |  sort Payload
+        |    operation tag(x: Int64) -> Int64
+        |  end
+        |  namespace model
+        |    sort Payload
+        |      operation tag(x: Int64) -> Int64
+        |    end
+        |  end
+        |  sort Absolute
+        |    operation use(p: app.model.Payload) -> app.model.Payload
+        |  end
+        |  sort Relative
+        |    operation use(p: model.Payload) -> model.Payload
+        |  end
+        |  sort Near
+        |    operation use(p: Payload) -> Payload
+        |  end
+        |end
+        |""".stripMargin, "two_payloads.anthill")
+    val files = gen(fixture)
+    def src(leaf: String) = files.find(_.relPath.endsWith(s"/app/$leaf.scala"))
+      .getOrElse(fail(s"expected $leaf.scala in ${files.map(_.relPath)}")).contents
+
+    assert(src("Absolute").contains("def use(p: _root_.app.model.Payload): _root_.app.model.Payload"),
+      s"an ABSOLUTE written prefix must select the package it names:\n${src("Absolute")}")
+    // THE RELATIVE READING, and it is not a second rule: anthill resolves a written
+    // path's HEAD segment in scope and appends the tail (kernel §"A dotted path ends the
+    // ladder on its head segment"), so `model.Payload` inside `app` names `app.model`.
+    // The absolute reading is tried after, which is why both spellings above land on one
+    // declaration.
+    assert(src("Relative").contains("def use(p: _root_.app.model.Payload): _root_.app.model.Payload"),
+      s"a RELATIVE written prefix must resolve against the enclosing package:\n${src("Relative")}")
+    // CONTROL: the bare name still takes the nearest declaration, bare. Without this the
+    // test would keep passing if a qualified name simply started winning everywhere.
+    assert(src("Near").contains("def use(p: Payload): Payload"),
+      s"a bare mention must still reach the exact-package declaration:\n${src("Near")}")
+    ScalaCompile.assertCompiles("two same-leaf declarations selected by written prefix", files)
+  }
+
+  test("WI-1081: what a qualified reading consults, and what it does not") {
+    // THE PRECEDENCE DECISIONS the ticket left open, each with the answer it takes and a
+    // control that separates it from the bare chain.
+    //
+    // THE SCALARS STILL WIN, in the package that DECLARES them (WI-1021): `Int64` is in
+    // the prelude's emitted-type table too (`trait Int64`, which no value inhabits), so
+    // without the scalar rung this reads `_root_.anthill.prelude.Int64`.
+    //
+    // THE TYPE PARAMETERS DO NOT, because a parameter has no package. `Payload` here is
+    // both a binder of the enclosing sort and a declaration in `app.model`; the bare
+    // chain answers with the binder and the qualified reading must not.
+    //
+    // FAILS WHEN BACKED OUT: dropping the prefix makes `scalar` return
+    // `_root_.scala.Long` anyway (the bare chain has the same scalar rung, so that arm
+    // is the one this test shares with the old code) but makes `shadowed` emit
+    // `Payload`, the binder.
+    val fixture = parseSource(
+      """namespace app
+        |  namespace model
+        |    sort Payload
+        |      operation tag(x: Int64) -> Int64
+        |    end
+        |  end
+        |  sort Holder
+        |    sort Payload = ?
+        |    operation scalar(x: anthill.prelude.Int64) -> anthill.prelude.Int64
+        |    operation shadowed(p: app.model.Payload) -> Payload
+        |    operation self(h: app.Holder) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "qualified_precedence.anthill")
+    val files = gen(fixture)
+    val src = files.find(_.relPath.endsWith("/app/Holder.scala"))
+      .getOrElse(fail("expected Holder.scala")).contents
+    assert(src.contains("def scalar(x: _root_.scala.Long): _root_.scala.Long"),
+      s"a qualified scalar is still the host carrier:\n$src")
+    assert(src.contains("def shadowed(p: _root_.app.model.Payload): Payload"),
+      s"a qualified name must not be answered by a same-named type PARAMETER:\n$src")
+    // THE ENCLOSING SORT DOES answer a qualified self-mention, and re-attaches its own
+    // parameters exactly as the bare one does (WI-1055 A3) — in anthill they are in
+    // scope whichever way the sort is spelled.
+    assert(src.contains("def self(h: Holder[Payload]): _root_.scala.Long"),
+      s"a qualified mention of the enclosing sort must re-attach its parameters:\n$src")
+    ScalaCompile.assertCompiles("qualified precedence", files)
+  }
+
+  test("WI-1081: a qualified name outside the emitted closure is REFUSED, not re-anchored") {
+    // THE PINNED OUTCOME for the case the corpus is full of. A bare mention gets
+    // `Placement.Ambient` because a sibling in a file the caller did not supply is
+    // indistinguishable from a typo (WI-1055 measured the alternative at thirteen prelude
+    // files). A QUALIFIED one is not that case: the source named the package, so
+    // Bootstrap can prove the emitted spelling would name a different type — which is
+    // exactly what it shipped, `anthill.prelude.Symbol` for `anthill.reflect.Symbol`.
+    //
+    // FAILS WHEN BACKED OUT: with the prefix dropped this emits `app.Term` (the ambient
+    // guess) and there is no refusal to intercept.
+    val fixture = parseSource(
+      """namespace app
+        |  sort Holder
+        |    operation held(x: Int64) -> other.pkg.Term
+        |  end
+        |end
+        |""".stripMargin, "absent_package.anthill")
+    val err = intercept[BootstrapError](gen(fixture))
+    assert(err.getMessage.contains("`other.pkg.Term`"),
+      s"the refusal must name what the source WROTE: ${err.getMessage}")
+    // THE HEAD IS WHAT IS REPORTED, with the readings of it named: a written path binds
+    // on its FIRST segment (kernel §"`a.b.c` — relative, and only relative"), so saying
+    // the whole path is missing without saying where `other` was looked for leaves the
+    // reader unable to tell a relative miss from a top-level one.
+    assert(err.getMessage.contains("head segment `other`"),
+      s"the refusal must name the segment that failed to bind: ${err.getMessage}")
+    assert(err.getMessage.contains("`app.other`") && err.getMessage.contains("`other`"),
+      s"the refusal must say which packages it read the head as: ${err.getMessage}")
+    assert(err.getMessage.contains("absent_package.anthill:3:"),
+      s"the refusal must be located: ${err.getMessage}")
+
+    // THE OTHER HALF: a package that IS in the closure but declares the leaf with no
+    // Scala emission. The reading ENDS there rather than falling through to the next
+    // one — the source named that package, so another package's same-named declaration
+    // is not what it meant.
+    val absent = parseSource(
+      """namespace app
+        |  namespace model
+        |    sort Opaque = ?
+        |  end
+        |  sort Opaque
+        |    operation tag(x: Int64) -> Int64
+        |  end
+        |  sort Holder
+        |    operation held(x: Int64) -> app.model.Opaque
+        |  end
+        |end
+        |""".stripMargin, "not_emitted.anthill")
+    val err2 = intercept[BootstrapError](gen(absent))
+    assert(err2.getMessage.contains("emits no Scala type for"),
+      s"a declared-and-not-emitted name must refuse with that reason: ${err2.getMessage}")
+    assert(err2.getMessage.contains("`app.model`"),
+      s"the refusal must name the package the source chose: ${err2.getMessage}")
+  }
+
+  test("WI-1081: a dotted name whose HEAD is a value is a projection, not a package") {
+    // THE OTHER READING OF THE SAME SPELLING. `s.T` is the element of the stream the
+    // value `s` holds (kernel §"How the slot is named", WI-1059), and the prelude writes
+    // it in nearly every collection signature. Reading it as a package-qualified name
+    // would refuse half the prelude; reading only its last segment — what Bootstrap did
+    // — answers the RECEIVER'S member with whatever that name means at the site.
+    //
+    // THE ARM WITH A CONTROL is the applied receiver: `r1: Box[T = L]` pins the slot, so
+    // `r1.T` is `L`. Dropping the prefix gives `T`, the enclosing sort's parameter — a
+    // DIFFERENT type, emitted silently. relation.anthill's `join` is the corpus instance
+    // and says so in prose ("right for `union`, WRONG for `join`"); it is driven here
+    // because that file's `Relation` sort is refused whole for an unrelated
+    // `anthill.reflect` operation, so its emission never reaches a compiler.
+    //
+    // FAILS WHEN BACKED OUT: `pinned` reads `(x: T, y: T) => _root_.scala.Boolean`.
+    val fixture = parseSource(
+      """namespace app
+        |  sort Box
+        |    sort T = ?
+        |    operation pinned[L, R](r1: Box[T = L], r2: Box[T = R], c: (x: r1.T, y: r2.T) -> Bool) -> Bool
+        |    operation tied(b: Box) -> b.T
+        |    operation shadow(app: Box) -> app.T
+        |  end
+        |end
+        |""".stripMargin, "projection.anthill")
+    val files = gen(fixture)
+    val src = files.find(_.relPath.endsWith("/app/Box.scala"))
+      .getOrElse(fail("expected Box.scala")).contents
+    assert(src.contains("c: (L, R) => _root_.scala.Boolean"),
+      s"a projection off an APPLIED receiver is the argument that receiver wrote:\n$src")
+    // THE TIE, which passes either way BY DESIGN and is here as the control for the arm
+    // above: a bare occurrence of the ENCLOSING sort ties to that sort's own parameters
+    // (`docs/design/type-parameter-scoping.md` §3), so `b.T` is `T` — the same answer
+    // dropping the prefix gave, and the reason the corpus compiled at all.
+    assert(src.contains("def tied(b: Box[T]): T"),
+      s"a projection off a bare enclosing receiver is the sort's own parameter:\n$src")
+    // A VALUE BINDING SHADOWS A PACKAGE, which is anthill's own head-segment rule: this
+    // parameter is NAMED `app`, and `app` is also the package this file emits into. Read
+    // as a package, `app.T` names nothing in `app` and would be a refusal — so emitting
+    // `T` is the value binding winning, not a coincidence.
+    assert(src.contains("def shadow(app: Box[T]): T"),
+      s"a value binding must be consulted before the packages:\n$src")
+    ScalaCompile.assertCompiles("projections off pinned and bare receivers", files)
+  }
+
+  test("WI-1081: a projection Bootstrap cannot read off the receiver is REFUSED") {
+    // The three shapes the two readings do not cover. Each was previously answered by
+    // whatever the member NAME happened to mean at the site — an enclosing parameter, a
+    // prelude sort, or an ambient guess — with nothing tying that answer to the receiver.
+    //
+    // FAILS WHEN BACKED OUT: every one of these emits. `foreign` emits `T` (the enclosing
+    // sort's parameter, nothing to do with `Marker`), `arrow` emits `T` likewise, and
+    // `positional` emits `T` where the receiver pinned the slot to `L`.
+    // `params` is a knob because the receiver's OWN occurrence is arity-checked before
+    // any projection off it is read: `Box[T = L, T = R]` against a one-parameter `Box`
+    // is refused as a two-argument application and never reaches the repeat.
+    def boxWith(params: String, op: String) = parseSource(
+      s"""namespace app
+         |  sort Marker
+         |    operation tag(x: Int64) -> Int64
+         |  end
+         |  sort Box
+         |$params
+         |    $op
+         |  end
+         |end
+         |""".stripMargin, "bad_projection.anthill")
+    def box(op: String) = boxWith("    sort T = ?", op)
+
+    val foreign = intercept[BootstrapError](gen(box("operation f(m: Marker) -> m.T")))
+    assert(foreign.getMessage.contains("not a bare occurrence of the enclosing sort"),
+      s"a bare NON-enclosing receiver has no tie: ${foreign.getMessage}")
+    val arrow = intercept[BootstrapError](gen(box("operation f(g: (x: Int64) -> Int64) -> g.T")))
+    assert(arrow.getMessage.contains("an arrow type"),
+      s"the refusal must say what the receiver was declared as: ${arrow.getMessage}")
+    val positional =
+      intercept[BootstrapError](gen(box("operation f[L](r: Box[L]) -> r.T")))
+    assert(positional.getMessage.contains("binds no `T` among them"),
+      s"a positionally-applied receiver names no slot: ${positional.getMessage}")
+    // AN UNWRITTEN SLOT of an APPLIED receiver is the same refusal and NOT the tie, and
+    // that is a semantic decision rather than a gap: kernel §"How the slot is named"
+    // (WI-1059) makes `r.U` the receiver's OWN skolem, so `join`'s `{r1.E, r2.E}` are two
+    // different rows. Falling back to the enclosing sort's `U` would collapse them.
+    val unwritten =
+      intercept[BootstrapError](gen(box("operation f[L](r: Box[T = L]) -> r.U")))
+    assert(unwritten.getMessage.contains("OWN skolem"),
+      s"an unwritten slot is the receiver's skolem, not the sort's parameter: ${unwritten.getMessage}")
+    // A REPEATED binding answers nothing rather than last-wins — WI-1022 refuses the
+    // structurally identical repeated sort binder for the same reason.
+    val repeated = intercept[BootstrapError](gen(boxWith(
+      "    sort T = ?\n    sort U = ?", "operation f[L, R](r: Box[T = L, T = R]) -> r.T")))
+    assert(repeated.getMessage.contains("more than once"),
+      s"a repeated binding must not silently last-win: ${repeated.getMessage}")
+    // THE MEMBER MUST BE THE SORT'S, not the OPERATION's: `params` merges the two, and
+    // reading it answered `b.U` with the operation's own binder — a name `Box` never
+    // declared. CONTROL: `b.T` in the same shape emits (the test above).
+    val opParam = intercept[BootstrapError](gen(box("operation f[U](b: Box) -> b.U")))
+    assert(opParam.getMessage.contains("declares no parameter `U`"),
+      s"an operation's own type parameter is not a member of the sort: ${opParam.getMessage}")
+    // A PROJECTION OFF A PROJECTION: the tail is appended to what the head denotes and
+    // never looked up on its own, and what `b.T` denotes is a type with no members here.
+    val chained = intercept[BootstrapError](gen(box("operation f(b: Box) -> b.T.U")))
+    assert(chained.getMessage.contains("projects off the projection `b.T`"),
+      s"a two-member path must be refused at the chain: ${chained.getMessage}")
+    // A RECEIVER THAT IS ITSELF A ROW / TUPLE / VARIABLE — the remaining `Other` arms,
+    // driven so the enumeration in §2.1b is not longer than the code's.
+    val tuple = intercept[BootstrapError](gen(box("operation f(t: (a: Int64, b: Int64)) -> t.T")))
+    assert(tuple.getMessage.contains("a tuple type"), tuple.getMessage)
+
+    // ALL ARE LOCATED at the written occurrence, which is the one place a reader can act
+    // on: the receiver's declaration is right there beside it.
+    Seq(foreign, arrow, positional, unwritten, repeated, opParam, chained, tuple).foreach(e =>
+      assert(e.getMessage.contains("bad_projection.anthill:"), e.getMessage))
+  }
+
+  test("WI-1081: a path binds on its HEAD, and a miss under the bound package is LOUD") {
+    // THE RULE THAT MAKES THE PREFIX MEAN SOMETHING, and the one the first cut of this
+    // ticket got wrong. The kernel spells it (§"`a.b.c` — relative, and only relative"):
+    // resolve the FIRST segment in scope, append the rest, and "a MISS under the head the
+    // path bound is loud; the path is never re-anchored elsewhere."
+    //
+    // THE FIXTURE SEPARATES THE TWO READINGS: `util.text.Escaper` written in `app` binds
+    // its head to `app.util` (which exists — `Filler` is declared there), so the path
+    // means `app.util.text.Escaper`, which nothing declares. A top-level `util.text`
+    // package with an `Escaper` in it is there as the trap: searching for the LEAF would
+    // skip past the bound head and emit `_root_.util.text.Escaper` — a type from a
+    // different package tree, silently.
+    //
+    // FAILS WHEN BACKED OUT: make the walk try each reading until one holds the LEAF and
+    // this emits `def use(e: _root_.util.text.Escaper): _root_.scala.Long` with no
+    // refusal at all, so the `intercept` fails.
+    val fixture = parseSource(
+      """namespace app
+        |  namespace util
+        |    sort Filler
+        |      operation tag(x: Int64) -> Int64
+        |    end
+        |  end
+        |  sort Consumer
+        |    operation use(e: util.text.Escaper) -> Int64
+        |  end
+        |end
+        |namespace util.text
+        |  sort Escaper
+        |    operation tag(x: Int64) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "head_binding.anthill")
+    val err = intercept[BootstrapError](gen(fixture))
+    assert(err.getMessage.contains("binds its head to package `app.util`"),
+      s"the refusal must say which package the head bound: ${err.getMessage}")
+    assert(err.getMessage.contains("declares `Escaper` in `app.util.text`"),
+      s"the refusal must name the package the whole path denotes: ${err.getMessage}")
+    assert(err.getMessage.contains("not") && err.getMessage.contains("re-anchored"),
+      s"the refusal must say why the other reading is not tried: ${err.getMessage}")
+    // CONTROL: the sibling declaration in the SAME fixture emits, so this is a fact
+    // about the path and not about the file failing to load.
+    val ok = Bootstrap.generate(fixture, scalaTypes)
+    assert(ok.files.exists(_.relPath.endsWith("/app/util/Filler.scala")),
+      s"the head package's own declaration must still emit: ${ok.files.map(_.relPath)}")
+  }
+
+  test("WI-1081: the self-receiver test honours a written prefix too") {
+    // THE READER THIS TICKET LEFT BEHIND, found by /code-review. `Bootstrap.carrierOf`
+    // decides whether a sort's operations receive the sort ITSELF, which is what
+    // WI-1022's `extends`-vs-`using` partition turns on, and it compared LEAF names. Once
+    // `TypeGen` honours a written prefix the two readers disagree: this sort's parameter
+    // is typed `_root_.app.model.Payload` — a different declaration — while the carrier
+    // reading called the operation self-receiving.
+    //
+    // FAILS WHEN BACKED OUT: restore the leaf comparison and `Payload` reads as
+    // self-representing, so `requires Eq[T]` is no longer over the carrier and emits as
+    // `using` evidence with a note claiming the sort is its own carrier — the `extends`
+    // assertion below fails.
+    val fixture = parseSource(
+      """namespace app
+        |  namespace model
+        |    sort Payload
+        |      operation tag(x: Int64) -> Int64
+        |    end
+        |  end
+        |  sort Payload
+        |    sort T = ?
+        |    requires Eq[T]
+        |    operation use(p: app.model.Payload) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "carrier_prefix.anthill")
+    val src = gen(fixture).find(_.relPath.endsWith("/app/Payload.scala"))
+      .getOrElse(fail("expected app/Payload.scala")).contents
+    assert(src.contains("extends _root_.anthill.prelude.Eq[T]"),
+      s"a foreign same-leaf receiver must not make the sort self-representing:\n$src")
+    assert(src.contains("_root_.app.model.Payload"),
+      s"and the parameter must still be typed by the sort the prefix names:\n$src")
+
+    // CONTROL, and it is what keeps the fix from being "dotted receivers never count":
+    // the same declaration with the prefix naming THIS sort's own package is still a
+    // self receiver, so the requirement is evidence rather than a supertype.
+    val selfSrc = gen(parseSource(
+      """namespace app
+        |  sort Payload
+        |    sort T = ?
+        |    requires Eq[T]
+        |    operation use(p: app.Payload) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "carrier_self.anthill")).head.contents
+    assert(!selfSrc.contains("extends _root_.anthill.prelude.Eq[T]"),
+      s"a QUALIFIED self-mention must still read as the sort itself:\n$selfSrc")
+  }
+
+  test("WI-1081: a projection off a QUALIFIED receiver reads the same as off a bare one") {
+    // The binding answers, and a binding is self-contained: `r: X[T = L]` says `r.T` is
+    // `L` whatever `X` is and wherever it lives. Refusing a dotted receiver — which the
+    // first cut did, on the ground that its parameters were not in hand — punished
+    // exactly the spelling §2.1b tells a cross-package consumer to use.
+    //
+    // FAILS WHEN BACKED OUT: make a dotted receiver type `ReceiverType.Other` and this
+    // is a refusal ("declared as a dotted type name") rather than `L`.
+    val fixture = parseSource(
+      """namespace app
+        |  namespace model
+        |    sort Relation
+        |      sort T = ?
+        |      operation tag(x: Int64) -> Int64
+        |    end
+        |  end
+        |  sort Consumer
+        |    operation f[L](r: app.model.Relation[T = L]) -> r.T
+        |  end
+        |end
+        |""".stripMargin, "qualified_receiver.anthill")
+    val files = gen(fixture)
+    val src = files.find(_.relPath.endsWith("/app/Consumer.scala"))
+      .getOrElse(fail("expected Consumer.scala")).contents
+    assert(src.contains("def f[L](r: _root_.app.model.Relation[L]): L"),
+      s"a projection off a qualified receiver is that receiver's written argument:\n$src")
+    ScalaCompile.assertCompiles("a projection off a qualified receiver", files)
+  }
+
+  test("WI-1081: a projection in an EFFECT position is not a row variable") {
+    // `OpGen.rowVariables` infers which of an operation's own type parameters are effect
+    // rows by reading the names its signature writes in effect positions, and its
+    // scaladoc claims "IT CANNOT OVER-COLLECT" because the result is intersected with the
+    // operation's declared parameters. Reading a dotted name's LAST segment broke that:
+    // `effects s.E` contributed `E`, and an operation that also declares `[E]` had its
+    // binder erased while every use of `E` still rendered.
+    //
+    // PRE-EXISTING (WI-1062) rather than introduced here, and driven now because this
+    // ticket makes the two readers of a dotted name visibly disagree.
+    //
+    // FAILS WHEN BACKED OUT: restore the leaf read and `E` is classified as a row, so the
+    // `[E]` binder disappears and `x: E` is refused ("`E` is an effect row, not a type").
+    val src = gen(parseSource(
+      """namespace app
+        |  sort Box
+        |    sort T = ?
+        |    effects E = ?
+        |    operation weird[E](s: Box, x: E) -> Int64 effects s.E
+        |  end
+        |end
+        |""".stripMargin, "row_projection.anthill")).head.contents
+    assert(src.contains("def weird[E](s: Box[T], x: E): _root_.scala.Long"),
+      s"a projection in an effect position must not claim the operation's own `E`:\n$src")
+  }
+
+  test("WI-1081: a projection is answered the same way in an ARGUMENT slot as in a type") {
+    // `TypeScope.isEffectArgument` is the fallback half of WI-1062's erasure rule, used
+    // where the target's declaration is unreadable — a `Placement.Ambient` head, whose
+    // parameters live in a file the caller did not supply. It asks "is this ARGUMENT a
+    // row", and routing it through `placeName` changed its answer for a dotted argument
+    // in both directions. Neither direction is reachable from the prelude (every prelude
+    // name is placed by its declaration and erases before this predicate runs), so it is
+    // driven here or not at all.
+    //
+    // FAILS WHEN BACKED OUT: with `place(n.last)` restored, `viaWritten`'s `h2.E` asks
+    // about the leaf `E` — which the enclosing sort binds as an effect parameter — so it
+    // erases for a reason that has nothing to do with `h2`, and `viaMissing` erases too
+    // instead of being refused.
+    def holder(op: String) = parseSource(
+      s"""namespace app
+         |  sort Bin
+         |    sort T = ?
+         |  end
+         |  sort Holder
+         |    sort T = ?
+         |    effects E = ?
+         |    $op
+         |  end
+         |end
+         |""".stripMargin, "argument_projection.anthill")
+
+    // THE SUBSTITUTE DECIDES: `h2: Holder[T = T, E = {}]` makes `h2.E` the written row,
+    // so the argument is dropped from the ambient head — the same answer a directly
+    // written `{}` would get, which is the point of asking the substitute.
+    val written = gen(holder(
+      "operation viaWritten(h2: Holder[T = T, E = {}], x: Boxy[E = h2.E]) -> T"))
+      .find(_.relPath.endsWith("/Holder.scala")).getOrElse(fail("expected Holder.scala")).contents
+    assert(written.contains("x: app.Boxy)"),
+      s"a projection to a written row is an effect argument and is dropped:\n$written")
+    // A PROJECTION THE RECEIVER CANNOT ANSWER is not an effect argument — it is kept,
+    // rendered, and refused there. Loud beats erasing on a leaf that names an effect
+    // parameter of an unrelated declaration.
+    val refused = intercept[BootstrapError](gen(holder(
+      "operation viaMissing(b: Bin[T = T], x: Boxy[E = b.E]) -> T")))
+    assert(refused.getMessage.contains("`b.E`"),
+      s"the refusal must name the projection, not the leaf: ${refused.getMessage}")
   }
