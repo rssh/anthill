@@ -31,6 +31,17 @@
 //! `unify_types`' boolean deliberately (WI-367/WI-379 depend on a failed unify
 //! against an already-pinned slot being a silent no-op), so the conformance site
 //! is the one that must decide it.
+//!
+//! WI-1085 CLOSED THE CALLBACK CASE this file pinned as a known gap, and the same
+//! sentence explains it: pair the predicate with a resolution of matching depth.
+//! The gap was diagnosed here as a consequence of the `type_contains_callable`
+//! withholding — true, and not the whole cause. A callable is routed to the
+//! component-wise `validate_arrow_param_result`, which was applying
+//! `resolved_type_is_ground` to each component AS WRITTEN, so `X` read non-ground
+//! however firmly σ had pinned it and the comparison never ran. Resolving the
+//! component through σ first (WI-1084 for the result, WI-1085 for the param) closes
+//! it with the withholding untouched. See
+//! [`two_callback_arguments_sharing_a_type_var_must_agree`], the inverted pin.
 
 use crate::common::{interp_for, try_load_kb_with};
 
@@ -322,21 +333,31 @@ end
     );
 }
 
-/// KNOWN GAP, pinned so it is visible rather than assumed closed — and inverted
-/// when it closes, the way WI-792 inverted WI-791's.
+/// THE KNOWN GAP, INVERTED — closed by WI-1085, the way WI-792 inverted WI-791's.
 ///
-/// Two ARROW-typed arguments sharing one type variable are still NOT checked
-/// against each other: this loads clean, `f` pinning `X := Int64` and `g` handing
-/// over a `(String) -> Int64`. The deep walk is deliberately NOT applied when
-/// either side is callable — see `validate_arg_against_param` — because making a
-/// callback read as ground routes it from the component-wise arrow checkers to
-/// the whole-type `types_compatible`, which REFUSES the `Function[A = tuple]`
-/// against a 2-parameter eta arrow that WI-775/WI-792 settled must be accepted
-/// (measured: 5 cases across wi424/wi784/wi787 flipped to refused). Closing this
-/// means teaching `arrow_compatible_view` the `Function`-states-no-arity rule,
-/// which is a change to who OWNS arrow conformance, not a walk depth.
+/// Two ARROW-typed arguments sharing one type variable were NOT checked against each
+/// other: this LOADED CLEAN with `f` pinning `X := Int64` and `g` handing over a
+/// `(String) -> Int64`. The diagnosis this pin carried named the right frame and the
+/// wrong rung. Right: the deep walk in `validate_arg_against_param` is still withheld
+/// for a callable, because making one read as ground routes it to the whole-type
+/// `types_compatible`, which refuses a `Function[A = tuple]` against a 2-parameter eta
+/// arrow (5 cases across wi424/wi784/wi787). Wrong: it read that withholding as the
+/// whole reason nothing was checked. The component-wise checker the callable is routed
+/// TO — `validate_arrow_param_result` — was ALSO skipping, because it tested each
+/// component for groundness AS WRITTEN, and `X` reads non-ground however firmly σ has
+/// pinned it. Resolving the component through σ first (WI-1084 for the result, WI-1085
+/// for the param) closes it with no change to who owns arrow conformance.
+///
+/// CONTROL: this is the row that fails when WI-1085's σ-resolution of the param is
+/// backed out — it goes back to loading clean. It passes either way under the OTHER
+/// half (the positional/by-name split), since the refusal is at arity 1, where both
+/// readings coincide.
+///
+/// The message is asserted at both ends because naming `Int64` is the point: the pair
+/// is rendered as σ resolves it, so the reader sees what the FIRST argument pinned
+/// rather than the `?X` the slot is written with.
 #[test]
-fn known_gap_two_callback_arguments_sharing_a_type_var_are_not_checked() {
+fn two_callback_arguments_sharing_a_type_var_must_agree() {
     let src = r#"
 namespace test.wi836.gap
   import anthill.prelude.{Int64, String}
@@ -346,9 +367,30 @@ namespace test.wi836.gap
   operation go() -> Int64 = both(fi, fs)
 end
 "#;
-    assert!(
-        try_load_kb_with(src).is_ok(),
-        "KNOWN GAP: heterogeneous callback arguments still load — invert this when closed",
+    assert_refused_with(
+        src,
+        &["both.g", "expected Int64 -> Int64, got String -> Int64"],
+        "the SECOND callback must be checked against the variable the first pinned",
+    );
+}
+
+/// The control that makes the row above a claim about the SHARED VARIABLE rather than
+/// about arrow conformance generally: the same disagreement written monomorphically,
+/// which the ground path has always refused. Passes both ways, by design.
+#[test]
+fn a_monomorphic_callback_disagreement_was_always_refused() {
+    let src = r#"
+namespace test.wi836.gapm
+  import anthill.prelude.{Int64, String}
+  operation fs(x: String) -> Int64 = 1
+  operation bothm(f: (x: Int64) -> Int64, g: (x: Int64) -> Int64) -> Int64 = 1
+  operation go() -> Int64 = bothm(fs, fs)
+end
+"#;
+    assert_refused_with(
+        src,
+        &["type mismatch", "String"],
+        "a monomorphic callback disagreement is refused by the ground path",
     );
 }
 

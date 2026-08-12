@@ -405,6 +405,14 @@ end
 /// WI-792's fix is that arity is THE ONE COMPONENT that check can always decide —
 /// a ground `Const(Int)` however polymorphic the param and result are — so it now
 /// runs there too, ahead of the groundness-gated component checks.
+///
+/// WI-1085 — the EXPECTED side now reads `(x: Int64, y: Int64)` where it read
+/// `(x: ?T, y: ?T)`. `validate_arrow_param_result` renders its verdict through σ,
+/// because every check it makes now compares σ-resolved components and printing the
+/// slot AS WRITTEN describes a comparison it did not perform. `?T` is pinned to
+/// `Int64` by the sibling arguments `v: T, w: T` (7 and 8), so the reader is shown
+/// what the slot actually demanded here rather than the variable it is spelled with.
+/// The ARITY claim this row makes is untouched — it is the counts that disagree.
 #[test]
 fn generic_callback_arrow_arity_is_conformance_checked() {
     assert_refused_naming(
@@ -419,7 +427,7 @@ namespace test.wi791.knowngap
     = apply2(get_a, 7, 8)
 end
 "#,
-        (2, "(x: ?T, y: ?T) -> Int64"),
+        (2, "(x: Int64, y: Int64) -> Int64"),
         (1, "((a: Int64, b: Int64)) -> Int64"),
     );
 }

@@ -255,6 +255,12 @@ end
 /// program written non-generically is refused by WI-791
 /// (`positionally_spelled_two_parameter_callback_is_refused`) — genericity was
 /// the whole difference, which is what made this a gap rather than a policy.
+///
+/// WI-1085: the expected side reads `(x: Int64, y: Int64)` where it read
+/// `(x: ?T, y: ?T)` — `validate_arrow_param_result` renders its verdict through σ,
+/// and `?T` is pinned to `Int64` by the sibling arguments `v: T, w: T`. The claim
+/// is unchanged; the message names what the slot demanded instead of the variable
+/// it is spelled with.
 #[test]
 fn a_generic_callback_slot_checks_arity() {
     assert_refused_naming(
@@ -269,7 +275,7 @@ namespace test.wi792.gena
     = apply2(get_a, 7, 8)
 end
 "#,
-        "a 2-parameter function (x: ?T, y: ?T) -> Int64",
+        "a 2-parameter function (x: Int64, y: Int64) -> Int64",
         "a 1-parameter function ((a: Int64, b: Int64)) -> Int64",
     );
 }
@@ -289,6 +295,12 @@ end
 /// Nothing is lost: since WI-784 the spread convention is reachable through
 /// `Function[A, B]` for operations AND lambdas in both application forms
 /// (`a_function_spelling_states_no_arity_so_neither_form_is_refused` above).
+///
+/// WI-1085: the expected side reads `((_1: Int64, _2: Int64)) -> Int64` where it
+/// read `?T -> Int64` — the verdict is rendered through σ, and `?T` is pinned to
+/// the positional pair by the sibling argument `v: T` (`(7, 8)`). The two sides now
+/// print the SAME components and differ only in whether they are one parameter or
+/// two, which is exactly the disagreement, and the count words carry it (WI-795).
 #[test]
 fn a_generic_callback_slot_checks_arity_in_the_spread_direction_too() {
     assert_refused_naming(
@@ -303,7 +315,7 @@ namespace test.wi792.genb
     = apply1(two, (7, 8))
 end
 "#,
-        "a 1-parameter function ?T -> Int64",
+        "a 1-parameter function ((_1: Int64, _2: Int64)) -> Int64",
         "a 2-parameter function (_1: Int64, _2: Int64) -> Int64",
     );
 }

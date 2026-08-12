@@ -426,10 +426,25 @@ nor the slot-wise check is stated over it — both `f(3, 10)` and `f((3, 10))`
 remain legal at a `Function[(A, B), R]` parameter.
 
 The same checks reach a callback argument whose declared type is still
-**polymorphic** (`apply2[T](f: (x: T, y: T) -> R, …)`). Component *types* there
-are deferred — a genuinely polymorphic component must not be rejected before it is
-instantiated — but **arity** is decided regardless, since a parameter count is not
-something instantiation can change.
+**polymorphic** (`apply2[T](f: (x: T, y: T) -> R, …)`). A component type is
+deferred only while it is *genuinely* polymorphic — a variable the call has already
+pinned is **resolved and then decided**, including one pinned by a *sibling*
+argument, so `both[X](f: (x: X) -> R, g: (x: X) -> R)` refuses a `g` that
+contradicts the `X` its `f` fixed (WI-1084 for the result position, WI-1085 for the
+parameter; the same rule that makes two `List[T = X]` arguments agree, WI-836).
+**Arity** is decided regardless, since a parameter count is not something
+instantiation can change.
+
+The positional rule above relates two parameter *lists*, so it applies when **both**
+sides are arrows — whether or not either was reached through a variable. Every mixed
+pairing with a `Function[A, B, E]` is compared **by name** instead, in both
+directions: `A` is one argument's data type and not a list, and zipping a parameter
+list onto it is the same bridge whichever side the list is on. **One exemption**, and
+it is open rather than settled: a `Function` slot's `A` is compared *as written*, not
+through σ, so an `A` that is a variable is not compared at all and `apT[T](f:
+Function[A = T, B = R], t: T)` accepts a two-parameter operation under the spread
+convention above — while the same slot written out concretely refuses it. Which of
+those two verdicts is right is **WI-1087**.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 

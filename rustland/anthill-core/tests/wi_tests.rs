@@ -1159,3 +1159,6 @@ mod wi1077_accepts_vs_receives_test;
 
 #[path = "include/wi1083_polytype_test.rs"]
 mod wi1083_polytype_test;
+
+#[path = "include/wi1085_arrow_param_relation_test.rs"]
+mod wi1085_arrow_param_relation_test;

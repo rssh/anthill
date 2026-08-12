@@ -27435,9 +27435,16 @@ fn validate_arg_against_param(
     // b: Int64), B = Int64]` slot states NO arity, so the eta arrow of a 2-parameter
     // operation belongs in it. Measured, not predicted: without this,
     // `wi787_eta_spread_named_tuple_test` (3 cases), `wi784_closure_arity_test`'s rigid-`A`
-    // case and `wi424`'s row-gated callback all flipped from load-clean to refused. The
-    // resulting hole is pinned by `known_gap_two_callback_arguments_sharing_a_type_var_-
-    // are_not_checked`, which fails when the deeper fix lands.
+    // case and `wi424`'s row-gated callback all flipped from load-clean to refused.
+    //
+    // WI-1085 — THE HOLE THIS LEFT IS CLOSED, and NOT by moving this carve-out. The gap
+    // pinned here as `known_gap_two_callback_arguments_sharing_a_type_var_are_not_checked`
+    // was read as a consequence of the withholding alone; it was equally a consequence of the
+    // checker the callable is routed TO, which tested each component for groundness AS
+    // WRITTEN and so skipped a variable σ had already pinned. Resolving the component first
+    // (WI-1084 for the result, WI-1085 for the param) closes it with this withholding
+    // untouched — the pin is now the positive `two_callback_arguments_sharing_a_type_var_-
+    // must_agree`.
     //
     // STRUCTURAL, not a head test — the correction the first cut needed. `types_compatible`
     // DECOMPOSES a sort application down to `arrow_compatible_view`, so a callable NESTED in
@@ -27578,7 +27585,24 @@ fn validate_arg_against_param(
 ///   * result is COVARIANT — the callback's result must satisfy the declared
 ///     result (`actual.result <: declared.result`).
 /// Each component check fires only when BOTH sides of it are ground, so a
-/// polymorphic actual / declared component is conservatively skipped.
+/// polymorphic actual / declared component is conservatively skipped — groundness
+/// asked of the component AFTER σ resolves it, so "polymorphic" means genuinely
+/// un-pinned and not merely written with a variable (WI-1084/WI-1085; the one
+/// exception, and why, is at the `Function` arm).
+///
+/// WI-1085 — WHICH RELATION the PARAM check uses is decided by the SPELLING OF
+/// BOTH SIDES, not by the declared one alone. [`arrow_parts`] decomposes an `arrow`
+/// and a `Function[A, B, E]` onto one `param`, but an arrow's is a parameter LIST
+/// (applied positionally at arity ≠ 1) and a `Function`'s `A` is one argument's
+/// DATA type — so one comparison served two questions and got the arrow one wrong.
+/// The POSITIONAL relation needs a parameter list on each side, so it is reached
+/// only by an `arrow`/`arrow` pair; the three MIXED pairings all take the by-name
+/// one. Keying on the declared spelling alone was this ticket's first cut and gave
+/// the positional relation to a `Function`-typed ARGUMENT at an arrow slot — the
+/// same WI-775 bridge from the other side, pinned by
+/// `wi1085…::a_function_typed_argument_at_an_arrow_slot_is_not_zipped_positionally`.
+/// The arms at the site state each, along with which side σ resolves and why they
+/// differ on that too.
 fn validate_arrow_param_result(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -27593,12 +27617,28 @@ fn validate_arrow_param_result(
         // Not both arrows (or a param-less form) — nothing this helper can decide.
         return None;
     };
-    let mismatch = || TypeError::TypeMismatch {
+    // WI-1085: RENDERED AS σ RESOLVES IT — the type each side HAS at this call site, which is
+    // what the reader needs and what the checks below mostly compare. The measured message
+    // for two callback arguments sharing one variable was `expected ?X -> Int64, got String ->
+    // Int64`: the reader was shown the variable and not the `Int64` the FIRST argument had
+    // pinned it to, which is the whole content of the disagreement.
+    //
+    // UNIFORM, THOUGH ONE ARM COMPARES AS-WRITTEN. The `Function`-slot arm below deliberately
+    // does not σ-resolve its operands, so on that path the rendering resolves more than the
+    // comparison read. It resolves no LESS — that arm's gate already requires both operands
+    // ground as written, so σ is an identity on them — and what it adds is the binding of a
+    // component the comparison did not consult (a slot declared `-> R` prints its pinned `R`).
+    // Extra context about the same two types, never a different verdict; a per-arm rendering
+    // would buy nothing but a second way for the two to disagree.
+    //
+    // (`walk_type_deep_value` is pure σ, so this names a binding and never δ-grounds one into
+    // existence.)
+    let mismatch = |kb: &mut KnowledgeBase, subst: &mut Substitution| TypeError::TypeMismatch {
         site: TypeError::here(),
         span,
         context: context.clone(),
-        expected: declared.clone(),
-        actual: actual.clone(),
+        expected: walk_type_deep_value(kb, subst, declared),
+        actual: walk_type_deep_value(kb, subst, actual),
     };
     // WI-792: ARITY, and it runs FIRST because it is THE ONE COMPONENT THIS CHECK
     // CAN ALWAYS DECIDE. The groundness discipline below defers a component whose
@@ -27624,12 +27664,15 @@ fn validate_arrow_param_result(
     // convention is reachable through `Function[A, B]` for operations AND lambdas
     // in both application forms, so nothing is lost by refusing it here.
     let arity_key = kb.intern("arity");
-    if let (Some(d_arity), Some(a_arity)) = (
+    // WI-1085: both counts are kept — the equality below is one question, and WHICH
+    // RELATION the param slots take is another that reads the same two numbers.
+    let (d_arity, a_arity) = (
         arrow_arity(kb, declared, arity_key),
         arrow_arity(kb, actual, arity_key),
-    ) {
-        if d_arity != a_arity {
-            return Some(mismatch());
+    );
+    if let (Some(d), Some(a)) = (d_arity, a_arity) {
+        if d != a {
+            return Some(mismatch(kb, subst));
         }
     }
     // WI-801: and the `Function[A, B, E]` half of the same question, which the
@@ -27643,45 +27686,115 @@ fn validate_arrow_param_result(
     if let Some(err) = function_slot_arity_error(kb, declared, actual, span, context) {
         return Some(err);
     }
-    // WI-1084 — RESOLVE EACH COMPONENT THROUGH σ BEFORE ASKING WHETHER IT IS GROUND. The
-    // groundness gates below are what defer a genuinely polymorphic component to dispatch,
-    // and they were reading the component AS WRITTEN: a variable the argument-unify loop had
-    // already pinned still read as non-ground, so the comparison was skipped and the
-    // disagreement was never seen. This is WI-836's correction one level down — "pairs the
-    // predicate with a resolution of matching depth" — and it is the SECOND of the two
-    // levels WI-1084 needed, the first being that unification had no arm to make the binding
-    // with (see [`unify_arrow_function_view`]).
+    // Contravariant param: `declared.param <: actual.param`.
+    //
+    // WI-1085 — ONE COMPARISON WAS ANSWERING TWO DIFFERENT QUESTIONS. [`arrow_parts`] maps
+    // both callable spellings onto one `param`, which erases the very distinction the answer
+    // turns on, so the DECLARED spelling ([`type_dispatch_name_view`]) has to be consulted
+    // separately. It selects the RELATION and, with it, the OPERAND that relation is applied
+    // to — the two arms differ on both, and each says why.
+    //
+    // BOTH SPELLINGS ARE READ, not just the declared one. The positional relation belongs to
+    // a pair of parameter LISTS, so it needs an `arrow` on EACH side — and the mismatched
+    // pairing runs in both directions, a `Function[A = …]` ARGUMENT reaching an `arrow` slot
+    // as readily as the reverse. Keying on the declared spelling alone would hand that one
+    // the positional relation and bridge `A` to a parameter list from the other side, which
+    // is the same WI-775 hole through the back door.
+    let param_list_arity = match (
+        type_dispatch_name_view(kb, declared),
+        type_dispatch_name_view(kb, actual),
+    ) {
+        // Both counts are `Some` here BY CONSTRUCTION, so there is nothing to assert and no
+        // count to invent: [`extract_type`]'s `Arrow` arm yields `Error` unless the `arity`
+        // child reads as a `Const(Int)`, so a malformed arrow makes [`arrow_parts`] answer
+        // `None` and this function returned at its head. (A first cut carried a
+        // `debug_assert` here modelled on [`agreed_arrow_arity`]'s; that one guards a
+        // relation reached WITHOUT an `arrow_parts` decode, and this one could not fire.)
+        // The equality above has already refused a pair whose two counts disagree, so either
+        // count names the same list length.
+        (Some("arrow"), Some("arrow")) => d_arity,
+        _ => None,
+    };
+    match param_list_arity {
+        // A GENUINE ARROW PAIR — the arity above is one both sides state and agree on, and at
+        // arity ≠ 1 the slot is a parameter LIST, applied POSITIONALLY (WI-782's `_1.._n`
+        // convention, WI-442's synthetic escape). [`arrow_params_compatible`] is the relation
+        // the GROUND path already uses for exactly this pair ([`arrow_compatible_view`]), and
+        // it routes arity ONE back to the ordinary type relation itself (WI-791: a lone
+        // parameter's slot is its TYPE, and a tuple there is DATA). Reading it BY NAME, as
+        // this arm did, refuses what WI-782 REQUIRES: `foldLeft(f: (acc: Acc, x: Element) ->
+        // Acc)` given an operation's eta arrow `(_1: Int64, _2: Int64) -> Int64` is `expected
+        // (acc: ?Acc, x: Element), got (_1: Int64, _2: Int64)` — the 38 rows WI-1084 measured
+        // and the reason it could σ-resolve only the RESULT. MEASURED AGAIN HERE, with only
+        // this arm reverted: 35 rows over 17 tickets, the stdlib combinators among them.
+        //
+        // AND σ-RESOLVED, WI-1084's step for the result taken here at last: the groundness
+        // gate is what defers a genuinely polymorphic component to dispatch, and it was
+        // reading the component AS WRITTEN, so a variable the argument-unify loop had already
+        // pinned still read as non-ground and the comparison was skipped. WI-836's correction
+        // one level down — pair the predicate with a resolution of matching depth. It is what
+        // makes this check reachable at all for an ordinary higher-order call, and what
+        // closes the PARAM twin of the result hole WI-1084 closed (`wi836…::two_callback_-
+        // arguments_sharing_a_type_var_must_agree`, the gap WI-836 pinned).
+        Some(arity) => {
+            let d_param_r = walk_type_deep_value(kb, subst, &d_param);
+            let a_param_r = walk_type_deep_value(kb, subst, &a_param);
+            if resolved_type_is_ground(kb, &d_param_r)
+                && resolved_type_is_ground(kb, &a_param_r)
+                && !arrow_params_compatible(kb, subst, &d_param_r, &a_param_r, arity)
+            {
+                return Some(mismatch(kb, subst));
+            }
+        }
+        // EVERY MIXED PAIRING — all three of `Function`/`Function`, `Function` slot given an
+        // arrow, and an ARROW SLOT GIVEN A `Function`. BY NAME, on the component AS WRITTEN,
+        // and both halves are unchanged from WI-775/WI-1084 deliberately.
+        //
+        // So YES, an arrow slot's parameter LIST is compared by name here — that is not the
+        // arm above leaking, it is the only relation available when the other side has no
+        // list to zip against. A `Function[A = …]`'s `A` is the ARGUMENT's data type (what
+        // flows to `apply(f, x: A)`); zipping a parameter list onto it is the WI-775 bridge
+        // whichever side the list is on. The ground-path twin is
+        // [`arrow_function_compatible`], which applies this same relation to this same pair
+        // and carries the measurement. `wi1085…::a_function_typed_argument_at_an_arrow_slot_-
+        // is_not_zipped_positionally` drives the arrow-slot direction.
+        //
+        // NOT σ-RESOLVED, and that is this arm's decision rather than an oversight carried
+        // over. Resolving would not merely widen a groundness gate here: it would extend
+        // WI-775's refusal to a pairing only a VARIABLE `A` can present — `apT[T](f:
+        // Function[A = T, B = Int64], t: T)` given a 2-parameter operation, where `T` is
+        // pinned by the SIBLING argument `t` — and those programs load and RUN today under
+        // the WI-775/WI-787 spread convention (`f(3, 10)` and `f((3, 10))` are both legal at
+        // the slot, and WI-801 admits both arities at it). MEASURED: σ-resolving this arm
+        // costs SIX rows, every one a program that evaluates — all four of
+        // `wi787_eta_spread_named_tuple_test`, `wi1085…::a_function_slot_still_spreads_an_-
+        // operation_across_its_components`, and WI-1083's headline
+        // `a_requires_carrying_member_runs_as_a_function_value`, which reaches its dispatch
+        // dictionary through a `Function`-typed slot. Whether a written-out `A` and a
+        // σ-pinned one should be decided alike is a question about who owns `Function`
+        // conformance — WI-775's by-name relation or WI-801's two-admitted-arities rule —
+        // and not about a walk depth; WI-1087 holds it.
+        None => {
+            if resolved_type_is_ground(kb, &d_param)
+                && resolved_type_is_ground(kb, &a_param)
+                && !types_compatible(kb, subst, &d_param, &a_param)
+            {
+                return Some(mismatch(kb, subst));
+            }
+        }
+    }
+    // WI-1084 — RESOLVE THE RESULT THROUGH σ BEFORE ASKING WHETHER IT IS GROUND, for the
+    // reason the arrow arm above now shares: the gate was reading the component AS WRITTEN,
+    // so a variable the argument-unify loop had already pinned still read as non-ground and
+    // the comparison was skipped. The first of the two levels WI-1084 needed was that
+    // unification had no arm to make the binding with at all (see
+    // [`unify_arrow_function_view`]).
     //
     // WHAT THIS DOES NOT DO is re-open the WI-836 carve-out one frame up. That one withholds
     // the WHOLE-TYPE `types_compatible` for a callable, because it would refuse the WI-775
     // pairing (a `Function[A = (a, b)]` slot admitting a 2-parameter eta arrow). Here the
-    // relation is unchanged — still component-wise, still by name — and only the operand of
-    // the groundness test moves. A component that σ leaves non-ground is deferred exactly as
-    // before.
-    // Contravariant param: `declared.param <: actual.param`.
-    // WI-775: BY NAME. `arrow_parts` decomposes a `Function[A = …]` too, so a
-    // positional bridge here would reopen the hole on that surface (see
-    // `arrow_function_compatible`); the genuine arrow-vs-arrow param relation
-    // is `arrow_compatible_view`'s, which does align positionally.
-    //
-    // WI-1084 — THE PARAM IS DELIBERATELY *NOT* σ-RESOLVED, and this is a measurement
-    // rather than an oversight. Resolving it makes both sides ground for an ordinary
-    // higher-order call, and the BY-NAME comparison then refuses a pairing WI-782 REQUIRES:
-    // `foldLeft(f: (acc: Acc, x: Element) -> Acc)` given an operation's eta arrow
-    // `(_1: Int64, _2: Int64) -> Int64` is `expected (acc: ?Acc, x: Element), got (_1, _2)`
-    // — 38 tests across WI-064/278/411/424/492/493/585 and the stdlib combinators. The
-    // by-name rule is right for the `Function[A = …]` spelling this function also serves and
-    // WRONG for a genuine arrow-vs-arrow parameter LIST, which must align positionally
-    // (`arrow_params_compatible`); the groundness gate has been hiding that disagreement.
-    // Splitting the two readings is a separate change with its own measurement, so the param
-    // keeps the reading it had and only the RESULT — a single type, with no naming
-    // convention to get wrong — is resolved.
-    if resolved_type_is_ground(kb, &d_param)
-        && resolved_type_is_ground(kb, &a_param)
-        && !types_compatible(kb, subst, &d_param, &a_param)
-    {
-        return Some(mismatch());
-    }
+    // relation stays component-wise and only the operand of the groundness test moves. A
+    // component that σ leaves non-ground is deferred exactly as before.
     let d_result_r = walk_type_deep_value(kb, subst, &d_result);
     let a_result_r = walk_type_deep_value(kb, subst, &a_result);
     // Covariant result: `actual.result <: declared.result`.
@@ -27689,7 +27802,7 @@ fn validate_arrow_param_result(
         && resolved_type_is_ground(kb, &a_result_r)
         && !types_compatible(kb, subst, &a_result_r, &d_result_r)
     {
-        return Some(mismatch());
+        return Some(mismatch(kb, subst));
     }
     None
 }
