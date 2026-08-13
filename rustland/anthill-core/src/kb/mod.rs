@@ -1173,6 +1173,14 @@ pub struct KnowledgeBase {
     pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
     pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
 
+    // WI-945 — call sites whose parent-bundle dictionary could not be built because a
+    // requirement element is left GENUINELY UNCONSTRAINED (§5.2), parked until every
+    // operation body is typed. See `typing::UnsuppliableRequirement` for why the
+    // verdict cannot be reached at the call: the σ that names the element lives only
+    // there, and whether the callee's body ever READS the slot is answerable only
+    // once that body has been classified.
+    pub(crate) unsuppliable_requirements: Vec<typing::UnsuppliableRequirement>,
+
     // WI-226 Cache A — memoized FLATTENED direct `requires` chain per sort.
     // WI-657(12) revived this (WI-230 → WI-657 it was dormant): it now caches the
     // flattened `Rc<Vec<RequiresEntry>>` that `typing::direct_requires_chain_rc`
@@ -1495,6 +1503,7 @@ impl KnowledgeBase {
             resolved_requires_facts: HashSet::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
+            unsuppliable_requirements: Vec::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),

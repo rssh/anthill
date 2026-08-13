@@ -6773,6 +6773,11 @@ fn attach_eta_dispatch_dict(
         &caller_requires,
         env.param_rigids(),
         &selected,
+        // WI-945: the eta route needs no parked verdict — its `Ok(None)` arm below is
+        // ALREADY a load error (WI-420), for the reason that makes the verdict
+        // unconditional here: an `OpRef` escapes to a foreign apply frame, so a dict
+        // missing at mint is missing for good, whatever the body does with it.
+        None,
     ) {
         Ok(Some(dict)) => {
             occ.set_classification(CallClass::EtaOpRef {
@@ -14024,6 +14029,7 @@ fn check_apply_iter(
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
                     // died at eval reading the unbound `__req_*`.
+                    let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb,
                         &subst,
@@ -14032,6 +14038,9 @@ fn check_apply_iter(
                         &caller_requires,
                         env.param_rigids(),
                         &selections,
+                        // WI-945: asked for ONLY inside an operation body — see the park
+                        // below for why a rule-body goal is a different question.
+                        env.enclosing_op().is_some().then_some(&mut unsuppliable),
                     )
                     .map_err(|refusal| {
                         TypeError::UnsatisfiableRequirement {
@@ -14042,6 +14051,38 @@ fn check_apply_iter(
                             refusal,
                         }
                     })?;
+                    // WI-945 — §5.2's unconstrained-element refusal, PARKED for the
+                    // pass that runs once every body is typed. Two gates, each with a
+                    // mechanism behind it rather than a corpus behind it:
+                    //
+                    //  * `enclosing_op` (asked for above): this dictionary is the
+                    //    call's only supply only in an OPERATION body, where eval
+                    //    installs it or plain-applies. A RULE-body goal reaches eval
+                    //    through the SLD bridge, which resolves real provider
+                    //    dictionaries from the CONCRETE argument values
+                    //    (`call_op_bridged` → `resolve_bridge_requirements`) and
+                    //    SUSPENDS when it cannot — so an element unpinned at load is
+                    //    the ORDINARY case there, every goal argument being a
+                    //    variable. MEASURED: `gap3b.combiner`'s `combines_to(?b, ?r)`
+                    //    (wi625 Layer B) and `PartialEq[T = PartialOrd.T]` at
+                    //    `anthill.prelude.PartialOrd` are exactly this — 93 of the 97
+                    //    instrumented hits across the workspace — and they all work.
+                    //  * whether the callee's body reads the slot — deferred to
+                    //    [`report_unsuppliable_requirements`]; see
+                    //    [`UnsuppliableRequirement`].
+                    //
+                    // No `dispatch_dict.is_none()` guard beside this: the builder fills
+                    // the slot on the one path that then returns `Ok(None)`, so a
+                    // refusal here and a dictionary are already mutually exclusive.
+                    if let Some(refusal) = unsuppliable {
+                        kb.unsuppliable_requirements.push(UnsuppliableRequirement {
+                            span,
+                            source: occ.span.source,
+                            callee_op: fn_sym,
+                            callee_sort: parent_sym,
+                            refusal,
+                        });
+                    }
                     // WI-822 LEG 1: and the callee's OWN op-scoped slots, from the same
                     // substitution. Its caller chain is the COMPOSED one — a callee op
                     // slot may forward from the caller's own op slots, which is how an
@@ -15828,6 +15869,10 @@ fn build_dispatching_dict_direct(
         // apply. This path's output is the diagnostic-only `dispatch_rewrites` term;
         // the dict eval actually threads was built at the call site, WITH the pin.
         &[],
+        // WI-945: nowhere to report an unsuppliable element and nothing to report —
+        // `require_complete = false` returns before that arm, and the σ it needs to
+        // name the element is exactly what this path does not have.
+        None,
     )
     // WI-828: a refusal needs the σ context (`disambig = Some`), so the σ-less
     // diagnostic path cannot produce one.
@@ -15940,6 +15985,284 @@ fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
     }
 }
 
+/// WI-945 — a call site whose parent-bundle dictionary could not be built because a
+/// requirement element is left GENUINELY UNCONSTRAINED (§5.2), parked for the verdict
+/// pass that runs once every operation body is typed ([`report_unsuppliable_requirements`]).
+///
+/// PARKED, NOT RAISED, because the two halves of the verdict are knowable in two
+/// different places and neither knows both:
+///
+///  - "nothing at this call pins the element" needs the per-call σ, which is alive
+///    only inside the typer's call check and is gone by `req_insertion` (the same
+///    reason [`build_concrete_dispatch_dict`] runs where it does). Hence the refusal
+///    is BUILT here, fully rendered.
+///  - "the callee will actually miss it" needs the CALLEE's body, and an operation
+///    may be called before its own body has been classified. Hence the refusal is
+///    DECIDED later, against [`op_body_reads_sort_requirement_slot`].
+///
+/// The second half is not a nicety: WI-822 LEG 2 measured the same distinction one
+/// channel over — "has an unpinnable chain" and "needs it" are different questions,
+/// and only the body answers the second. MEASURED here too, on the corpus:
+/// `test.wi508g.useNew` calls `FiniteCollection.size` with `Element` unpinned and
+/// answers 1, because `size`'s body reads no `__req_*` at all.
+pub(crate) struct UnsuppliableRequirement {
+    /// The call, for the diagnostic's location. `source` rides beside `span` because
+    /// this error is emitted outside the per-op loop that stamps `sources`.
+    pub(crate) span: Option<Span>,
+    pub(crate) source: crate::span::SourceId,
+    /// The operation called — the one whose body decides whether the missing
+    /// dictionary is a defect or an irrelevance.
+    pub(crate) callee_op: Symbol,
+    /// Its parent sort: the owner of the `requires` chain this dictionary would fill.
+    pub(crate) callee_sort: Symbol,
+    pub(crate) refusal: Box<RequirementRefusal>,
+}
+
+/// WI-945 — does `op`'s body read a SORT-level requirement slot, i.e. would entering it
+/// with no requirements channel leave a `__req_*` unbound? True iff some call in the
+/// body classified [`CallClass::DeferToRequirement`] against the sort half of the
+/// frame layout.
+///
+/// THE SORT HALF ONLY, and the index is what says so: an op-scoped defer is recorded in
+/// the COMPOSED chain's numbering with `sort_len` added ([`op_scoped_defer_location`]),
+/// and its slot is filled from a different channel entirely (`op_dicts`, built per call
+/// by [`build_op_scoped_dicts`]). Counting one would blame the parent-bundle dictionary
+/// for a slot it never fills.
+///
+/// This is the question [`sort_reads_requirement_slots`]' NAME asks and its body does
+/// not — that one answers "does this sort HAVE slots" (`provider_dict_entries`
+/// non-empty), which is the right gate for "build a dictionary at all" and the wrong
+/// one for "will the callee miss it". Both names are kept because both questions are
+/// asked; see WI-822 LEG 2, which measured the same split on the op half.
+///
+/// THREE WAYS A BODY READS THE FRAME, and the count is the point — an earlier cut had
+/// two and let a program through that loads clean and dies at eval (found by
+/// /code-review, reproduced, and now pinned by
+/// `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`):
+///  1. it DEFERS — a `DeferToRequirement` at a sort-half slot;
+///  2. it INHERITS — a same-sort call the typer gave no dictionary, which takes
+///     `start_apply_same_sort`'s `inherit` arm and reads whatever the sibling reads;
+///  3. it FORWARDS — a call the typer DID give a dictionary, one of whose slots is a
+///     `var_ref` into THIS frame ([`dict_forwards_frame_slot`]). "Got a dictionary" is
+///     not "needs nothing from me".
+///
+/// WHAT IT DELIBERATELY DOES NOT FOLLOW, so the bound is stated rather than assumed: a
+/// same-sort `PinNow` (statically resolved to a concrete impl, which eval plain-applies
+/// rather than inheriting into), and a cross-sort callee's own body — that callee's
+/// call site builds, or parks, its own dictionary under its own σ. Answering `false`
+/// there is a REFUSAL WITHHELD, never a wrong value: the program keeps exactly the
+/// behaviour it had before WI-945, eval's own `not bound` raise included.
+fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bool {
+    /// What one classified call in the body contributes to the answer.
+    enum Step {
+        /// It reads a sort-half slot: the whole question is settled.
+        Reads,
+        /// A same-sort call with no dictionary of its own, which will inherit this
+        /// frame — so whatever IT reads, this body effectively reads.
+        Inherits(Symbol),
+        /// A call the typer DID build a dictionary for. That dictionary may still read
+        /// this frame: a WI-418 forward projects a slot as `var_ref(__req_*)`, resolved
+        /// against the CALLER's frame at eval.
+        Forwards(TermId),
+        Nothing,
+    }
+    // TRANSITIVE OVER SAME-SORT CALLS, because those alone INHERIT this frame instead
+    // of building their own (`start_apply_same_sort`'s `inherit` arm, taken exactly
+    // when the typer supplied no dict). A sibling reached that way reads the SAME empty
+    // channel, so `twice(a) = inner(a)` with the read in `inner` is the subject one hop
+    // out — MEASURED as loading clean and dying at eval while the direct spelling was
+    // refused. Cross-sort calls are NOT followed: each builds, or parks, its own
+    // dictionary at its own site under its own σ.
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    let mut queue: Vec<Symbol> = vec![op];
+    while let Some(cur) = queue.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        let Some(body) = kb.op_body_node(cur).map(Rc::clone) else {
+            // Body-less: nothing reads anything. (A body-less op is also not a target
+            // this route reaches — it dispatches through its carrier — but saying so
+            // costs one `None` arm and keeps the predicate total.)
+            continue;
+        };
+        let parent = impl_parent_of_op(kb, cur);
+        let chain = op_dict_entries(kb, cur);
+        let sort_len = chain.sort_len();
+        // The frame slots a WI-418 forward inside a built dictionary could name. The
+        // SORT half only, for the same reason `sort_len` gates the defer arm.
+        let sort_names: Vec<Symbol> = chain.names(kb).iter().copied().take(sort_len).collect();
+        let mut stack: Vec<Rc<NodeOccurrence>> = vec![body];
+        while let Some(occ) = stack.pop() {
+            let NodeKind::Expr {
+                expr,
+                classification,
+                ..
+            } = &occ.kind
+            else {
+                continue;
+            };
+            // The classification is read into a local BEFORE anything else runs: a
+            // `RefCell` borrow held as a `match` scrutinee outlives the arms, and the
+            // arms below call back into `kb`.
+            let step = match classification.borrow().as_deref() {
+                // `slot < sort_len` is the sort-half test — see the doc above.
+                Some(CallClass::DeferToRequirement { slot, .. }) if *slot < sort_len => {
+                    Step::Reads
+                }
+                Some(CallClass::ConcreteApplyWithin {
+                    fn_target_sym,
+                    dispatch_dict,
+                    ..
+                }) => match dispatch_dict {
+                    None => Step::Inherits(*fn_target_sym),
+                    Some(d) => Step::Forwards(*d),
+                },
+                _ => Step::Nothing,
+            };
+            match step {
+                Step::Reads => return true,
+                Step::Inherits(target) => {
+                    if parent.is_some() && impl_parent_of_op(kb, target) == parent {
+                        queue.push(target);
+                    }
+                }
+                Step::Forwards(dict) => {
+                    if dict_forwards_frame_slot(kb, dict, &sort_names) {
+                        return true;
+                    }
+                }
+                Step::Nothing => {}
+            }
+            crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    false
+}
+
+/// WI-945 — does a built dispatching dictionary READ its builder's own frame, i.e. does
+/// it contain a `var_ref(name = <one of `frame_slots`>)`? That is the WI-418 forward:
+/// the dep stayed abstract and the enclosing sort's own `requires` covers it, so the
+/// slot is projected as a caller-frame read rather than constructed.
+///
+/// A DICTIONARY IS NOT SELF-CONTAINED, which is why the caller cannot stop at "this call
+/// got a dictionary, so it needs nothing from me". MEASURED: a `HolderVS` that requires
+/// both `VectorSpace[V, F]` and `Doubler[V]`, whose `twice` calls a cross-sort
+/// `Inner.innerOp` — `Inner`'s `Doubler` slot is filled by forwarding `HolderVS`'s own
+/// `__req_doubler`. With `F` unconstrained at `twice`'s call site the frame is empty and
+/// eval raises `var_ref(__req_doubler) unbound in requirement position`; the load was
+/// clean until this arm existed.
+///
+/// Walks the whole term, `var_ref` being nested arbitrarily deep inside
+/// `requirement_at_sort` projections and sub-dictionaries. A KB with no
+/// [`ProjectionSyms`] has no `var_ref` functor to find, so it answers `false`.
+fn dict_forwards_frame_slot(kb: &mut KnowledgeBase, dict: TermId, frame_slots: &[Symbol]) -> bool {
+    if frame_slots.is_empty() {
+        return false;
+    }
+    let Some(syms) = ProjectionSyms::resolve(kb) else {
+        return false;
+    };
+    let mut stack: Vec<TermId> = vec![dict];
+    let mut seen: HashSet<TermId> = HashSet::new();
+    while let Some(t) = stack.pop() {
+        if !seen.insert(t) {
+            continue;
+        }
+        let term = kb.get_term(t).clone();
+        if let Term::Fn {
+            functor,
+            named_args,
+            ..
+        } = &term
+        {
+            if *functor == syms.var_ref {
+                let named = named_args
+                    .iter()
+                    .find(|(k, _)| *k == syms.name)
+                    .map(|(_, v)| *v);
+                if let Some(Term::Ref(n)) = named.map(|v| kb.get_term(v)) {
+                    if frame_slots.contains(n) {
+                        return true;
+                    }
+                }
+            }
+        }
+        stack.extend(term.subterms());
+    }
+    false
+}
+
+/// WI-945 — the verdict on every call site [`build_concrete_dispatch_dict`] parked: a
+/// requirement element nothing at the call pins is a LOAD error (§5.2) when the callee
+/// would actually miss the dictionary, and nothing at all when it would not.
+///
+/// Runs after BOTH `check_operation_bodies` sweeps, which is the earliest point at
+/// which every callee has been classified — an operation is routinely called before
+/// its own body is checked, so asking at the call site would answer from whatever the
+/// sort-iteration order happened to be.
+fn report_unsuppliable_requirements(
+    kb: &mut KnowledgeBase,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    let parked = std::mem::take(&mut kb.unsuppliable_requirements);
+    if parked.is_empty() {
+        return;
+    }
+    // `sources` is parallel to `errors` on entry (the callers' contract) and must stay
+    // so: each error pushed here pairs with the span's own file, which is not the file
+    // the surrounding pass happens to be tagging.
+    sources.resize(errors.len(), None);
+    for entry in parked {
+        if !op_body_reads_sort_requirement_slot(kb, entry.callee_op) {
+            continue;
+        }
+        errors.push(TypeError::UnsatisfiableRequirement {
+            span: entry.span,
+            op: entry.callee_op,
+            callee_sort: entry.callee_sort,
+            eta: false,
+            refusal: entry.refusal,
+        });
+        sources.push(Some(entry.source));
+    }
+}
+
+/// The dep's own elements that NOTHING at this call determines, rendered
+/// `` `F = HolderVS.F` `` for a diagnostic. `goal.bindings` is already
+/// type-param-filtered by [`goal_from_requires_entry`] — the same extraction the
+/// resolution itself used — and [`sigma_class_terminal`]'s second component is the
+/// distinction that matters: `false` = the chase ended at an unbound global, i.e.
+/// an element neither the arguments nor an explicit type argument nor the
+/// enclosing scope's own parameters pin. An element that IS an enclosing-scope
+/// parameter terminates at a rigid (`true`) and is constrained in context, so it
+/// is absent from this list — which is what keeps the WI-418 abstract cross-sort
+/// forward (a sort's own param, covered by its `requires`) out of it.
+///
+/// Empty is the load-bearing answer: WI-945 reads it as the §5.2 verdict for a
+/// projection that failed with no σ-refused cover and no `Ambiguous` — non-empty
+/// means no supply can ever exist, empty means the dep is fully determined and
+/// merely unprovided (the WI-415/418 gap that stays a silent no-dict).
+fn unconstrained_elements(kb: &mut KnowledgeBase, dep: &RequiresEntry, ctx: &SigmaCtx) -> Vec<String> {
+    let Some(goal) = goal_from_requires_entry(kb, dep) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (k, v) in &goal.bindings {
+        if !is_type_param_value(kb, *v) {
+            continue;
+        }
+        if matches!(sigma_class_terminal(kb, ctx, *v), Some((_, false))) {
+            out.push(format!(
+                "`{} = {}`",
+                kb.local_name_of(*k),
+                format_term_for_goal(kb, *v),
+            ));
+        }
+    }
+    out
+}
+
 /// WI-828: classify WHY a `require_complete` dict build failed a dep on the
 /// σ-gated path. Returns `Some` only for the σ-refusal signature this ticket
 /// surfaces as a load diagnostic — a coarsely-covering entry the σ-gate
@@ -16015,24 +16338,7 @@ fn explain_dep_refusal(
         Some(g) => format_goal(kb, g),
         None => kb.qualified_name_of(dep.required_sort).to_string(),
     };
-    // The dep elements still unbound under σ — `goal.bindings` is already
-    // type-param-filtered by `goal_from_requires_entry`, the same extraction
-    // the resolution itself used.
-    let mut unconstrained: Vec<String> = Vec::new();
-    if let Some(g) = &goal {
-        for (k, v) in &g.bindings {
-            if !is_type_param_value(kb, *v) {
-                continue;
-            }
-            if matches!(sigma_class_terminal(kb, ctx, *v), Some((_, false))) {
-                unconstrained.push(format!(
-                    "`{} = {}`",
-                    kb.local_name_of(*k),
-                    format_term_for_goal(kb, *v),
-                ));
-            }
-        }
-    }
+    let unconstrained = unconstrained_elements(kb, dep, ctx);
     let refused_covers: Vec<String> = refused_entries
         .iter()
         .map(|e| render_requires_entry(kb, e))
@@ -16093,6 +16399,12 @@ fn build_dispatching_dict_from_chain(
     disambig: Option<&SigmaCtx>,
     // WI-841: the call site's explicit provider selections, per slot (§4.5).
     selected: &[InstanceSelection],
+    // WI-945: where to report a dep that fails to project because an element is
+    // genuinely unconstrained (§5.2) — a no-dict outcome NOTHING can later fill, as
+    // opposed to the WI-415/418 gap this arm otherwise reports by staying silent.
+    // `None` from the req-insertion path, which passes `require_complete = false` and
+    // so never reaches this arm at all.
+    mut unsuppliable: Option<&mut Option<Box<RequirementRefusal>>>,
 ) -> Result<Option<TermId>, Box<RequirementRefusal>> {
     // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
     // it depends only on `caller_requires`, not on the current dep, so the
@@ -16158,10 +16470,42 @@ fn build_dispatching_dict_from_chain(
                         caller_requires,
                         &caller_sub_chains,
                         ctx,
-                        s3_failure,
+                        s3_failure.clone(),
                     )
                 }) {
                     return Err(Box::new(refusal));
+                }
+                // WI-945 — §5.2's THIRD signature, and the one that had no reader:
+                // "a requirement element left genuinely unconstrained at the call …
+                // is a load-time error naming the requirement, the unconstrained
+                // element, ANY σ-refused covering entry, and the construction
+                // outcome". The `any` is what the two arms above do not cover — they
+                // fire only WITH a σ-refused cover or an `Ambiguous` construction, so
+                // the plainest spelling of the rule (a caller that declares no
+                // `requires` at all, an element nothing pins, no provider to tie) fell
+                // through to the silent `Ok(None)` and died at eval. MEASURED as such:
+                // a `sort HolderVS` with `sort V = ? / sort F = ? / requires
+                // VectorSpace[V, F]`, called at a `Vec3` that pins `V` and nothing that
+                // pins `F`.
+                //
+                // Reported through the out-parameter rather than `Err`: unlike the two
+                // arms above, this one is not yet a verdict — see
+                // [`UnsuppliableRequirement`] for the half of it only the callee's body
+                // can answer.
+                if let (Some(ctx), Some(slot)) = (disambig, unsuppliable.as_deref_mut()) {
+                    let unconstrained = unconstrained_elements(kb, dep, ctx);
+                    if !unconstrained.is_empty() {
+                        *slot = Some(Box::new(RequirementRefusal {
+                            dep_text: render_requires_entry(kb, dep),
+                            unconstrained,
+                            refused_covers: Vec::new(),
+                            construction: s3_failure
+                                .as_ref()
+                                .map(|r| describe_resolution_failure(kb, r))
+                                .unwrap_or_default(),
+                            pinned: None,
+                        }));
+                    }
                 }
                 return Ok(None);
             }
@@ -16220,6 +16564,10 @@ fn build_concrete_dispatch_dict(
     // Direct call's dictionary is BUILT on, so it is where a construction-site
     // selection (§5.3) actually decides which provider lands in the callee's frame.
     selected: &[InstanceSelection],
+    // WI-945: see [`build_dispatching_dict_from_chain`]'s parameter of the same name.
+    // A caller that passes `None` accepts today's silent no-dict for an unconstrained
+    // element — the eta site does, because its own `Ok(None)` arm is already loud.
+    unsuppliable: Option<&mut Option<Box<RequirementRefusal>>>,
 ) -> Result<Option<TermId>, Box<RequirementRefusal>> {
     // WI-418: a SAME-SORT call inherits the enclosing frame's requirements at
     // eval (`start_apply_same_sort` checks `inherit` — callee parent == caller
@@ -16278,6 +16626,7 @@ fn build_concrete_dispatch_dict(
         true,
         Some(&disambig),
         selected,
+        unsuppliable,
     )
 }
 
@@ -45646,6 +45995,21 @@ fn type_check_sorts_collect(
         }
     }
 
+    // WI-945: every call site whose parent-bundle dictionary could not be built for an
+    // element nothing at the call pins. HERE and not inside either sweep above: the
+    // verdict reads the CALLEE's body classifications, and only now has every body
+    // been through one of the two.
+    report_unsuppliable_requirements(kb, &mut errors, &mut sources);
+    // …and nothing may park after it. Only `check_operation_bodies` sets the
+    // `enclosing_op` the park is gated on, so today no later pass can — this asserts
+    // that rather than trusting it, because a park added downstream would otherwise be
+    // dropped in silence (/code-review).
+    debug_assert!(
+        kb.unsuppliable_requirements.is_empty(),
+        "a requirement refusal was parked after `report_unsuppliable_requirements` drained \
+         the queue — it would never be reported",
+    );
+
     // WI-398: signature well-formedness over EVERY operation — independent of the
     // sort/body split above, so a body-less FREE spec is covered too.
     errors.extend(check_operation_signatures(kb));
@@ -45663,9 +46027,10 @@ fn type_check_sorts_collect(
     // the collection + dispatch read is settled.
     // WI-1026: takes `sources` too — this pass now raises the WI-1012 supplier-tie
     // refusal, whose value over eval's face is precisely that it is LOCATED.
-    // Padded HERE, like the sort loop's own pad above: the two passes between that
+    // Padded HERE, like the sort loop's own pad above: the untagged passes between that
     // loop and this call (`check_operation_signatures`,
-    // `check_branch_external_exclusion`) push untagged errors, and the
+    // `check_branch_external_exclusion` — WI-945's
+    // `report_unsuppliable_requirements` pads and pairs its own) push errors, and the
     // `check_entity_facts` / `check_operation_bodies` contract is that `sources` is
     // parallel on ENTRY. Repairing it inside the callee gave this one pass a second
     // convention.

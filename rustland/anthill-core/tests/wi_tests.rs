@@ -1193,3 +1193,6 @@ mod wi1088_spread_labels_identity_test;
 
 #[path = "include/wi1094_named_slot_inference_test.rs"]
 mod wi1094_named_slot_inference_test;
+
+#[path = "include/wi945_unconstrained_sort_element_test.rs"]
+mod wi945_unconstrained_sort_element_test;
