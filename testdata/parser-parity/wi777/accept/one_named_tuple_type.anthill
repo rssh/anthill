@@ -1,0 +1,3 @@
+namespace parity.wi777.named
+  operation one() -> (a: A)
+end

@@ -622,8 +622,23 @@ private class AnthillParserImpl(
     }
 
   private def arrowType[$: P]: P[TypeExpr] =
-    P(arrowParams ~ "->" ~ typeExpr ~ ("@" ~ effectSet).?).map {
-      case (params, ret, effs) => TypeExpr.Arrow(params, ret, effs.getOrElse(IndexedSeq.empty))
+    P(parenthesizedTypeList ~ "->" ~ typeExpr ~ ("@" ~ effectSet).?).map {
+      case (params, ret, effs) =>
+        // WI-777 / rust WI-766: the arrow parameter list and tuple type are ONE
+        // production. A denoted named field is meaningful in a tuple TYPE
+        // (`Keep = (who: "name")`) but not as a parameter's TYPE. Admit the shared
+        // syntax first and refuse this reading here, where the context is known —
+        // the same parse-permissive / conversion-strict split as rustland.
+        if params.fields.exists(_.ty match
+          case TypeExpr.Denoted(_) => true
+          case _                   => false)
+        then
+          errors += ParseError(
+            "an arrow parameter cannot use a constant as its type; constants stand in " +
+            "type position only as type arguments or named-tuple type components",
+            params.span)
+        TypeExpr.Arrow(
+          params.fields.map(_.ty), ret, effs.getOrElse(IndexedSeq.empty))
     }
 
   /** Effect set, shared by arrow `@` and operation `effects`. Mirrors
@@ -697,28 +712,48 @@ private class AnthillParserImpl(
     TypeExpr.Variable(
       terms.allocAt(Term.Fn(intern(op), IArray(inner), IArray.empty), span), IndexedSeq.empty)
 
-  private def arrowParams[$: P]: P[IndexedSeq[TypeExpr]] =
-    P("(" ~ arrowParam.rep(sep = ",") ~ ")").map(_.toIndexedSeq)
+  /** One component of the parenthesized type list shared by tuple and arrow types.
+    * `None` is a positional component; keeping that state explicit prevents the
+    * parser-only `_` sentinel from being mistaken for a written label while the two
+    * context-specific validators below decide what the list means. */
+  private case class TupleField(name: Option[TermSymbol], ty: TypeExpr)
 
-  /** An arrow parameter may carry an optional binder NAME — `(x: Elem) -> Bool`
-    * — so a dependent-absence row `-Modify[x]` can reference it (WI-441).
-    * scaland has no typer, so the binder name is dropped and only the type is
-    * kept (matching scaland's single-param arrow lowering, which never
-    * captured binder names). NO cut after `:`, so a NAMED TUPLE type
-    * `(a: T, b: U)` — for which arrow's `->` is absent — still backtracks
-    * cleanly to `tupleType`. */
-  private def arrowParam[$: P]: P[TypeExpr] =
-    P((ident ~ ":" ~ typeExpr).map { case (_, t) => t } | typeExpr)
+  /** The ONE parenthesized type-list carrier (WI-777), mirroring rustland's
+    * `tuple_type` after WI-766. A following `->` turns it into an arrow parameter
+    * list; without one, [[tupleType]] reads it as a tuple type.
+    *
+    * There are deliberately NO cuts inside this production. `typeExpr` tries
+    * [[arrowType]] first, so a complete `(a: A)` prefix must be able to backtrack to
+    * [[tupleType]] when no `->` follows. A cut after the first comma would make every
+    * two-component tuple commit to the arrow alternative and fail at its absent arrow.
+    *
+    * The three arms encode the kernel's arity-sensitive trailing-comma rule exactly:
+    * empty and one-component lists have no trailing comma, while 2+ may have one. */
+  private case class ParenthesizedTypeList(fields: IndexedSeq[TupleField], span: Span)
 
-  case class TupleField(name: TermSymbol, ty: TypeExpr)
+  private def parenthesizedTypeList[$: P]: P[ParenthesizedTypeList] =
+    P(located(
+      ("(" ~ ")").map(_ => IndexedSeq.empty[TupleField]) |
+      ("(" ~ tupleTypeArg ~ ")").map(f => IndexedSeq(f)) |
+      ("(" ~ tupleTypeArg ~ "," ~ tupleTypeArg ~
+        ("," ~ tupleTypeArg).rep ~ ",".? ~ ")").map { case (first, second, rest) =>
+          first +: second +: rest.toIndexedSeq
+        }
+    )).map { case (fields, span) => ParenthesizedTypeList(fields, span) }
 
   private def tupleType[$: P]: P[TypeExpr] =
-    P(
-      ("(" ~ ")").map(_ => TypeExpr.TupleType(IndexedSeq.empty)) |
-      ("(" ~ tupleTypeArg ~ ("," ~/ tupleTypeArg).rep(1) ~ ")").map { case (first, rest) =>
-        TypeExpr.TupleType((first +: rest.toIndexedSeq).map(f => (f.name, f.ty)))
-      }
-    )
+    P(parenthesizedTypeList).map { list =>
+      // A lone positional `(A)` is a valid arrow PARAMETER LIST but not a type:
+      // parentheses are not type grouping, and a positional 1-tuple has no distinct
+      // surface meaning. The shared production must therefore accept it, and only the
+      // tuple-type reading can refuse it. Named `(a: A)` is the writable 1-tuple.
+      if list.fields.length == 1 && list.fields.head.name.isEmpty then
+        errors += ParseError(
+          "a single parenthesized type is not a type: `(A)` is neither grouping nor " +
+          "a one-component tuple — write `A`, or name the component as `(a: A)`",
+          list.span)
+      TypeExpr.TupleType(list.fields.map(f => (f.name.getOrElse(intern("_")), f.ty)))
+    }
 
   /** A component of a tuple type. WI-763 adds the DENOTED component `person:
     * "name"` — a named component whose value is a CONSTANT standing in type
@@ -730,9 +765,9 @@ private class AnthillParserImpl(
     * read as a `simple_type` name. */
   private def tupleTypeArg[$: P]: P[TupleField] =
     P(
-      (ident ~ ":" ~ denotedLiteral).map { case (n, t) => TupleField(n, t) } |
-      (ident ~ ":" ~ typeExpr).map { case (n, t) => TupleField(n, t) } |
-      typeExpr.map(t => TupleField(intern("_"), t))
+      (ident ~ ":" ~ denotedLiteral).map { case (n, t) => TupleField(Some(n), t) } |
+      (ident ~ ":" ~ typeExpr).map { case (n, t) => TupleField(Some(n), t) } |
+      typeExpr.map(t => TupleField(None, t))
     )
 
   // ── Terms ────────────────────────────────────────────────────
