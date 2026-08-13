@@ -280,19 +280,22 @@ fn chain_for(
     enclosing_sort: Option<Symbol>,
     enclosing_op: Option<Symbol>,
 ) -> crate::kb::typing::DictChain {
-    // MIRRORS `TypingEnv::set_enclosing_op` TO THE BRANCH, and the condition is the
-    // load-bearing half. That setter installs the COMPOSED chain only when the
-    // operation declares an op-scoped one; with none it keeps the SORT chain
-    // `set_enclosing_sort` gave it — built from the sort the typer was TOLD. This
-    // arm re-derives its sort half from the OP instead (`op_dict_entries` →
-    // `impl_parent_of_op`), so taking it unconditionally would read a different list
-    // wherever the two disagree: a namespace-level operation reached with a sort still
-    // in the env answers `None` there, emptying the whole chain, and a `FromScope`
-    // index the typer resolved against the sort's slots would then be named off
-    // nothing. Same-source-or-same-branch is the only way the two cannot drift.
-    if let Some(op) = enclosing_op.filter(|op| {
-        !crate::kb::typing::op_requires_chain_rc(kb, *op).is_empty()
-    }) {
+    // THE OP ARM IS UNCONDITIONAL, and a reviewer's objection to that was MEASURED
+    // rather than accepted (WI-1092 review): `TypingEnv::set_enclosing_op` installs the
+    // COMPOSED chain only when the operation declares an op-scoped one and otherwise
+    // keeps the SORT chain `set_enclosing_sort` gave it, so this arm — which re-derives
+    // its sort half from the OP (`op_dict_entries` → `impl_parent_of_op`) — reads a
+    // different SOURCE from the producer wherever the two disagree. Mirroring the
+    // producer's branch here (take the op chain only when the op declares one, else the
+    // recorded `enclosing_sort`) looks like the obvious repair and IS NOT SAFE: driven
+    // on top of WI-1091's widened-placement patch it flips
+    // `wi227_projection_search_test::flat_path_emits_var_ref_named_requirement` from
+    // `var_ref` to `requirement_at_sort`, on a fixture whose two chains have EQUAL
+    // LENGTH and identical entries — so the two sources differ in something past their
+    // slots, which that patch's new `DictChain::owner()` reader can see and this file
+    // cannot. Which source is right is therefore WI-1091's question, not this arm's:
+    // its patch is the only code that reads the difference.
+    if let Some(op) = enclosing_op {
         if let Some(cached) = cache.get(&op) {
             return cached.clone();
         }
