@@ -288,6 +288,35 @@ pub enum TypeError {
         /// The slot's binder as written.
         binder: Symbol,
     },
+    /// WI-1094 (058 §3.4/§3.9): a call whose callee declares a NAMED requirement slot
+    /// the enclosing signature left UNIVERSALLY QUANTIFIED — `size(s: SortedSet[T =
+    /// String])` calling `SortedSet.toList(s)` — with nothing in the frame supplying its
+    /// dictionary. §3.4 makes omission in TYPE position mean "any", so the value flowing
+    /// in already chose; §3.9 leaves two lawful answers, forward the value's dictionary
+    /// or refuse, and forwarding is unavailable BY CONSTRUCTION — a dictionary rides in a
+    /// FRAME, never in a value, so a signature declaring no slot for it has nothing to
+    /// forward. Constructing one instead is a rival for a decision made elsewhere:
+    /// MEASURED, a `Descending` set read back in ascending order.
+    ///
+    /// COUNT-INDEPENDENT, deliberately. Before this ticket the same shape was refused
+    /// only when two or more providers happened to TIE
+    /// ([`TypeError::DispatchAmbiguous`]); with one provider it loaded and constructed
+    /// silently. `provider` is what the construction WOULD have picked — named because
+    /// "it would have used this one" is what makes the refusal actionable, not because
+    /// the count matters.
+    ErasedRequirementSlot {
+        span: Option<Span>,
+        op: Symbol,
+        /// The slot's binder as the callee declared it (`O`).
+        binder: Symbol,
+        /// The spec the slot demands (`Ord`).
+        spec: Symbol,
+        /// The provider a construction would have chosen at this call's bindings, when
+        /// one exists. `None` where the element is abstract and only a FORWARD was
+        /// available — the case whose wrong dictionary comes out of the caller's own
+        /// chain rather than out of a search.
+        provider: Option<Symbol>,
+    },
     /// WI-841: `f[Spec = W](…)` on a slot whose route cannot THREAD the selection —
     /// an OP-SCOPED `requires`, served by value-directed dispatch at eval, which never
     /// sees the call's selections. Raised only when two or more providers
@@ -823,6 +852,35 @@ impl TypeError {
                     kb.qualified_name_of(*op),
                 )
             }
+            TypeError::ErasedRequirementSlot {
+                op,
+                binder,
+                spec,
+                provider,
+                ..
+            } => {
+                let would_take = match provider {
+                    Some(p) => format!(
+                        "; a construction here would answer for {}",
+                        kb.qualified_name_of(*p)
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    "the call to {} leaves its named requirement slot `{}: {}` \
+                     universally quantified — the argument's type omits it, which means \
+                     ANY provider, and no slot of this signature supplies its \
+                     dictionary{}. Whatever is supplied here answers for this signature \
+                     and not for the value, which carries whichever provider its own \
+                     construction site chose. Write `{1}` in the parameter's type, or \
+                     declare a NAMED slot for it (`requires {1}: {2}[…]`) and write that \
+                     name there, so the caller supplies the value's own",
+                    kb.qualified_name_of(*op),
+                    kb.local_name_of(*binder),
+                    kb.qualified_name_of(*spec),
+                    would_take,
+                )
+            }
             TypeError::UnthreadableSelection {
                 op,
                 spec,
@@ -1039,6 +1097,7 @@ impl TypeError {
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
+            | TypeError::ErasedRequirementSlot { span, .. }
             | TypeError::UnthreadableSelection { span, .. }
             | TypeError::WitnessDoesNotProvide { span, .. }
             | TypeError::ValueDirectedSelection { span, .. }
@@ -1283,6 +1342,20 @@ impl TypeError {
                     "a locatable requirement slot `{}` on {}",
                     kb.local_name_of(*binder),
                     kb.qualified_name_of(*owner),
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::ErasedRequirementSlot {
+                op, binder, spec, ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requires".to_string(),
+                expected_type: format!(
+                    "a supplied `{}: {}` slot (write it in the type, or declare it)",
+                    kb.local_name_of(*binder),
+                    kb.qualified_name_of(*spec),
                 ),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -12448,6 +12521,26 @@ fn check_apply_iter(
         // polymorphic effect row at the carrier below (WI-357).
         let mut effects = merge_effects(kb, &substituted_op_effects, &arg_effects);
 
+        // WI-1094 (058 §3.4) — a NAMED requirement slot nobody bound is INFERRED, into
+        // the substitution and therefore into `resolved_ret` below, so the choice rides
+        // in the constructed value's type and every later bracket-less call reads it
+        // back through σ. ABOVE the walk deliberately, and above
+        // `selections_from_slot_bindings` too: this call's OWN dictionary build then
+        // sees the inferred binding as an ordinary tier-1 pin, which is what makes the
+        // answer compose instead of being re-derived per call. Its other half refuses
+        // the ERASED slot, so it must also sit above every early return below — the
+        // discipline WI-839 recorded for `check_selection_bindings`.
+        infer_named_slot_bindings(
+            kb,
+            &mut subst,
+            &op,
+            fn_sym,
+            &env.enclosing_dict_chain().clone(),
+            env.param_rigids(),
+            &selections,
+            span,
+        )?;
+
         // Resolve return type deeply so `Option[T = Var(vid_T)]`
         // collapses to `Option[T = Term]` once `vid_T` is bound. WI-341:
         // carrier-agnostic walk (the return type is a `Value`). `mut`: a
@@ -17964,6 +18057,381 @@ fn selections_from_slot_bindings(
     Ok(selected)
 }
 
+/// WI-1094 — what a callee's NAMED requirement slot's binder resolves to AT THIS CALL,
+/// which is the question 058 §3.4's two halves are told apart by.
+///
+/// A named slot IS a type parameter, so the binder's binding is a THREE-way question
+/// and every previous reader asked a two-way one. [`is_type_param_value`] answers
+/// "abstract", collapsing a still-FLEX variable with a skolem — and those are the two
+/// cases that must diverge here: a flex var is *nobody has said*, which §3.4 leaves "to
+/// inference"; a skolem is *the enclosing signature said ANY*, which is a universally
+/// quantified parameter whose dictionary must arrive from the caller's frame, never be
+/// constructed here.
+enum SlotBinderState {
+    /// A still-FLEX variable — the slot is unwritten at every site that could have
+    /// written it. `SortedSet.empty[T = Pair[…]]()`: `O` appears only in the RESULT, so
+    /// this call CONSTRUCTS the value and choosing its order is this call's to make.
+    Unspoken(VarId),
+    /// A skolem: a `Var::Rigid`, or the `s.O` projection [`UnwrittenFill::Projection`]
+    /// mints for a parameter's unwritten slot. `size(s: SortedSet[T = String])` means
+    /// "any order" — the value flowing in already chose, and its choice is not
+    /// recoverable here.
+    Quantified,
+    /// A witness sort. Already decided — [`selections_from_slot_bindings`] reads it back
+    /// as a tier-1 pin, and this mechanism has nothing to add.
+    Decided,
+    /// A carrier with NO witness reading at all — an arrow, a tuple, an effect row, a
+    /// denoted value. Split from [`Self::Decided`] rather than folded into it (code
+    /// review) because the two skip for OPPOSITE reasons and calling this one "decided"
+    /// asserts a witness that is not there.
+    ///
+    /// Skipped all the same, and the sibling reader is why that is right rather than
+    /// lax: [`selections_from_slot_bindings`] reaches the identical situation through
+    /// `sort_functor_of` and records it as *"no witness to name, and
+    /// `check_selection_bindings` has no goal to judge it against; the requirement's own
+    /// route reports it"*. Refusing here instead would take that report away from the
+    /// route that can render it.
+    NoWitnessReading,
+}
+
+/// WI-1094 — classify one named slot's binder. See [`SlotBinderState`].
+///
+/// NO `subst` PARAMETER, and the absence is a claim rather than an omission: `bound` is
+/// what `surface_node_binding_to_term(walk_type_deep(subst, …))` returned, and that PAIR
+/// is the substitution read — the walk resolves every binding, the surfacing recovers
+/// the `Value::Node`-carried ones the walk stops at. A variable surviving both is
+/// therefore unbound, and re-probing `subst` here would be a second reading of one fact
+/// that can only disagree with the first. [`selections_from_slot_bindings`] and
+/// `set_resolved_type_args` read these very variables through the same pair and call a
+/// surviving var abstract on the same grounds.
+///
+/// ASKED THROUGH [`type_head`], NOT BY MATCHING CARRIERS — WI-1079's lesson, and here it
+/// is load-bearing rather than tidy: the erased slot arrives in TWO forms and a
+/// hand-rolled `Term::Var` test sees only one. A slot omitted at the TOP LEVEL of a
+/// parameter's type is filled with the `s.O` PROJECTION ([`UnwrittenFill::Projection`]),
+/// a `TypeHead::ExprCarried`; one omitted in a NESTED binding is filled with a fresh
+/// `Var::Rigid`, a `TypeHead::Skolem`. Both say the same thing — the caller quantified
+/// it — and `erase3`, the shape this ticket exists for, is the projection one.
+fn slot_binder_state(kb: &KnowledgeBase, bound: TermId) -> SlotBinderState {
+    match type_head(kb, &TermIdView(bound)) {
+        // The only "nobody has said" carrier: an engine flex variable no seeding, no
+        // argument and no expected type bound.
+        TypeHead::FlexVar(vid) => SlotBinderState::Unspoken(vid),
+        // Every spelling of "the enclosing signature quantified this". A skolem and the
+        // two projection neutrals are WI-400 ζ's rigid types; a reflect-minted
+        // `TypeVar` carries a name and nothing else, so it can decide nothing either.
+        TypeHead::Skolem(_)
+        | TypeHead::ExprCarried
+        | TypeHead::RigidProjection
+        | TypeHead::TypeVar(_) => SlotBinderState::Quantified,
+        // A bare or applied SORT reference — a witness, unless the "sort" is one of the
+        // enclosing declaration's own parameters, which is abstract for the same reason
+        // a skolem is ([`is_type_param_value`] reads these two shapes as abstract too).
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => {
+            if is_sort_param_symbol(kb, s) {
+                SlotBinderState::Quantified
+            } else {
+                SlotBinderState::Decided
+            }
+        }
+        // Everything else is a carrier with no witness reading. ENUMERATED as its own
+        // answer rather than swept into `Decided` — see [`SlotBinderState::NoWitnessReading`].
+        _ => SlotBinderState::NoWitnessReading,
+    }
+}
+
+/// WI-1094 — the `requires` entry a named slot `binder` of the CALLEE's ENCLOSING SORT
+/// demands, decoded into the goal it states at this call's bindings.
+///
+/// THE SORT LEVEL ONLY, which is why there is no second decoder here. An OP-scoped named
+/// slot is skipped by the caller (see [`infer_named_slot_bindings`]), and writing its
+/// branch anyway was measured to be actively wrong: `op_dict_entries` yields the
+/// NORMALIZED `SortView` shape while [`goal_from_op_requires_entry`] decodes the BARE
+/// application on purpose, so pairing them yields a binding-free goal that every provider
+/// matches — the exact vacuous-check shape that function's own doc warns about.
+///
+/// BY SLOT INDEX, verified — [`dict_chain_index_of_named_slot`] owns the claim that
+/// `NamedRequirementSlot::slot` IS the dictionary-chain index and refuses when the entry
+/// found there demands another spec. Not by SPEC, which is what [`selection_goals`] does
+/// and what it may do: a selection is spec-keyed, so which of two same-spec slots it
+/// matched is unobservable there. Here it is observable — the two slots are two
+/// PARAMETERS with two bindings, and answering one slot's goal into the other's binder
+/// is a wrong dictionary that loads clean.
+fn named_slot_goal(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    owner: Symbol,
+    binder: Symbol,
+    span: Option<Span>,
+) -> Result<Option<(RequiresEntry, SortGoal)>, TypeError> {
+    // `owner` came from [`named_slot_owner`], which found the slot there, so this and the
+    // index below are total. `SlotSelectionUnindexable` is still an ERROR rather than a
+    // `None`: it means the declaration order and the dictionary order have drifted, and
+    // pinning the wrong slot resolves a real goal with a real provider and computes a
+    // wrong answer ([`dict_chain_index_of_named_slot`] argues it).
+    let Some(slot) = named_requirement_slot_of(kb, owner, binder) else {
+        return Ok(None);
+    };
+    let idx = dict_chain_index_of_named_slot(kb, owner, &slot, fn_sym, span)?;
+    let Some(entry) = provider_dict_entries(kb, owner).entries().get(idx).cloned() else {
+        return Ok(None);
+    };
+    let concrete = substituted_entry(kb, &entry, subst);
+    let goal = goal_from_requires_entry(kb, &concrete);
+    Ok(goal.map(|g| (concrete, g)))
+}
+
+/// WI-1094 — WHICH DECLARATION owns the named slot `binder` of `fn_sym`, and what spec it
+/// demands: the operation's own scope, else its enclosing SORT's.
+///
+/// [`named_slot_spec`]'s ladder with the OWNER kept, and it exists because dropping the
+/// owner is what let two readers disagree about it. That function answers a `Symbol` for
+/// four callers who only need the spec; this walk needs to know *whose* slot it found —
+/// to skip the op-scoped case (058 §3.9) and to index the right chain — and re-deriving
+/// the owner from a second ladder is how the legs drift (`impl_parent_of_op` against the
+/// kind-gated `impl_parent_sort_of_op`; see [`names_any_requirement_slot`]).
+///
+/// The SORT-kind gate is this ladder's, deliberately: a FREE operation's "parent" is its
+/// NAMESPACE, which has no dictionary chain to index, so a namespace-level slot answers
+/// `None` here and the call keeps its pre-existing reading rather than being classified
+/// against a chain that does not exist.
+fn named_slot_owner(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    binder: Symbol,
+) -> Option<(Symbol, Symbol)> {
+    if let Some(slot) = named_requirement_slot_of(kb, fn_sym, binder) {
+        return slot.spec_base.map(|spec| (fn_sym, spec));
+    }
+    let parent = impl_parent_sort_of_op(kb, fn_sym)?;
+    let slot = named_requirement_slot_of(kb, parent, binder)?;
+    slot.spec_base.map(|spec| (parent, spec))
+}
+
+/// WI-1094 (058 §3.4, second half) — **INFER AN OMITTED NAMED SLOT INTO THE TYPE**, and
+/// REFUSE the erasure §3.9 cannot serve. Both halves are one walk because they are one
+/// question asked of one binding, and splitting them is how the second gets forgotten.
+///
+/// §3.4: *"Omitting a named slot in type position means ANY … Omitting it at a call
+/// leaves it to inference (the ladder, §3.2)."* WI-861 delivered the ladder for a
+/// DISPATCH and deliberately withheld it at a named slot ([`DefaultRung`]), because a
+/// dictionary-only answer writes nothing into the TYPE: `empty` would pick an order, and
+/// the very next `insert(s, x)` would see an unbound `O` and pick again, independently.
+/// So the answer goes into the BINDER's variable. Everything downstream is already
+/// built: `resolved_ret` walks it, so the choice rides in the constructed value's type;
+/// [`selections_from_slot_bindings`] reads it back at every later bracket-less call as
+/// an ordinary tier-1 pin; and THIS call's own dictionary build sees the same pin,
+/// because this runs before both.
+///
+/// **THE LADDER'S OWN ORDER IS WHAT MAKES IT SAFE, and it is not re-implemented here.**
+/// [`resolve`] answers `FromScope` when the caller's frame already carries a dictionary
+/// for the goal, and `FromScope` pins no impl ([`ResolvedRequiresNode::impl_sort`] is
+/// `None`) — so a slot the caller supplies is left alone and keeps forwarding. Only a
+/// CONSTRUCTION (`Leaf`/`Conditional`) names a provider, and only then is there anything
+/// to write into the type. A tie or a miss binds nothing: the existing refusal at the
+/// dictionary build is the better diagnostic, and it still fires.
+///
+/// **AND THE ERASURE, which is the second face of the same measurement.** Where the
+/// binder is [`SlotBinderState::Quantified`] — a signature wrote `SortedSet[T = Int64]`
+/// and left `O` universally quantified — a construction is not inference, it is a rival
+/// dictionary for a value that already chose. MEASURED (WI-861, `erase3`): a
+/// `SortedSet[T = Int64, O = Descending]` inserted into through such a signature read
+/// back **3** where the slot-keeping route read **7**, the erased route having built its
+/// dictionary from `Int64`'s own ascending `Ord`. §3.9 leaves two repairs — forward the
+/// value's own dictionary, or refuse — and forwarding is unavailable BY CONSTRUCTION: a
+/// dictionary is never carried by a value, only by a frame, so a signature that declares
+/// no slot for it has nothing to forward. Hence the refusal, and hence it is
+/// COUNT-INDEPENDENT: before this ticket the two-provider spelling was loud only by
+/// accident of the tier-3 tie, while the one-provider spelling loaded clean and
+/// constructed silently.
+///
+/// `Ok(())` with nothing bound is the overwhelmingly common answer — the gate is one
+/// `is_empty()` on the callee's own slot index.
+#[allow(clippy::too_many_arguments)]
+fn infer_named_slot_bindings(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    caller_requires: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    selected: &[InstanceSelection],
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if !names_any_requirement_slot(kb, fn_sym) {
+        return Ok(());
+    }
+    // The SAME two scopes rule (1) binds and `selections_from_slot_bindings` reads, so
+    // a slot reachable by a bracket key is a slot this can infer, with no third list.
+    for (name, var) in call_bracket_scopes(kb, op, fn_sym) {
+        // ONE LADDER, WALKED ONCE, and the owner it lands on is carried to every reader
+        // below. The first cut asked twice — `named_slot_spec` here (whose parent leg is
+        // `impl_parent_of_op`) and [`named_slot_goal`] again (whose leg was the
+        // kind-gated `impl_parent_sort_of_op`) — which is precisely the drift
+        // [`names_any_requirement_slot`]'s doc names: a free operation's "parent" is its
+        // NAMESPACE, so the two legs answer differently for one, and the disagreement
+        // showed up as this walk classifying a slot and then finding no goal for it —
+        // i.e. SILENTLY ACCEPTING an erasure. Resolving the owner once makes the two
+        // unable to disagree.
+        let Some((owner, spec_sort)) = named_slot_owner(kb, fn_sym, name) else {
+            continue;
+        };
+        // AN OP-SCOPED NAMED SLOT IS OUT OF SCOPE FOR THIS MECHANISM, and the reason is
+        // the mechanism's own definition rather than caution. The answer here is written
+        // into a TYPE PARAMETER so that it rides in a VALUE's type; 058 §3.9 says an
+        // op-scoped requirement is "evidence about THIS CALL of THIS OPERATION, belonging
+        // to no instance", so there is no value to carry it and nothing for the write to
+        // buy. WI-841 says the same thing from the other side: that route is served by
+        // value-directed dispatch at eval, which never sees a selection, so a bracket
+        // there is refused outright once two providers answer
+        // ([`TypeError::UnthreadableSelection`]). Such a call keeps its pre-existing
+        // reading — `[d = W]`, or `UnconstrainedTypeParam` if omitted.
+        if owner == fn_sym {
+            continue;
+        }
+        let var_term = type_param_var_term(kb, var);
+        let walked = walk_type_deep(kb, subst, var_term);
+        let bound = surface_node_binding_to_term(kb, subst, walked);
+        let state = slot_binder_state(kb, bound);
+        match state {
+            // Already decided by a bracket or by an argument's type — WI-844's σ read
+            // pins it, and this has nothing to add. `NoWitnessReading` skips too, for the
+            // OTHER reason its doc gives: the requirement's own route owns that report.
+            SlotBinderState::Decided | SlotBinderState::NoWitnessReading => continue,
+            // 058 §7.1's abstract form, and the ONE shape a quantified slot may take:
+            // the parameter's TYPE writes the binder as one of THIS signature's own
+            // declared parameters (`first(s: SortedSet[T = T, O = O])` on a sort that
+            // declares `requires O: Ord[T]`). Then the caller's matching slot supplies
+            // the dictionary FOR THAT PARAMETER, so what arrives is the value's own —
+            // §3.9's "run time copies it along", spelled in the type.
+            //
+            // ASKED OF `param_rigids` — the body's parameter→skolem map — because
+            // "declared here" is exactly what that map records, and no weaker test does.
+            // In particular "the frame supplies SOMETHING for this spec" does NOT: a sort
+            // with an ANONYMOUS `requires Ord[LT]` covers the goal and forwards, but its
+            // dictionary answers a constraint of ITS OWN and is not the order the argument
+            // was built with — the erase3 wrong answer, reached through a forward instead
+            // of a construction. The binder having no declaration is precisely what says
+            // the signature left the slot out.
+            //
+            // ABOVE the goal decode, for cost and for one correctness reason: this is the
+            // common path in any program using §7.1's form, and `named_slot_goal` can
+            // raise `SlotSelectionUnindexable`, which must not reach a call this arm
+            // accepts.
+            //
+            // **IT MATCHES ONE OF THE THREE CARRIERS `Quantified` ADMITS, and that bound
+            // is recorded rather than closed** (code review). `param_rigids` holds
+            // `Var::Rigid` terms, so a binder reaching the typer as `TypeHead::TypeVar` or
+            // as a `SortRef` to a sort parameter — `view_is_abstract_type_param`'s other
+            // two carriers for the same abstract binding — can never equal an entry here
+            // and would be REFUSED where a rigid forwards. Left as is on measurement, not
+            // on faith: neither the suite, the corpus, nor a review probe could construct
+            // a program reaching either carrier in this position, and widening the match
+            // blind would add a second, undriven reading of "declared here". The failure
+            // direction is also the safe one — a spurious `ErasedRequirementSlot` is loud
+            // and names its repair, where the alternative is the silent wrong order this
+            // whole arm exists to stop. If one ever surfaces, the fix is to ask the
+            // question carrier-neutrally (resolve the binder to its canonical `VarId` and
+            // match `param_rigids`' KEY), not to add a second carrier test.
+            SlotBinderState::Quantified
+                if param_rigids.iter().any(|(_, rigid)| *rigid == bound) =>
+            {
+                continue
+            }
+            SlotBinderState::Unspoken(_) | SlotBinderState::Quantified => {}
+        }
+        // BEST-EFFORT, AND NOTHING BELOW MAY BE GATED ON IT. `goal_from_requires_entry`
+        // answers `None` for a spec it cannot decode, and making the REFUSAL conditional
+        // on a successful decode would turn "I could not read this requirement" into "this
+        // erasure is fine" — a silent accept of the one thing this function exists to
+        // refuse. The `Unspoken` arm may skip on `None` (not binding is the conservative
+        // direction, and the dictionary build then reports whatever it finds); the
+        // `Quantified` arm uses the goal only to NAME a provider in its message.
+        let decoded = named_slot_goal(kb, subst, fn_sym, owner, name, span)?;
+        match state {
+            SlotBinderState::Unspoken(vid) => {
+                let Some((_, goal)) = decoded else {
+                    continue;
+                };
+                // THE LADDER, WITH THE CALLER'S FRAME IN SCOPE — which is what keeps the
+                // inference a rung and not an override. `resolve` answers `FromScope`
+                // when the frame already carries this goal's dictionary, and `FromScope`
+                // pins no impl, so nothing is written and the forward stands. Only a
+                // CONSTRUCTION names a provider, and only then is there anything to put
+                // in the type.
+                let scope = ResolutionScope {
+                    available_requires: caller_requires,
+                    sigma: Some(&SigmaCtx {
+                        subst,
+                        param_rigids,
+                    }),
+                    selected,
+                };
+                let Some(provider) = (match resolve(kb, &goal, &scope) {
+                    ResolutionResult::Resolved(tree) => tree.impl_sort(),
+                    // A tie or a miss binds nothing: the dictionary build's own refusal
+                    // names the candidates and the bracket to write, which is the better
+                    // diagnostic, and it still fires.
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                // The witness as a TYPE. A bare sort reference is what a written
+                // `[O = ByFst]` lowers to and what `sort_functor_of` reads back, so the
+                // inferred binding and the written one are one spelling.
+                let witness_term = kb.alloc(Term::Ref(provider));
+                subst.bind_term(kb, vid, witness_term);
+            }
+            SlotBinderState::Quantified => {
+                // Past the skip above, so the binder is one the signature never declared.
+                //
+                // What a construction WOULD have taken, which is what makes the message
+                // actionable. Deliberately resolved with an EMPTY scope: a frame entry
+                // that merely covers the goal is the case being refused, so consulting the
+                // frame here would answer `FromScope`, pin no impl, and say nothing.
+                //
+                // `None` DOES NOT EXCUSE THE CALL, and gating on it was a first cut that
+                // MEASURED WRONG. Where the element is abstract (`Loose requires Ord[LT]`
+                // over its own `LT`) no construction is possible at all, so the gate
+                // declined — and the dictionary build then FORWARDED the caller's own
+                // anonymous `Ord[LT]`, which is a constraint of `Loose`'s and not the
+                // order the argument was built with. Driven: a `Descending` set inserted
+                // into through such a body read back **3** where its own order says 7.
+                // The refusal is about the slot being unsupplied, not about what a rival
+                // would have been, so the provider is a detail of the MESSAGE.
+                let provider = decoded.and_then(|(_, goal)| {
+                    let scope = ResolutionScope {
+                        available_requires: &[],
+                        sigma: Some(&SigmaCtx {
+                            subst,
+                            param_rigids,
+                        }),
+                        selected,
+                    };
+                    match resolve(kb, &goal, &scope) {
+                        ResolutionResult::Resolved(tree) => tree.impl_sort(),
+                        _ => None,
+                    }
+                });
+                return Err(TypeError::ErasedRequirementSlot {
+                    span,
+                    op: fn_sym,
+                    binder: name,
+                    // The slot's spec off the ONE ladder above, not off the decoded entry:
+                    // the message must not go missing with the decode.
+                    spec: spec_sort,
+                    provider,
+                });
+            }
+            SlotBinderState::Decided | SlotBinderState::NoWitnessReading => {
+                unreachable!("filtered above")
+            }
+        }
+    }
+    Ok(())
+}
+
 /// WI-844 — does `fn_sym` or its enclosing SORT name any requirement slot (§4.7)?
 ///
 /// The cheap gate on [`selections_from_slot_bindings`], and its own function because
@@ -20252,6 +20720,15 @@ pub enum DefaultRung {
 /// plausible indexings. Matching on the SPEC needs no shared convention and errs toward
 /// `Withhold`, which is the direction that refuses rather than answers: it over-fires
 /// only for an owner declaring a named AND an anonymous slot of ONE spec.
+///
+/// **RE-EXAMINED AT WI-1094 AND KEPT, with a narrower job.** That ticket gave the named
+/// slot its own mechanism — [`infer_named_slot_bindings`] answers a still-FLEX binder at
+/// the CALL SITE by writing the ladder's answer into the TYPE, and refuses an ERASED one
+/// outright — so the two cases this gate was carrying at WI-861 no longer reach it. What
+/// still does is the SUB-GOAL recursion below: `resolve_inner` re-derives the rung for the
+/// CHOSEN PROVIDER's own named slots (`LexFst requires OA: Ord[A]`), one level inside a
+/// resolution tree, where no call site exists to infer at. MEASURED: backing this out cost
+/// 4 tests at WI-861 and costs **2** now, both `wi870`, both that recursion.
 ///
 /// COST: one `HashMap<Symbol, _>` probe per dep, and `named_requirement_slots` answers
 /// `&[]` for every owner that declares none — which is nearly all of them, so the

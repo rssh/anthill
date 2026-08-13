@@ -36,9 +36,17 @@
 -- This is not a hole to be closed later — `report[T, O](s: SortedSet[T = T, O = O])`
 -- (the abstract, universally-polymorphic form) is how a consumer stays order-agnostic
 -- AND keeps the distinction, and it is the form to prefer when the body dispatches
--- through the order at all. Measured: an omitted `O` whose body DOES dispatch through
--- the slot is a load error naming the candidate providers, not a silent pick — the
--- comparator is genuinely under-determined there.
+-- through the order at all.
+--
+-- AND OMITTING IT IS ONLY FREE FOR A BODY THAT NEVER DISPATCHES THROUGH THE SLOT
+-- (WI-1094). One that does is REFUSED at that call, because there is nothing sound to
+-- give it: the argument's order was chosen at its construction site and no dictionary
+-- travels with a value, so anything supplied here answers for the SIGNATURE and not for
+-- the value. Measured, in both directions it could go wrong — constructing a provider
+-- reads a `Descending` set back ascending, and so does forwarding an ANONYMOUS
+-- `requires Ord[T]` the consumer happens to declare. The repair is to name the slot and
+-- write it: `first(s: SortedSet[T = E, O = OE])` on a sort declaring `requires
+-- OE: Ord[E]`. The refusal does not depend on how many `Ord` providers are in scope.
 --
 -- ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────────
 --
@@ -60,6 +68,13 @@
 -- it needs none of this file: a bare `sort H { sort T = ?  requires Eq[T] … }` fails
 -- the same way. A comparator WITNESS sidesteps it, and naming one is the intended
 -- spelling anyway.
+--
+-- (WI-857 fixed that arity mismatch, and WI-1094 changed what the omission MEANS at a
+-- CONSTRUCTION site: `SortedSet.empty[T = Int64]()` now runs the §3.2 ladder and BINDS
+-- `O` in the resulting type, so `s: SortedSet[T = Int64, O = Int64]` and every call
+-- after it reads that back. Naming a comparator is still the spelling to prefer when
+-- you mean a particular one — inference takes the carrier's own provision, which is
+-- rarely what a program declaring a rival wants.)
 --
 -- ── EQUALITY ─────────────────────────────────────────────────────────────────────
 --

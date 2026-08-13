@@ -1187,3 +1187,6 @@ mod wi1087_function_slot_spread_test;
 
 #[path = "include/wi1088_spread_labels_identity_test.rs"]
 mod wi1088_spread_labels_identity_test;
+
+#[path = "include/wi1094_named_slot_inference_test.rs"]
+mod wi1094_named_slot_inference_test;

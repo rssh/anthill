@@ -1290,6 +1290,20 @@ An optional binder names the requirement slot (`requires O: Ord[T]`, proposal
 therefore addressable in type/selection position; an anonymous slot remains a
 constraint that is solved rather than incorporated into the sort's identity.
 
+Because a named slot is a type parameter, **omitting it means two different
+things and they are decided per call site** (proposal 058 §3.4, WI-1094).  Where
+nothing anywhere has bound it — a construction such as
+`SortedSet.empty[T = Int64]()` — the dispatch ladder answers and the answer is
+**bound into the parameter**, so it is part of the constructed value's type and
+every later bracket-less call reads it back.  Where a *signature* omitted it
+(`size(s: SortedSet[T = String])`), the slot is universally quantified: the
+argument's provider was chosen elsewhere and no dictionary travels with a value,
+so a call that dispatches through the slot is **refused**, regardless of how many
+providers are in scope.  The repair is to name the slot on the enclosing
+declaration and write that name in the parameter's type
+(`first(s: SortedSet[T = E, O = OE])` under `requires OE: Ord[E]`), which is what
+makes the forwarded dictionary the value's own.
+
 The `requires` declaration takes a type expression — either a simple sort name or a parameterized sort with bindings:
 
 ```

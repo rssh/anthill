@@ -20,13 +20,15 @@
 //! because `Pair` is a CONCRETE provider, and WI-877 records the decision to keep the
 //! order as `Pair`'s own identity anyway).
 //!
-//! **WI-861 CLOSED HALF OF THAT, and the file records which half.** 058 §3.2's rung 2a
-//! makes a carrier's own provision the default, so a bracket-less `Ord.compare` on two
-//! pairs takes the canonical order and needs no unwritable bracket
-//! (`a_bracketless_compare_takes_the_prelude_ordering`). A bracket-less `SortedSet` of
-//! pairs does NOT: `SortedSet requires O: Ord[T]` is a NAMED slot, where a default is
-//! deliberately withheld — **WI-1094**, pinned by
-//! `a_bracketless_pair_set_still_needs_its_bracket`.
+//! **WI-861 CLOSED HALF OF THAT AND WI-1094 THE OTHER, and the file records which was
+//! which, because the two halves needed DIFFERENT mechanisms.** 058 §3.2's rung 2a makes
+//! a carrier's own provision the default, so a bracket-less `Ord.compare` on two pairs
+//! takes the canonical order and needs no unwritable bracket
+//! (`a_bracketless_compare_takes_the_prelude_ordering`). That is a DISPATCH, and a
+//! dictionary is the whole answer. A bracket-less `SortedSet` of pairs is not:
+//! `SortedSet requires O: Ord[T]` is a NAMED slot, i.e. a type PARAMETER, so the answer
+//! has to land in the TYPE or the next call re-derives it — WI-1094's inference, driven
+//! by `a_bracketless_pair_set_takes_the_prelude_ordering`.
 //!
 //! WHY THE PRELUDE COULD HAVE CARRIED AN ORDERING (and what still holds): obstacle B —
 //! `Ord requires Eq[T]`, and in a binding-free `stdlib/` load no primitive's `Eq`
@@ -315,15 +317,16 @@ fn swapping_the_brackets_swaps_the_answers() {
 /// canonical lexicographic `fst`-then-`snd` order and each rival stays opt-in by bracket
 /// — with no edit to `pair.anthill`, which is the property worth preserving.
 ///
-/// **AND ONLY THE DISPATCH FACE OF THE PINCER IS CLOSED**, which is a bound worth stating
-/// exactly. The `SortedSet[T = Pair[…]]` face is NOT: `SortedSet requires O: Ord[T]` is a
-/// NAMED slot, i.e. a type PARAMETER, and rung 2a fills a DICTIONARY without writing
-/// anything into the type — so a value typed "any `O`" carrying a `Pair`-ordered
-/// dictionary is exactly the mismatch that route must not produce (measured, WI-861:
-/// erasing a named slot and defaulting it reads a `Descending` set back in ascending
-/// order). Named-slot INFERENCE — binding `O` in the result type, which is what §3.4's
-/// "omitting it at a call leaves it to inference" actually asks for — is **WI-1094**.
-/// `a_bracketless_pair_set_still_needs_its_bracket` below pins that half.
+/// **THIS IS THE DISPATCH FACE OF THE PINCER**, and stating the bound is still worth it
+/// because the other face needed a different mechanism, not more of this one. The
+/// `SortedSet[T = Pair[…]]` face goes through a NAMED slot, i.e. a type PARAMETER, and
+/// rung 2a fills a DICTIONARY without writing anything into the type — so a value typed
+/// "any `O`" carrying a `Pair`-ordered dictionary is exactly the mismatch that route must
+/// not produce (measured, WI-861: erasing a named slot and defaulting it reads a
+/// `Descending` set back in ascending order). Named-slot INFERENCE — binding `O` in the
+/// call's result type, which is what §3.4's "omitting it at a call leaves it to
+/// inference" actually asks for — landed at **WI-1094**, and
+/// `a_bracketless_pair_set_takes_the_prelude_ordering` below drives it.
 ///
 /// The value is what says WHICH order answered: `(1,9)` before `(2,1)` is `fst`-first,
 /// the prelude's canonical order; `BySnd` would compare 9 against 1 and answer positive.
@@ -362,49 +365,65 @@ fn a_bracketless_compare_takes_the_prelude_ordering() {
     );
 }
 
-/// THE OTHER FACE OF THE PINCER, PINNED AS STILL OPEN. A `SortedSet` of pairs with no
-/// `O` written stays refused, because a NAMED slot is a type parameter and rung 2a does
-/// not bind one (see the arm above, and [`DefaultRung`]'s note in `kb/typing.rs`).
+/// THE OTHER FACE OF THE PINCER, CLOSED AT **WI-1094** — and this arm is the ticket's
+/// headline acceptance, kept in the shape it was pinned in so the flip is legible.
 ///
-/// Pinned rather than left as a silence so that **WI-1094** has to come back here and
-/// flip it: the acceptance for that ticket is that this program loads and renders
-/// `(1,9)(2,1)`, the same answer the bracket-less `Ord.compare` above now gives.
+/// WHAT IT MEASURED BEFORE: `SortedSet.empty[T = Pair[Int64, Int64]]()` beside two rival
+/// pair orderings did not load, naming all three providers. `SortedSet requires O:
+/// Ord[T]` is a NAMED slot, i.e. a type PARAMETER, and WI-861's rung 2a fills a
+/// DICTIONARY without writing anything into the TYPE — so a default there would have
+/// produced a value typed "any `O`" carrying a `Pair`-ordered dictionary, which is
+/// exactly the mismatch its `erase3` measurement recorded. The rung was withheld and the
+/// program stayed refused.
+///
+/// WHAT CLOSES IT is not a default at all: `infer_named_slot_bindings` runs the ladder
+/// for a slot whose binder is still a FLEX variable — nobody, at any site, has said —
+/// and BINDS THE BINDER, so `s` is typed `SortedSet[T = Pair[…], O = Pair]` and the two
+/// bracket-less calls after it (`insert`, `toList`) read that back through σ as an
+/// ordinary tier-1 pin. The choice travels with the value instead of being re-derived,
+/// which is the property a dictionary-only answer could not have.
+///
+/// THREE ASSERTIONS, and the second two are what make the first mean anything: `(1,9)`
+/// before `(2,1)` is `fst`-first, the prelude's canonical order — so silence took
+/// `Pair`'s own provision — while each rival bracket still answers its own way. One
+/// answer three times would mean the inference had simply overridden every site.
 #[test]
-fn a_bracketless_pair_set_still_needs_its_bracket() {
-    let src = program(
-        "wi858.set.bare",
-        &format!(
-            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}  end",
-            pipeline("bare", "")
-        ),
+fn a_bracketless_pair_set_takes_the_prelude_ordering() {
+    let set = |ns: &str, bracket: &str| {
+        let src = program(
+            ns,
+            &format!(
+                "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}  end",
+                pipeline("run", bracket)
+            ),
+        );
+        eval_str(
+            &src,
+            &format!("{ns}.Driver.run"),
+            "the SortedSet pipeline must load and run",
+        )
+    };
+    assert_eq!(
+        set("wi858.set.bare", ""),
+        "(1,9)(2,1)",
+        "058 §3.4: an omitted named slot is left to inference, and §3.6 makes `Pair`'s \
+         own provision the answer — so a bracket-less pair set takes the canonical \
+         `fst`-then-`snd` order, with no `O =` written anywhere in the pipeline. Before \
+         WI-1094 this program did not load at all"
     );
-    let errs = load_errs(&src);
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("is ambiguous among providers")
-                && e.contains("anthill.prelude.Pair")
-                && e.contains("wi858.set.bare.ByFst")
-                && e.contains("wi858.set.bare.BySnd")
-        }),
-        "the NAMED-slot route keeps the three-way refusal — WI-861 deliberately withholds \
-         the default there, and WI-1094 owns closing it: {errs:?}"
-    );
-    // …and the same pipeline WITH the bracket runs, so the refusal is the omission and
-    // not the pipeline having broken.
-    let pinned = program(
-        "wi858.set.pinned",
-        &format!(
-            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}  end",
-            pipeline("byFst", ", O = ByFst")
-        ),
+    // THE CONTROLS. Without them this test would pass on a tree where the inference had
+    // stopped being a LADDER answer and become a fixed choice: each bracket names a
+    // rival, and each rival still wins where it is written.
+    assert_eq!(
+        set("wi858.set.byfst", ", O = ByFst"),
+        "(1,9)(2,1)",
+        "tier 1 agrees with the inferred answer here — the same order, said explicitly"
     );
     assert_eq!(
-        eval_str(
-            &pinned,
-            "wi858.set.pinned.Driver.byFst",
-            "the bracketed pipeline must still run"
-        ),
-        "(1,9)(2,1)",
+        set("wi858.set.bysnd", ", O = BySnd"),
+        "(2,1)(1,9)",
+        "…and DISAGREES here: `BySnd` compares 1 against 9, so an inference that \
+         overrode the bracket would show up as `(1,9)(2,1)` a third time"
     );
 }
 

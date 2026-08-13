@@ -639,6 +639,16 @@ fn a_signature_omitting_the_ordering_accepts_both() {
 ///
 /// The pair matters: "omitting is allowed" and "omitting is silently resolved" would
 /// look identical from the accepting test alone.
+///
+/// **WI-1094 REWROTE WHAT IT SAYS, AND THE REASON IS THAT THE OLD MESSAGE WAS RIGHT BY
+/// ACCIDENT.** It used to be a tier-3 tie — *"constructing `Ord[T = String]` is ambiguous
+/// among providers: String, ByLength, Alphabetical"* — which is a refusal that DEPENDS ON
+/// THE COUNT: `wi1094`'s `a_sole_provider_does_not_excuse_the_erasure` runs this very
+/// shape with ONE provider declared, and before WI-1094 it loaded clean and constructed
+/// silently. The defect is not the tie; it is that `O` is universally quantified here and
+/// no dictionary for it is in the frame, so ANY construction answers for a value that
+/// already chose. That is what is refused now, count-independently. The one thing that
+/// did not change is the property this arm was written for: it still does not pick.
 #[test]
 fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
     let src = program(
@@ -650,13 +660,12 @@ fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
     let errs = load_errs(&src);
     assert!(
         errs.iter().any(|e| {
-            e.contains("anthill.prelude.Ord[T = anthill.prelude.String]")
-                && e.contains("ambiguous among providers")
-                && e.contains("wi844.underdetermined.ByLength")
-                && e.contains("wi844.underdetermined.Alphabetical")
+            e.contains("universally quantified")
+                && e.contains("`O: anthill.prelude.Ord`")
+                && e.contains("anthill.prelude.SortedSet.toList")
         }),
         "a body that reads the order through an OMITTED slot is under-determined and \
-         must name the candidates, never pick one: {errs:?}"
+         must say so, never pick one: {errs:?}"
     );
 }
 
