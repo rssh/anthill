@@ -969,6 +969,8 @@ mod wi943_type_param_identity_test;
 #[path = "include/wi948_written_connective_head_test.rs"]
 mod wi948_written_connective_head_test;
 
+#[path = "include/wi1092_dispatched_rule_defined_target_test.rs"]
+mod wi1092_dispatched_rule_defined_target_test;
 #[path = "include/wi1090_struct_eq_is_a_test_test.rs"]
 mod wi1090_struct_eq_is_a_test_test;
 
