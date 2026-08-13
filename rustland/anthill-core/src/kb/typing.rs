@@ -12626,11 +12626,15 @@ fn check_apply_iter(
             // plus that same param lookup, and `spec_sort` is that parent here — so a
             // `match self_recv_spec` wrapper around it would be a third gate that only
             // LOOKS authoritative.
-            let carrier = statically_pinned_carrier(
-                kb,
-                receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results),
-                carrier_param_sym,
-            );
+            let recv_carrier =
+                receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results);
+            let carrier = statically_pinned_carrier(kb, recv_carrier, carrier_param_sym);
+            // WI-1093: the SELF-RECEIVER half alone, which is what
+            // `dispatch_spec_op_cached` discriminates on — the carrier-param shape rides
+            // in the per-call `subst` instead, so passing it here would put it in the goal
+            // TWICE. Same reading as the body-less block's `carrier_sym`, and named the
+            // same way there.
+            let self_recv_carrier = statically_pinned_carrier(kb, recv_carrier, None);
             if let Some(carrier_sym) = carrier {
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
@@ -12708,13 +12712,111 @@ fn check_apply_iter(
                         named_results,
                     );
                     merge_effects_into(kb, &mut effects, &derived);
+                    // WI-1093: RESOLVE THE SPEC AT THE PINNED CARRIER and hand the tree to
+                    // the shared tail, which emits it as the callee's `dispatch_dict`
+                    // (WI-829 `emit_tree_as_projection`). Without it this arm passed `None`
+                    // and the pinned implementation was entered with NO requirements channel
+                    // at all — so a carrier whose member reads one of its own
+                    // PROVISION-CONDITION slots (058 §3.8: `provides Sp[Wrap] :- Sp[E]`,
+                    // the shape `Pair`'s four provisions have) died
+                    // `DeferToRequirement: … not bound … frame binds []`. The elements'
+                    // dictionaries live in the INSTANCE and in nothing this arm built.
+                    //
+                    // This is the SAME resolution the body-less route runs a few hundred
+                    // lines below, with the same arguments, and that is the point: whether
+                    // the spec op happens to carry a default body decides which BODY runs,
+                    // never what evidence the frame gets.
+                    //
+                    // THE OUTCOME IS DISCARDED ON PURPOSE, and this is the one place it
+                    // could be mistaken for a silent skip. The impl is ALREADY chosen —
+                    // `cands` named it, by whichever of the three supply routes — so this
+                    // resolution is asked ONLY for the tree, and its verdict arbitrates
+                    // nothing. Every non-`Unique` outcome yields `None`, which is exactly
+                    // what this arm passed before, so no program changes shape on it:
+                    //   * `Deferred` — the spec is a direct `requires` of the enclosing
+                    //     sort, so the frame already carries it; `None` is the same-sort
+                    //     inherit this arm has always taken, and is CORRECT, not a
+                    //     degradation.
+                    //   * `NoCandidates` — the carrier supplies the member but makes no
+                    //     provision at these bindings, so no instance exists to thread.
+                    //   * `NoMatch` / `Ambiguous` — raised on their own account by the
+                    //     BODY-LESS route, which is the route that dispatches on them.
+                    //     Raising here would newly refuse defaulted calls that run today,
+                    //     which is a coherence change and not this ticket's.
+                    // Nothing is swallowed: a body that DOES read a slot no tree supplied
+                    // raises `DeferToRequirement: … not bound` NAMING the frame and its
+                    // chain owner — the WI-822 LEG 2 policy, that "has a chain" and "needs
+                    // it" are different questions and only the body answers the second.
+                    //
+                    // A SECOND CONSUMER, named because a first draft of this note claimed
+                    // there was only one: `req_insertion::run` also reads
+                    // `ConcreteApplyWithin.resolved_tree` and passes it to
+                    // [`record_apply_within_concrete`], where `Some(tree)` switches the
+                    // emitted `apply_within(requirements = …)` from
+                    // `build_dispatching_dict_direct(callee_spec_sort, …)` — the parent
+                    // bundle, keyed to the CALLEE's sort — to `emit_tree_as_projection`,
+                    // keyed to the tree's resolved PROVIDER. So the tree decides the
+                    // dictionary's `impl:` functor, hence the callee's `__req_self`, on
+                    // both paths.
+                    //
+                    // THE PAIRING IS UNGUARDED, stated rather than asserted. `impl_op`
+                    // comes from `cands` (`carrier_override_suppliers`); the tree's
+                    // `impl_sort` comes from `sort_ops_lookup` inside `resolve_at_goal`.
+                    // Nothing here requires them to name the same provider, and if they
+                    // diverged `expand_dispatching_dict`'s `slots_for(owner)` would find
+                    // the callee's parent is neither the layout's spec nor its provider
+                    // and raise `Internal`. Examined and NOT driven: two attempts to make
+                    // them disagree (a witness sort providing the spec at a carrier with
+                    // its own same-named member, with and without slot reads) both came
+                    // back non-`Unique`, so no tree was emitted and nothing changed. A
+                    // `debug_assert` is deliberately not added for a relationship no
+                    // fixture reaches — it would pin a claim this ticket cannot measure.
+                    //
+                    // COST, corrected by this ticket's own review: NOT one memoized walk.
+                    // `dispatch_spec_op_cached` sets `cacheable = disambig.is_none() ||
+                    // the goal is fully ground`, and this site always passes
+                    // `Some(&dispatch_sigma)` — so a defaulted spec-op call inside a
+                    // GENERIC body, where the spec's type param is still a var, bypasses
+                    // the memo and re-runs `resolve_inner` on every visit. That is the
+                    // common shape for the stdlib's defaulted-op family. Kept because the
+                    // σ is what makes the resolution agree with the body-less route's
+                    // (WI-829), and a tree resolved without it is not the same tree.
+                    //
+                    // Not gated on "will the tail use it" (`sort_reads_requirement_slots`
+                    // AND cross-sort) because that gate lives inside
+                    // `classify_pin_or_apply_within`, and a second copy that drifted would
+                    // drop the tree SILENTLY — the failure this fix exists to remove.
+                    //
+                    // REACHES A `debug_assert!` THIS ARM DID NOT CARRY BEFORE: with a tree
+                    // in hand, `classify_pin_or_apply_within` asserts the emit succeeded.
+                    // `ProjectionSyms::resolve` answers `None` on a KB without
+                    // `anthill.reflect.Expr.var_ref` / `requirement_at_sort` /
+                    // `Dictionary`, so a reflect-less debug build with a defaulted op
+                    // pinned to a slot-reading supplier now panics in the typer where it
+                    // used to degrade to `None`. Every fixture loads the stdlib, so
+                    // nothing reaches it; recorded because it is a panic-vs-degrade
+                    // change and not a no-op.
+                    let dispatch_sigma = SigmaCtx {
+                        subst: &subst,
+                        param_rigids: env.param_rigids(),
+                    };
+                    let (_, resolved_tree) = dispatch_spec_op_cached(
+                        kb,
+                        &subst,
+                        spec_sort,
+                        op_short_sym,
+                        env.enclosing_requires(),
+                        self_recv_carrier,
+                        Some(&dispatch_sigma),
+                        &selections,
+                    );
                     classify_pin_or_apply_within(
                         kb,
                         occ,
                         fn_sym,
                         impl_op,
                         env.enclosing_sort(),
-                        None,
+                        resolved_tree,
                         Some(&OpSupplyCtx {
                             subst: &subst,
                             caller_requires: env.enclosing_frame_chain(),
