@@ -637,13 +637,22 @@ fn wi580_member_uses_declared_eq_not_unification() {
 
 #[test]
 fn wi580_member_over_rule_defined_eq_decides() {
-    // Completeness guard: an element type whose `eq` is defined by `<=>` rules
-    // (a carrier `eq` override, NOT an eval-bridge-runnable body) is still decided
-    // by `member` — the body's `eq(head, x)` dispatches to the carrier's `<=>`
-    // rules, which the eval bridge fires by ordinary SLD (kernel-language.md
-    // §"= — the semantic equality test"). Confirms the retirement of the `:-`
-    // structural twins does NOT strand membership over a rule-defined `eq` as an
-    // undecided residual: every ground query below decides DEFINITELY.
+    // Completeness guard: an element type whose `eq` is defined by RULES (a carrier
+    // `eq` override, NOT an eval-bridge-runnable body) is still decided by `member` —
+    // the body's `eq(head, x)` dispatches to the carrier's clauses, which the eval
+    // bridge fires by ordinary SLD (kernel-language.md §"= — the semantic equality
+    // test"). Confirms the retirement of the `:-` structural twins does NOT strand
+    // membership over a rule-defined `eq` as an undecided residual: every ground
+    // query below decides DEFINITELY.
+    //
+    // WI-1092 — THE CLAUSES ARE PREDICATE HEADS, and the fixture's original `<=>`
+    // spelling (`rule ceq(red, red) <=> true`) is why. An equation's clause is
+    // indexed under the CONNECTIVE, so `ceq` owned none: the sub-proof this test
+    // names ran over an empty candidate set, and its three answers came from the
+    // structural fast path (`red_in_red`, `blue_in_rb`) and from an empty search
+    // read as refutation (`red_in_blue`) — never from `ceq`. All three passed and
+    // measured nothing. With predicate heads the dispatch decides them, and
+    // `red_in_blue` is a refutation from a definition rather than from its absence.
     let src = r#"
         namespace test.wi580ce
           import anthill.prelude.{Bool, List, Eq, PartialEq}
@@ -652,10 +661,8 @@ fn wi580_member_over_rule_defined_eq_decides() {
             entity red
             entity blue
             operation ceq(a: Color, b: Color) -> Bool
-            rule ceq(red, red) <=> true
-            rule ceq(blue, blue) <=> true
-            rule ceq(red, blue) <=> false
-            rule ceq(blue, red) <=> false
+            rule ceq(red, red)
+            rule ceq(blue, blue)
             provides PartialEq[T = Color, eq = ceq]
             provides Eq[T = Color]
           end
@@ -680,6 +687,13 @@ fn wi580_member_over_rule_defined_eq_decides() {
         1,
         "blue is a member of [red, blue]"
     );
+    // WI-1092 CONTROL, and the one assertion here that a definition-less `ceq` fails:
+    // `blue_in_rb` walks PAST a non-matching head (`eq(blue, red)`) before reaching
+    // the match, so it needs that first compare DECIDED. Restore the `<=>` fixture
+    // above and it suspends instead (WI-1092: an absent definition is not a false
+    // one), the walk never reaches `blue`, and this drops to 0. The other two pass
+    // either way — `red_in_red` by the structural fast path, `red_in_blue` by empty
+    // search or by refutation, which are the same 0.
 }
 
 #[test]

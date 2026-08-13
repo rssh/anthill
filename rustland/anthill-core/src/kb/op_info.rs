@@ -266,9 +266,42 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
         return false;
     };
-    kb.rules_by_functor(op_info_sym)
-        .into_iter()
+    // WI-1092: `_iter`, not the snapshot — this tier walks every `OperationInfo` fact
+    // in the KB and `any` stops at the first match, so materializing the whole list
+    // first was a per-probe allocation the scan never needed.
+    kb.rules_by_functor_iter(op_info_sym)
         .any(|rid| kb.is_fact(rid) && head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
+}
+
+/// WI-1092 — is `sym` an operation that is DECLARED and NOWHERE DEFINED? A
+/// signature, and none of the four things that could answer a call to it: a clause
+/// indexed under it (SLD proves it), a runnable body or an interpreter host mapping
+/// (eval runs it — `typing::op_is_interpretable`), or a resolver builtin (which
+/// decides the goal before any clause is consulted, spec §5.3).
+///
+/// The question is "is there ANY definition", so it must not be answered by any one
+/// of those readers alone: `op_is_interpretable` is the eval half and is also the
+/// supplier filter's (`spec_op_suppliers_for_carrier`) — widening THAT to count
+/// clauses would change which members a carrier is read as implementing, which is a
+/// different question with different callers. This one composes it instead.
+///
+/// DECLARED is load-bearing, not decoration. An undeclared symbol with no clauses is
+/// the EMPTY RELATION and refutes under the closed-world reading — that is ordinary
+/// SLD, and `resolve.rs`'s `no_such_pred` / `myeq0` unit tests pin it. A declared
+/// operation makes a promise a name alone does not: something implements this. When
+/// nothing does, the call is unrunnable (WI-818's `OperationBodyMissing`), never
+/// false.
+///
+/// ORDERED CHEAPEST-FIRST, and [`operation_is_declared`] is last for the reason its
+/// own doc gives: without an `OperationInfo` record it scans every such fact in the
+/// KB. Its caller keeps the same discipline one level up — `prove_rule_predicate`
+/// asks this only where the search came back EMPTY, never before it, so a proved
+/// compare on the per-dispatch `eq` path pays nothing.
+pub fn declared_op_with_no_definition(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    !kb.has_clauses_under(sym)
+        && !kb.is_builtin(sym)
+        && !crate::kb::typing::op_is_interpretable(kb, sym)
+        && operation_is_declared(kb, sym)
 }
 
 /// WI-943 — the canonical logical variable `op_sym` DECLARES IN ITS BRACKET for the

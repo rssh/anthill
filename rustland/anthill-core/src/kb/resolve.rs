@@ -286,7 +286,7 @@ fn sem_verdict(equal: bool, positive: bool) -> BuiltinResult {
     }
 }
 
-/// WI-625 — the three-way outcome of proving a rule-backed predicate goal by a
+/// WI-625 — the outcome of proving a rule-backed predicate goal by a
 /// bounded closed sub-resolution ([`KnowledgeBase::prove_rule_predicate`]).
 /// Shared by the resolver's semantic-`eq` dispatch (`sem_eq_dispatch`) and the
 /// eval→SLD bridge (`eval/builtins.rs`, `eval/eval.rs`), so both read a
@@ -297,6 +297,13 @@ pub(crate) enum PredicateProof {
     Proved,
     /// The search ran to exhaustion, complete, with no proof.
     Refuted,
+    /// WI-1092 — there was NOTHING TO SEARCH: `pred` is a DECLARED OPERATION with
+    /// no clause indexed under it, no runnable body and no host mapping. Distinct
+    /// from [`Self::Refuted`], which is a verdict *from* a definition; this says the
+    /// definition is absent, and an absent definition is not a false one. An
+    /// undeclared bare predicate symbol is NOT this case — a relation nobody writes
+    /// a clause for is the empty relation, and the closed-world reading refutes it.
+    Undefined,
     /// No definite proof, and the search was incomplete — never decide from it.
     /// WI-628: `truncated` distinguishes the two incompleteness sources, because
     /// the resolver-side consumer ([`KnowledgeBase::sem_eq_dispatch`]) must
@@ -5208,6 +5215,15 @@ impl KnowledgeBase {
             // guard reading empty-as-refute sees it; a flounder over a complete
             // search stays a non-truncated delay.
             PredicateProof::Undecided { truncated } => BuiltinResult::Delay { truncated },
+            // WI-1092 — the carrier DECLARES this `eq` member and nothing defines it.
+            // Not `sem_verdict(false)`: "these two are unequal" is a claim, and there
+            // is nothing here to make it with. The resolver has no error channel (an
+            // op's own runtime error residualizes here too, three lines up), so the
+            // goal stays undecided — complete, hence non-truncated: no branch was cut,
+            // the definition is missing. The LOUD verdict for the same target is the
+            // eval face's (`OperationBodyMissing`), which is where a program that runs
+            // it, rather than merely resolving over it, ends up.
+            PredicateProof::Undefined => BuiltinResult::delay(),
         }
     }
 
@@ -5218,8 +5234,20 @@ impl KnowledgeBase {
     /// evaluator. Operands must be CLOSED (ground): the resolver reifies under σ
     /// before calling ([`Self::sem_eq_dispatch`]); the eval→SLD bridge (WI-625)
     /// passes already-ground interpreter values. The sub-proof is a closed TEST —
-    /// its bindings never reach the caller's frame — and three-way, never
+    /// its bindings never reach the caller's frame — and never
     /// wrong-by-truncation (see [`PredicateProof`]).
+    ///
+    /// WI-1092 — AN ABSENT DEFINITION IS NOT A FALSE ONE, and this is the ONE site
+    /// that can tell the difference: the one that knows the search had no clause to
+    /// try. A DECLARED operation with no clause, no runnable body and no host mapping
+    /// used to reach the resolver anyway, exhaust the empty candidate set, and come
+    /// back `Refuted` — which every caller renders as `false`. So a carrier whose
+    /// `eq` member is declared and never defined — the shape an UNTAGGED `<=>`
+    /// equation leaves, its clause being indexed under the connective so the subject
+    /// owns none (spec §5.3) — silently answered "not equal" on every route that
+    /// reaches it, raising nothing. It now reports [`PredicateProof::Undefined`]: the
+    /// eval faces make it the WI-818 `OperationBodyMissing` the spec states for
+    /// exactly this case, and the resolver leaves the goal undecided.
     pub(crate) fn prove_rule_predicate(
         &mut self,
         pred: Symbol,
@@ -5253,6 +5281,16 @@ impl KnowledgeBase {
             PredicateProof::Undecided { truncated: true }
         } else if v.residual {
             PredicateProof::Undecided { truncated: false }
+        } else if crate::kb::op_info::declared_op_with_no_definition(self, pred) {
+            // WI-1092 — asked HERE, on the refutation edge, and not before the search:
+            // the two verdicts differ only when the search came back empty, and only
+            // then is the probe worth its cost. `operation_is_declared` falls back to
+            // scanning every `OperationInfo` fact when the operation has no cached
+            // record, which on a per-dispatch `eq` path would be a real toll to pay for
+            // every PROVED compare. On this edge it is proportionate: the search that
+            // just exhausted found nothing, so one index read decides whether that
+            // nothing is a refutation or a missing definition.
+            PredicateProof::Undefined
         } else {
             PredicateProof::Refuted
         }

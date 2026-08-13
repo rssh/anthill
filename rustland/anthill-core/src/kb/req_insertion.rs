@@ -280,7 +280,19 @@ fn chain_for(
     enclosing_sort: Option<Symbol>,
     enclosing_op: Option<Symbol>,
 ) -> crate::kb::typing::DictChain {
-    if let Some(op) = enclosing_op {
+    // MIRRORS `TypingEnv::set_enclosing_op` TO THE BRANCH, and the condition is the
+    // load-bearing half. That setter installs the COMPOSED chain only when the
+    // operation declares an op-scoped one; with none it keeps the SORT chain
+    // `set_enclosing_sort` gave it — built from the sort the typer was TOLD. This
+    // arm re-derives its sort half from the OP instead (`op_dict_entries` →
+    // `impl_parent_of_op`), so taking it unconditionally would read a different list
+    // wherever the two disagree: a namespace-level operation reached with a sort still
+    // in the env answers `None` there, emptying the whole chain, and a `FromScope`
+    // index the typer resolved against the sort's slots would then be named off
+    // nothing. Same-source-or-same-branch is the only way the two cannot drift.
+    if let Some(op) = enclosing_op.filter(|op| {
+        !crate::kb::typing::op_requires_chain_rc(kb, *op).is_empty()
+    }) {
         if let Some(cached) = cache.get(&op) {
             return cached.clone();
         }

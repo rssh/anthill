@@ -217,10 +217,21 @@ impl std::fmt::Display for EvalError {
         match self {
             EvalError::UnboundVar { name, .. } => write!(f, "unbound variable: {name}"),
             EvalError::UnknownOperation { name } => write!(f, "unknown operation: {name}"),
+            // WI-1092 — the "typer-guaranteed invariant violation (should be
+            // unreachable)" this said is no longer true, and saying it misdirects the
+            // author who now reaches it: an ordinary program that declares an
+            // operation and defines it nowhere lands here, and used to be answered
+            // `false` instead. The four things looked for are named because which one
+            // is missing is the repair, and the equation trap is named because it is
+            // the shape that looks like a definition and is not.
             EvalError::OperationBodyMissing { name, backtrace } => write!(
                 f,
-                "operation has no body: {name} — this is a typer-guaranteed invariant \
-                 violation (should be unreachable).\nbacktrace:\n{backtrace}"
+                "operation has no body: {name} — nothing this runtime can run is \
+                 registered for it: no operation body, no host `operation_map` entry \
+                 for this language, no builtin, and no rule clause indexed under it. \
+                 (An untagged `<=>` equation is indexed under the CONNECTIVE, so its \
+                 subject owns no clause — kernel-language.md §5.3.)\
+                 \nbacktrace:\n{backtrace}"
             ),
             EvalError::TypeMismatch { expected, got } => {
                 write!(f, "type mismatch: expected {expected}, got {got}")

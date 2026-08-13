@@ -17016,6 +17016,18 @@ pub(crate) fn resolve_bridge_requirements(
         // Every slot was an op-scoped one and none resolved: the answer this call had
         // BEFORE the chain was widened, down to not placing a `__req_self` the frame
         // never used to carry.
+        //
+        // SO `__req_self` RIDES WITH THE SLOTS, and one operation value-directed on two
+        // argument sets can get two frame shapes — asked about by the WI-1092 review,
+        // and kept. `frame_requirements_from_trees` leads every channel it builds with
+        // the self slot because that is the WI-857 layout; a channel with no entries is
+        // not a shorter channel, it is no channel, which is what `NoneNeeded` says. The
+        // difference the two shapes make is only ever an ADDED `__req_self`, and with
+        // `sort_len == 0` that stand-in is arity 0 — `Dictionary(impl: parent)`, the
+        // frame's own sort, which is exactly what a self-slot read wants and strictly
+        // better than the absent slot's raise-at-the-read. Making it uniform would mean
+        // placing a self slot on a call that resolved nothing, which is the pre-widening
+        // regression the branch above exists to avoid.
         return BridgeRequirements::NoneNeeded;
     }
     BridgeRequirements::Resolved(parent, trees)
@@ -41417,6 +41429,18 @@ fn synth_op_req_names_of(kb: &mut KnowledgeBase, op_sym: Symbol) -> Rc<Vec<Symbo
             // cons to the very same `TermId` (`requires Desc[T = HT]` written on the sort
             // and on one of its members). Two slots under one name, and `find_requirement`
             // takes the first — silently the other instance's dictionary.
+            //
+            // THE `_o<id>` FORM IS NOT ITSELF COLLISION-FREE, and stays that way on
+            // purpose (asked of it by the WI-1092 review, then re-derived): two OP
+            // entries can mint this same name, but only by sharing a base AND a
+            // hash-cons id — and a shared id IS structural identity, i.e. the same
+            // requirement written twice. Identical entries substitute to one concrete
+            // goal, hence one resolved tree and one dictionary, so first-wins hands the
+            // second slot exactly what resolving it again would have produced. What
+            // makes two slots want DIFFERENT dictionaries is a difference in the spec
+            // term — another type-param binding, an operation binding — and every such
+            // difference is a different `TermId`, which this suffix already separates.
+            // Position would separate the names without separating anything real.
             match &entry.spec {
                 Value::Term { id, .. } => format!("{base}_o{}", id.raw()),
                 // WI-662: a denoted spec has no hash-cons id — the op-chain position is

@@ -1131,6 +1131,29 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                         EvalError::Internal(detail)
                     })
                 }
+                // WI-1092 — the operands' carrier DECLARES this `eq` member and
+                // nothing defines it. NOT `Ok(false)`, and not the structural verdict
+                // either: the carrier said its equality is `target`, so answering
+                // structurally would report a verdict it disowned. Loud through the
+                // shared WI-818 classifier at top level, and under the resolver→eval
+                // bridge a Suspend (never truncated — no branch was cut) so the
+                // resolver residualizes exactly as its own `sem_eq_dispatch` does for
+                // the same target.
+                crate::kb::resolve::PredicateProof::Undefined => {
+                    if i.bridge_mode() {
+                        // Its own sentence rather than the classifier's rendering: a
+                        // `detail` rides inside a residual, where the classifier's
+                        // remedy paragraph and backtrace are noise.
+                        return Err(EvalError::Suspended {
+                            detail: format!(
+                                "carrier eq `{}` is declared with no definition",
+                                i.kb().qualified_name_of(target)
+                            ),
+                            truncated: false,
+                        });
+                    }
+                    Err(i.unrunnable_target_error(target))
+                }
             };
         }
         // Non-ground operand: `=` never binds — fall through to the structural

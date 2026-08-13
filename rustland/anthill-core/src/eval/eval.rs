@@ -1523,6 +1523,19 @@ impl Interpreter {
             // must never produce. Nothing in tree reaches this — a WI-415 parent-bundle
             // dict and a WI-829 spec-instance dict both resolve back to the member the
             // classification named — so it is an internal disagreement, not a program.
+            //
+            // RE-DERIVED (WI-1092 review), which proposed that a `provides Spec[…,
+            // member = other]` binding makes the redirect an ordinary program shape and
+            // this raise a program-killer. It does not reach here, for two reasons that
+            // have to BOTH hold: `op_dicts` is non-empty only where the TYPER
+            // classified the call, and the classified routes are the two named above —
+            // the deferred route (`start_apply_deferred`), which is where a provision's
+            // op binding actually redirects, carries no op half at all; and a provision
+            // binding that rivals a member the carrier declares itself is a supplier tie
+            // refused before it runs (WI-842/WI-1010), so the table cannot hold both.
+            // Examined, not driven: no fixture reaches this arm in either direction, and
+            // the neighbouring "place nothing, let the read complain" policy is what it
+            // should become if one ever does.
             return Err(EvalError::Internal(format!(
                 "op-scoped frame push: the call site supplied {} slot(s) for `{}`, but \
                  dispatch landed on `{}`",
@@ -2772,6 +2785,13 @@ impl Interpreter {
                     self.kb.local_name_of(pred)
                 )))
             }
+            // WI-1092 — the bridge resolved a target nothing defines. Both eval faces
+            // reach this through the same helper, and both hand it to the WI-818
+            // classifier, so a definitionless target reports `OperationBodyMissing`
+            // whether the call was dispatched through a dictionary, spelled in a body,
+            // or entered from the host — the same verdict those paths already give a
+            // target the eq bridge declines to take at all.
+            crate::kb::resolve::PredicateProof::Undefined => Err(self.unrunnable_target_error(pred)),
         }
     }
 

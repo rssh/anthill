@@ -41,9 +41,11 @@
 //! `merge_secondary_entry_operations` call from `resolve_instantiations` and
 //! re-running, not predicted. SIX of the nine fail, three pass either way. Every
 //! failing dispatch row reports the SAME error, `EvalError::OperationBodyMissing`
-//! naming `test.wi1008.Show.show` — rendered "operation has no body: … — this is a
-//! typer-guaranteed invariant violation (should be unreachable)", which is the
-//! program loading clean and then dying:
+//! naming `test.wi1008.Show.show` — rendered "operation has no body: … — nothing this
+//! runtime can run is registered for it", which is the program loading clean and then
+//! dying (WI-1092 rewrote that sentence, which until then claimed the path was an
+//! unreachable typer-invariant violation; this ticket is one of the two shapes that
+//! reach it, and neither is that):
 //!
 //!   * [`op_in_secondary_entry_dispatches`] — FAILS. The capability.
 //!   * [`claim_in_secondary_entry_dispatches`] — FAILS, identically. So the CLAIM's
