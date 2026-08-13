@@ -93,7 +93,7 @@ Tagged sequence `modinst`; WI-648 is the umbrella.
 | 8c | rung 2a: the classifier tie reads the index; the five-flip inventory | open — **WI-861**, after 8b |
 | 9 | surface consolidation: `default provides` sugar + the `fact`-as-provision retirement (proposal §4) | open — **WI-862**, after 8b |
 | — | phase 7's three spin-offs: per-clause `provides … :- goals` — ✅ **WI-869** (`wi869_per_provision_conditions_test`), see §16; the bracket-value slot binding — ✅ **WI-870** (`wi870_bracket_value_slot_test`), see §18; the componentwise-provider slot defect (**WI-871**) — open, independent of the 8x chain |
-| deferred | named instance facts; implicit scoped selection; the general existential (WI-402); `Coherent` rows + `coherent sort` sugar; `within:`; `NoDefault`; selection on the op-scoped route (WI-822 leg 1 built the channel; the body reads it only on the tie route) | — |
+| deferred | named instance facts; implicit scoped selection; the general existential (WI-402); `Coherent` rows + `coherent sort` sugar; `within:`; `NoDefault`; selection on the op-scoped route — **WI-1091** (WI-822 leg 1 built the channel; the body reads it only on the tie route) | — |
 
 **The standing lesson** (earned three times before delivery, once after): a design that moves an error — or asserts a mechanism already runs — must enumerate the consumers of the thing it moves and check each still has a site to complain from and a check that fires there. Rung 2a's flip inventory (§3) is written before implementation for exactly this reason.
 

@@ -396,7 +396,8 @@ fn a_pin_outranks_a_deferral_to_the_enclosing_frame() {
 /// never reads the slot and the pin is still not consulted — measured by this very
 /// test, which kept computing 99 across the change. Only a call value-direction
 /// CANNOT serve reads the slot (`kb::typing::op_scoped_defer_location`), and lifting
-/// this refusal means moving that placement, with its own measurement.
+/// this refusal means moving that placement, with its own measurement — WI-1091, whose
+/// acceptance is that THIS test flips to Ok(5).
 ///
 /// MEASURED, and only the SECOND row shows it: with `AddM` and `AnyM` both answering,
 /// `[Monoid = AnyM]` computed 99 and looked honoured — it merely agreed with what the

@@ -72,7 +72,8 @@ const TWO_MONOIDS: &str = r#"
 /// slots exist and the call site fills them, but a body reads them only where
 /// value-direction cannot serve the call, and `fold`'s `Monoid.combine` over an
 /// abstract element is served by it. See `wi841_call_site_selection_test`'s
-/// `an_op_scoped_selection_that_could_differ_is_refused_not_ignored`.
+/// `an_op_scoped_selection_that_could_differ_is_refused_not_ignored`, and WI-1091,
+/// which owns lifting it.
 const FOLDER: &str = r#"
   sort Folder
     sort FT = ?
