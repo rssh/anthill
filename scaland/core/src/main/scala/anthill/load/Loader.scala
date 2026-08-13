@@ -731,8 +731,9 @@ object Loader:
     // re-derived from a name blocklist — the thing `SimpleTermStore.minted` exists to
     // replace — and a legitimate 2-ary predicate head spelled as an ordinary call
     // (`rule eq(?a, ?b)`) would be read as an equation whose "LHS" is a variable,
-    // introducing nothing at all. (rustland's `parse_equation_lhs` still tests the
-    // name alone; this is a deliberate divergence, and the fix belongs there too.)
+    // introducing nothing at all. (WI-948 ported the guard back to rustland's
+    // `parse_equation_lhs`, where it also fixed the `[T]`-introducer reader; the two
+    // implementations agree here, so this is no longer a divergence.)
     if !fileTerms.isMinted(head) then None
     else fileTerms.get(head) match
       case fn: Term.Fn

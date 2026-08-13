@@ -66,6 +66,19 @@ pub fn is_arrow_functor(name: &str) -> bool {
 /// equational-head recognition (WI-619: the `[T]` introducer on an equational head
 /// rides on the LHS operand, not the whole `eq(lhs, rhs)` node). Parse-layer peer
 /// of the KB-side `is_equational_head`.
+///
+/// WI-948 — A NAME, NOT A VERDICT. The three spellings are ordinary identifiers a
+/// user may write as a call, so this predicate never decides ON ITS OWN that a node
+/// is an equation: pair it with [`SimpleTermStore::is_minted`](crate::parse::ir::SimpleTermStore::is_minted),
+/// exactly as [`is_arrow_functor`] is paired above. `load::parse_equation_lhs` is the
+/// one caller that asks the question about a rule HEAD, and it carries the pairing.
+///
+/// THIS SET IS WIDER THAN THE KB'S — **WI-1090**, open, measured under WI-948. The
+/// KB-side owner (`KnowledgeBase::is_equality_connective_functor`) caches only
+/// `PartialEq.eq` and `kernel.unify`, so a `===` head is an equation HERE and not
+/// there: its `[simp]` tag can never fire, and WI-139's unindexing never runs on it.
+/// Do not narrow or widen either side alone — WI-1090 decides which `===` is, and
+/// makes the two read off one owner.
 pub fn is_equation_functor(name: &str) -> bool {
     name == EQ_FUNCTOR || name == UNIFY_FUNCTOR || name == STRUCT_EQ_FUNCTOR
 }

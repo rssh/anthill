@@ -3892,11 +3892,45 @@ impl RuleIntroduction {
 /// source of truth for the functors the infix desugar mints), never by arity
 /// alone — but a connective-named head of some other arity is not an equation
 /// either.
+///
+/// WI-948 — AND THE CONNECTIVE MUST BE ONE THE DESUGAR WROTE, which is
+/// `is_minted` (WI-618) and not the name: `SimpleTermStore::minted` exists
+/// precisely so this decision is carried rather than re-derived from a
+/// spelling. `eq` / `unify` / `struct_eq` are also ORDINARY IDENTIFIERS, so the
+/// name test alone answers YES for a head that is a written CALL — and then
+/// hands both readers the first ARGUMENT where the subject should be. Silent in
+/// both, MEASURED on rustland before this guard:
+///
+/// * [`Loader::collect_rule_tvar_names`] looked for `rule eq[t](?x, ?y)`'s `[t]`
+///   introducer on `?x`, found none, and dropped it — so the `:- Eq[t]` guard
+///   never folded, `t` reached scope resolution as an ordinary term
+///   (`unresolved name 't'`), and the unconsumed bracket drew WI-839's
+///   "call-site type arguments are not supported here". This is WI-619's defect
+///   reached through the NAME; WI-619 fixed the arity gate beside it.
+/// * [`rule_introduced_functor_name`] made `rule struct_eq(f(?x), ?x)`'s
+///   argument the subject and minted `f` stamped
+///   [`SymbolKind::EquationFunctor`] — WI-898's distinction inverted for a rule
+///   with no equation in it, after which a citation of `f` was refused with
+///   "is defined by equations … no defining equation for it can be found".
+///
+/// The mint damage is only ever to the ARGUMENT: all three connective spellings
+/// are implicit-tier reserved vocabulary ([`PRELUDE_QUALIFIED`] /
+/// [`kernel_vocab_qualified`]), so a head can never introduce one of them
+/// whatever this function answers — [`name_denotes_for_rule_head`] refuses it
+/// (WI-530), measured identical with the guard and without it.
+///
+/// The guard is one condition, not new machinery: [`rule_introduced_functor_name`]
+/// already asks `is_minted` about the SUBJECT two steps later, for the same
+/// reason. Scaland's `Loader.parseEquationLhs` carried it first (WI-618 port);
+/// the two implementations now agree.
 fn parse_equation_lhs(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
     head: TermId,
 ) -> Option<TermId> {
+    if !parse_terms.is_minted(head) {
+        return None;
+    }
     match parse_terms.get(head) {
         Term::Fn {
             functor, pos_args, ..
@@ -3917,8 +3951,13 @@ fn parse_equation_lhs(
 /// on. A PREDICATE head is its own subject; an EQUATION's head functor is the
 /// `=`/`<=>` CONNECTIVE and its subject is the LHS, so `rule ite(true, ?t, ?_) =
 /// ?t` is about `ite`, never `eq`. A BODIED rule is not an equation at all (§8.3:
-/// an equation is bodyless), so `f(?x) = ?y :- guard` is about `eq` — which the caller's
-/// mint guard then refuses, WI-530's outcome reached without WI-530's special case.
+/// an equation is bodyless), so `f(?x) = ?y :- guard` is about the whole `eq(…)` head —
+/// and introduces NOTHING, because that head is minted, so the `is_minted(subject)`
+/// guard below returns first. WI-530's outcome, reached without WI-530's special case.
+/// (This doc used to say the CALLER's mint guard refuses it via
+/// [`name_denotes_for_rule_head`]; that rung is never consulted for this shape, and a
+/// reader backing out either guard would have predicted the wrong control. Corrected
+/// under WI-948, which measured the path.)
 ///
 /// WI-896 — EVERYTHING AFTER THAT POINT IS ONE RULE FOR BOTH KINDS. WI-894 ran
 /// two different guards here — the equation path skipped every
