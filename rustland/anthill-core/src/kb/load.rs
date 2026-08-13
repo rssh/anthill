@@ -8454,6 +8454,14 @@ fn load_phase_inner(
     // re-validate the eliminated subset with the same logic).
     all_errors.extend(super::typing::validate_rigid_projection_formations(kb));
     mark!("validate_rigid_projection_formations");
+    // WI-861 (058 §3.2 rung 2a): SEED the defaults index before the typer, whose
+    // `check_apply_iter` is the rung's first consumer — the authoritative build runs
+    // after `eq_derive::run`, far below, and a tie that consulted a `None` index simply
+    // stayed refused. Verdict deliberately not collected here; see the function's doc for
+    // why the late build's error set is a superset and why collecting HERE would refuse
+    // a mark on a provider whose provision `eq_derive` has not asserted yet.
+    super::defaults::seed_default_provider_index(kb);
+    mark!("seed_default_provider_index");
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence

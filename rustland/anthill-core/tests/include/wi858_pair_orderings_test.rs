@@ -13,13 +13,20 @@
 //!
 //! WHICH CHANGES THE COEXISTENCE STORY BELOW, and the arms record the new shape
 //! rather than being deleted. `Pair` is now a THIRD `Ord` provider, so the two
-//! witnesses declared here tie three ways at a bracket-less compare — the same
-//! configuration `wi844_sorted_set_driver_test` has over `String`, whose host
-//! `Ord` provider makes its ties three-way. Every repair here is still writable
-//! for the two LOCAL witnesses; naming the prelude's own is not (058 §3.5 check 3
-//! refuses `[Ord = Pair]` because `Pair` is a CONCRETE provider — WI-861's rung
-//! 2a is what would close that, and WI-877 records the decision to keep the order as
-//! `Pair`'s own identity anyway).
+//! witnesses declared here tie three ways — the same configuration
+//! `wi844_sorted_set_driver_test` has over `String`, whose host `Ord` provider makes
+//! its ties three-way. Every repair here is still writable for the two LOCAL
+//! witnesses; naming the prelude's own is not (058 §3.5 check 3 refuses `[Ord = Pair]`
+//! because `Pair` is a CONCRETE provider, and WI-877 records the decision to keep the
+//! order as `Pair`'s own identity anyway).
+//!
+//! **WI-861 CLOSED HALF OF THAT, and the file records which half.** 058 §3.2's rung 2a
+//! makes a carrier's own provision the default, so a bracket-less `Ord.compare` on two
+//! pairs takes the canonical order and needs no unwritable bracket
+//! (`a_bracketless_compare_takes_the_prelude_ordering`). A bracket-less `SortedSet` of
+//! pairs does NOT: `SortedSet requires O: Ord[T]` is a NAMED slot, where a default is
+//! deliberately withheld — **WI-1094**, pinned by
+//! `a_bracketless_pair_set_still_needs_its_bracket`.
 //!
 //! WHY THE PRELUDE COULD HAVE CARRIED AN ORDERING (and what still holds): obstacle B —
 //! `Ord requires Eq[T]`, and in a binding-free `stdlib/` load no primitive's `Eq`
@@ -292,36 +299,112 @@ fn swapping_the_brackets_swaps_the_answers() {
 /// WI-877's feedback measured it and chose the canonical order as `Pair`'s identity —
 /// and asserting the prelude's name HERE is what keeps the choice visible: were the
 /// provision withdrawn, this arm reports it instead of quietly passing on two.
+/// **FLIPPED AT WI-861** — and this arm is the SHIPPED-LIBRARY reason 058 §3.2's rung 2a
+/// exists, so the finding it used to record is kept in full rather than replaced.
+///
+/// WHAT IT MEASURED BEFORE: with two program-declared orderings beside the prelude's own,
+/// a bracket-less `Ord.compare` on a `Pair` was a THREE-way tier-3 refusal — and the
+/// canonical order was then UNREACHABLE, because the repair the diagnostic advertises
+/// (`[Ord = Pair]`) is itself refused by §3.5 check 3: `Pair` is a CONCRETE provider, so
+/// an explicit witness is rejected on the grounds that the value directs the dispatch. A
+/// program that declared a rival pair ordering lost the prelude's canonical one with no
+/// spelling to get it back, and WITH NO EDIT AVAILABLE to `pair.anthill` that would help.
+///
+/// §3.6's inference rule closes it exactly: `default_provider(?S, ?C, ?C) :-
+/// self_provides(?C, ?S)` makes `Pair`'s own provision the default, so silence takes the
+/// canonical lexicographic `fst`-then-`snd` order and each rival stays opt-in by bracket
+/// — with no edit to `pair.anthill`, which is the property worth preserving.
+///
+/// **AND ONLY THE DISPATCH FACE OF THE PINCER IS CLOSED**, which is a bound worth stating
+/// exactly. The `SortedSet[T = Pair[…]]` face is NOT: `SortedSet requires O: Ord[T]` is a
+/// NAMED slot, i.e. a type PARAMETER, and rung 2a fills a DICTIONARY without writing
+/// anything into the type — so a value typed "any `O`" carrying a `Pair`-ordered
+/// dictionary is exactly the mismatch that route must not produce (measured, WI-861:
+/// erasing a named slot and defaulting it reads a `Descending` set back in ascending
+/// order). Named-slot INFERENCE — binding `O` in the result type, which is what §3.4's
+/// "omitting it at a call leaves it to inference" actually asks for — is **WI-1094**.
+/// `a_bracketless_pair_set_still_needs_its_bracket` below pins that half.
+///
+/// The value is what says WHICH order answered: `(1,9)` before `(2,1)` is `fst`-first,
+/// the prelude's canonical order; `BySnd` would compare 9 against 1 and answer positive.
 #[test]
-fn a_bracketless_compare_with_two_orderings_names_both() {
+fn a_bracketless_compare_takes_the_prelude_ordering() {
+    let cmp = |ns: &str, bracket: &str| {
+        let src = program(
+            ns,
+            &format!(
+                "{BY_SND}  end\n{BY_FST}  end\n  sort Use\n    \
+                 operation cmp(a: Pair[Int64, Int64], b: Pair[Int64, Int64]) -> Int64 =\n      \
+                 Ord.compare{bracket}(a, b)\n  end\n  sort Driver\n    \
+                 operation drive(n: Int64) -> Int64 =\n      \
+                 Use.cmp(pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
+            ),
+        );
+        eval_int(
+            &src,
+            &format!("{ns}.Driver.drive"),
+            "the bracket-less compare must dispatch",
+        )
+    };
+    assert!(
+        cmp("wi858.bare", "") < 0,
+        "058 §3.6: `Pair` provides `Ord` ITSELF, so its own provision is the inferred \
+         default and silence takes the canonical `fst`-then-`snd` order — 1 < 2. Before \
+         WI-861 this program did not load at all, and no bracket could have named `Pair` \
+         (§3.5 check 3 refuses a concrete provider)"
+    );
+    // THE CONTROL, and it is what keeps the two rivals real rather than inert: the SAME
+    // call with a bracket answers the OTHER order. Without it this test would pass just
+    // as well on a tree where `BySnd` had stopped being reachable.
+    assert!(
+        cmp("wi858.bare.pinned", "[Ord = BySnd]") > 0,
+        "tier 1 outranks the default: `BySnd` compares 9 against 1"
+    );
+}
+
+/// THE OTHER FACE OF THE PINCER, PINNED AS STILL OPEN. A `SortedSet` of pairs with no
+/// `O` written stays refused, because a NAMED slot is a type parameter and rung 2a does
+/// not bind one (see the arm above, and [`DefaultRung`]'s note in `kb/typing.rs`).
+///
+/// Pinned rather than left as a silence so that **WI-1094** has to come back here and
+/// flip it: the acceptance for that ticket is that this program loads and renders
+/// `(1,9)(2,1)`, the same answer the bracket-less `Ord.compare` above now gives.
+#[test]
+fn a_bracketless_pair_set_still_needs_its_bracket() {
     let src = program(
-        "wi858.bare",
+        "wi858.set.bare",
         &format!(
-            "{BY_SND}  end\n{BY_FST}  end\n  sort Use\n    \
-             operation cmp(a: Pair[Int64, Int64], b: Pair[Int64, Int64]) -> Int64 =\n      \
-             Ord.compare(a, b)\n  end"
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}  end",
+            pipeline("bare", "")
         ),
     );
     let errs = load_errs(&src);
-    let tie: Vec<&String> = errs
-        .iter()
-        .filter(|e| e.contains("ambiguous dispatch of"))
-        .collect();
+    assert!(
+        errs.iter().any(|e| {
+            e.contains("is ambiguous among providers")
+                && e.contains("anthill.prelude.Pair")
+                && e.contains("wi858.set.bare.ByFst")
+                && e.contains("wi858.set.bare.BySnd")
+        }),
+        "the NAMED-slot route keeps the three-way refusal — WI-861 deliberately withholds \
+         the default there, and WI-1094 owns closing it: {errs:?}"
+    );
+    // …and the same pipeline WITH the bracket runs, so the refusal is the omission and
+    // not the pipeline having broken.
+    let pinned = program(
+        "wi858.set.pinned",
+        &format!(
+            "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n{RENDER}{}  end",
+            pipeline("byFst", ", O = ByFst")
+        ),
+    );
     assert_eq!(
-        tie.len(),
-        1,
-        "one ambiguous call, one error; all errors: {errs:?}"
-    );
-    assert!(
-        tie[0].contains("wi858.bare.ByFst") && tie[0].contains("wi858.bare.BySnd"),
-        "the tie must name BOTH declared orderings: {}",
-        tie[0]
-    );
-    assert!(
-        tie[0].contains("anthill.prelude.Pair"),
-        "…and the PRELUDE's own, which WI-877 added: a two-way tie here would mean \
-         `Pair` stopped providing its canonical order: {}",
-        tie[0]
+        eval_str(
+            &pinned,
+            "wi858.set.pinned.Driver.byFst",
+            "the bracketed pipeline must still run"
+        ),
+        "(1,9)(2,1)",
     );
 }
 

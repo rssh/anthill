@@ -297,10 +297,28 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
 /// KB. Its caller keeps the same discipline one level up — `prove_rule_predicate`
 /// asks this only where the search came back EMPTY, never before it, so a proved
 /// compare on the per-dispatch `eq` path pays nothing.
+/// WI-861 (found by review) — THE EXECUTABLE READER, NOT THE INTERPRETABLE ONE, and the
+/// difference is a whole host backend. `op_is_interpretable`'s mapping leg is
+/// `is_interpreter_mapped_op` (rust only, WI-886), so composing it here answered "declared
+/// and nowhere defined" for an operation implemented by a cpp `operation_map` entry — and
+/// `prove_rule_predicate` then returned `Undefined` where the same program built for rust
+/// returns `Refuted`. One goal, two answers, decided by which backend loaded it.
+///
+/// TWO EXISTING DOCS ALREADY LEGISLATED IT and the code disagreed with both:
+/// [`crate::kb::resolve::PredicateProof::Undefined`] defines its class as "no runnable
+/// body and no host mapping" — program-wide — and [`crate::kb::typing::op_is_executable`]
+/// says a question of this kind "must not change answer with the host backend". That
+/// function IS `is_builtin || is_host_mapped_op || op_has_runnable_body`, so asking it
+/// replaces both legs above and drops the divergence rather than patching around it.
+///
+/// The DIRECTION is the one the docs give: a cpp mapping IS a definition, so the promise
+/// "something implements this" is kept and the goal refutes under the closed-world reading
+/// exactly as it does for a rust mapping. What this runtime can RUN is a different
+/// question with a different reader, and eval already asks it (`op_is_interpretable`, at
+/// the supplier filter and the override gate).
 pub fn declared_op_with_no_definition(kb: &KnowledgeBase, sym: Symbol) -> bool {
     !kb.has_clauses_under(sym)
-        && !kb.is_builtin(sym)
-        && !crate::kb::typing::op_is_interpretable(kb, sym)
+        && !crate::kb::typing::op_is_executable(kb, sym)
         && operation_is_declared(kb, sym)
 }
 

@@ -75,6 +75,31 @@ const RIVAL_ABSTRACT: &str = r#"
   end
 "#;
 
+/// WI-861 — A CARRIER THAT PROVIDES NOTHING ITSELF, with two witnesses, so the
+/// sub-goal `Desc[T = Twig]` inside `WrapDesc`'s dictionary genuinely ties.
+///
+/// The move is forced by 058 §3.2's rung 2a and not cosmetic: a carrier's OWN provision
+/// is its default, so `Leaf` beside `RIVAL_*` no longer ties — it RESOLVES to `Leaf`,
+/// which `the_self_provider_answers_the_tie_and_the_dictionary_builds` below asserts as
+/// a VALUE. Neither `TwigA` nor `TwigB` is the carrier and neither is marked, so nothing
+/// answers and this file's subject — a genuine two-provider tie reaching a route with no
+/// bracket — is still what the pin measures.
+const TWIG: &str = r#"
+  sort Twig
+    entity twig
+  end
+
+  sort TwigA
+    fact Desc[T = Twig]
+    operation describe(x: Twig) -> Int64 = 3
+  end
+
+  sort TwigB
+    fact Desc[T = Twig]
+    operation describe(x: Twig) -> Int64 = 5
+  end
+"#;
+
 /// A conditional provider that never READS its dictionary, plus a carrier with
 /// no `Desc` provider at all — so its chain resolves to NO provider rather than
 /// to a tie.
@@ -126,10 +151,14 @@ fn drive(src: &str, ns: &str) -> Result<Value, EvalError> {
 
 /// THE PIN. A genuine two-provider tie, reached through value-directed dispatch,
 /// surfaces as `AmbiguousRequirement` naming the requirement and BOTH candidates.
+///
+/// WI-861 moved it onto [`TWIG`] — see that constant. The `Leaf` + rival pair it used to
+/// run on now RESOLVES, which the next test asserts as a value; what is pinned here is
+/// the tie that no default answers.
 #[test]
 fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers() {
     let ns = "wi855.tie";
-    let err = drive(&program(ns, RIVAL_CONCRETE, "wrap(leaf())"), ns).unwrap_err();
+    let err = drive(&program(ns, TWIG, "wrap(twig())"), ns).unwrap_err();
     let EvalError::AmbiguousRequirement {
         op,
         requirement,
@@ -147,15 +176,15 @@ fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers(
         "the error must name the impl whose chain could not be built; got `{op}`"
     );
     assert!(
-        requirement.contains("Desc") && requirement.contains("Leaf"),
-        "the error must name the REQUIREMENT that tied (`Desc[T = Leaf]`); got `{requirement}`"
+        requirement.contains("Desc") && requirement.contains("Twig"),
+        "the error must name the REQUIREMENT that tied (`Desc[T = Twig]`); got `{requirement}`"
     );
     assert_eq!(
         candidates.len(),
         2,
         "exactly the two tied providers expected; got {candidates:?}"
     );
-    for want in ["Leaf", "Rival"] {
+    for want in ["TwigA", "TwigB"] {
         assert!(
             candidates.iter().any(|c| c.ends_with(want)),
             "`{want}` must appear among the tied providers; got {candidates:?}"
@@ -164,7 +193,7 @@ fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers(
     // The rendered message is what an author actually sees, so it carries the
     // same three facts rather than only the struct fields.
     let rendered = err.to_string();
-    for want in ["WrapDesc.describe", "Desc", "Leaf", "Rival"] {
+    for want in ["WrapDesc.describe", "Desc", "TwigA", "TwigB"] {
         assert!(
             rendered.contains(want),
             "the rendered diagnostic must mention `{want}`; got: {rendered}"
@@ -178,11 +207,23 @@ fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers(
 /// (exempted from the witness rule as a manifest backend, so the group stays a group
 /// of one) or ABSTRACT (a witness beside the self-provider — a group of two, both
 /// NAMEABLE, which 058 tier 3 lets coexist). Both spellings load, for two different
-/// reasons, and both then tie at dispatch.
+/// reasons.
 ///
 /// Without this, `RIVAL_CONCRETE`'s doc would rest on the exemption alone — which is
 /// true of that spelling and false as a general account, and would send the next
 /// reader to narrow an exemption that is not what admits the other program.
+///
+/// **WI-861 FLIPPED THE SECOND HALF** — this is the ticket's flip (2), and the change is
+/// which verdict the admitted program reaches, not whether it is admitted. It used to
+/// say "…and both then TIE at dispatch". They no longer do: `Leaf` PROVIDES `Desc`
+/// itself, so 058 §3.6 infers `default_provider(Desc, Leaf, Leaf)` and silence takes the
+/// carrier's own implementation (12 = 10·1 + 2 through `WrapDesc`'s dictionary). The
+/// rival stays loadable and stays opt-in.
+///
+/// So the ONLY thing that changed for these two programs is the LADDER, which is what
+/// makes the load-admission assertion still worth making: were coherence to start
+/// refusing either spelling, the value below would never be reached and this arm would
+/// report it.
 ///
 /// The name changed at WI-859: "invisible" was accurate while a self-provider was a
 /// candidate of no kind at all, and the abstract arm is now SEEN and admitted.
@@ -201,9 +242,13 @@ fn load_coherence_admits_the_tie_either_way() {
                 errs.join("\n")
             )
         });
+        let got = drive(&src, ns);
         assert!(
-            matches!(drive(&src, ns), Err(EvalError::AmbiguousRequirement { .. })),
-            "`{ns}` must reach the runtime tie"
+            matches!(got, Ok(Value::Int(12))),
+            "`{ns}`: 058 §3.2 rung 2a takes the carrier's own provision, and 12 = \
+             10·describe(leaf) + 2 says the DICTIONARY was built from it. A 72 would be \
+             `Rival` winning; an `AmbiguousRequirement` is the pre-WI-861 verdict. \
+             Got {got:?}"
         );
     }
 }

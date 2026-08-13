@@ -1738,19 +1738,45 @@ impl Interpreter {
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
-        let encl = enclosing_sort.ok_or_else(|| {
-            EvalError::Internal("DeferToRequirement classification missing enclosing_sort".into())
-        })?;
-        let caller_names = match enclosing_op {
-            Some(op) => crate::kb::typing::op_dict_entries(&mut self.kb, op).names(&mut self.kb),
+        // WI-861 (found by review) — WI-822 LEG 1 gave this path a SECOND chain owner and
+        // the `enclosing_sort` demand stayed in front of BOTH, so an op-scoped
+        // classification whose operation has no enclosing sort (a NAMESPACE-level
+        // `operation … requires Spec[…]`, where `impl_parent_of_op` answers `None`) would
+        // raise `Internal(… missing enclosing_sort)` for a value the `Some` arm never
+        // reads. The demand belongs in the arm that reads it, and the OWNER rides out of
+        // the match so the slot-range message names the chain it actually indexed rather
+        // than always the sort.
+        //
+        // NOT DRIVEN, and said so rather than claimed: the namespace-level op-scoped
+        // program was BUILT (`operation probe[PT](x: PT) … requires Desc[T = PT]` called
+        // at a concrete carrier) and it RUNS — with one provider the goal resolves
+        // `Unique` and never defers, and with two the call site's pinned carrier is
+        // refused at load before any classification defers. So this is a correctness-
+        // preserving relocation with no behaviour change on any path measured reachable;
+        // the WI-857 precedent for that is its `debug_assert!(false)` on a branch counted
+        // ZERO times across the suite.
+        let (owner, caller_names) = match enclosing_op {
+            Some(op) => (
+                op,
+                crate::kb::typing::op_dict_entries(&mut self.kb, op).names(&mut self.kb),
+            ),
             None => {
-                crate::kb::typing::provider_dict_entries(&mut self.kb, encl).names(&mut self.kb)
+                let encl = enclosing_sort.ok_or_else(|| {
+                    EvalError::Internal(
+                        "DeferToRequirement classification missing enclosing_sort".into(),
+                    )
+                })?;
+                (
+                    encl,
+                    crate::kb::typing::provider_dict_entries(&mut self.kb, encl)
+                        .names(&mut self.kb),
+                )
             }
         };
         let name_sym = *caller_names.get(slot).ok_or_else(|| {
             EvalError::Internal(format!(
                 "DeferToRequirement slot {slot} out of range for {} (chain len {})",
-                self.kb.local_name_of(encl),
+                self.kb.local_name_of(owner),
                 caller_names.len()
             ))
         })?;
@@ -1788,7 +1814,7 @@ impl Interpreter {
                          frame (running `{running_op}`, requires-chain owner `{}`; frame \
                          binds {:?})",
                         self.kb.local_name_of(name_sym),
-                        self.kb.qualified_name_of(encl),
+                        self.kb.qualified_name_of(owner),
                         bound,
                     ))
                 })?
@@ -3678,9 +3704,18 @@ pub(crate) fn spec_op_dispatch_by_value(
     match cands.as_slice() {
         [] => ValueDirectedDispatch::NoSupplier,
         [only] => ValueDirectedDispatch::Sole(only.target),
-        _ => ValueDirectedDispatch::Tie {
-            carrier,
-            candidates: cands,
+        // WI-861 (058 §3.2 RUNG 2a) — a tie the DEFAULT breaks is not a tie. Asked through
+        // [`crate::kb::typing::default_among_suppliers`], the same owner the two typer
+        // guards ask, so a program cannot be refused at load and answered here (or the
+        // reverse). The carrier is the value's own runtime sort, which is a base with no
+        // element type — see `CarrierKey`'s note on why a base-only lookup can only
+        // DECLINE where a term-carrying one would decide.
+        many => match crate::kb::typing::default_among_suppliers(kb, spec_sort, carrier, many) {
+            Some(i) => ValueDirectedDispatch::Sole(many[i].target),
+            None => ValueDirectedDispatch::Tie {
+                carrier,
+                candidates: cands,
+            },
         },
     }
 }

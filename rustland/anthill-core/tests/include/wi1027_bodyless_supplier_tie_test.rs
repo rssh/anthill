@@ -78,17 +78,29 @@
 //!
 //! Two rows deserve their reading stated. `a_provision_tie_is_still_reported_as_a_
 //! provider_tie` fails in column 1 not for its headline claim — the `Ambiguous` exclusion
-//! holds either way — but for its FIXTURE GUARD, which asserts that dropping the
-//! self-provision turns the same program into the supplier tie; without a guard there is
-//! no tie to turn into, and a test that only asserted the exclusion would have passed
-//! while measuring nothing. And the last three ok-either-way rows are the controls an
-//! over-firing guard consumes first: the 1-supplier answer on each side of the tie, and
-//! the SLD path over one supplier.
+//! holds either way — but for its FIXTURE GUARD, which asserts that a program one
+//! provision short of it IS the supplier tie; without a guard there is no tie to turn
+//! into, and a test that only asserted the exclusion would have passed while measuring
+//! nothing. And the last three ok-either-way rows are the controls an over-firing guard
+//! consumes first: the 1-supplier answer on each side of the tie, and the SLD path over
+//! one supplier.
+//!
+//! **WI-861 CHANGED WHAT THAT ROW'S TIE IS MADE OF, and added a row.** 058 §3.2's rung 2a
+//! makes a carrier's OWN provision its default, so *the carrier's provision beside a
+//! witness* — the shape both this file's provision-tie fixture and its guard's licence
+//! were built on — now RESOLVES. Its exclusion is shown with two WITNESSES instead, and
+//! the old fixture's new verdict is `a_self_providing_carrier_now_answers_the_bracketless_
+//! call` (7, the carrier's own member, against `Rival`'s 9). The guard itself gained a
+//! clause: it declines when the rung names exactly one of the tied suppliers, driven by
+//! `wi861_rung2a_default_dispatch_test::a_bodyless_own_member_beside_a_marked_witness_
+//! takes_the_default` — the test that makes the licence MEASURED, since this guard
+//! selects nothing and only the value shows that it and the dispatch agreed.
 //!
 //! The eval face's control is elsewhere and must stay green —
 //! `wi842_bracketless_readers_test::a_two_provider_value_directed_dispatch_names_both_
 //! candidates`, whose carrier is a type param (`Holder.probe(x: HT)`), so no static
-//! carrier exists for this guard to read and the refusal stays at the read.
+//! carrier exists for this guard to read and the refusal stays at the read. (WI-861 moved
+//! that test's fixture too, for the same reason as this one; its shape is unchanged.)
 //!
 //! REFERENCE: WI-1012; WI-1010; WI-842; WI-876; `docs/design/058-implementation.md` §14.
 
@@ -291,25 +303,34 @@ fn a_rule_reaching_the_tie_through_an_operation_is_refused() {
     );
 }
 
-/// THE EXCLUSION, DRIVEN. Add the carrier's OWN provision (`provides Desc[T = Leaf]`) to
-/// the witness fixture and the goal now matches TWO provisions, so `dispatch_spec_op_
-/// cached` answers `DispatchOutcome::Ambiguous` — an outcome that raises on its own
-/// account, with `InstanceTie`'s provider symbols and its own `TieRepair`. The guard
-/// skips it deliberately; this test is what fails if that skip is dropped.
+/// THE EXCLUSION, DRIVEN. When the goal matches TWO PROVISIONS, `dispatch_spec_op_cached`
+/// answers `DispatchOutcome::Ambiguous` — an outcome that raises on its own account, with
+/// `InstanceTie`'s provider symbols and its own `TieRepair` — and this guard skips it
+/// deliberately. This test is what fails if that skip is dropped.
+///
+/// **WI-861 CHANGED WHICH FIXTURE SHOWS IT, and the change IS the ticket's flip.** It
+/// used to add the carrier's OWN provision (`SELF_PROVIDED_OWN_RUNNABLE`) beside the
+/// witness. That pair no longer refuses at all: 058 §3.6 infers `default_provider(Desc,
+/// Leaf, Leaf)` from the carrier's own provision, rung 2a takes it, and the program RUNS
+/// — asserted as a value in `a_self_providing_carrier_now_answers_the_bracketless_call`
+/// below. So the exclusion is shown with a SECOND WITNESS instead, where two provisions
+/// still tie and no default names either.
 ///
 /// This file originally RECORDED a bad rendering here rather than fixing it: swap the
 /// witness for the instance fact and the same `Ambiguous` arm printed the carrier TWICE
-/// (`Leaf, Leaf`) with `TieRepair::ValueDirected`. **WI-1032 closed it**, and not where
-/// this note expected — the two provisions AGREE as provisions, so the collector now
-/// collapses them and the conflict reaches the supplier guard above. Driving it also
-/// turned up the worse half: the same pair WITHOUT the op binding is one dictionary
-/// written twice, and it was REFUSED. See `wi1032_provision_dedup_test`. What survives
-/// here is the exclusion itself, which this test still pins: `Rival` is a distinct
-/// provider, so the tie is a real PROVIDER tie and `DispatchAmbiguous` owns it.
+/// (`Leaf, Leaf`) with `TieRepair::ValueDirected`. **WI-1032 closed it** — the two
+/// provisions AGREE as provisions, so the collector collapses them and the conflict
+/// reaches the supplier guard above. See `wi1032_provision_dedup_test`.
 #[test]
 fn a_provision_tie_is_still_reported_as_a_provider_tie() {
+    /// A SECOND witness, so the two provisions tie with neither being the carrier's own
+    /// — the configuration rung 2a leaves alone.
+    const SECOND_WITNESS: &str = "\n  sort Other\n    import anthill.prelude.Int64\n    \
+                                  fact Desc[T = Leaf]\n    \
+                                  operation describe(x: Leaf) -> Int64 = 11\n  end\n";
     let ns = "test.wi1027.provisiontie";
-    let msg = refusal(&program(ns, SELF_PROVIDED_OWN_RUNNABLE, RIVAL_WITNESS, ""));
+    let two_witnesses = format!("{RIVAL_WITNESS}{SECOND_WITNESS}");
+    let msg = refusal(&program(ns, OWN_UNRUNNABLE, &two_witnesses, ""));
     assert!(
         msg.contains("instances provide"),
         "two PROVISIONS matching the goal are `DispatchAmbiguous`'s tie, not the supplier \
@@ -319,12 +340,35 @@ fn a_provision_tie_is_still_reported_as_a_provider_tie() {
         !msg.contains("the carrier's own member"),
         "the supplier tie's route rendering must not appear here: {msg}",
     );
-    // The self-provision is what moves it: the same program without it is the supplier
-    // tie above. Asserted so this test cannot pass by the fixture drifting into a shape
-    // that never had two provisions.
+    // The SECOND witness is what moves it: with one, the goal matches a single provision
+    // and route 1's unweighed own member makes it the SUPPLIER tie above. Asserted so
+    // this test cannot pass by the fixture drifting into a shape that never had two.
     assert!(
         refusal(&program(ns, OWN_RUNNABLE, RIVAL_WITNESS, "")).contains("the carrier's own member"),
-        "fixture guard: dropping the self-provision must give the SUPPLIER tie",
+        "fixture guard: dropping the second witness must give the SUPPLIER tie",
+    );
+}
+
+/// **THE FLIP** (WI-861, 058 §3.2 rung 2a) — the fixture the test above used to run on,
+/// kept HERE with its new verdict rather than deleted, because this file is where the
+/// old one is looked for.
+///
+/// `Leaf` provides `Desc` ITSELF and supplies a runnable `describe`, with a nameable
+/// witness rival beside it. That was `DispatchAmbiguous` ("2 instances provide"); it is
+/// now the carrier's own answer, 7, because §3.6's inference rule makes a carrier's own
+/// provision its default and §3.2's rung 2a takes it at the tie.
+///
+/// The value is what makes this an assertion about the rung: `Rival.describe` answers 9,
+/// so first-match-by-route-order and default-by-provision are distinguishable here.
+#[test]
+fn a_self_providing_carrier_now_answers_the_bracketless_call() {
+    let ns = "test.wi1027.defaulted";
+    let src = program(ns, SELF_PROVIDED_OWN_RUNNABLE, RIVAL_WITNESS, "");
+    assert_eq!(
+        probe(ns, &src),
+        7,
+        "058 §3.6: the carrier's own provision is its default, so silence takes \
+         `Leaf.describe` (7) and `Rival` (9) stays opt-in by bracket"
     );
 }
 

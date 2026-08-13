@@ -123,6 +123,56 @@ fn the_two_predicates_split_by_language() {
     );
 }
 
+/// …AND THE SPLIT MUST NOT REACH A CLOSED-WORLD VERDICT (WI-861, found by /code-review).
+///
+/// `declared_op_with_no_definition` asks "is there ANY definition", and the resolver turns
+/// its answer into `PredicateProof::Undefined` (goal undecided) rather than a refutation.
+/// It used to compose `is_builtin || op_is_interpretable`, and `op_is_interpretable` is
+/// the RUST-ONLY reader above — so `Box.max` answered "declared and nowhere defined" here
+/// while the identical program built for cpp has an implementation. One goal, two answers,
+/// decided by which backend loaded it, which is exactly what `op_is_executable`'s own doc
+/// forbids and what `PredicateProof::Undefined`'s doc ("no runnable body and no host
+/// mapping") already legislated.
+///
+/// Asserted on the PREDICATE and not through a resolver goal, and the bound is worth
+/// stating: `prove_rule_predicate` is `pub(crate)` and reaches this only on the refutation
+/// edge of a search over an OPERATION symbol, which this fixture has no rule to make. What
+/// is driven is the predicate this file's own subject decides; the one caller is named
+/// above so a future widening has somewhere to look. Backed out (restore
+/// `op_is_interpretable`), this fails and nothing else does.
+#[test]
+fn the_language_split_does_not_reach_the_closed_world_verdict() {
+    let kb = crate::common::load_kb_with(CPP_ONLY_MEMBER);
+    let max = kb
+        .try_resolve_symbol("wi886.cpponly.Box.max")
+        .expect("Box.max resolves");
+    assert!(
+        !anthill_core::kb::op_info::declared_op_with_no_definition(&kb, max),
+        "a cpp `operation_map` entry IS a definition — the closed-world question must \
+         not change answer with the host backend, even though THIS runtime cannot run it \
+         (which is `op_is_interpretable`'s question, asserted above)"
+    );
+    // THE CONTROL: an operation declared with no body and NO mapping in any language is
+    // still "declared and nowhere defined", so the predicate has not simply gone false.
+    let src = r#"
+namespace wi886.undefined
+  import anthill.prelude.Int64
+  sort Holder
+    operation lonely(x: Int64) -> Int64
+  end
+end
+"#;
+    let kb2 = crate::common::load_kb_with(src);
+    let lonely = kb2
+        .try_resolve_symbol("wi886.undefined.Holder.lonely")
+        .expect("Holder.lonely resolves");
+    assert!(
+        anthill_core::kb::op_info::declared_op_with_no_definition(&kb2, lonely),
+        "no clauses, no builtin, no mapping in ANY language, and declared: the predicate \
+         must still say so"
+    );
+}
+
 /// The behavioural consequence, which is what makes the split worth having: eval falls
 /// through to `Ord`'s DEFAULT `max` instead of selecting a member it cannot call.
 /// Before the split this died `OperationBodyMissing { wi886.cpponly.Box.max }` on a

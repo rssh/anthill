@@ -225,6 +225,9 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         None,
         None,
         &[],
+        // WI-861: these fixtures use ANONYMOUS `requires` slots, which is the
+        // population rung 2a serves; a named slot withholds it (`DefaultRung`).
+        anthill_core::kb::typing::DefaultRung::Consult,
     );
     assert!(
         projection.is_none(),
@@ -299,6 +302,9 @@ fn ground_dep_emits_the_dictionary_node() {
         None,
         None,
         &[],
+        // WI-861: these fixtures use ANONYMOUS `requires` slots, which is the
+        // population rung 2a serves; a named slot withholds it (`DefaultRung`).
+        anthill_core::kb::typing::DefaultRung::Consult,
     )
     .expect("Strategy 3 must resolve Eq[T=Int64] via SortProvidesInfo");
 

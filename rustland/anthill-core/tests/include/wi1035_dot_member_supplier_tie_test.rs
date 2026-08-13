@@ -47,6 +47,17 @@
 //! backing — the relation `resolve_op_target` dispatches through — so it means "the same
 //! implementation, chosen by the value", never "some same-named operation".
 //!
+//! **WI-861 GAVE THE CONCRETE ARM A SECOND REROUTE, for this file's own reason.** When
+//! 058 §3.2's rung 2a breaks a supplier tie in favour of a WITNESS, `DotMember::Take`
+//! cannot express the answer — it says exactly one thing, "call the member this dot
+//! resolved" — so taking the member would answer where the qualified spelling pins the
+//! witness: the spelling-keyed silence this ticket closed, re-created one rung down. The
+//! call is handed to `DispatchByValue` instead, whose synthesized `Desc.describe(x)` is
+//! re-typed through the arm that CAN express it. A supplier that IS the member keeps
+//! `Take`, so the zero-dot corpus path is bit-for-bit unchanged. Driven by
+//! `the_two_spellings_agree_when_a_default_answers` and by
+//! `wi861_rung2a_default_dispatch_test::the_dot_spelling_reads_the_same_arbitration`.
+//!
 //! ## BLAST RADIUS — MEASURED, not predicted
 //!
 //! ZERO sites in the corpus. Counted at the guard itself over four cumulative loads
@@ -418,9 +429,9 @@ fn a_dot_under_an_entity_constructor_is_located_too() {
     );
 }
 
-/// THE STATED DIVERGENCE, PINNED SO IT IS A DECISION AND NOT A DRIFT. Add the carrier's
-/// own provision beside a witness rival and the QUALIFIED spelling reports the PROVIDER
-/// tie — `DispatchOutcome::Ambiguous`, which raises on its own account and which
+/// THE STATED DIVERGENCE, PINNED SO IT IS A DECISION AND NOT A DRIFT. Put a PROVISION TIE
+/// in front of both spellings and the QUALIFIED one reports the PROVIDER tie —
+/// `DispatchOutcome::Ambiguous`, which raises on its own account and which
 /// `refuse_unarbitrated_supplier_tie`'s caller therefore excludes. The dot ran no dispatch
 /// at all, so it has no outcome to yield to and reports the SUPPLIER tie instead.
 ///
@@ -428,24 +439,67 @@ fn a_dot_under_an_entity_constructor_is_located_too() {
 /// differs. Asserted from both ends — the dot's wording AND the qualified spelling's on
 /// the identical source — so a future change that unified them has to come here and say so
 /// rather than flip one silently.
+///
+/// **WI-861 CHANGED THE FIXTURE, and the change is that ticket's flip.** The tie used to
+/// be the carrier's own provision beside a witness; 058 §3.6 infers a default from a
+/// carrier's own provision, so rung 2a now RESOLVES that pair (both spellings, which
+/// `the_two_spellings_agree_when_a_default_answers` below asserts as a value). A tie that
+/// no default names needs the carrier to provide nothing itself, so `MEMBER_ONLY` keeps
+/// route 1 for the dot while TWO WITNESSES supply the provisions that tie.
 #[test]
 fn a_dot_on_a_provision_tie_refuses_as_a_supplier_tie() {
     let ns = "test.wi1035.provisiontie";
-    let dot = refusal(&body_less(ns, OWN, RIVAL_WITNESS, DOT_OP));
+    /// The carrier's own runnable member with NO provision — route 1 for the dot, and no
+    /// inferred default row for the rung.
+    const MEMBER_ONLY: &str = "    operation describe(x: Leaf) -> Int64 = 7\n";
+    const SECOND_WITNESS: &str = "\n  sort Other\n    import anthill.prelude.Int64\n    \
+                                  fact Desc[T = Leaf]\n    \
+                                  operation describe(x: Leaf) -> Int64 = 11\n  end\n";
+    let supply = format!("{RIVAL_WITNESS}{SECOND_WITNESS}");
+    let dot = refusal(&body_less(ns, MEMBER_ONLY, &supply, DOT_OP));
     assert!(
         dot.contains("the carrier's own member"),
         "the dot reports the SUPPLIER tie, by route: {dot}",
     );
     let qualified = refusal(&body_less(
         ns,
-        OWN,
-        RIVAL_WITNESS,
+        MEMBER_ONLY,
+        &supply,
         "  operation probe() -> Int64 = Desc.describe(leaf())\n",
     ));
     assert!(
         qualified.contains("instances provide"),
         "fixture guard: the qualified spelling of THIS program must be the provider tie, \
          which is what makes the two sentences differ: {qualified}",
+    );
+}
+
+/// **THE FLIP** (WI-861, 058 §3.2 rung 2a) — the fixture the test above used to run on,
+/// kept here with its new verdict, and kept as a BOTH-SPELLINGS assertion because that is
+/// this file's whole subject: one program may not be refused through `Desc.describe(x)`
+/// and answered through `x.describe()`, nor answer two different things.
+///
+/// `Leaf` provides `Desc` itself, so §3.6 infers `default_provider(Desc, Leaf, Leaf)`,
+/// and both spellings take the carrier's own `describe` (7) over the witness's 9.
+#[test]
+fn the_two_spellings_agree_when_a_default_answers() {
+    let ns = "test.wi1035.defaulted";
+    let dotted = probe(ns, &body_less(ns, OWN, RIVAL_WITNESS, DOT_OP));
+    let qualified = probe(
+        ns,
+        &body_less(
+            ns,
+            OWN,
+            RIVAL_WITNESS,
+            "  operation probe() -> Int64 = Desc.describe(leaf())\n",
+        ),
+    );
+    assert_eq!(
+        (dotted, qualified),
+        (7, 7),
+        "058 §3.6's inferred row makes the carrier's own provision the default, and BOTH \
+         spellings read that one arbitration — a 9 on either side would be the witness \
+         winning, and a disagreement would be the spelling-keyed silence this file closed"
     );
 }
 

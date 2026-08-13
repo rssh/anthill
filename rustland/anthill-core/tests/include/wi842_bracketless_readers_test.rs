@@ -12,10 +12,14 @@
 //!
 //!   * VALUE-DIRECTED DISPATCH (`eval.rs`'s `own .or_else(fact) .or_else(witness)`
 //!     chain, now `typing::spec_op_suppliers_for_carrier`). MEASURED before the fix,
-//!     on the program below: the two-provider program answered `Ok(Int(1))` — the
-//!     carrier's own member — and the rule-body twin answered `described(leaf(), 1)`
+//!     on the `Leaf` + `RIVAL` program this file then used: it answered `Ok(Int(1))` —
+//!     the carrier's own member — and the rule-body twin answered `described(leaf(), 1)`
 //!     DEFINITELY while denying `described(leaf(), 7)`, i.e. it committed to one
 //!     provider and denied the other's answer with no diagnostic from anywhere.
+//!     **WI-861 moved both tie pins onto [`TWIG`]**, because 058 §3.2's rung 2a makes a
+//!     carrier's own provision its default and that pair is no longer a tie at all —
+//!     the answer it now gives is asserted in `wi861_rung2a_default_dispatch_test`. The
+//!     historical measurement above is about the shape, not about today's fixture.
 //!   * CARRIER-KEYED PROVIDER VIEWS (`provider_spec_view_bindings`, ~12 call sites:
 //!     type conformance, member projection, carrier-param classification). MEASURED
 //!     before the fix: the SAME program loaded clean or was refused depending on which
@@ -88,28 +92,65 @@ end
     )
 }
 
-/// Call `Holder.probe(leaf())` from the host — the entry with no call site at all.
-fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
+/// WI-861 — A CARRIER THAT PROVIDES NOTHING ITSELF, with two witnesses. The fixture the
+/// two tie pins moved onto, and the move is forced rather than cosmetic: 058 §3.2's rung
+/// 2a makes a carrier's OWN provision its default, so `Leaf` beside `RIVAL` is no longer
+/// a tie at all — it RESOLVES to `Leaf`, which is asserted in
+/// `wi861_rung2a_default_dispatch_test::a_value_directed_tie_takes_the_carriers_own_
+/// supplier`. `Twig` has no provision of its own and neither witness is marked, so
+/// nothing answers and §4.9's rule — go loud on the second candidate, never first-match —
+/// is still what these two tests measure.
+///
+/// The two witnesses disagree (3 vs 5), so a first-match regression shows as a VALUE
+/// rather than as a missing error.
+const TWIG: &str = r#"
+  sort Twig
+    entity twig
+  end
+
+  sort TwigA
+    fact Desc[T = Twig]
+    operation describe(x: Twig) -> Int64 = 3
+  end
+
+  sort TwigB
+    fact Desc[T = Twig]
+    operation describe(x: Twig) -> Int64 = 5
+  end
+"#;
+
+/// Call `Holder.probe(<ctor>())` from the host — the entry with no call site at all.
+fn probe_entity(ns: &str, extra: &str, ctor: &str) -> Result<Value, EvalError> {
     let src = program(ns, extra, "");
     let kb = crate::common::load_kb_with(&src);
-    let leaf_sym = kb.resolve_symbol(&format!("{ns}.Leaf.leaf"));
+    let sym = kb.resolve_symbol(&format!("{ns}.{ctor}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp)
         .expect("register standard eval builtins");
-    let leaf = Value::Entity {
-        functor: leaf_sym,
+    let recv = Value::Entity {
+        functor: sym,
         pos: Vec::new().into(),
         named: Vec::new().into(),
     };
-    interp.call(&format!("{ns}.Holder.probe"), &[leaf])
+    interp.call(&format!("{ns}.Holder.probe"), &[recv])
+}
+
+fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
+    probe_entity(ns, extra, "Leaf.leaf")
 }
 
 /// THE PIN. Two providers, one bracket-less value-directed dispatch: a NAMED
 /// diagnostic listing both candidates BY SUPPLY ROUTE, never the first match.
+///
+/// WI-861 moved it onto [`TWIG`] — see that constant for why the `Leaf` + `RIVAL` pair
+/// stopped being a tie, and where the answer it now gives is asserted. The route
+/// rendering for a carrier's OWN member beside a witness is not lost with it: it is
+/// `wi861_rung2a_default_dispatch_test::a_bodyless_own_member_beside_a_marked_witness_
+/// takes_the_default`'s unmarked control, and `wi1012`/`wi1027`'s refusals.
 #[test]
 fn a_two_provider_value_directed_dispatch_names_both_candidates() {
     let ns = "wi842.vd.tie";
-    let err = probe_leaf(ns, RIVAL).unwrap_err();
+    let err = probe_entity(ns, TWIG, "Twig.twig").unwrap_err();
     let EvalError::AmbiguousSpecOpDispatch {
         op,
         carrier,
@@ -128,7 +169,7 @@ fn a_two_provider_value_directed_dispatch_names_both_candidates() {
         "the error must name the spec op; got `{op}`"
     );
     assert!(
-        carrier.ends_with("Leaf"),
+        carrier.ends_with("Twig"),
         "the error must name the carrier; got `{carrier}`"
     );
     assert_eq!(
@@ -136,31 +177,27 @@ fn a_two_provider_value_directed_dispatch_names_both_candidates() {
         2,
         "exactly the two suppliers expected; got {candidates:?}"
     );
-    // Rendered BY ROUTE: the two are written in different syntaxes (a member of the
-    // carrier vs a witness sort's `fact`), and only the route says which text to delete.
-    assert!(
-        candidates
-            .iter()
-            .any(|c| c.contains("own member") && c.ends_with("Leaf.describe'")),
-        "one candidate is the carrier's OWN member; got {candidates:?}"
-    );
-    assert!(
-        candidates
-            .iter()
-            .any(|c| c.contains("witness sort") && c.contains("Rival")),
-        "the other is the WITNESS sort; got {candidates:?}"
-    );
+    // Rendered BY ROUTE, so the author knows which text to delete — here both are witness
+    // sorts, and the rendering must still SEPARATE them by name.
+    for want in ["TwigA", "TwigB"] {
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.contains("witness sort") && c.contains(want)),
+            "`{want}` must appear as a WITNESS candidate; got {candidates:?}"
+        );
+    }
     let rendered = err.to_string();
-    for want in ["Desc.describe", "Leaf", "Rival"] {
+    for want in ["Desc.describe", "Twig", "TwigA", "TwigB"] {
         assert!(
             rendered.contains(want),
             "the rendered diagnostic must mention `{want}`: {rendered}"
         );
     }
     // WI-1012 — THE REPAIR THIS TIE HAS, and the control the message had been missing.
-    // `Rival` is a WITNESS sort: a nameable provider distinct from the carrier, and
+    // `TwigA`/`TwigB` are WITNESS sorts: nameable providers distinct from the carrier, and
     // `Desc.describe` is BODY-LESS, so it has the `Dispatch` requirement slot a
-    // `[Desc = Rival]` bracket binds (`callee_requirement_slots`). No such bracket can
+    // `[Desc = TwigA]` bracket binds (`callee_requirement_slots`). No such bracket can
     // be written HERE — that is what "bracket-less read" means and why this refuses —
     // but routing the call through an operation that can write one IS a repair, and it
     // is the ONE tie shape the corpus drives. Asserted because a shared message is
@@ -192,6 +229,29 @@ fn the_same_program_with_one_provider_still_dispatches() {
     );
 }
 
+/// …AND THE PAIR THAT USED TO BE THE HEADLINE, kept HERE with its new verdict rather
+/// than deleted with the fixture (WI-861, and the review that caught `RIVAL` going
+/// unused: an orphaned fixture is the shape a lost control takes).
+///
+/// `Leaf` PROVIDES `Desc` itself and `RIVAL` is a nameable witness beside it. That was
+/// this file's `AmbiguousSpecOpDispatch` pin; 058 §3.6 infers a default from a carrier's
+/// own provision and §3.2's rung 2a takes it, so the same value-directed read now
+/// ANSWERS — and answers `1`, the carrier's own member, not `Rival`'s 7.
+///
+/// It is NOT a return to first-match, which is this file's subject: the difference is
+/// visible one fixture over, where the marked witness wins
+/// (`wi861_rung2a_default_dispatch_test::a_value_directed_tie_takes_the_marked_witness`),
+/// and where a witness-only tie still refuses (the pin above).
+#[test]
+fn a_self_providing_carrier_now_answers_where_it_used_to_tie() {
+    let got = probe_leaf("wi842.vd.defaulted", RIVAL);
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "the carrier's own provision is its default (058 §3.6), so the value-directed \
+         read takes `Leaf.describe` (1) and `Rival` (7) stays opt-in; got {got:?}"
+    );
+}
+
 /// A rule-body atom reaches the same read (its op-call operand runs through the
 /// SLD→eval bridge, WI-625 gap 1), and there the tie DELAYS instead of answering.
 ///
@@ -203,6 +263,10 @@ fn the_same_program_with_one_provider_still_dispatches() {
 /// two-provider program answered `described(leaf(), 1)` DEFINITELY and refuted
 /// `described(leaf(), 7)` — indistinguishable from the one-provider program, with the
 /// second provider silently ignored.
+///
+/// WI-861 moved the TIED arm onto [`TWIG`] for the reason that constant states: `Leaf` +
+/// `RIVAL` now resolves by rung 2a. The UNTIED arm keeps `Leaf`, so the pair still
+/// differs by exactly one thing — whether anything answers the dispatch.
 #[test]
 fn a_rule_body_delays_on_the_tie_instead_of_first_matching() {
     const RULE: &str = r#"
@@ -210,30 +274,37 @@ fn a_rule_body_delays_on_the_tie_instead_of_first_matching() {
     :- eq(?y, Holder.probe(?x))
 "#;
     // ONE provider: the rule answers, and answers 1 (not 7).
-    let (definite_1, definite_7) = rule_answers("wi842.vd.rule.untied", "", RULE);
+    let (definite_1, definite_7) =
+        rule_answers("wi842.vd.rule.untied", "", RULE, "Leaf.leaf", (1, 7));
     assert_eq!(
         (definite_1, definite_7),
         (1, 0),
         "with one provider the rule must fire for the provider's answer (1) and refute 7"
     );
-    // TWO providers: neither answer is DEFINITE. A definite 1 (or 7) here is a
+    // TWO providers: neither answer is DEFINITE. A definite 3 (or 5) here is a
     // first-match commitment — the defect this ticket closes.
-    let (tied_1, tied_7) = rule_answers("wi842.vd.rule.tie", RIVAL, RULE);
+    let (tied_3, tied_5) = rule_answers("wi842.vd.rule.tie", TWIG, RULE, "Twig.twig", (3, 5));
     assert_eq!(
-        (tied_1, tied_7),
+        (tied_3, tied_5),
         (0, 0),
         "with two providers the rule may not DECIDE either answer: the dispatch is \
          ambiguous, so the goal delays (a residual, non-definite solution)"
     );
 }
 
-/// `described(leaf(), n)` for n = 1 and 7 — the count of DEFINITE solutions of each.
-/// Ground queries on purpose: an unbound query var triggers the caller-var delay
-/// pre-check and the body never runs (the WI-483 pattern).
-fn rule_answers(ns: &str, extra: &str, rule: &str) -> (usize, usize) {
+/// `described(<ctor>(), n)` for the two candidate answers — the count of DEFINITE
+/// solutions of each. Ground queries on purpose: an unbound query var triggers the
+/// caller-var delay pre-check and the body never runs (the WI-483 pattern).
+fn rule_answers(
+    ns: &str,
+    extra: &str,
+    rule: &str,
+    ctor: &str,
+    answers: (i64, i64),
+) -> (usize, usize) {
     let mut kb = crate::common::load_kb_with(&program(ns, extra, rule));
     let functor = kb.resolve_symbol(&format!("{ns}.described"));
-    let leaf_ctor = kb.resolve_symbol(&format!("{ns}.Leaf.leaf"));
+    let leaf_ctor = kb.resolve_symbol(&format!("{ns}.{ctor}"));
     let leaf: TermId = kb.alloc(Term::Fn {
         functor: leaf_ctor,
         pos_args: SmallVec::new(),
@@ -255,7 +326,7 @@ fn rule_answers(ns: &str, extra: &str, rule: &str) -> (usize, usize) {
             .filter(|s| s.is_definite())
             .count()
     };
-    (definite_for(1), definite_for(7))
+    (definite_for(answers.0), definite_for(answers.1))
 }
 
 // ── `provider_spec_view_bindings`: the carrier-keyed provider view ──────────────

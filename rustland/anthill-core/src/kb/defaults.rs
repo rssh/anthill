@@ -13,9 +13,15 @@
 //!
 //! Both live in `stdlib/anthill/reflect/typing.anthill`, and **the relations are the
 //! authority**: this module MATERIALIZES them into an index the hot path can read
-//! (`EqDispatchIndex`'s pattern — 058 rung 2a, WI-861, is the first consumer and does
-//! not exist yet), and runs the two checks that cannot be SLD goals because they are
-//! about the row SET rather than about one row.
+//! (`EqDispatchIndex`'s pattern), and runs the two checks that cannot be SLD goals
+//! because they are about the row SET rather than about one row.
+//!
+//! WI-861 ADDED THE CONSUMER — 058 §3.2's **rung 2a**, *an unselected dispatch takes the
+//! DEFAULT among the tied most-specific candidates* — as [`default_among`], which every
+//! tie site in the tree asks so the rung has one implementation. [`CarrierKey`] and
+//! [`DefaultRung`](typing::DefaultRung) carry the two bounds on it: how precisely the
+//! asker can name the carrier, and the one goal shape (an omitted NAMED slot) where a
+//! default must NOT answer.
 //!
 //! The two checks:
 //!
@@ -304,6 +310,121 @@ fn render_row(kb: &KnowledgeBase, r: &DefaultRow, with_origin: bool) -> String {
     }
 }
 
+/// WI-861 (058 §3.2 rung 2a) — the CARRIER a default lookup is keyed by, at the precision
+/// its asker actually has.
+///
+/// TWO ARMS BECAUSE THERE ARE TWO ASKERS AND THEY KNOW DIFFERENT AMOUNTS, and an ENUM
+/// rather than a `{ base, view }` pair because a carrier's base is DERIVABLE from its
+/// view: carrying both would let a caller hand over a base that disagrees with the term
+/// beside it, and nothing would catch it. The base is not a second identity — it is the
+/// [`DefaultProviderIndex`] BUCKET KEY, and it is derived here rather than supplied.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CarrierKey {
+    /// The carrier AS WRITTEN — what the provision tie in [`typing::resolve_inner`] has,
+    /// since the goal carries its own bindings. **This is the arm that can tell `X[Y]`
+    /// from `X[Z]`**: rows are per APPLICATION, so `List[T = Int64]` and `List[T =
+    /// String]` are two rows sharing one bucket, and only [`typing::carrier_views_overlap`]
+    /// separates them.
+    View(TermId),
+    /// Only the runtime carrier SORT is known — a VALUE-DIRECTED tie, where the receiver
+    /// is a `Value::List` naming `List` and carrying no element type.
+    ///
+    /// This is NOT "match anything". It drops the overlap filter, which can only make the
+    /// answer LESS decided: two rows at one base naming two providers (the DISJOINT pair
+    /// `one_default` admits) leave [`default_provider_for`] with no unique answer and the
+    /// tier-3 refusal stands. The base-only asker can decline where the term-carrying one
+    /// would decide; it can never decide where the other would decline.
+    Base(Symbol),
+}
+
+/// WI-861 (058 §3.6) — WHICH PROVIDER SILENCE TAKES for this `(spec, carrier)`, or `None`
+/// when nothing says.
+///
+/// The index is the materialized `default_provider(?S, ?C, ?W)` relation, so this is that
+/// query with `?S` and `?C` given. `one_default` guarantees at most one provider across
+/// rows whose carriers OVERLAP — but rows at DISJOINT carriers of one base coexist by
+/// design (`List[T = Int64]` beside `List[T = String]`), so two providers can still come
+/// back from one bucket and the loop must answer `None` rather than take the first. That
+/// is not a load-error case; it is a lookup at a carrier the asker described too loosely
+/// (see [`CarrierKey::view`]).
+///
+/// `None` when the KB never built an index — a hand-built `KnowledgeBase` that never
+/// loaded. Rung 2a then never fires, which is the pre-8c behaviour.
+pub(crate) fn default_provider_for(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    carrier: CarrierKey,
+) -> Option<Symbol> {
+    let index = kb.default_provider_index()?;
+    // The BUCKET KEY is derived, never supplied — see [`CarrierKey`]. `None` for a view
+    // whose base is unreadable, which is the same decline the rung takes for a carrier it
+    // cannot name at all. (`rows_for_carrier` canonicalizes, so neither arm does.)
+    let (base, view) = match carrier {
+        CarrierKey::View(v) => (typing::carrier_view_base(kb, v)?, Some(v)),
+        CarrierKey::Base(s) => (s, None),
+    };
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let mut answer: Option<Symbol> = None;
+    for row in index.rows_for_carrier(kb, base) {
+        if row.spec != spec_canon {
+            continue;
+        }
+        if let Some(v) = view {
+            if !typing::carrier_views_overlap(kb, row.carrier, v) {
+                continue;
+            }
+        }
+        match answer {
+            None => answer = Some(row.provider),
+            // Rows are stored with a canonical provider, so this is an id compare.
+            Some(w) if w == row.provider => {}
+            Some(_) => return None,
+        }
+    }
+    answer
+}
+
+/// WI-861 — 058 §3.2 RUNG 2a, as one predicate: *when exactly one of the tied candidates
+/// is the default provider, take it.*
+///
+/// `providers` is the tied candidates' PROVIDER symbols in candidate order; the answer is
+/// the index of the one the default names. Every caller reduces its own candidate type to
+/// that sequence — a provision's `impl_sort`, a supplier's route-derived provider — so
+/// the rung itself has one implementation and cannot say different things at the three
+/// sites that ask it.
+///
+/// **EXACTLY ONE, not the first.** Two tied candidates naming one provider is a real
+/// configuration (a carrier's own member beside its own instance fact's binding; one
+/// provider reached through two non-identical provisions), and a default names a
+/// PROVIDER — it does not choose between two of that provider's own texts. The refusal
+/// stands there, which is what keeps WI-1027's fixture 2 and `TieRepair::
+/// OneProviderTwoProvisions` reachable.
+///
+/// **SPECIFICITY RANKS FIRST** (058 §3.2): this is consulted only where the tie has
+/// already survived the ranking its caller applies — `pick_most_specific` at the
+/// provision site, and nothing at the supplier sites, which have no ranking at all
+/// (`arbitrate_defaulted_supplier_tie`'s doc says why). A default is a fallback, never a
+/// competitor: no candidate loses to one that ranks below it.
+pub(crate) fn default_among<I: Iterator<Item = Symbol>>(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    carrier: CarrierKey,
+    providers: I,
+) -> Option<usize> {
+    let want = default_provider_for(kb, spec, carrier)?;
+    let mut hit: Option<usize> = None;
+    for (i, p) in providers.enumerate() {
+        if kb.canonical_sort_sym(p) != want {
+            continue;
+        }
+        if hit.is_some() {
+            return None;
+        }
+        hit = Some(i);
+    }
+    hit
+}
+
 /// WI-860 — build the index and run 058 §3.6's two load checks.
 ///
 /// Must run once every `SortProvidesInfo` fact is asserted, since BOTH legs read the
@@ -312,6 +433,9 @@ fn render_row(kb: &KnowledgeBase, r: &DefaultRow, with_origin: bool) -> String {
 /// Placed after `eq_derive::run` for that reason — that pass is the last to assert
 /// provisions, and a default row for a derived `PartialEq` provision must exist for the
 /// same reason as one for a written provision.
+///
+/// WI-861 CALLS IT A SECOND TIME, EARLIER — see [`seed_default_provider_index`]. THIS
+/// call is the authoritative one and the only one whose verdict is read.
 #[must_use = "the default-provider refusals are load-blocking and must be merged"]
 pub fn build_default_provider_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // ONE canonicalizing walk over the provisions, shared by both legs.
@@ -347,6 +471,34 @@ pub fn build_default_provider_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     }
     kb.set_default_provider_index(DefaultProviderIndex { by_carrier_base });
     errors
+}
+
+/// WI-861 — the SAME derivation, run BEFORE the typer, because rung 2a's first consumer
+/// is a load-time refusal.
+///
+/// 058 §3.2's rung 2a is read by `check_apply_iter`, which runs inside `type_check_sorts`
+/// — and the authoritative [`build_default_provider_index`] runs ~70 lines of pipeline
+/// LATER, after `eq_derive::run`. Measured: with only the late build, every typer-site
+/// flip in this rung's inventory stayed refused, because the index the tie consulted was
+/// `None`. So the pass runs twice, over the provision relation as it stands at each point.
+///
+/// **THIS ONE'S VERDICT IS DISCARDED, AND THAT IS NOT A SILENT SKIP.** Rows are DERIVED
+/// from provisions and provisions are only ever ADDED between the two calls (`eq_derive::
+/// run` asserts, never retracts), so the late build's row set is a superset of this one's
+/// and its error set is a superset too — every refusal this build could raise, that one
+/// raises, with the derived provisions included. Collecting here instead would be the
+/// unsound direction: check 1 would refuse a `DefaultProvider` naming a provider whose
+/// only provision `eq_derive` has not asserted yet.
+///
+/// **WHAT THE TYPER THEREFORE CANNOT SEE** is a default row inferred from an `eq_derive`
+/// derivation — i.e. a `PartialEq` / `NonEq` provision on a Float-containing composite.
+/// That is exactly the coherent family (058 §3.7), whose ties are refused at LOAD by
+/// `EqDispatchIndex` and never reach a rung; flip (4) of this ticket's inventory asserts
+/// the family is untouched. The typer also runs against the pre-`eq_derive` PROVISION
+/// relation itself, so seeding here reads the same relation the tie it serves was
+/// computed from — aligned rather than merely early.
+pub(crate) fn seed_default_provider_index(kb: &mut KnowledgeBase) {
+    let _discarded = build_default_provider_index(kb);
 }
 
 /// One provision as this pass needs it: canonical keys for comparison, the provider's

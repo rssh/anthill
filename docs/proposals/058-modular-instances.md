@@ -4,7 +4,7 @@
 [`kernel-language.md` §§5.2–5.4](../kernel-language.md#52-sort); conditional
 provisions are in [§5.10](../kernel-language.md#510-proof-declarations-in-body-proofs-and-provides-blocks).
 
-**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's **relations and their load checks are delivered** (WI-860) with nothing yet consulting them — rung 2a (§3.2) is what will; §3.10's congruent positive lawfulness, the use-site discharge WI-869 left unread, is proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
+**Status:** Active. The core (§3.1–§3.5) is delivered, including §3.3's composition (WI-870); §3.8's bundle rule and per-provision conditions (WI-869) are driven end to end over `Pair` (`wi858_pair_orderings_test`); §3.6's relations, their load checks (WI-860) and **their consumer — §3.2's rung 2a (WI-861) — are delivered for the DISPATCH**, and withheld at a named slot for the reason §3.4 now states; §3.10's congruent positive lawfulness, the use-site discharge WI-869 left unread, is proposed. This document states the language **rules and surface** only. Implementation mapping, phase status, measurements, and build order: [`../design/058-implementation.md`](../design/058-implementation.md). Exploration record: `docs/brainstorms/prelude-multiple-orderings.md` and git history.
 
 ## 1. Problem
 
@@ -42,7 +42,7 @@ An unselected spec-op dispatch resolves, in order:
 
 1. **Explicit selection** written at the use site (§3.3).
 2. **The unique provider** for `(spec, carrier)` — the pre-existing rule, unchanged.
-   - *2a (proposed):* **the default provider** (§3.6), when exactly one of the tied most-specific candidates is it. Specificity ranks first — a strictly-more-specific candidate wins silently; a default is a fallback, not a competitor.
+   - *2a:* **the default provider** (§3.6), when exactly one of the tied most-specific candidates is it. Specificity ranks first — a strictly-more-specific candidate wins silently; a default is a fallback, not a competitor. Exactly one, never the first: two tied candidates naming ONE provider (a carrier's own member beside its own instance fact's binding; one provider reached through two non-identical provisions) leave the tie standing, because a default names a provider and does not arbitrate between two of that provider's own texts. **The rung answers a DISPATCH, not a named slot** — see §3.4.
 3. Otherwise: a **loud error at that use site**, naming every candidate and the repair (the bracket to write, or the reason none applies — a value-directed site carries no bracket, though a witness among its rivals is still nameable at a site that does; a sub-goal's tie is reported at its own level, never re-attributed to the outer spec). "At that use site" fixes the **blame**, not the phase: when the use site's carrier is known statically the error is raised while loading, still naming the call.
 
 ### 3.3 Selection surface
@@ -68,11 +68,13 @@ requires O: Ord[T]          -- named: a PARAMETER — part of the type's identit
 
 An anonymous slot fixes nothing about the type: `List[T = Int64]` is one type no matter which `Eq` satisfied it. A named slot is an ordinary type parameter, addressable in brackets and in type position — `SortedSet[T = String, O = ByLength]` and `…O = Alphabetical]` are **different types**, so merging them is a type error before it is a wrong answer. The author chooses by naming. Omitting a named slot in type position means "any" — it is how order-agnostic signatures are written, so the merge guarantee is per-signature, holding exactly where the slot is written. Omitting it at a call leaves it to inference (the ladder, §3.2).
 
+**A default may not stand in for an omitted NAMED slot** (WI-861). §3.2's rung 2a fills *silence*: nowhere did anyone say which provider, so the language may. An omitted named slot is not silence — the value flowing into an order-agnostic signature already chose, and its choice is part of its type. Answering there with a default overrides a decision made elsewhere: **measured**, a `SortedSet[T = Int64, O = Descending]` inserted into through a signature that omits `O` reads back in *ascending* order. So the rung is withheld at a named slot and such a dispatch stays a §3.2 tier-3 error. Inference for an omitted named slot is a different mechanism — it must **bind the slot in the call's result type**, so the choice travels with the value instead of being re-derived per call — and is deferred (WI-1094); a dictionary-only default cannot express it and does not compose across the next call.
+
 ### 3.5 Validation at the selection site
 
 `f[Spec = W](…)` requires: `W` provides `Spec` at the call's bindings (else loud, naming both); the slot exists on the callee; and the dispatch is not value-directed on a concrete carrier — there the value decides, and an explicit witness is **refused**, not preferred.
 
-### 3.6 Defaults — one relation, one inference rule *(the relations and their checks are delivered; §3.2's rung 2a, their only consumer, is not)*
+### 3.6 Defaults — one relation, one inference rule *(delivered, with §3.2's rung 2a as their consumer)*
 
 Whether silence may pick is **not a property of the spec** — `Monoid[Int64]` has no canonical instance while `Monoid[List]` has concatenation — so it is a per-`(spec, carrier)` partial function, expressed as reflect-layer facts (the variance pattern, proposal 035; **zero new grammar**):
 

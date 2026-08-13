@@ -191,34 +191,63 @@ fn two_orderings_for_one_carrier_coexist() {
     );
 }
 
-/// …AND THAT IS WHY THEY ARE NOT IN THE PRELUDE. With them declared, a bracket-less
-/// `Ord.compare` on a `String` is an ambiguous dispatch naming all three. Pinning
-/// this is what makes the placement decision a measurement rather than a preference:
-/// putting these two witnesses in `stdlib/` would hand this error to every downstream
-/// program that compares two strings.
+/// …AND WHAT A BRACKET-LESS `Ord.compare` ON A `String` DOES BESIDE THEM — **FLIPPED AT
+/// WI-861** (058 §3.2 rung 2a, phase 8c), which is this test's whole point rather than an
+/// incidental update, so the old assertion is quoted here rather than deleted.
+///
+/// IT USED TO BE A LOAD ERROR naming all three providers (`anthill.prelude.String`,
+/// `ByLength`, `Alphabetical`) — the measurement that decided the two witnesses do NOT
+/// belong in `stdlib/`, because putting them there would hand that error to every
+/// downstream program comparing two strings. Rung 2a settles it instead: `String`
+/// PROVIDES `Ord` itself, so 058 §3.6 infers `default_provider(Ord, String, String)` and
+/// silence takes the host's own ordering. The two witnesses stay opt-in by bracket.
+///
+/// THE PLACEMENT DECISION IT DROVE STILL STANDS, for a reason this arm no longer
+/// measures on its own: a stdlib witness would be a coexisting rival for a carrier that
+/// self-provides, which `one_default` refuses outright (no-displacement, WI-860) if it
+/// were also marked, and which silently loses to the host ordering if it were not.
+/// Either way the ordering a downstream program gets is not the library's to change.
+///
+/// The VALUE is what makes this an assertion about the rung and not about the error text:
+/// `"zz"` vs `"aaa"` sorts `aaa` first under the host's alphabetical order, `zz` first
+/// under `ByLength`. So a 1 (or a -1 from the wrong witness winning) would be visible.
 #[test]
-fn two_string_orderings_make_a_bare_compare_ambiguous() {
+fn a_bare_compare_takes_the_hosts_own_ordering() {
     let src = program(
         "wi844.bare",
-        "  sort Use\n    operation cmp(a: String, b: String) -> Int64 = Ord.compare(a, b)\n  end",
+        "  sort Use\n    \
+         operation cmp(a: String, b: String) -> Int64 = Ord.compare(a, b)\n  end\n  \
+         sort Driver\n    \
+         operation drive(n: Int64) -> Int64 = Use.cmp(\"zz\", \"aaa\")\n  end",
     );
-    let errs = load_errs(&src);
-    let tie: Vec<&String> = errs
-        .iter()
-        .filter(|e| e.contains("ambiguous dispatch of"))
-        .collect();
-    assert_eq!(
-        tie.len(),
-        1,
-        "one ambiguous call, one error; all errors: {errs:?}"
-    );
-    let text = tie[0];
     assert!(
-        text.contains("anthill.prelude.String")
-            && text.contains("wi844.bare.ByLength")
-            && text.contains("wi844.bare.Alphabetical"),
-        "the diagnostic must name all three providers — the prelude's own included, \
-         since it is the one a stdlib placement would collide with: {text}"
+        eval_int(
+            &src,
+            "wi844.bare.Driver.drive",
+            "a bracket-less compare must take `String`'s own ordering"
+        ) > 0,
+        "`String` self-provides `Ord`, so 058 §3.6's inferred row makes the host's \
+         alphabetical order the default: `zz` > `aaa`. `ByLength` would answer 0 \
+         (both length-2 vs 3 — actually negative), and before WI-861 this program did \
+         not load at all"
+    );
+    // THE CONTROL that keeps the two witnesses reachable, and keeps this from passing on
+    // a tree where they stopped loading: the same carrier, the same two rivals, with the
+    // bracket written — `ByLength` puts the SHORTER string first, so the sign flips.
+    let bracketed = program(
+        "wi844.bare.pinned",
+        "  sort Use\n    \
+         operation cmp(a: String, b: String) -> Int64 = Ord.compare[Ord = ByLength](a, b)\n  end\n  \
+         sort Driver\n    \
+         operation drive(n: Int64) -> Int64 = Use.cmp(\"zz\", \"aaa\")\n  end",
+    );
+    assert!(
+        eval_int(
+            &bracketed,
+            "wi844.bare.pinned.Driver.drive",
+            "the bracket must still select a witness over the default"
+        ) < 0,
+        "tier 1 outranks the default: `ByLength` orders `zz` (2) before `aaa` (3)"
     );
 }
 

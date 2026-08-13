@@ -12659,7 +12659,7 @@ fn check_apply_iter(
                 // concrete carrier, so an abstract-spec receiver still needs the late
                 // refusal.
                 //
-                // WI-1042 — the CONDITION is [`refuse_defaulted_supplier_tie`], shared with
+                // WI-1042 — the CONDITION is [`arbitrate_defaulted_supplier_tie`], shared with
                 // the dot spelling ([`dot_member_dispatch_decision`]) so one program cannot
                 // be refused through `Desc.describe(x)` and accepted through `x.describe()`.
                 // It takes the slice this arm already computed, so the pin below still walks
@@ -12696,10 +12696,14 @@ fn check_apply_iter(
                 // ([`supplier_tie_error`]), which is where the `NameableWitness` repair this
                 // arm can never reach becomes reachable — a body-less op HAS the dispatch
                 // slot a bracket binds.
-                refuse_defaulted_supplier_tie(kb, fn_sym, carrier_sym, &cands, span)?;
-                // Exactly ONE supplier: pin it. NO supplier is the gap a default exists to
+                // WI-861: and it SELECTS — a tie the 058 §3.2 rung 2a default breaks
+                // yields that supplier here, so `Some` now means "one supplier, or the
+                // one silence takes" rather than "exactly one".
+                let chosen =
+                    arbitrate_defaulted_supplier_tie(kb, spec_sort, fn_sym, carrier_sym, &cands, span)?;
+                // A supplier: pin it. NO supplier is the gap a default exists to
                 // fill — fall through and run the spec's default body.
-                if let [only] = cands.as_slice() {
+                if let Some(only) = chosen {
                     let impl_op = only.target;
                     let derived = dispatched_impl_effects(
                         kb,
@@ -13230,7 +13234,7 @@ fn check_apply_iter(
             // the outcome arms rather than at each of them (the "refuse above the returns,
             // do not enumerate them" discipline WI-839's review adopted and WI-841's
             // `check_selection_bindings` placement follows). The rule, the two narrowing
-            // clauses and the measurements are at [`refuse_unarbitrated_supplier_tie`];
+            // clauses and the measurements are at [`arbitrate_unarbitrated_supplier_tie`];
             // what has to be said HERE is only what is local to this frame.
             //
             // THE CARRIER IS NOT `carrier_sym`. That reading made the whole guard inert on
@@ -13272,7 +13276,12 @@ fn check_apply_iter(
             // no compile error once 058 phase 3b makes the gate slot-precise.
             if !outcome_raises_on_its_own_account && !pinned_spec {
                 if let Some(pinned_carrier) = pinned_carrier {
-                    refuse_unarbitrated_supplier_tie(
+                    // WI-861: the supplier the rung named is DISCARDED here, and only here
+                    // — this frame selects nothing. `dispatch_spec_op_cached` above already
+                    // resolved the call, reading the same rung one layer down at
+                    // `resolve_inner`, and lands on the same provider. The DOT caller,
+                    // which does select, keeps the answer.
+                    let _rung_answer = arbitrate_unarbitrated_supplier_tie(
                         kb,
                         spec_sort,
                         pinned_carrier,
@@ -14894,29 +14903,83 @@ fn statically_pinned_carrier(
 /// fallback, and this question is a coherence one — "did the author supply two
 /// implementations?" — which must not change answer with the host backend (WI-886).
 /// Driven by the unrunnable-member fixture, which has two suppliers here and one there.
-fn refuse_unarbitrated_supplier_tie(
+///
+/// WI-861 (058 §3.2 RUNG 2a) — and the guard now DECLINES when the default names exactly
+/// one of the tied suppliers. It selects nothing itself, so the licence is that the
+/// dispatch it lets through lands on the same provider the rung named, in both shapes:
+///
+///   * the default is the CARRIER (its own provision, inferred). The carrier self-provides,
+///     so it contributes a provision; a rival provision makes `resolve_inner` tie and
+///     [`default_among_candidates`] takes the carrier, whose `sort_ops_lookup` answer is
+///     the `Own` member — this very supplier. With no rival provision the outcome is
+///     `Unique(carrier)` already, and the surviving tie is `Own`-vs-`Fact`, one provider
+///     twice, which the rung declines (see [`SpecOpSupplier::provider`]).
+///   * the default is a WITNESS. Then `resolve_inner` resolves to that witness — by
+///     uniqueness or by the same rung — and the projection lands on its own member.
+///
+/// Driven by `wi861_rung2a_default_dispatch_test::a_bodyless_own_member_beside_a_marked_
+/// witness_takes_the_default`, whose value assertion is what makes the agreement measured
+/// rather than argued.
+///
+/// IT RETURNS THE SUPPLIER IT DECLINED FOR, and that is not decoration: a caller that
+/// SELECTS (the dot — [`dot_takes_or_reroutes`]) must know WHICH candidate the rung named,
+/// because declining to refuse and then calling the other one is the same wrong answer
+/// with no diagnostic. `check_apply_iter`'s caller ignores the answer, and may: the
+/// dispatch there is `dispatch_spec_op_cached`'s, which reads the same rung one layer down
+/// at `resolve_inner` and lands on the same provider (both shapes argued at the guard's
+/// head, and driven by the test named above).
+///
+/// `Ok(None)` means "nothing arbitrated here" — 0 or 1 supplier, or a tie every candidate
+/// of which the provision arbitration CAN weigh, which `resolve_inner` owns.
+fn arbitrate_unarbitrated_supplier_tie(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     carrier: Symbol,
     spec_op: Symbol,
     op_short_sym: Symbol,
     span: Option<Span>,
-) -> Result<(), TypeError> {
+) -> Result<Option<Symbol>, TypeError> {
     let cands = spec_op_suppliers_for_carrier(kb, spec_sort, carrier, spec_op, op_short_sym);
     // Count first: the route scan is skipped for the 0- and 1-supplier case, which the
     // blast-radius scan measured as every call in the tree.
-    if cands.len() >= 2
-        && cands
+    if cands.len() < 2
+        || cands
             .iter()
-            .any(|c| !c.route.weighed_by_provision_arbitration())
+            .all(|c| c.route.weighed_by_provision_arbitration())
     {
-        return Err(supplier_tie_error(kb, spec_op, carrier, &cands, span));
+        return Ok(None);
     }
-    Ok(())
+    match default_among_suppliers(kb, spec_sort, carrier, &cands) {
+        Some(i) => Ok(Some(cands[i].target)),
+        None => Err(supplier_tie_error(kb, spec_op, carrier, &cands, span)),
+    }
+}
+
+/// WI-861 — 058 §3.2 RUNG 2a at a SUPPLIER tie: the index of the tied supplier whose
+/// PROVIDER the default names, or `None` for "say which".
+///
+/// The sibling of [`default_among_candidates`], over the other candidate population, and
+/// both reduce to [`super::defaults::default_among`] so the rung has ONE implementation.
+/// What differs is only the carrier key: a supplier tie is asked at a carrier SORT — the
+/// value's own, or the call's statically pinned one — with no carrier TERM in hand, so
+/// the lookup is base-only and declines wherever that is not decisive
+/// ([`super::defaults::CarrierKey`] carries why that direction is the safe one).
+pub(crate) fn default_among_suppliers(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    cands: &[SpecOpSupplier],
+) -> Option<usize> {
+    super::defaults::default_among(
+        kb,
+        spec_sort,
+        super::defaults::CarrierKey::Base(carrier),
+        cands.iter().map(|c| c.provider(carrier)),
+    )
 }
 
 /// WI-1042 — the DEFAULTED half's tie condition, in ONE place. The sibling of
-/// [`refuse_unarbitrated_supplier_tie`], and deliberately a DIFFERENT condition: this one
+/// [`arbitrate_unarbitrated_supplier_tie`], and deliberately a DIFFERENT condition: this one
 /// is a bare count.
 ///
 /// Takes the candidate slice the caller ALREADY computed, which is what makes sharing
@@ -14924,7 +14987,7 @@ fn refuse_unarbitrated_supplier_tie(
 /// `[only]` pin walk the suppliers twice or leave it matching an arm it can no longer
 /// reach" — and that is true only of a helper that re-derives [`carrier_override_suppliers`]
 /// itself. Passing the slice is the shape [`supplier_tie_error`] and
-/// `refuse_unarbitrated_supplier_tie` already use, and it serves BOTH sites in one walk:
+/// `arbitrate_unarbitrated_supplier_tie` already use, and it serves BOTH sites in one walk:
 /// `check_apply_iter`'s WI-1012 arm asks this, then matches the same slice for its single
 /// pin. What the coupling cost while it was two copies: the WI-1012 arm carries a
 /// documented REACH narrowing (only the carrier-param shape can tie), and the moment that
@@ -14940,17 +15003,32 @@ fn refuse_unarbitrated_supplier_tie(
 /// `Expr::DotApply` carries no `type_args` field, so a dot is bracket-less by
 /// construction — the WI-842 argument). Two suppliers therefore genuinely ARE a tie. The
 /// clauses over there exist because something does.
-fn refuse_defaulted_supplier_tie(
+///
+/// WI-861 — IT ALSO SELECTS NOW, and the two jobs are one function because they are one
+/// decision. 058 §3.2's rung 2a says an unselected dispatch takes the DEFAULT among the
+/// tied candidates; a helper that only declined to refuse would leave both callers
+/// falling through to the spec's own default body, which is precisely the silence the
+/// rung exists to fill. So the answer is *which supplier*, and `Err` is the tier-3
+/// refusal that stands when nothing says.
+///
+/// `Ok(None)` is the ZERO-supplier gap — a default is what fills it, and the caller runs
+/// the spec's default body.
+fn arbitrate_defaulted_supplier_tie<'a>(
     kb: &KnowledgeBase,
+    spec_sort: Symbol,
     spec_op: Symbol,
     carrier: Symbol,
-    cands: &[SpecOpSupplier],
+    cands: &'a [SpecOpSupplier],
     span: Option<Span>,
-) -> Result<(), TypeError> {
-    if cands.len() >= 2 {
-        return Err(supplier_tie_error(kb, spec_op, carrier, cands, span));
+) -> Result<Option<&'a SpecOpSupplier>, TypeError> {
+    match cands {
+        [] => Ok(None),
+        [only] => Ok(Some(only)),
+        many => match default_among_suppliers(kb, spec_sort, carrier, many) {
+            Some(i) => Ok(Some(&many[i])),
+            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, span)),
+        },
     }
-    Ok(())
 }
 
 /// WI-1035/WI-1038 — what a dot does with the member it resolved on the receiver's sort.
@@ -15033,9 +15111,9 @@ enum DotMember {
 /// abstract arm has no load answer to keep.
 ///
 /// THE TWO HALVES ASK DIFFERENT QUESTIONS, and each is now DELEGATED to the owner of its
-/// condition: the BODY-LESS one to [`refuse_unarbitrated_supplier_tie`], whose narrowing
+/// condition: the BODY-LESS one to [`arbitrate_unarbitrated_supplier_tie`], whose narrowing
 /// clauses exist because `dispatch_spec_op_cached` can weigh provisions, and the DEFAULTED
-/// one to [`refuse_defaulted_supplier_tie`], shared with WI-1012's arm in
+/// one to [`arbitrate_defaulted_supplier_tie`], shared with WI-1012's arm in
 /// [`check_apply_iter`]. **WI-1042 — WHAT THE COPY COST, recorded because the reason it
 /// was a copy was WRONG:** WI-1035 kept the three-line condition inline here on the ground
 /// that extracting it would make that arm's `[only]` pin walk the suppliers twice. It does
@@ -15180,14 +15258,52 @@ fn dot_member_dispatch_decision(
     // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
         // BODY-LESS — a different question with a different condition; see
-        // [`refuse_unarbitrated_supplier_tie`].
-        refuse_unarbitrated_supplier_tie(kb, spec_sort, carrier, spec_op, op_short_sym, span)?;
-        return Ok(DotMember::Take);
+        // [`arbitrate_unarbitrated_supplier_tie`].
+        let broke_a_tie =
+            arbitrate_unarbitrated_supplier_tie(kb, spec_sort, carrier, spec_op, op_short_sym, span)?;
+        return Ok(dot_takes_or_reroutes(kb, own_member, spec_op, broke_a_tie));
     }
     // DEFAULTED.
     let cands = carrier_override_suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
-    refuse_defaulted_supplier_tie(kb, spec_op, carrier, &cands, span)?;
-    Ok(DotMember::Take)
+    let chosen = arbitrate_defaulted_supplier_tie(kb, spec_sort, spec_op, carrier, &cands, span)?;
+    // ONLY A TIE, and the `len() >= 2` is the whole of that claim: `chosen` is also `Some`
+    // for a SOLE supplier, and rerouting there would change what an ordinary one-supplier
+    // dot calls whenever `carrier_override_suppliers`' interpretability filter has dropped
+    // the member itself — reachable, and exactly the WI-616 name-coincidence shape the
+    // abstract arm above declines to act on.
+    let broke_a_tie = (cands.len() >= 2).then(|| chosen.map(|c| c.target)).flatten();
+    Ok(dot_takes_or_reroutes(kb, own_member, spec_op, broke_a_tie))
+}
+
+/// WI-861 — WHAT A DOT DOES WITH ITS MEMBER once 058 §3.2's rung 2a has spoken, for BOTH
+/// halves, because the two diverging is this file's own subject one rung down.
+///
+/// `Take` says exactly one thing — "call the member this dot resolved" — so a default
+/// naming a WITNESS has no expression there, and taking the member anyway answers where
+/// the qualified spelling pins the witness. MEASURED before this was shared: the body-less
+/// half consulted the rung (through the guard's new decline) and then returned `Take`
+/// regardless, so one program answered `7` qualified and `1` dotted — the spelling-keyed
+/// silence WI-1035 was opened to close, re-created by its own successor.
+///
+/// The call is handed to [`DotMember::DispatchByValue`] instead, whose synthesized
+/// `Desc.describe(x)` is re-typed through the arm that CAN express "the provider silence
+/// takes", so both spellings read one arbitration rather than two.
+///
+/// `chosen` is `Some` ONLY for a TIE the rung broke — never for a sole supplier, which is
+/// not the rung's business and keeps the member, so every dot in the corpus (0 own-member
+/// dots, measured at this function's caller) is bit-for-bit unchanged.
+fn dot_takes_or_reroutes(
+    kb: &KnowledgeBase,
+    own_member: Symbol,
+    spec_op: Symbol,
+    chosen: Option<Symbol>,
+) -> DotMember {
+    match chosen {
+        Some(t) if kb.canonical_sym(t) != kb.canonical_sym(own_member) => {
+            DotMember::DispatchByValue(spec_op)
+        }
+        _ => DotMember::Take,
+    }
 }
 
 /// WI-1027 — build the load-time supplier-tie refusal from a candidate list the caller
@@ -15728,6 +15844,9 @@ fn build_dispatching_dict_from_chain(
             disambig,
             s3_slot,
             selected,
+            // WI-861 — `callee_spec_sort` OWNS this chain, so it is the sort whose named
+            // slots decide whether a default may answer this dep.
+            rung_for_dep(kb, callee_spec_sort, dep.required_sort),
         ) {
             Some(t) => proj_terms.push(t),
             None if require_complete => {
@@ -15952,6 +16071,9 @@ fn build_op_scoped_dicts(
                 Some(&disambig),
                 None,
                 selected,
+                // WI-861 — an OP-scoped chain: `callee_op` is the declaration that owns
+                // these slots, so it is the one whose named slots decide.
+                rung_for_dep(kb, callee_op, dep.required_sort),
             )
         })
         .collect()
@@ -16115,6 +16237,13 @@ pub fn build_dep_projection(
     // the candidate set. Empty on the req-insertion diagnostic path, which has no call
     // site in hand.
     selected: &[InstanceSelection],
+    // WI-861 (058 §3.2 rung 2a): may Strategy 3's CONSTRUCTION take a default when its
+    // providers tie? [`DefaultRung::Withhold`] where the dep is the callee's NAMED slot —
+    // a type parameter whose binding the caller erased, not a silence to fill. Every
+    // caller derives it through [`rung_for_dep`] from the owner whose chain it is
+    // walking; the WI-227 test file passes `Consult`, which is the anonymous case its
+    // fixtures use.
+    rung: DefaultRung,
 ) -> Option<TermId> {
     // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
     // E = ?`) is satisfied STRUCTURALLY by the effect-row machinery — there is
@@ -16238,7 +16367,7 @@ pub fn build_dep_projection(
         sigma: disambig,
         selected,
     };
-    match resolve(kb, &goal, &scope) {
+    match resolve_with_rung(kb, &goal, &scope, rung) {
         ResolutionResult::Resolved(tree) => {
             emit_tree_as_projection(kb, caller_requires, &tree, syms)
         }
@@ -17073,7 +17202,12 @@ pub(crate) fn resolve_bridge_requirements(
             sigma: None,
             selected: &[],
         };
-        match resolve(kb, &goal, &scope) {
+        // WI-861 — the chain's two halves have two OWNERS ([`dict_layout`]): the sort's
+        // slots then the operation's, so the named-slot question is asked of whichever
+        // half `i` falls in. Asking `parent` for an op-half slot would read the wrong
+        // declaration's slot list.
+        let rung = rung_for_dep(kb, if op_half { op } else { parent }, goal.spec_sort);
+        match resolve_with_rung(kb, &goal, &scope, rung) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             // WI-855: a TIE is a coherence verdict, kept apart from the causes that
             // merely say "not pinnable at these types" — see `BridgeRequirements`.
@@ -17270,13 +17404,20 @@ pub(crate) fn record_apply_within_rewrite(
         None => return false,
     };
 
-    let enclosing_sort = match enclosing_sort {
-        Some(s) => s,
-        None => return false,
-    };
+    // WI-861 (found by review): the SORT is demanded only where the SORT's chain is what
+    // is read. WI-822 LEG 1 gave this function a second chain owner and left the guard in
+    // front of both, so an op-scoped classification on a NAMESPACE-level operation (no
+    // enclosing sort) would emit NO REWRITE — silently, this function's `false` meaning
+    // exactly that — for a call the typer had classified. Its eval twin
+    // (`start_apply_deferred`) carried the identical guard, one arm apart, and raised
+    // instead; both moved together. UNDRIVEN and stated as such at that twin, where the
+    // probe that failed to reach either is recorded.
     let chain = match enclosing_op {
         Some(op) => op_dict_entries(kb, op),
-        None => provider_dict_entries(kb, enclosing_sort),
+        None => match enclosing_sort {
+            Some(s) => provider_dict_entries(kb, s),
+            None => return false,
+        },
     };
     let name = match chain.name_at(kb, slot) {
         Some(n) => n,
@@ -18944,7 +19085,7 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// ONE reader — [`call_dispatch_shape`] — and it is the union because
 /// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
 /// or refuses a defaulted call, the WI-210 block dispatches a body-less one and
-/// [`refuse_unarbitrated_supplier_tie`] refuses ITS tie. WI-1026 admitted only the
+/// [`arbitrate_unarbitrated_supplier_tie`] refuses ITS tie. WI-1026 admitted only the
 /// defaulted half, so a rule body naming a BODY-LESS spec op reached no dispatch
 /// decision at all: MEASURED, `rule answer(?r) :- Desc.describe(leaf(), ?r)` on a
 /// body-less `describe` loaded CLEAN and answered `[]` for every supply shape — one
@@ -20067,18 +20208,97 @@ pub enum ResolutionResult {
     },
 }
 
+/// WI-861 — may 058 §3.2's RUNG 2a answer this goal's tie?
+///
+/// **THE DISTINCTION IS §3.4's, AND IT IS MEASURED.** A default fills SILENCE: nowhere
+/// in the program did anyone say which provider, so the language may. A NAMED
+/// requirement slot is not silence — it is a TYPE PARAMETER, and its value is part of
+/// the type's identity. A signature that omits it (`size(s: SortedSet[T = String])`)
+/// means ANY, so the value flowing in ALREADY CHOSE and carries its choice; picking a
+/// default there does not fill a gap, it overrides a decision that was made elsewhere.
+///
+/// MEASURED, on `SortedSet[T = Int64, O = Descending]` built at one site and inserted
+/// into through a signature that erases `O` (scratch probe, this ticket): the erased
+/// route inserts with `Int64`'s OWN ascending order and reads back `3` where the
+/// slot-keeping route reads `7`. Rung 2a would have made exactly that program load.
+///
+/// **AND WHY WITHHOLDING IS NOT A CONTRADICTION OF §3.4's OTHER HALF** ("omitting it at
+/// a call leaves it to inference"): inference there must BIND the slot — the result of
+/// `SortedSet.empty[T = String]()` would have to be typed `SortedSet[T = String, O =
+/// <chosen>]`. Rung 2a fills a DICTIONARY and writes nothing into the type, so it cannot
+/// express that inference; a value whose type says "any O" and whose dictionary says
+/// `String` is the mismatch the measurement above produced. Named-slot inference is a
+/// separate increment — **WI-1094**.
+///
+/// The one-provider case is UNCHANGED and still silently constructs (measured: the same
+/// erasing program over a carrier with a single `Ord` provider loads clean today). That
+/// is the pre-existing half of the same hazard, it is not this ticket's to widen or to
+/// close, and **WI-1094** owns it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DefaultRung {
+    /// The goal is an UNSELECTED dispatch, or an ANONYMOUS `requires` slot — which
+    /// "fixes nothing about the type" (§3.4), so no value carries a competing choice.
+    Consult,
+    /// The goal fills a NAMED requirement slot whose binding is not in hand.
+    Withhold,
+}
+
+/// WI-861 — [`DefaultRung`] for one dependency of `owner`'s requirement chain.
+///
+/// BY SPEC, not by chain index. The index would be exact — `NamedRequirementSlot::slot`
+/// IS the dictionary-chain index ([`dict_chain_index_of_named_slot`] states that
+/// identity) — but every caller here iterates a chain it built for its own purpose, and
+/// WI-857's dual lesson is that a positional channel with four producers grows four
+/// plausible indexings. Matching on the SPEC needs no shared convention and errs toward
+/// `Withhold`, which is the direction that refuses rather than answers: it over-fires
+/// only for an owner declaring a named AND an anonymous slot of ONE spec.
+///
+/// COST: one `HashMap<Symbol, _>` probe per dep, and `named_requirement_slots` answers
+/// `&[]` for every owner that declares none — which is nearly all of them, so the
+/// `same_sort_canonical` walk (a qualified-name compare) is not on the common path. It is
+/// asked per sub-goal inside `resolve_inner`'s recursion and deliberately not hoisted:
+/// the loop takes `&mut kb`, so keeping the slice across it would need a clone of a list
+/// that is empty in the case worth optimizing for.
+fn rung_for_dep(kb: &KnowledgeBase, owner: Symbol, dep_spec: Symbol) -> DefaultRung {
+    let named = kb
+        .named_requirement_slots(owner)
+        .iter()
+        .any(|s| s.spec_base.is_some_and(|b| same_sort_canonical(kb, b, dep_spec)));
+    if named {
+        DefaultRung::Withhold
+    } else {
+        DefaultRung::Consult
+    }
+}
+
 /// Public entry point — instance synthesis for `goal` in `scope`.
 /// Takes a mutable KB because conditional resolution allocates
 /// freshly-substituted subgoal terms (impl-param `Ref(EqList.A)`
 /// replaced by the matched per-call value) for the recursive
 /// resolution step.
+///
+/// WI-861: 058 §3.2's rung 2a APPLIES — this entry point is the DISPATCH's, where a tie
+/// is exactly the silence a default fills. A caller building a requirement dictionary
+/// for a named slot asks [`resolve_with_rung`] instead.
 pub fn resolve(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
     scope: &ResolutionScope,
 ) -> ResolutionResult {
+    resolve_with_rung(kb, goal, scope, DefaultRung::Consult)
+}
+
+/// [`resolve`] with 058 §3.2's rung 2a explicitly enabled or withheld — see
+/// [`DefaultRung`] for which goals may take a default and why the named-slot half may
+/// not.
+pub fn resolve_with_rung(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+    rung: DefaultRung,
+) -> ResolutionResult {
     let mut stack: Vec<SortGoal> = Vec::new();
-    resolve_inner(kb, goal, scope, &mut stack, None, None)
+    resolve_inner(kb, goal, scope, &mut stack, None, None, rung)
 }
 
 fn resolve_inner<'a>(
@@ -20101,6 +20321,12 @@ fn resolve_inner<'a>(
     // name the slot: "provides no instance at these bindings" is unactionable when the
     // author's text was `OE = LexFst` and the goal rendered is `Ord[T = Int64]`.
     slot_pin: Option<&'a SlotSelection>,
+    // WI-861 (058 §3.2 rung 2a) — may a DEFAULT answer this goal's tie? Carried per goal
+    // rather than on the scope because it is a property of the SLOT this goal fills, and
+    // the recursion re-derives it per sub-goal from the CHOSEN PROVIDER's own declaration
+    // ([`rung_for_dep`]) — a witness's named element slots are named slots too, and a
+    // bracket-less call into one is the same erased binding one level down.
+    rung: DefaultRung,
 ) -> ResolutionResult {
     // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
     // CALL made", so a selection reaches the call's own goal and no sub-goal: a
@@ -20229,7 +20455,16 @@ fn resolve_inner<'a>(
         };
     }
 
-    let chosen = match pick_most_specific(kb, &candidates) {
+    // WI-861 (058 §3.2 RUNG 2a): specificity FIRST, the default only at its tie. The
+    // order is the rule — "a strictly-more-specific candidate wins silently; a default is
+    // a fallback, not a competitor" — and writing it as a fallback of this `match` is what
+    // makes it unstateable the other way round. `rung` is [`DefaultRung::Withhold`] where
+    // the goal fills a NAMED slot, which is not silence at all.
+    let chosen = match pick_most_specific(kb, &candidates).or_else(|| {
+        (rung == DefaultRung::Consult)
+            .then(|| default_among_candidates(kb, goal, &candidates))
+            .flatten()
+    }) {
         Some(idx) => &candidates[idx],
         None => {
             stack.pop();
@@ -20325,7 +20560,21 @@ fn resolve_inner<'a>(
         // SELECTED provider and never on caller scope, so it introduces no
         // import-coupling.
         let sub_pin = slot_pin_at(pin, i, spec_half_len);
-        match resolve_inner(kb, sg, scope, stack, Some(chosen_impl_sort), sub_pin) {
+        // WI-861 — a sub-goal filling one of the CHOSEN PROVIDER's own NAMED slots is the
+        // same erased binding one level down (`LexFst requires OA: Ord[A]` reached with no
+        // `[OA = …]`), so the default is withheld there for the reason [`DefaultRung`]
+        // gives. Derived from `chosen_impl_sort`, which is why the rung rides per goal
+        // rather than on the scope.
+        let sub_rung = rung_for_dep(kb, chosen_impl_sort, sg.spec_sort);
+        match resolve_inner(
+            kb,
+            sg,
+            scope,
+            stack,
+            Some(chosen_impl_sort),
+            sub_pin,
+            sub_rung,
+        ) {
             ResolutionResult::Resolved(t) => sub_resolutions.push(t),
             // WI-857: a SPEC-half slot that does not resolve is CARRIED as
             // `Unavailable`, uniformly across NoMatch / Ambiguous / Cyclic — the
@@ -21704,6 +21953,78 @@ fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<u
         return None;
     }
     Some(first.0)
+}
+
+/// WI-861 — 058 §3.2 RUNG 2a at the PROVISION tie: the index of the tied candidate the
+/// default names, or `None` for "say which" (tier 3, unchanged).
+///
+/// A candidate's provider IS its `impl_sort` — for a witness the witness sort, for a
+/// carrier-keyed provision the carrier — which is the same symbol
+/// [`super::defaults::DefaultRow::provider`] carries, so the two need no translation.
+///
+/// THE CARRIER IS THE GOAL'S, not the candidate's, and it is what makes the lookup
+/// precise rather than "does any row name this sort": a provider with two provisions of
+/// one spec at disjoint carriers contributes two rows, and only the one whose carrier the
+/// goal describes may answer. `None` from [`goal_carrier_key`] — a spec with no carrier
+/// parameter (WI-1076: a self-representing spec, whose dispatch is directed by the
+/// receiver value and which therefore has no carrier position a row could be keyed at) —
+/// declines the rung outright rather than falling back to a base-only lookup: there is no
+/// base to fall back to.
+fn default_among_candidates(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+    candidates: &[Candidate],
+) -> Option<usize> {
+    let carrier = goal_carrier_key(kb, goal)?;
+    super::defaults::default_among(
+        kb,
+        goal.spec_sort,
+        carrier,
+        candidates.iter().map(|c| c.impl_sort),
+    )
+}
+
+/// WI-861 — the CARRIER a [`SortGoal`] names, as 058 §3.6's rows are keyed.
+///
+/// Read off the spec's carrier PARAMETER ([`spec_carrier_param`], WI-1076/1077's owner —
+/// the parameter the spec's operations take, not "the first one"), through the same
+/// [`binding_for_param`] rule every other binding lookup in this file runs. `Label` is
+/// [`BindingKeyMatch::for_bases`]' verdict by construction: both sides are `goal.
+/// spec_sort`'s own parameters, and the two producers key them differently (a canonical
+/// `Ord.T` against a written bare `T`), which is exactly what identity-then-label exists
+/// for.
+///
+/// [`SortGoal::carrier`] is deliberately NOT a second source. It is WI-350's
+/// SELF-RECEIVER discriminator, set only for specs whose carrier is not a binding — the
+/// self-representing shape `spec_carrier_param` answers `None` for — and there
+/// `collect_provides_candidates` has already narrowed every candidate to that one sort,
+/// so a surviving tie is one provider reached twice and no default separates it (see
+/// [`super::defaults::default_among`]'s "exactly one, not the first").
+///
+/// A binding that names a TYPE PARAMETER rather than a sort (`Ord[T = E]` inside a
+/// generic body) yields no carrier: [`carrier_view_parts`] answers on the `Ref`, but
+/// [`is_type_param_value`] is what says the name denotes no carrier, and a default for
+/// "any carrier" is not a thing 058 §3.6 can express — the abstract goal resolves through
+/// the caller's own `requires` slot, not through a default.
+fn goal_carrier_key(kb: &KnowledgeBase, goal: &SortGoal) -> Option<super::defaults::CarrierKey> {
+    let param = spec_carrier_param(kb, goal.spec_sort)?;
+    let view = *binding_for_param(kb, &goal.bindings, param, BindingKeyMatch::Label)?;
+    if is_type_param_value(kb, view) {
+        return None;
+    }
+    // The WRITTEN view alone: `X[Y]` and `X[Z]` are different carriers and this is what
+    // says so. Its base is the index's bucket key and is derived at the lookup
+    // ([`super::defaults::CarrierKey`]), never carried alongside where the two could
+    // disagree.
+    Some(super::defaults::CarrierKey::View(view))
+}
+
+/// WI-861 — the BASE sort of a carrier view (`List[T = Int64]` ⇒ `List`), for the one
+/// reader that needs the [`super::defaults::DefaultProviderIndex`] BUCKET rather than the
+/// comparison. `None` for a term that is not a carrier shape at all, which that reader
+/// takes as "no default here".
+pub(crate) fn carrier_view_base(kb: &KnowledgeBase, view: TermId) -> Option<Symbol> {
+    carrier_view_parts(kb, view).map(|(base, _)| base)
 }
 
 /// Build subgoals for a chosen conditional candidate by substituting
@@ -24202,7 +24523,7 @@ pub(crate) enum SupplyRoute {
 
 impl SupplyRoute {
     /// WI-1027 — could `resolve_inner`'s provision arbitration have WEIGHED this supplier
-    /// against a rival? The predicate [`refuse_unarbitrated_supplier_tie`] turns into a
+    /// against a rival? The predicate [`arbitrate_unarbitrated_supplier_tie`] turns into a
     /// verdict, kept here and EXHAUSTIVE so a fourth route cannot inherit an answer by
     /// silence — the whole cost of getting it wrong is refusing correct programs at load,
     /// which is what the six-fixture measurement in that function's doc discovered.
@@ -24242,6 +24563,28 @@ pub(crate) struct SpecOpSupplier {
 }
 
 impl SpecOpSupplier {
+    /// WI-861 — the PROVIDER this supplier belongs to, which is what 058 §3.6's default
+    /// rows name. The three routes map two ways and the split is the route's own:
+    ///
+    ///   * [`SupplyRoute::Witness`] carries the witness sort — a different sort from the
+    ///     carrier by the definition of a witness ([`witness_dispatch_carrier`]).
+    ///   * [`SupplyRoute::Own`] and [`SupplyRoute::Fact`] both belong to the CARRIER: an
+    ///     own member is the carrier's own text, and a carrier-keyed instance fact's
+    ///     `sort_ref` IS the carrier (`provision_supplier`'s `None` arm keys it there).
+    ///
+    /// THE TWO COLLAPSING IS LOAD-BEARING, not an approximation. A default names a
+    /// provider, and a carrier's own member beside its own instance fact's binding is one
+    /// provider saying two things — so both map to one symbol,
+    /// [`super::defaults::default_among`] sees two hits, and the refusal stands. That is
+    /// WI-1027's fixture 2 and it must not be broken by a rung that arbitrates between a
+    /// provider and itself.
+    pub(crate) fn provider(&self, carrier: Symbol) -> Symbol {
+        match self.route {
+            SupplyRoute::Own | SupplyRoute::Fact => carrier,
+            SupplyRoute::Witness(w) => w,
+        }
+    }
+
     /// Render this candidate for an ambiguity diagnostic, naming its ROUTE.
     /// `op_short` is the spec op's short name, so the fact leg can echo the binding
     /// the author actually wrote (`eq = cEq`).
@@ -27557,7 +27900,17 @@ fn resolve_at_goal(
     // Two `None`s: this IS the goal the call made, so there is no enclosing provider
     // whose locality could narrow it (WI-857) and no slot of one to pin (WI-870) —
     // `scope.selected` is the only pin that reaches this level.
-    match resolve_inner(kb, &goal, &scope, &mut stack, None, None) {
+    // WI-861: and [`DefaultRung::Consult`], because this IS the unselected DISPATCH 058
+    // §3.2's ladder is about — no named slot, so silence here is silence.
+    match resolve_inner(
+        kb,
+        &goal,
+        &scope,
+        &mut stack,
+        None,
+        None,
+        DefaultRung::Consult,
+    ) {
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
@@ -49647,7 +50000,7 @@ fn align_call_args_to_params(
 /// by the value, and a read that SELECTS goes loud on the second candidate).
 ///
 /// WI-1043 added the BODY-LESS half — the same rule one guard over
-/// (`refuse_unarbitrated_supplier_tie` rather than `refuse_defaulted_supplier_tie`), and
+/// (`arbitrate_unarbitrated_supplier_tie` rather than `arbitrate_defaulted_supplier_tie`), and
 /// the sentence that used to exclude it was wrong on its own terms: "it has no default to
 /// shadow, so `reduce_op_value` leaves it un-ground and the goal residualizes rather than
 /// answering wrongly" — residualizing IS the wrong answer. MEASURED, every supply shape
