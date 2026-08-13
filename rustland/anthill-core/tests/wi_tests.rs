@@ -720,6 +720,9 @@ mod wi763_written_keep_spec_test;
 #[path = "include/wi766_one_component_tuple_type_test.rs"]
 mod wi766_one_component_tuple_type_test;
 
+#[path = "include/wi777_parser_parity_corpus_test.rs"]
+mod wi777_parser_parity_corpus_test;
+
 #[path = "include/wi775_positional_tuple_bridge_test.rs"]
 mod wi775_positional_tuple_bridge_test;
 

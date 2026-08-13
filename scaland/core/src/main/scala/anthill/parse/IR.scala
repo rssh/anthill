@@ -226,9 +226,12 @@ enum TypeExpr:
   case Variable(termId: TermId, descriptions: IndexedSeq[String])
   case TupleType(fields: IndexedSeq[(TermSymbol, TypeExpr)])
   /** Arrow type: `(A) -> B`, `(A, B) -> C @ E`, or `(A) -> B @ {E1, E2}`.
+    * Its parameter surface is parsed by the same parenthesized type-list production
+    * as `TupleType` (WI-777 / rust WI-766); names are intentionally discarded because
+    * scaland has no dependent typer, preserving the existing IR contract.
     * Empty `effects` means no `@` annotation — the braced surface form
-    * requires at least one element (`commaSep1`), so emptiness can only
-    * come from a missing annotation. Mirrors `rustland` `TypeExpr::Arrow`. */
+    * may itself be empty (`@ {}`), so emptiness also denotes an explicitly closed
+    * pure row. Mirrors `rustland` `TypeExpr::Arrow`. */
   case Arrow(params: IndexedSeq[TypeExpr], returnType: TypeExpr, effects: IndexedSeq[TypeExpr])
   /** WI-302: a literal value standing in a type-argument slot — value-in-type,
     * e.g. `Vector[Int64, 3]` / `Fin[n = 8]`. The loader/typer (rust-only)
