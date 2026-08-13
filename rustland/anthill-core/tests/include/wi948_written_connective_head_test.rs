@@ -1,6 +1,6 @@
 //! WI-948 — A HEAD IS AN EQUATION BECAUSE THE DESUGAR WROTE IT, NOT BECAUSE OF ITS
 //! NAME. `load::parse_equation_lhs` decided "is this head an equation?" from the head
-//! functor's SPELLING (`eq` / `unify` / `struct_eq`, `pratt::is_equation_functor`)
+//! functor's SPELLING (`pratt::EQUATION_FUNCTORS`, read via `is_equation_functor`)
 //! with nothing asking whether the node came from the infix desugar — the exact
 //! re-derivation `SimpleTermStore::minted` (WI-618) exists to replace. The guard is
 //! `is_minted(head)`, and `rule_introduced_functor_name` already asks that same
@@ -18,20 +18,20 @@
 //!     through the name instead of through arity — WI-619 fixed the arity gate and left
 //!     the name gate standing.
 //!   * `rule_introduced_functor_name` — WHICH NAME THE RULE INTRODUCES. A written
-//!     `struct_eq(f948(?x), ?x)` made the ARGUMENT `f948` the subject and minted it
+//!     `unify(f948(?x), ?x)` made the ARGUMENT `f948` the subject and minted it
 //!     `SymbolKind::EquationFunctor`: WI-898's distinction inverted for a rule that
 //!     contains no equation at all.
 //!
 //! # WHAT THIS FIX DOES NOT CHANGE, MEASURED HERE RATHER THAN LEFT IMPLIED
 //!
 //! A written connective-named head still does not RUN, and this file must not read as
-//! a promise that it does. `eq` / `unify` / `struct_eq` are reserved vocabulary
+//! a promise that it does. Every connective spelling is reserved vocabulary
 //! (`kernel_vocab_qualified` / `PRELUDE_QUALIFIED`), so such a head RESOLVES rather
 //! than declares (WI-896) — to `anthill.prelude.PartialEq.eq` or
-//! `anthill.kernel.struct_eq` — and its clause joins that builtin-backed name, where
+//! `anthill.kernel.unify` — and its clause joins that builtin-backed name, where
 //! WI-139 unindexes it (`is_equational_head`) or the builtin decides the goal before
 //! any clause is consulted. Loaded, unreachable, silent. That is **WI-899**, still
-//! open, which names `eq`/`unify`/`struct_eq` heads explicitly and whose acceptance is
+//! open, which names connective heads explicitly and whose acceptance is
 //! "a clause the resolver can never reach is refused or diagnosed rather than silently
 //! loaded". The inertness is PRE-EXISTING, not created by this guard, and one row of
 //! each of the first two tests MEASURES it on a shape that loads with the guard AND
@@ -44,6 +44,14 @@
 //! after. It exchanges a refusal that named the wrong thing (`unresolved name 't'`,
 //! because the guard never folded) for WI-899's known silence. It does not become a
 //! working predicate, and the test says so at its site.
+//!
+//! WHY THE DIRECTION-2 FIXTURES SAY `unify` AND NOT `struct_eq`. They said `struct_eq`
+//! when this landed, and WI-1090 then removed that spelling from
+//! `pratt::EQUATION_FUNCTORS` — after which `parse_equation_lhs` declined those fixtures
+//! on the NAME test and the `is_minted` guard stopped being what decided them. The tests
+//! kept passing and measured nothing; the back-out run is what showed it. Any fixture
+//! here must be spelled with a live connective, and a future narrowing of that list has
+//! to move these with it.
 //!
 //! THE CONTROL, measured by backing the `is_minted` guard out of `parse_equation_lhs`:
 //! all three tests fail, each on the assertion its doc names. The rows marked
@@ -162,11 +170,11 @@ end
 /// and without it — MEASURED, in this order — because `mine948` is not a connective
 /// spelling, so `parse_equation_lhs` declines it on the name test alone either way.
 ///
-/// The row just before the absence is the WI-899 counterpart of the first test's first:
-/// the `struct_eq` head does land a clause, in the KERNEL builtin's bucket, where the
-/// resolver's own `===` decides the goal first. Asserted rather than left unsaid,
-/// because a fixture that silently extends a kernel relation is exactly the kind of
-/// thing a reader should see stated. Either way, guard or no guard.
+/// The row just before the absence is the WI-899 counterpart of the first test's first,
+/// on this fixture's own connective: the `unify` head resolves to the kernel symbol and
+/// is then unindexed as a law, so it reaches no goal. Stated rather than left implied,
+/// because a fixture whose rule does nothing is exactly the kind of thing a reader
+/// should see said out loud. Either way, guard or no guard.
 #[test]
 fn an_argument_of_a_written_connective_head_is_not_the_subject() {
     const SRC: &str = r#"
@@ -174,7 +182,7 @@ namespace wi948.subject
   sort S
     import anthill.prelude.{Int64}
     entity boxed948(v: Int64)
-    rule struct_eq(f948(?x), ?x)
+    rule unify(f948(?x), ?x)
     rule mine948(boxed948(v: ?x), ?x)
     rule drive948(?v) :- mine948(boxed948(v: 7), ?v)
   end
@@ -210,15 +218,29 @@ end
          reaches it and the head's shared `?x` carries 7 out; got {values:?}",
     );
 
-    // EITHER WAY, and before the absence below so the control run reaches it.
-    // `struct_eq` is reserved kernel vocab, so this head resolves to the builtin `===`
-    // and files its clause there — behind a resolver primitive that answers before any
-    // clause is read. WI-899, not this fix.
+    // EITHER WAY, and before the absence below so the control run reaches it. `unify` is
+    // reserved kernel vocab, so this head RESOLVES to `anthill.kernel.unify` (WI-896) —
+    // and an untagged bodyless head on a connective is a WI-139 cite-required law, so
+    // `unindex_functor` drops it. The rule reaches no goal, with the guard or without.
+    // A DELTA against the same program minus the rule, because the stdlib's own `[simp]`
+    // equations live in that bucket and an absolute count would be a census of them.
+    const WITHOUT_THE_CONNECTIVE_HEAD: &str = r#"
+namespace wi948.subject
+  sort S
+    import anthill.prelude.{Int64}
+    entity boxed948(v: Int64)
+    rule mine948(boxed948(v: ?x), ?x)
+  end
+end
+"#;
+    let mut without = crate::common::load_kb_with(WITHOUT_THE_CONNECTIVE_HEAD);
+    let qn = "anthill.kernel.unify";
     assert_eq!(
-        clauses_under(&mut kb, "anthill.kernel.struct_eq"),
-        1,
-        "the head resolves to the kernel connective and its clause lands in that \
-         bucket, unreachable behind the builtin — stated here rather than hidden",
+        clauses_under(&mut kb, qn),
+        clauses_under(&mut without, qn),
+        "the head resolves to the kernel connective and is then unindexed as a law, so \
+         it contributes nothing a goal can reach — stated here rather than hidden. \
+         This fix does not change it; WI-899 owns making it loud",
     );
 
     assert!(
@@ -241,7 +263,7 @@ fn an_argument_is_not_reported_as_defined_by_equations() {
 namespace wi948.cite
   sort S
     import anthill.prelude.{Int64}
-    rule struct_eq(f948(?x), ?x)
+    rule unify(f948(?x), ?x)
     operation drive(n: Int64) -> Int64 = f948(n)
   end
 end

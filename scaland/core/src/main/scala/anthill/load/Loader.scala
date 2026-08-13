@@ -718,28 +718,100 @@ object Loader:
         if name.contains('.') then None else Some((name, kind))
       case _ => None
 
-  /** The LHS operand of a parse-layer EQUATION head (`lhs = rhs` / `<=>` / `===`), or
-    * `None` when `head` is not one. The connective sits at the head with its subject
-    * at position 0; arity 2 is load-bearing — a 2-ary head is told from an equation by
-    * the CONNECTIVE (`Pratt.isEquationFunctor`, the one source of truth for the
-    * functors the infix desugar mints), never by arity alone. */
+  /** THE SHAPE: a head the infix desugar wrote with an equality-family connective —
+    * its functor spelling and its LHS operand — or `None` when `head` is not one. The
+    * connective sits at the head with its operands at 0 and 1; arity 2 is load-bearing
+    * — a 2-ary head is told from a connective head by the FUNCTOR
+    * (`Pratt.isEqualityFamilyFunctor`, one source of truth with the desugar's table),
+    * never by arity alone.
+    *
+    * `isMinted` FIRST, and it is not redundant with the name test: only a node the
+    * infix desugar built is a written connective. Without it the decision would be
+    * re-derived from a name blocklist — the thing `SimpleTermStore.minted` exists to
+    * replace — and a legitimate 2-ary predicate head spelled as an ordinary call
+    * (`rule eq(?a, ?b)`) would be read as an equation whose "LHS" is a variable,
+    * introducing nothing at all. (WI-948 ported this guard to rustland's
+    * `parse_equation_lhs`; the two implementations agree.) */
+  private def parseConnectiveHead(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
+  ): Option[(String, TermId)] =
+    if !fileTerms.isMinted(head) then None
+    else fileTerms.get(head) match
+      case fn: Term.Fn if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
+        val name = fileSym.name(fn.functor)
+        Option.when(Pratt.isEqualityFamilyFunctor(name))((name, fn.posArgs(0)))
+      case _ => None
+
+  /** The LHS operand of a parse-layer DEFINING EQUATION head (`lhs = rhs` / `<=>`), or
+    * `None` when `head` is not one — [[parseConnectiveHead]] narrowed to the
+    * connectives that DEFINE. `===` is not one (WI-1090): it is the structural identity
+    * test, its subject defines nothing, and a bodyless `===` head is refused by
+    * [[nonDefiningConnectiveHead]] instead of being stamped.
+    *
+    * Two questions, kept apart deliberately — "where do the operands sit" is the shape
+    * above and answers the same for every family member, while "does this head DEFINE"
+    * is this one. Collapsing them cost rustland a bodied `g[T](?x) === ?x :- p(?x)`,
+    * whose `[T]` introducer rides on the LHS like every connective head's. */
   private def parseEquationLhs(
     fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
   ): Option[TermId] =
-    // `isMinted` FIRST, and it is not redundant with the name test: only a node the
-    // infix desugar built is a written connective. Without it the decision would be
-    // re-derived from a name blocklist — the thing `SimpleTermStore.minted` exists to
-    // replace — and a legitimate 2-ary predicate head spelled as an ordinary call
-    // (`rule eq(?a, ?b)`) would be read as an equation whose "LHS" is a variable,
-    // introducing nothing at all. (WI-948 ported the guard back to rustland's
-    // `parse_equation_lhs`, where it also fixed the `[T]`-introducer reader; the two
-    // implementations agree here, so this is no longer a divergence.)
-    if !fileTerms.isMinted(head) then None
-    else fileTerms.get(head) match
-      case fn: Term.Fn
-        if fn.posArgs.length == 2 && fn.namedArgs.isEmpty
-        && Pratt.isEquationFunctor(fileSym.name(fn.functor)) => Some(fn.posArgs(0))
-      case _ => None
+    parseConnectiveHead(fileSym, fileTerms, head)
+      .filter((name, _) => Pratt.isEquationFunctor(name))
+      .map((_, lhs) => lhs)
+
+  /** WI-1090 — a head written with an equality-family connective that does NOT define,
+    * as `(connective spelling, subject or None)`. `None` for every other head,
+    * including a defining one: a `=`/`<=>` head is a real equation and is nobody's
+    * error.
+    *
+    * Purely parse-layer: `isMinted` already proves the desugar wrote the node, so the
+    * connective's identity needs no symbol resolution — a user's own `struct_eq`
+    * operation can never be minted (WI-948), which is why that guard exists. */
+  private def nonDefiningConnectiveHead(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
+  ): Option[(String, Option[String])] =
+    parseConnectiveHead(fileSym, fileTerms, head)
+      .filterNot((name, _) => Pratt.isEquationFunctor(name))
+      .map { (name, lhs) =>
+        val subject = fileTerms.get(lhs) match
+          case fn: Term.Fn => Some(fileSym.name(fn.functor))
+          case Term.Ref(s) => Some(fileSym.name(s))
+          case _           => None
+        (name, subject)
+      }
+
+  /** WI-1090 — THE CONNECTIVE-DEFINES-NOTHING SENTENCE. `===` compares, it does not
+    * define, and `<=>` is the connective that does; the author who wrote this believes
+    * otherwise, so the message has to say which and name the substitute. Mirrors
+    * rustland's `non_defining_connective_head_message`. */
+  private def nonDefiningConnectiveMessage(connective: String, subject: Option[String]): String =
+    val op = if connective == Pratt.structEqFunctor then "===" else connective
+    val what = subject match
+      case Some(s) => s"the rule `$s(…) $op …` defines nothing, and `$s` is left naming no callable"
+      case None    => s"a `lhs $op rhs` rule with no body goals defines nothing"
+    val remedy = subject match
+      case Some(s) => s"Write `<=>` to define `$s` by equations"
+      case None    => "Write `<=>` to define by equations"
+    s"`$op` is the structural identity TEST, not a defining connective, so $what: " +
+    s"`$op` is a resolver builtin that answers every goal itself, so no clause of it is " +
+    s"ever consulted, and a `[simp]` tag on it never fires (the normalizer reads only " +
+    s"the `=` and `<=>` equations). $remedy, or give the rule a BODY GOAL to state it " +
+    s"as an ordinary law about `$op`."
+
+  /** WI-1090 — push the refusal for a bodyless head written with a non-defining
+    * connective, reporting whether it fired. One helper for the two callers a bodyless
+    * head has: a `rule` with no body, and a `fact` (which §6.1 defines as exactly
+    * that). Rustland shipped the rule side alone and its review found the `fact`
+    * spelling loading clean one keyword away. */
+  private def refuseNonDefiningConnectiveHead(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId,
+    span: Span, errors: ArrayBuffer[LoadError]
+  ): Boolean =
+    nonDefiningConnectiveHead(fileSym, fileTerms, head) match
+      case Some((connective, subject)) =>
+        errors += LoadError.Other(nonDefiningConnectiveMessage(connective, subject), span)
+        true
+      case None => false
 
   /** WI-295: a `Selective` import name that did not resolve in pass 2. The
     * head-functor symbol of a rule-introduced predicate is not registered until pass
@@ -980,9 +1052,14 @@ object Loader:
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
       item match
         case Item.FactItem(fact) =>
-          val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors)
-          val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
-          kb.assertFact(kbTerm, sortSort, scope)
+          // WI-1090: a fact IS a bodyless rule (§6.1), so `fact lhs === rhs` is the same
+          // dead clause the rule arm refuses — refused BEFORE the assert, so no consumer
+          // that collects errors without failing the load sees the pre-fix KB.
+          if !refuseNonDefiningConnectiveHead(
+            fileSym, fileTerms, fact.term, fileTerms.spanOf(fact.term), errors) then
+            val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors)
+            val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
+            kb.assertFact(kbTerm, sortSort, scope)
 
         case Item.RuleItem(rule) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
@@ -1121,6 +1198,15 @@ object Loader:
         "(e.g. `rule my_law: H1, H2 :- B`)",
         rule.span)
       return
+
+    // WI-1090: a BODYLESS head written with a connective that does not DEFINE
+    // (`lhs === rhs`) is a definition that cannot define — refused before any clause is
+    // asserted. A rule with a body is untouched: it is not an equation at all (§8.3) but
+    // an ordinary law about the operator, which `totalfloat.anthill` writes.
+    if rule.body.isEmpty then
+      val refused = positiveHeads.exists(h =>
+        refuseNonDefiningConnectiveHead(fileSym, fileTerms, h, fileTerms.spanOf(h), errors))
+      if refused then return
 
     val kbBody = rule.body.map(_.map(b =>
       reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm))).getOrElse(IndexedSeq.empty)

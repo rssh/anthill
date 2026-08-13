@@ -301,6 +301,34 @@ pub enum LoadError {
         /// rides this layer unchanged rather than being flattened and rebuilt.
         census: super::simp_rewrite::ClauseCensus,
     },
+    /// WI-1090: a BODYLESS rule head written with `===`. The shape reads as a
+    /// definition and can never be one: `===` is the structural identity TEST (spec
+    /// §"Equality: test vs. bind" puts it in the test column beside `=`; §"`===` —
+    /// the structural identity *test*" makes it a resolver builtin that never
+    /// dispatches), while `<=>` is named there as the connective of equational rule
+    /// heads.
+    ///
+    /// Load-blocking, because every later site is silent. MEASURED before this
+    /// refusal: the rule loaded, its subject was stamped `EquationFunctor` with zero
+    /// clauses under it, `simp_equation_rids` could never reach it so a `[simp]` tag
+    /// did nothing, its clause went to the kernel builtin's bucket where the builtin
+    /// answers first (0 solutions with the law and without it, on a goal the law
+    /// makes true), and the only diagnostic the author ever saw was at a CITATION,
+    /// blaming a missing equation that was written three lines up.
+    ///
+    /// BODIED is untouched: `lhs === rhs :- guard` is not an equation at all (§8.3)
+    /// but an ordinary clause on the connective, which is WI-899's subject and
+    /// `totalfloat.anthill`'s `rule eq(?a, ?b) :- ?a === ?b` shape.
+    StructEqDefiningHead {
+        span: Option<Span>,
+        /// The connective's functor spelling, carried from the desugar's own table so
+        /// a later non-defining family member reports under its own name.
+        connective: &'static str,
+        /// The subject's spelling — the name the author was trying to define, read off
+        /// the LHS operand — or `None` when that operand names nothing (`rule ?x ===
+        /// ?x`). See [`NonDefiningConnectiveHead::subject`].
+        subject: Option<String>,
+    },
     /// WI-1034: a RULE-BODY goal whose functor names nothing — no clause indexes it
     /// and no declaration of any kind (sort / entity / operation / const / builtin)
     /// carries it. The goal can never match, so the conjunction it sits in is dead
@@ -1483,6 +1511,7 @@ impl LoadError {
             | LoadError::UnselectedInstance { span, .. }
             | LoadError::AmbiguousSpecOpDispatch { span, .. }
             | LoadError::TypedPatternNotEnforced { span, .. }
+            | LoadError::StructEqDefiningHead { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -1679,6 +1708,18 @@ impl LoadError {
                 span,
             } => {
                 let msg = super::typing::unreduced_equation_functor_message(functor, *census);
+                if let Some(sp) = span {
+                    format!("{}: {}", loc.format_start(*sp), msg)
+                } else {
+                    msg
+                }
+            }
+            LoadError::StructEqDefiningHead {
+                connective,
+                subject,
+                span,
+            } => {
+                let msg = non_defining_connective_head_message(connective, subject.as_deref());
                 if let Some(sp) = span {
                     format!("{}: {}", loc.format_start(*sp), msg)
                 } else {
@@ -2448,6 +2489,18 @@ impl std::fmt::Display for LoadError {
                 span,
             } => {
                 let msg = super::typing::unreduced_equation_functor_message(functor, *census);
+                if let Some(sp) = span {
+                    write!(f, "{} at {}..{}", msg, sp.start, sp.end)
+                } else {
+                    write!(f, "{}", msg)
+                }
+            }
+            LoadError::StructEqDefiningHead {
+                connective,
+                subject,
+                span,
+            } => {
+                let msg = non_defining_connective_head_message(connective, subject.as_deref());
                 if let Some(sp) = span {
                     write!(f, "{} at {}..{}", msg, sp.start, sp.end)
                 } else {
@@ -3878,69 +3931,131 @@ impl RuleIntroduction {
     }
 }
 
-/// The LHS operand of a parse-layer EQUATION head (`lhs = rhs` / `<=>` / `===`),
-/// or `None` when `head` is not one. THE ONE OWNER of that shape knowledge — the
-/// connective sits at the head and its subject at `pos_args[0]` — so the two
-/// readers cannot answer it differently: [`rule_introduced_functor_name`] (which
-/// name the rule introduces) and `Loader::collect_rule_tvar_names` (where a head's
-/// `[T]` introducer rides, WI-619). They were separate walks 11k lines apart and
-/// had already drifted on the arity guard.
+/// THE SHAPE: a parse-layer head the infix desugar wrote with an equality-family
+/// connective — its functor spelling and its LHS operand — or `None` when `head` is
+/// not one. THE ONE OWNER of that knowledge (the connective sits at the head, its
+/// operands at `pos_args[0]` and `[1]`), so no reader can walk it differently. They
+/// were separate walks 11k lines apart and had already drifted on the arity guard.
 ///
 /// Arity 2 is load-bearing and WI-619 records why: a plain 2-ary predicate head
-/// (`same_ty[t](?x, ?y)`) is told from an equation by the CONNECTIVE
-/// ([`is_equation_functor`](crate::parse::pratt::is_equation_functor), the one
-/// source of truth for the functors the infix desugar mints), never by arity
-/// alone — but a connective-named head of some other arity is not an equation
-/// either.
+/// (`same_ty[t](?x, ?y)`) is told from a connective head by the FUNCTOR
+/// ([`is_equality_family_functor`](crate::parse::pratt::is_equality_family_functor),
+/// one source of truth with the desugar's table), never by arity alone — but a
+/// connective-named head of some other arity is not one either.
 ///
-/// WI-948 — AND THE CONNECTIVE MUST BE ONE THE DESUGAR WROTE, which is
-/// `is_minted` (WI-618) and not the name: `SimpleTermStore::minted` exists
-/// precisely so this decision is carried rather than re-derived from a
-/// spelling. `eq` / `unify` / `struct_eq` are also ORDINARY IDENTIFIERS, so the
-/// name test alone answers YES for a head that is a written CALL — and then
-/// hands both readers the first ARGUMENT where the subject should be. Silent in
-/// both, MEASURED on rustland before this guard:
+/// WI-948 — AND THE CONNECTIVE MUST BE ONE THE DESUGAR WROTE, which is `is_minted`
+/// (WI-618) and not the name: `SimpleTermStore::minted` exists precisely so this is
+/// carried rather than re-derived from a spelling. The family's names are also
+/// ORDINARY IDENTIFIERS, so the name test alone answers YES for a head that is a
+/// written CALL — and then hands every reader the first ARGUMENT where the subject
+/// should be. Silent, and MEASURED on rustland before the guard: a written
+/// `unify(f(?x), ?x)` made `f` the subject and stamped it
+/// [`SymbolKind::EquationFunctor`], after which a citation of `f` was refused with
+/// "is defined by equations … no defining equation for it can be found".
 ///
-/// * [`Loader::collect_rule_tvar_names`] looked for `rule eq[t](?x, ?y)`'s `[t]`
-///   introducer on `?x`, found none, and dropped it — so the `:- Eq[t]` guard
-///   never folded, `t` reached scope resolution as an ordinary term
-///   (`unresolved name 't'`), and the unconsumed bracket drew WI-839's
-///   "call-site type arguments are not supported here". This is WI-619's defect
-///   reached through the NAME; WI-619 fixed the arity gate beside it.
-/// * [`rule_introduced_functor_name`] made `rule struct_eq(f(?x), ?x)`'s
-///   argument the subject and minted `f` stamped
-///   [`SymbolKind::EquationFunctor`] — WI-898's distinction inverted for a rule
-///   with no equation in it, after which a citation of `f` was refused with
-///   "is defined by equations … no defining equation for it can be found".
+/// WI-1090 — TWO QUESTIONS, AND THIS FUNCTION ANSWERS ONLY THE FIRST HALF OF EACH.
+/// "Where do the operands sit" and "does this head DEFINE" are different questions
+/// with different answers for `===`, and collapsing them broke the bodied
+/// `g[T](?x) === ?x :- p(?x)` — its `[T]` rides on the LHS like every connective
+/// head's, but its subject introduces nothing. So the shape lives here and the
+/// meaning lives in the two callers:
 ///
-/// The mint damage is only ever to the ARGUMENT: all three connective spellings
-/// are implicit-tier reserved vocabulary ([`PRELUDE_QUALIFIED`] /
-/// [`kernel_vocab_qualified`]), so a head can never introduce one of them
-/// whatever this function answers — [`name_denotes_for_rule_head`] refuses it
-/// (WI-530), measured identical with the guard and without it.
-///
-/// The guard is one condition, not new machinery: [`rule_introduced_functor_name`]
-/// already asks `is_minted` about the SUBJECT two steps later, for the same
-/// reason. Scaland's `Loader.parseEquationLhs` carried it first (WI-618 port);
-/// the two implementations now agree.
-fn parse_equation_lhs(
-    parse_sym: &crate::intern::SymbolTable,
+/// * [`parse_equation_lhs`] adds `is_equation_functor` — the DEFINING subset — and
+///   is what [`rule_introduced_functor_name`] asks.
+/// * `Loader::collect_rule_tvar_names` takes this one whole, because a `[T]`
+///   introducer rides on the LHS of a comparison exactly as it does on the LHS of a
+///   definition.
+fn parse_connective_head<'a>(
+    parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
     head: TermId,
-) -> Option<TermId> {
+) -> Option<(&'a str, TermId)> {
     if !parse_terms.is_minted(head) {
         return None;
     }
     match parse_terms.get(head) {
         Term::Fn {
             functor, pos_args, ..
-        } if pos_args.len() == 2
-            && crate::parse::pratt::is_equation_functor(parse_sym.local_name(*functor)) =>
-        {
-            Some(pos_args[0])
+        } if pos_args.len() == 2 => {
+            let name = parse_sym.local_name(*functor);
+            crate::parse::pratt::is_equality_family_functor(name).then_some((name, pos_args[0]))
         }
         _ => None,
     }
+}
+
+/// The LHS operand of a parse-layer DEFINING EQUATION head (`lhs = rhs` / `<=>`), or
+/// `None` when `head` is not one — [`parse_connective_head`] narrowed to the
+/// connectives that define ([`is_equation_functor`](crate::parse::pratt::is_equation_functor)).
+/// The question [`rule_introduced_functor_name`] asks: whose name does this rule
+/// introduce, and does the head shape make it an equation functor?
+///
+/// `===` is deliberately NOT one (WI-1090, spec §"Equality: test vs. bind"): it is a
+/// test, its subject defines nothing, and a bodyless `===` head is refused at load
+/// ([`LoadError::StructEqDefiningHead`]) rather than stamped.
+///
+/// The mint damage this can still do is only ever to the ARGUMENT: every connective
+/// spelling is implicit-tier reserved vocabulary ([`PRELUDE_QUALIFIED`] /
+/// [`kernel_vocab_qualified`]), so a head can never introduce one of them whatever
+/// this answers — [`name_denotes_for_rule_head`] refuses it (WI-530), measured
+/// identical with the `is_minted` guard and without it.
+fn parse_equation_lhs(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    head: TermId,
+) -> Option<TermId> {
+    parse_connective_head(parse_sym, parse_terms, head)
+        .filter(|(name, _)| crate::parse::pratt::is_equation_functor(name))
+        .map(|(_, lhs)| lhs)
+}
+
+/// WI-1090 — a head the desugar wrote with an equality-family connective that does
+/// NOT define, described well enough for the refusal to say what the author meant.
+/// `None` for every other head, including a defining one: a `=`/`<=>` head is a real
+/// equation and is nobody's error.
+struct NonDefiningConnectiveHead {
+    /// The connective's functor spelling (`struct_eq`) — carried rather than assumed,
+    /// so a later family member gets the refusal without a second site learning its
+    /// name.
+    connective: &'static str,
+    /// The subject's spelling when the LHS is an application — the name the author was
+    /// trying to define. `None` for a variable or literal LHS (`rule ?x === ?x`),
+    /// which names nothing: the refusal still fires, and its message must not invent a
+    /// subject (a first cut substituted the CONNECTIVE there and told the author to
+    /// define `===` itself).
+    subject: Option<String>,
+}
+
+/// Read a rule or fact head as a [`NonDefiningConnectiveHead`]. Purely parse-layer:
+/// `is_minted` already proves the desugar wrote the node, so the connective's identity
+/// needs no symbol resolution — a user's own `struct_eq` operation can never be minted
+/// (WI-948), which is the whole reason that guard exists.
+fn non_defining_connective_head(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    head: TermId,
+) -> Option<NonDefiningConnectiveHead> {
+    let (name, lhs) = parse_connective_head(parse_sym, parse_terms, head)?;
+    if crate::parse::pratt::is_equation_functor(name) {
+        return None;
+    }
+    // `&'static`: the name came from the desugar's own table, so it outlives the parse
+    // store — and pinning it to the table is what makes a new family member reach this
+    // refusal by being added there, rather than by someone remembering this site.
+    let connective = crate::parse::pratt::EQUALITY_FAMILY_FUNCTORS
+        .iter()
+        .copied()
+        .find(|n| *n == name)?;
+    let subject = match parse_terms.get(lhs) {
+        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+            Some(parse_sym.local_name(*functor).to_string())
+        }
+        _ => None,
+    };
+    Some(NonDefiningConnectiveHead {
+        connective,
+        subject,
+    })
 }
 
 /// The name a rule INTRODUCES — the name that must become a scoped symbol so a
@@ -4069,6 +4184,48 @@ fn duplicate_type_message(
          members join the first's, silently. Rename one, or move the members into a \
          `namespace {name} … end` at the same address, which adds to the type without \
          redefining it."
+    )
+}
+
+/// WI-1090 — THE CONNECTIVE-DEFINES-NOTHING SENTENCE, one owner, for
+/// [`duplicate_type_message`]'s reason: `LoadError` renders through two paths, and a
+/// second hand-kept copy would drift with only one of them under test.
+///
+/// Says WHY and names the substitute, because the author who wrote this believes they
+/// defined a function and the message has to replace that belief: `===` compares, it
+/// does not define, and `<=>` is the connective that does. The three silences it stands
+/// in for — a `[simp]` that cannot fire, a subject stamped as an equation functor
+/// owning no equations, and a clause filed behind a resolver builtin — are all
+/// invisible from the source, which is why this fires at the rule rather than waiting
+/// for a citation to mis-report it.
+///
+/// `subject` is `None` when the left operand names nothing (`rule ?x === ?x`), and the
+/// sentence then omits it rather than substituting something. A first cut put the
+/// CONNECTIVE in that slot and rendered "`===` is left naming no callable. Write `<=>`
+/// to define `===` by equations" — a remedy telling the author to define the operator
+/// they had just used.
+fn non_defining_connective_head_message(connective: &str, subject: Option<&str>) -> String {
+    let op = match connective {
+        crate::parse::pratt::STRUCT_EQ_FUNCTOR => "===",
+        other => other,
+    };
+    let what = match subject {
+        Some(s) => format!(
+            "the rule `{s}(…) {op} …` defines nothing, and `{s}` is left naming no callable"
+        ),
+        None => format!("a `lhs {op} rhs` rule with no body goals defines nothing"),
+    };
+    let remedy = match subject {
+        Some(s) => format!("Write `<=>` to define `{s}` by equations"),
+        None => "Write `<=>` to define by equations".to_string(),
+    };
+    format!(
+        "`{op}` is the structural identity TEST, not a defining connective, so {what}: \
+         `{op}` is a resolver builtin that answers every goal itself, so no clause of it \
+         is ever consulted, and a `[simp]` tag on it never fires (the normalizer reads \
+         only the `=` and `<=>` equations). {remedy}, or give the rule a BODY GOAL to \
+         state it as an ordinary law about `{op}` — a folded `Spec[T]` bound is not one, \
+         so a rule whose only goal was that guard is still a definition here."
     )
 }
 
@@ -19267,6 +19424,24 @@ impl<'a> Loader<'a> {
         // typo in a fact argument would otherwise assert inert arrow data.
         self.check_bare_arrow_typo(f.term, "a fact", &HashSet::new());
 
+        // WI-1090: …and being a bodyless rule (§6.1) is exactly what makes a `fact lhs
+        // === rhs` the same dead clause `load_rule` refuses. Found by review after the
+        // rule-side refusal shipped alone: one keyword away, `fact boxp(v: 1) ===
+        // boxp(v: 1)` loaded clean and filed its clause under the kernel connective. A
+        // fact has no body to give it the other reading, so the refusal here needs no
+        // emptiness test — the item IS the empty body.
+        if let Some(nd) =
+            non_defining_connective_head(&self.parsed.symbols, &self.parsed.terms, f.term)
+        {
+            self.errors.push(LoadError::StructEqDefiningHead {
+                span: Some(self.source_span_of(f.term).span),
+                connective: nd.connective,
+                subject: nd.subject,
+            });
+            self.current_owner = prev_owner;
+            return;
+        }
+
         // WI-716: a fact head is a ground VALUE — mark the conversion so the
         // partial-named-arg expansion defaults an absent OPTIONAL field to
         // `none()` rather than an unbound var (which would unsoundly unify a
@@ -19671,16 +19846,23 @@ impl<'a> Loader<'a> {
         head_parse_id: TermId,
         out: &mut std::collections::HashSet<String>,
     ) {
-        // For an equational head `keep[T](…) = rhs` the introducer rides on the
-        // LHS operand (`pos_args[0]`), so read the type-args there rather than off
-        // the whole `eq(lhs, rhs)` node. WI-619: recognize the equational head by
-        // its connective FUNCTOR (`eq`/`unify`/`struct_eq`, the pratt desugar of
-        // `=`/`<=>`/`===`), NOT by `pos_args.len() == 2` — a plain 2-ary predicate
-        // head (`same_ty[t](?x, ?y)`) also has two positional args, and reading
-        // type-args off `pos_args[0]` (the first ARGUMENT `?x`, which has none)
-        // there would silently drop the head's `[t]` introducer (1-ary and 3-ary
-        // heads read off the head node and worked; exactly 2-ary misfired).
-        let target = parse_equation_lhs(&self.parsed.symbols, &self.parsed.terms, head_parse_id)
+        // For a connective head `keep[T](…) = rhs` the introducer rides on the LHS
+        // operand (`pos_args[0]`), so read the type-args there rather than off the
+        // whole `eq(lhs, rhs)` node. WI-619: recognize the connective head by its
+        // FUNCTOR, NOT by `pos_args.len() == 2` — a plain 2-ary predicate head
+        // (`same_ty[t](?x, ?y)`) also has two positional args, and reading type-args
+        // off `pos_args[0]` (the first ARGUMENT `?x`, which has none) there would
+        // silently drop the head's `[t]` introducer (1-ary and 3-ary heads read off the
+        // head node and worked; exactly 2-ary misfired).
+        //
+        // WI-1090: [`parse_connective_head`] and NOT `parse_equation_lhs` — the whole
+        // FAMILY, including the connectives that define nothing. Where a `[T]` rides is
+        // a question about the head's SHAPE, and `===` has the same shape as `=`. Asked
+        // through the narrower predicate, a bodied `g[T](?x) === ?x :- p(?x)` lost its
+        // bracket to the WI-839 sweep while its one-character-apart `<=>` twin kept it
+        // — WI-619's own defect, for a spelling WI-619 could not have known about.
+        let target = parse_connective_head(&self.parsed.symbols, &self.parsed.terms, head_parse_id)
+            .map(|(_, lhs)| lhs)
             .unwrap_or(head_parse_id);
         if let Some(bindings) = self.read_parse_call_type_args(target) {
             let mut all_introducers = true;
@@ -19877,6 +20059,13 @@ impl<'a> Loader<'a> {
         // so the head-error paths can key on the head OCCURRENCE (its RuleId)
         // rather than the hash-consed head TermId.
         let mut positive_head_spans: Vec<SourceSpan> = Vec::with_capacity(r.heads.len());
+        // WI-1090: per positive head, the non-defining connective it was written with
+        // (`===`), parallel to `positive_heads`. Read from the PARSE store because the
+        // KB head cannot answer it — a written `struct_eq(…)` call resolves to the same
+        // kernel symbol a `===` does (WI-948), and the two are different mistakes with
+        // different owners (this one, and WI-899).
+        let mut positive_head_nondefining: Vec<Option<NonDefiningConnectiveHead>> =
+            Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
         for h in &r.heads {
             match h {
@@ -19898,6 +20087,11 @@ impl<'a> Loader<'a> {
                     self.in_rule_head = false;
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
                     positive_head_spans.push(self.source_span_of(*tid));
+                    positive_head_nondefining.push(non_defining_connective_head(
+                        &self.parsed.symbols,
+                        &self.parsed.terms,
+                        *tid,
+                    ));
                     positive_heads.push(head);
                     // WI-797: a mounted-extent functor must have no resident rule
                     // (single owner) — refuse any head owned by a mounted source.
@@ -19956,6 +20150,34 @@ impl<'a> Loader<'a> {
         // every variable bound by an earlier positive goal — else NAF on an
         // unbound unification is unsound.
         self.check_negated_unify_allowedness(&body_nodes);
+
+        // WI-1090: a BODYLESS head written with a connective that does not DEFINE
+        // (`lhs === rhs`) is a definition that cannot define, so it is refused before
+        // any clause is asserted — `refuse_if_extent_owned`'s shape, and for its
+        // reason: a caller that collects load errors without failing the load (the
+        // `anthill run` footgun) would otherwise see exactly the pre-WI-1090 KB, a dead
+        // clause filed under the kernel connective.
+        //
+        // Bodylessness is read off `body_nodes`, i.e. AFTER guard folding, so a rule
+        // whose only body goal was a folded `Spec[T]` guard is judged by the same
+        // emptiness every equation reader uses. A BODIED one is untouched: it is not an
+        // equation at all (§8.3) but an ordinary law about the operator, which
+        // `totalfloat.anthill` writes.
+        if body_nodes.is_empty() {
+            if let Some((idx, nd)) = positive_head_nondefining
+                .iter()
+                .enumerate()
+                .find_map(|(i, h)| h.as_ref().map(|h| (i, h)))
+            {
+                self.errors.push(LoadError::StructEqDefiningHead {
+                    span: positive_head_spans.get(idx).map(|s| s.span),
+                    connective: nd.connective,
+                    subject: nd.subject.clone(),
+                });
+                self.current_owner = prev_owner;
+                return;
+            }
+        }
 
         let meta = r.meta.as_ref().map(|mb| self.load_meta_block(mb));
 
@@ -23647,6 +23869,108 @@ mod wi351_place_tests {
             role("curry.f.result.result"),
             Some(SymbolKind::CallbackResult)
         );
+    }
+}
+
+/// WI-1090 — THE TWO SIDES OF "IS THIS AN EQUATION CONNECTIVE?", pinned against each
+/// other. The question is asked twice and cannot be asked once: the parse layer has no
+/// symbols yet, so it keys on the desugar's NAME
+/// ([`crate::parse::pratt::EQUATION_FUNCTORS`]); the KB layer has resolved everything,
+/// so it keys on the canonical SYMBOL (`is_equality_connective_functor`, whose doc
+/// records why a short-name answer there is the WI-627 bug). Two keys, one rule — and
+/// nothing but a test can hold them together.
+///
+/// Both directions, because the gap this ticket closed was one-sided: the parse list
+/// named a third connective the KB cache did not, and no reader noticed for as long as
+/// the disagreement only made things silently useless.
+///
+/// This lives HERE rather than in an integration test because both halves are
+/// crate-private: `implicit_qualified` (the name → qualified-target owner) and
+/// `is_equality_connective_functor` (`pub(crate)`).
+#[cfg(test)]
+mod wi1090_connective_agreement_tests {
+    use super::*;
+    use crate::parse::pratt;
+
+    fn bootstrapped() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    /// FORWARD: every name the parse side calls an equation connective resolves, and
+    /// the KB agrees it is one. Fails if a spelling is added to `EQUATION_FUNCTORS`
+    /// without `cache_connective_syms` learning it.
+    #[test]
+    fn every_parse_equation_connective_is_one_in_the_kb() {
+        let kb = bootstrapped();
+        for name in pratt::EQUATION_FUNCTORS {
+            let qn = implicit_qualified(name).unwrap_or_else(|| {
+                panic!("`{name}` is a reserved connective, so it must have an implicit target")
+            });
+            let sym = kb
+                .try_resolve_symbol(qn)
+                .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
+            assert!(
+                kb.is_equality_connective_functor(sym),
+                "`{name}` → `{qn}`: the parse side treats a bodyless head on it as a \
+                 DEFINING equation, so the KB must index and fire it as one",
+            );
+        }
+    }
+
+    /// BACKWARD, and the row the ticket is about: `===` resolves, is reserved kernel
+    /// vocabulary, and is NOT an equation connective on either side. Before WI-1090 the
+    /// parse side said yes and the KB said no — so a `[simp]`-tagged `g(?x) === ?x`
+    /// stamped its subject `EquationFunctor` and could never fire.
+    #[test]
+    fn struct_eq_is_a_test_on_both_sides() {
+        let kb = bootstrapped();
+        let qn = implicit_qualified(pratt::STRUCT_EQ_FUNCTOR)
+            .expect("`===` is reserved kernel vocabulary and must have an implicit target");
+        let sym = kb
+            .try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
+        assert!(
+            !kb.is_equality_connective_functor(sym),
+            "`===` is the structural identity TEST (spec §'Equality: test vs. bind'), \
+             never a defining connective",
+        );
+        assert!(
+            !pratt::is_equation_functor(pratt::STRUCT_EQ_FUNCTOR),
+            "…and the parse side must give the same answer — that agreement IS WI-1090",
+        );
+    }
+
+    /// BACKWARD, over the WHOLE FAMILY: for every spelling the desugar mints for an
+    /// equality operator, the KB's verdict and the parse side's must be the same
+    /// verdict. Fails if `cache_connective_syms` learns a family member the parse list
+    /// does not name as an equation, AND if the parse list names one the cache does not
+    /// hold — so neither side can grow alone.
+    ///
+    /// It walks `EQUALITY_FAMILY_FUNCTORS` rather than a hand-written pair of accessors,
+    /// which is the whole difference between a pin and a tautology: an earlier cut
+    /// iterated `[kb.eq_functor(), kb.unify_functor()]`, whose short names ARE the two
+    /// members of `EQUATION_FUNCTORS`, so it asserted `"eq" == "eq"` and would have
+    /// stayed green through exactly the divergence this ticket closed.
+    #[test]
+    fn the_two_sides_agree_on_every_equality_family_spelling() {
+        let kb = bootstrapped();
+        for name in pratt::EQUALITY_FAMILY_FUNCTORS {
+            let qn = implicit_qualified(name).unwrap_or_else(|| {
+                panic!("`{name}` is minted by the desugar, so it must be reserved vocabulary")
+            });
+            let sym = kb
+                .try_resolve_symbol(qn)
+                .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
+            assert_eq!(
+                kb.is_equality_connective_functor(sym),
+                pratt::is_equation_functor(name),
+                "`{name}` → `{qn}`: the parse side decides whether a bodyless head on it \
+                 introduces a subject, and the KB decides whether that head is indexed \
+                 and fired as an equation. One connective, one answer",
+            );
+        }
     }
 }
 

@@ -969,6 +969,9 @@ mod wi943_type_param_identity_test;
 #[path = "include/wi948_written_connective_head_test.rs"]
 mod wi948_written_connective_head_test;
 
+#[path = "include/wi1090_struct_eq_is_a_test_test.rs"]
+mod wi1090_struct_eq_is_a_test_test;
+
 #[path = "include/wi968_builtin_registration_names_test.rs"]
 mod wi968_builtin_registration_names_test;
 

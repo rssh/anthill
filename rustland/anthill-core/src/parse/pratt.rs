@@ -45,12 +45,52 @@ pub const ARROW_FUNCTOR: &str = "arrow";
 /// The functor the ternary `-> … @ …` desugars to (an effectful arrow type).
 pub const ARROW_EFFECT_FUNCTOR: &str = "arrow_effect";
 
-/// The equation-connective functors the infix desugar mints for `=`/`<=>`/`===`
-/// (proposal 049/051). An equational rule head `lhs = rhs` carries one of these
-/// as its head functor, with the LHS at `pos_args[0]` — see [`is_equation_functor`].
+/// The functors the infix desugar mints for the equality family, `=`/`<=>`/`===`
+/// (proposal 049/051). Only the first two are EQUATION connectives — see
+/// [`EQUATION_FUNCTORS`].
 pub const EQ_FUNCTOR: &str = "eq";
 pub const UNIFY_FUNCTOR: &str = "unify";
 pub const STRUCT_EQ_FUNCTOR: &str = "struct_eq";
+
+/// The equality-family connectives — every functor the infix desugar mints for a
+/// binary equality operator, whatever it MEANS. One SHAPE: the connective at the
+/// head, its operands at `pos_args[0]` and `[1]`. Read by
+/// [`is_equality_family_functor`].
+///
+/// This is the list a reader consults when its question is about the shape rather
+/// than the meaning — WHERE a head's `[T]` introducer rides
+/// (`Loader::collect_rule_tvar_names`, WI-619) is such a question, and its answer is
+/// "on the LHS operand" for every member, including the ones that define nothing.
+/// WI-1090 learned that the hard way: narrowing [`EQUATION_FUNCTORS`] alone silently
+/// took a bodied `g[T](?x) === ?x :- p(?x)`'s bracket away from the one reader that
+/// consumes it, which is precisely the WI-619 defect for a new spelling.
+pub const EQUALITY_FAMILY_FUNCTORS: &[&str] = &[EQ_FUNCTOR, UNIFY_FUNCTOR, STRUCT_EQ_FUNCTOR];
+
+/// The EQUATION connectives: the SUBSET of [`EQUALITY_FAMILY_FUNCTORS`] whose minted
+/// node, as a bodyless rule head, is a DEFINING EQUATION — the subject at
+/// `pos_args[0]` is a name the rule introduces and the normalizer can fire. Read by
+/// [`is_equation_functor`], which is the only way to ask.
+///
+/// `struct_eq` is deliberately ABSENT (WI-1090). The spec's equality table
+/// (§"Equality: test vs. bind, structural vs. semantic") puts `===` in the TEST
+/// column beside `=`, and §"`===` — the structural identity *test*" makes it a
+/// resolver builtin that is total, carrier-agnostic and never dispatches, while
+/// `<=>` is named there as "the connective of equational rule heads". The KB-side
+/// owner ([`KnowledgeBase::is_equality_connective_functor`](crate::kb::KnowledgeBase))
+/// has always agreed — it caches `PartialEq.eq` and `kernel.unify` and nothing
+/// else — and this list is what brings the parse side to the same answer.
+///
+/// MEASURED before the correction, on a `[simp]`-tagged `g(?x) === ?x`: the
+/// subject was stamped [`SymbolKind::EquationFunctor`](crate::intern::SymbolKind)
+/// with ZERO clauses under it, `simp_equation_rids` (the eq+unify buckets) could
+/// never reach the rule, and citing `g` was refused with "defined by equations …
+/// no defining equation for it can be found" — about an equation written three
+/// lines up. The identical rule spelled `<=>` loads and runs.
+///
+/// `=` stays IN, and that is a separate known state, not an oversight: §5.3
+/// records (WI-884) that the loader accepts an `=`-spelled bodyless rule as an
+/// equation exactly as it accepts `<=>`, and WI-888 decides which side moves.
+pub const EQUATION_FUNCTORS: &[&str] = &[EQ_FUNCTOR, UNIFY_FUNCTOR];
 
 /// Is `name` one of the arrow-family functors the pratt desugar mints for
 /// `->`/`@`? The loader's bare-arrow diagnostics (WI-605/WI-618) key on this
@@ -60,27 +100,30 @@ pub fn is_arrow_functor(name: &str) -> bool {
     name == ARROW_FUNCTOR || name == ARROW_EFFECT_FUNCTOR
 }
 
-/// Is `name` one of the equation-connective functors the infix desugar mints
-/// for `=`/`<=>`/`===`? Kept as one source of truth with the TABLE below (via the
-/// shared constants), so a new equation spelling cannot drift out of the loader's
-/// equational-head recognition (WI-619: the `[T]` introducer on an equational head
-/// rides on the LHS operand, not the whole `eq(lhs, rhs)` node). Parse-layer peer
-/// of the KB-side `is_equational_head`.
+/// Is `name` an EQUATION connective — one of [`EQUATION_FUNCTORS`]? Kept as one
+/// source of truth with the TABLE below (via the shared constants), so a new
+/// equation spelling cannot drift out of the loader's equational-head recognition
+/// (WI-619: the `[T]` introducer on an equational head rides on the LHS operand,
+/// not the whole `eq(lhs, rhs)` node). Parse-layer peer of the KB-side
+/// `is_equational_head`, and WI-1090 made the two answer alike — the agreement is
+/// pinned by `load::wi1090_connective_agreement_tests`, which walks this list and the
+/// KB cache in both directions.
 ///
-/// WI-948 — A NAME, NOT A VERDICT. The three spellings are ordinary identifiers a
-/// user may write as a call, so this predicate never decides ON ITS OWN that a node
-/// is an equation: pair it with [`SimpleTermStore::is_minted`](crate::parse::ir::SimpleTermStore::is_minted),
+/// WI-948 — A NAME, NOT A VERDICT. The spellings are ordinary identifiers a user may
+/// write as a call, so this predicate never decides ON ITS OWN that a node is an
+/// equation: pair it with [`SimpleTermStore::is_minted`](crate::parse::ir::SimpleTermStore::is_minted),
 /// exactly as [`is_arrow_functor`] is paired above. `load::parse_equation_lhs` is the
 /// one caller that asks the question about a rule HEAD, and it carries the pairing.
-///
-/// THIS SET IS WIDER THAN THE KB'S — **WI-1090**, open, measured under WI-948. The
-/// KB-side owner (`KnowledgeBase::is_equality_connective_functor`) caches only
-/// `PartialEq.eq` and `kernel.unify`, so a `===` head is an equation HERE and not
-/// there: its `[simp]` tag can never fire, and WI-139's unindexing never runs on it.
-/// Do not narrow or widen either side alone — WI-1090 decides which `===` is, and
-/// makes the two read off one owner.
 pub fn is_equation_functor(name: &str) -> bool {
-    name == EQ_FUNCTOR || name == UNIFY_FUNCTOR || name == STRUCT_EQ_FUNCTOR
+    EQUATION_FUNCTORS.contains(&name)
+}
+
+/// Is `name` an equality-family connective — one of [`EQUALITY_FAMILY_FUNCTORS`]?
+/// The SHAPE question, wider than [`is_equation_functor`] by exactly the connectives
+/// that compare without defining. Ask this one when what you need is where the
+/// operands sit; ask the other when what you need is whether the head DEFINES.
+pub fn is_equality_family_functor(name: &str) -> bool {
+    EQUALITY_FAMILY_FUNCTORS.contains(&name)
 }
 
 fn infix_entry(op: &str) -> Option<&'static InfixEntry> {

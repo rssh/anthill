@@ -58,14 +58,39 @@ object Pratt:
   def lookupInfix(name: String): Option[InfixEntry] = infixTable.get(name)
   def lookupPrefix(name: String): Option[PrefixEntry] = prefixTable.get(name)
 
-  /** Is `name` one of the equation-connective functors the infix desugar mints for
-    * `=` / `<=>` / `===`? Derived from `infixTable` above rather than restated, so a
-    * new equation spelling cannot drift out of the loader's equational-head
-    * recognition. Mirrors rustland's `pratt::is_equation_functor`. */
-  private val equationFunctors: Set[String] =
+  /** The equality-family connectives — every functor the infix desugar mints for a
+    * binary equality operator, whatever it MEANS. One SHAPE: the connective at the
+    * head, its operands at positions 0 and 1. Derived from `infixTable` rather than
+    * restated, so a new spelling cannot drift out of it. Mirrors rustland's
+    * `pratt::EQUALITY_FAMILY_FUNCTORS`.
+    *
+    * This is the list to consult when the question is about the shape rather than the
+    * meaning — WHERE a head's `[T]` introducer rides is such a question, and the answer
+    * is "the LHS operand" for every member, including the ones that define nothing. */
+  private val equalityFamilyFunctors: Set[String] =
     Set("=", "<=>", "===").flatMap(infixTable.get).map(_.functor)
 
+  def isEqualityFamilyFunctor(name: String): Boolean = equalityFamilyFunctors.contains(name)
+
+  /** The EQUATION connectives: the SUBSET of [[equalityFamilyFunctors]] whose minted
+    * node, as a bodyless rule head, is a DEFINING EQUATION whose subject sits at
+    * position 0. Mirrors rustland's `pratt::EQUATION_FUNCTORS`.
+    *
+    * `===` is deliberately absent (WI-1090). The spec's equality table (§"Equality:
+    * test vs. bind, structural vs. semantic") puts it in the TEST column beside `=`,
+    * and §"`===` — the structural identity *test*" makes it a resolver builtin that
+    * never dispatches, while `<=>` is named there as "the connective of equational rule
+    * heads". A `===` head therefore introduces no subject, and a bodyless one is
+    * refused ([[Loader.nonDefiningConnectiveHead]]). */
+  private val equationFunctors: Set[String] =
+    Set("=", "<=>").flatMap(infixTable.get).map(_.functor)
+
   def isEquationFunctor(name: String): Boolean = equationFunctors.contains(name)
+
+  /** The functor `===` desugars to — the one non-defining member of the family, needed
+    * by the loader's refusal so it can name the operator back to the author. */
+  val structEqFunctor: String =
+    infixTable("===").functor
 
   /** Desugar a flat infix chain.
     *

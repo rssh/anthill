@@ -1287,6 +1287,65 @@ class ParserIntegrationTest extends munit.FunSuite:
       "a written call introduces a Goal; only the infix desugar makes an equation")
   }
 
+  // ── WI-1090: `===` is a test, not a defining connective ──
+
+  /** `===` sits in the TEST column of the spec's equality table (§"Equality: test vs.
+    * bind, structural vs. semantic"), beside `=`, with `<=>` alone in the bind column
+    * and named there as "the connective of equational rule heads". So a bodyless `lhs
+    * === rhs` reads as a definition and can never be one, and the loader says so
+    * instead of storing a clause nothing will ever consult.
+    *
+    * Ported with rustland's half (WI-1090), which measured what the silence cost: the
+    * subject was stamped an equation-functor owning zero clauses, `[simp]` could never
+    * fire it, and the only diagnostic reached the author at a CITATION, blaming a
+    * missing equation that was written three lines up. */
+  test("WI-1090: a bodyless `===` head is refused and names `<=>` as the substitute") {
+    val (kb, errs) = loadFixture(
+      """namespace p1090
+        |  sort S
+        |    rule g1090(?x) === ?x
+        |  end
+        |end""".stripMargin)
+    assert(errs.exists(e => e.toString.contains("`===` is the structural identity TEST")),
+      s"a bodyless `===` head must be refused at the rule; got $errs")
+    assert(errs.exists(e => e.toString.contains("g1090") && e.toString.contains("Write `<=>`")),
+      s"the message must name the subject and the connective that defines it; got $errs")
+    assertEquals(kindOf(kb, "p1090.S.g1090"), None,
+      "and nothing is introduced under it \u2014 `===` has no subject to introduce")
+  }
+
+  /** A fact IS a bodyless rule (§6.1), so the same head one keyword away is the same
+    * dead clause. Rustland shipped the rule side alone and its review found this
+    * spelling loading clean; both sides carry the row now. */
+  test("WI-1090: the `fact` spelling of a `===` head is refused too") {
+    val (_, errs) = loadFixture(
+      """namespace p1090b
+        |  sort S
+        |    fact g1090(1) === g1090(1)
+        |  end
+        |end""".stripMargin)
+    assert(errs.exists(e => e.toString.contains("`===` is the structural identity TEST")),
+      s"`fact lhs === rhs` is a bodyless rule and must be refused; got $errs")
+  }
+
+  /** THE LIMIT, in both directions the refusal could have overreached: a rule with a
+    * BODY is an ordinary law about the operator (`totalfloat.anthill` writes one), and
+    * a `<=>` head one character apart is a real equation whose subject IS introduced.
+    * Without this row the refusal could be widened to every `===` head — which would
+    * refuse the standard library — and nothing would notice. */
+  test("WI-1090: a bodied law about `===`, and the `<=>` twin, both still load") {
+    val (kb, errs) = loadFixture(
+      """namespace p1090c
+        |  sort S
+        |    rule same1090(?x) :- ?x === 1
+        |    rule g1090(?x) <=> ?x
+        |  end
+        |end""".stripMargin)
+    assert(errs.isEmpty, s"neither shape is a bodyless `===` head; got $errs")
+    assertEquals(kindOf(kb, "p1090c.S.g1090"), Some(SymbolKind.EquationFunctor),
+      "`<=>` is the connective of equational rule heads, so its subject IS introduced")
+  }
+
   // ── WI-992: a dotted declaration lives in the namespace it names ──
 
   /** `sort wi992.Spec` written at a file's top level, and a sibling requiring it by its
