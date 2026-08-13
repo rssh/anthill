@@ -255,12 +255,14 @@ impl Interpreter {
                         slot,
                         proj_path,
                         enclosing_sort,
+                        enclosing_op,
                         ..
                     }) => self.start_apply_deferred(
                         *spec_op_sym,
                         *slot,
                         proj_path,
                         *enclosing_sort,
+                        *enclosing_op,
                         pos_args,
                         named_args,
                         type_args,
@@ -270,12 +272,16 @@ impl Interpreter {
                         spec_op_sym,
                         enclosing_sort,
                         dispatch_dict,
+                        op_dicts,
+                        enclosing_op,
                         ..
                     }) => self.start_apply_same_sort(
                         *fn_target_sym,
                         *spec_op_sym,
                         *enclosing_sort,
                         *dispatch_dict,
+                        op_dicts,
+                        *enclosing_op,
                         pos_args,
                         named_args,
                         type_args,
@@ -320,12 +326,15 @@ impl Interpreter {
                 // changes, this must read the classification's `spec_op_sym` instead;
                 // a concrete-form `fn` would make the layout measure a spec-instance
                 // dict against the provider's chain alone.
+                // WI-822 LEG 1: no op-scoped slots — the IR `apply_within` form carries
+                // only the instance channel, and this arm is rebuild-only (see above).
                 self.start_apply_within(
                     *functor,
                     *functor,
                     args,
                     named_args,
                     requirements,
+                    &[],
                     type_args,
                 )
             }
@@ -1043,11 +1052,107 @@ impl Interpreter {
                 find_requirement(&top.requirements, *name)
                     .cloned()
                     .ok_or_else(|| {
-                        EvalError::Internal(format!(
-                            "var_ref({}) unbound in requirement position",
-                            self.kb.local_name_of(*name)
-                        ))
+                        // WI-822: the ONE spelling of this failure, shared with the
+                        // best-effort reader ([`Self::try_eval_requirement_chain_node`]),
+                        // which needs the same sentence when it decides to raise.
+                        self.unbound_requirement_error(*name)
                     })
+            }
+            other => Err(EvalError::Internal(format!(
+                "expected requirement-chain Expr, got {:?}",
+                std::mem::discriminant(other),
+            ))),
+        }
+    }
+
+    /// WI-822 — the unbound-`var_ref` message, one owner (the strict reader raises
+    /// it, the best-effort one re-raises it when its caller decides to).
+    ///
+    /// NAMES THE FRAME, for the reason its sibling in `start_apply_deferred` does:
+    /// "unbound" alone cannot tell a frame built from a DIFFERENT chain from one that
+    /// was never given requirements at all, and the message named neither the running
+    /// operation nor what the frame does hold. The two unbound-requirement messages
+    /// this mechanism can raise say the same things.
+    fn unbound_requirement_error(&self, name: Symbol) -> EvalError {
+        let Some(top) = self.stack.top() else {
+            return EvalError::Internal(format!(
+                "var_ref({}) unbound in requirement position (no current frame)",
+                self.kb.local_name_of(name),
+            ));
+        };
+        let bound: Vec<&str> = top
+            .requirements
+            .iter()
+            .map(|(n, _)| self.kb.local_name_of(*n))
+            .collect();
+        EvalError::Internal(format!(
+            "var_ref({}) unbound in requirement position (running `{}`; frame binds {:?})",
+            self.kb.local_name_of(name),
+            self.kb.qualified_name_of(top.op),
+            bound,
+        ))
+    }
+
+    /// WI-822 LEG 1 — [`Self::eval_requirement_chain_node`] for a supply that is
+    /// allowed NOT to exist: `Ok(None)` iff some `var_ref` in the chain names a slot
+    /// this frame does not bind. Every other failure is still an `Err`.
+    ///
+    /// Its one caller is the op-scoped frame push, and the tolerance is the same
+    /// decision WI-822 LEG 2 recorded for the same channel, one step earlier. A
+    /// forwarded op-scoped slot (`var_ref(__req_eq)`, emitted because the CALLER's own
+    /// chain covers the callee's dep) is only readable if the caller's own slot was
+    /// itself filled — and several routes into an operation legitimately fill none:
+    /// an eta'd `OpRef` escapes to a foreign apply frame, a host `interp.call` has no
+    /// call site at all, a dictionary-directed dispatch fills only the sort half.
+    /// MEASURED: `wi420_eta_concrete_member_evals` — `List.member` eta'd into a HOF,
+    /// whose body's recursive self-call forwards `member`'s own `__req_eq`, died
+    /// `var_ref(__req_eq) unbound` in a frame that had never been given one, on a
+    /// program whose `eq` is served by value-direction and needs no dictionary.
+    ///
+    /// Not a silent skip: the slot is left ABSENT, so a body that actually reads it
+    /// raises the frame-naming error above at the read — which is where it is a
+    /// failure. `ANTHILL_TRACE_REQ` prints what was dropped, exactly as the LEG 2
+    /// unsupplied trace does.
+    fn try_eval_requirement_chain_node(
+        &self,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Result<Option<super::value::Dictionary>, EvalError> {
+        let expr = match &occ.kind {
+            NodeKind::Expr { expr, .. } => expr,
+            _ => {
+                return Err(EvalError::Internal(
+                    "requirement chain must be an Expr-kind occurrence".into(),
+                ))
+            }
+        };
+        match expr {
+            Expr::RequirementAtSort { chain, slot } => {
+                let Some(parent) = self.try_eval_requirement_chain_node(chain)? else {
+                    return Ok(None);
+                };
+                self.project_requirement(&parent, *slot as usize, "this chain")
+                    .map(Some)
+            }
+            Expr::Dictionary {
+                impl_sort,
+                subs: sub_occs,
+            } => {
+                let mut subs: SmallVec<[super::value::Dictionary; 1]> = SmallVec::new();
+                for r in sub_occs.iter() {
+                    // A construction whose SUB is unreadable is itself unreadable —
+                    // half a dictionary is not a dictionary.
+                    let Some(s) = self.try_eval_requirement_chain_node(r)? else {
+                        return Ok(None);
+                    };
+                    subs.push(s);
+                }
+                self.build_dictionary(*impl_sort, subs).map(Some)
+            }
+            Expr::VarRef { name } => {
+                let top = self.stack.top().ok_or_else(|| {
+                    EvalError::Internal("requirement chain var_ref on empty stack".into())
+                })?;
+                Ok(find_requirement(&top.requirements, *name).cloned())
             }
             other => Err(EvalError::Internal(format!(
                 "expected requirement-chain Expr, got {:?}",
@@ -1331,6 +1436,11 @@ impl Interpreter {
         args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         requirements_occ: &[Rc<NodeOccurrence>],
+        // WI-822 LEG 1: the callee's OP-SCOPED slot expressions, appended to the frame
+        // after the dictionary's half. Empty for every operation that writes no
+        // `requires` of its own, and for the rebuild-only `Expr::ApplyWithin` arm,
+        // whose IR form carries only the instance channel.
+        op_dicts: &[Option<TermId>],
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         if requirements_occ.len() > 1 {
@@ -1357,11 +1467,131 @@ impl Interpreter {
         // `__req_<spec>` → each positional sub-instance). Same name
         // synthesis as the typer's IR emitter, so the callee body's
         // `var_ref(__req_*)` reads resolve against this frame.
-        let requirements = match dispatching_dict {
+        let mut requirements = match dispatching_dict {
             Some(dict) => self.expand_dispatching_dict(spec_op, target, &dict)?,
             None => SmallVec::new(),
         };
+        // WI-822 LEG 1: the OP-SCOPED tail, evaluated in THIS (the caller's) frame —
+        // a forwarded slot is a `var_ref` into the caller's own channel, so it has to
+        // be read before the callee's frame is pushed.
+        self.push_op_scoped_slots(target, functor, op_dicts, &mut requirements)?;
         self.dispatch_apply_with_requirements(target, requirements, type_args, args, named_args)
+    }
+
+    /// WI-822 LEG 1 — append `target`'s OP-SCOPED requirement slots (the tail of
+    /// [`op_dict_entries`], after its parent sort's) to a frame channel under
+    /// construction, evaluating each supplied expression IN THE CALLER'S FRAME.
+    ///
+    /// A slot whose expression is `None` — the call site could not project it — is
+    /// simply not placed. That is the WI-822 LEG 2 decision applied to the same
+    /// channel: "has a chain" and "needs it" are different questions, only the body
+    /// answers the second, and a body that does read an unplaced slot raises the
+    /// frame-naming `DeferToRequirement: … not bound` rather than running on a
+    /// dictionary nobody could justify. Nothing mis-indexes, because these slots are
+    /// keyed by NAME.
+    ///
+    /// The count check is not decoration: `op_dicts` was built by the TYPER from the
+    /// callee's op chain and the names are re-derived HERE from the same chain, so a
+    /// disagreement means the two read different chains — the WI-869 desync class,
+    /// one channel over.
+    fn push_op_scoped_slots(
+        &mut self,
+        target: Symbol,
+        // WI-822 LEG 1: the operation the TYPER built `op_dicts` for. Normally `target`
+        // itself, but `dispatch_via_sort_ops_table` may redirect a classified callee to
+        // another member, and a supply built for one operation is not evidence for
+        // another — its slots range over a different `requires` clause under names that
+        // can coincide. Placed only when the two agree.
+        built_for: Symbol,
+        op_dicts: &[Option<TermId>],
+        out: &mut SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<(), EvalError> {
+        // EMPTY IS NOT CHECKED against the callee's slot count, and the asymmetry is
+        // deliberate: it is both "this operation writes no `requires`" (the universal
+        // case, which must cost nothing) and "this classification had no call-site
+        // substitution to build from" — the σ-less route in `resolve.rs`, which says so
+        // at its own site. Both mean "place nothing", which the read reports if the
+        // body needs it. A NON-empty list that disagrees is a producer/consumer desync
+        // and is caught below.
+        if op_dicts.is_empty() {
+            return Ok(());
+        }
+        if built_for != target {
+            // Loud rather than placed: the count check below cannot tell two
+            // operations' chains apart when they happen to be the same length, and a
+            // dictionary keyed to the wrong clause is the one outcome this channel
+            // must never produce. Nothing in tree reaches this — a WI-415 parent-bundle
+            // dict and a WI-829 spec-instance dict both resolve back to the member the
+            // classification named — so it is an internal disagreement, not a program.
+            return Err(EvalError::Internal(format!(
+                "op-scoped frame push: the call site supplied {} slot(s) for `{}`, but \
+                 dispatch landed on `{}`",
+                op_dicts.len(),
+                self.kb.qualified_name_of(built_for),
+                self.kb.qualified_name_of(target),
+            )));
+        }
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, target);
+        let sort_len = chain.sort_len();
+        let names = chain.names(&mut self.kb);
+        let op_names = &names[sort_len.min(names.len())..];
+        if op_names.len() != op_dicts.len() {
+            return Err(EvalError::Internal(format!(
+                "op-scoped frame push: `{}` reads {} op-scoped requirement slot(s) but \
+                 the call site supplied {}",
+                self.kb.qualified_name_of(target),
+                op_names.len(),
+                op_dicts.len(),
+            )));
+        }
+        for (name, supplied) in op_names.iter().copied().zip(op_dicts.iter()) {
+            let Some(tid) = supplied else { continue };
+            let occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, *tid);
+            match self.try_eval_requirement_chain_node(&occ)? {
+                Some(dict) => out.push((name, dict)),
+                None => {
+                    if self.trace_requirements {
+                        eprintln!(
+                            "[req] op-scoped slot `{}` of `{}` NOT placed: its supply \
+                             forwards a caller slot this frame does not bind",
+                            self.kb.local_name_of(name),
+                            self.kb.qualified_name_of(target),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// WI-822 LEG 1 — drop the CALLER's own op-scoped slots from a channel the callee
+    /// INHERITS. A same-sort sibling call inherits the frame verbatim, which is right
+    /// for the sort's slots (the two members read the same ones) and wrong for the
+    /// operation's: `f requires Desc[FT]` and `g requires Desc[GT]` name one slot
+    /// `__req_desc` at two instantiations, so an inherited channel would hand `g` the
+    /// dictionary built for `f` — silently, since the names match. The callee's own
+    /// are placed afterwards by [`Self::push_op_scoped_slots`]; a slot the call site
+    /// could not project is then ABSENT and raises at the read, which is the outcome
+    /// this strip exists to prefer over a wrong one.
+    fn strip_caller_op_slots(
+        &mut self,
+        caller_op: Option<Symbol>,
+        reqs: &mut SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<(), EvalError> {
+        let Some(caller_op) = caller_op else {
+            return Ok(());
+        };
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, caller_op);
+        let sort_len = chain.sort_len();
+        let names = chain.names(&mut self.kb);
+        if sort_len >= names.len() {
+            // The overwhelmingly common caller: no `requires` of its own, nothing to
+            // strip, and not even a scan.
+            return Ok(());
+        }
+        let strip = &names[sort_len..];
+        reqs.retain(|(n, _)| !strip.contains(n));
+        Ok(())
     }
 
     /// Dispatch a `CallClass::ConcreteApplyWithin` into a sort with
@@ -1397,6 +1627,11 @@ impl Interpreter {
         spec_op: Symbol,
         enclosing_sort: Option<Symbol>,
         dispatch_dict: Option<TermId>,
+        // WI-822 LEG 1: the callee's own op-scoped slots, and the CALLER's operation
+        // whose slots must not be inherited in their place. See
+        // [`Self::push_op_scoped_slots`] / [`Self::strip_caller_op_slots`].
+        op_dicts: &[Option<TermId>],
+        enclosing_op: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         type_args: FrameTypeArgs,
@@ -1408,7 +1643,7 @@ impl Interpreter {
                 (Some(c), Some(e)) if c == e,
             );
         if inherit {
-            let caller_reqs = self
+            let mut caller_reqs = self
                 .stack
                 .top()
                 .ok_or_else(|| {
@@ -1416,6 +1651,10 @@ impl Interpreter {
                 })?
                 .requirements
                 .clone();
+            // WI-822 LEG 1: the SORT's slots are shared by every member and inherit
+            // correctly; the caller OPERATION's are its own and must not ride along.
+            self.strip_caller_op_slots(enclosing_op, &mut caller_reqs)?;
+            self.push_op_scoped_slots(target, target, op_dicts, &mut caller_reqs)?;
             return self.dispatch_apply_with_requirements(
                 target,
                 caller_reqs,
@@ -1435,8 +1674,28 @@ impl Interpreter {
                 pos_args,
                 named_args,
                 std::slice::from_ref(&dict_occ),
+                op_dicts,
                 type_args,
             );
+        }
+        // WI-822 LEG 1: no instance dictionary, but the callee may still have
+        // op-scoped slots of its own — the `Holder.probe requires Zeroable[HT]` shape,
+        // whose sort declares nothing. `start_apply` installs NO channel at all, so
+        // such a call goes through the requirements-passing dispatch with the
+        // op-scoped slots alone. Note the absence of `__req_self`: this frame had none
+        // before and gains none, so only the new slots are new.
+        if !op_dicts.is_empty() {
+            let mut reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
+            self.push_op_scoped_slots(target, target, op_dicts, &mut reqs)?;
+            if !reqs.is_empty() {
+                return self.dispatch_apply_with_requirements(
+                    target,
+                    reqs,
+                    type_args,
+                    pos_args,
+                    named_args,
+                );
+            }
         }
         self.start_apply(target, pos_args, named_args, type_args)
     }
@@ -1458,6 +1717,10 @@ impl Interpreter {
         slot: usize,
         proj_path: &[usize],
         enclosing_sort: Option<Symbol>,
+        // WI-822 LEG 1: the operation whose frame `slot` indexes. `slot` counts the
+        // sort's dictionary chain FIRST and that operation's own `requires` after it,
+        // so a sort alone cannot name a slot past the first half.
+        enclosing_op: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
         type_args: FrameTypeArgs,
@@ -1465,8 +1728,12 @@ impl Interpreter {
         let encl = enclosing_sort.ok_or_else(|| {
             EvalError::Internal("DeferToRequirement classification missing enclosing_sort".into())
         })?;
-        let caller_names =
-            crate::kb::typing::provider_dict_entries(&mut self.kb, encl).names(&mut self.kb);
+        let caller_names = match enclosing_op {
+            Some(op) => crate::kb::typing::op_dict_entries(&mut self.kb, op).names(&mut self.kb),
+            None => {
+                crate::kb::typing::provider_dict_entries(&mut self.kb, encl).names(&mut self.kb)
+            }
+        };
         let name_sym = *caller_names.get(slot).ok_or_else(|| {
             EvalError::Internal(format!(
                 "DeferToRequirement slot {slot} out of range for {} (chain len {})",
@@ -2079,19 +2346,26 @@ impl Interpreter {
     /// unresolvable requirement means, and each maps that itself.
     ///
     /// WHY THIS AND NOT A CALL-SITE SUPPLY CHANNEL (WI-822 records the choice): an
-    /// OP-SCOPED `requires` chain (WI-448/WI-562) has no frame slots at all —
-    /// `synth_req_names` is keyed by the parent SORT — so the op-scoped requirement
-    /// is served by value-direction, not by a dictionary, and demonstrably serves it
-    /// correctly (`op_scoped_relay_chain_correct_via_value_direction` computes its
-    /// 551 with no dictionary anywhere). The defect was never that value-direction
-    /// is the wrong channel; it was that the channel stopped at the impl's door.
-    /// Its one genuine blind spot is a spec op with NO receiver argument to direct
-    /// it (`operation zero() -> T`), which no value can select and which therefore
-    /// needs a real op-scoped dictionary channel — WI-822's undelivered LEG 1,
-    /// pinned as a current defect by
-    /// `receiverless_spec_op_op_scoped_rejected_sort_level_correct` (the op-scoped
-    /// spelling is REJECTED AT LOAD where its sort-level twin is correct). Not
-    /// papered over here.
+    /// op-scoped requirement (WI-448/WI-562) is served by VALUE-DIRECTION, not by a
+    /// dictionary, and demonstrably serves it correctly
+    /// (`op_scoped_relay_chain_correct_via_value_direction` computes its 551 with no
+    /// dictionary anywhere). The defect was never that value-direction is the wrong
+    /// channel; it was that the channel stopped at the impl's door.
+    ///
+    /// WI-822 LEG 1 then built the channel for the one blind spot value-direction
+    /// HAS — a spec op with NO receiver argument (`operation zero() -> T`), which no
+    /// value can select, so its two providers tie with nothing to break the tie — and
+    /// left every other op-scoped call on this route. An op's own `requires` now names
+    /// frame slots after its sort's (`op_dict_entries`), a call site fills them, and a
+    /// body defers to them only where dispatch ties
+    /// (`kb::typing::op_scoped_defer_location`, which records why that placement is
+    /// measured rather than preferred). The receiver-less program that used to be
+    /// REFUSED AT LOAD while its sort-level twin computed 5 now computes 5 too —
+    /// `receiverless_spec_op_op_scoped_rejected_sort_level_correct`.
+    ///
+    /// This resolve reads the COMPOSED chain for the same reason (see
+    /// `resolve_bridge_requirements`): a value-directed dispatch has no call site, so
+    /// if the impl it lands on has op-scoped slots, nothing else would fill them.
     ///
     /// WHEN THE CHAIN CANNOT BE RESOLVED at these argument types, this ENTERS THE
     /// FRAME UNSUPPLIED (the pre-WI-822 behaviour) rather than raising — with ONE

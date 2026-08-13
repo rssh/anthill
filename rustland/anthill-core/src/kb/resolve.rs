@@ -6814,7 +6814,10 @@ impl KnowledgeBase {
                 // inherit-the-caller's-frame case — and `reduce_op_value`'s WI-1037
                 // arm bridges it, where `resolve_bridge_requirements` builds the
                 // chain at the concrete argument types instead.
-                classify_pin_or_apply_within(self, occ, functor, target, None, None);
+                // WI-822 LEG 1: and no call-site substitution either, so no op-scoped
+                // supply is built here — the same bridge covers it, resolving the
+                // callee's chain at the concrete argument types.
+                classify_pin_or_apply_within(self, occ, functor, target, None, None, None);
                 UnstampedDispatch::Stamped
             }
             ValueDirectedDispatch::Tie { .. } => UnstampedDispatch::Refused,

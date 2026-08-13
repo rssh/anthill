@@ -385,9 +385,18 @@ fn a_pin_outranks_a_deferral_to_the_enclosing_frame() {
 }
 
 /// PHASE 2 DOES NOT DELIVER SELECTION ON THE OP-SCOPED ROUTE, and this is the pair
-/// that says so. An operation-scoped `requires` has no dictionary channel at all
-/// (`synth_req_names` is keyed by the parent SORT), so it is served by value-directed
-/// dispatch, which never sees the call's selections — WI-822 leg 1, undelivered.
+/// that says so. An operation-scoped `requires` is served by value-directed dispatch,
+/// which never sees the call's selections.
+///
+/// WI-822 LEG 1 LANDED AND THIS PAIR IS UNCHANGED — recorded here because WI-841's own
+/// note predicted the refusal would be lifted by it. LEG 1 gave the op-scoped chain
+/// real frame slots and a call-site supply that DOES honour `selected`; what it did
+/// not change is which channel the callee's BODY reads. `probe`'s
+/// `Monoid.combine(a, b)` over an abstract element is served by value-direction, so it
+/// never reads the slot and the pin is still not consulted — measured by this very
+/// test, which kept computing 99 across the change. Only a call value-direction
+/// CANNOT serve reads the slot (`kb::typing::op_scoped_defer_location`), and lifting
+/// this refusal means moving that placement, with its own measurement.
 ///
 /// MEASURED, and only the SECOND row shows it: with `AddM` and `AnyM` both answering,
 /// `[Monoid = AnyM]` computed 99 and looked honoured — it merely agreed with what the

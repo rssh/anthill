@@ -1200,6 +1200,34 @@ pub struct KnowledgeBase {
     // collision-disambiguation HashMap on every frame push.
     pub(crate) synth_req_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
 
+    /// WI-822 LEG 1 — memoized per OPERATION: its own op-scoped `requires` chain
+    /// (`typing::op_requires_chain_rc`) and the `__req_*` names of the frame slots
+    /// that chain contributes AFTER its parent sort's (`typing::synth_op_req_names`).
+    /// Two maps, both keyed by the operation symbol, because the entries are decoded
+    /// from `OperationInfo` while the names additionally depend on the parent sort's
+    /// chain (a base that collides with a sort slot's is disambiguated on the OP
+    /// side, so the sort half's naming is untouched).
+    ///
+    /// Cleared by `invalidate_requires_chain_cache` alongside the sort-keyed caches:
+    /// the names derive from `provider_dict_chain`, so a chain change must drop them
+    /// too. The ENTRIES do not (an op's `requires` is fixed at load), but they are
+    /// cleared with the rest rather than kept — one lifetime is easier to reason
+    /// about than two, and refilling is one `lookup_operation_info`.
+    pub(crate) op_requires_chain_cache:
+        RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+    pub(crate) synth_op_req_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
+    /// WI-822 LEG 1 — the COMPOSED frame chain and its COMPOSED names, per operation:
+    /// what `op_dict_entries` / `DictChain::names` hand out for an operation that
+    /// writes `requires` of its own. Memoized because both are read PER DISPATCH — the
+    /// frame push, the caller-slot strip, the deferred-slot lookup — and each would
+    /// otherwise allocate a fresh `Vec` concatenating two memoized halves.
+    /// `anthill.prelude.List.member` is on that path in every program that loads the
+    /// stdlib. Filled only for the operations that HAVE an op half; the rest return the
+    /// sort's own memoized `Rc` and never reach these maps.
+    pub(crate) op_dict_chain_cache:
+        RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+    pub(crate) op_frame_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
+
     /// WI-869 — memoized DICTIONARY chain per carrier: the sort's own `requires`
     /// chain followed by its conditional provisions' `:- goals` (`typing::
     /// provider_dict_chain`). Cleared by `invalidate_requires_chain_cache` alongside
@@ -1472,6 +1500,10 @@ impl KnowledgeBase {
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
+            op_requires_chain_cache: RefCell::new(HashMap::new()),
+            synth_op_req_names_cache: RefCell::new(HashMap::new()),
+            op_dict_chain_cache: RefCell::new(HashMap::new()),
+            op_frame_names_cache: RefCell::new(HashMap::new()),
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             spec_carrier_param_cache: RefCell::new(HashMap::new()),
             resolve_cache: RefCell::new(HashMap::new()),
@@ -1494,6 +1526,12 @@ impl KnowledgeBase {
         self.requires_tree_cache.borrow_mut().clear();
         self.synth_req_names_cache.borrow_mut().clear();
         self.provider_dict_chain_cache.borrow_mut().clear();
+        // WI-822 LEG 1: the op-keyed half of the same layout — its names are the
+        // sort half's continuation, so it goes stale for exactly the same reasons.
+        self.op_requires_chain_cache.borrow_mut().clear();
+        self.synth_op_req_names_cache.borrow_mut().clear();
+        self.op_dict_chain_cache.borrow_mut().clear();
+        self.op_frame_names_cache.borrow_mut().clear();
     }
 
     /// Drop the memoized spec-op SLD dispatch results. Called when a

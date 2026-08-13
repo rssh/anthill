@@ -125,10 +125,12 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 callee_spec_sort,
                 spec_op_sym,
                 enclosing_sort,
+                enclosing_op,
                 resolved_tree,
                 ..
             } => {
-                let caller_requires = chain_for(kb, &mut chain_cache, enclosing_sort);
+                let caller_requires =
+                    chain_for(kb, &mut chain_cache, enclosing_sort, enclosing_op);
                 record_apply_within_concrete(
                     kb,
                     apply_term,
@@ -146,6 +148,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 slot,
                 proj_path,
                 enclosing_sort,
+                enclosing_op,
                 ..
             } => {
                 record_apply_within_rewrite(
@@ -155,6 +158,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     &pos_args,
                     spec_op_sym,
                     enclosing_sort,
+                    enclosing_op,
                     slot,
                     &proj_path,
                 );
@@ -264,11 +268,28 @@ fn materialize_apply(kb: &mut KnowledgeBase, raw: RawClassified) -> ClassifiedAp
 /// declared half hands `build_dep_projection` indices that no longer point at the slot
 /// they name. This is the SECOND producer of that positional list; the first is
 /// `TypingEnv::set_enclosing_sort`, and the two must read one chain.
+///
+/// WI-822 LEG 1: and when the caller's OPERATION writes `requires` of its own, its
+/// slots follow the sort's ([`op_dict_entries`]) — so the cache is keyed by the
+/// operation when there is one. The typer's producer composes exactly the same way
+/// (`TypingEnv::set_enclosing_op`); a `FromScope` index past the sort half would
+/// otherwise be named off a shorter list here than the one it was resolved against.
 fn chain_for(
     kb: &mut KnowledgeBase,
     cache: &mut HashMap<Symbol, crate::kb::typing::DictChain>,
     enclosing_sort: Option<Symbol>,
+    enclosing_op: Option<Symbol>,
 ) -> crate::kb::typing::DictChain {
+    if let Some(op) = enclosing_op {
+        if let Some(cached) = cache.get(&op) {
+            return cached.clone();
+        }
+        let chain = crate::kb::typing::op_dict_entries(kb, op);
+        // Keyed by the OPERATION symbol, which is disjoint from the sort symbols the
+        // other arm keys by, so one map serves both without collision.
+        cache.insert(op, chain.clone());
+        return chain;
+    }
     let s = match enclosing_sort {
         Some(s) => s,
         None => return crate::kb::typing::DictChain::empty(),

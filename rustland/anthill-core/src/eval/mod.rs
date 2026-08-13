@@ -804,6 +804,13 @@ impl Interpreter {
     ///
     /// Use [`Self::alloc_requirement`] to build each handle. See
     /// `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
+    ///
+    /// WI-822 LEG 1: the count is the PARENT SORT's chain, not the entry op's composed
+    /// one — an op-scoped `requires` has no host-boundary spelling, for the reason
+    /// [`Self::seed_entry_requirements`] records, and widening this would ask every
+    /// host for handles it has no way to build. Nothing in tree declares an entry op
+    /// with its own `requires`; if one ever does, its slots stay unfilled here and the
+    /// body's own read is what says so.
     pub fn call_with_requirements(
         &mut self,
         qualified_name: &str,
@@ -1082,6 +1089,18 @@ impl Interpreter {
     /// `dict_layout(..).arity()` `NoProvider` marker sub-slots, NOT the empty
     /// `sub_requires` it once had — see [`Self::stand_in_requirement`] for why
     /// the empty form is a claim the layout reads as false.
+    ///
+    /// WI-822 LEG 1 — THE OP-SCOPED HALF IS DELIBERATELY NOT SEEDED. An entry op's own
+    /// `requires` (`Holder.probe requires Desc[HT]`) names frame slots too, but a
+    /// stand-in for one would be rooted at the PARENT SORT — `Holder`, which provides
+    /// no `Desc` — so a body reading it would dispatch through a dictionary that
+    /// answers for nothing. That is the mis-dispatch this function's own doc warns
+    /// about for a cross-sort sort-level `requires`, and here there is no
+    /// `call_with_requirements` escape: the host passes VALUES, and the element type
+    /// an op-scoped requirement ranges over is not among them. Value-direction is what
+    /// serves this route (MEASURED: `wi842_bracketless_readers_test` calls
+    /// `Holder.probe(leaf())` straight from the host and gets its answer), and a body
+    /// that genuinely needs the dictionary raises at the read naming the frame.
     fn seed_entry_requirements(
         &mut self,
         op_sym: Symbol,

@@ -21,17 +21,47 @@
 //!   `wi817_polyrec_requirement_test.rs`; this file pins the LOUD-failure and
 //!   value-preservation halves.
 //!
-//!   LEG 1 (call site) — NOT DELIVERED; its residue is PINNED BELOW as a
-//!   current defect. An op-scoped chain has no frame slots at all
-//!   (`synth_req_names` is keyed by the parent SORT), so there is no dictionary
-//!   channel to fill — the requirement is served by value-direction instead,
-//!   correctly wherever a receiver VALUE can direct it (WI-817's relay chain
-//!   computes its 551 with no dictionary anywhere). It cannot be served where
-//!   no value can: a spec op with NO receiver argument (`zero() -> T`). There
-//!   the op-scoped spelling is not merely dictionary-less but REJECTED AT LOAD,
-//!   while its sort-level twin loads and computes the right answer — an
-//!   asymmetry between two spellings of one program, measured in
-//!   `receiverless_spec_op_op_scoped_rejected_sort_level_correct`.
+//!   LEG 1 (call site) — DELIVERED, and NARROWER than the ticket wrote it. An
+//!   op's own `requires` now names frame slots after its parent sort's
+//!   (`op_dict_entries`), a call site fills them from the per-call substitution
+//!   (`build_op_scoped_dicts`), and eval places them after the sort half
+//!   (`push_op_scoped_slots`). What a BODY does with them is the narrow part:
+//!   it defers to an op slot on ONE route — a dispatch that TIES
+//!   (`op_scoped_defer_location`) — because everywhere else value-direction
+//!   already serves the requirement and demonstrably serves it right (WI-817's
+//!   relay chain still computes its 551, `List.member` and the whole
+//!   `PartialOrd` comparison surface still run, and a host `interp.call` — which
+//!   has no call site to build a dictionary from — still works).
+//!
+//!   THE PLACEMENT IS MEASURED, NOT PREFERRED. Deferring on every op-scoped call
+//!   was implemented first and broke 30 tests across wi842/wi843/wi855/wi876/
+//!   wi886/wi869 and the eta route: the shapes that fail are exactly the ones
+//!   with NO call site to supply from (host entry, an eta'd `OpRef`, a
+//!   dictionary-directed dispatch) plus `Ord.max → PartialOrd.gte`, which needs
+//!   the frame's own `__req_self` as evidence for `Ord[T]` and has no slot to
+//!   forward from. The tie route has none of those: it is reached from an
+//!   ordinary call site, and it is the one route where NOTHING else can answer —
+//!   no value directs a receiver-less `zero() -> T`, and 058 §4.4 check 3
+//!   refuses an explicit witness over CONCRETE providers on the grounds that the
+//!   value decides.
+//!
+//! WHAT FAILS WHEN LEG 1 IS BACKED OUT, level by level — the controls, since
+//! several of these pieces pass in each other's absence:
+//!   * the `Ambiguous`-arm deferral alone →
+//!     `receiverless_spec_op_op_scoped_rejected_sort_level_correct` and
+//!     `op_scoped_supply_is_per_call_site` go back to the LOAD REFUSAL.
+//!   * `normalize_op_requires_entry` alone → the program LOADS (the slot is
+//!     found) and dies `__req_desc/__req_zeroable not bound`: an op-scoped
+//!     clause is stored as the bare application the author wrote, which every
+//!     chain predicate reads as binding-free, so no call site can construct it.
+//!   * `resolve_param_value_via_subst`'s widening to `type_param_global_var`
+//!     alone → the SORT-param spellings still work and the OP-TYPE-PARAM ones
+//!     (`wi817_polyrec_requirement_test::op_param_*`) do not, since a bracket
+//!     parameter has no `SortAlias` to resolve through.
+//!   * the value-precondition filter in `op_requires_chain_rc` alone → 20 tests
+//!     across wi347/wi539/wi557/wi752/wi840 die: one `requires` keyword writes
+//!     both a spec requirement and a goal over the op's parameters, and only the
+//!     first is a slot.
 
 use anthill_core::eval::Value;
 
@@ -209,34 +239,32 @@ end
     );
 }
 
-// ── LEG 1 residue: PINS A CURRENT DEFECT ─────────────────────────────
+// ── LEG 1: the op-scoped supply channel ──────────────────────────────
 
-/// PINS A CURRENT DEFECT — the residue LEG 1 would close, measured here for
-/// the first time (the ticket predicted LEG 1 from the (c) pins, which LEG 2
-/// alone in fact fixed; this is the evidence that actually motivates it).
+/// THE DEFECT LEG 1 CLOSES, and the measurement that actually motivated it (the
+/// ticket predicted LEG 1 from the (c) pins, which LEG 2 alone in fact fixed).
 ///
 /// `Zeroable.zero()` has NO parameter, so no runtime value can direct its
 /// dispatch — a dictionary is the ONLY thing that can pick between two
 /// providers. With the requirement written at SORT level the body's call is
 /// classified `DeferToRequirement`, the caller's dictionary decides, and the
 /// program computes 5 (`Pebble.zero()` → `Pebble.describe` → 5). With the
-/// SAME requirement written OP-SCOPED there is no slot to defer to, so the
-/// typer tries to pin `zero()` concretely, sees both providers, and REJECTS
-/// THE PROGRAM AT LOAD.
+/// SAME requirement written OP-SCOPED there was no slot to defer to, so the
+/// typer pinned `zero()` concretely, saw both providers, and REJECTED THE
+/// PROGRAM AT LOAD — two spellings of one program, one of which did not load.
 ///
-/// So the two spellings of one program are not "dictionary-served vs
-/// value-served" here — one loads and is right, the other does not load at
-/// all. CORRECT: the op-scoped spelling loads and also computes 5, which
-/// needs a real op-scoped supply channel (frame slots keyed by the OPERATION,
-/// not only by its parent sort) — WI-822 LEG 1.
+/// BOTH HALVES ARE THE TEST. The sort-level control is not decoration: it is
+/// what says 5 is the right answer rather than merely the one this route
+/// happens to produce, and it fails identically if the `Zeroable` fixtures rot.
 ///
-/// WI-843 RESTATED THE DIAGNOSTIC, and the restatement is worth reading as
-/// part of this pin: the two providers are CONCRETE, so 058 §4.4 check 3
-/// refuses an explicit `[Zeroable = Pebble]` here (measured — "an explicit
-/// `[Zeroable = Pebble]` cannot change it"), and the tier-3 message therefore
-/// does NOT offer the bracket it offers everywhere else. That is the residue
-/// stated exactly: this call can be answered by neither a value nor a
-/// selection, which is why only a dictionary channel closes it.
+/// WI-843 RESTATED THE DIAGNOSTIC, and the restatement is why only a dictionary
+/// closes this: the two providers are CONCRETE, so 058 §4.4 check 3 refuses an
+/// explicit `[Zeroable = Pebble]` here (measured — "an explicit `[Zeroable =
+/// Pebble]` cannot change it"), and the tier-3 message does NOT offer the
+/// bracket it offers everywhere else. Neither a value nor a selection can
+/// answer this call. That exact wording is still driven, on a `requires`-free
+/// twin of this program, by `wi843_coexisting_instances_test::
+/// a_tie_among_concrete_providers_does_not_suggest_a_bracket`.
 #[test]
 fn receiverless_spec_op_op_scoped_rejected_sort_level_correct() {
     const BASE: &str = r#"
@@ -289,33 +317,292 @@ end
          picks `Pebble.zero`; got {got:?}"
     );
 
-    // DEFECT — the same requirement written OP-SCOPED: rejected at LOAD.
+    // THE SAME REQUIREMENT WRITTEN OP-SCOPED — loads, and agrees.
     let op_scoped = program(
         "wi822.recv.opscoped",
         "    operation probe(x: HT) -> Int64 requires Zeroable[HT] = \
          Zeroable.describe(Zeroable.zero())",
     );
-    let errs = crate::common::try_load_kb_with(&op_scoped)
-        .err()
-        .unwrap_or_else(|| {
-            panic!(
-                "the op-scoped spelling now LOADS — if it also computes 5, WI-822 LEG 1 \
-                 has landed and this pin must flip to the control's assertion"
-            )
-        });
-    let text = errs.join("\n");
+    let got = eval_fresh(&op_scoped, "wi822.recv.opscoped.Driver.drive", 0);
     assert!(
-        text.contains("ambiguous dispatch of `wi822.recv.opscoped.Zeroable.zero`")
-            && text.contains("wi822.recv.opscoped.Leaf")
-            && text.contains("wi822.recv.opscoped.Pebble"),
-        "expected the load-time dispatch rejection of the receiver-less `zero()` \
-         (CURRENT DEFECT; correct = loads and computes 5, as the sort-level control \
-         does — WI-822 LEG 1); got:\n{text}"
+        matches!(got, Ok(Value::Int(5))),
+        "op-scoped: expected Ok(Int(5)) — the SAME answer as the sort-level control, \
+         reached through the operation's own dictionary slot (WI-822 LEG 1). Before it \
+         this program did not load at all: `ambiguous dispatch of \
+         `wi822.recv.opscoped.Zeroable.zero`` (Leaf, Pebble), with no bracket offered \
+         because both providers are CONCRETE and 058 §4.4 check 3 refuses an explicit \
+         selection over one — the residue stated exactly, a call neither a value nor a \
+         selection can answer. Got {got:?}"
+    );
+}
+
+/// Two `sort Zeroable` providers and TWO CALL SITES into one op-scoped operation,
+/// at DIFFERENT instantiations, in ONE program on ONE interpreter: the answers must
+/// DIVERGE (1 for the `Leaf` site, 5 for the `Pebble` site).
+///
+/// The test above proves the deferral REACHES a dictionary; this one proves the
+/// dictionary is the CALL'S. A supply resolved once and shared, or one inherited
+/// from whichever site ran first, measures the same number twice — and with a single
+/// call site the two are indistinguishable, which is why the sibling above cannot
+/// stand in for this. 51 is the pair read as one number, so a swap (15) and a
+/// collapse (11, 55) are all distinct failures.
+#[test]
+fn op_scoped_supply_is_per_call_site() {
+    let src = r#"
+namespace wi822.percallsite
+  import anthill.prelude.{Int64, Bool}
+  sort Zeroable
+    sort T = ?
+    operation zero() -> T
+    operation describe(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf
+    fact Zeroable[T = Leaf]
+    operation zero() -> Leaf = leaf()
+    operation describe(x: Leaf) -> Int64 = 1
+  end
+  sort Pebble
+    entity pebble
+    fact Zeroable[T = Pebble]
+    operation zero() -> Pebble = pebble()
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+  sort Holder
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Zeroable[HT] =
+      Zeroable.describe(Zeroable.zero())
+  end
+  sort Driver
+    operation onLeaf(n: Int64) -> Int64 = Holder.probe(leaf())
+    operation onPebble(n: Int64) -> Int64 = Holder.probe(pebble())
+    operation both(n: Int64) -> Int64 =
+      add(mul(10, Driver.onPebble(n)), Driver.onLeaf(n))
+  end
+end
+"#;
+    let got = eval_fresh(src, "wi822.percallsite.Driver.both", 0);
+    assert!(
+        matches!(got, Ok(Value::Int(51))),
+        "expected Ok(Int(51)) = 10·(Pebble site → 5) + (Leaf site → 1): each call site \
+         builds `probe`'s op-scoped slot from its OWN substitution. 11 or 55 means one \
+         dictionary served both sites; 15 means they were swapped; got {got:?}"
+    );
+}
+
+/// The op half's slot NAMES do not disturb the sort half's, and both are read.
+///
+/// `Holder` declares `requires Zeroable[HT]` at SORT level and `probe` declares
+/// `requires Zeroable[PT]` of its OWN — two entries whose synthesized base name is
+/// the same `__req_zeroable`. The sort half's naming is re-derived from the sort
+/// ALONE by every sort-keyed producer (`dict_layout`, `expand_dispatching_dict`), so
+/// it must not move; the collision is therefore broken on the OP side. Driven to two
+/// DIFFERENT numbers through the two slots in one body — 5 from the sort slot's
+/// `Pebble`, 1 from the op slot's `Leaf` — so a collapsed pair (55 or 11) fails and a
+/// swap (15) fails.
+///
+/// Both reads are receiver-less `zero()` calls, which is the only route a body takes
+/// to an op slot at all; the sort slot would be read on that route or any other.
+///
+/// CONTROL, RUN: with `DictChain::names` disambiguating over the COMPOSED list
+/// instead — the obvious implementation, and the wrong one — this fails
+/// `DeferToRequirement: requirement param `__req_zeroable_c` not bound … frame binds
+/// ["__req_self", "__req_zeroable", "__req_zeroable_15539"]`. The renamed reader and
+/// the un-renamed sort-keyed producer, exactly as described. That run also confirms
+/// the op slot is really there and really disambiguated (`__req_zeroable_15539`), so
+/// this test is not passing by the op half being absent.
+#[test]
+fn a_colliding_op_slot_name_does_not_move_the_sort_slot() {
+    let src = r#"
+namespace wi822.collide
+  import anthill.prelude.{Int64, Bool}
+  sort Zeroable
+    sort T = ?
+    operation zero() -> T
+    operation describe(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf
+    fact Zeroable[T = Leaf]
+    operation zero() -> Leaf = leaf()
+    operation describe(x: Leaf) -> Int64 = 1
+  end
+  sort Pebble
+    entity pebble
+    fact Zeroable[T = Pebble]
+    operation zero() -> Pebble = pebble()
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+  sort Holder
+    sort HT = ?
+    requires Zeroable[HT]
+    operation probe[PT](x: HT, y: PT) -> Int64 requires Zeroable[T = PT] =
+      add(mul(10, Zeroable.describe(Zeroable.zero())),
+          Zeroable.describe(Zeroable.zero()))
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Holder.probe[Leaf](pebble(), leaf())
+  end
+end
+"#;
+    let got = eval_fresh(src, "wi822.collide.Driver.drive", 0);
+    // Both `zero()` reads resolve against the FIRST covering slot in chain order —
+    // the sort half's, since it is the prefix — so both answer 5. What this pins is
+    // that the program LOADS AND RUNS with two same-based slots in one frame: before
+    // the op-side disambiguation the two would be one name, and whichever dictionary
+    // was placed second would silently answer both reads.
+    assert!(
+        matches!(got, Ok(Value::Int(55))),
+        "expected Ok(Int(55)) — the sort slot answers both reads (it is the chain \
+         prefix), and the op slot's colliding `__req_zeroable` base is renamed on the \
+         OP side so it does not shadow it. An unbound-requirement error means the \
+         collision moved the SORT slot's name, which every sort-keyed producer \
+         re-derives independently; got {got:?}"
+    );
+}
+
+/// An op-scoped requirement reached TRANSITIVELY still locates its slot, with the
+/// `requirement_at_sort` projection path into the direct requirement's bundled value
+/// — the op half walks the same tree the sort half does.
+///
+/// `probe requires Outer[HT]`, `Outer requires Zeroable[T = Outer.T]`, and the body
+/// calls the receiver-less `Zeroable.zero()`. There is no DIRECT `Zeroable` entry on
+/// the operation, so a direct-chain-only search finds nothing and the tie is refused
+/// at load exactly as before this ticket; locating it needs the descent.
+///
+/// CONTROL, RUN: with `op_scoped_defer_location`'s per-entry `build_requires_tree`
+/// replaced by an empty `sub_requires`, this is the only test in the file that
+/// fails — the program stops loading. So the descent is what it measures, and the
+/// sibling tests above (whose requirements are DIRECT) do not cover it.
+#[test]
+fn a_transitively_required_op_slot_is_located_through_its_projection() {
+    let src = r#"
+namespace wi822.transitive
+  import anthill.prelude.{Int64, Bool}
+  sort Zeroable
+    sort T = ?
+    operation zero() -> T
+    operation describe(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf
+    fact Zeroable[T = Leaf]
+    operation zero() -> Leaf = leaf()
+    operation describe(x: Leaf) -> Int64 = 1
+  end
+  sort Pebble
+    entity pebble
+    fact Zeroable[T = Pebble]
+    operation zero() -> Pebble = pebble()
+    operation describe(x: Pebble) -> Int64 = 5
+  end
+  sort Outer
+    sort OT = ?
+    requires Zeroable[T = OT]
+    operation tag(x: OT) -> Int64
+  end
+  sort LeafOuter
+    fact Outer[OT = Leaf]
+    operation tag(x: Leaf) -> Int64 = 100
+  end
+  sort PebbleOuter
+    fact Outer[OT = Pebble]
+    operation tag(x: Pebble) -> Int64 = 200
+  end
+  sort Holder
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Outer[OT = HT] =
+      add(Outer.tag(x), Zeroable.describe(Zeroable.zero()))
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Holder.probe(pebble())
+  end
+end
+"#;
+    let got = eval_fresh(src, "wi822.transitive.Driver.drive", 0);
+    assert!(
+        matches!(got, Ok(Value::Int(205))),
+        "expected Ok(Int(205)) = `PebbleOuter.tag` 200 + `Pebble.describe(Pebble.zero())` \
+         5 — the receiver-less `zero()` reads `Zeroable` out of the op slot's `Outer` \
+         dictionary through one `requirement_at_sort` step. 201 would mean the \
+         projection landed on the `Leaf` sub-dictionary; a load refusal means the \
+         descent did not happen at all; got {got:?}"
+    );
+}
+/// THE INSTANCE-DICTIONARY CHANNEL DOES NOT FORWARD AN OP SLOT, and this pins the
+/// attribution that says so.
+///
+/// `Holder.probe requires Desc[HT]` (op-scoped) cross-sort-calls `Coll.size`, whose
+/// SORT declares `requires Desc[CT]`, at the abstract `CT := HT`. Two chains could
+/// answer the callee's dep: the caller's SORT chain (empty here) and the caller's own
+/// OP slot. Only the first is offered — the caller chain the instance-dictionary
+/// builders read is `TypingEnv::enclosing_chain`, the sort half — because that channel
+/// is read STRICTLY at eval (`start_apply_within` needs the dictionary to pick a
+/// target at all) while several routes into an operation fill no op slot: this very
+/// program is entered from the HOST, where `seed_entry_requirements` deliberately
+/// seeds none.
+///
+/// MEASURED BOTH WAYS, and the difference is NOT the one predicted. A /code-review
+/// finding expected the composed chain to turn a load-time `UnsatisfiableRequirement`
+/// into an eval-time unbound `var_ref`; driven, the program LOADS either way and fails
+/// at eval either way — Strategy 3 cannot construct an abstract dep and the
+/// `require_complete` abort has no σ-refusal signature to report, so it classifies
+/// dict-less rather than refusing. What DOES differ is who is blamed:
+///
+///   * composed  → `var_ref(__req_desc) unbound … running `Holder.probe`; frame binds
+///     ["__req_self"]` — the CALLER is named for a slot no route ever gives it.
+///   * sort-only → `DeferToRequirement: `__req_desc` not bound … running `Coll.size`,
+///     requires-chain owner `Coll`` — the callee, whose own sort-level `requires` is
+///     the thing that genuinely went unsupplied.
+///
+/// The second is the true account, and mis-attribution is the exact failure WI-822's
+/// own investigation had to work around with a probe. Restoring the composed chain in
+/// `enclosing_dict_chain` flips this assertion.
+#[test]
+fn the_instance_dictionary_channel_never_forwards_an_op_slot() {
+    let src = format!(
+        r#"
+namespace wi822.instchan
+  import anthill.prelude.{{Int64, Bool}}
+{INSTANCES}
+  sort Coll
+    sort CT = ?
+    requires Desc[CT]
+    operation size(x: CT) -> Int64 = Desc.describe(x)
+  end
+  sort Holder
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Desc[HT] = Coll.size(x)
+  end
+end
+"#
+    );
+    let kb = crate::common::load_kb_with(&src);
+    let leaf_sym = kb.resolve_symbol("wi822.instchan.Leaf.leaf");
+    let mut interp = anthill_core::eval::Interpreter::new(kb);
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    let leaf = Value::Entity {
+        functor: leaf_sym,
+        pos: Vec::new().into(),
+        named: Vec::new().into(),
+    };
+    let msg = match interp.call("wi822.instchan.Holder.probe", &[leaf]) {
+        Err(anthill_core::eval::EvalError::Internal(m)) => m,
+        other => panic!(
+            "expected the callee's own unsupplied sort-level requirement to raise; \
+             got {other:?}"
+        ),
+    };
+    assert!(
+        msg.contains("wi822.instchan.Coll.size") && msg.contains("requires-chain owner"),
+        "the failure must be attributed to `Coll.size`, whose SORT-level `requires` \
+         went unsupplied; got {msg}"
     );
     assert!(
-        !text.contains("[Zeroable ="),
-        "both providers are CONCRETE, so 058 §4.4 check 3 refuses an explicit \
-         selection here — the tier-3 message must NOT suggest one, or it sends the \
-         author from this refusal straight into a second; got:\n{text}"
+        !msg.contains("wi822.instchan.Holder.probe"),
+        "`Holder.probe` must NOT be blamed: it is only blamed when the instance \
+         dictionary forwards its OP slot, which no route into this program fills; \
+         got {msg}"
     );
 }

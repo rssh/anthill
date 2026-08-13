@@ -318,6 +318,11 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
         enclosing_sort: None,
         resolved_tree: None,
         dispatch_dict: None,
+        // WI-822 LEG 1: no op-scoped slots — this fixture's target writes no
+        // `requires` of its own, and the classification under test is the
+        // dictionary-carry, which the op half does not participate in.
+        op_dicts: Default::default(),
+        enclosing_op: None,
     });
 
     // (1) the carry is real — a plain rebuild on the DICTIONARY's target still

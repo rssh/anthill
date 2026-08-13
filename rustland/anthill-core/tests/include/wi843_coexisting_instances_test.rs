@@ -63,10 +63,16 @@ const TWO_MONOIDS: &str = r#"
 
 /// A `fold` over `Monoid`, on the SORT-LEVEL `requires` route. §4.2 spells the
 /// example with an OP-scoped `requires`, which phase 3b cannot use: an op-scoped
-/// slot has no dictionary channel (`synth_req_names` is keyed by the parent SORT —
-/// WI-822 leg 1, undelivered), so WI-841 REFUSES a selection there whenever two or
-/// more providers answer, which is exactly the situation this ticket creates. The
-/// sort-level twin is the same selection through the channel that can carry it.
+/// requirement is served by value-directed dispatch, which never sees a selection, so
+/// WI-841 REFUSES one there whenever two or more providers answer — exactly the
+/// situation this ticket creates. The sort-level twin is the same selection through
+/// the channel that can carry it.
+///
+/// STILL TRUE AFTER WI-822 LEG 1, which gave the op-scoped chain frame slots: the
+/// slots exist and the call site fills them, but a body reads them only where
+/// value-direction cannot serve the call, and `fold`'s `Monoid.combine` over an
+/// abstract element is served by it. See `wi841_call_site_selection_test`'s
+/// `an_op_scoped_selection_that_could_differ_is_refused_not_ignored`.
 const FOLDER: &str = r#"
   sort Folder
     sort FT = ?
@@ -259,8 +265,18 @@ fn selecting_at_the_unselected_call_makes_it_load_and_run() {
 /// MEASURED, which is why the branch exists: `Zeroable.zero[Zeroable = Pebble]()` on
 /// exactly this program is `expected no explicit witness — this dispatch is
 /// value-directed`. The receiver-less nullary op is the shape that gets here — no
-/// argument value can direct it, so neither tier answers (that residue is WI-822 leg
-/// 1, pinned in its own file; what is asserted here is only the WORDING).
+/// argument value can direct it, so neither tier answers.
+///
+/// WI-822 LEG 1 CHANGED WHAT THE THIRD ANSWER IS, and this fixture had to move by one
+/// line to keep driving the wording. `Holder.probe` used to be written `requires
+/// Zeroable[HT]`, and that op-scoped clause is now a real frame slot the tie DEFERS to
+/// — the program loads and computes 5 (`wi822_op_scoped_supply_test::
+/// receiverless_spec_op_op_scoped_rejected_sort_level_correct` is where that is
+/// asserted, and it is the same program). So the `requires` is dropped here: with no
+/// chain to defer to there is still no third answer, the tie still refuses, and the
+/// WORDING — which is all this test ever asserted — is still driven. Restoring the
+/// clause would silently turn this into a load-clean program and the `load_errs`
+/// oracle would report it, which is how the move was found.
 #[test]
 fn a_tie_among_concrete_providers_does_not_suggest_a_bracket() {
     let src = r#"
@@ -285,7 +301,7 @@ namespace wi843.concretetie
   end
   sort Holder
     sort HT = ?
-    operation probe(x: HT) -> Int64 requires Zeroable[HT] =
+    operation probe(x: HT) -> Int64 =
       Zeroable.describe(Zeroable.zero())
   end
   sort Driver
