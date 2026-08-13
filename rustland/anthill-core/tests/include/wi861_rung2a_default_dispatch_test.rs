@@ -411,14 +411,39 @@ fn a_value_directed_tie_takes_the_marked_witness() {
 /// THE CONTROL FLIP (3) NAMES: a WITNESS-ONLY tie with no default keeps the diagnostic.
 /// This is what makes the two tests above evidence of a rung rather than of the refusal
 /// having been weakened.
+///
+/// **WI-1091 MOVED WHICH DIAGNOSTIC, not whether there is one.** `Holder.probe`'s
+/// requirement is OP-SCOPED, and WI-1091 widened the placement so its body's
+/// `Desc.describe(x)` reads the slot that licence names instead of being served by
+/// value-direction. The question the runtime asks therefore changed from "which SUPPLIER
+/// of `describe` for `Leaf`?" (`AmbiguousSpecOpDispatch`) to "which `Desc[Leaf]`
+/// INSTANCE?" (`AmbiguousRequirement`) — one step earlier, at the dictionary this call
+/// could not build. Both name `Rival` and `Other`, which is what this control is for; the
+/// supplier-tie rendering is still pinned by the sibling
+/// [`a_bodyless_own_member_beside_a_marked_witness_takes_the_default`]'s unmarked control
+/// and by wi1012/wi1027's load refusals.
+///
+/// BACKED OUT (WI-1091's widening reverted): `AmbiguousSpecOpDispatch` naming the same
+/// two witnesses — so this row measures the rung either way, and only the error's NAME
+/// moves with the placement.
 #[test]
 fn a_witness_only_value_directed_tie_stays_loud() {
     let ns = "wi861.vd.loud";
     let src = program(ns, &[LEAF_BARE, RIVAL, OTHER, HOLDER_OP]);
     let err = probe_leaf_from_host(&src, ns).unwrap_err();
-    let EvalError::AmbiguousSpecOpDispatch { candidates, .. } = &err else {
+    let EvalError::AmbiguousRequirement {
+        requirement,
+        candidates,
+        ..
+    } = &err
+    else {
         panic!("expected the tie to stay loud with no default row; got {err:?}")
     };
+    assert!(
+        requirement.contains("Desc") && requirement.contains("Leaf"),
+        "the tie must name the REQUIREMENT that could not be built (`Desc[T = Leaf]`); \
+         got `{requirement}`"
+    );
     assert!(
         candidates.iter().any(|c| c.contains("Rival"))
             && candidates.iter().any(|c| c.contains("Other")),

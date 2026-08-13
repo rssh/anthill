@@ -62,8 +62,26 @@
 //!     across wi347/wi539/wi557/wi752/wi840 die: one `requires` keyword writes
 //!     both a spec requirement and a goal over the op's parameters, and only the
 //!     first is a slot.
+//!
+//! **WI-1091 MOVED THE PLACEMENT, and everything above stays true as HISTORY
+//! rather than as the current rule.** LEG 1's narrowness was measured, not
+//! preferred — and the measurement is what says so: widening the deferral broke
+//! exactly the routes with NO CALL SITE to supply from. WI-1091 supplied them
+//! (a host entry resolves the op half from the argument values; an eta'd
+//! `OpRef` carries its own; an element the call cannot pin is completed from
+//! the providers where they leave one answer; the defaulted fall-through
+//! threads the carrier's instance), and only then widened. The op-scoped
+//! licence is now read where the SORT-level one is — the pre-check AHEAD of
+//! dispatch, which is what makes the two spellings agree and what a bracket
+//! needs in order to decide (`wi841_call_site_selection_test::
+//! an_op_scoped_selection_decides_and_the_value_shows_it`).
+//!
+//! So "the body defers on ONE route" is no longer the rule, and the paragraph
+//! above is left standing because the shapes it enumerates are the ones that
+//! had to be repaired. The two WI-1091 rows at the end of this file drive the
+//! op half at a boundary with no call site.
 
-use anthill_core::eval::Value;
+use anthill_core::eval::{Interpreter, Value};
 
 /// Spec `Desc` + a base instance at `Leaf` (describe → 1) + a CONDITIONAL
 /// instance at `Wrap[E]` given `Desc[E]` (describe → 10·describe(inner) + 2),
@@ -604,6 +622,211 @@ end
         "`Holder.probe` must NOT be blamed: it is only blamed when the instance \
          dictionary forwards its OP slot, which no route into this program fills; \
          got {msg}"
+    );
+}
+
+
+// ── WI-1091: the OP HALF at a boundary with no call site ─────────────
+
+/// **AN ELEMENT THE HOST CANNOT PIN IS COMPLETED FROM THE PROVIDERS — but only where
+/// they leave exactly ONE answer, and this pair drives both sides of that.**
+///
+/// `resolve_bridge_requirements` only ever resolved a FULLY-PINNED goal: an abstract
+/// binding matches ANY provider, so building a dictionary at one would let the bridged op
+/// mis-decide. WI-1091 relaxed that for the OP HALF alone, because a host entry has no
+/// bracket to write and the widened placement makes the body READ the slot — see
+/// `unique_provider_completion`. The relaxation is exact rather than lenient exactly when
+/// the providers admit one completion, which is what these two rows separate.
+///
+/// The fixture is the smallest shape with the defect: `probe[E, F]` requires `Pair[E, F]`
+/// and takes only an `E`, so `F` appears in no parameter type and NOTHING at a host entry
+/// can pin it. `Pair` is a two-parameter spec so that the un-pinnable element is a genuine
+/// dispatch element and not an effect row (which is non-discriminating by design).
+///
+/// FAILS IF THE RELAXATION IS BACKED OUT: the sole-provider row raises
+/// `__req_pair not bound`. FAILS IF IT IS WIDENED TO FIRST-MATCH: the two-provider row
+/// answers 1 or 2 instead of raising.
+#[test]
+fn wi1091_an_unpinnable_op_element_is_completed_only_when_the_providers_agree() {
+    let program = |ns: &str, second: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+  sort Tag
+    entity tag
+  end
+  sort Pair
+    sort E = ?
+    sort F = ?
+    operation combine(x: E) -> Int64
+  end
+  sort First
+    fact Pair[E = Tag, F = Int64]
+    operation combine(x: Tag) -> Int64 = 1
+  end
+{second}
+  sort Holder
+    operation probe[E, F](x: E) -> Int64 requires Pair[E, F] = Pair.combine(x)
+  end
+end
+"#
+        )
+    };
+    const RIVAL: &str = r#"  sort Second
+    fact Pair[E = Tag, F = Tag]
+    operation combine(x: Tag) -> Int64 = 2
+  end
+"#;
+    let enter = |ns: &str, src: &str| {
+        let kb = crate::common::load_kb_with(src);
+        let tag = kb.resolve_symbol(&format!("{ns}.Tag.tag"));
+        let mut interp = anthill_core::eval::Interpreter::new(kb);
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+            .expect("register standard eval builtins");
+        interp.call(
+            &format!("{ns}.Holder.probe"),
+            &[Value::Entity {
+                functor: tag,
+                pos: Vec::new().into(),
+                named: Vec::new().into(),
+            }],
+        )
+    };
+
+    // ONE completion — `F` has exactly one value any provider gives it at `E = Tag`, so
+    // the goal has exactly one answer and taking it is exact.
+    let sole = program("wi1091.complete.sole", "");
+    let got = enter("wi1091.complete.sole", &sole);
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "with one provider the open `F` has ONE answer, so the host entry must complete \
+         the goal and the body must read the slot; got {got:?}"
+    );
+
+    // TWO completions — `F = Int64` and `F = Tag` both answer at `E = Tag`. Neither may
+    // be picked for the author: the slot stays absent and the body's read reports it.
+    let tied = program("wi1091.complete.tied", RIVAL);
+    let got = enter("wi1091.complete.tied", &tied);
+    let err = got.expect_err(
+        "CONTROL: with two completions the arguments genuinely do not decide, and \
+         picking either would be the WRONG-dictionary case the `all_pinned` gate exists \
+         to prevent",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("__req_pair") && msg.contains("not bound"),
+        "…and the body's read must name the slot it did not get; got {msg}"
+    );
+
+    // AN OPEN-ENDED RIVAL IS THE SAME VERDICT, and it is the row the first cut of this
+    // test could not see (found by /code-review). `Anything` binds `F` to its OWN
+    // parameter, so it answers at EVERY completion rather than proposing one — and a
+    // provider that proposes nothing used to be indistinguishable from a provider that
+    // is not there. MEASURED before the fix: `Ok(Int(1))`, the ground provider's answer,
+    // silently chosen where `F := Tag` was equally available (2). This is the reason the
+    // enumeration RETURNS on an unproposable provider rather than skipping it.
+    const OPEN_ENDED: &str = r#"  sort Anything
+    sort A = ?
+    fact Pair[E = A, F = A]
+    operation combine(x: A) -> Int64 = 2
+  end
+"#;
+    let open_ended = program("wi1091.complete.open", OPEN_ENDED);
+    let got = enter("wi1091.complete.open", &open_ended);
+    let err = got.expect_err(
+        "CONTROL: a provider that leaves `F` abstract answers at more than one \
+         completion, so the arguments do not decide and no completion may be taken",
+    );
+    assert!(
+        err.to_string().contains("__req_pair"),
+        "…and the body's read must name the slot it did not get; got {err}"
+    );
+}
+
+/// **THE ACCESSOR RUNS** — WI-1088's rule applied to WI-1091's field. `opref_shape`'s
+/// keys are DECLARED accessors, so carrying the op-scoped channel as a fifth key means
+/// declaring `OpRef.opRequirements` on the reflect `OpRef` sort, "and a declared accessor
+/// a caller cannot call is a surface that only looks complete"
+/// (`wi1088_spread_labels_identity_test::the_spread_labels_accessor_answers_for_both_
+/// mints`, whose shape this follows).
+///
+/// Driven to the VALUE, and to BOTH answers, because a reader that returned `some([])`
+/// for an op with no `requires` of its own would pass a positive-only test. The FILLED
+/// row keeps an unprojected slot as `none()` IN PLACE: position is which requirement each
+/// slot answers (the apply site zips this list against `op_dict_entries`' tail), so a
+/// reader that dropped absences would mis-name every slot after the gap.
+#[test]
+fn wi1091_the_op_requirements_accessor_answers_for_both_mints() {
+    use anthill_core::eval::value::Dictionary;
+    let mut interp = crate::common::interp_for("namespace test.wi1091.acc\nend\n");
+    let op = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option")
+        .expect("a symbol to name as the op");
+    let some_s = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.some")
+        .expect("Option.some");
+    let none_s = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.none")
+        .expect("Option.none");
+    let cons_s = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.List.cons")
+        .expect("List.cons");
+    let dict = Dictionary::build(interp.kb(), op, []).expect("a one-slot dictionary");
+
+    let functor = |v: &Value| match v {
+        Value::Entity { functor, .. } => *functor,
+        other => panic!("expected an entity, got {other:?}"),
+    };
+    let call = |i: &mut Interpreter, reqs: Option<Vec<Option<Dictionary>>>| {
+        i.call(
+            "anthill.realization.runtime.OpRef.opRequirements",
+            &[Value::OpRef {
+                op,
+                dict: None,
+                named: None,
+                spread_labels: None,
+                op_reqs: reqs.map(|r| std::rc::Rc::from(r.as_slice())),
+            }],
+        )
+        .expect("OpRef.opRequirements")
+    };
+
+    // An op that writes no `requires` of its own — the universal case.
+    assert_eq!(
+        functor(&call(&mut interp, None)),
+        none_s,
+        "an op with no `requires` of its own must answer none(), not some([])"
+    );
+
+    // Two slots, the second unprojected: `some(cons(some(d), cons(none(), nil)))`.
+    let answer = call(&mut interp, Some(vec![Some(dict), None]));
+    assert_eq!(functor(&answer), some_s, "a chain-carrying op answers some(…)");
+    let child = |v: &Value, name: &str, kb: &anthill_core::kb::KnowledgeBase| -> Value {
+        match v {
+            Value::Entity { named, .. } => named
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == name)
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| panic!("no `{name}` child on {v:?}")),
+            other => panic!("expected an entity, got {other:?}"),
+        }
+    };
+    let mut node = child(&answer, "value", interp.kb());
+    let mut slots: Vec<bool> = Vec::new();
+    while functor(&node) == cons_s {
+        slots.push(functor(&child(&node, "head", interp.kb())) == some_s);
+        node = child(&node, "tail", interp.kb());
+    }
+    assert_eq!(
+        slots,
+        vec![true, false],
+        "the slots must come back IN ORDER with the unprojected one kept as none() in \
+         place — dropping it would re-index every slot after the gap"
     );
 }
 

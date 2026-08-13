@@ -339,24 +339,37 @@ end
 /// ticket newly admits — so it is asserted here rather than assumed to inherit 3a's
 /// coverage.
 ///
-/// The verdict is DELAY, not an error surfaced to the query: an eval error inside a
-/// bridged body residualizes rather than aborting the enclosing rule (WI-483), so the
-/// rule reports by NOT ANSWERING. What must not happen is a DEFINITE answer — that is
-/// first-match with the loser silently denied.
+/// The verdict was DELAY: an eval error inside a bridged body residualizes rather than
+/// aborting the enclosing rule (WI-483), so the rule reported by NOT ANSWERING.
+///
+/// **WI-1091 MOVED IT EARLIER, to a LOAD REFUSAL, and that is strictly better.** Two
+/// things compose. The doc above used to say "a rule-body atom is never typer-classified
+/// (§4.9)" — that stopped being true at WI-1058, which decides the general rule-body call;
+/// `Holder.probe(2, 3)` is now type-checked with a per-call σ pinning `HT := Int64`. And
+/// WI-1091 widened the op-scoped placement, so building this call's `Monoid[Int64]`
+/// dictionary is now part of classifying it — where the tie is IN HAND, with both
+/// providers and the `[Monoid = …]` bracket that repairs it. Refusing there is what makes
+/// the op-scoped spelling agree with the sort-level one, which has refused the identical
+/// program at load since WI-828.
+///
+/// WHAT THIS ROW STILL MEASURES IS UNCHANGED: never first-match. A DEFINITE answer of 5
+/// or 6 is the defect phase 3a exists to prevent, and a program that does not load cannot
+/// produce one. The CONTROL is what keeps that from being vacuous — with ONE provider the
+/// same text loads and the rule answers 5 definitely.
+///
+/// THE DELAY VERDICT IS NOT LOST EITHER: it is what a tie with NO call-site σ still does,
+/// pinned by `wi842_bracketless_readers_test::a_rule_body_delays_on_the_tie_instead_of_
+/// first_matching`, whose rule body reaches the bridge instead of a classified call.
 #[test]
 fn a_rule_body_over_two_coexisting_witnesses_does_not_first_match() {
-    // The requirement is OP-SCOPED, so `Monoid.combine(a, b)` inside `probe` is served
-    // by VALUE DIRECTION rather than by a caller's dictionary (WI-562) — the
-    // bracket-less read. A typer-classified call would be `pick_most_specific`'s job
-    // and is already loud at load, which is the other test above.
     const TAIL: &str = r#"  sort Holder
     sort HT = ?
     operation probe(a: HT, b: HT) -> HT requires Monoid[T = HT] = Monoid.combine(a, b)
   end
   rule combined(?y)
     :- eq(?y, Holder.probe(2, 3))"#;
-    // 5 = AddM, 6 = MulM.
-    let tied = definite_answers("wi843.rulebody", &program("wi843.rulebody", TAIL));
+    // CONTROL FIRST, and the order matters now that the tied program does not load: it is
+    // what says this fixture drives a rule that fires at all. 5 = AddM, 6 = MulM.
     let one = definite_answers(
         "wi843.rulebody1",
         &program_with("wi843.rulebody1", &one_monoid(), TAIL),
@@ -365,14 +378,24 @@ fn a_rule_body_over_two_coexisting_witnesses_does_not_first_match() {
         one,
         (1, 0),
         "CONTROL: with ONE provider the rule must answer 5 DEFINITELY and refute 6 — \
-         otherwise the tie assertion below measures a rule that never fires",
+         otherwise the refusal below measures a rule that never fires",
     );
-    assert_eq!(
-        tied,
-        (0, 0),
-        "a rule body has no bracket to write (§4.2 leaves rule bodies out of \
-         selection), so a tie there must DELAY — deciding either answer would be the \
-         silent first-match phase 3a exists to prevent",
+    let errs = crate::common::try_load_kb_with(&program("wi843.rulebody", TAIL))
+        .err()
+        .expect(
+            "two coexisting witnesses and a call site that pins the element: the \
+             dictionary this call needs cannot be built, and neither provider may be \
+             picked for the author",
+        );
+    let text = errs.join("\n");
+    assert!(
+        text.contains("AddM") && text.contains("MulM"),
+        "the refusal must name BOTH coexisting witnesses — naming one is the \
+         first-match defect wearing a diagnostic: {text}"
+    );
+    assert!(
+        text.contains("Monoid"),
+        "…and the requirement that tied: {text}"
     );
 }
 

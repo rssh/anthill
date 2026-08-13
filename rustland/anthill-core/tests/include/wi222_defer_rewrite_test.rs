@@ -24,23 +24,44 @@ use crate::common::interp_for;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::get_named_arg;
 
+/// **THE SPEC IS THE FIXTURE'S OWN, and that is what makes this test measure the
+/// fixture** (WI-1091). It read `anthill.prelude.PartialEq.eq` and took the FIRST
+/// matching entry out of `kb.dispatch_origin_iter()`, on the recorded grounds that "the
+/// apply_within shape … is identical for any defer rewrite — names model". That premise
+/// is false: a TRANSITIVE deferral emits `requirement_at_sort(var_ref(…), slot = k)`, not
+/// a bare `var_ref`, and the sibling `transitive_eq_call_classifies_as_nested_deferral`
+/// in this very file pins one. What kept it green was that no such rewrite happened to
+/// win the race — `req_insertion::run` walks `kb.op_bodies_iter()`, whose backing
+/// `op_records` is a `HashMap` (random order per process), and
+/// `record_apply_within_rewrite` is IDEMPOTENT on a key built from the callee functor
+/// ALONE, so every abstract `eq` call in the image collides and exactly one rewrite
+/// survives. MEASURED under WI-1091's widened op-scoped placement, which puts more sorts
+/// in that race: `dispatching dict for Defer must be var_ref; got …requirement_at_sort`.
+/// A local spec no other body calls has exactly one rewrite, so the entry read below is
+/// the one this fixture produced — asserted rather than assumed.
+///
+/// Its twin one file over is `wi227_projection_search_test::flat_path_emits_var_ref_
+/// named_requirement`, repaired the same way and for the same reason.
 #[test]
 fn deferred_call_rewrites_to_apply_within_with_spec_op_fn() {
-    // Sort `Wi222Box` declares `requires Eq[T]` and an op `use_eq` that
-    // calls `eq(a, b)`. With the sort's `requires` chain in scope, the
+    // Sort `Wi222Box` declares `requires Wi222Spec[T]` and an op `use_eq` that
+    // calls `Wi222Spec.same(a, b)`. With the sort's `requires` chain in scope, the
     // call must classify as Deferred and emit names-model shape:
-    // `apply_within(fn = Ref(Eq.eq), args = ...,
-    //  requirements = [var_ref(name = Ref(__req_eq))])`.
+    // `apply_within(fn = Ref(Wi222Spec.same), args = ...,
+    //  requirements = [var_ref(name = Ref(__req_wi222spec))])`.
     // The dispatching-dict expression reads the caller's frame
-    // requirement-param `__req_eq` by name (no positional slot).
+    // requirement-param by name (no positional slot).
     let src = r#"
 namespace test.wi222.defer_rewrite
-  import anthill.prelude.PartialEq.{eq}
-  import anthill.prelude.{PartialEq, Bool}
+  import anthill.prelude.{Bool}
+  sort Wi222Spec
+    sort T = ?
+    operation same(a: T, b: T) -> Bool
+  end
   sort Wi222Box
     sort T = ?
-    requires PartialEq[T]
-    operation use_eq(a: T, b: T) -> Bool = eq(a, b)
+    requires Wi222Spec[T]
+    operation use_eq(a: T, b: T) -> Bool = Wi222Spec.same(a, b)
   end
 end
 "#;
@@ -48,15 +69,9 @@ end
     let kb = interp.kb();
 
     let eq_sym = kb
-        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
-        .expect("Eq.eq registered");
+        .try_resolve_symbol("test.wi222.defer_rewrite.Wi222Spec.same")
+        .expect("Wi222Spec.same registered");
 
-    // Pick a defer rewrite for Eq.eq from this test's Wi222Box body.
-    // WI-325: stdlib sorts with their own `requires Eq[T]` (e.g.
-    // `List`) also produce defer rewrites for Eq.eq — those have
-    // `fn = Ref(Eq.eq)` like ours; iteration order matters, so we
-    // grab the first match and verify the apply_within shape (which
-    // is identical for any defer rewrite — names model).
     let aw_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.apply_within")
         .expect("apply_within in stdlib");
@@ -70,37 +85,21 @@ end
         .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil in stdlib");
 
-    let mut rewritten_for_eq: Option<_> = None;
-    for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
-        if spec_sym != eq_sym {
-            continue;
-        }
-        // Every defer rewrite for Eq.eq carries `fn = Ref(Eq.eq)` —
-        // the names-model shape under test. Pin-now rewrites would
-        // carry `fn = Ref(<impl>.eq)` and are excluded here.
-        let named_args = match kb.get_term(rewritten_tid) {
-            Term::Fn { named_args, .. } => named_args.clone(),
-            _ => continue,
-        };
-        let fn_tid = match named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == "fn")
-            .map(|(_, v)| *v)
-        {
-            Some(t) => t,
-            None => continue,
-        };
-        let fn_target = match kb.get_term(fn_tid) {
-            Term::Ref(s) | Term::Ident(s) => *s,
-            _ => continue,
-        };
-        if fn_target == eq_sym {
-            rewritten_for_eq = Some(rewritten_tid);
-            break;
-        }
-    }
-    let rewritten_tid =
-        rewritten_for_eq.expect("at least one Eq.eq defer rewrite (Wi222Box.use_eq) must exist");
+    // ASSERTED, not assumed: exactly one rewrite may exist for a spec op only this
+    // fixture calls. More would mean the subject is again chosen by iteration order.
+    let rewrites: Vec<_> = kb
+        .dispatch_origin_iter()
+        .filter(|(_, spec_sym)| *spec_sym == eq_sym)
+        .map(|(tid, _)| tid)
+        .collect();
+    assert_eq!(
+        rewrites.len(),
+        1,
+        "`Wi222Spec.same` is called from exactly one body, so exactly one rewrite may \
+         be recorded for it — more means this test's subject is chosen by \
+         `dispatch_origin`'s iteration order again"
+    );
+    let rewritten_tid = rewrites[0];
 
     let (functor, named_args) = match kb.get_term(rewritten_tid) {
         Term::Fn {
@@ -124,15 +123,15 @@ end
         Term::Ref(s) => assert_eq!(
             *s,
             eq_sym,
-            "fn-position must be Ref(Eq.eq); got Ref({})",
+            "fn-position must be Ref(Wi222Spec.same); got Ref({})",
             kb.qualified_name_of(*s)
         ),
         other => panic!("apply_within fn must be Term::Ref(spec_op); got {other:?}"),
     }
 
-    // requirements = cons(var_ref(name=Ref(__req_eq)), nil) — single
-    // named-requirement read; Wi222Box's transitive chain is [Eq], the
-    // synthesized name for slot 0 is `__req_eq`.
+    // requirements = cons(var_ref(name=Ref(__req_wi222spec)), nil) — single
+    // named-requirement read; Wi222Box's transitive chain is [Wi222Spec], the
+    // synthesized name for slot 0 is `__req_wi222spec`.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements")
         .expect("apply_within must carry `requirements`");
     let (reqs_functor, reqs_named) = match kb.get_term(reqs_tid) {
@@ -167,15 +166,17 @@ end
     );
     let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        // WI-644: the fixture `requires PartialEq[T]` (the base holding `eq`), so the
-        // synthesized name is `__req_partialeq`. WI-873: the entry read here may be
-        // ANOTHER sort's rewrite for the same spec, so only the spec is asserted.
+        // WI-873: the entry read here MAY be another sort's rewrite for the same spec,
+        // so only the spec is asserted. WI-1091 made the entry the fixture's own, so the
+        // name is now exactly slot 0 of `Wi222Box`'s chain — but the tolerant reader is
+        // kept, since it is the shared one and the claim is about WHICH SPEC named the
+        // param either way.
         Term::Ref(s) => crate::common::assert_req_param_spec(
             kb,
             *s,
-            "__req_partialeq",
-            "a `PartialEq`-deferred call's dispatching dict must read a requirement \
-             param synthesized from `PartialEq`",
+            "__req_wi222spec",
+            "a `Wi222Spec`-deferred call's dispatching dict must read a requirement \
+             param synthesized from `Wi222Spec`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }

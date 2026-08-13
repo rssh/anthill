@@ -384,32 +384,35 @@ fn a_pin_outranks_a_deferral_to_the_enclosing_frame() {
     );
 }
 
-/// PHASE 2 DOES NOT DELIVER SELECTION ON THE OP-SCOPED ROUTE, and this is the pair
-/// that says so. An operation-scoped `requires` is served by value-directed dispatch,
-/// which never sees the call's selections.
+/// **WI-1091 DELIVERED SELECTION ON THE OP-SCOPED ROUTE, and this row is its
+/// acceptance.** It used to assert a REFUSAL, and the refusal was the honest option at
+/// the time: WI-841 measured that `probe[Monoid = AddM](2, 3)` computed **99** —
+/// `AnyM`'s answer, the provider the author did NOT name — in a program that loaded, so
+/// the pin was accepted and silently dropped. Refusing beat computing the wrong number.
 ///
-/// WI-822 LEG 1 LANDED AND THIS PAIR IS UNCHANGED — recorded here because WI-841's own
-/// note predicted the refusal would be lifted by it. LEG 1 gave the op-scoped chain
-/// real frame slots and a call-site supply that DOES honour `selected`; what it did
-/// not change is which channel the callee's BODY reads. `probe`'s
-/// `Monoid.combine(a, b)` over an abstract element is served by value-direction, so it
-/// never reads the slot and the pin is still not consulted — measured by this very
-/// test, which kept computing 99 across the change. Only a call value-direction
-/// CANNOT serve reads the slot (`kb::typing::op_scoped_defer_location`), and lifting
-/// this refusal means moving that placement, with its own measurement — WI-1091, whose
-/// acceptance is that THIS test flips to Ok(5).
+/// WHAT IT TOOK, since two earlier tickets predicted the lift and neither delivered it.
+/// WI-822 LEG 1 gave the op-scoped chain real frame slots and a call-site supply that
+/// HONOURS `selected` — and this row kept computing 99 across that change, because the
+/// supply is not the question: the question is which channel the callee's BODY reads.
+/// WI-1091 widened that, and even then the first cut still measured 99 on all three rows
+/// below. The reason is worth keeping, because it is what the placement actually is:
+/// `Monoid.combine(a, b)` at the abstract `HT` matches only the PARAMETRIC `AnyM`, so
+/// dispatch answers `Unique` and pins the body at load — reaching none of the outcome
+/// arms the widening had wired. The op-scoped licence had to be read where the
+/// SORT-LEVEL one already is, in the pre-check that runs AHEAD of dispatch (WI-239's
+/// "defer-to-requirement takes priority over provider-based dispatch").
 ///
-/// MEASURED, and only the SECOND row shows it: with `AddM` and `AnyM` both answering,
-/// `[Monoid = AnyM]` computed 99 and looked honoured — it merely agreed with what the
-/// search picks — while `[Monoid = AddM]` ALSO computed 99, the answer of the provider
-/// the author did not name. A silently wrong number, in a program that loaded. The
-/// control is the whole test; the agreeing row alone was a false positive.
+/// SO THE THREE ROWS ARE ITS SORT-LEVEL TWIN'S, verbatim — see
+/// [`selection_overrides_the_search_and_the_value_shows_it`], which drives the same
+/// 5 / 5 / 99 on `HOLDER_SORT_LEVEL`. That agreement IS the claim: moving `requires`
+/// from the sort to the operation changes nothing an author can observe.
 ///
-/// So the call is REFUSED where the ignored selection could differ. With a SOLE
-/// provider it cannot — the pin necessarily names it — which is why the sibling below
-/// still loads and computes, and is what §9 phase 2's acceptance asks for.
+/// THE UNBRACKETED ROW IS WHAT CHANGED MOST, and it is the control that makes the other
+/// two mean something. It used to be **99** — value-direction's first answer — and is now
+/// **5**, the ground provider `pick_most_specific` takes. A `99` in any row is the WI-841
+/// defect back: the search's answer where the author named a provider.
 #[test]
-fn an_op_scoped_selection_that_could_differ_is_refused_not_ignored() {
+fn an_op_scoped_selection_decides_and_the_value_shows_it() {
     let build = |call: &str| {
         program(
             "wi841.unthreadable",
@@ -424,30 +427,39 @@ fn an_op_scoped_selection_that_could_differ_is_refused_not_ignored() {
             ),
         )
     };
-    for call in [
-        "Holder.probe[Monoid = AddM](2, 3)",
-        "Holder.probe[Monoid = AnyM](2, 3)",
-    ] {
-        refused_with(
-            &build(call),
-            "cannot be honoured",
-            "an op-scoped slot cannot thread a selection, and two providers answer it",
-        );
-    }
-
-    // CONTROL 1 — unbracketed, the same program loads and runs. The refusal is about
-    // the SELECTION, not about op-scoped requirements or about two providers.
     assert_eq!(
         eval_int(
             &build("Holder.probe(2, 3)"),
             "wi841.unthreadable.Driver.go",
             "unbracketed"
         ),
+        5,
+        "CONTROL: with no bracket the search takes the GROUND provider — a 99 here is \
+         value-direction answering instead of the dictionary, which is the placement \
+         WI-1091 moved",
+    );
+    assert_eq!(
+        eval_int(
+            &build("Holder.probe[Monoid = AddM](2, 3)"),
+            "wi841.unthreadable.Driver.go",
+            "pinning the search's own answer"
+        ),
+        5,
+    );
+    assert_eq!(
+        eval_int(
+            &build("Holder.probe[Monoid = AnyM](2, 3)"),
+            "wi841.unthreadable.Driver.go",
+            "pinning AGAINST the search"
+        ),
         99,
+        "the pin must OVERRIDE the search, not merely agree with it — this row and the \
+         one above differ only in the bracket, and they must differ in the value",
     );
 
-    // CONTROL 2 — the SORT-LEVEL twin of the refused call is threaded and honoured, so
-    // the refusal is scoped to the route that cannot carry a pin, not to the spelling.
+    // CONTROL — the SORT-LEVEL twin of the same call gives the same answer, which is
+    // what "the two spellings agree" means. It was the CONTRAST when this row asserted a
+    // refusal; it is the AGREEMENT now, and it is the same assertion either way.
     let sort_level = program(
         "wi841.threadable",
         PARAMETRIC_RIVAL,
@@ -543,13 +555,17 @@ fn a_named_sort_level_binder_selects() {
     );
 }
 
-/// An OP-LEVEL named binder is the same rule on a route that cannot carry it. Named
-/// or anonymous makes no difference: an operation-scoped `requires` has no dictionary
-/// channel, so with two providers answering, the selection is refused rather than
-/// ignored. The sort-level twin above is the contrast — same binder spelling, same
-/// witness, threaded there and not here.
+/// An OP-LEVEL named binder is the same rule on the same route (WI-1091). Named or
+/// anonymous makes no difference and neither does which declaration carries the clause:
+/// the binder reaches the operation's own slot, the call-site supply fills it from the
+/// bracket, and the body reads it. This row asserted a REFUSAL until WI-1091 — see
+/// [`an_op_scoped_selection_decides_and_the_value_shows_it`] for why refusing was right
+/// while the body could not read the slot, and what had to move.
+///
+/// The sort-level twin above is now the AGREEMENT rather than the contrast: same binder
+/// spelling, same witness, same 5.
 #[test]
-fn an_op_level_named_binder_on_an_unthreadable_slot_is_refused() {
+fn an_op_level_named_binder_selects_its_own_slot() {
     let src = program(
         "wi841.namedop",
         PARAMETRIC_RIVAL,
@@ -562,10 +578,11 @@ fn an_op_level_named_binder_on_an_unthreadable_slot_is_refused() {
             driver("Holder.probe[m = AddM](2, 3)")
         ),
     );
-    refused_with(
-        &src,
-        "cannot be honoured",
-        "an op-scoped slot threads no selection",
+    assert_eq!(
+        eval_int(&src, "wi841.namedop.Driver.go", "an op-level named binder selects"),
+        5,
+        "AddM's 5, not the search's 99 — else the binder bound a parameter and selected \
+         nothing, which is exactly the WI-840 state one declaration over",
     );
 }
 

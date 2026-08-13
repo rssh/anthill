@@ -82,6 +82,7 @@ fn an_opref_is_equal_to_itself_and_keys_by_its_op() {
     let a = resolve(&interp, "anthill.prelude.Int64");
     let b = resolve(&interp, "anthill.prelude.Bool");
     let mk = |op| Value::OpRef {
+        op_reqs: None,
         // WI-1087: a hand-built value, not minted at an eta site — no slot to read
         // a parameter-list mapping off.
         spread_labels: None,
@@ -113,6 +114,7 @@ fn the_named_spec_op_half_is_part_of_the_identity() {
     let (eq, same_key) = eq_and_key(
         kb,
         &Value::OpRef {
+            op_reqs: None,
             // WI-1087: a hand-built value, not minted at an eta site — no slot to
             // read a parameter-list mapping off.
             spread_labels: None,
@@ -121,6 +123,7 @@ fn the_named_spec_op_half_is_part_of_the_identity() {
             named: None,
         },
         &Value::OpRef {
+            op_reqs: None,
             // WI-1087: a hand-built value, not minted at an eta site — no slot to
             // read a parameter-list mapping off.
             spread_labels: None,
@@ -150,6 +153,7 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
     let d_int = crate::common::dict(&interp, int64, []);
     let d_bool = crate::common::dict(&interp, bool_sym, []);
     let with = |d| Value::OpRef {
+        op_reqs: None,
         // WI-1087: a hand-built value, not minted at an eta site — no slot to read
         // a parameter-list mapping off.
         spread_labels: None,
@@ -177,6 +181,7 @@ fn two_oprefs_differing_only_in_their_dictionary_are_distinct() {
         kb,
         &with(d_int),
         &Value::OpRef {
+            op_reqs: None,
             // WI-1087: a hand-built value, not minted at an eta site — no slot to
             // read a parameter-list mapping off.
             spread_labels: None,
@@ -307,6 +312,7 @@ fn an_opref_key_is_payload_bearing() {
     let key = goal_fingerprint(
         interp.kb(),
         &Value::OpRef {
+            op_reqs: None,
             // WI-1087: a hand-built value, not minted at an eta site — no slot to
             // read a parameter-list mapping off.
             spread_labels: None,

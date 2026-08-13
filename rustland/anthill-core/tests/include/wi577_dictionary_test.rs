@@ -146,7 +146,8 @@ fn resolve_op_real_impl_yields_callable_opref() {
 
     // The result carries the dispatch dict — so it stays callable.
     match &opref {
-        Value::OpRef { dict, .. } => {
+        Value::OpRef {
+            op_reqs: None, dict, .. } => {
             assert!(
                 dict.is_some(),
                 "resolveOp must capture this dict as the dispatch env"
@@ -224,7 +225,8 @@ fn ops_enumerates_dict_operations_as_oprefs() {
             );
             let head = named_field(&interp, named, "head");
             assert!(
-                matches!(head, Value::OpRef { dict: Some(_), .. }),
+                matches!(head, Value::OpRef {
+                op_reqs: None, dict: Some(_), .. }),
                 "each ops element is a callable, dict-bearing OpRef"
             );
         }
@@ -250,6 +252,7 @@ fn opref_backed_by_builtin_is_callable() {
     let abs = resolve(&interp, "anthill.prelude.Int64.abs");
     // `named: None` — a bare ref names its own op (WI-857).
     let opref = Value::OpRef {
+        op_reqs: None,
         // WI-1087: a hand-built value, not minted at an eta site — no slot to read
         // a parameter-list mapping off.
         spread_labels: None,
@@ -306,7 +309,8 @@ fn resolve_op_remembers_the_named_spec_op() {
         .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
         .unwrap();
     match &opref {
-        Value::OpRef { op, named, .. } => {
+        Value::OpRef {
+            op_reqs: None, op, named, .. } => {
             assert_eq!(
                 interp.kb().qualified_name_of(*op),
                 "test.wi577.named.Descending.compare",
@@ -335,6 +339,7 @@ fn opref_dict_none_for_dictless_ref() {
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     // A bare op-ref with no captured dict (a requires-free / namespace-level op).
     let opref = Value::OpRef {
+        op_reqs: None,
         // WI-1087: a hand-built value, not minted at an eta site — no slot to read
         // a parameter-list mapping off.
         spread_labels: None,
@@ -412,6 +417,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     // of the contract, so the `some(...)` above is not merely "always some".
     let eq_eq = resolve(&interp, "anthill.prelude.PartialEq.eq");
     let bare = Value::OpRef {
+        op_reqs: None,
         // WI-1087: a hand-built value, not minted at an eta site — no slot to read
         // a parameter-list mapping off.
         spread_labels: None,

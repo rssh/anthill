@@ -325,6 +325,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
         "anthill.realization.runtime.OpRef.spreadLabels",
         opref_spread_labels,
     )?;
+    register_if_present(
+        interp,
+        "anthill.realization.runtime.OpRef.opRequirements",
+        opref_op_requirements,
+    )?;
 
     // WI-876 — last, because it is the KB-DRIVEN half: everything above is a
     // hardcoded qualified name, this reads what the loaded binding blocks asked
@@ -4257,6 +4262,11 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         op: target,
         dict: Some(Rc::new(h)),
         named: Some(spec_op_sym),
+        // WI-1091: and no call site either, so nothing here could have BUILT an
+        // op-scoped slot. A resolved member whose own `requires` clause the body reads
+        // therefore enters unsupplied and raises at the read, naming the frame — the
+        // same answer this route gave before the channel existed.
+        op_reqs: None,
     })
 }
 
@@ -4292,12 +4302,14 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
         .map(|target| {
             resolve_op_target_checked(&interp.kb, impl_sym, target)
                 .map(|resolved| Value::OpRef {
-                    // WI-1087: not an eta site — see the sibling mint above.
+                    // WI-1087 / WI-1091: not an eta site — see the sibling mint above
+                    // for both halves.
                     spread_labels: None,
                     op: resolved,
                     dict: Some(h.clone()),
                     // The table row IS the op named here, pre-resolution.
                     named: Some(target),
+                    op_reqs: None,
                 })
                 .map_err(|detail| EvalError::UnpinnedRequirement { detail })
         })
@@ -4372,6 +4384,47 @@ fn opref_spread_labels(interp: &mut Interpreter, args: &[Value]) -> Result<Value
         Value::OpRef { spread_labels, .. } => match spread_labels {
             Some(labels) => {
                 let elems: Vec<Value> = labels.iter().copied().map(symbol_value).collect();
+                let list = build_value_list(interp, elems)?;
+                Ok(option_some(some_sym, value_key, list))
+            }
+            None => Ok(option_none(none_sym)),
+        },
+        other => Err(type_mismatch("OpRef", &other, None)),
+    }
+}
+
+/// `OpRef.opRequirements(r) -> Option[List[Option[Dictionary]]]` — the OPERATION's own
+/// `requires` slots captured at the eta site, in chain order; none() for an op that
+/// writes no `requires` of its own, and a none() ELEMENT for a slot the eta site could
+/// not project.
+///
+/// WI-1091 declared it for the reason WI-1019 declared `named` and WI-1088
+/// `spreadLabels`: it is part of the value's identity ([`crate::kb::term_view`]'s
+/// `opref_shape`), and the accessor set claims to expose everything the value holds. It
+/// is the sharpest case of the three — for an eta of an operation whose SORT requires
+/// nothing, `dict` is none() on every reference, so this is the only field that can tell
+/// two of them apart.
+///
+/// Two renderings of one field, as with `spreadLabels`: the structural view spells it as
+/// a positional TUPLE (order is which requirement each slot answers, and a `cons` chain
+/// per child read would be an allocation on the equality / `goal_fingerprint` / discrim
+/// path), this accessor as a `List` (the anthill surface, where a tuple of
+/// statically-unknown width is not a declarable type).
+fn opref_op_requirements(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r] = expect_args::<1>("OpRef.opRequirements", args)?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_key = interp.kb.intern("value");
+    match r {
+        Value::OpRef { op_reqs, .. } => match op_reqs {
+            Some(slots) => {
+                let elems: Vec<Value> = slots
+                    .iter()
+                    .map(|slot| match slot {
+                        Some(d) => option_some(some_sym, value_key, d.as_value().clone()),
+                        None => option_none(none_sym),
+                    })
+                    .collect();
                 let list = build_value_list(interp, elems)?;
                 Ok(option_some(some_sym, value_key, list))
             }

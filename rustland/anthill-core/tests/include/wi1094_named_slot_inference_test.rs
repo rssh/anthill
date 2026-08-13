@@ -643,23 +643,34 @@ fn the_dot_spelling_reads_the_same_decision() {
 
 // ── the boundary of the mechanism ────────────────────────────────────
 
-/// **AN OP-SCOPED NAMED SLOT IS OUT OF SCOPE, and the exclusion is pinned rather than
-/// left to the absence of a test.** This mechanism writes into a type PARAMETER so the
-/// answer rides in a VALUE's type; 058 §3.9 says an op-scoped requirement is "evidence
-/// about THIS CALL of THIS OPERATION, belonging to no instance", so there is no value to
-/// carry it. WI-841 agrees from the other side: that route is served by value-directed
-/// dispatch, which never sees a selection, so a bracket there is refused outright once
-/// two providers answer.
+/// **AN OP-SCOPED NAMED SLOT IS OUT OF SCOPE FOR THE INFERENCE, and the exclusion is
+/// pinned rather than left to the absence of a test.** This mechanism writes into a type
+/// PARAMETER so the answer rides in a VALUE's type; 058 §3.9 says an op-scoped
+/// requirement is "evidence about THIS CALL of THIS OPERATION, belonging to no
+/// instance", so there is no value to carry it. Omitting the binder is therefore still
+/// `UnconstrainedTypeParam` — an inference that had fired would have bound it from
+/// `Widget`'s own provision and the program would load.
 ///
-/// So both spellings keep their PRE-WI-1094 reading, and the pair is the assertion:
-/// omitting the binder is still `UnconstrainedTypeParam` (an inference that fired would
-/// have bound it and this would load), and writing it is still `UnthreadableSelection`
-/// (which is what says the route genuinely cannot carry the answer, so declining to
-/// infer is not a gap this ticket left).
+/// **THE SECOND HALF MOVED AT WI-1091, and the correction matters more than the row.**
+/// This doc used to add: "WI-841 agrees from the other side: that route is served by
+/// value-directed dispatch, which never sees a selection, so a bracket there is refused
+/// outright once two providers answer" — and concluded that refusing the WRITTEN binder
+/// is "WHY inferring it would buy nothing: the route cannot carry the answer to the
+/// body". The premise was true when written and is now false. WI-1091 widened the
+/// op-scoped placement, so a body call licensed by its enclosing operation's own
+/// `requires` READS that dictionary, and the call-site supply has honoured the bracket
+/// since WI-822 LEG 1. A written `[d = LoudDesc]` now DECIDES — 99, `LoudDesc`'s answer,
+/// against the 1 that `Widget`'s own provision gives by default.
+///
+/// So the two halves no longer share a reason, and that is the honest reading: the route
+/// CAN carry a selection, and this ticket still declines to INFER one because a type
+/// parameter is the wrong place to put evidence that belongs to no instance. Which is a
+/// narrower claim than the one this row used to make, and the one it can support.
 ///
 /// The tie here is DEFAULT-ABLE on purpose — `Widget` provides `Desc` itself, so §3.6
 /// mints a default row and the ladder WOULD have had an answer to give. Without that,
-/// "nothing was inferred" would be indistinguishable from "there was nothing to infer".
+/// "nothing was inferred" would be indistinguishable from "there was nothing to infer";
+/// it is also what makes 1-vs-99 name WHICH provider the bracket chose.
 #[test]
 fn an_op_scoped_named_slot_keeps_its_own_reading() {
     let fixtures = r#"
@@ -700,13 +711,16 @@ fn an_op_scoped_named_slot_keeps_its_own_reading() {
          reached it, the default (`Widget`'s own provision) would have bound it and this \
          would load: {bare:?}"
     );
-    let pinned = load_errs(&driver("wi1094.opslot.pinned", "[d = LoudDesc]"));
+    // …and WRITING it now DECIDES (WI-1091). Driven to the VALUE, not to a load verdict:
+    // `LoudDesc`'s 99 against the 1 `Widget`'s own provision gives by default, so a
+    // bracket that were accepted and dropped — WI-841's measured defect — would show as
+    // the default's number rather than as an error.
+    let mut interp = crate::common::interp_for(&driver("wi1094.opslot.pinned", "[d = LoudDesc]"));
+    let got = interp.call("wi1094.opslot.pinned.Driver.run", &[Value::Int(0)]);
     assert!(
-        pinned
-            .iter()
-            .any(|e| e.contains("has no dictionary channel")),
-        "…and writing it is still WI-841's refusal, which is WHY inferring it would buy \
-         nothing: the route cannot carry the answer to the body: {pinned:?}"
+        matches!(got, Ok(Value::Int(99))),
+        "the written binder must select `LoudDesc` — a 1 is `Widget`'s own provision, \
+         i.e. the bracket accepted and dropped; got {got:?}"
     );
 }
 

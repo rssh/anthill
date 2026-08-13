@@ -317,31 +317,6 @@ pub enum TypeError {
         /// chain rather than out of a search.
         provider: Option<Symbol>,
     },
-    /// WI-841: `f[Spec = W](…)` on a slot whose route cannot THREAD the selection —
-    /// an OP-SCOPED `requires`, served by value-directed dispatch at eval, which never
-    /// sees the call's selections. Raised only when two or more providers
-    /// answer the goal, i.e. when the ignored selection could actually pick the wrong
-    /// one: MEASURED, `probe[Monoid = AddM](2, 3)` computed `AnyM`'s 99. With a SOLE
-    /// provider the pin necessarily names it and the call is accepted.
-    ///
-    /// WI-822 LEG 1 GAVE THE CHAIN A CHANNEL AND THIS REFUSAL STILL STANDS — worth
-    /// stating, because WI-841 predicted the opposite. The slot now exists and the
-    /// call site DOES build its dictionary honouring `selected`; what did not change
-    /// is which channel the callee's BODY reads. An op-scoped requirement is served by
-    /// VALUE-DIRECTION wherever value-direction can serve it ([`op_scoped_defer_location`]
-    /// records why that placement is measured, not preferred), and `probe`'s
-    /// `Monoid.combine(a, b)` over an abstract element is exactly such a call — so the
-    /// pin is still not consulted and 99 is still what an accepted call would compute.
-    /// Lifting this needs the body to read the slot on more than the tie route, which
-    /// is a placement change with its own measurement.
-    UnthreadableSelection {
-        span: Option<Span>,
-        op: Symbol,
-        spec: Symbol,
-        witness: Symbol,
-        /// The providers that answer the goal, for the diagnostic.
-        candidates: Vec<String>,
-    },
     /// WI-841 (058 §4.4 check 1): `f[Spec = W](…)` named a witness that does not
     /// provide that spec at all — no `SortProvidesInfo(sort_ref = W, spec = Spec[…])`
     /// exists. Names BOTH, since either half can be the typo.
@@ -881,32 +856,6 @@ impl TypeError {
                     would_take,
                 )
             }
-            TypeError::UnthreadableSelection {
-                op,
-                spec,
-                witness,
-                candidates,
-                ..
-            } => {
-                format!(
-                    "`[{} = {}]` cannot be honoured at {}: the requirement is declared \
-                     on the OPERATION, and an operation-scoped `requires` has no \
-                     dictionary channel — it is resolved from the argument VALUES at \
-                     run time, which cannot see this selection. {} providers answer it \
-                     ({}), so the selection would be silently ignored and one of them \
-                     picked instead. Declaring the `requires` on the enclosing SORT \
-                     threads it — but that is not a free rewrite: a sort-level \
-                     requirement is imposed on every dispatch through that sort, which \
-                     is why `List.member`'s `Eq[T]` is written on the operation. \
-                     Threading an operation-scoped selection is the real fix (WI-822 \
-                     leg 1); until it lands, this call has no honest reading",
-                    short_name_of(kb.qualified_name_of(*spec)),
-                    short_name_of(kb.qualified_name_of(*witness)),
-                    kb.qualified_name_of(*op),
-                    candidates.len(),
-                    candidates.join(", "),
-                )
-            }
             TypeError::WitnessDoesNotProvide {
                 op,
                 witness,
@@ -1098,7 +1047,6 @@ impl TypeError {
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
             | TypeError::ErasedRequirementSlot { span, .. }
-            | TypeError::UnthreadableSelection { span, .. }
             | TypeError::WitnessDoesNotProvide { span, .. }
             | TypeError::ValueDirectedSelection { span, .. }
             | TypeError::ConflictingSelection { span, .. }
@@ -1355,17 +1303,6 @@ impl TypeError {
                 expected_type: format!(
                     "a supplied `{}: {}` slot (write it in the type, or declare it)",
                     kb.local_name_of(*binder),
-                    kb.qualified_name_of(*spec),
-                ),
-                actual_type: self.format(kb),
-                span: self.span(kb),
-            },
-            TypeError::UnthreadableSelection { op, spec, .. } => LoadError::TypeMismatch {
-                origin: None,
-                entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "type_arg".to_string(),
-                expected_type: format!(
-                    "a threadable slot for {} (declare the `requires` on the sort)",
                     kb.qualified_name_of(*spec),
                 ),
                 actual_type: self.format(kb),
@@ -6768,13 +6705,23 @@ fn attach_eta_dispatch_dict(
     // marks the occurrence; a branch that forgot these labels would silently give the
     // operation spelling a source-order spread while its lambda twin read by name.
     let spread_labels = function_slot_spread_labels(kb, sym, expected);
+    // WI-1091 — THE OP HALF, computed before every branch below and for the same reason
+    // `spread_labels` is: each branch marks the occurrence and returns, and three of them
+    // return before any dictionary is built at all. `List.member` reaches the SECOND of
+    // them (`List` declares no `requires`), so an eta of the one stdlib operation with an
+    // op-scoped clause was minting a dict-less `OpRef` — which value-direction covered
+    // for, and WI-1091's widened placement does not.
+    let (subst, selected, op_dicts) =
+        eta_op_scoped_dicts(kb, env, sym, fn_ty, expected, Some(occ.span.span))?;
     let Some(parent) = impl_parent_of_op(kb, sym) else {
         // Namespace-level op — no enclosing sort `requires`. WI-700: still MARK the
         // eta (dict None) so a nullary eta mints an `OpRef` at eval (a namespace op
-        // like `poke` reaches only this arm).
+        // like `poke` reaches only this arm). WI-1091: a namespace-level op may still
+        // write `requires` of its OWN, so the op half rides even here.
         occ.set_classification(CallClass::EtaOpRef {
             dict: None,
             spread_labels,
+            op_dicts,
         });
         return Ok(());
     };
@@ -6783,11 +6730,12 @@ fn attach_eta_dispatch_dict(
     // it inline. An eta'd op on a carrier whose requirements are all provision
     // conditions would otherwise mint a dict-less `OpRef` for a body that reads them.
     if !sort_reads_requirement_slots(kb, parent) {
-        // Requires-free op — eval forwards the caller's reqs. WI-700: MARK the eta
+        // Requires-free SORT — eval forwards the caller's reqs. WI-700: MARK the eta
         // (dict None) regardless, so a nullary eta mints an `OpRef` at eval.
         occ.set_classification(CallClass::EtaOpRef {
             dict: None,
             spread_labels,
+            op_dicts,
         });
         return Ok(());
     }
@@ -6803,6 +6751,7 @@ fn attach_eta_dispatch_dict(
             occ.set_classification(CallClass::EtaOpRef {
                 dict: None,
                 spread_labels,
+                op_dicts,
             });
             return Ok(());
         };
@@ -6811,70 +6760,11 @@ fn attach_eta_dispatch_dict(
         occ.set_classification(CallClass::EtaOpRef {
             dict: Some(dict),
             spread_labels,
+            op_dicts,
         });
         return Ok(());
     }
-    // Pin the op's element type(s) by unifying its eta arrow against the
-    // expected arrow (best-effort: a non-unifiable expected leaves a dep
-    // abstract, which `build_concrete_dispatch_dict` then forwards or rejects).
-    let mut subst = Substitution::new();
-    // Pin the op's element type by unifying the expected and eta-arrow PARAM
-    // types (carrier-agnostic via `arrow_parts`: `expected` is a `Function[...]`
-    // sort-ref, the eta arrow an `arrow` form — unifying the whole types across
-    // those two carriers does not decompose). Concrete-first so a bare self-sort
-    // ref (e.g. member's `l: List`) on the op side stays open while the concrete
-    // expected param pins the element (`List.T := Int`) — mirroring the direct
-    // call's arg-first unify order.
-    let exp_param = arrow_parts(kb, expected).and_then(|(p, _, _)| p);
-    // WI-1083: read THROUGH a ∀ to its body, un-freshened — see [`poly_type_body`] for
-    // why this one reader must see the operation's own variables rather than an
-    // instantiation. Without it `arrow_parts` answers `None` for every
-    // type-parameterized operation (a ∀ is not an arrow), the pin silently does not
-    // happen, and the dictionary build is handed an empty σ.
-    let fn_body = poly_type_body(kb, fn_ty);
-    let fn_param = match &fn_body {
-        Some(body) => arrow_parts(kb, body).and_then(|(p, _, _)| p),
-        None => arrow_parts(kb, fn_ty).and_then(|(p, _, _)| p),
-    };
-    if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
-        unify_types(kb, &mut subst, &ep, &fp);
-    }
     let caller_requires = env.enclosing_dict_chain().clone();
-    // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
-    // BRACKET — there is no call here to write one on.
-    //
-    // WI-844: but that is only half of §4.7's channel, and this site fills the other
-    // half itself — the unify above pins the op's params from the EXPECTED ARROW, so
-    // when that arrow names a witness (`(SortedSet[T = String, O = ByLength], String) ->
-    // …`) σ already holds it. MEASURED before this: a bare-name eta of `SortedSet.insert`
-    // against exactly that arrow refused with "constructing `Ord[T = String]` is
-    // ambiguous among providers" — the expected type's `O = ByLength` notwithstanding.
-    // The slot read is the same one the direct call uses; only the σ producer differs.
-    //
-    // No `check_selection_bindings` here, unlike the direct call: a pin that fails to
-    // land is already loud from this very build (`RequirementRefusal { pinned }` names
-    // the selected witness and the dep), and adding the call-site check would widen
-    // what an eta refuses beyond what this ticket measured.
-    //
-    // GATED BEFORE the record read, not inside: `lookup_operation_info_full` clones
-    // every per-field `Vec` of the signature (`op_info_from_signature` — the cost
-    // `operation_is_declared` exists to avoid), and `names_any_requirement_slot` is two
-    // `Symbol`-keyed index gets. An op that names no slot must not pay the clone.
-    let selected = if names_any_requirement_slot(kb, sym) {
-        match lookup_operation_info_full(kb, sym) {
-            Some(op) => selections_from_slot_bindings(
-                kb,
-                &subst,
-                &op,
-                sym,
-                Vec::new(),
-                Some(occ.span.span),
-            )?,
-            None => Vec::new(),
-        }
-    } else {
-        Vec::new()
-    };
     match build_concrete_dispatch_dict(
         kb,
         &subst,
@@ -6888,6 +6778,7 @@ fn attach_eta_dispatch_dict(
             occ.set_classification(CallClass::EtaOpRef {
                 dict: Some(dict),
                 spread_labels,
+                op_dicts,
             });
             Ok(())
         }
@@ -6924,6 +6815,126 @@ fn attach_eta_dispatch_dict(
             })
         }
     }
+}
+
+/// WI-1091 — an eta site's σ, its selections, and the OPERATION's own `requires` slots
+/// built from both, for [`attach_eta_dispatch_dict`].
+///
+/// THE σ AND THE SELECTIONS WERE ALREADY COMPUTED HERE, inline in the cross-sort arm;
+/// this lifts them ahead of every branch because the op half needs them on paths that
+/// arm never reaches. That is not a refactor for tidiness — `List.member` is the shape:
+/// its `requires Eq[T]` is on the OPERATION while `List` declares none, so it returns at
+/// the `sort_reads_requirement_slots` guard, three branches before any σ existed.
+///
+/// The σ is the same pin the sort half takes (the expected arrow against the op's eta
+/// arrow, which is what turns `member`'s `List.T` into `Int64`), and `selected` is the
+/// same §4.7 channel — so a `[Spec = Witness]` written at the eta reaches an op-scoped
+/// slot exactly as it reaches a sort-level one. Building the op half from a DIFFERENT σ
+/// would be the two-producers-one-rule defect this file guards everywhere else.
+///
+/// WHAT IT COSTS, stated rather than claimed away: the three branches that return early
+/// now pay the ∀-read and the arrow unify, which only the cross-sort arm used to. That is
+/// the price of ONE producer of σ — computing it in two places is the desync class this
+/// file spends most of its comments on — and the build it feeds is already free for the
+/// universal case (`build_op_scoped_dicts` returns on a memoized `is_empty()` for an
+/// operation that writes no `requires` of its own).
+#[allow(clippy::type_complexity)]
+fn eta_op_scoped_dicts(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    sym: Symbol,
+    fn_ty: &Value,
+    expected: &Value,
+    span: Option<Span>,
+) -> Result<(Substitution, Vec<InstanceSelection>, SmallVec<[Option<TermId>; 2]>), TypeError> {
+    // Pin the op's element type(s) by unifying its eta arrow against the
+    // expected arrow (best-effort: a non-unifiable expected leaves a dep
+    // abstract, which `build_concrete_dispatch_dict` then forwards or rejects).
+    let mut subst = Substitution::new();
+    // Pin the op's element type by unifying the expected and eta-arrow PARAM
+    // types (carrier-agnostic via `arrow_parts`: `expected` is a `Function[...]`
+    // sort-ref, the eta arrow an `arrow` form — unifying the whole types across
+    // those two carriers does not decompose). Concrete-first so a bare self-sort
+    // ref (e.g. member's `l: List`) on the op side stays open while the concrete
+    // expected param pins the element (`List.T := Int`) — mirroring the direct
+    // call's arg-first unify order.
+    let exp_param = arrow_parts(kb, expected).and_then(|(p, _, _)| p);
+    // WI-1083: read THROUGH a ∀ to its body, un-freshened — see [`poly_type_body`] for
+    // why this one reader must see the operation's own variables rather than an
+    // instantiation. Without it `arrow_parts` answers `None` for every
+    // type-parameterized operation (a ∀ is not an arrow), the pin silently does not
+    // happen, and the dictionary build is handed an empty σ.
+    let fn_body = poly_type_body(kb, fn_ty);
+    let fn_param = match &fn_body {
+        Some(body) => arrow_parts(kb, body).and_then(|(p, _, _)| p),
+        None => arrow_parts(kb, fn_ty).and_then(|(p, _, _)| p),
+    };
+    if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
+        unify_types(kb, &mut subst, &ep, &fp);
+    }
+    // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
+    // BRACKET — there is no call here to write one on.
+    //
+    // WI-844: but that is only half of §4.7's channel, and this site fills the other
+    // half itself — the unify above pins the op's params from the EXPECTED ARROW, so
+    // when that arrow names a witness (`(SortedSet[T = String, O = ByLength], String) ->
+    // …`) σ already holds it. MEASURED before this: a bare-name eta of `SortedSet.insert`
+    // against exactly that arrow refused with "constructing `Ord[T = String]` is
+    // ambiguous among providers" — the expected type's `O = ByLength` notwithstanding.
+    // The slot read is the same one the direct call uses; only the σ producer differs.
+    //
+    // No `check_selection_bindings` here, unlike the direct call: a pin that fails to
+    // land is already loud from this very build (`RequirementRefusal { pinned }` names
+    // the selected witness and the dep), and adding the call-site check would widen
+    // what an eta refuses beyond what this ticket measured.
+    //
+    // GATED BEFORE the record read, not inside: `lookup_operation_info_full` clones
+    // every per-field `Vec` of the signature (`op_info_from_signature` — the cost
+    // `operation_is_declared` exists to avoid), and `names_any_requirement_slot` is two
+    // `Symbol`-keyed index gets. An op that names no slot must not pay the clone.
+    let selected = if names_any_requirement_slot(kb, sym) {
+        match lookup_operation_info_full(kb, sym) {
+            Some(op) => {
+                selections_from_slot_bindings(kb, &subst, &op, sym, Vec::new(), span)?
+            }
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    // THE COMPOSED CHAIN, and the distinction is the same one the written call site draws
+    // (found by /code-review): `build_concrete_dispatch_dict` takes
+    // `enclosing_dict_chain` — the SORT half alone, because an INSTANCE dictionary must
+    // not forward an op slot — while `build_op_scoped_dicts` takes
+    // `enclosing_frame_chain`, since "a callee op slot may forward from the caller's own
+    // op slots, which is how an op-scoped requirement relays hop to hop". Reading the
+    // sort-only chain here made the eta the one spelling that cannot relay: an operation
+    // that itself `requires Eq[T]` can hand its `__req_eq` to a written
+    // `List.member(x, l)` and could not hand it to an eta'd `member`, so two spellings of
+    // one program disagreed — the defect class this ticket is about.
+    //
+    // WI-1091: a TIE in the op half is refused here exactly as it is at a written call
+    // site — an eta carries no bracket to decide it either, and `attach_eta_dispatch_dict`
+    // already turns the sort half's refusal into `UnsatisfiableRequirement { eta: true }`.
+    let op_dicts = build_op_scoped_dicts(
+        kb,
+        &subst,
+        sym,
+        env.enclosing_frame_chain(),
+        env.param_rigids(),
+        &selected,
+    )
+    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
+        span,
+        op: sym,
+        // The OPERATION owns an op-scoped clause, so it is what the message must name
+        // as the declaration whose requirement could not be supplied — its parent sort
+        // did not write it.
+        callee_sort: sym,
+        eta: true,
+        refusal,
+    })?;
+    Ok((subst, selected, op_dicts))
 }
 
 /// WI-275: the expected-type hint for a higher-order argument occurrence. Only a
@@ -10788,7 +10799,10 @@ pub(crate) fn classify_pin_or_apply_within(
     // arms that have no substitution in hand; those supply no op slots, so a callee
     // that reads one raises at the read rather than being handed a wrong dictionary.
     op_supply: Option<&OpSupplyCtx<'_>>,
-) {
+    // WI-1091: `Err` for the ONE absence in the op half that is a verdict rather than a
+    // gap — a TIE, which no other pass will ever report (058 tier 3 admits the pair on
+    // purpose). Every other unprojectable slot still classifies with the slot absent.
+) -> Result<(), TypeError> {
     let impl_sort = impl_parent_of_op(kb, impl_op);
     let needs_reqs = impl_sort
         .map(|s| sort_reads_requirement_slots(kb, s))
@@ -10805,7 +10819,14 @@ pub(crate) fn classify_pin_or_apply_within(
             ctx.caller_requires,
             ctx.param_rigids,
             ctx.selected,
-        ),
+        )
+        .map_err(|refusal| TypeError::UnsatisfiableRequirement {
+            span: Some(occ.span.span),
+            op: impl_op,
+            callee_sort: impl_op,
+            eta: false,
+            refusal,
+        })?,
         None => SmallVec::new(),
     };
     // WI-822 LEG 1: … but only where there IS a parent to name as the callee's
@@ -10872,6 +10893,7 @@ pub(crate) fn classify_pin_or_apply_within(
         }
     };
     classify(kb, occ, class);
+    Ok(())
 }
 
 /// WI-822 LEG 1 — the call-site context [`build_op_scoped_dicts`] needs, bundled so
@@ -12921,7 +12943,126 @@ fn check_apply_iter(
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
                         }),
-                    );
+                    )?;
+                    return Ok(TypeResult {
+                        ty: resolved_ret,
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+                // WI-1093 ARM 2 / WI-1091 cause (1) — NO SUPPLIER, so the spec's own
+                // DEFAULT BODY runs. It is still a call AT A CARRIER, and the evidence it
+                // is entered with must be that carrier's INSTANCE. Falling through from
+                // here reaches the Direct arm, which builds the WI-415 PARENT BUNDLE: the
+                // SPEC's own `requires` chain resolved at the carrier, stamped with the
+                // SPEC. Right for the default body's OWN reads (`Sp requires Base[T]` at
+                // `T = Wrap` genuinely IS `Base[Wrap]`), wrong for the carrier's provision
+                // CONDITIONS, which the bundle does not carry at all.
+                //
+                // NOT `dispatch_spec_op_cached`, and that is the crux: it resolves the
+                // instance and then PROJECTS it to a member through
+                // `sort_ops_lookup(impl_sort, op_short)`, discarding the tree when the
+                // projection misses. Here it MUST miss — "no supplier" is exactly what
+                // selects this arm — so it answers `NoMatch` with `None` and the fix is
+                // INERT. What this arm wants is the INSTANCE, not a dispatch: the default
+                // body is already the target and nothing is being chosen.
+                //
+                // GATED ON A CONSTRUCTED INSTANCE (`Leaf` / `Conditional`); every other
+                // verdict falls through unchanged. `FromScope` is deliberately left alone
+                // — the enclosing frame already carries that dictionary and the Direct
+                // arm's inherit is right for it.
+                //
+                // MEASURED INERT ON ITS OWN (why WI-1093 reverted it): this FIRES — on the
+                // wi1093 tower at both carriers and on stdlib `Iterable.find` at `List` —
+                // and moves no verdict, because the eta reader's failure has a SECOND
+                // cause in eval (`requirements_for_value_directed_impl` returns a
+                // non-empty `incoming` unchanged after a value-directed redirect, so the
+                // redirected impl runs on a channel built for another operation). Land it
+                // WITH that one; the driver is
+                // `wi1093_defaulted_call_instance_dict_test::pins_the_defaulted_fall_through_losing_the_elements_dictionary`,
+                // which must flip from its pinned error to 10.
+                let dispatch_sigma = SigmaCtx {
+                    subst: &subst,
+                    param_rigids: env.param_rigids(),
+                };
+                let goal = sort_goal_from_subst(kb, &subst, spec_sort, self_recv_carrier);
+                let scope = ResolutionScope {
+                    available_requires: env.enclosing_requires(),
+                    sigma: Some(&dispatch_sigma),
+                    selected: &selections,
+                };
+                // WI-1091 — `Conditional` ONLY, where WI-1093's draft took `Leaf` too.
+                // The defect is precisely that the WI-415 parent bundle carries the
+                // SPEC's chain at the carrier and none of the carrier's PROVISION
+                // CONDITIONS; a provision with no conditions has nothing the bundle is
+                // missing, so preferring an instance there changes the dictionary an
+                // author sees for no reason and — measured on the stdlib — for a cost:
+                // `Iterable.find` at `List` and `FiniteCollection.filter` at a carrier
+                // that inherits `filter` from `Iterable` both resolve `Leaf`, and eval's
+                // `dispatch_via_sort_ops_table` then walks that instance to a member of a
+                // THIRD sort whose slots it does not carry (`Stream.find`,
+                // `Iterable.filter`), which is `expand_dispatching_dict`'s WI-857 raise
+                // and its `push_op_scoped_slots` twin.
+                let default_tree = match resolve(kb, &goal, &scope) {
+                    ResolutionResult::Resolved(tree @ ResolvedRequiresNode::Conditional { .. }) => {
+                        Some(tree)
+                    }
+                    _ => None,
+                };
+                // WI-1091 — …AND ONLY WHERE THAT INSTANCE SPEAKS ABOUT THE OPERATION
+                // EVAL WILL ACTUALLY ENTER. `dispatch_via_sort_ops_table` resolves the
+                // dictionary's own member for this op, and it can land on a THIRD sort:
+                // `FiniteCollection.filter` at a carrier that INHERITS `filter` from
+                // `Iterable` lands on `Iterable.filter`, whose chain no
+                // `FiniteCollection[BoxColl]` dictionary carries. Handing it one is
+                // `expand_dispatching_dict`'s WI-857 raise, deferred to run time —
+                // measured on the stdlib as exactly that, plus the `push_op_scoped_slots`
+                // twin for the op half (`Iterable.find` supplied, `Stream.find` entered).
+                // Where the instance says nothing about that member it is not evidence
+                // for this call, and the Direct arm's parent bundle stands unchanged.
+                // [`dictionary_covers_target`] is the one owner of the question; the eval
+                // guard asks it in the same words.
+                // WI-1091 — …AND ONLY WHERE THE DEFAULT BODY IS WHAT ACTUALLY RUNS,
+                // which is this arm's own stated premise, now ENFORCED rather than
+                // assumed. It classifies `fn_sym` as its own target on the grounds that
+                // "no supplier" means the spec's default body runs — but eval does not
+                // take the classification's word for it: `dispatch_via_sort_ops_table`
+                // walks the dictionary's OWN member for this op
+                // (`resolve_op_target(dict.impl_sort(), fn_sym)`), and a resolved
+                // instance can name a provider that HAS one. MEASURED on the stdlib:
+                // `Iterable.find` at `List` resolves an instance whose impl is `Stream`,
+                // whose `Stream.find` is then entered with a channel built for
+                // `Iterable.find` — `push_op_scoped_slots`' producer/consumer desync
+                // raise, and its `expand_dispatching_dict` twin one channel over.
+                //
+                // Asking the SAME `resolve_op_target` eval will ask is what keeps the two
+                // from disagreeing; the equality is stronger than
+                // [`dictionary_covers_target`] and subsumes it here (a target that IS the
+                // spec op has the spec as its owner, which every layout covers).
+                let default_tree = default_tree.filter(|tree| {
+                    tree.impl_sort()
+                        .is_some_and(|provider| resolve_op_target(kb, provider, fn_sym) == fn_sym)
+                });
+                if default_tree.is_some() {
+                    // `fn_sym` as its OWN target: the default body is what runs, so the
+                    // classification names the spec op on both sides, exactly as the
+                    // Direct arm did — only the dictionary changes.
+                    classify_pin_or_apply_within(
+                        kb,
+                        occ,
+                        fn_sym,
+                        fn_sym,
+                        env.enclosing_sort(),
+                        default_tree,
+                        Some(&OpSupplyCtx {
+                            subst: &subst,
+                            caller_requires: env.enclosing_frame_chain(),
+                            param_rigids: env.param_rigids(),
+                            selected: &selections,
+                            enclosing_op: env.enclosing_op(),
+                        }),
+                    )?;
                     return Ok(TypeResult {
                         ty: resolved_ret,
                         env: env.clone(),
@@ -13067,7 +13208,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                             }),
-                        );
+                        )?;
                     }
                 }
                 return Ok(TypeResult {
@@ -13206,6 +13347,49 @@ fn check_apply_iter(
                         node: Rc::clone(occ),
                     });
                 }
+            }
+
+            // WI-1091 — THE OPERATION'S OWN `requires` IS READ AT THE SAME POINT, and
+            // this is what makes the two spellings agree rather than merely coexist.
+            //
+            // The pre-check above is the whole of WI-239's rule — "defer-to-requirement
+            // takes priority over provider-based dispatch" — and it read the SORT's chain
+            // alone. WI-822 LEG 1 gave an operation's own `requires` real frame slots and
+            // a call-site supply, and WI-1091 widened which dispatch outcomes may read
+            // them; but reading them only from the outcome arms leaves the licence
+            // INVISIBLE wherever dispatch resolves, which is the ordinary case.
+            //
+            // MEASURED, and it is what the ticket's acceptance turns on:
+            // `probe(a: HT, b: HT) requires Monoid[T = HT] = Monoid.combine(a, b)` over a
+            // GROUND `AddM` and a PARAMETRIC `AnyM`. At the abstract `HT` only `AnyM`
+            // matches, so dispatch answers `Unique(AnyM.combine)` and pins the body at
+            // load — no outcome arm is reached, no slot is read, and every call computes
+            // `AnyM`'s 99. Including `probe[Monoid = AddM](2, 3)`, which is the SILENT
+            // WRONG NUMBER WI-841 refused rather than ship. Its sort-level twin answers
+            // 5/5/99 through this very pre-check.
+            //
+            // ORDER: the sort half is tried FIRST and this is its fallback, so no call the
+            // sort chain already served can change hands. That is also the chain's own
+            // order — an operation's slots follow its sort's ([`op_dict_entries`]) — and
+            // `op_scoped_defer_location` answers in the COMPOSED numbering, so the two
+            // arms hand `CallClass::DeferToRequirement` slots off one list.
+            if defer_to_op_scoped_slot(
+                kb,
+                env,
+                occ,
+                &subst,
+                spec_sort,
+                fn_sym,
+                op_short_sym,
+                enclosing_sort,
+                pinned_spec,
+            ) {
+                return Ok(TypeResult {
+                    ty: resolved_ret.clone(),
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
             }
 
             // WI-350: an abstract spec receiver (`s : Stream[T]`, or an
@@ -13430,7 +13614,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                             }),
-                        );
+                        )?;
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
                             env: env.clone(),
@@ -13500,7 +13684,13 @@ fn check_apply_iter(
                     // WI-653: carrier-aware coverage — the licensing `requires` must
                     // supply `spec_sort` OVER THE CALL'S CARRIER, not merely by symbol.
                     if op_requires_covers_call(kb, env, &subst, spec_sort) {
-                        // licensed by the enclosing op's own `requires` — no diagnostic.
+                        // WI-1091: licensed by the enclosing op's own `requires` — and
+                        // now DEFERRED to the slot that licence names, when the chain
+                        // has one. See `defer_to_op_scoped_slot`.
+                        defer_to_op_scoped_slot(
+                            kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
+                            enclosing_sort, pinned_spec,
+                        );
                     } else if spec_warrants_abstract_check(kb, spec_sort) {
                         let spec_qn = kb.qualified_name_of(spec_sort).to_string();
                         // WI-387 FIX 3: the receiver carrier's provider fact may
@@ -13690,7 +13880,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                             }),
-                        );
+                        )?;
                     }
                 }
                 DispatchOutcome::NoMatch { unmet } => {
@@ -13710,6 +13900,11 @@ fn check_apply_iter(
                     // `Unique` and keeps its impl effect-grounding (WI-365).
                     // WI-653: carrier-aware coverage (see the NoCandidates arm above).
                     if op_requires_covers_call(kb, env, &subst, spec_sort) {
+                        // WI-1091: as in the `NoCandidates` arm above.
+                        defer_to_op_scoped_slot(
+                            kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
+                            enclosing_sort, pinned_spec,
+                        );
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
                             env: env.clone(),
@@ -13745,40 +13940,16 @@ fn check_apply_iter(
                     // gate IS the design (see [`op_scoped_defer_location`]): an
                     // op-scoped requirement stays served by value-direction wherever
                     // value-direction can serve it, which is everywhere else.
-                    let sigma_ctx = SigmaCtx {
-                        subst: &subst,
-                        param_rigids: env.param_rigids(),
-                    };
-                    if !pinned_spec {
-                        if let Some((slot, proj_path)) = op_scoped_defer_location(
-                            kb,
-                            &subst,
-                            spec_sort,
-                            env.enclosing_frame_chain(),
-                            Some(&sigma_ctx),
-                        ) {
-                            let resolved_spec =
-                                env.enclosing_frame_chain().entries()[slot].clone();
-                            classify(
-                                kb,
-                                occ,
-                                CallClass::DeferToRequirement {
-                                    spec_op_sym: fn_sym,
-                                    op_short_sym,
-                                    resolved_spec,
-                                    slot,
-                                    proj_path,
-                                    enclosing_sort,
-                                    enclosing_op: env.enclosing_op(),
-                                },
-                            );
-                            return Ok(TypeResult {
-                                ty: resolved_ret.clone(),
-                                env: env.clone(),
-                                effects,
-                                node: Rc::clone(occ),
-                            });
-                        }
+                    if defer_to_op_scoped_slot(
+                        kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
+                        enclosing_sort, pinned_spec,
+                    ) {
+                        return Ok(TypeResult {
+                            ty: resolved_ret.clone(),
+                            env: env.clone(),
+                            effects,
+                            node: Rc::clone(occ),
+                        });
                     }
                     return Err(TypeError::DispatchAmbiguous {
                         span,
@@ -13883,7 +14054,16 @@ fn check_apply_iter(
                         env.enclosing_frame_chain(),
                         env.param_rigids(),
                         &selections,
-                    );
+                    )
+                    // WI-1091: a TIE in the op half is a load refusal, as the sort half's
+                    // is one line above — see `build_op_scoped_dicts`.
+                    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
+                        span,
+                        op: fn_sym,
+                        callee_sort: fn_sym,
+                        eta: false,
+                        refusal,
+                    })?;
                     classify(
                         kb,
                         occ,
@@ -15696,20 +15876,28 @@ impl RequirementRefusal {
         } else {
             format!("call to `{}`", op_qn)
         };
+        // WI-1091: an OP-SCOPED requirement is owned by the operation itself, so the
+        // owner and the callee are one name and "requirement `X` of `f` cannot be
+        // supplied for call to `f`" says it twice. Drop the owner clause there — which is
+        // also the only honest option, since the alternative spellings would attribute
+        // the clause to a parent sort that did not write it.
+        let owner = if callee_sort == op {
+            String::new()
+        } else {
+            format!(" of `{}`", kb.qualified_name_of(callee_sort))
+        };
         let mut msg = match &self.pinned {
             Some(w) => format!(
-                "requirement `{}` of `{}` cannot be supplied for {} from the selected \
+                "requirement `{}`{} cannot be supplied for {} from the selected \
                  witness `{}`",
                 self.dep_text,
-                kb.qualified_name_of(callee_sort),
+                owner,
                 usage,
                 kb.qualified_name_of(*w),
             ),
             None => format!(
-                "requirement `{}` of `{}` cannot be supplied for {}",
-                self.dep_text,
-                kb.qualified_name_of(callee_sort),
-                usage,
+                "requirement `{}`{} cannot be supplied for {}",
+                self.dep_text, owner, usage,
             ),
         };
         if !self.unconstrained.is_empty() {
@@ -16115,6 +16303,24 @@ fn build_concrete_dispatch_dict(
 /// frame-naming `DeferToRequirement: … not bound` from `start_apply_deferred`. The
 /// all-or-nothing shape the sort half uses is wrong here for a second reason too:
 /// these slots are keyed by NAME, so a partial supply cannot mis-index the rest.
+///
+/// EXCEPT FOR A TIE (WI-1091), which is the one absence that is a VERDICT rather than
+/// a gap. "Best-effort" answers the question "could this call supply the slot?", and for
+/// every other cause the honest answer is "no, and maybe nobody needs it". A tie answers
+/// a DIFFERENT question — 058 tier 3 let two providers coexist and this call names
+/// neither — and nothing else in the pipeline will ever report it: the load-time
+/// coherence checks exempt these pairs BY DESIGN, so a tie reaching a route with no
+/// bracket is exactly the case that must go loud where it is found (WI-855's rule).
+/// Refusing it here is what makes the op-scoped spelling AGREE with the sort-level one,
+/// which has refused the identical program at load since WI-828 —
+/// `build_dispatching_dict_from_chain`'s `require_complete` arm, through the same
+/// [`explain_dep_refusal`] and with the same `RequirementRefusal` payload.
+///
+/// MEASURED as the row that needs it: `wi855 tie_through_value_directed_dispatch_names_
+/// the_requirement_and_both_providers` drives `Holder.probe(wrap(twig()))` from a WRITTEN
+/// call site, so the supply is this function's and not the bridge's. Silent, its slot was
+/// absent and the widened read said `__req_desc not bound … frame binds []`, naming
+/// neither the tie nor the two witnesses that caused it.
 fn build_op_scoped_dicts(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -16122,7 +16328,7 @@ fn build_op_scoped_dicts(
     caller_requires: &DictChain,
     param_rigids: &[(VarId, TermId)],
     selected: &[InstanceSelection],
-) -> SmallVec<[Option<TermId>; 2]> {
+) -> Result<SmallVec<[Option<TermId>; 2]>, Box<RequirementRefusal>> {
     // THE NORMALIZED entries, off the very chain whose slots these dictionaries fill
     // ([`op_dict_entries`]) — not the raw `op_requires_chain_rc`, whose bare-application
     // spec every predicate below reads as binding-free. Same list, same order, same
@@ -16130,10 +16336,10 @@ fn build_op_scoped_dicts(
     let chain = op_dict_entries(kb, callee_op);
     let op_chain: Vec<RequiresEntry> = chain.op_entries().to_vec();
     if op_chain.is_empty() {
-        return SmallVec::new();
+        return Ok(SmallVec::new());
     }
     let Some(syms) = ProjectionSyms::resolve(kb) else {
-        return SmallVec::new();
+        return Ok(SmallVec::new());
     };
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
@@ -16143,33 +16349,52 @@ fn build_op_scoped_dicts(
         subst,
         param_rigids,
     };
-    op_chain
-        .iter()
-        .map(|entry| {
-            // Same substitution the sort half takes: a call-site-pinned element
-            // (`Zeroable[HT]` at `HT := Pebble`) becomes concrete and Strategy 3
-            // constructs it; one left abstract stays open for a Strategy-1/2 forward
-            // out of the caller's own chain — which, WI-822, now includes the
-            // CALLER's op slots, so an op-scoped requirement relays hop to hop.
-            let dep = RequiresEntry {
-                required_sort: entry.required_sort,
-                spec: substitute_spec_via_subst(kb, &entry.spec, subst),
-            };
-            build_dep_projection(
-                kb,
-                &dep,
-                caller_requires,
-                &caller_sub_chains,
-                &syms,
-                Some(&disambig),
-                None,
-                selected,
-                // WI-861 — an OP-scoped chain: `callee_op` is the declaration that owns
-                // these slots, so it is the one whose named slots decide.
-                rung_for_dep(kb, callee_op, dep.required_sort),
-            )
-        })
-        .collect()
+    let mut out: SmallVec<[Option<TermId>; 2]> = SmallVec::new();
+    for entry in &op_chain {
+        // Same substitution the sort half takes: a call-site-pinned element
+        // (`Zeroable[HT]` at `HT := Pebble`) becomes concrete and Strategy 3
+        // constructs it; one left abstract stays open for a Strategy-1/2 forward
+        // out of the caller's own chain — which, WI-822, now includes the
+        // CALLER's op slots, so an op-scoped requirement relays hop to hop.
+        let dep = RequiresEntry {
+            required_sort: entry.required_sort,
+            spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+        };
+        // WI-1091: ask the search for its terminal outcome, so the tie below is the one
+        // THIS search saw rather than a re-run that could disagree with it — the same
+        // discipline (and the same out-parameter) `build_dispatching_dict_from_chain`
+        // uses on the sort half.
+        let mut s3_failure: Option<ResolutionResult> = None;
+        let projected = build_dep_projection(
+            kb,
+            &dep,
+            caller_requires,
+            &caller_sub_chains,
+            &syms,
+            Some(&disambig),
+            Some(&mut s3_failure),
+            selected,
+            // WI-861 — an OP-scoped chain: `callee_op` is the declaration that owns
+            // these slots, so it is the one whose named slots decide.
+            rung_for_dep(kb, callee_op, dep.required_sort),
+        );
+        if projected.is_none() {
+            if let Some(tie @ ResolutionResult::Ambiguous { .. }) = &s3_failure {
+                // ONLY the tie. A σ-refused cover, a bare `NoMatch` and a `Cyclic` all
+                // stay silent absences here, which is what keeps the 29 stdlib bodies
+                // that have a chain and never read it running.
+                return Err(Box::new(RequirementRefusal {
+                    dep_text: render_requires_entry(kb, &dep),
+                    unconstrained: Vec::new(),
+                    refused_covers: Vec::new(),
+                    construction: describe_resolution_failure(kb, tie),
+                    pinned: None,
+                }));
+            }
+        }
+        out.push(projected);
+    }
+    Ok(out)
 }
 
 /// WI-415: substitute the per-call type bindings into a `requires`-entry spec
@@ -16277,6 +16502,44 @@ fn wrap_dispatch_channel(kb: &mut KnowledgeBase, dict_term: TermId) -> TermId {
     kb.build_list(&[dict_term])
 }
 
+/// WI-1091 — is `dep` the sort `owner`'s OWN spec at `owner`'s OWN parameters, i.e.
+/// exactly what the frame's `__req_self` holds?
+///
+/// True when every type-param binding the dep states σ-agrees with the enclosing
+/// sort's parameter of that name. A dep that states NO binding is also true: a
+/// bracket-less `requires Ord` says nothing about which instantiation it wants, and
+/// §5.2 makes that the callee's wildcard, which `__req_self` answers.
+fn dep_is_owner_self_instance(
+    kb: &mut KnowledgeBase,
+    ctx: &SigmaCtx,
+    dep: &RequiresEntry,
+    owner: Symbol,
+) -> bool {
+    let Some((_, bindings)) = unwrap_spec_view_value(kb, &dep.spec) else {
+        return false;
+    };
+    let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
+    let own_params = sort_type_params_as_pairs(kb, owner);
+    for (key, value) in bindings {
+        if !is_type_param_binding(kb, key, &spec_qn) {
+            continue;
+        }
+        let short = kb.local_name_of(key).to_string();
+        let short = short_name_of(&short).to_string();
+        let Some((_, own_var)) = own_params
+            .iter()
+            .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
+            .copied()
+        else {
+            return false;
+        };
+        if !sigma_pair_precise(kb, ctx, value, own_var) {
+            return false;
+        }
+    }
+    true
+}
+
 /// WI-227: recursively search for an IR projection that delivers a
 /// requirement value satisfying `dep` at runtime, given `caller_requires`
 /// as the caller's frame-level requirement chain. Tries named-param
@@ -16351,6 +16614,45 @@ pub fn build_dep_projection(
     // position" at eval.
     if is_effects_runtime(kb, dep.required_sort) {
         return Some(build_empty_bundle(kb, syms, dep.required_sort));
+    }
+
+    // WI-1091 — Strategy 0: the dep IS THE ENCLOSING SORT'S OWN SPEC, at its own
+    // parameters. The caller's `requires` chain cannot cover that — a sort does not
+    // `requires` itself — but the frame already holds the evidence under `__req_self`:
+    // the dictionary this very body was dispatched through, whose spec is the enclosing
+    // sort and whose instantiation is this call's.
+    //
+    // MEASURED as the shape without which WI-1091 cannot widen the op-scoped deferral:
+    // `anthill.prelude.Ord.max` calls `PartialOrd.gte`, whose op-scoped `requires
+    // Ord[T]` is exactly `Ord` at `Ord`'s own parameter. Read from the chain it is
+    // unprojectable and `Ord.max` dies `__req_ord not bound … frame binds
+    // ["__req_self", "__req_partialeq"]` — with the answer sitting in the frame it
+    // names. Three stdlib comparison-surface tests (wi876, wi886, wi869) turn on it.
+    //
+    // GATED ON IDENTITY, not on the spec symbol alone: every type-param binding the dep
+    // states must σ-resolve to the ENCLOSING SORT'S OWN parameter, so `Ord[T = Ord.T]`
+    // forwards and `Ord[T = SomethingElse]` does not — `__req_self` is one
+    // instantiation, and handing it to a different one is the wrong-dictionary class
+    // this whole file guards. No σ context ⇒ no Strategy 0 (the req-insertion
+    // diagnostic path, which has no call site to be precise about).
+    //
+    // AND IT YIELDS TO A CALL-SITE PIN, for the reason Strategies 1 and 2 do (found by
+    // /code-review, and it is this ticket's OWN defect class one strategy over): this is
+    // a FORWARD — "the enclosing frame's dictionary answers this" — and §4.1 tier 1 says
+    // an explicit witness on the call outranks a forward exactly as it outranks a search.
+    // Without the gate, `helper[Ord = LoudOrd](x)` written inside `Ord`'s own default
+    // body forwards `__req_self` and the named witness is never consulted: a bracket
+    // accepted and silently dropped, which is precisely the silent wrong number WI-841
+    // measured and WI-1091 exists to close.
+    if pinned_witness_for(kb, selected, dep.required_sort).is_none() {
+        if let (Some(owner), Some(ctx)) = (caller_requires.owner(), disambig) {
+            if same_sort_canonical(kb, dep.required_sort, owner)
+                && dep_is_owner_self_instance(kb, ctx, dep, owner)
+            {
+                let req_self = kb.intern("__req_self");
+                return Some(build_req_var_ref(kb, syms, req_self));
+            }
+        }
     }
 
     // Strategy 1 — named-param, binding-aware. Match by (required_sort,
@@ -17137,6 +17439,16 @@ pub(crate) enum BridgeRequirements {
     Ambiguous {
         requirement: String,
         candidates: Vec<String>,
+        /// WI-1091 — the frame requirement-param name of the slot that tied.
+        ///
+        /// A CONSUMER THAT SUPPLIES ONLY ONE HALF NEEDS IT, and without it there was no
+        /// way to ask: `Interpreter::seed_entry_op_requirements` takes the OP half out of
+        /// this resolution and leaves the sort half's stand-ins alone, so a tie in the
+        /// SORT half is not its verdict to raise — it is a slot the host entry never
+        /// asked about, and raising on it would fail an entry that used to run.
+        /// `requirements_for_value_directed_impl` supplies BOTH halves and raises on
+        /// either, which is unchanged.
+        slot: Symbol,
     },
 }
 
@@ -17271,10 +17583,31 @@ pub(crate) fn resolve_bridge_requirements(
                 .iter()
                 .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
         });
-        if !all_pinned {
-            if op_half {
-                continue;
-            }
+        // WI-1091 — THE OP HALF RESOLVES AN OPEN ELEMENT ANYWAY, and accepts only a
+        // UNIQUE answer. The soundness argument above is about a WRONG dictionary being
+        // built where the wildcard admits SEVERAL providers; where it admits exactly
+        // one, that one is the only dictionary the goal could ever name, so taking it
+        // is exact rather than lenient — the same reasoning `check_selection_bindings`
+        // makes for its sole-provider acceptance, and the same shape as the tie check
+        // one arm down. Two or more still land on `Ambiguous` below and a goal nothing
+        // answers on `NoProvider`, both unchanged.
+        //
+        // MEASURED as the shape that needs it: `G.twice[V, F](a: V) requires
+        // VectorSpace[V, F]` entered from the host. The argument pins `V := Vec3` and
+        // NOTHING pins `F` — it is a return-position element of the spec, not of the
+        // operation's parameters — so the gate skipped the slot, and under WI-1091's
+        // widened placement the body's `VectorSpace.vec_add(a, a)` reads it and dies
+        // `__req_vectorspace not bound`. `Vec3` has one `VectorSpace` provision, so the
+        // open `F` has exactly one answer. `vec3_ops_test::a_generic_consumer_of_vector_
+        // space_loads_and_dispatches` and `renamed_op_type_params_are_covered_by_the_
+        // operations_own_requires` are the two rows; both are CAPABILITY tests (they
+        // assert the doubled vector), not diagnostics.
+        //
+        // THE SORT HALF IS UNTOUCHED, and deliberately: its slots are what the callee's
+        // dictionary LAYOUT is measured against, `unpinnable_impl_requirement_is_
+        // refused_before_it_can_run` pins the refusal, and widening it is a different
+        // question from the one this ticket measured.
+        if !all_pinned && !op_half {
             return BridgeRequirements::Unresolvable {
                 detail: format!(
                     "`{}` is not fully pinned by the argument types — a spec \
@@ -17300,21 +17633,50 @@ pub(crate) fn resolve_bridge_requirements(
         // half `i` falls in. Asking `parent` for an op-half slot would read the wrong
         // declaration's slot list.
         let rung = rung_for_dep(kb, if op_half { op } else { parent }, goal.spec_sort);
+        // WI-1091 — the OP HALF's open element, COMPLETED FROM THE PROVIDERS when they
+        // leave exactly one possibility. See [`unique_provider_completion`].
+        let goal = if all_pinned {
+            goal
+        } else {
+            match unique_provider_completion(kb, &goal, &scope, rung) {
+                Some(completed) => completed,
+                None => continue,
+            }
+        };
         match resolve_with_rung(kb, &goal, &scope, rung) {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             // WI-855: a TIE is a coherence verdict, kept apart from the causes that
             // merely say "not pinnable at these types" — see `BridgeRequirements`.
             ResolutionResult::Ambiguous { goal_text, tie } => {
-                // WI-822 LEG 1: the op half skips this too. WI-855's rule — a tie is a
-                // coherence verdict with no earlier owner, so raise it — is about the
-                // slot the callee's dictionary LAYOUT demands; an op-scoped slot is not
-                // one, and a body that never reads it must keep running exactly as it
-                // did before this chain was widened. A body that DOES read it raises at
-                // the read; that message names the frame but not the tie, which is the
-                // cost of not being able to regress a working call.
-                if op_half {
-                    continue;
-                }
+                // WI-1091 — THE OP HALF RAISES THE TIE TOO, and the paragraph that used
+                // to stand here is why it now must. WI-822 LEG 1 wrote: "the op half
+                // skips this too … an op-scoped slot is not [a slot the callee's layout
+                // demands], and a body that never reads it must keep running exactly as
+                // it did before this chain was widened. A body that DOES read it raises
+                // at the read; that message names the frame but not the tie, which is
+                // the cost of not being able to regress a working call."
+                //
+                // THAT COST IS NOW PAID BY EVERY SUCH BODY, because WI-1091 widened the
+                // placement: a body whose spec-op call is licensed by its own `requires`
+                // now READS this slot rather than being served by value-direction. So
+                // the skip stopped protecting a working call and started converting a
+                // named coherence verdict — `AmbiguousRequirement`, which names the
+                // requirement and both providers — into `Internal(DeferToRequirement:
+                // __req_desc not bound)`, which names neither. MEASURED as five rows:
+                // wi842 (both tie pins), wi843, wi855's value-directed tie, and WI-861's
+                // own `a_witness_only_value_directed_tie_stays_loud` control.
+                //
+                // And WI-855's rule was never really about the layout — it is that a TIE
+                // IS A COHERENCE VERDICT WITH NO EARLIER OWNER. 058 tier 3 lets nameable
+                // providers coexist on purpose, so a tie reaching a route with no bracket
+                // channel must go loud where it is found. That holds for an op-scoped
+                // slot exactly as for a sort-level one; nothing about which half the slot
+                // falls in changes who else could have reported it, which is NOBODY.
+                //
+                // The `Unresolvable` and no-provider arms are UNTOUCHED and still skip:
+                // those say "not pinnable at these types", which is a different claim
+                // with a different population — the 29 stdlib bodies WI-822 LEG 2
+                // measured, which have a chain and never read it.
                 return BridgeRequirements::Ambiguous {
                     requirement: goal_text,
                     candidates: tie
@@ -17322,6 +17684,7 @@ pub(crate) fn resolve_bridge_requirements(
                         .iter()
                         .map(|s| kb.qualified_name_of(*s).to_string())
                         .collect(),
+                    slot: *name,
                 }
             }
             // "no unique provider" was the umbrella wording BECAUSE it also covered
@@ -17360,6 +17723,211 @@ pub(crate) fn resolve_bridge_requirements(
         return BridgeRequirements::NoneNeeded;
     }
     BridgeRequirements::Resolved(parent, trees)
+}
+
+/// WI-1091 — does the instance dictionary for `spec` at `provider` carry the requirement
+/// slots the operation `target` will READ?
+///
+/// THE SAME QUESTION `Interpreter::expand_dispatching_dict` asks at the moment of the
+/// frame push, where the answer `no` is a RAISE (WI-857's guard — "`resolve_op_target`
+/// can land on a THIRD sort … a frame silently short of the slots its body reads"). Asked
+/// here so that `requirements_for_value_directed_impl` does not re-key a channel onto a
+/// redirected target the dictionary says nothing about, which would be that raise one
+/// call early. Written as a function rather than inline because the two must not come to
+/// disagree; the typer's defaulted arm asks a STRONGER question of its own (that
+/// `resolve_op_target` lands on the spec op ITSELF, so the default body really is what
+/// runs) and is deliberately not routed through this one.
+///
+/// THE SHAPE IT EXISTS FOR, measured on the stdlib: a dictionary for `FiniteCollection`
+/// at `BoxColl`, whose `filter` the carrier INHERITS FROM `Iterable` — a third sort,
+/// neither the spec the dictionary witnesses nor the provider it names. `Iterable`'s own
+/// chain is not in that layout and never could be, so handing it over is not a supply at
+/// all. Same shape one channel over: an `Iterable.isEmpty` channel redirected to
+/// `Stream.isEmpty`.
+///
+/// TRUE for a target that reads NO slots (a namespace-level op, or an owner with an empty
+/// chain), because there is then nothing to be short of — which is exactly the
+/// `names.is_empty()` arm the eval guard already takes before raising.
+pub(crate) fn dictionary_covers_target(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    provider: Symbol,
+    target: Symbol,
+) -> bool {
+    let Some(owner) = impl_parent_of_op(kb, target) else {
+        return true;
+    };
+    let names = provider_dict_entries(kb, owner).names(kb);
+    if names.is_empty() {
+        return true;
+    }
+    // The LENGTH is checked as well as the presence, for the reason the eval guard checks
+    // it: two interned copies of one sort would pass `same_sort_canonical` for identity
+    // while their two chain reads disagreed, and a short slice is a frame missing slots.
+    dict_layout(kb, spec, provider)
+        .slots_for(kb, owner)
+        .is_some_and(|slots| slots.len() == names.len())
+}
+
+/// WI-1091 — the one GROUND completion of `goal`'s un-pinned elements, when the spec's
+/// providers leave exactly one. `None` when they leave none or several.
+///
+/// THE SHAPE THIS EXISTS FOR, measured: `operation twice[V, F](a: V) -> V requires
+/// VectorSpace[V, F]` entered from the HOST. The argument pins `V := Vec3`; nothing
+/// pins `F`, which appears in no parameter type, so [`resolve_bridge_requirements`]'
+/// `all_pinned` gate skipped the slot — and under WI-1091's widened placement the body's
+/// `VectorSpace.vec_add(a, a)` reads it and dies `__req_vectorspace not bound`. At a
+/// written call site §5.2 makes the author pin it (`twice[F = Float](a)`); the host
+/// boundary has no bracket to write, so the choice is to infer it or to refuse the entry.
+///
+/// WHY IT IS NOT A LOOSER MATCH. The obvious spelling — leave the element open in the
+/// goal and let the matcher wildcard it — is CLOSED, and closed on purpose: a per-call
+/// value that is a bare type-param does NOT match a concrete candidate ([`dispatch_
+/// values_match`] owns that half of WI-824's rule emergently, and its doc says a
+/// var-tolerant widening silently re-opens the mis-pin), while DROPPING the binding makes
+/// the pairing loop in [`collect_provides_candidates`] reject the candidate outright (a
+/// type param the goal omits is discriminating — else every concrete `Eq` impl would
+/// match a bare `Eq` goal). Both refusals are right and neither is relaxed here.
+///
+/// So the completion is CONSTRUCTED and then re-decided by the ORDINARY resolution: one
+/// candidate goal per provider, each fully pinned, each run through the very
+/// [`resolve_with_rung`] the caller would have run. That is what keeps this from drifting
+/// away from the matcher — nothing here decides whether a provider ANSWERS, only which
+/// completions are worth asking about. Exactly one survivor is the answer; two are a tie
+/// and none is no provider, and both leave the slot absent exactly as before.
+fn unique_provider_completion(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+    rung: DefaultRung,
+) -> Option<SortGoal> {
+    // The elements the arguments did not pin, by the spec's own short names.
+    let open: Vec<String> = kb
+        .type_params_of_sort(goal.spec_sort)
+        .into_iter()
+        .filter(|tp| {
+            !goal
+                .bindings
+                .iter()
+                .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
+        })
+        .collect();
+    if open.is_empty() {
+        return None;
+    }
+    // Each provider's own ground value for every open element, as one completion. A
+    // provider that leaves any of them abstract (`fact VectorSpace[V, F]`, universally
+    // quantified) offers no completion and is simply not proposed — it will still be
+    // reached by whichever completion another provider proposes, since the resolution
+    // below is the ordinary one.
+    let spec_canon = kb.canonical_sort_sym(goal.spec_sort);
+    let mut completions: Vec<SmallVec<[(Symbol, TermId); 2]>> = Vec::new();
+    for rid in provides_rids_by_spec(kb, spec_canon) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head_named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else {
+            continue;
+        };
+        let Some((view_base_sym, view_bindings)) = unwrap_spec_view(kb, spec_view_tid) else {
+            continue;
+        };
+        if view_base_sym != goal.spec_sort {
+            continue;
+        }
+        // A provider that DISAGREES on an element the arguments DID pin cannot answer
+        // this goal at any completion, so it is not a rival. Conservative on purpose —
+        // it excludes only a provably-ground mismatch — because the veto below rests on
+        // whatever survives here.
+        let mut could_answer = true;
+        for (key, goal_value) in goal.bindings.clone() {
+            if !type_value_is_ground(kb, goal_value) {
+                continue;
+            }
+            let short = kb.local_name_of(key).to_string();
+            let Some((_, cand)) = view_bindings
+                .iter()
+                .find(|(k, _)| kb.local_name_of(*k) == short.as_str())
+                .copied()
+            else {
+                continue;
+            };
+            if type_value_is_ground(kb, cand) && !dispatch_values_match(kb, goal_value, cand) {
+                could_answer = false;
+                break;
+            }
+        }
+        if !could_answer {
+            continue;
+        }
+        let mut filled: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for short in &open {
+            let hit = view_bindings.iter().find(|(k, v)| {
+                kb.local_name_of(*k) == short.as_str() && type_value_is_ground(kb, *v)
+            });
+            match hit {
+                Some((k, v)) => filled.push((*k, *v)),
+                None => {
+                    filled.clear();
+                    break;
+                }
+            }
+        }
+        if filled.len() != open.len() {
+            // AN OPEN-ENDED RIVAL, and it is why this returns rather than skipping
+            // (found by /code-review, and DRIVEN before the fix — measured `Ok(Int(1))`,
+            // the ground provider's answer, where the parametric one would have given
+            // 2). A provider that leaves an open element abstract answers the goal at
+            // MORE THAN ONE completion, so it cannot propose one — and its silence used
+            // to read as absence, which is what let a single ground `fact` look like the
+            // only answer. It is not a rival to be counted, it is proof the arguments do
+            // not decide: `fact Pair[E = A, F = A]` beside `fact Pair[E = Tag, F = Int64]`
+            // makes both `F := Int64` and `F := Tag` answerable at `E = Tag`.
+            return None;
+        }
+        // Two providers naming the same value for an element propose ONE completion —
+        // they would resolve identically, and counting them twice would read as a tie.
+        if !completions.iter().any(|prev| {
+            prev.len() == filled.len()
+                && prev
+                    .iter()
+                    .zip(filled.iter())
+                    .all(|((_, a), (_, b))| values_structurally_equal(kb, *a, *b))
+        }) {
+            completions.push(filled);
+        }
+    }
+    let mut answer: Option<SortGoal> = None;
+    for filled in completions {
+        let mut candidate_goal = goal.clone();
+        for (key, value) in filled {
+            match candidate_goal
+                .bindings
+                .iter_mut()
+                .find(|(k, _)| kb.local_name_of(*k) == kb.local_name_of(key))
+            {
+                Some(slot) => slot.1 = value,
+                None => candidate_goal.bindings.push((key, value)),
+            }
+        }
+        if !matches!(
+            resolve_with_rung(kb, &candidate_goal, scope, rung),
+            ResolutionResult::Resolved(_)
+        ) {
+            continue;
+        }
+        if answer.is_some() {
+            // Two completions both answer — the arguments genuinely do not decide, and
+            // taking either would be the WRONG-dictionary case the `all_pinned` gate
+            // exists to prevent.
+            return None;
+        }
+        answer = Some(candidate_goal);
+    }
+    answer
 }
 
 /// Extract a `SortGoal` from a `RequiresEntry`'s SortView, keeping only
@@ -18282,11 +18850,18 @@ fn infer_named_slot_bindings(
         // into a TYPE PARAMETER so that it rides in a VALUE's type; 058 §3.9 says an
         // op-scoped requirement is "evidence about THIS CALL of THIS OPERATION, belonging
         // to no instance", so there is no value to carry it and nothing for the write to
-        // buy. WI-841 says the same thing from the other side: that route is served by
+        // buy. Such a call keeps its pre-existing reading — `[d = W]`, or
+        // `UnconstrainedTypeParam` if omitted.
+        //
+        // WI-1091 REMOVED THE SECOND HALF of this reason, and it is worth saying that it
+        // is gone rather than leaving the narrower claim looking co-signed. The half was:
+        // "WI-841 says the same thing from the other side: that route is served by
         // value-directed dispatch at eval, which never sees a selection, so a bracket
-        // there is refused outright once two providers answer
-        // ([`TypeError::UnthreadableSelection`]). Such a call keeps its pre-existing
-        // reading — `[d = W]`, or `UnconstrainedTypeParam` if omitted.
+        // there is refused outright once two providers answer". It no longer is — a
+        // written `[d = W]` on an op-scoped slot now DECIDES
+        // (`wi1094_named_slot_inference_test::an_op_scoped_named_slot_keeps_its_own_
+        // reading` drives it to `LoudDesc`'s 99). Declining to INFER one is still right,
+        // for the first reason alone.
         if owner == fn_sym {
             continue;
         }
@@ -19127,36 +19702,10 @@ fn check_selection_bindings(
         return Ok(());
     }
     for sel in selections {
-        for (goal, threaded) in selection_goals(kb, subst, fn_sym, sel.spec_sort) {
+        for goal in selection_goals(kb, subst, fn_sym, sel.spec_sort) {
             let candidates = collect_provides_candidates(kb, &goal, None);
             if candidates.is_empty() {
                 continue;
-            }
-            // WI-841: a slot whose route cannot THREAD the selection, where the
-            // selection could actually change the answer. MEASURED: on an op-scoped
-            // `requires` with two providers, `probe[Monoid = AddM](2, 3)` computed
-            // 99 — `AnyM`'s answer, the provider the author did NOT name — because
-            // value-directed dispatch never sees the pin. Silently the wrong number,
-            // so this is an error and not a lint.
-            //
-            // Gated on TWO OR MORE candidates on purpose: with a sole provider the
-            // pin necessarily names it, so accepting is exact rather than lenient —
-            // and that is the case 058 §9 phase 2's acceptance requires to load
-            // (`fold[Monoid = AddM]([2,3,4])` computes 9 "with the carrier's SOLE
-            // provider"). WI-822 LEG 1 gave the op-scoped chain a channel and this
-            // refusal stayed — the body reads that channel only where value-direction
-            // cannot serve the call, and this shape is one it can.
-            if !threaded && candidates.len() > 1 {
-                return Err(TypeError::UnthreadableSelection {
-                    span,
-                    op: fn_sym,
-                    spec: sel.spec_sort,
-                    witness: sel.witness,
-                    candidates: candidates
-                        .iter()
-                        .map(|c| kb.qualified_name_of(c.impl_sort).to_string())
-                        .collect(),
-                });
             }
             if !candidates
                 .iter()
@@ -19189,20 +19738,30 @@ fn selection_goals(
     subst: &Substitution,
     fn_sym: Symbol,
     spec_sort: Symbol,
-) -> Vec<(SortGoal, bool)> {
+) -> Vec<SortGoal> {
     let slots: Vec<CalleeSlot> = callee_requirement_slots(kb, fn_sym)
         .into_iter()
         .filter(|s| same_sort_canonical(kb, s.spec, spec_sort))
         .collect();
-    let mut goals: Vec<(SortGoal, bool)> = Vec::new();
+    let mut goals: Vec<SortGoal> = Vec::new();
     for slot in slots {
-        // WI-841: can this slot's route actually USE a selection? An OP-SCOPED
-        // `requires` is served by value-directed dispatch at eval, which never sees
-        // `selections`. WI-822 LEG 1 built the slot and its call-site supply DOES
-        // honour `selected` — but the body reads that supply only on the one route
-        // value-direction cannot serve ([`op_scoped_defer_location`]), so for every
-        // other op-scoped call the answer here is unchanged.
-        let threaded = !matches!(slot.source, CalleeSlotSource::OpRequires(_));
+        // WI-1091 — EVERY SLOT'S ROUTE CAN NOW THREAD A SELECTION, so this walk no
+        // longer answers a second question alongside the goal.
+        //
+        // It used to carry a `threaded` flag, false for `CalleeSlotSource::OpRequires`,
+        // and `check_selection_bindings` turned that into `TypeError::
+        // UnthreadableSelection` wherever two providers answered. The claim behind it was
+        // measured and was true: an op-scoped requirement was served by value-directed
+        // dispatch, which never sees `selections`, so `probe[Monoid = AddM](2, 3)`
+        // computed 99 — the provider the author did not name — and refusing beat
+        // computing that. WI-1091 changed the placement rather than the claim: a body
+        // call licensed by its enclosing operation's own `requires` now READS that slot,
+        // and the call-site supply has honoured the bracket since WI-822 LEG 1
+        // ([`build_op_scoped_dicts`] threads `selected` into [`build_dep_projection`]).
+        // The refusal and its `TypeError` variant went with the flag rather than being
+        // left as a condition that can no longer hold — `wi841_call_site_selection_test::
+        // an_op_scoped_selection_decides_and_the_value_shows_it` drives the 5/5/99 that
+        // replaced it.
         let goal = match slot.source {
             // Formed as `dispatch_spec_op_cached` forms it. No carrier: the
             // receiver-carrier classification runs further down, and this check only
@@ -19220,7 +19779,7 @@ fn selection_goals(
                 goal_from_op_requires_entry(kb, &concrete)
             }
         };
-        goals.extend(goal.map(|g| (g, threaded)));
+        goals.extend(goal);
     }
     goals
 }
@@ -20020,6 +20579,20 @@ pub enum CallClass {
         /// [`Value::OpRef`](crate::eval::Value)'s field of the same name for what the
         /// runtime does with them and why the value cannot re-derive them.
         spread_labels: Option<std::rc::Rc<[Symbol]>>,
+        /// WI-1091 — the OPERATION'S OWN `requires` slots, in chain order, built at the
+        /// eta site by the very [`build_op_scoped_dicts`] a written call site uses (so a
+        /// `[Spec = Witness]` bracket on the eta reaches them the same way). EMPTY for an
+        /// operation that writes no `requires` of its own.
+        ///
+        /// SEPARATE FROM `dict`, and the separation is what makes the eta work at all for
+        /// the shape that needed this: `List.member` carries `requires Eq[T]` on the
+        /// OPERATION while `List` itself requires nothing, so the sort half is `None` and
+        /// this is the whole supply. Before it, an eta'd `member` reached
+        /// [`attach_eta_dispatch_dict`]'s `sort_reads_requirement_slots` guard and minted
+        /// a dict-less `OpRef` — which was harmless while value-direction served the
+        /// body's `eq(head, x)`, and is a `__req_eq not bound` under WI-1091's widened
+        /// placement.
+        op_dicts: SmallVec<[Option<TermId>; 2]>,
     },
 }
 
@@ -20371,22 +20944,80 @@ pub fn find_requires_location(
         .map(|i| matches[i].0.clone())
 }
 
+/// WI-1091 — classify a body call onto the enclosing OPERATION's own `requires` slot,
+/// when its chain has one. `true` iff it did.
+///
+/// THE ONE PLACE the op-scoped deferral is decided, shared by the three dispatch
+/// outcomes that can reach it: `Ambiguous` (nothing else can answer — WI-822's
+/// original and only caller) and the two arms where [`op_requires_covers`] LICENSES
+/// the call (`NoCandidates`, `NoMatch`). WI-822 wired only the first, on the measured
+/// grounds that value-direction already served the rest; WI-1091 widened it because
+/// being served by value-direction is exactly what makes a call-site SELECTION
+/// unreachable — value-directed dispatch never sees `selections`, so WI-841 had to
+/// REFUSE `probe[Monoid = AddM](2, 3)` rather than let it compute `AnyM`'s 99. The
+/// slot's supply DOES honour the bracket ([`build_op_scoped_dicts`] threads `selected`
+/// into [`build_dep_projection`]), so reading it is what makes the pin land.
+///
+/// A PIN AT THIS CALL still outranks the forward (058 §4.1 tier 1, the same gate the
+/// three sort-level defer sites keep): deferring says "the enclosing frame answers
+/// this", and an explicit witness on THIS call says otherwise.
+fn defer_to_op_scoped_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+    enclosing_sort: Option<Symbol>,
+    pinned_spec: bool,
+) -> bool {
+    if pinned_spec {
+        return false;
+    }
+    let sigma_ctx = SigmaCtx {
+        subst,
+        param_rigids: env.param_rigids(),
+    };
+    let chain = env.enclosing_frame_chain().clone();
+    let Some((slot, proj_path)) =
+        op_scoped_defer_location(kb, subst, spec_sort, &chain, Some(&sigma_ctx))
+    else {
+        return false;
+    };
+    let resolved_spec = chain.entries()[slot].clone();
+    classify(
+        kb,
+        occ,
+        CallClass::DeferToRequirement {
+            spec_op_sym: fn_sym,
+            op_short_sym,
+            resolved_spec,
+            slot,
+            proj_path,
+            enclosing_sort,
+            enclosing_op: env.enclosing_op(),
+        },
+    );
+    true
+}
+
 /// WI-822 LEG 1 — the frame slot of the enclosing OPERATION's OWN `requires` chain
 /// that answers `spec_sort` at this call's bindings, as `(slot, proj_path)` in the
 /// COMPOSED chain's numbering (`chain.sort_len()` is added, so the answer indexes the
 /// same list [`CallClass::DeferToRequirement::slot`] does).
 ///
-/// THE ONE READER OF THE OP HALF, and its one caller is the `Ambiguous` dispatch arm.
-/// That is the whole scope of the deferral this ticket adds, and the scope is the
-/// decision: an op-scoped requirement is served by VALUE-DIRECTED dispatch
-/// (WI-822 LEG 2's recorded choice, unchanged and measured correct — WI-817's relay
-/// chain, WI-842's and WI-855's tie diagnostics, `List.member`, the whole
-/// `PartialOrd` comparison surface), and a dictionary answers only where no value
-/// can: a spec op with NO receiver argument (`zero() -> T`), whose providers
-/// therefore tie with nothing to break the tie. Before this the tie was a LOAD
-/// REFUSAL while the sort-level twin of the same program loaded and was right; §4.4
-/// check 3 refuses an explicit `[Zeroable = Pebble]` over concrete providers, so
-/// neither a value nor a selection could answer it.
+/// THE ONE READER OF THE OP HALF, reached through [`defer_to_op_scoped_slot`].
+///
+/// WI-822 called it from the `Ambiguous` arm ALONE — the route where nothing else can
+/// answer: a spec op with NO receiver argument (`zero() -> T`), whose providers tie
+/// with nothing to break the tie, since §4.4 check 3 refuses an explicit
+/// `[Zeroable = Pebble]` over concrete providers. That was a LOAD REFUSAL while the
+/// sort-level twin of the same program loaded and was right.
+///
+/// WI-1091 WIDENED IT to the two licensing arms as well, and the widening is what
+/// makes a call-site SELECTION reach an op-scoped slot at all. It cost four routes a
+/// supply they had never needed — see [`defer_to_op_scoped_slot`] and the ticket.
 ///
 /// Reuses [`collect_requires_matches`] over a tree built from the op's own entries,
 /// so a TRANSITIVE op-scoped requirement (`requires Ord[T]` answering an `Eq` call)
@@ -42018,6 +42649,11 @@ impl DictChain {
 
     pub fn entries(&self) -> &[RequiresEntry] {
         &self.entries
+    }
+
+    /// The sort whose chain the prefix is — `None` for an unnamed chain.
+    pub fn owner(&self) -> Option<Symbol> {
+        self.owner
     }
 
     /// WI-822 LEG 1 — how many leading entries are the OWNER SORT's. Slots at or

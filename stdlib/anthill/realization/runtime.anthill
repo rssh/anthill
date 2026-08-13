@@ -111,5 +111,19 @@ namespace anthill.realization.runtime
     -- representation omitting it would merge two distinct values — and that
     -- representation feeds fact dedup, where merging DROPS A FACT (WI-815, WI-1088).
     operation spreadLabels(r: OpRef) -> Option[T = List[T = Symbol]]
+
+    -- The OPERATION'S OWN `requires` slots (WI-1091) — the tail of the op's
+    -- dictionary chain, after its parent sort's, in CHAIN ORDER. A separate
+    -- channel from `dict` because a dictionary is a SPEC INSTANCE while these are
+    -- evidence about THIS reference to THIS operation, belonging to no instance.
+    -- An element is none() for a slot the eta site could not project; that slot is
+    -- simply not placed in the callee frame, and a body that reads it raises.
+    -- none() (outer) for an op that writes no `requires` of its own.
+    --
+    -- Declared for the reason `named` and `spreadLabels` are, and it is the field
+    -- that MOST needs declaring: for an eta of an operation whose SORT requires
+    -- nothing (`List.member` is exactly that), `dict` is none() on every such
+    -- reference, so this channel is the ONLY thing telling two of them apart.
+    operation opRequirements(r: OpRef) -> Option[T = List[T = Option[T = Dictionary]]]
   end
 end

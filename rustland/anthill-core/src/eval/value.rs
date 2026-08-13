@@ -146,6 +146,47 @@ pub enum Value {
         ///    spellings agreed throughout (WI-784 holds), which is why the fix is on the
         ///    RELATION and covers both.
         spread_labels: Option<Rc<[Symbol]>>,
+        /// WI-1091 — the OPERATION'S OWN `requires` slots (`op_dict_entries`' tail,
+        /// after its parent sort's), evaluated at MINT in the eta-site frame exactly as
+        /// `dict` is, and pushed into the callee frame at apply beside it. In CHAIN
+        /// ORDER, one entry per slot; `None` in a slot is one the eta site could not
+        /// project, which is simply not placed — the same policy `push_op_scoped_slots`
+        /// applies to a written call. `None` (outer) for an operation that writes no
+        /// `requires` of its own, which is nearly all of them.
+        ///
+        /// IT IS A SECOND CHANNEL AND NOT PART OF `dict`, for the reason
+        /// `build_op_scoped_dicts` states: a dictionary is a SPEC INSTANCE, laid out by
+        /// `DictLayout` and indexed by `requirement_at_sort`, whereas an op-scoped
+        /// requirement is evidence about THIS CALL of THIS OPERATION and belongs to no
+        /// instance. Appending it would make every layout reader op-aware for a thing no
+        /// instance has.
+        ///
+        /// WHY IT RIDES ON THE VALUE rather than being re-resolved at apply. The apply
+        /// frame is a stranger's (the HOF's), so the only alternative is to rebuild the
+        /// chain from the RUNTIME ARGUMENT VALUES the way `requirements_for_value_
+        /// directed_impl` does — and that loses what the eta site knows and the values do
+        /// not: which providers the EXPECTED ARROW selected. `attach_eta_dispatch_dict`
+        /// already computes `selected` (WI-844's §4.7 half: an eta carries no bracket, but
+        /// the expected arrow's own bindings put the witness in σ) and threads it into the
+        /// sort half; the op half is built by the SAME `build_op_scoped_dicts` from the
+        /// SAME σ, so it cannot drift from it. Same argument as `dict`'s and as
+        /// `spread_labels`': mint-time STATIC information the apply site cannot re-derive.
+        ///
+        /// NOT SEPARATELY DRIVEN, and said here rather than left to be assumed: the
+        /// corpus has no eta of an op-scoped-`requires` operation into an arrow that
+        /// NAMES a witness, so what `wi420_eta_concrete_member_evals` measures is the
+        /// channel (an eta'd `List.member` finds its `__req_eq`), not the selection
+        /// riding on it. The selection half is inherited from the one builder both halves
+        /// call, which `wi841_call_site_selection_test`'s rows drive at a written call
+        /// site — a shared producer, not a second implementation.
+        ///
+        /// PART OF THE VALUE'S STRUCTURAL IDENTITY (`term_view::opref_shape`'s fifth
+        /// key), by WI-1088's rule: two `OpRef`s to one op carrying different evidence
+        /// answer differently, and a representation that merges them DROPS A FACT
+        /// (WI-815). It is the only distinguishing field for an eta of an operation whose
+        /// SORT requires nothing — `List.member` is exactly that shape, so `dict` is
+        /// `None` on both sides of any such pair.
+        op_reqs: Option<Rc<[Option<Dictionary>]>>,
     },
     Stream(StreamHandle),
     /// First-class substitution — reference into an arena owned by the

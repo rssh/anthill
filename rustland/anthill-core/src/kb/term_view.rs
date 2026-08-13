@@ -14,6 +14,7 @@
 //! This module defines the trait and implementations. Direct structural
 //! unification via `match_view` lives in `kb::mod`.
 
+use smallvec::SmallVec;
 use std::rc::Rc;
 
 use crate::eval::value::Value;
@@ -2357,6 +2358,7 @@ fn opref_key(kb: &KnowledgeBase, k: &str) -> Symbol {
         "dict" => "anthill.realization.runtime.OpRef.dict",
         "named" => "anthill.realization.runtime.OpRef.named",
         "spread" => "anthill.realization.runtime.OpRef.spreadLabels",
+        "opreqs" => "anthill.realization.runtime.OpRef.opRequirements",
         other => unreachable!("opref_key: `{other}` is not an OpRef accessor"),
     };
     accessor_key(kb, OPREF_QNAME, accessor, "OpRef")
@@ -2440,26 +2442,74 @@ pub(crate) fn dictionary_view_syms(kb: &KnowledgeBase) -> Option<(Symbol, Symbol
 /// refusal does not reach them, because it relates a declared slot to a value flowing
 /// INTO it and two independent slots are never so related, and
 /// `views_structurally_equal` compares whatever it is handed.
-fn opref_shape(has_dict: bool, has_named: bool, has_spread: bool) -> &'static [&'static str] {
-    let keys: &'static [&'static str] = match (has_dict, has_named, has_spread) {
-        (false, false, false) => &["op"],
-        (true, false, false) => &["op", "dict"],
-        (false, true, false) => &["op", "named"],
-        (true, true, false) => &["op", "dict", "named"],
-        (false, false, true) => &["op", "spread"],
-        (true, false, true) => &["op", "dict", "spread"],
-        (false, true, true) => &["op", "named", "spread"],
-        (true, true, true) => &["op", "dict", "named", "spread"],
-    };
-    debug_assert_keys_distinct(OPREF_QNAME, keys);
+/// The keys an `OpRef` presents, in a fixed order, one per half it actually carries.
+///
+/// WI-1091 turned an eight-arm `match` over the presence bits into this builder. The
+/// arms were already at the edge of legibility at three optional halves; the op-scoped
+/// channel makes four, and sixteen literal arms is a table nobody would check. The
+/// order is the declaration order and stays fixed, which is what the head arity, the
+/// key list and `named_arg`'s lookup all agree on.
+fn opref_shape(present: OpRefHalves) -> SmallVec<[&'static str; 5]> {
+    let mut keys: SmallVec<[&'static str; 5]> = SmallVec::new();
+    keys.push("op");
+    if present.dict {
+        keys.push("dict");
+    }
+    if present.named {
+        keys.push("named");
+    }
+    if present.spread {
+        keys.push("spread");
+    }
+    if present.op_reqs {
+        keys.push("opreqs");
+    }
+    debug_assert_keys_distinct(OPREF_QNAME, &keys);
     keys
 }
 
-fn opref_head(has_dict: bool, has_named: bool, has_spread: bool, kb: &KnowledgeBase) -> ViewHead {
+/// Which optional halves an `OpRef` value carries — the one argument
+/// [`opref_shape`], [`opref_head`] and the two `TermView` arms share, so a reader
+/// cannot pass the bits in a different order than another reader does.
+#[derive(Clone, Copy)]
+struct OpRefHalves {
+    dict: bool,
+    named: bool,
+    spread: bool,
+    op_reqs: bool,
+}
+
+impl OpRefHalves {
+    /// Read off the value itself, so the four bits are derived in ONE place.
+    fn of(value: &Value) -> Self {
+        match value {
+            Value::OpRef {
+                dict,
+                named,
+                spread_labels,
+                op_reqs,
+                ..
+            } => Self {
+                dict: dict.is_some(),
+                named: named.is_some(),
+                spread: spread_labels.is_some(),
+                op_reqs: op_reqs.is_some(),
+            },
+            _ => Self {
+                dict: false,
+                named: false,
+                spread: false,
+                op_reqs: false,
+            },
+        }
+    }
+}
+
+fn opref_head(present: OpRefHalves, kb: &KnowledgeBase) -> ViewHead {
     ViewHead::Functor {
         functor: Some(reflect_ctor_sym(kb, OPREF_QNAME, "OpRef")),
         pos_arity: 0,
-        named_arity: opref_shape(has_dict, has_named, has_spread).len(),
+        named_arity: opref_shape(present).len(),
     }
 }
 
@@ -2505,12 +2555,7 @@ impl TermView for Value {
             Value::SymbolRef(s) => ViewHead::Ref(*s),
             // WI-1019 — the two RESOLVED values read structurally; see the
             // section above for why these two and not the rest.
-            Value::OpRef {
-                dict,
-                named,
-                spread_labels,
-                ..
-            } => opref_head(dict.is_some(), named.is_some(), spread_labels.is_some(), kb),
+            Value::OpRef { .. } => opref_head(OpRefHalves::of(self), kb),
             // WHAT IS STILL `Opaque`, AND WHY — a payload-free head is the right
             // answer for a carrier with no shape to present, NOT a gap. Equality
             // is carrier identity ([`Value::opaque_carrier_eq`]) and the key stays
@@ -2583,8 +2628,9 @@ impl TermView for Value {
                 dict,
                 named,
                 spread_labels,
+                op_reqs,
             } => {
-                let keys = opref_shape(dict.is_some(), named.is_some(), spread_labels.is_some());
+                let keys = opref_shape(OpRefHalves::of(self));
                 let idx = keys.iter().position(|k| opref_key(kb, k) == sym)?;
                 Some(ViewItem::Owned(match keys[idx] {
                     "op" => Value::SymbolRef(*op),
@@ -2614,6 +2660,24 @@ impl TermView for Value {
                             .collect(),
                         named: Vec::new().into(),
                     },
+                    // WI-1091: the op-scoped slots as a POSITIONAL tuple too, and for
+                    // the same reason — these are CHAIN-ORDER slots, so position IS
+                    // which requirement each one answers. An UNFILLED slot views as
+                    // `Unit`, which keeps two `OpRef`s that filled different slots
+                    // distinguishable; collapsing absences would merge them, and this
+                    // view feeds fact dedup, where merging drops a fact (WI-815).
+                    "opreqs" => Value::Tuple {
+                        pos: op_reqs
+                            .as_ref()
+                            .expect("opref_shape listed `opreqs` without one")
+                            .iter()
+                            .map(|slot| match slot {
+                                Some(d) => d.as_value().clone(),
+                                None => Value::Unit,
+                            })
+                            .collect(),
+                        named: Vec::new().into(),
+                    },
                     other => unreachable!("opref named_arg: no arm for key `{other}`"),
                 }))
             }
@@ -2633,12 +2697,7 @@ impl TermView for Value {
             // WI-1019 — the SAME shape the head counted and `named_arg` resolves
             // against, so head arity, keys and children cannot drift apart (the
             // WI-814 discipline).
-            Value::OpRef {
-                dict,
-                named,
-                spread_labels,
-                ..
-            } => opref_shape(dict.is_some(), named.is_some(), spread_labels.is_some())
+            Value::OpRef { .. } => opref_shape(OpRefHalves::of(self))
                 .iter()
                 .map(|k| opref_key(kb, k))
                 .collect(),

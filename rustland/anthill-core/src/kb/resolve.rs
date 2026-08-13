@@ -6855,7 +6855,25 @@ impl KnowledgeBase {
                 // WI-822 LEG 1: and no call-site substitution either, so no op-scoped
                 // supply is built here — the same bridge covers it, resolving the
                 // callee's chain at the concrete argument types.
-                classify_pin_or_apply_within(self, occ, functor, target, None, None, None);
+                // WI-1091: the refusal this can now return is a TIE in the callee's
+                // OP-SCOPED half, and it is unreachable from here BY CONSTRUCTION — that
+                // half is built only from an `op_supply` context, which is `None` above.
+                // Handled anyway, and handled LOUDLY: `Refused` alone would turn a named
+                // coherence verdict (the requirement and both providers) into a goal that
+                // silently does not stamp, which is the shape this repo's "loud error
+                // over silent skip" rule is about. Traced rather than raised because this
+                // function's return type has no error channel and the arm is unreachable
+                // — if a construction change ever reaches it, the text is what says so.
+                if let Err(refusal) =
+                    classify_pin_or_apply_within(self, occ, functor, target, None, None, None)
+                {
+                    eprintln!(
+                        "[wi1091] unstamped dispatch of `{}` refused while classifying: {}",
+                        self.qualified_name_of(functor),
+                        refusal.format(self),
+                    );
+                    return UnstampedDispatch::Refused;
+                }
                 UnstampedDispatch::Stamped
             }
             ValueDirectedDispatch::Tie { .. } => UnstampedDispatch::Refused,

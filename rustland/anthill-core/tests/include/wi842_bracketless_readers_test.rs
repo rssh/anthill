@@ -139,82 +139,86 @@ fn probe_leaf(ns: &str, extra: &str) -> Result<Value, EvalError> {
     probe_entity(ns, extra, "Leaf.leaf")
 }
 
-/// THE PIN. Two providers, one bracket-less value-directed dispatch: a NAMED
-/// diagnostic listing both candidates BY SUPPLY ROUTE, never the first match.
+/// THE PIN. Two providers, one bracket-less read from a host entry: a NAMED diagnostic
+/// listing both candidates, never the first match.
 ///
 /// WI-861 moved it onto [`TWIG`] — see that constant for why the `Leaf` + `RIVAL` pair
-/// stopped being a tie, and where the answer it now gives is asserted. The route
-/// rendering for a carrier's OWN member beside a witness is not lost with it: it is
-/// `wi861_rung2a_default_dispatch_test::a_bodyless_own_member_beside_a_marked_witness_
-/// takes_the_default`'s unmarked control, and `wi1012`/`wi1027`'s refusals.
+/// stopped being a tie, and where the answer it now gives is asserted.
+///
+/// **WI-1091 MOVED WHICH QUESTION IS ASKED, and the diagnostic with it.** `Holder.probe`'s
+/// requirement is OP-SCOPED, and WI-1091 widened the placement so a body call licensed by
+/// its enclosing operation's own `requires` reads THAT dictionary rather than being served
+/// by value-direction. So the runtime no longer gets as far as "which SUPPLIER of
+/// `describe` for `Twig`?" — it fails one step earlier, building the `Desc[Twig]`
+/// dictionary the licence names, and reports `AmbiguousRequirement` naming the requirement
+/// and both providers. §4.9's rule is what this row measures and it is unchanged: go loud
+/// on the second candidate, never first-match.
+///
+/// WHAT MOVED WITH IT, and where it is still measured — this row used to be the eval face
+/// of `AmbiguousSpecOpDispatch`, including its BY-ROUTE candidate rendering and its
+/// `NameableWitness` repair. None of that is lost:
+///   * the eval face itself — `wi1012_static_supplier_tie_test::a_tie_on_an_abstract_
+///     carrier_is_still_refused_at_the_call`, whose abstract-`Shape` receiver reaches
+///     value-direction with no op-scoped `requires` in the way;
+///   * the one message body across both faces — `wi1012 both_faces_render_one_message_body`;
+///   * the `NameableWitness` repair and its sentence — `wi1027` route 3, `wi1035`, `wi1043`.
+///
+/// WHAT AN AUTHOR LOSES, stated rather than left to be noticed: `AmbiguousSpecOpDispatch`
+/// carries a `repair` (`SupplierTieRepair::NameableWitness` — "route the call through an
+/// operation that can write `[Spec = Witness]`") and `AmbiguousRequirement` has no such
+/// field, so on THIS route the message now names both providers and not what to write.
+/// The repair sentence is still measured on the LOAD face (wi1027 route 3, wi1035,
+/// wi1043) and the eval face keeps it wherever a supplier tie is still what fails
+/// (wi1012's abstract-carrier row). Restoring it here means giving
+/// `AmbiguousRequirement` a repair of its own, which is a diagnostics change with its
+/// own shape — not this ticket's, and recorded here so it is a decision rather than an
+/// omission.
+///
+/// BACKED OUT (WI-1091's widening reverted): `AmbiguousSpecOpDispatch` naming `TwigA` and
+/// `TwigB` by supply route. `Ok(Int(1))` / `Ok(Int(7))` are the pre-WI-842 defect this
+/// still guards on either placement — a first match, with the loser silently denied.
 #[test]
 fn a_two_provider_value_directed_dispatch_names_both_candidates() {
     let ns = "wi842.vd.tie";
     let err = probe_entity(ns, TWIG, "Twig.twig").unwrap_err();
-    let EvalError::AmbiguousSpecOpDispatch {
+    let EvalError::AmbiguousRequirement {
         op,
-        carrier,
+        requirement,
         candidates,
-        repair,
     } = &err
     else {
         panic!(
-            "expected AmbiguousSpecOpDispatch; got {err:?} — `Ok(Int(1))` here is the \
-             pre-WI-842 behaviour (first match: the carrier's own member), and \
-             `Ok(Int(7))` would be the same defect with the other winner"
+            "expected AmbiguousRequirement; got {err:?} — `Ok(Int(3))` here is the \
+             pre-WI-842 behaviour (first match), and `Ok(Int(5))` would be the same \
+             defect with the other winner"
         )
     };
     assert!(
-        op.ends_with("Desc.describe"),
-        "the error must name the spec op; got `{op}`"
+        op.ends_with("Holder.probe"),
+        "the error must name the operation whose requirement could not be built; got `{op}`"
     );
     assert!(
-        carrier.ends_with("Twig"),
-        "the error must name the carrier; got `{carrier}`"
+        requirement.contains("Desc") && requirement.contains("Twig"),
+        "the error must name the REQUIREMENT that tied (`Desc[T = Twig]`); got `{requirement}`"
     );
     assert_eq!(
         candidates.len(),
         2,
-        "exactly the two suppliers expected; got {candidates:?}"
+        "exactly the two providers expected; got {candidates:?}"
     );
-    // Rendered BY ROUTE, so the author knows which text to delete — here both are witness
-    // sorts, and the rendering must still SEPARATE them by name.
     for want in ["TwigA", "TwigB"] {
         assert!(
-            candidates
-                .iter()
-                .any(|c| c.contains("witness sort") && c.contains(want)),
-            "`{want}` must appear as a WITNESS candidate; got {candidates:?}"
+            candidates.iter().any(|c| c.contains(want)),
+            "`{want}` must be named as a provider; got {candidates:?}"
         );
     }
     let rendered = err.to_string();
-    for want in ["Desc.describe", "Twig", "TwigA", "TwigB"] {
+    for want in ["Twig", "TwigA", "TwigB"] {
         assert!(
             rendered.contains(want),
             "the rendered diagnostic must mention `{want}`: {rendered}"
         );
     }
-    // WI-1012 — THE REPAIR THIS TIE HAS, and the control the message had been missing.
-    // `TwigA`/`TwigB` are WITNESS sorts: nameable providers distinct from the carrier, and
-    // `Desc.describe` is BODY-LESS, so it has the `Dispatch` requirement slot a
-    // `[Desc = TwigA]` bracket binds (`callee_requirement_slots`). No such bracket can
-    // be written HERE — that is what "bracket-less read" means and why this refuses —
-    // but routing the call through an operation that can write one IS a repair, and it
-    // is the ONE tie shape the corpus drives. Asserted because a shared message is
-    // exactly where it can be lost: WI-1012's first cut told this author "no bracket
-    // names any of them", which is true only of a DEFAULTED op's tie.
-    assert_eq!(
-        *repair,
-        anthill_core::kb::typing::SupplierTieRepair::NameableWitness,
-        "a witness rival on a body-less op is nameable at a bracket-capable call",
-    );
-    assert!(
-        rendered.contains(
-            "route the call through an operation that can write \
-                           `[Spec = Witness]`"
-        ),
-        "the witness repair must survive into the rendered message: {rendered}",
-    );
 }
 
 /// ABSENCE CONTROL — the identical program with ONE provider still dispatches and

@@ -316,6 +316,7 @@ fn two_oprefs_differing_only_in_their_spread_mapping_are_distinct() {
     let op = sym("anthill.prelude.Option");
     let (acc, x) = (sym("anthill.prelude.Int64"), sym("anthill.prelude.Bool"));
     let with = |labels: Option<Vec<Symbol>>| Value::OpRef {
+        op_reqs: None,
         op,
         dict: None,
         named: None,
@@ -437,6 +438,7 @@ fn the_spread_labels_accessor_answers_for_both_mints() {
         i.call(
             "anthill.realization.runtime.OpRef.spreadLabels",
             &[Value::OpRef {
+                op_reqs: None,
                 op,
                 dict: None,
                 named: None,

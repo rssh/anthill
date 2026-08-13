@@ -479,6 +479,10 @@ impl Interpreter {
                 // concrete one builds from its `fact` — and capture it on the
                 // OpRef for the apply path to install into the callee frame.
                 let dict = self.eta_dispatch_dict(occ)?;
+                // WI-1091: and the OPERATION's own slots, evaluated in this same frame
+                // for the same reason. `List.member` needs exactly this and no sort
+                // half at all — `List` declares no `requires`.
+                let op_reqs = self.eta_op_scoped_reqs(occ)?;
                 // WI-857: an eta captures its OWN parent's bundle, so the named op
                 // and the target are the same — `named: None`.
                 return Ok(StepOutcome::Deliver(Value::OpRef {
@@ -489,6 +493,7 @@ impl Interpreter {
                     // apply site cannot re-derive which of `A`'s components each
                     // parameter wants.
                     spread_labels: Self::eta_spread_labels(occ),
+                    op_reqs,
                 }));
             }
         }
@@ -848,22 +853,28 @@ impl Interpreter {
     /// Shared by `occ_is_eta_marked` (`.is_some()`) and `eta_dispatch_dict`
     /// (`.flatten()`), so the classification read lives in one place.
     fn eta_marker(occ: &Rc<NodeOccurrence>) -> Option<Option<TermId>> {
-        Self::eta_classification(occ).map(|(dict, _)| dict)
+        Self::eta_classification(occ).map(|(dict, _, _)| dict)
     }
 
-    /// WI-1087: the whole `EtaOpRef` payload — `(dict, spread_labels)`. The read that
-    /// [`Self::eta_marker`] and [`Self::eta_spread_labels`] share, so the two halves of
-    /// one classification are never fetched by two different matches.
+    /// WI-1087 / WI-1091: the whole `EtaOpRef` payload — `(dict, spread_labels,
+    /// op_dicts)`. The read that [`Self::eta_marker`], [`Self::eta_spread_labels`] and
+    /// [`Self::eta_op_scoped_reqs`] share, so the halves of one classification are never
+    /// fetched by three different matches.
     #[allow(clippy::type_complexity)]
     fn eta_classification(
         occ: &Rc<NodeOccurrence>,
-    ) -> Option<(Option<TermId>, Option<Rc<[crate::intern::Symbol]>>)> {
+    ) -> Option<(
+        Option<TermId>,
+        Option<Rc<[crate::intern::Symbol]>>,
+        SmallVec<[Option<TermId>; 2]>,
+    )> {
         match &occ.kind {
             NodeKind::Expr { classification, .. } => match classification.borrow().as_deref() {
                 Some(crate::kb::typing::CallClass::EtaOpRef {
                     dict,
                     spread_labels,
-                }) => Some((*dict, spread_labels.clone())),
+                    op_dicts,
+                }) => Some((*dict, spread_labels.clone(), op_dicts.clone())),
                 _ => None,
             },
             _ => None,
@@ -874,7 +885,40 @@ impl Interpreter {
     /// any — captured on the minted `OpRef` so the apply path can spread by NAME. See
     /// `Value::OpRef::spread_labels`.
     fn eta_spread_labels(occ: &Rc<NodeOccurrence>) -> Option<Rc<[crate::intern::Symbol]>> {
-        Self::eta_classification(occ).and_then(|(_, labels)| labels)
+        Self::eta_classification(occ).and_then(|(_, labels, _)| labels)
+    }
+
+    /// WI-1091 — the OPERATION's own `requires` slots the typer built at this eta site,
+    /// EVALUATED IN THE CURRENT (eta-site) FRAME, exactly as [`Self::eta_dispatch_dict`]
+    /// evaluates the sort half: a forwarded slot is a `var_ref` into THIS frame's channel
+    /// and there is no other moment at which it can be read — the `OpRef` escapes to a
+    /// stranger's apply frame.
+    ///
+    /// `None` when the operation writes no `requires` of its own (the universal case).
+    /// A slot whose expression is `None`, or whose forward this frame cannot answer,
+    /// stays `None` IN PLACE rather than being dropped: position is which requirement the
+    /// slot answers (the apply site zips it against `op_dict_entries`' tail), and a
+    /// shorter list would mis-name every slot after the gap.
+    fn eta_op_scoped_reqs(
+        &mut self,
+        occ: &Rc<NodeOccurrence>,
+    ) -> Result<Option<Rc<[Option<super::value::Dictionary>]>>, EvalError> {
+        let Some((_, _, op_dicts)) = Self::eta_classification(occ) else {
+            return Ok(None);
+        };
+        if op_dicts.is_empty() {
+            return Ok(None);
+        }
+        let mut out: Vec<Option<super::value::Dictionary>> = Vec::with_capacity(op_dicts.len());
+        for supplied in op_dicts.iter() {
+            let Some(tid) = supplied else {
+                out.push(None);
+                continue;
+            };
+            let slot_occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, *tid);
+            out.push(self.try_eval_requirement_chain_node(&slot_occ)?);
+        }
+        Ok(Some(out.into()))
     }
 
     /// WI-700: true iff the typer marked this occurrence as an eta-lift. `reduce_var`
@@ -1577,6 +1621,64 @@ impl Interpreter {
         Ok(())
     }
 
+    /// WI-1091 — the eta twin of [`Self::push_op_scoped_slots`]: place slots ALREADY
+    /// EVALUATED (at the eta site, in the frame that could still read them) rather than
+    /// expressions to evaluate here.
+    ///
+    /// The two differ only in WHEN the value was computed, so they must not differ in
+    /// which slot each one names. Both derive the names from `op_dict_entries(target)`'s
+    /// tail — one chain, one order — and both refuse a length disagreement rather than
+    /// place a dictionary against a name it does not answer.
+    ///
+    /// `None` (or an empty list) means the operation writes no `requires` of its own,
+    /// which is nearly every operation and costs one `is_none()`.
+    fn push_captured_op_scoped_slots(
+        &mut self,
+        target: Symbol,
+        captured: Option<&[Option<super::value::Dictionary>]>,
+        out: &mut SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<(), EvalError> {
+        let Some(captured) = captured else {
+            return Ok(());
+        };
+        if captured.is_empty() {
+            return Ok(());
+        }
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, target);
+        let sort_len = chain.sort_len();
+        let names = chain.names(&mut self.kb);
+        let op_names = &names[sort_len.min(names.len())..];
+        if op_names.len() != captured.len() {
+            // The same producer/consumer desync `push_op_scoped_slots` refuses, reached
+            // the other way: the `OpRef` was minted for one operation and applied at
+            // another whose chain is a different length. Loud, because a dictionary
+            // keyed to the wrong clause is the one outcome this channel must not produce.
+            return Err(EvalError::Internal(format!(
+                "op-scoped eta push: `{}` reads {} op-scoped requirement slot(s) but the \
+                 eta site captured {}",
+                self.kb.qualified_name_of(target),
+                op_names.len(),
+                captured.len(),
+            )));
+        }
+        for (name, slot) in op_names.iter().copied().zip(captured.iter()) {
+            match slot {
+                Some(dict) => out.push((name, dict.clone())),
+                None => {
+                    if self.trace_requirements {
+                        eprintln!(
+                            "[req] op-scoped slot `{}` of eta'd `{}` NOT placed: the eta \
+                             site could not project it",
+                            self.kb.local_name_of(name),
+                            self.kb.qualified_name_of(target),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// WI-822 LEG 1 — drop the CALLER's own op-scoped slots from a channel the callee
     /// INHERITS. A same-sort sibling call inherits the frame verbatim, which is right
     /// for the sort's slots (the two members read the same ones) and wrong for the
@@ -2132,6 +2234,7 @@ impl Interpreter {
                 dict,
                 named,
                 spread_labels,
+                op_reqs,
             }) => {
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
@@ -2143,7 +2246,7 @@ impl Interpreter {
                 // the callee frame — not the caller's (empty / wrong-scope)
                 // requirements. A dict-less OpRef (requires-free, or a same-sort
                 // eta that inherits) forwards the caller's requirements.
-                let requirements = match dict {
+                let mut requirements = match dict {
                     Some(d) => {
                         drop(requirements);
                         // WI-857: `op` is the RESOLVED target; the op the call NAMED
@@ -2154,6 +2257,11 @@ impl Interpreter {
                     }
                     None => requirements,
                 };
+                // WI-1091: the OPERATION's own slots ride BESIDE the sort half — the
+                // eta captured them at mint in its own frame, and this is where they
+                // enter the callee's. Named entries, so they neither depend on nor
+                // disturb the sort half's layout-indexed positions.
+                self.push_captured_op_scoped_slots(op, op_reqs.as_deref(), &mut requirements)?;
                 // WI-455: an `OpRef` DENOTES the operation `op`. It is an already-
                 // resolved reference, not a name to be looked up again — so go
                 // straight to resolved dispatch, bypassing the shadowing lookup
@@ -2257,6 +2365,7 @@ impl Interpreter {
                         self.note_dispatch(impl_target);
                         let requirements = self.requirements_for_value_directed_impl(
                             impl_target,
+                            target,
                             &arg_values,
                             requirements,
                         )?;
@@ -2322,6 +2431,7 @@ impl Interpreter {
                     self.note_dispatch(impl_target);
                     let requirements = self.requirements_for_value_directed_impl(
                         impl_target,
+                        target,
                         &arg_values,
                         requirements,
                     )?;
@@ -2453,6 +2563,12 @@ impl Interpreter {
     pub(super) fn requirements_for_value_directed_impl(
         &mut self,
         impl_target: Symbol,
+        // WI-1091 — the operation the incoming channel was BUILT FOR. Every caller today
+        // reaches this AFTER a redirect, so it is the pre-redirect op and differs from
+        // `impl_target`; it is named rather than assumed because the WI-822 LEG 2
+        // short-circuit is about whether the caller knew THIS callee, and that is a
+        // question the callee's symbol alone cannot answer. See the short-circuit below.
+        built_for: Symbol,
         arg_values: &[Value],
         incoming: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
@@ -2462,7 +2578,67 @@ impl Interpreter {
         // specific supply; leave it. Only the empty channel — the abstract call
         // that reached value-direction precisely because nothing was known
         // statically — is the one this fills.
+        //
+        // WI-1091 — EXCEPT AFTER A REDIRECT, where that premise is false. The caller
+        // knew `built_for`; the value then chose `impl_target`, a DIFFERENT operation
+        // whose `requires` clause is a different clause under names that can coincide. So
+        // the channel is not "the more specific supply" for this callee, it is another
+        // operation's — and running on it is how a carrier's own member came to read a
+        // slot the SPEC's half never carried.
+        //
+        // RE-EXPANDED, NOT REBUILT, and that is the whole of it: the channel already
+        // leads with `__req_self`, the dictionary this dispatch came through
+        // ([`Self::expand_dispatching_dict`] puts it there), and the redirected impl's
+        // own slots are sub-dictionaries OF THAT SAME INSTANCE — they are what a
+        // conditional provision's `:- goals` resolved to. Rebuilding from the argument
+        // VALUES instead would lose them: a bare entity value names its carrier sort and
+        // carries no type arguments, so `Wrap`'s `Sp[T = E]` condition cannot be pinned
+        // from `wrap(inner: leaf(7))` at all.
+        //
+        // MEASURED, on `wi1093_defaulted_call_instance_dict_test`'s tower: `Sp.ranked`'s
+        // default body eta-lifts its sibling `rank`, the `OpRef` carries the `Sp[Wrap]`
+        // instance out, and `dispatch_resolved_operation` redirects to `Wrap.rank` —
+        // whose receiver-less `Sp.mark()` reads the `Sp[E]` condition slot and died
+        // `__req_sp not bound … frame binds ["__req_self", "__req_base"]`, the SPEC's
+        // half. With this it reads the ELEMENT's dictionary and answers 10.
         if !incoming.is_empty() {
+            // EVERY CALLER IS ALREADY PAST A REDIRECT — both eval sites are inside
+            // `if impl_target != target`, and the host-entry site hands in an EMPTY
+            // channel, which the guard above excludes. So this equality never holds
+            // today (found by /code-review, whose objection to the comment was right:
+            // it read as though a same-op path were covered here). It is kept as the
+            // statement of WHEN the WI-822 LEG 2 short-circuit is legitimate — a caller
+            // that knew THIS callee — so that a future non-redirect caller gets the
+            // pass-through rather than a re-expansion built for someone else.
+            if built_for == impl_target {
+                return Ok(incoming);
+            }
+            // …AND ONLY WHERE THE DICTIONARY SPEAKS ABOUT THE REDIRECTED OPERATION. A
+            // redirect can land on a THIRD sort's member — `Iterable.isEmpty` on a `List`
+            // lands on `Stream.isEmpty`, whose `Stream` is neither the spec the dictionary
+            // witnesses nor the provider it names — and that instance carries nothing for
+            // it. Re-expanding there is not a more precise supply, it is
+            // `expand_dispatching_dict`'s WI-857 raise one call early
+            // ([`dictionary_covers_target`] is the same question, asked once, by both).
+            // Where it does not speak, the incoming channel stands exactly as it did
+            // before WI-1091: the pre-existing answer for a redirect this ticket has no
+            // evidence to change, and the body's own read stays the judge.
+            let covered = find_requirement(&incoming, self.fields.req_self)
+                .cloned()
+                .filter(|dict| {
+                    let spec = crate::kb::typing::impl_parent_of_op(&self.kb, built_for)
+                        .unwrap_or_else(|| dict.impl_sort());
+                    let provider = dict.impl_sort();
+                    crate::kb::typing::dictionary_covers_target(
+                        &mut self.kb,
+                        spec,
+                        provider,
+                        impl_target,
+                    )
+                });
+            if let Some(dict) = covered {
+                return self.expand_dispatching_dict(built_for, impl_target, &dict);
+            }
             return Ok(incoming);
         }
         match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, impl_target, arg_values)
@@ -2486,9 +2662,13 @@ impl Interpreter {
             }
             // WI-855 — a TIE is the one unresolvable cause that does NOT enter
             // unsupplied: see the doc comment's last paragraph.
+            // WI-1091: BOTH halves raise here — this function supplies both, so a tie
+            // in either is its verdict. (The op-half-only consumer filters; see
+            // `BridgeRequirements::Ambiguous::slot`.)
             BridgeRequirements::Ambiguous {
                 requirement,
                 candidates,
+                slot: _,
             } => Err(EvalError::AmbiguousRequirement {
                 op: self.kb.qualified_name_of(impl_target).to_string(),
                 requirement,

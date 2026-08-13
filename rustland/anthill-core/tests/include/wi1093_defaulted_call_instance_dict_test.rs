@@ -17,13 +17,15 @@
 //!     dispatch dict AT ALL: the implementation is entered with an EMPTY channel and its
 //!     first condition-slot read dies `not bound`. **This ticket fixes that arm**;
 //!     [`the_pinned_override_reads_its_provision_condition`] is its driver.
-//!   * **NO SUPPLIER** — the default body runs and the Direct arm builds the WI-415
+//!   * **NO SUPPLIER** — the default body runs and the Direct arm built the WI-415
 //!     parent bundle: right for the default body's OWN reads (`Sp requires Base[T]` at
 //!     `T = Wrap` genuinely IS `Base[Wrap]`), wrong for the carrier's provision
-//!     CONDITIONS, which the bundle does not carry at all. **NOT fixed here** — pinned as
-//!     a failing expectation by
-//!     [`pins_the_defaulted_fall_through_losing_the_elements_dictionary`], whose doc
-//!     carries the two causes and the measurement showing a typer-only fix moves nothing.
+//!     CONDITIONS, which the bundle does not carry at all. Not fixed by WI-1093, which
+//!     pinned it as a FAILING expectation; **WI-1091 DELIVERED IT**, and
+//!     [`the_defaulted_fall_through_reads_the_elements_dictionary`] now asserts the value
+//!     (10, the element's dictionary) where it used to assert the error. Its doc carries
+//!     the two causes — one in the typer, one in eval — and the measurement showing that
+//!     fixing either alone moves nothing, which is why WI-1093 shipped neither.
 //!
 //! **THE MEASUREMENT THAT DECIDES WHETHER A NUMBER IS EVIDENCE.** An op WITH a receiver is
 //! repaired by value-direction at every call: `spec_call_runtime_carrier` classifies the
@@ -235,12 +237,12 @@ fn control_a_leaf_carrier_reads_nothing_and_is_unaffected() {
     );
 }
 
-/// **PINS THE SECOND ARM'S DEFECT — this row asserts a FAILURE, on purpose.**
+/// **THE SECOND ARM — the row this file pinned as a FAILURE, now DELIVERED by WI-1091.**
 ///
-/// The FALL-THROUGH arm: no supplier, so `Sp`'s own default body runs and the Direct arm
-/// builds the WI-415 PARENT BUNDLE. `Sp.ranked` eta-lifts its sibling `rank`, so
-/// `attach_eta_dispatch_dict` captures `var_ref(__req_self)` and the `OpRef` carries that
-/// bundle to a foreign apply frame, where the caller cannot re-resolve.
+/// The FALL-THROUGH arm: no supplier, so `Sp`'s own default body runs. `Sp.ranked`
+/// eta-lifts its sibling `rank`, so `attach_eta_dispatch_dict` captures
+/// `var_ref(__req_self)` and the `OpRef` carries whatever that names to a foreign apply
+/// frame, where the caller cannot re-resolve.
 ///
 /// **WHY IT IS VISIBLE AT ALL, and why an earlier draft of this file wrongly concluded it
 /// was not.** That draft had `Wrap.rank` read `Sp.rank(i)` — an op WITH a receiver — and
@@ -250,37 +252,38 @@ fn control_a_leaf_carrier_reads_nothing_and_is_unaffected() {
 /// matter what the frame holds. With the receiver-LESS `Sp.mark()` there is no such route
 /// and the wrong frame is exactly what one sees.
 ///
-/// TWO CAUSES, and NEITHER is fixed here — which is why this asserts the error:
-///   1. the typer threads the parent bundle instead of the instance (this ticket's arm 2);
-///   2. eval's value-directed redirect to `Wrap.rank` keeps the SPEC's half of the
-///      channel, and `requirements_for_value_directed_impl` will not rebuild it because
-///      `incoming` is non-empty (WI-822 LEG 2's deliberate short-circuit).
-/// FIXING ONLY (1) CHANGES NOTHING HERE — measured: implemented, it fired on this fixture
-/// AND on stdlib `Iterable.find`, and this row's message did not move. So arm 2 has no
-/// driver of its own and both causes belong to WI-1091, whose increment (a) is the first
-/// forward of `__req_self` and whose increment (b) is the eta's missing op half.
+/// TWO CAUSES, AND BOTH LANDED TOGETHER — which is why they are one ticket's, and why
+/// WI-1093 shipped this row asserting the ERROR rather than half a fix:
+///   1. THE TYPER threaded the WI-415 PARENT BUNDLE (the SPEC's own `requires` chain
+///      resolved at the carrier, stamped with the spec) instead of the carrier's
+///      INSTANCE. `check_apply_iter`'s defaulted arm now resolves the spec AT THE PINNED
+///      CARRIER on the no-supplier exit and classifies with that tree.
+///   2. EVAL kept the SPEC's half after a value-directed REDIRECT: the eta's channel was
+///      built for `Sp.rank`, `dispatch_resolved_operation` redirected to `Wrap.rank`, and
+///      `requirements_for_value_directed_impl` returned the non-empty `incoming`
+///      UNCHANGED (WI-822 LEG 2's short-circuit, whose premise — "a caller who knew the
+///      callee built the more specific supply" — is false of a callee the caller did not
+///      know). It now RE-EXPANDS that channel's `__req_self` for the operation actually
+///      entered.
 ///
-/// WHEN WI-1091 LANDS THIS ROW MUST FAIL, and its replacement is `10` — the element's
-/// dictionary, exactly as [`the_pinned_override_reads_its_provision_condition`] asserts on
-/// the arm that IS fixed. A pinned defect that silently starts passing is the failure mode
-/// this shape exists to prevent.
+/// FIXING ONLY (1) CHANGED NOTHING HERE, measured twice: WI-1093 implemented it, saw it
+/// FIRE on this tower and on stdlib `Iterable.find`, and saw this row's message not move.
+/// That is why it was reverted there and why the two arrived together.
+///
+/// **10 IS THE ELEMENT'S DICTIONARY**, the same reading
+/// [`the_pinned_override_reads_its_provision_condition`] asserts on the arm WI-1093 did
+/// fix — see its table for what each number means. A `20` would be `Sp[Wrap]`, the
+/// carrier's own read in the element's place; a `-1` would be the override lost; a raise
+/// is no dictionary at all, which is what this row used to assert.
 #[test]
-fn pins_the_defaulted_fall_through_losing_the_elements_dictionary() {
-    let mut interp = crate::common::interp_for(TOWER);
-    let err = interp
-        .call("wi1093.tower.Driver.defaulted_at_wrap", &[Value::Int(0)])
-        .expect_err(
-            "WI-1091 not landed: the eta must still carry the PARENT BUNDLE out of the \
-             default body, so `Wrap.rank` cannot find its `Sp[E]` condition slot",
-        );
-    let msg = err.to_string();
-    assert!(
-        msg.contains("__req_sp") && msg.contains("not bound"),
-        "expected the unbound provision-condition slot; got: {msg}"
-    );
-    assert!(
-        msg.contains("__req_self") && msg.contains("__req_base"),
-        "…and the frame it DOES bind is the SPEC's half — the parent bundle, naming \
-         `Sp`'s own `requires` chain and none of `Wrap`'s provision conditions. got: {msg}"
+fn the_defaulted_fall_through_reads_the_elements_dictionary() {
+    assert_eq!(
+        eval_int(
+            "wi1093.tower.Driver.defaulted_at_wrap",
+            "the defaulted `Sp.ranked` eta-lifts `rank`, and the `OpRef` must carry the \
+             `Sp[Wrap]` INSTANCE out — so the redirected `Wrap.rank` reads the ELEMENT's \
+             `Sp[Leaf]` and answers 10"
+        ),
+        10,
     );
 }

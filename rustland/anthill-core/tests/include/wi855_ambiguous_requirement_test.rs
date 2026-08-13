@@ -149,56 +149,59 @@ fn drive(src: &str, ns: &str) -> Result<Value, EvalError> {
     interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)])
 }
 
-/// THE PIN. A genuine two-provider tie, reached through value-directed dispatch,
-/// surfaces as `AmbiguousRequirement` naming the requirement and BOTH candidates.
+/// THE PIN, and the claim is unchanged by WI-1091: a genuine two-provider tie surfaces
+/// NAMED — the requirement and BOTH candidates — never as a missing-dictionary report
+/// from a frame the author never wrote.
 ///
 /// WI-861 moved it onto [`TWIG`] — see that constant. The `Leaf` + rival pair it used to
 /// run on now RESOLVES, which the next test asserts as a value; what is pinned here is
 /// the tie that no default answers.
+///
+/// **WI-1091 MOVED WHEN, from the dispatch to the LOAD, and only for a WRITTEN call
+/// site.** `Holder.probe`'s requirement is op-scoped; WI-1091 widened the placement so
+/// the body reads the dictionary that licence names, which makes BUILDING that dictionary
+/// part of classifying `Driver.drive`'s call — and `Holder.probe(wrap(twig()))` pins
+/// `HT := Wrap[Twig]`, so the tie is in hand there, with both providers and the bracket
+/// that repairs it. Refusing at load is what makes this spelling agree with its
+/// SORT-LEVEL twin, which has refused the identical program since WI-828. Earlier,
+/// named, with a repair: strictly more than the dispatch-time raise it replaces.
+///
+/// THE EVAL FACE IS NOT LOST, and this is the part that would be easy to get wrong. A
+/// route with no call site cannot be refused at load, and there the SAME
+/// `EvalError::AmbiguousRequirement` is raised — now from the host-entry seeding
+/// (`Interpreter::seed_entry_op_requirements`), and driven by
+/// `wi842_bracketless_readers_test::a_two_provider_value_directed_dispatch_names_both_
+/// candidates` and `wi861_rung2a_default_dispatch_test::a_witness_only_value_directed_
+/// tie_stays_loud`, both of which assert that error and both of its providers.
+///
+/// BACKED OUT (WI-1091's widening reverted): this program LOADS and answers
+/// `Err(AmbiguousRequirement { op: "…WrapDesc.describe", … })` at the call.
 #[test]
 fn tie_through_value_directed_dispatch_names_the_requirement_and_both_providers() {
     let ns = "wi855.tie";
-    let err = drive(&program(ns, TWIG, "wrap(twig())"), ns).unwrap_err();
-    let EvalError::AmbiguousRequirement {
-        op,
-        requirement,
-        candidates,
-    } = &err
-    else {
-        panic!(
-            "expected an AmbiguousRequirement naming the tie; got {err:?} — an \
-             `Internal(DeferToRequirement …)` here is the pre-WI-855 behaviour \
-             (unsupplied frame, failure reported as a MISSING dictionary)"
-        )
-    };
+    let errs = crate::common::try_load_kb_with(&program(ns, TWIG, "wrap(twig())"))
+        .err()
+        .expect(
+            "two providers of `Desc[Twig]` and a call site that pins the element: the \
+             dictionary `Holder.probe` needs cannot be built, and an `Internal(\
+             DeferToRequirement …)` at eval would be the pre-WI-855 behaviour — a \
+             MISSING-dictionary report naming neither the tie nor the providers",
+        );
+    let text = errs.join("\n");
     assert!(
-        op.ends_with("WrapDesc.describe"),
-        "the error must name the impl whose chain could not be built; got `{op}`"
-    );
-    assert!(
-        requirement.contains("Desc") && requirement.contains("Twig"),
-        "the error must name the REQUIREMENT that tied (`Desc[T = Twig]`); got `{requirement}`"
-    );
-    assert_eq!(
-        candidates.len(),
-        2,
-        "exactly the two tied providers expected; got {candidates:?}"
+        text.contains("Desc") && text.contains("Twig"),
+        "the refusal must name the REQUIREMENT that tied (`Desc[T = Twig]`); got: {text}"
     );
     for want in ["TwigA", "TwigB"] {
         assert!(
-            candidates.iter().any(|c| c.ends_with(want)),
-            "`{want}` must appear among the tied providers; got {candidates:?}"
+            text.contains(want),
+            "`{want}` must appear among the tied providers; got: {text}"
         );
     }
-    // The rendered message is what an author actually sees, so it carries the
-    // same three facts rather than only the struct fields.
-    let rendered = err.to_string();
-    for want in ["WrapDesc.describe", "Desc", "TwigA", "TwigB"] {
-        assert!(
-            rendered.contains(want),
-            "the rendered diagnostic must mention `{want}`; got: {rendered}"
-        );
-    }
+    assert!(
+        text.contains("Holder.probe"),
+        "…and the call whose requirement could not be supplied; got: {text}"
+    );
 }
 
 /// WHY THE RUNTIME OWNS THIS VERDICT — measured, and measured on the shape that
@@ -268,25 +271,110 @@ fn the_same_program_with_one_provider_still_computes_its_answer() {
     );
 }
 
-/// WI-822'S LINE, HELD. A requirement that resolves to NO provider is NOT a
-/// coherence violation — it is the "cannot be pinned / may not be needed" class
-/// WI-822 measured against the stdlib — so it still enters the frame UNSUPPLIED
-/// and the body that never reads the slot still runs.
+/// WI-822'S LINE, HELD — and WI-1091 re-shaped this row because the line was being
+/// asserted through a body that DOES read the slot.
 ///
-/// `Quiet` provides `Desc[T = Box[B = E]]` conditional on `Desc[T = E]`, but its
-/// body is a constant that never reads the dictionary; `Mystery` has no `Desc`
-/// provider at all, so dispatching on `box(mystery())` resolves that chain to
-/// `NoMatch`. Answer 5 ⇒ the frame was entered unsupplied and ran. If this ever
-/// flips to an error, the WI-855 raise has leaked out of the ambiguous case and
-/// back onto the 29 stdlib tests WI-822 measured.
+/// The claim is unchanged: a requirement that resolves to NO provider is NOT a coherence
+/// violation. It is the "cannot be pinned / may not be needed" class WI-822 measured
+/// against the stdlib, so the frame is entered UNSUPPLIED and a body that never reads the
+/// slot still runs. `Silent.probe` is such a body — it carries `requires Desc[T = HT]`
+/// and answers a constant — and it answers 5 with `box(mystery())`, whose `Desc` chain
+/// resolves to no provider at all. If THAT ever flips to an error, the WI-855 raise has
+/// leaked out of the ambiguous case and back onto the 29 stdlib tests WI-822 measured.
+///
+/// WHAT CHANGED. This row used to drive `Holder.probe`, whose body IS `Desc.describe(x)`
+/// — a body that reads the slot. It answered 5 because value-direction served that read
+/// from the runtime value, which is exactly the placement WI-1091 replaced: the call is
+/// licensed by `probe`'s own `requires`, so it now reads the dictionary that licence
+/// names, finds nothing, and raises naming the frame. So the old row was measuring the
+/// route rather than the line, and the line survives it — restated below on a body that
+/// really does not read.
+///
+/// AND THE TWO SPELLINGS AGREE, which is the other half and the one that says the new
+/// verdict is right rather than merely new. The SORT-LEVEL twin of `Holder` — the same
+/// text with `requires Desc[T = HT]` on the sort instead of on the operation — loads and
+/// raises the SAME frame-naming error, and did so before WI-1091 as well. An unpinnable
+/// requirement is not an error for a body that ignores it and IS one for a body that
+/// reads it, on EITHER spelling; that is the rule, and it is what §5.2 states.
 #[test]
 fn other_unresolvable_causes_still_enter_unsupplied() {
+    // A body that does NOT read the slot: enters unsupplied, runs.
+    const SILENT: &str = r#"
+  sort Silent
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Desc[T = HT] = 5
+  end
+"#;
     let ns = "wi855.nomatch";
-    let got = drive(&program(ns, QUIET, "box(mystery())"), ns);
+    let src = format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+{INSTANCES}{QUIET}{SILENT}
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Silent.probe(box(mystery()))
+  end
+end
+"#
+    );
+    let mut interp = crate::common::interp_for(&src);
+    let got = interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]);
     assert!(
         matches!(got, Ok(Value::Int(5))),
-        "expected Ok(Int(5)): `Quiet`'s chain resolves to NO provider at `Mystery`, \
+        "expected Ok(Int(5)): the `Desc` chain resolves to NO provider at `Mystery`, \
          which must still enter the frame unsupplied and run a body that never reads \
          the slot (WI-822's measured behaviour); got {got:?}"
     );
+}
+
+/// THE AGREEMENT, driven on both spellings of one program — the half of the rule above
+/// that a body which DOES read an unsupplied slot is what makes observable.
+///
+/// The op-scoped `Holder.probe` and its sort-level twin differ in ONE line (which
+/// declaration carries `requires Desc[T = HT]`) and must give one verdict. Both raise,
+/// naming the frame and the slot it does not bind. Measured, not assumed: the sort-level
+/// spelling answered exactly this before WI-1091 too, so the widening moved the op-scoped
+/// spelling ONTO the sort-level answer rather than inventing a third one.
+///
+/// FAILS IF THE WIDENING IS BACKED OUT — the op-scoped arm answers `Ok(Int(5))` then,
+/// served by value-direction, and the two spellings disagree.
+#[test]
+fn a_body_that_reads_an_unsuppliable_slot_agrees_on_both_spellings() {
+    const OP_SCOPED: &str = r#"
+  sort Reader
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Desc[T = HT] = Desc.describe(x)
+  end
+"#;
+    const SORT_LEVEL: &str = r#"
+  sort Reader
+    sort HT = ?
+    requires Desc[T = HT]
+    operation probe(x: HT) -> Int64 = Desc.describe(x)
+  end
+"#;
+    for (which, reader) in [("op-scoped", OP_SCOPED), ("sort-level", SORT_LEVEL)] {
+        let ns = format!("wi855.agree.{}", which.replace('-', ""));
+        let src = format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+{INSTANCES}{QUIET}{reader}
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Reader.probe(box(mystery()))
+  end
+end
+"#
+        );
+        let mut interp = crate::common::interp_for(&src);
+        let got = interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]);
+        let err = got.expect_err(&format!(
+            "{which}: a body that READS a slot nothing can supply must raise, not answer"
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("__req_desc") && msg.contains("not bound"),
+            "{which}: the raise must name the slot the frame does not bind; got {msg}"
+        );
+    }
 }

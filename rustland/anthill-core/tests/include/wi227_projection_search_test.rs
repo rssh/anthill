@@ -47,22 +47,45 @@ fn load_stdlib_only() -> KnowledgeBase {
     kb
 }
 
+/// WI-237 names-model regression: a sort declaring `requires Spec[T]` and calling
+/// `Spec.op(...)` must rewrite to `apply_within(fn = Ref(Spec.op),
+/// requirements = [var_ref(name = Ref(__req_spec))])` — Strategy 1 emits the single
+/// dispatching dict expression via the synthesized requirement-param name for the
+/// caller's chain slot 0.
+///
+/// **THE SPEC IS THE FIXTURE'S OWN, and that is what makes this test measure the
+/// fixture** (WI-1091). It read `anthill.prelude.PartialEq.eq` and selected its
+/// subject with `for (tid, spec) in kb.dispatch_origin_iter() { if spec == eq_sym
+/// { keep = Some(tid) } }` — a scan of a KB-GLOBAL map, keeping whichever entry
+/// came last. Two facts make that arbitrary rather than merely loose:
+/// `req_insertion::run` walks `kb.op_bodies_iter()`, whose backing `op_records` is
+/// a `HashMap` (random order per process), and `record_apply_within_rewrite` is
+/// IDEMPOTENT on a key that `materialize_apply` builds from the callee functor
+/// ALONE (`apply(fn = Ref(functor), args = nil)`) — so every abstract `eq` call in
+/// the image collides on one key and exactly one rewrite survives, the first one
+/// walked. Which sort's that is was already known to be arbitrary
+/// (`common::assert_req_param_spec`'s doc, WI-873, which relaxed the param-NAME
+/// assertion for this reason); what stayed was the head-shape assertion, and it is
+/// order-dependent for the same reason. MEASURED under WI-1091's widened
+/// op-scoped placement, which puts more sorts in the race: FAILED in one full-
+/// workspace run (`Strategy 1 emits var_ref; got …requirement_at_sort`, a nested
+/// projection from some other sort) and PASSED in the next run of the same binary,
+/// same code. A local spec no other body calls has exactly one rewrite, so the
+/// entry this reads is the one this fixture produced — asserted below rather than
+/// assumed.
 #[test]
 fn flat_path_emits_var_ref_named_requirement() {
-    // WI-237 names-model regression: a sort declaring `requires Eq[T]`
-    // and calling `eq(...)` must rewrite to
-    // `apply_within(fn = Ref(Eq.eq),
-    //  requirements = [var_ref(name = Ref(__req_eq))])` — Strategy 1
-    // emits the single dispatching dict expression via the synthesized
-    // requirement-param name for the caller's chain slot 0 (Eq).
     let src = r#"
 namespace test.wi227.flat
-  import anthill.prelude.PartialEq.{eq}
-  import anthill.prelude.{PartialEq, Bool}
+  import anthill.prelude.{Bool}
+  sort Wi227Spec
+    sort T = ?
+    operation same(a: T, b: T) -> Bool
+  end
   sort Wi227Flat
     sort T = ?
-    requires PartialEq[T]
-    operation use_eq(a: T, b: T) -> Bool = eq(a, b)
+    requires Wi227Spec[T]
+    operation use_eq(a: T, b: T) -> Bool = Wi227Spec.same(a, b)
   end
 end
 "#;
@@ -70,8 +93,8 @@ end
     let kb = interp.kb();
 
     let eq_sym = kb
-        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
-        .expect("Eq.eq");
+        .try_resolve_symbol("test.wi227.flat.Wi227Spec.same")
+        .expect("Wi227Spec.same");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref");
@@ -82,32 +105,42 @@ end
         .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil");
 
-    let mut rewritten_for_eq = None;
-    for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
-        if spec_sym == eq_sym {
-            rewritten_for_eq = Some(rewritten_tid);
-        }
-    }
-    let rewritten_tid = rewritten_for_eq.expect("eq() must be rewritten");
+    // ASSERTED, not assumed: the whole point of a local spec is that the KB-global
+    // map holds exactly one rewrite for it, so the read below cannot pick up another
+    // sort's. If this ever counts more than one, the selection is arbitrary again and
+    // the failure must say so rather than silently measure a stranger.
+    let rewrites: Vec<_> = kb
+        .dispatch_origin_iter()
+        .filter(|(_, spec_sym)| *spec_sym == eq_sym)
+        .map(|(tid, _)| tid)
+        .collect();
+    assert_eq!(
+        rewrites.len(),
+        1,
+        "`Wi227Spec.same` is called from exactly one body, so exactly one rewrite \
+         may be recorded for it — more means the subject of this test is again \
+         chosen by `dispatch_origin`'s iteration order"
+    );
+    let rewritten_tid = rewrites[0];
 
     let named_args = match kb.get_term(rewritten_tid) {
         Term::Fn { named_args, .. } => named_args.clone(),
         other => panic!("rewritten must be Fn; got {other:?}"),
     };
 
-    // fn = Ref(Eq.eq) — spec-op symbol directly.
+    // fn = Ref(Wi227Spec.same) — spec-op symbol directly.
     let fn_tid = get_named_arg(kb, &named_args, "fn").expect("fn arg");
     match kb.get_term(fn_tid) {
         Term::Ref(s) => assert_eq!(
             *s,
             eq_sym,
-            "fn must be Ref(Eq.eq); got Ref({})",
+            "fn must be Ref(Wi227Spec.same); got Ref({})",
             kb.qualified_name_of(*s)
         ),
         other => panic!("fn must be Term::Ref(spec_op); got {other:?}"),
     }
 
-    // requirements = cons(var_ref(name=Ref(__req_eq)), nil) — Strategy 1
+    // requirements = cons(var_ref(name=Ref(__req_wi227spec)), nil) — Strategy 1
     // (named-param flat match) emits a name-based read of the caller's
     // requirement-param.
     let reqs_tid = get_named_arg(kb, &named_args, "requirements").expect("requirements arg");
@@ -143,15 +176,17 @@ end
     );
     let name_tid = get_named_arg(kb, &head_named, "name").expect("name arg");
     match kb.get_term(name_tid) {
-        // WI-644: `eq`'s spec is the `PartialEq` base, so the param name is
-        // `__req_partialeq`. WI-873: was "at CALLER chain[0]" — the map is KB-global
-        // and the surviving entry may be another sort's, so only the spec is asserted.
+        // WI-873: was "at CALLER chain[0]" — the map is KB-global and the surviving
+        // entry may be another sort's, so only the spec is asserted. WI-1091 made the
+        // entry the fixture's own, so the name is now exactly slot 0 of `Wi227Flat`'s
+        // chain — but the tolerant reader is kept, since it is the shared one and the
+        // claim is about WHICH SPEC named the param either way.
         Term::Ref(s) => crate::common::assert_req_param_spec(
             kb,
             *s,
-            "__req_partialeq",
+            "__req_wi227spec",
             "Strategy 1's var_ref must name a requirement param synthesized from \
-             `PartialEq`",
+             `Wi227Spec`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }

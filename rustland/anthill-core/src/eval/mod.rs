@@ -582,7 +582,10 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
-        let requirements = self.seed_entry_requirements(sym)?;
+        let mut requirements = self.seed_entry_requirements(sym)?;
+        // WI-1091: the OP-SCOPED half, RESOLVED at the concrete argument types rather
+        // than stood in for. See `seed_entry_op_requirements`.
+        self.seed_entry_op_requirements(sym, args, &mut requirements)?;
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
@@ -648,6 +651,7 @@ impl Interpreter {
                 BridgeRequirements::Ambiguous {
                     requirement,
                     candidates,
+                    slot: _,
                 } => {
                     let tie = EvalError::AmbiguousRequirement {
                         op: self.kb.qualified_name_of(sym).to_string(),
@@ -994,7 +998,13 @@ impl Interpreter {
                         // it through would silence leg 2 at every host entry and enter a
                         // conditional impl (`WrapDesc requires Desc[T = E]`) with a
                         // channel its first dictionary read cannot satisfy.
+                        // WI-1091: `built_for` is `t` itself, since the channel handed
+                        // in is EMPTY — this site discards the incoming one for the
+                        // reason above, so there is no other operation's supply here to
+                        // re-key. The two arguments coincide and the short-circuit is
+                        // not reached either way.
                         requirements = self.requirements_for_value_directed_impl(
+                            t,
                             t,
                             args,
                             smallvec::SmallVec::new(),
@@ -1126,6 +1136,106 @@ impl Interpreter {
             out.push((*name, slot));
         }
         Ok(out)
+    }
+
+    /// WI-1091 — the entry op's OWN op-scoped slots, resolved at the concrete argument
+    /// types, appended after [`Self::seed_entry_requirements`]' sort half.
+    ///
+    /// A host `interp.call` is one of the four routes WI-822 measured as unable to fill
+    /// an op slot: there is no call site to build one, and a STAND-IN cannot serve it
+    /// (it is rooted at the PARENT SORT, which provides nothing the op-scoped clause
+    /// names, so it would mis-dispatch — that is why the sort half's stand-ins are not
+    /// simply extended). But the route is not information-free: the host handed us
+    /// GROUND VALUES, and an op-scoped requirement ranges over the operation's own
+    /// parameters, so they pin it. That is literally the bridge's problem — "concrete
+    /// op, real argument values, no caller dictionary" — so it is the bridge's
+    /// resolution, [`crate::kb::typing::resolve_bridge_requirements`], shared with
+    /// WI-625 and WI-822 LEG 2.
+    ///
+    /// BEST-EFFORT, and the sort half is untouched by a failure here: an op-scoped
+    /// element the arguments cannot pin leaves its slot ABSENT, which is what every
+    /// other producer of this channel does ([`super::eval::Interpreter`]'s
+    /// `push_op_scoped_slots`), and the body's own read is what reports it. Only the OP
+    /// half is taken out of the resolution — the sort half's stand-ins are already in
+    /// `out`, and replacing them with resolved dictionaries would change what a
+    /// requires-carrying entry op has always been given.
+    fn seed_entry_op_requirements(
+        &mut self,
+        op_sym: Symbol,
+        args: &[Value],
+        out: &mut smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
+    ) -> Result<(), EvalError> {
+        use crate::kb::typing::BridgeRequirements;
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, op_sym);
+        let sort_len = chain.sort_len();
+        let names = chain.names(&mut self.kb);
+        if sort_len >= names.len() {
+            // No op half — the universal case, and not even a resolution.
+            return Ok(());
+        }
+        let op_names: std::collections::HashSet<Symbol> =
+            names[sort_len..].iter().copied().collect();
+        let (parent, trees) =
+            match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, op_sym, args) {
+                BridgeRequirements::Resolved(parent, trees) => (parent, trees),
+                // WI-1091 — A TIE IS RAISED, not entered-unsupplied, and this is the same
+                // rule `requirements_for_value_directed_impl` applies to the sort half
+                // (WI-855): a tie is a coherence verdict with no earlier owner, so the
+                // route that finds it is the one that must report it. Entering unsupplied
+                // would turn a message naming the requirement and both providers into the
+                // frame-naming `not bound` at the read, which names neither — and a HOST
+                // ENTRY is precisely a route with no bracket channel to decide it.
+                // …AND ONLY WHERE THE TIED SLOT IS ONE OF THIS FUNCTION'S. A tie in the
+                // SORT half is not the op half's verdict to raise: `seed_entry_
+                // requirements` has already installed that half's stand-ins, the host
+                // entry never asked this function about it, and raising would fail an
+                // entry that used to run. Its own consumer —
+                // `requirements_for_value_directed_impl`, which supplies both halves —
+                // still raises on either (found by /code-review; the doc above claimed
+                // "only the OP half is taken out of the resolution" while the code
+                // raised for both).
+                BridgeRequirements::Ambiguous {
+                    requirement,
+                    candidates,
+                    slot,
+                } if op_names.contains(&slot) => {
+                    return Err(EvalError::AmbiguousRequirement {
+                        op: self.kb.qualified_name_of(op_sym).to_string(),
+                        requirement,
+                        candidates,
+                    })
+                }
+                // Unresolvable / nothing needed: enter with the sort half alone. "Has a
+                // chain" and "needs it" are different questions and only the body answers
+                // the second; a body that DOES read the absent slot raises at the read.
+                _ => {
+                    if self.trace_requirements {
+                        eprintln!(
+                            "[req] host entry to `{}`: op-scoped slots NOT seeded — the \
+                             argument types do not pin them",
+                            self.kb.qualified_name_of(op_sym),
+                        );
+                    }
+                    return Ok(());
+                }
+            };
+        let seeded = self.frame_requirements_from_trees(parent, &trees).map_err(|f| {
+            EvalError::Internal(match f {
+                FrameReqFailure::CallerScopeSlot(name) => format!(
+                    "entry `{}`: requirement `{}` resolved to a caller-scope slot, but \
+                     the resolution ran with no scope",
+                    self.kb.qualified_name_of(op_sym),
+                    self.kb.local_name_of(name),
+                ),
+                FrameReqFailure::NoDictionarySort => format!(
+                    "entry `{}`: cannot build any requirement dictionary — this KB never \
+                     loaded `anthill.realization.runtime.Dictionary`",
+                    self.kb.qualified_name_of(op_sym),
+                ),
+            })
+        })?;
+        out.extend(seeded.into_iter().filter(|(n, _)| op_names.contains(n)));
+        Ok(())
     }
 
     /// WI-857 — a **stand-in** dictionary for `spec` under the functor `functor`:
