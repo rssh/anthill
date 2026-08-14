@@ -58,6 +58,22 @@
 //! one repair applied). They are here because the refusal must NOT fire there, which is
 //! a claim about this change even though neither test needed it.
 //!
+//! ── the /code-review follow-ups, each its own back-out ─────────────────────────
+//!
+//! Backing out the SELF-REPRESENTING gate in `spec_carrier_param_or_sole` fails
+//! `a_self_representing_spec_does_not_file_its_element_as_the_carrier`, and only that.
+//!
+//! Backing out `carrier_has_provision_row`'s use of that same ladder (reverting it to
+//! `witness_dispatch_carrier`, which stops at rung 1) fails
+//! `a_witness_row_is_found_for_a_carrier_param_less_spec`, and only that.
+//!
+//! Backing out the row-exists WORDING fails
+//! `the_row_exists_sentence_does_not_claim_a_condition_it_never_checked`, and only that.
+//!
+//! MEASURED one at a time, each over the whole file: 12 pass, 1 fails. The three are
+//! independent, which is the claim — a shared ladder that only one reader consults is
+//! the defect all three descend from.
+//!
 //! NOT DRIVEN HERE, and pinned elsewhere rather than duplicated: the FULLY-PINNED gate,
 //! whose control is an abstract carrier that must still enter unsupplied — `wi822
 //! unbound_requirement_message_names_the_running_frame` and `wi855
@@ -567,4 +583,188 @@ end
         "with the provision on the CARRIER the dictionary builds and `contains` answers"
     );
     assert_eq!(eval_int(SRC, "wi1102.repaired.Driver.has"), 0);
+}
+
+// ── /code-review follow-ups on the carrier-parameter ladder ─────────────────
+//
+// Three findings on the shipped WI-1102, all about the SECOND rung of "which type
+// parameter holds the carrier" (`spec_carrier_param_or_sole`). Fixed inline rather than
+// filed, per the repo's follow-up rule.
+
+/// RUNG 2 MUST NOT FIRE FOR A SELF-REPRESENTING SPEC.
+///
+/// `spec_carrier_param` answers `None` for two different reasons, and only one of them
+/// licenses "the sole type parameter is the carrier". A spec with no receiving surface
+/// (`Eq`, `NonEq`, `Monad`) has a sole parameter that IS the carrier. A SELF-REPRESENTING
+/// one — an operation receiving on the sort itself, `Container.head(c: Container)` — does
+/// not: its parameter is the ELEMENT. Reading it as the carrier is WI-1076's measured
+/// defect, which filed seven stdlib provisions at the type VARIABLE `T`; here it would
+/// send the author to declare `provides Container[T = Mystery]` on `Mystery`, the
+/// element, when the provision belongs on whatever sort IS a container of it.
+///
+/// Every self-representing spec in the stdlib carries a second type parameter, so this
+/// needs a written one-parameter spec to reach — which is also why the shipped code was
+/// green: the corpus cannot get here (WI-979's shape).
+///
+/// CONTROL — FAILS with the `spec_is_self_representing` gate removed from
+/// `spec_carrier_param_or_sole`: the refusal then names `Mystery` as the sort that
+/// provides no `Container`, which the assertion below rejects by name.
+#[test]
+fn a_self_representing_spec_does_not_file_its_element_as_the_carrier() {
+    const SRC: &str = r#"
+namespace wi1102.selfrep
+  import anthill.prelude.{Int64}
+  sort Container
+    sort T = ?
+    -- RECEIVES ON THE SORT: self-representing. `T` is the element type.
+    operation head(c: Container) -> T
+    -- ... and a non-receiving member, so a requirement holder's body can READ the slot.
+    operation tag() -> Int64
+  end
+  sort Mystery
+    entity mystery
+  end
+  sort Reader
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Container[T = HT] = Container.tag()
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Reader.probe(mystery())
+  end
+end
+"#;
+    let text = match crate::common::try_load_kb_with(SRC) {
+        Err(errs) => errs.join("\n"),
+        Ok(_) => String::new(),
+    };
+    assert!(
+        !text.contains("`wi1102.selfrep.Mystery` provides no `wi1102.selfrep.Container`"),
+        "`Mystery` is `Container`'s ELEMENT, not its carrier — a self-representing spec \
+         binds no carrier in its parameters, so no sort can be named here and none must \
+         be; got:\n{text}"
+    );
+    assert!(
+        !text.contains("provides Container[T = wi1102.selfrep.Mystery] on"),
+        "…and no repair line may prescribe the element as the provider; got:\n{text}"
+    );
+}
+
+/// THE TWO HALVES OF THE DIAGNOSTIC MUST DECODE THE CARRIER THE SAME WAY.
+///
+/// `unprovided_provision` picks the carrier off the ladder; `carrier_has_provision_row`
+/// then asks whether that sort already has a row, and its answer picks WHICH of the two
+/// sentences is rendered. It used to ask through `witness_dispatch_carrier`, which stops
+/// at rung 1 — right for its other callers (WI-1076), wrong here, because rung 1 answers
+/// `None` for exactly the carrier-param-less family rung 2 exists to serve. Every WITNESS
+/// row for such a spec then decoded to the PROVIDER, so `has_a_row` could never be true
+/// and a carrier whose provision lives on another sort was told it had none.
+///
+/// `Lawful` has a sole parameter and no operation receiving on anything, so rung 2 names
+/// `T`. `Quiet` provides `Lawful[T = Box[B = E]]` conditionally, so `Box` HAS a row; the
+/// goal fails only because `Mystery` has none. This is `a_failing_conditional_provision_
+/// is_not_reported_as_a_missing_one` one family over — that fixture's `Desc` has a
+/// carrier PARAM (`describe(x: T)`), so it never left rung 1.
+///
+/// CONTROL — FAILS with `carrier_has_provision_row` reverted to
+/// `witness_dispatch_carrier(...).unwrap_or(provider)`: the message becomes "`Box`
+/// provides no `Lawful`", rejected by name below.
+#[test]
+fn a_witness_row_is_found_for_a_carrier_param_less_spec() {
+    const SRC: &str = r#"
+namespace wi1102.witnessrow
+  import anthill.prelude.{Int64}
+  sort Lawful
+    sort T = ?
+    -- Receives on NOTHING (the `NonEq.nonEqRefl` shape): no carrier PARAM, and not
+    -- self-representing either — so the sole parameter `T` IS the carrier.
+    operation mark() -> Int64
+  end
+  sort Mystery
+    entity mystery
+  end
+  sort Box
+    sort B = ?
+    entity box(inner: B)
+  end
+  sort Quiet
+    sort E = ?
+    requires Lawful[T = E]
+    fact Lawful[T = Box[B = E]]
+    operation mark() -> Int64 = 5
+  end
+  sort Reader
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Lawful[T = HT] = Lawful.mark()
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Reader.probe(box(inner: mystery()))
+  end
+end
+"#;
+    let text = refusal(SRC, "the witness row at a carrier-param-less spec");
+    assert!(
+        !text.contains("`wi1102.witnessrow.Box` provides no `wi1102.witnessrow.Lawful`"),
+        "`Box` DOES provide `Lawful` — via the witness `Quiet` — so the sentence that \
+         sends the author to write a row on `Box` is the wrong one; got:\n{text}"
+    );
+    assert!(
+        text.contains("wi1102.witnessrow.Box") && text.contains("does provide"),
+        "the refusal must still name `Box` and select the row-exists sentence; \
+         got:\n{text}"
+    );
+}
+
+/// THE ROW-EXISTS SENTENCE MUST NOT NAME A MECHANISM THE LOOKUP NEVER CHECKED.
+///
+/// `carrier_has_provision_row` proves only that SOME row keyed by this base exists —
+/// deliberately, per its doc. It used to select a sentence asserting the row is
+/// CONDITIONAL and that "the missing provision belongs on that argument's sort, not on
+/// `{carrier}`". An UNCONDITIONAL row at a different instantiation makes the lookup true
+/// too, and there the ruled-out repair — a second row on the carrier — is the correct
+/// one.
+///
+/// `Box` provides `Desc` at `B = Int64` only, unconditionally; the call needs it at
+/// `B = Mystery`.
+///
+/// CONTROL — FAILS against the shipped wording, which tells this author the gap is on
+/// `Mystery`'s sort and explicitly not on `Box`. Both repairs are now named, because
+/// which one applies is precisely what this lookup does not know.
+#[test]
+fn the_row_exists_sentence_does_not_claim_a_condition_it_never_checked() {
+    const SRC: &str = r#"
+namespace wi1102.uncond
+  import anthill.prelude.{Int64}
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Mystery
+    entity mystery
+  end
+  sort Box
+    sort B = ?
+    entity box(inner: B)
+    fact Desc[T = Box[B = Int64]]
+    operation describe(x: Box[B = Int64]) -> Int64 = 5
+  end
+  sort Reader
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Desc[T = HT] = Desc.describe(x)
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = Reader.probe(box(inner: mystery()))
+  end
+end
+"#;
+    let text = refusal(SRC, "the unconditional row at another instantiation");
+    assert!(
+        !text.contains("belongs on that argument's sort, not on"),
+        "the lookup proved only that a row EXISTS; `Box`'s row here is unconditional and \
+         at another instantiation, so ruling out a second row on `Box` rules out the \
+         correct repair; got:\n{text}"
+    );
+    assert!(
+        text.contains("no row of it answers at these bindings"),
+        "the sentence must say what was actually established; got:\n{text}"
+    );
 }

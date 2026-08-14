@@ -15994,10 +15994,27 @@ pub struct UnprovidedProvision {
 /// is the reader that keeps them apart). Keyed by BASE, so a row for `Box[B = E]`
 /// answers for `Box[B = Mystery]`: the question is whether this SORT has a provision,
 /// not whether this instantiation resolves — the goal already answered that, with `No`.
+/// That is also the limit of what the `true` answer licenses, and the message it selects
+/// says no more than it (see the `has_a_row` arm in [`RequirementRefusal::render`]).
+///
+/// IT MUST DECODE THE CARRIER ON THE SAME LADDER AS [`unprovided_provision`], which is
+/// why it reads [`spec_carrier_param_or_sole`] rather than calling
+/// [`witness_dispatch_carrier`]. That reader stops at rung 1
+/// ([`provision_carrier_binding`] → [`spec_carrier_param`]) and is right to: its other
+/// callers must not take rung 2 (WI-1076). But here rung 1 answers `None` for exactly
+/// the lawfulness family this diagnostic serves — `Eq`, `NonEq` — so every witness row
+/// for one would decode to the PROVIDER, `has_a_row` could never be `true`, and a
+/// carrier whose provision is a witness elsewhere would be told to write a row it
+/// already has. The two questions "which parameter holds the carrier" get ONE answer.
 fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    let carrier_param = spec_carrier_param_or_sole(kb, spec);
     provisions_of_spec(kb, spec).any(|(provider, spec_t, _)| {
-        let dispatch_carrier =
-            witness_dispatch_carrier(kb, spec, provider, spec_t).unwrap_or(provider);
+        // No carrier parameter to read ⇒ the provision's dispatch carrier IS the
+        // provider (a self-provision, an instance fact, or a row that names no other
+        // sort) — the same default `witness_dispatch_carrier`'s `None` stands for.
+        let dispatch_carrier = carrier_param
+            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(spec_t)))
+            .map_or(provider, |(_, base)| base);
         same_sort_canonical(kb, dispatch_carrier, carrier)
     })
 }
@@ -16070,12 +16087,21 @@ impl RequirementRefusal {
             // rest from its own parameters, which §5.2 legislates as its own load error
             // — advice that trades one refusal for another. `dep_text` is the goal as
             // rendered, so `provides <dep_text>` is complete by construction.
+            // WI-1102 — this arm says ONLY what the lookup established: a row exists for
+            // this sort, and none of its rows answers at these bindings. It used to name
+            // the mechanism ("its provision is conditional and the condition fails on a
+            // type argument above"), which `carrier_has_provision_row` does not check and
+            // which is false for the other shape that reaches here — an UNCONDITIONAL row
+            // at a different instantiation (`Box provides Desc[T = Box[B = Int64]]`, call
+            // needs `Desc[Box[B = String]]`), where a second row on `Box` IS the repair
+            // the old sentence explicitly ruled out. So it points at the bindings and
+            // names both repairs, which is the whole of what is known here.
             msg.push_str(&if u.has_a_row {
                 format!(
-                    "; `{carrier}` does provide `{spec}`, but not at these bindings — \
-                     its provision is conditional and the condition fails on a type \
-                     argument above, so the missing provision belongs on that argument's \
-                     sort, not on `{carrier}`"
+                    "; `{carrier}` does provide `{spec}`, but no row of it answers at \
+                     these bindings — check the type arguments above: either one of them \
+                     lacks the provision a conditional row requires, or `{carrier}` needs \
+                     a row at this instantiation"
                 )
             } else {
                 format!(
@@ -17169,22 +17195,18 @@ fn unprovided_provision(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Option<U
     if !pinned {
         return None;
     }
-    // WHICH parameter the carrier goes in, on a two-rung ladder because the established
-    // reader cannot answer for the spec this ticket is about. [`spec_carrier_param`]
-    // finds the param some declared OPERATION receives on — and `Eq` declares no
-    // operation at all (its `eq` lives on the `PartialEq` it requires; `eq.anthill` has
-    // only the dormant `eq_refl` law), so it answers `None` for `Eq`, `NonEq`, and every
-    // other spec that is a pure lawfulness claim over a surface it inherits.
-    // A SOLE type parameter is that carrier by construction: there is no other slot for
-    // a binding to mean. A multi-parameter spec with no receiving operation falls
-    // through and is NOT refused — the diagnostic's whole content is "this sort lacks
-    // this provision" and there is no non-arbitrary way to say which sort that is.
+    // WHICH parameter the carrier goes in, on the two-rung ladder the established reader
+    // cannot answer for the spec this ticket is about: [`spec_carrier_param`] finds the
+    // param some declared OPERATION receives on, and `Eq` declares no operation at all
+    // (its `eq` lives on the `PartialEq` it requires; `eq.anthill` has only the dormant
+    // `eq_refl` law), so it answers `None` for `Eq`, `NonEq`, and every other spec that
+    // is a pure lawfulness claim over a surface it inherits. The ladder — including why
+    // rung 2 must exclude a SELF-REPRESENTING spec — lives at
+    // [`spec_carrier_param_or_sole`], which `carrier_has_provision_row` reads too so the
+    // two halves of this diagnostic cannot disagree about which parameter that is.
     // The param is read for the CARRIER alone; the repair line quotes the whole
     // requirement, so a multi-parameter spec is not narrowed to one binding.
-    let param = spec_carrier_param(kb, dep.required_sort).or_else(|| {
-        let tps = kb.type_params_of_sort(dep.required_sort);
-        (tps.len() == 1).then(|| goal.bindings.first().map(|(k, _)| *k))?
-    })?;
+    let param = spec_carrier_param_or_sole(kb, dep.required_sort)?;
     let bound = goal
         .bindings
         .iter()
@@ -26238,6 +26260,46 @@ fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
     answer
 }
 
+/// WI-1102 — WHICH type parameter of `spec` the carrier goes in, on a two-rung ladder.
+/// ONE owner, because two readers ask it and a disagreement between them is a wrong
+/// sentence rather than a missing one (see [`carrier_has_provision_row`], whose verdict
+/// picks which of `UnprovidedProvision`'s two sentences is rendered).
+///
+/// Rung 1 is [`spec_carrier_param`] — the param some declared OPERATION receives on.
+/// Rung 2 is a SOLE type parameter, which is that carrier by construction: there is no
+/// other slot for a binding to mean. Rung 2 is gated on the spec not being
+/// SELF-REPRESENTING (WI-614's [`spec_is_self_representing`], the established reader for
+/// exactly that shape) — the OTHER reason rung 1 answers `None`, and the one where the
+/// sole parameter is the ELEMENT and not the carrier: reading it as the carrier is
+/// WI-1076's measured defect, seven stdlib provisions filed at the type VARIABLE `T`.
+/// The two `None`s must be told apart here because only one of them licenses rung 2.
+/// MEASURED over stdlib + host bindings: fourteen sorts reach rung 2, and the
+/// sole parameter is the carrier in every one — `Eq`, `NonEq`, `Monad`, `DelayMonad`,
+/// `BoundedLattice`, `Modify`, `Effect`, `EffectsRuntime`, `Modifiable`, `Option`,
+/// `StoredRef`, `Monad.M`, and the two `realization.runtime` dictionaries. Every
+/// self-representing stdlib spec (`Stream`, `FiniteStream`, `LogicalStream`) carries a
+/// second parameter and so never reached rung 2 anyway; the gate is what keeps a
+/// USER-written single-parameter one — `sort C { sort T = ?; operation head(c: C) -> T }`
+/// — from being read as though `T` carried the provision.
+///
+/// A multi-parameter spec with no receiving operation falls through to `None` and is NOT
+/// refused: the diagnostic's whole content is "this sort lacks this provision" and there
+/// is no non-arbitrary way to say which sort that is.
+fn spec_carrier_param_or_sole(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
+    if let Some(p) = spec_carrier_param(kb, spec_sort) {
+        return Some(p);
+    }
+    // Canonical on both reads, as `spec_carrier_param` is internally: an ALIAS symbol of
+    // the spec owns no operations and no type params, so an uncanonical ask would find
+    // neither a self-receiver nor a sole parameter and answer rung 2 for every spec.
+    let canon = kb.canonical_sort_sym(spec_sort);
+    if spec_is_self_representing(kb, canon) {
+        return None;
+    }
+    let tps = sort_type_params_as_pairs(kb, canon);
+    (tps.len() == 1).then(|| tps[0].0)
+}
+
 /// [`provision_carrier_sort`] before it throws the WRITTEN term away: the value bound to
 /// the spec's carrier param AND the sort-like base that value names, as one answer.
 ///
@@ -26293,6 +26355,23 @@ fn provision_carrier_binding(
         return None;
     }
     let carrier_param = spec_carrier_param(kb, spec_sort)?;
+    provision_binding_at_param(kb, carrier_param, spec_view)
+}
+
+/// [`provision_carrier_binding`] once the carrier PARAMETER is decided — the half that
+/// reads a binding off a spec view and filters it to a sort-like base.
+///
+/// Split out for WI-1102, which needs the same read at a param chosen on a different
+/// ladder ([`spec_carrier_param_or_sole`]). The split is deliberately at the param and
+/// not at the ladder: pushing the fallback INTO `provision_carrier_binding` would move
+/// it under every one of that function's readers — the dot-call receiver probe, 058
+/// §3.6's default rows, the `dispatch_carrier` builtin — and WI-1076 measured what
+/// happens when those read a first parameter that is not a carrier.
+fn provision_binding_at_param(
+    kb: &KnowledgeBase,
+    carrier_param: Symbol,
+    spec_view: &Value,
+) -> Option<(Value, Symbol)> {
     let carrier_short = short_name_of(kb.local_name_of(carrier_param));
     // The param's OWN symbol first, short name only as the fallback — `goal_binding_value`'s
     // two-rung ladder, and here it is also what keeps the common case allocation-free:
