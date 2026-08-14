@@ -563,7 +563,10 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    - **The existing stdlib names are a migration this decision does not perform.** `Set.member` /
      `Set.subset` are Bool operations whose definition is clauses, so under the convention they become
      `isMember` / `isSubset` with `member` / `subset` the relations. A convention the stdlib contradicts
-     is a dead letter, so this needs its own ticket rather than a silent rename here.
+     is a dead letter, so this needs its own ticket rather than a silent rename here. **Filed as
+     WI-1096**, which also has to settle the shape the convention cannot reach: `Set.eq` is the same
+     body-less-Bool-with-clauses shape and is **spec-owned** (`provides PartialEq[T = Set]` /
+     `Eq[T = Set]`), so a spec member keeps the spec's name and the convention stops at it.
    - **Scope: Bool-valued predicates only.** A non-Bool operation has no boolean face — its relational
      reading is the **arity+1 graph** (WI-938, `unify(op(args), ?r)`), a different question from this
      one, and the same-arity coincidence is exactly what makes the Bool case need a convention.
