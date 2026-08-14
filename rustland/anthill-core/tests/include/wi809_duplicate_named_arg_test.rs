@@ -16,7 +16,7 @@
 //! twice silently filled an unrelated field and left the intended one unbound.
 //!
 //! THE CHECK EXISTED AND ENTITIES DID NOT USE IT. The identical spelling against an
-//! OPERATION was already refused by `named_arg_coverage_errors` ("binds a parameter
+//! OPERATION was already refused by `bind_call_arguments` ("binds a parameter
 //! already given"); entity construction, facts and rule-body atoms never route through
 //! it.
 //!
@@ -26,7 +26,7 @@
 //! constructor, fact, rule-body atom, function value, dot call — which is what stops this
 //! from being the same half-covered rule a third time (WI-805's lesson).
 //!
-//! `named_arg_coverage_errors` KEEPS BOTH ITS OWN REASONS, neither of which is syntactic:
+//! `bind_call_arguments` KEEPS BOTH ITS OWN REASONS, neither of which is syntactic:
 //! an UNKNOWN label, and a label colliding with a parameter already filled POSITIONALLY
 //! (`f(3, acc: 10)` — WI-783, still its own test). Only the two-named-args spelling moved
 //! earlier.

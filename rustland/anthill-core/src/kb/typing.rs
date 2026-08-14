@@ -11242,13 +11242,16 @@ fn normalize_variadic_capture(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     fn_sym: Symbol,
+    // WI-1100: read by the CALLER (`kb.op_capture_param`), which needs it to count this
+    // call as the source text writes it, and handed on rather than looked up twice.
+    capture_param: Option<Symbol>,
     params: &[(Symbol, Value)],
     occ: &Rc<NodeOccurrence>,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     named_results: &[Result<TypeResult, TypeError>],
 ) -> Result<Option<CaptureRewrite>, TypeError> {
-    let capture_sym = match kb.op_capture_param(fn_sym) {
+    let capture_sym = match capture_param {
         Some(s) => s,
         None => return Ok(None),
     };
@@ -11655,10 +11658,27 @@ fn check_apply_iter(
         // node's labels, the argument list, the typed results) so the node reorder for eval
         // stays consistent. `None` (no capture parameter, or an already-normalized call)
         // keeps the original borrows — the zero-cost common path.
+        // WI-1100: the shape of the call AS WRITTEN, read before the rewrite below can
+        // append its own argument. `capture_param` is the `...args` slot no caller names
+        // and the rewrite fills; `source_args` is what the AUTHOR wrote. An arity
+        // diagnostic must count in the source's currency: with the rewritten list,
+        // `cap()` on `cap(x: Int64, ...rest: R)` reported "got 1 argument" about a call
+        // with no arguments in it, against an "expected 2" the author can never write.
+        let capture_param = kb.op_capture_param(fn_sym);
+        let source_args = pos_args.len()
+            + match capture_param {
+                // The >99% path: no capture slot, so every label is the author's.
+                None => named_args.len(),
+                Some(c) => named_args
+                    .iter()
+                    .filter(|(label, _)| !same_label(kb, c, *label))
+                    .count(),
+            };
         let capture_rewrite = normalize_variadic_capture(
             kb,
             env,
             fn_sym,
+            capture_param,
             &op.params,
             occ,
             pos_args,
@@ -11969,6 +11989,11 @@ fn check_apply_iter(
             if let Ok(ref arg_result) = pos_results[i] {
                 // WI-374: validate against the param AS WRITTEN, not the
                 // inference-expanded copy (see `written_params` above).
+                // WI-1100: a `None` here is a SURPLUS argument — one that fills no
+                // declared slot. It stays skipped, because the thing to say about it is
+                // not a type mismatch; [`call_arity_error`] below reports the count, and
+                // did not exist when this `get` was the whole of what a surplus argument
+                // met.
                 if let Some((param_sym, param_type)) = written_params.get(i) {
                     // WI-398: validate against the ELIMINATED type for a projection param
                     // (`s.cell.T` → `String`); the raw type for a non-projection param.
@@ -12053,15 +12078,29 @@ fn check_apply_iter(
                 }
             }
         }
-        // WI-426: named-argument COVERAGE (see `named_arg_coverage_errors`, which
+        // WI-426: named-argument COVERAGE (see `bind_call_arguments`, which
         // WI-783 shares with the function-VALUE call path so the two cannot drift).
-        arg_type_errors.extend(named_arg_coverage_errors(
+        // WI-1100: and the ARITY verdict the same binding decides — every declared slot
+        // filled exactly once, nothing outside the list ([`call_arity_error`]). Both are
+        // read off ONE pairing of arguments to slots rather than from a second count.
+        let mut binding = bind_call_arguments(
             kb,
             &op.params,
             pos_args.len(),
             named_args,
             fn_sym,
             "this operation",
+            span,
+        );
+        arg_type_errors.append(&mut binding.label_errors);
+        arg_type_errors.extend(call_arity_error(
+            kb,
+            &op.params,
+            &binding,
+            source_args,
+            capture_param,
+            fn_sym,
+            env.in_rule_body(),
             span,
         ));
         if !arg_type_errors.is_empty() {
@@ -14365,15 +14404,25 @@ fn check_apply_iter(
                 })?;
                 // The same WI-426 coverage rule the named-operation path applies,
                 // via the shared checker so the two cannot drift.
-                arg_errors.extend(named_arg_coverage_errors(
-                    kb,
-                    &params,
-                    pos_args.len(),
-                    named_args,
-                    fn_sym,
-                    "this function value's type",
-                    span,
-                ));
+                //
+                // WI-1100: the LABEL half only. This path's ARITY is already owned, one
+                // block up, by `positional_arg_expectations` — which knows the two
+                // readings a `Function[A, B, E]` slot admits (one whole-`A` argument, or
+                // `A`'s components spread) and so states a count where the binder, which
+                // reads a parameter LIST, cannot. A wrong total returned `CountMismatch`
+                // there and never reached here.
+                arg_errors.extend(
+                    bind_call_arguments(
+                        kb,
+                        &params,
+                        pos_args.len(),
+                        named_args,
+                        fn_sym,
+                        "this function value's type",
+                        span,
+                    )
+                    .label_errors,
+                );
                 // WI-792: and the same per-argument conformance the positional
                 // loop applies, at the slot each label resolved to. An UNKNOWN
                 // label matches no param and is skipped here, so it is reported
@@ -31106,6 +31155,26 @@ fn gather_spread_args_into_tuple(
     ))
 }
 
+/// WI-426 / WI-783 / WI-1100 — WHICH declared slot each argument of a call fills.
+/// The one binder: a positional argument fills slot `i`, a label fills the slot it
+/// names, and no slot may be filled twice. Everything a caller can ask about a call's
+/// SHAPE is read off this — the label diagnostics (`label_errors`) and the arity ones
+/// ([`call_arity_error`]) alike — so the two cannot answer from different pairings.
+struct ArgumentBinding {
+    /// One [`TypeError`] per offending LABEL: one that names no parameter, and one that
+    /// binds a parameter a positional argument (or an earlier label) already filled.
+    /// Empty = every label resolved to a distinct free slot.
+    label_errors: Vec<TypeError>,
+    /// The declared parameters this call filled with nothing, in declaration order.
+    /// Carried as the NAMES rather than as a count: with labels in play a call can
+    /// supply the right number of arguments and still leave a slot empty, and which
+    /// one it is is the whole of what the author has to fix.
+    unfilled: Vec<Symbol>,
+    /// Positional arguments past the end of the declared list — each occupies no slot
+    /// at all. Counted rather than flagged so the diagnostic can state the count given.
+    surplus_positional: usize,
+}
+
 /// WI-426 / WI-783: named-argument COVERAGE against a callee's parameter list —
 /// every label must name a DISTINCT parameter that no positional argument has
 /// already filled. Yields one [`TypeError`] per offending label; empty = clean.
@@ -31119,11 +31188,22 @@ fn gather_spread_args_into_tuple(
 /// Shared by both callee kinds so their diagnostics cannot drift apart — a named
 /// operation (`op.params`) and a function VALUE whose arrow type declares binder
 /// names ([`arrow_declared_param_list`]) — with `subject` naming the kind in the
-/// message. MISSING parameters are deliberately NOT checked: partial application
-/// is legal (WI-374). `#[track_caller]` so `site` still records the CALLING path
-/// rather than this one shared body.
+/// message. `#[track_caller]` so `site` still records the CALLING path rather than
+/// this one shared body.
+///
+/// WI-1100: it also REPORTS THE COVERAGE it was already computing. Until then the
+/// `covered` vector was built, read for the duplicate-label test, and dropped — and
+/// the doc here said missing parameters are "deliberately NOT checked: partial
+/// application is legal (WI-374)". That citation was to the wrong ticket and the wrong
+/// language rule: WI-374 is the *type*-application expansion (a parametric sort left
+/// partly unwritten), and the kernel spec has always said the opposite about VALUE
+/// arguments — "the argument count must equal the declared arity"
+/// (§"Applying a function value checks its arguments", stated of a named operation as
+/// the thing an arrow application is checked *like*). No under-applied call produces a
+/// function value anywhere in this language; it produced an `EvalError::ArityMismatch`
+/// on whichever execution first reached it, which is the deferral WI-1100 removed.
 #[track_caller]
-fn named_arg_coverage_errors(
+fn bind_call_arguments(
     kb: &KnowledgeBase,
     params: &[(Symbol, Value)],
     pos_count: usize,
@@ -31131,18 +31211,24 @@ fn named_arg_coverage_errors(
     callee: Symbol,
     subject: &str,
     span: Option<Span>,
-) -> Vec<TypeError> {
+) -> ArgumentBinding {
+    let positional_filled = pos_count.min(params.len());
     // Most calls pass no labels at all; keep the common path allocation-free
     // (the pre-WI-783 inline version was guarded by the same emptiness test).
+    // `unfilled` allocates only for a call that is already wrong.
     if named_args.is_empty() {
-        return Vec::new();
+        return ArgumentBinding {
+            label_errors: Vec::new(),
+            unfilled: params[positional_filled..].iter().map(|(s, _)| *s).collect(),
+            surplus_positional: pos_count - positional_filled,
+        };
     }
     let site = std::panic::Location::caller();
     let mut covered = vec![false; params.len()];
     for slot in covered.iter_mut().take(pos_count) {
         *slot = true;
     }
-    let mut errors = Vec::new();
+    let mut label_errors = Vec::new();
     for (arg_name, _) in named_args.iter() {
         let reason = match params
             .iter()
@@ -31156,7 +31242,7 @@ fn named_arg_coverage_errors(
             }
         };
         if let Some(reason) = reason {
-            errors.push(TypeError::Other {
+            label_errors.push(TypeError::Other {
                 site,
                 span,
                 context: TypeErrorContext::OperationArgument {
@@ -31172,7 +31258,136 @@ fn named_arg_coverage_errors(
             });
         }
     }
-    errors
+    ArgumentBinding {
+        unfilled: params
+            .iter()
+            .zip(&covered)
+            .filter(|(_, filled)| !**filled)
+            .map(|((s, _), _)| *s)
+            .collect(),
+        label_errors,
+        surplus_positional: pos_count - positional_filled,
+    }
+}
+
+/// WI-1100 — the ARITY verdict on a call to a named operation: every declared slot is
+/// filled exactly once, and no argument occupies a slot that does not exist. Read off
+/// [`bind_call_arguments`]'s binding rather than re-derived, so "which slot does this
+/// argument fill" is answered ONCE for a call. A bare count comparison would not do:
+/// with labels in play a call can supply the right NUMBER of arguments and still leave a
+/// slot empty (`pair(a: 1, bogus: 2)`), and only the binder knows which.
+///
+/// THE DEFECT IT CLOSES: nothing compared a call's argument count against the callee's
+/// declaration. The positional loop reads `written_params.get(i)`, so a SURPLUS argument
+/// simply matched no parameter and was skipped; a MISSING one left a parameter with
+/// nothing to check against. Measured on the built CLI: `concat("a", "b", "c", "d")` on
+/// the binary `String.concat` answered `loaded: 2602 facts, 176 rules` and `128 pass, 0
+/// failed`, with the error deferred to `EvalError::ArityMismatch` on whichever execution
+/// first reached the expression — and on the RESOLUTION path deferred to nothing at all,
+/// the goal answering `no solutions` indistinguishably from one that legitimately has
+/// none. What surfaced it: WI-1097's duplicate-id refusal built its message with a
+/// four-argument `concat`, so the error path of an error-detection gate was itself broken
+/// and the whole suite stayed green, because no test drove a store with a collision.
+///
+/// **BOTH NUMBERS ARE IN THE SOURCE'S CURRENCY** — what the author wrote, not what the
+/// typer holds. `supplied` is counted at the call site BEFORE the WI-727 capture rewrite
+/// appends its synthesized record (see the caller), and `capture_param` is subtracted
+/// from the declared side and described instead: a `...args` slot is not an argument any
+/// caller writes, so reporting it on either side states a count the source cannot have.
+///
+/// **THE RULE-BODY TOLERANCE, and why it is a reading rather than a hole.** A rule body's
+/// goal may be written at the operation's arity + 1: that is the FUNCTIONAL-RELATION view
+/// (kernel §5.3, WI-938) — `vec_add(a, b, ?c)` resolves as `unify(vec_add(a, b), ?c)`,
+/// with the last column receiving the result — and it is the shape the WI-1043 rule-body
+/// spec-op dispatch is written in (`rule answer(?r) :- Desc.describe(leaf(), ?r)`, where
+/// `describe` takes one parameter). Those atoms reach this check through
+/// [`dispatch_calls_in_occ`], so refusing arity + 1 there would refuse a delivered
+/// language feature — 17 tests across five files, measured.
+///
+/// **WHAT THE TOLERANCE LEAVES OPEN, precisely** (WI-1104). `in_rule_body` is a
+/// PER-RULE flag ([`TypingEnv::rule_body_dispatch`]), while GOAL-vs-VALUE is [`BodyPos`],
+/// which lives in the rule-body walk and is not carried into the typing env. So a
+/// VALUE-position rule-body call that is over-applied by exactly one is admitted too:
+///
+/// ```text
+/// rule r(?y) :- leaf().describe(?d), ?y = concat("a", "b", "c")   -- loads clean
+/// ```
+///
+/// That is one position of the very defect this closes, and it is stated rather than
+/// hidden. Every other count is refused, in a rule body and an operation body alike; the
+/// operation body — where the ticket's whole population lives — has no tolerance at all.
+/// Closing it needs the position threaded to here, which is WI-1104's own work.
+/// The extra column is also not TYPE-checked (the positional loop skips an argument past
+/// the declared list), which is the same ticket's second half: nothing today relates a
+/// relational goal's result column to the operation's return type.
+fn call_arity_error(
+    kb: &mut KnowledgeBase,
+    params: &[(Symbol, Value)],
+    binding: &ArgumentBinding,
+    supplied: usize,
+    capture_param: Option<Symbol>,
+    callee: Symbol,
+    in_rule_body: bool,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if binding.surplus_positional == 0 && binding.unfilled.is_empty() {
+        return None;
+    }
+    // The functional-relation view (see this function's doc): ONE extra positional
+    // column on a rule-body goal, every declared slot filled. `unfilled.is_empty()`
+    // and `surplus_positional == 1` together say the arguments are exactly the
+    // declared list plus one — with no label in play, since a label fills a slot and
+    // so cannot be the surplus.
+    if in_rule_body && binding.unfilled.is_empty() && binding.surplus_positional == 1 {
+        return None;
+    }
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let unfilled_tail = if binding.unfilled.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; no argument fills parameter{} {}",
+            plural(binding.unfilled.len()),
+            binding
+                .unfilled
+                .iter()
+                .map(|s| format!("`{}`", short_name_of(kb.local_name_of(*s))))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    };
+    // The DECLARED count in the same currency `supplied` is counted in: what a caller
+    // writes. A variadic capture slot is not one of those — it is filled by the WI-727
+    // rewrite, from named arguments the fixed list does not name — so it is subtracted
+    // here and described instead.
+    let declared = params.len() - usize::from(capture_param.is_some());
+    let capture_tail = match capture_param {
+        Some(c) => format!(
+            ", plus any named arguments the `...{}` capture collects",
+            short_name_of(kb.local_name_of(c)),
+        ),
+        None => String::new(),
+    };
+    let expected = format!(
+        "{} argument{} — the parameter list `{}` declares{}",
+        declared,
+        plural(declared),
+        kb.qualified_name_of(callee),
+        capture_tail,
+    );
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        // The subject is the call's SHAPE, not any one parameter — the same
+        // `arity` pseudo-parameter the function-VALUE path's count mismatch
+        // reports under, so the two render alike.
+        context: TypeErrorContext::OperationArgument {
+            op_name: callee,
+            param: kb.intern("arity"),
+        },
+        expected,
+        actual: format!("{supplied} argument{}{unfilled_tail}", plural(supplied)),
+    })
 }
 
 /// WI-426: rebuild an operation-call `Apply` with its NAMED arguments reordered

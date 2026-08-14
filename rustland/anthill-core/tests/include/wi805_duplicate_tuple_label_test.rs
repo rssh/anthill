@@ -339,7 +339,7 @@ fn labels_do_not_collide_across_distinct_tuples() {
 /// The exemption is not an oversight: a parameter list is applied POSITIONALLY, so
 /// a repeated binder name leaves NO parameter unreachable, and the one channel that
 /// does read those names — a named argument — already refuses a duplicate at the
-/// call (`named_arg_coverage_errors`, "binds a parameter already given"). Nothing
+/// call (`bind_call_arguments`, "binds a parameter already given"). Nothing
 /// here is silently wrong, which is what this file is about. Recorded rather than
 /// widened, so that a later decision to reject duplicate binder names is taken on
 /// its own terms.

@@ -46,12 +46,12 @@ const TUPLE_LABELS_DISTINCT: &str = "a named tuple's component names must be dis
 /// and built an entity with TWO `a` fields and NO `b` — `.a` read the first, `.b` raised
 /// `Internal("field_access: entity has no field 'b'")` at run time, and a positional
 /// pattern saw the second `a` sitting in `b`'s slot. The operation path already refused
-/// the same spelling (`named_arg_coverage_errors`); entity construction, facts and
+/// the same spelling (`bind_call_arguments`); entity construction, facts and
 /// rule-body atoms did not, because they never route through it.
 ///
 /// Checked HERE rather than at the typer because it needs no type information — it is
 /// the purely syntactic question of whether one argument list repeats a label — so one
-/// rule at the syntax layer covers every callee shape at once. `named_arg_coverage_errors`
+/// rule at the syntax layer covers every callee shape at once. `bind_call_arguments`
 /// keeps both of its own reasons, which this cannot see: an UNKNOWN label, and a label
 /// colliding with a parameter already filled POSITIONALLY (`f(3, acc: 10)`, WI-783).
 const NAMED_ARGS_DISTINCT: &str = "a named-argument list may not repeat a label — the \

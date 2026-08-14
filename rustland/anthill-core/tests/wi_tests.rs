@@ -1214,3 +1214,6 @@ mod wi1102_unsatisfiable_requirement_test;
 
 #[path = "include/wi1103_derived_provision_reload_test.rs"]
 mod wi1103_derived_provision_reload_test;
+
+#[path = "include/wi1100_call_arity_test.rs"]
+mod wi1100_call_arity_test;
