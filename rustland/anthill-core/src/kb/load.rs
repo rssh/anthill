@@ -830,7 +830,7 @@ pub enum LoadError {
     /// clause and design §3.3's precedence ("rules win") suppresses that view, and
     /// the clause answers a RESIDUAL. The clause supplies no reading — it removes a
     /// working one. Same thing WI-935 measured of geometry's relational twins ("they
-    /// computed nothing — the residual was the point") and WI-580 of `List.member`,
+    /// computed nothing — the residual was the point") and WI-580 of `List.contains` (then spelled `member`),
     /// where the twins branched on structural unification against a body using the
     /// declared `Eq`, so the two definitions could DISAGREE.
     ///
@@ -4309,7 +4309,7 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
 /// SAYS WHICH REPAIR, and there are two opposite ones, because which text is the
 /// definition is the author's call and the loader cannot guess: delete the clauses
 /// and keep the body, or delete the `=` body and let the clauses BE the definition.
-/// The second is not a fallback — it is how `anthill.prelude.Set.member` is written,
+/// The second is not a fallback — it is how `anthill.prelude.Set.contains` is written,
 /// and naming it here is what keeps this refusal from reading as "clauses are wrong".
 ///
 /// AND NAMES THE EXEMPTION, since the neighbouring spelling is common: an equation
@@ -4337,7 +4337,7 @@ fn body_and_clauses_message(op: &str, decl_site: &str, clause_sites: &[String]) 
          view serve the relational goal (WI-938), or drop the `=` body and let the \
          clauses BE the definition — a body-less operation defined by its clauses is \
          legal and is how a predicate is written relationally \
-         (`anthill.prelude.Set.member`). An equation (`<=>`, or `=` with a `[simp]` \
+         (`anthill.prelude.Set.contains`). An equation (`<=>`, or `=` with a `[simp]` \
          tag) is a LAW about this operation rather than a clause of it, and is not \
          what this refusal is about.",
         clause_sites.len(),
@@ -10814,6 +10814,50 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
     }
 }
 
+/// WI-939 item 4 — how many ARGUMENTS this rule's head carries. `None` when the head
+/// is not an application at all (a bare marker), which is not a graph clause either.
+fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
+    match kb.terms.get(kb.rule_head(rid)) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => Some(pos_args.len() + named_args.len()),
+        _ => None,
+    }
+}
+
+/// WI-939 item 4 — WOULD this bodied operation have a BOOL relational view at its
+/// OWN arity, if it carried no clauses?
+///
+/// [`KnowledgeBase::bare_bodied_bool_relation`]'s gates MINUS the rule-less one, and
+/// dropping that one is the whole point: the real predicate answers `false` as soon as
+/// a clause exists, so asking it here — where a clause always exists — would always
+/// say no and the check could never fire.
+///
+/// THE BUILTIN GATE IS WHAT KEEPS THE LEMMAS LEGAL, and it is not incidental. A
+/// clause on a BUILTIN-BACKED name is inert at SLD: the builtin decides the goal
+/// before any clause is consulted (§"A rule head functor is resolved, not declared"),
+/// so it suppresses nothing and really is a lemma. That is exactly `PartialOrd.gte` /
+/// `.lte`, whose SMT lemmas sit at their own arity — 26 sites the first cut refused.
+/// An operation with no builtin behind it has no such shield: its derived view WOULD
+/// have answered, and a clause there replaces it.
+fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
+    if kb.builtin_of(f).is_some() {
+        return false;
+    }
+    let Some(sig) = kb.op_record(f).and_then(|r| r.signature.as_ref()) else {
+        return false;
+    };
+    // Effect-free: an effectful body is not a logical relation, so it is granted no
+    // derived view and a clause beside it takes nothing away.
+    if !sig.effects.is_empty() {
+        return false;
+    }
+    super::typing::sort_functor_of_view(kb, &sig.return_type)
+        .is_some_and(|s| kb.sort_sym_is_bool(s))
+}
+
 /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION: a body OR clauses, never both.
 /// Load-blocking.
 ///
@@ -10829,13 +10873,30 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
 /// answers `Int(2)`, DEFINITE, through WI-938's derived view. Add one clause and the
 /// same goal answers a RESIDUAL, `definite=false` — design §3.3's "rules win"
 /// suppresses the derived view and the clause computes nothing in its place. WI-935
-/// measured the same of geometry's relational twins and WI-580 of `List.member`,
+/// measured the same of geometry's relational twins and WI-580 of `List.contains` (then spelled `member`),
 /// where the twins could DISAGREE with the body (structural unification against the
 /// declared `Eq`).
 ///
+/// TWO ARITIES, NOT ONE — the first cut got this wrong and /code-review caught it.
+/// A clause is refused where the DERIVED VIEW would have answered, and that is:
+///   * `params + 1` for any bodied operation — WI-938's functional-relation slot; and
+///   * `params` — the operation's OWN arity — when it is a bodied Bool op that would
+///     have had `bare_bodied_bool_relation`'s view (`eq(op(args), true)`).
+/// Filtering on `params + 1` alone called every own-arity clause a lemma, which let
+/// WI-580's own unsound shape straight back in: measured, `operation isbig(b) -> Bool
+/// = true` beside `rule isbig(box(n: 0))` loaded CLEAN and the goal answered NO
+/// SOLUTIONS while the body says `true` — the clause both suppressed the derived view
+/// and contradicted it.
+///
+/// AND THE BUILTIN GATE IS WHAT KEEPS THE LEMMAS LEGAL. `PartialOrd.gte` / `.lte` are
+/// bodied Bool ops carrying same-arity SMT lemmas — 26 sites, and §"A rule head
+/// functor is resolved, not declared" states the shape is intended. They survive
+/// because a clause on a BUILTIN-BACKED name is inert at SLD (the builtin decides the
+/// goal first), so it suppresses nothing; [`would_derive_bool_relation`] reads that.
+///
 /// THE BODY IS THE DISCRIMINATOR, AND THE STANDARD LIBRARY IS WHY. A BODY-LESS
 /// operation carrying clauses is ONE definition written relationally — that is
-/// exactly `Set.member` (2 clauses, no body), `Set.subset` and `Set.eq`, all shipped
+/// exactly `Set.contains` (2 clauses, no body), `Set.subset` and `Set.eq`, all shipped
 /// — so keying on "has clauses" alone would refuse the prelude. Keying on "has a body
 /// AND has clauses" is also what design §3.3 already implies with "body-unfold fires
 /// only for rule-less bodied functors".
@@ -10850,19 +10911,6 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
 /// CORPUS COST ZERO, measured with the instrument proven positive first: planting
 /// `operation twice(b) = 2` beside `rule twice(?b, ?r)` is found, and beside
 /// `rule twice(?b)` is found, while the loaded stdlib plus Rust bindings hold none.
-/// WI-939 item 4 — how many ARGUMENTS this rule's head carries. `None` when the head
-/// is not an application at all (a bare marker), which is not a graph clause either.
-fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
-    match kb.terms.get(kb.rule_head(rid)) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => Some(pos_args.len() + named_args.len()),
-        _ => None,
-    }
-}
-
 fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     // By symbol index, not `HashMap` order: two runs over one corpus must report
     // identically.
@@ -10870,14 +10918,19 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
         .op_bodies_iter()
         .map(|(sym, _)| sym)
         .filter_map(|sym| {
-            // AT THE GRAPH ARITY ONLY — see the doc above: `params + 1`, the slot
-            // WI-938's derived view occupies. A clause at the operation's OWN arity
-            // is a LEMMA about it (§"A rule head functor is resolved, not declared"),
-            // which is what `PartialOrd.gte`'s SMT lemmas are.
-            let graph_arity = super::op_info::lookup_operation_info(kb, sym)?.params.len() + 1;
+            // WHICH ARITIES THE DERIVED VIEW OCCUPIES, and there are TWO — an
+            // earlier cut counted only the first and let WI-580's own unsound shape
+            // back in (found by /code-review, measured, pinned by
+            // `a_same_arity_clause_on_a_bodied_bool_op_is_refused`):
+            //   * `params + 1` — WI-938's functional-relation slot, for ANY bodied op;
+            //   * `params` — the BOOL relational view, `eq(op(args), true)`, which
+            //     sits at the operation's own arity ([`bare_bodied_bool_relation`]).
+            let params = super::op_info::lookup_operation_info(kb, sym)?.params.len();
+            let bool_view = would_derive_bool_relation(kb, sym);
+            let occupied = |n: usize| n == params + 1 || (bool_view && n == params);
             let sites: Vec<SourceSpan> = kb
                 .rules_by_functor_iter(sym)
-                .filter(|rid| head_arg_count(kb, *rid) == Some(graph_arity))
+                .filter(|rid| head_arg_count(kb, *rid).is_some_and(occupied))
                 .filter_map(|rid| kb.rule_head_span(rid))
                 .collect();
             // A clause whose span the loader did not record would make the refusal

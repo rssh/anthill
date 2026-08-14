@@ -520,97 +520,41 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    around round-trips, and treat the collapse as a consumption-site presentation only. Zero → `Unit`.
 6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
    de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
-7. **Naming the two faces of a predicate — DECIDED: a convention, `<name>` for the relation and
-   `is<Name>` for the boolean.** A Bool-valued predicate has two readings — the intensional relation and
-   the boolean value — and **measured on the shipped stdlib, only one of them is reachable from a given
-   name.** `anthill.prelude.Set.member` carries **2 clauses and no body**, so its definition *is* a
-   relation, and it is not citable as one: `cites_a_relation` is
-   `Goal ∥ Rule ∥ (EquationFunctor ∧ has_clauses)`, its rule heads landed on the *operation* symbol
-   (WI-896) so no `Goal` was ever minted, and **every** spelling through the operation's own name yields
-   `Bool` — bare qualified `Set.member` does not resolve at all, bare unqualified and applied
-   `Coll.has(1, c)` both type as `Bool`. The one route that reaches the relation face is a **second rule
-   with its own name**: `rule hasRel(?x, ?c) :- has(?x, ?c)` then `Coll.hasRel` ⇒
-   `Relation[T = (x: Int64, c: Coll), E = {Error}]` (measured). `Set.subset` is the same shape.
+7. **Naming the two faces of a predicate — RAISED, then WITHDRAWN. There is nothing to name.**
+   The question was whether a Bool-valued predicate's two readings — the intensional relation and the
+   boolean value — need two names, since they coincide in ARITY (unlike a function, whose relational
+   reading is the arity+1 graph, WI-938). A convention was decided (`<name>` the relation, `is<Name>`
+   the boolean) and is **withdrawn**: it was routing around a self-inflicted limitation rather than a
+   language one, and the measurement that raised it was read wrongly.
 
-   So the language **already forces two names**. The convention names them, instead of leaving every
-   author to invent `hasRel` / `memberRel` / `subsetRel` ad hoc.
+   **THE TWO FACES NEVER CONTEND FOR ONE NAME.** `examples/classic-mini/map-colouring` is the design
+   working, with a passing test: `colouring` is a plain `rule`, `main` cites it bare as a
+   `Relation[(wa: Colour, …)]` and drains it with `colouring.takeN(20)` — and there is **no boolean
+   operation anywhere**. The faces come from **how many columns are bound**: all free enumerates, all
+   bound gives `Relation[Unit]` whose non-emptiness *is* the boolean, which `negate`'s contract already
+   defines. One name, two readings, chosen by application.
 
-   **THE CONVENTION DOES NOT DEPEND ON HOW THE PREDICATE IS DEFINED.** `Set.member` (clauses, no body)
-   was the measurement that raised the question, but the naming is about what the operation IS — a
-   boolean face — not about the form its definition happens to take. `List.member` is the same
-   predicate written with a body and zero clauses, and it is `is<Name>` for the same reason: measured,
-   it is equally not citable as a relation, and a naming rule keyed on body-existence would rename an
-   operation when its definition was rewritten. **The key is the Bool RETURN TYPE.**
+   **What made `Set.member` look like a counter-example was its own declaration.** Measured both ways:
+   a pure rule cited where a `Relation` is expected loads clean (`cites_a_relation = true`), while an
+   operation carrying the *identical* clauses is refused — because the rule heads land on the operation
+   symbol and no `Goal` kind is ever minted (WI-896). So the relation face was unreachable for a
+   self-inflicted reason, and a second name would have papered over it.
 
-   Three exclusions, each measured rather than assumed. Census over stdlib, `anthill-stl`, examples,
-   `anthill-todo` and `anthill-cpp-gen`: **59** Bool-returning operations, 7 already `is`-prefixed —
+   **The defect underneath was an API one, and it was fixed instead.** `member(x: T, l: List)` took the
+   ELEMENT first, so it could not dot-dispatch — §6.7 binds a receiver to the first parameter, and
+   `l.member(7)` was refused `expected List, got Int64`. `List.member` / `Set.member` are now
+   `contains(container, element)`, matching `Map.contains(m, key)` and `String.contains(s, sub)`, so
+   `l.contains(x)` works. That is one name for one question across the containers — the opposite
+   direction from the withdrawn convention, and the reason it is recorded as withdrawn rather than
+   deferred.
 
-   | class | count | why the convention does not reach it |
-   |---|---|---|
-   | **spec-owned** — `eq`, `neq`, `gt`/`gte`/`lt`/`lte`, `less`, `compare`, and every carrier implementing them | **27** | the spec owns the name; a provider implements what it provides (the `Set.eq` case below) |
-   | **effectful** — `Store.flush`, `Store.retract`, `Emitter.send`, `MutableCollection.insert` | **4+** | a Bool here is a success/status result, not a proposition. An effectful body is not a logical relation, which is the gate `bare_bodied_bool_relation` already applies |
-   | **connectives on `Bool`** — `and`, `or`, `not` | **4** | operations *on* truth values, not propositions *about* a subject |
-
-   That leaves **~14** genuine predicates — `Set.member` / `.subset`, `List.member`, `Map.contains`,
-   `String.contains` / `.startsWith` / `.endsWith`, `reflect.ground` / `.nonvar` / `.can_be_sort`,
-   `platform.exists` / `.has_property`, `parse.has_binding` — spanning both definition forms, which is
-   the point. (The count is approximate at its edges: `kernel.cut` / `push_choice` are resolver control
-   rather than predicates, and one effectful op escaped the census's effect test. WI-1096 settles the
-   exact list, since the convention's population is that ticket's first question.)
-
-   **THE RULE IS: A Bool-VALUED PREDICATE IS NAMED `is<Name>`.** It holds over the whole population at
-   once, both definition forms, and it is the only thing the convention asserts — a boolean may not
-   occupy the plain name. Whether that plain name is then FILLED by a relation is a separate fact,
-   answered per type by whether a relation face is citable there: `Set`'s clauses are citable so `member`
-   becomes its relation, while a body-defined predicate has none *yet* and its plain name simply stands
-   empty. An absence violates nothing; a plain-named boolean does. A convention applied to part of its
-   population is not a convention, so there is no staged reading in which only the clause-defined
-   predicates migrate.
-
-   **The relation is primary and plainly named; the boolean is `is<Name>` and is the DERIVED reading** —
-   `Relation[Unit]` non-emptiness, which `negate`'s own contract already defines ("its stream yields one
-   `unit` iff `r` has NO solution, and is empty iff `r` is provable"). That matches the `Set` spelling,
-   where the clauses are the definition and the boolean is what `eq` dispatches to.
-
-   **A CONVENTION, NOT A LOADER CHECK, and the distinction is load-bearing.** There is nothing to
-   disambiguate — the two readings never contend for one name, an operation name having no relation
-   reading at all — so a check would have no ambiguity to resolve. Enforcing it would make the kernel
-   read meaning from a name's TEXT, which §8.6 closes: short-name matching "survives only for name
-   resolution against a scoped set, never as a test of whether two sorts are the same". Under an enforced
-   rule, renaming an operation would change its semantics.
-
-   Rejected, and one deferred:
-   - **one name, two faces via an expected-type arm.** Widening `cites_a_relation` to "an operation that
-     has clauses" makes `Set.member` citable in one edit — and immediately re-creates the ambiguity the
-     arm order in `check_bare_ref` exists to prevent, since that name would then carry a `Bool` reading
-     and a `Relation` reading in the same bare position.
-   - **an explicit adapter** (`has.relation`). `Relation` is a sort, not a spec, so the adapter has no
-     natural home the way an inherited `.map` does.
-   - **making a BODY-DERIVED relation citable as a value — a separate follow-up, and not a gate.** A
-     bodied predicate's relational reading is served in GOAL position (`bare_bodied_bool_relation`
-     routes a bare Bool goal to `eq(op(args), true)`, using the declared `Eq` by construction — the
-     sound path WI-580 chose), but it is not a first-class `Relation` VALUE: `cites_a_relation` needs a
-     `Goal`/`Rule` kind and a bodied operation mints neither, so measured, `List.member` answers as a
-     goal and does not resolve where a `Relation` is expected. Closing that is what later fills the
-     plain name for body-defined predicates. The naming rule does not wait on it — and note the
-     asymmetry it leaves meanwhile, since the docs should not imply otherwise: a clause-defined
-     predicate can carry both faces today, a body-defined one only the boolean.
-   - **a builder DSL — `mySet.has.member` — DEFERRED, not refused.** Naming the face at the *use* site
-     rather than in the declaration is strictly more expressive than a convention, and considerably more
-     machinery. Revisit if the convention proves too coarse.
-
-   Sub-points:
-   - **The existing stdlib names are a migration this decision does not perform.** `Set.member` /
-     `Set.subset` are Bool operations whose definition is clauses, so under the convention they become
-     `isMember` / `isSubset` with `member` / `subset` the relations. A convention the stdlib contradicts
-     is a dead letter, so this needs its own ticket rather than a silent rename here. **Filed as
-     WI-1096**, which also has to settle the shape the convention cannot reach: `Set.eq` is the same
-     Bool-returning shape and is **spec-owned** (`provides PartialEq[T = Set]` / `Eq[T = Set]`), so a
-     spec member keeps the spec's name and the convention stops at it — the largest exclusion above,
-     27 of the 59.
-   - **Scope: Bool-valued predicates only.** A non-Bool operation has no boolean face — its relational
-     reading is the **arity+1 graph** (WI-938, `unify(op(args), ?r)`), a different question from this
-     one, and the same-arity coincidence is exactly what makes the Bool case need a convention.
+   **What remains genuinely open** is the one-way gap this exposed, and it is not about naming: a
+   body-derived relational reading is served in GOAL position (`bare_bodied_bool_relation` routes a bare
+   Bool goal to `eq(op(args), true)`, using the declared `Eq` by construction — the sound path WI-580
+   chose) but is **not** a first-class `Relation` VALUE, since `cites_a_relation` needs a `Goal`/`Rule`
+   kind. Measured: `List.contains` answers as a goal and does not resolve where a `Relation` is
+   expected. So a clause-defined predicate can be cited as a value and a body-defined one cannot. Not
+   filed; recorded here as the residue.
 
 ## Future direction — associated (dispatched) relations: relations as *spec members*
 

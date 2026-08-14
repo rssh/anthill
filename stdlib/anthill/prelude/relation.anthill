@@ -46,32 +46,27 @@
 -- residual)`, never raised) because an enum HAS a third arm to carry it — `T` does
 -- not. Same fact, two faces, each as honest as its type allows.
 --
--- NAMING A PREDICATE'S TWO FACES — the convention, 052 §Open questions 7. A
--- Bool-valued predicate reads two ways, and they coincide in ARITY (unlike a
--- function, whose relational reading is the arity+1 graph — WI-938), so only one of
--- them is reachable from a given name: MEASURED, an operation name has NO relation
--- reading at all (`cites_a_relation` needs a `Goal`/`Rule` kind, and a rule head that
--- lands on an existing operation mints neither — WI-896). `Set.member` here carries
--- two clauses and no body, and is still not citable as a `Relation`.
+-- NAMING A PREDICATE'S TWO FACES — SETTLED THE OTHER WAY, and the record is kept
+-- because a rule this file once carried should not vanish silently. 052 §Open-7
+-- decided a CONVENTION (`<name>` the relation, `is<Name>` the boolean); it was then
+-- WITHDRAWN, because it was working around a self-inflicted limitation rather than a
+-- language one.
 --
--- So name them separately: `<name>` is the RELATION (primary, plainly named) and
--- `is<Name>` the BOOLEAN, which is the derived reading — `Relation[Unit]`
--- non-emptiness, exactly as `negate` below defines it. The rule is only that a
--- BOOLEAN MAY NOT OCCUPY THE PLAIN NAME; whether that name is then filled by a
--- relation is a separate fact, true where a relation face is citable (clauses) and
--- not yet where it is body-derived — an empty plain name violates nothing. This is a CONVENTION, not a
--- check: nothing is ambiguous (the two never contend for one name), and a kernel that
--- read meaning from a name's text would make renaming semantic (§8.6).
+-- WHAT THE MEASUREMENT ACTUALLY SHOWED. The two faces never contend for one name:
+-- `colouring` in examples/classic-mini/map-colouring is a RULE, cited bare, and
+-- `main` consumes it as a stream — with NO boolean operation anywhere. The faces come
+-- from HOW MANY COLUMNS ARE BOUND: all free enumerates, all bound gives
+-- `Relation[Unit]` whose non-emptiness IS the boolean (`negate` below states that
+-- contract). `Set.contains` only looked like a problem because it declares an
+-- OPERATION at the name, which suppresses the `Goal` kind — measured, a pure rule
+-- cited as a `Relation` loads clean while an operation with the identical clauses is
+-- refused. That is a self-inflicted limitation, and a naming convention would only
+-- have routed around it.
 --
--- KEYED ON THE Bool RETURN TYPE, never on how the predicate is DEFINED. `Set.member`
--- (clauses) and `List.member` (a body) are the same predicate written two ways and
--- take the same name shape; a rule keyed on body-existence would rename an operation
--- when its definition was rewritten. Three classes of Bool operation are outside it,
--- measured: SPEC-OWNED names (`eq`, `gt`, … — a provider implements what it
--- provides), EFFECTFUL ones (a Bool status is not a proposition, the gate
--- `bare_bodied_bool_relation` already applies), and CONNECTIVES on Bool (`and` / `or`
--- / `not` — operations on truth values, not propositions about a subject). The
--- stdlib's own `member` / `subset` predate the convention (WI-1096).
+-- The real defect there was an API one, fixed instead: `member(x, l)` took the
+-- ELEMENT first, so it could not dot-dispatch (§6.7 binds the receiver to the first
+-- parameter). It is now `contains(l, x)` — container first, like `Map.contains` and
+-- `String.contains` — so `l.contains(x)` works.
 --
 -- T = the schema: the named tuple of the relation's free head parameters. Two
 --   degenerate arities collapse at the typer's schema boundary — one free variable

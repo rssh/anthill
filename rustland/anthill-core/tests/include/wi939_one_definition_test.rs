@@ -26,14 +26,24 @@
 //!
 //! ── WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
-//! MEASURED by deleting the `check_operation_body_and_clauses(kb)` call in
-//! `load_phase_inner` and re-running, not predicted: **1 fails, 5 pass.**
+//! MEASURED by making each edit and re-running, not predicted.
 //!
-//!   * [`a_clause_beside_a_body_answers_a_residual_instead`] — FAILS. The fixture
-//!     loads CLEAN with the check gone, which is the defect.
-//!   * the other five PASS EITHER WAY, BY DESIGN. They are the controls, and without
-//!     them a check that refused every operation carrying clauses — the standard
-//!     library included — would look correct here.
+//! Delete the `check_operation_body_and_clauses(kb)` call in `load_phase_inner` —
+//! **2 fail, 8 pass**: [`a_clause_beside_a_body_answers_a_residual_instead`] and
+//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`], each fixture then loading
+//! clean, which is the defect. The rest PASS EITHER WAY, BY DESIGN — they are the
+//! controls, and without them a check that refused every operation carrying clauses
+//! (the standard library included) would look correct here.
+//!
+//! Drop the `bool_view` disjunct, leaving `params + 1` — **exactly 1 fails**,
+//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`]. That is the first cut,
+//! and it is what /code-review refuted.
+//!
+//! Drop the BUILTIN gate in `would_derive_bool_relation` — **exactly 2 fail**, both
+//! lemma rows: [`a_clause_at_the_operations_own_arity_is_a_lemma`] and
+//! [`a_same_arity_lemma_on_a_builtin_backed_bool_op_is_legal`]. That is the trap on
+//! the other side: widening to the Bool arity WITHOUT the builtin gate refuses the
+//! 26 `PartialOrd.gte` / `.lte` SMT lemmas the spec says are intended.
 
 use anthill_core::eval::Value;
 use anthill_core::intern::SymbolKind;
@@ -268,5 +278,75 @@ fn the_shipped_prelude_still_loads() {
     assert!(
         !kb.program_clauses_by_functor(member).is_empty() && kb.op_body_node(member).is_none(),
         "the shape this control exists for: clauses, no body"
+    );
+}
+
+// ── the BOOL arity, which the first cut missed (found by /code-review) ──────
+
+/// A Bool-returning bodied operation's derived relational view sits at its OWN
+/// arity — `eq(op(args), true)`, `bare_bodied_bool_relation` — not at arity+1. The
+/// first cut filtered on `params + 1` alone and called every own-arity clause a
+/// lemma, which let WI-580's OWN unsound shape back in.
+///
+/// MEASURED by the reviewer on the built binary, and reproduced here: with the
+/// clause the goal answered NO SOLUTIONS while the body says `true` — the clause
+/// suppressed the derived view AND contradicted it.
+///
+/// BACKED OUT (drop the `bool_view` disjunct, leaving `params + 1`): this test
+/// FAILS — the fixture loads clean.
+#[test]
+fn a_same_arity_clause_on_a_bodied_bool_op_is_refused() {
+    let errs = refusal(
+        r#"
+namespace wi939d.boolarity
+  sort Box
+    entity box(n: Int64)
+    operation isbig(b: Box) -> Bool = true
+    rule isbig(box(n: 0))
+  end
+end
+"#,
+    );
+    for want in ["wi939d.boolarity.Box.isbig", "ONE definition"] {
+        assert!(errs.contains(want), "refusal must name {want:?}; got:\n{errs}");
+    }
+}
+
+/// THE CONTROL THAT KEEPS THE LEMMAS LEGAL, and the one the widening could break.
+/// `PartialOrd.gte` is Bool-returning AND bodied AND carries same-arity SMT lemmas —
+/// 26 such sites across the workspace. They stay legal because `gte` is
+/// BUILTIN-BACKED: a builtin decides its goal before any clause is consulted, so the
+/// clause suppresses nothing. `would_derive_bool_relation` reads that gate.
+///
+/// PASSES EITHER WAY, BY DESIGN once the builtin gate is present — and FAILS if the
+/// widening is written without it, which is the trap.
+#[test]
+fn a_same_arity_lemma_on_a_builtin_backed_bool_op_is_legal() {
+    crate::common::load_kb_with(
+        r#"
+namespace wi939d.lemma2
+  import anthill.prelude.{PartialOrd}
+  rule bound939b: gte(?x, 3.0) :- gte(?x, 5.0)
+end
+"#,
+    );
+}
+
+/// And an EFFECTFUL Bool op keeps its own-arity clauses too: an effectful body is
+/// not a logical relation, so it is granted no derived view and a clause beside it
+/// takes nothing away. Same gate `bare_bodied_bool_relation` applies.
+#[test]
+fn a_same_arity_clause_on_an_effectful_bool_op_is_legal() {
+    crate::common::load_kb_with(
+        r#"
+namespace wi939d.eff
+  import anthill.prelude.{Error}
+  sort Box
+    entity box(n: Int64)
+    operation risky(b: Box) -> Bool effects Error = true
+    rule risky(box(n: 0))
+  end
+end
+"#,
     );
 }
