@@ -520,6 +520,53 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    around round-trips, and treat the collapse as a consumption-site presentation only. Zero → `Unit`.
 6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
    de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
+7. **Naming the two faces of a predicate — DECIDED: a convention, `<name>` for the relation and
+   `is<Name>` for the boolean.** A Bool-valued predicate has two readings — the intensional relation and
+   the boolean value — and **measured on the shipped stdlib, only one of them is reachable from a given
+   name.** `anthill.prelude.Set.member` carries **2 clauses and no body**, so its definition *is* a
+   relation, and it is not citable as one: `cites_a_relation` is
+   `Goal ∥ Rule ∥ (EquationFunctor ∧ has_clauses)`, its rule heads landed on the *operation* symbol
+   (WI-896) so no `Goal` was ever minted, and **every** spelling through the operation's own name yields
+   `Bool` — bare qualified `Set.member` does not resolve at all, bare unqualified and applied
+   `Coll.has(1, c)` both type as `Bool`. The one route that reaches the relation face is a **second rule
+   with its own name**: `rule hasRel(?x, ?c) :- has(?x, ?c)` then `Coll.hasRel` ⇒
+   `Relation[T = (x: Int64, c: Coll), E = {Error}]` (measured). `Set.subset` is the same shape; measured
+   alongside, `List.member` is the mirror case — body, zero clauses — and equally not a relation.
+
+   So the language **already forces two names**. The convention names them, instead of leaving every
+   author to invent `hasRel` / `memberRel` / `subsetRel` ad hoc.
+
+   **The relation is primary and plainly named; the boolean is `is<Name>` and is the DERIVED reading** —
+   `Relation[Unit]` non-emptiness, which `negate`'s own contract already defines ("its stream yields one
+   `unit` iff `r` has NO solution, and is empty iff `r` is provable"). That matches the `Set` spelling,
+   where the clauses are the definition and the boolean is what `eq` dispatches to.
+
+   **A CONVENTION, NOT A LOADER CHECK, and the distinction is load-bearing.** There is nothing to
+   disambiguate — the two readings never contend for one name, an operation name having no relation
+   reading at all — so a check would have no ambiguity to resolve. Enforcing it would make the kernel
+   read meaning from a name's TEXT, which §8.6 closes: short-name matching "survives only for name
+   resolution against a scoped set, never as a test of whether two sorts are the same". Under an enforced
+   rule, renaming an operation would change its semantics.
+
+   Rejected, and one deferred:
+   - **one name, two faces via an expected-type arm.** Widening `cites_a_relation` to "an operation that
+     has clauses" makes `Set.member` citable in one edit — and immediately re-creates the ambiguity the
+     arm order in `check_bare_ref` exists to prevent, since that name would then carry a `Bool` reading
+     and a `Relation` reading in the same bare position.
+   - **an explicit adapter** (`has.relation`). `Relation` is a sort, not a spec, so the adapter has no
+     natural home the way an inherited `.map` does.
+   - **a builder DSL — `mySet.has.member` — DEFERRED, not refused.** Naming the face at the *use* site
+     rather than in the declaration is strictly more expressive than a convention, and considerably more
+     machinery. Revisit if the convention proves too coarse.
+
+   Sub-points:
+   - **The existing stdlib names are a migration this decision does not perform.** `Set.member` /
+     `Set.subset` are Bool operations whose definition is clauses, so under the convention they become
+     `isMember` / `isSubset` with `member` / `subset` the relations. A convention the stdlib contradicts
+     is a dead letter, so this needs its own ticket rather than a silent rename here.
+   - **Scope: Bool-valued predicates only.** A non-Bool operation has no boolean face — its relational
+     reading is the **arity+1 graph** (WI-938, `unify(op(args), ?r)`), a different question from this
+     one, and the same-arity coincidence is exactly what makes the Bool case need a convention.
 
 ## Future direction — associated (dispatched) relations: relations as *spec members*
 
