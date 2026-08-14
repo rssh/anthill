@@ -6928,6 +6928,12 @@ fn eta_op_scoped_dicts(
         env.enclosing_frame_chain(),
         env.param_rigids(),
         &selected,
+        // WI-1102 parks nothing on the ETA path. An `OpRef` is not an application: the
+        // dictionary rides on the VALUE and the slot is read wherever that value is
+        // finally applied, which may be a frame this site cannot see. Withholding keeps
+        // today's behaviour (eval's own `not bound` raise) rather than refusing a
+        // program on a read that may never happen — the bound is stated, not assumed.
+        None,
     )
     .map_err(|refusal| TypeError::UnsatisfiableRequirement {
         span,
@@ -10824,6 +10830,13 @@ pub(crate) fn classify_pin_or_apply_within(
             ctx.caller_requires,
             ctx.param_rigids,
             ctx.selected,
+            OpSlotParkSite::for_call(
+                kb,
+                impl_op,
+                ctx.enclosing_op,
+                Some(occ.span.span),
+                occ.span.source,
+            ),
         )
         .map_err(|refusal| TypeError::UnsatisfiableRequirement {
             span: Some(occ.span.span),
@@ -14075,13 +14088,22 @@ fn check_apply_iter(
                     // the slot on the one path that then returns `Ok(None)`, so a
                     // refusal here and a dictionary are already mutually exclusive.
                     if let Some(refusal) = unsuppliable {
-                        kb.unsuppliable_requirements.push(UnsuppliableRequirement {
-                            span,
-                            source: occ.span.source,
-                            callee_op: fn_sym,
-                            callee_sort: parent_sym,
-                            refusal,
-                        });
+                        // WI-1102: the CARRIER signature takes the builtin gate as well
+                        // ([`OpSlotParkSite`]) — a spec op that resolves structurally
+                        // never consults the dictionary, so no `provides` line would
+                        // change its outcome. WI-945's unconstrained-element signature
+                        // does NOT take it: that one is about an element nothing pins,
+                        // which a structural resolution does not supply either.
+                        if refusal.unprovided.is_none() || !kb.is_builtin(fn_sym) {
+                            kb.unsuppliable_requirements.push(UnsuppliableRequirement {
+                                span,
+                                source: occ.span.source,
+                                callee_op: fn_sym,
+                                callee_sort: parent_sym,
+                                refusal,
+                                slot: SlotToRead::Sort,
+                            });
+                        }
                     }
                     // WI-822 LEG 1: and the callee's OWN op-scoped slots, from the same
                     // substitution. Its caller chain is the COMPOSED one — a callee op
@@ -14095,6 +14117,13 @@ fn check_apply_iter(
                         env.enclosing_frame_chain(),
                         env.param_rigids(),
                         &selections,
+                        OpSlotParkSite::for_call(
+                            kb,
+                            fn_sym,
+                            env.enclosing_op(),
+                            span,
+                            occ.span.source,
+                        ),
                     )
                     // WI-1091: a TIE in the op half is a load refusal, as the sort half's
                     // is one line above — see `build_op_scoped_dicts`.
@@ -15907,6 +15936,70 @@ pub struct RequirementRefusal {
     /// are pre-rendered because they are LISTS built during the walk; a single name is
     /// not, and `render` already holds the `kb`.
     pinned: Option<Symbol>,
+    /// WI-1102: the carrier this call PINNED and the provision it lacks — 058 §3.10's
+    /// use-site discharge. Present exactly on the signature `unconstrained` is the
+    /// complement of: every element determined, and the named carrier providing
+    /// nothing. The other fields describe why a dictionary could not be ASSEMBLED;
+    /// this one says the program never had one to assemble.
+    unprovided: Option<UnprovidedProvision>,
+}
+
+/// WI-1102 — a fully-pinned requirement, and the CARRIER the call named for it.
+///
+/// Carried as SYMBOLS rather than a pre-rendered string because [`RequirementRefusal`]
+/// is built on a path that already holds the `kb` for its other names; there is no list
+/// here to pre-render.
+///
+/// `has_a_row` IS THE DIFFERENCE BETWEEN A CLAIM AND AN ASSERTION, and the first cut of
+/// this ticket got it wrong (found by /code-review): "the goal ended `NoMatch`" is NOT
+/// "this carrier provides nothing". A CONDITIONAL provision (058 §3.8) whose side
+/// condition fails produces the identical `NoMatch` at the top goal — `wi855`'s `Quiet`
+/// provides `Desc[T = Box[B = E]] :- Desc[T = E]`, so `Box` HAS a `Desc` provider and
+/// `Desc[Box[B = Mystery]]` fails only because `Mystery` has none. Told "`Box` provides
+/// no `Desc` — declare `provides Desc[…]` on `Box`", the author would be sent to the
+/// container when the gap is on the type argument, to write a second row for a carrier
+/// that already has one. So the row is LOOKED UP, and the two cases get two sentences.
+///
+/// WHAT IT DELIBERATELY DOES NOT SAY — that a missing provision is IMPOSSIBLE rather
+/// than merely absent. The ticket's class (3) is a `Float`-bearing composite, whose
+/// derived `NonEq` would make `provides Eq[…]` a line the loader then refuses
+/// (`check_eq_noneq_exclusive`). The classification that knows is
+/// [`super::eq_derive::EqClassification`], a `load.rs` local held between
+/// `derive_total_eq` and `eq_derive::run` — and `run`, which asserts the `NonEq` half,
+/// stands AFTER this diagnostic is rendered. Reading the provision relation for `NonEq`
+/// here would therefore answer `false` for exactly the carriers it is meant to catch,
+/// and threading the classification through the typer would give the rule the second
+/// owner its own doc forbids. The impossible half already has a home that runs late
+/// enough: WI-644's `check_use_site_requires_eq`, which refuses a `NonEq` carrier bound
+/// into a `requires Eq` position. Left as-is rather than half-answered.
+#[derive(Clone, Copy, Debug)]
+pub struct UnprovidedProvision {
+    /// The sort the call pinned into the spec's carrier parameter.
+    carrier: Symbol,
+    /// The spec the requirement names.
+    spec: Symbol,
+    /// Does `carrier` already have a provision row for `spec` — by any route
+    /// ([`carrier_has_provision_row`])? `true` ⇒ the row exists and its CONDITION failed
+    /// at these bindings, so the advice must point at the bindings and not at this sort.
+    has_a_row: bool,
+}
+
+/// WI-1102 — does any provision of `spec` dispatch at `carrier`?
+///
+/// The question the refusal's sentence asserts, asked of the relation rather than
+/// inferred from a failed goal. BOTH provenances count, because both are rows the author
+/// would be told to duplicate: a SELF-provision / instance fact, whose dispatch carrier
+/// is the provider itself, and a WITNESS, whose carrier is in the spec's own binding
+/// (WI-1069 — provider and carrier are two questions, and [`witness_dispatch_carrier`]
+/// is the reader that keeps them apart). Keyed by BASE, so a row for `Box[B = E]`
+/// answers for `Box[B = Mystery]`: the question is whether this SORT has a provision,
+/// not whether this instantiation resolves — the goal already answered that, with `No`.
+fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    provisions_of_spec(kb, spec).any(|(provider, spec_t, _)| {
+        let dispatch_carrier =
+            witness_dispatch_carrier(kb, spec, provider, spec_t).unwrap_or(provider);
+        same_sort_canonical(kb, dispatch_carrier, carrier)
+    })
 }
 
 impl RequirementRefusal {
@@ -15965,6 +16058,35 @@ impl RequirementRefusal {
         if !self.construction.is_empty() {
             msg.push_str(&format!("; {}", self.construction));
         }
+        // WI-1102 — the carrier clause and its OWN advice, which replaces the generic
+        // one below: "pin the element at the call site" is exactly the thing this
+        // author already did, and repeating it would send them looking for a second
+        // binding that is not missing.
+        if let Some(u) = &self.unprovided {
+            let carrier = kb.qualified_name_of(u.carrier);
+            let spec = kb.qualified_name_of(u.spec);
+            // The repair line carries the WHOLE requirement, not just its carrier
+            // binding: a multi-parameter spec written with one binding omitted fills the
+            // rest from its own parameters, which §5.2 legislates as its own load error
+            // — advice that trades one refusal for another. `dep_text` is the goal as
+            // rendered, so `provides <dep_text>` is complete by construction.
+            msg.push_str(&if u.has_a_row {
+                format!(
+                    "; `{carrier}` does provide `{spec}`, but not at these bindings — \
+                     its provision is conditional and the condition fails on a type \
+                     argument above, so the missing provision belongs on that argument's \
+                     sort, not on `{carrier}`"
+                )
+            } else {
+                format!(
+                    "; `{carrier}` provides no `{spec}` — declare `provides {}` on \
+                     `{carrier}` (or assert the `fact`), or call an operation that does \
+                     not require it",
+                    self.dep_text,
+                )
+            });
+            return msg;
+        }
         // The advice differs by branch: an author who already WROTE a witness cannot be
         // told to pin one.
         msg.push_str(match self.pinned {
@@ -16016,6 +16138,27 @@ pub(crate) struct UnsuppliableRequirement {
     /// Its parent sort: the owner of the `requires` chain this dictionary would fill.
     pub(crate) callee_sort: Symbol,
     pub(crate) refusal: Box<RequirementRefusal>,
+    /// WI-1102 — WHICH slot the "will the callee miss it" half must ask about. The two
+    /// halves are filled from different channels and read by different predicates, so
+    /// the question cannot be inferred from `callee_op` alone.
+    pub(crate) slot: SlotToRead,
+}
+
+/// WI-1102 — the half of the callee's frame a parked refusal is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotToRead {
+    /// A SORT-half slot: the parent-bundle dictionary, filled by
+    /// [`build_concrete_dispatch_dict`] and read by
+    /// [`op_body_reads_sort_requirement_slot`]. Not per-index — the sort half is
+    /// all-or-nothing (`require_complete`), so one missing dep leaves the whole
+    /// dictionary absent and any sort-half read misses it.
+    Sort,
+    /// The OP-scoped slot at this index in `callee_op`'s own chain
+    /// (`op_dict_entries(callee_op).op_entries()[i]`), filled by
+    /// [`build_op_scoped_dicts`]. Per-index because that half is best-effort and
+    /// keyed by NAME: its other slots are supplied normally, so blaming the operation
+    /// for a read of a DIFFERENT slot would refuse a program that works.
+    Op(usize),
 }
 
 /// WI-945 — does `op`'s body read a SORT-level requirement slot, i.e. would entering it
@@ -16150,6 +16293,107 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
     false
 }
 
+/// WI-1102 — the OP-HALF twin of [`op_body_reads_sort_requirement_slot`]: does `op`'s
+/// body read the op-scoped slot at `op_index`, i.e. would entering it without that slot
+/// leave a `__req_*` unbound?
+///
+/// PER-INDEX, unlike the sort half, and that is the whole difference between the two
+/// predicates. The sort half is built all-or-nothing (`require_complete`), so one
+/// unprojectable dep costs the callee its ENTIRE dictionary and any sort-half read
+/// misses it. The op half is best-effort and NAME-keyed ([`build_op_scoped_dicts`]), so
+/// its other slots arrive intact and a body reading one of THOSE is not evidence about
+/// this one.
+///
+/// TWO CHANNELS COUNTED, and the count is stated because WI-945's own doc records what
+/// happens when it is guessed (its predicate shipped with two of five):
+///  1. it DEFERS — a `DeferToRequirement` whose slot is `sort_len + op_index` in the
+///     COMPOSED numbering ([`op_scoped_defer_location`]). This is the ticket's whole
+///     measured population: `List.contains`' body calls `PartialEq.eq(…)`, licensed by
+///     its own `requires Eq[T]`, and that call reads `__req_eq`.
+///  2. it FORWARDS — a nested call whose own dictionary projects one of ITS slots as a
+///     `var_ref` into THIS frame ([`dict_forwards_frame_slot`]), covering `op_dicts` as
+///     well as `dispatch_dict`, which is the pair WI-1095 recorded as uncounted on the
+///     sort half.
+///
+/// UNCOUNTED, and named rather than left to be rediscovered — the sort half's doc
+/// records what happens when a channel list is quietly short:
+///  3. `CallClass::EtaOpRef`, which is a read of this frame too (WI-1095 lists it as the
+///     sort half's own uncounted channel). Matching it here would need `__req_self` in
+///     the name set as well as an arm, and this ticket measured no program that needs
+///     it.
+///
+/// NOT FOLLOWED, deliberately: a same-sort callee's body. The sort half follows those
+/// because eval's `start_apply_same_sort` inherit arm hands the sibling the same
+/// dictionary; an op-scoped slot belongs to THIS operation's declaration and the sibling
+/// has its own chain, so following would ask about a slot with a different owner.
+///
+/// Answering `false` anywhere here — an uncounted channel or an unfollowed callee — is a
+/// REFUSAL WITHHELD, never a wrong value: the program keeps exactly the behaviour it has
+/// today, eval's own `not bound` raise included.
+fn op_body_reads_op_requirement_slot(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    op_index: usize,
+) -> bool {
+    let Some(body) = kb.op_body_node(op).map(Rc::clone) else {
+        return false; // body-less: it dispatches through its carrier and reads nothing
+    };
+    let chain = op_dict_entries(kb, op);
+    let want = chain.sort_len() + op_index;
+    let names = chain.names(kb);
+    let Some(&slot_name) = names.get(want) else {
+        return false;
+    };
+    /// What one classified call in the body contributes to the answer — read out of the
+    /// `RefCell` BEFORE anything calls back into `kb`, since a borrow held as a `match`
+    /// scrutinee outlives the arms.
+    enum Step {
+        Reads,
+        Forwards(SmallVec<[TermId; 2]>),
+        Nothing,
+    }
+    let this_slot = [slot_name];
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![body];
+    while let Some(occ) = stack.pop() {
+        let NodeKind::Expr {
+            expr,
+            classification,
+            ..
+        } = &occ.kind
+        else {
+            continue;
+        };
+        let step = match classification.borrow().as_deref() {
+            Some(CallClass::DeferToRequirement { slot, .. }) if *slot == want => Step::Reads,
+            Some(CallClass::ConcreteApplyWithin {
+                dispatch_dict,
+                op_dicts,
+                ..
+            }) => Step::Forwards(
+                dispatch_dict
+                    .iter()
+                    .chain(op_dicts.iter().flatten())
+                    .copied()
+                    .collect(),
+            ),
+            _ => Step::Nothing,
+        };
+        match step {
+            Step::Reads => return true,
+            Step::Forwards(dicts) => {
+                for d in dicts {
+                    if dict_forwards_frame_slot(kb, d, &this_slot) {
+                        return true;
+                    }
+                }
+            }
+            Step::Nothing => {}
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
+}
+
 /// WI-945 — does a built dispatching dictionary READ its builder's own frame, i.e. does
 /// it contain a `var_ref(name = <one of `frame_slots`>)`? That is the WI-418 forward:
 /// the dep stayed abstract and the enclosing sort's own `requires` covers it, so the
@@ -16225,7 +16469,12 @@ fn report_unsuppliable_requirements(
     // the surrounding pass happens to be tagging.
     sources.resize(errors.len(), None);
     for entry in parked {
-        if !op_body_reads_sort_requirement_slot(kb, entry.callee_op) {
+        // WI-1102: the two halves are read by two predicates — see [`SlotToRead`].
+        let reads = match entry.slot {
+            SlotToRead::Sort => op_body_reads_sort_requirement_slot(kb, entry.callee_op),
+            SlotToRead::Op(i) => op_body_reads_op_requirement_slot(kb, entry.callee_op, i),
+        };
+        if !reads {
             continue;
         }
         errors.push(TypeError::UnsatisfiableRequirement {
@@ -16362,6 +16611,9 @@ fn explain_dep_refusal(
         refused_covers,
         construction,
         pinned: None,
+        // WI-1102's carrier signature is the COMPLEMENT of this explainer's (every
+        // element determined vs. one left open) and is built where that is known.
+        unprovided: None,
     })
 }
 
@@ -16468,6 +16720,9 @@ fn build_dispatching_dict_from_chain(
                             .map(|r| describe_resolution_failure(kb, r))
                             .unwrap_or_default(),
                         pinned: Some(w),
+                        // An author who NAMED a witness is told about the witness, not
+                        // sent to write a `provides` line on the carrier.
+                        unprovided: None,
                     }));
                 }
                 // WI-828: with a σ in hand, a refusal-signature failure (a
@@ -16515,7 +16770,34 @@ fn build_dispatching_dict_from_chain(
                                 .map(|r| describe_resolution_failure(kb, r))
                                 .unwrap_or_default(),
                             pinned: None,
+                            unprovided: None,
                         }));
+                    } else if let Some(nomatch @ ResolutionResult::NoMatch { .. }) = &s3_failure {
+                        // WI-1102 — §5.2's unconstrained-element refusal and 058 §3.10's
+                        // use-site discharge are COMPLEMENTS, which is why they are one
+                        // `if/else` and not two passes: the first fires when an element
+                        // is left open, the second exactly when none is and the carrier
+                        // the call DID name provides nothing. Reaching the second used
+                        // to mean falling through to `Ok(None)` — the silent no-dict
+                        // that loads clean and dies at eval.
+                        //
+                        // BOTH SPELLINGS OF ONE PROGRAM MUST AGREE (WI-855): the
+                        // op-scoped `requires` on the callee and the sort-level one on
+                        // its parent are the same claim written twice, and `wi855
+                        // a_body_that_reads_an_unsuppliable_slot_agrees_on_both_
+                        // spellings` is the row that says so. Parking only the op half
+                        // would have split them.
+                        if let Some(unprovided) = unprovided_provision(kb, dep) {
+                            let construction = describe_resolution_failure(kb, nomatch);
+                            *slot = Some(Box::new(RequirementRefusal {
+                                dep_text: render_requires_entry(kb, dep),
+                                unconstrained: Vec::new(),
+                                refused_covers: Vec::new(),
+                                construction,
+                                pinned: None,
+                                unprovided: Some(unprovided),
+                            }));
+                        }
                     }
                 }
                 return Ok(None);
@@ -16681,6 +16963,15 @@ fn build_concrete_dispatch_dict(
 /// call site, so the supply is this function's and not the bridge's. Silent, its slot was
 /// absent and the widened read said `__req_desc not bound … frame binds []`, naming
 /// neither the tie nor the two witnesses that caused it.
+///
+/// AND SINCE WI-1102, a `NoMatch` at a FULLY-PINNED carrier is PARKED rather than silent
+/// — 058 §3.10's use-site discharge, "'provides nothing at all' stops being an accepting
+/// state". That does NOT reopen the paragraph above: "best-effort" still answers "could
+/// this call supply the slot?", and the parked refusal is decided against the second
+/// question (does the callee's body READ it?) by
+/// [`op_body_reads_op_requirement_slot`] in [`report_unsuppliable_requirements`], so a
+/// body that never reads still runs. See [`unprovided_provision`] for the three
+/// conditions and [`OpSlotParkSite`] for the two the caller supplies.
 fn build_op_scoped_dicts(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -16688,6 +16979,9 @@ fn build_op_scoped_dicts(
     caller_requires: &DictChain,
     param_rigids: &[(VarId, TermId)],
     selected: &[InstanceSelection],
+    // WI-1102: the call's location, `Some` exactly when this call site may PARK a
+    // fully-pinned-carrier refusal — see [`OpSlotParkSite`].
+    park: Option<OpSlotParkSite>,
 ) -> Result<SmallVec<[Option<TermId>; 2]>, Box<RequirementRefusal>> {
     // THE NORMALIZED entries, off the very chain whose slots these dictionaries fill
     // ([`op_dict_entries`]) — not the raw `op_requires_chain_rc`, whose bare-application
@@ -16709,8 +17003,13 @@ fn build_op_scoped_dicts(
         subst,
         param_rigids,
     };
+    // WI-1102 — the queue mark this call's parks start at. A LATER slot may still raise
+    // the WI-1091 tie, and that `Err` aborts the whole classification: the earlier parks
+    // are then refusals for a call the caller is already refusing, and reporting both
+    // gives one call site two errors. Truncated on the `Err` path below.
+    let parked_mark = kb.unsuppliable_requirements.len();
     let mut out: SmallVec<[Option<TermId>; 2]> = SmallVec::new();
-    for entry in &op_chain {
+    for (op_index, entry) in op_chain.iter().enumerate() {
         // Same substitution the sort half takes: a call-site-pinned element
         // (`Zeroable[HT]` at `HT := Pebble`) becomes concrete and Strategy 3
         // constructs it; one left abstract stays open for a Strategy-1/2 forward
@@ -16740,21 +17039,167 @@ fn build_op_scoped_dicts(
         );
         if projected.is_none() {
             if let Some(tie @ ResolutionResult::Ambiguous { .. }) = &s3_failure {
-                // ONLY the tie. A σ-refused cover, a bare `NoMatch` and a `Cyclic` all
-                // stay silent absences here, which is what keeps the 29 stdlib bodies
-                // that have a chain and never read it running.
+                // ONLY the tie is raised HERE. A σ-refused cover and a `Cyclic` stay
+                // silent absences, which is what keeps the 29 stdlib bodies that have a
+                // chain and never read it running. A `NoMatch` is PARKED just below —
+                // it is not silent any more, but neither is it decided here.
+                kb.unsuppliable_requirements.truncate(parked_mark);
                 return Err(Box::new(RequirementRefusal {
                     dep_text: render_requires_entry(kb, &dep),
                     unconstrained: Vec::new(),
                     refused_covers: Vec::new(),
                     construction: describe_resolution_failure(kb, tie),
                     pinned: None,
+                    unprovided: None,
                 }));
+            }
+            // WI-1102 (058 §3.10) — the use-site discharge: this call PINNED a carrier
+            // and the goal `Spec[T = Carrier]` has no provider. PARKED, not raised, for
+            // WI-945's reason exactly one channel over — the σ that proves the element
+            // is pinned lives only here, and whether the callee will MISS the slot lives
+            // only in its body, which may not be typed yet. See
+            // [`UnsuppliableRequirement`].
+            if let (Some(site), Some(nomatch @ ResolutionResult::NoMatch { .. })) =
+                (park, &s3_failure)
+            {
+                if let Some(unprovided) = unprovided_provision(kb, &dep) {
+                    let construction = describe_resolution_failure(kb, nomatch);
+                    let dep_text = render_requires_entry(kb, &dep);
+                    kb.unsuppliable_requirements.push(UnsuppliableRequirement {
+                        span: site.span,
+                        source: site.source,
+                        callee_op,
+                        // The OPERATION owns an op-scoped clause; its parent sort did
+                        // not write it, so naming the parent would attribute the
+                        // requirement to a declaration that has none.
+                        callee_sort: callee_op,
+                        refusal: Box::new(RequirementRefusal {
+                            dep_text,
+                            unconstrained: Vec::new(),
+                            refused_covers: Vec::new(),
+                            construction,
+                            pinned: None,
+                            unprovided: Some(unprovided),
+                        }),
+                        slot: SlotToRead::Op(op_index),
+                    });
+                }
             }
         }
         out.push(projected);
     }
     Ok(out)
+}
+
+/// WI-1102 — a call site permitted to PARK an op-slot refusal, and the location it would
+/// carry. `None` means "do not park here", which is a decision about the SITE and not
+/// about the dep; each caller's `None` says why at its own site.
+///
+/// TWO GATES LIVE HERE rather than in [`build_op_scoped_dicts`], because neither is
+/// visible from the dep:
+///
+///  * **AN OPERATION BODY ONLY.** A RULE-body goal reaches eval through the SLD bridge,
+///    which resolves real provider dictionaries from the CONCRETE argument values at fire
+///    time and suspends when it cannot — so a carrier that provides nothing is the
+///    ORDINARY case there, not a defect. This is WI-945's own gate, one channel over,
+///    and it is load-bearing: stdlib `platform.needs_rebuild`'s `gt(?t_in, ?t_out)`
+///    compares two `Timestamp`s and `Ord[Timestamp]` has no provider, measured.
+///  * **NOT A RESOLVER BUILTIN.** `PartialOrd.gt`/`gte`/`lt`/`lte` are registered as
+///    builtins and resolve STRUCTURALLY; the default body carrying the `requires Ord[T]`
+///    is never entered, so the slot is never consulted and no `provides` line would
+///    change the outcome. The same exemption, for the same reason and with the same
+///    witness, that [`check_one_spec_op_requirement`] takes at its own `is_builtin` gate
+///    — see `wi642 builtin_comparison_op_on_concrete_no_instance_loads`. Measured
+///    without it: `SortedSet.insertSorted`'s `gt(c, 0)` at `Int64` is refused in every
+///    stdlib-only KB, `fact Ord[T = Int64]` living in the Rust bindings.
+#[derive(Clone, Copy)]
+struct OpSlotParkSite {
+    span: Option<Span>,
+    source: crate::span::SourceId,
+}
+
+impl OpSlotParkSite {
+    /// The site, or `None` when either gate above closes it.
+    fn for_call(
+        kb: &KnowledgeBase,
+        callee_op: Symbol,
+        enclosing_op: Option<Symbol>,
+        span: Option<Span>,
+        source: crate::span::SourceId,
+    ) -> Option<Self> {
+        (enclosing_op.is_some() && !kb.is_builtin(callee_op)).then_some(Self { span, source })
+    }
+}
+
+/// WI-1102 (058 §3.10, the use-site discharge) — the carrier this call pinned and the
+/// provision it lacks, or `None` when this dep is not that signature.
+///
+/// THREE CONDITIONS, and each is a distinct population the refusal must not swallow:
+///
+///  1. **FULLY PINNED** — every type-parameter the spec declares is bound, and bound to a
+///     fully-CONCRETE type. The same two-part test [`bridge_requirements`]' `all_pinned`
+///     gate makes of a bridged goal (`type_params_of_sort` × [`type_value_is_ground`]).
+///     It is the line between "this call NAMES a carrier and the carrier has no
+///     provider" — a program condition an author can act on — and "a type-parameter
+///     stayed abstract", where the caller's own chain or a later instantiation may still
+///     supply it and no refusal is owed here. An UNPARAMETERIZED spec passes the `all`
+///     vacuously and is excluded outright: there is no carrier to name.
+///  2. **A NAMEABLE CARRIER PARAMETER** — [`spec_carrier_param`], bound to a sort. The
+///     diagnostic's whole content is "*this sort* lacks *this provision*"; a spec whose
+///     carrier parameter cannot be identified has no such sentence to make.
+///  3. Decided by the caller, not here: the construction terminated `NoMatch` (no
+///     provider AT these bindings — an `Ambiguous` is the tie WI-1091 already refuses and
+///     a `Cyclic` is a third verdict), the callee is not a resolver builtin, and the
+///     callee's body actually reads the slot.
+///
+/// The ticket's class (3) — a carrier for which the provision is IMPOSSIBLE, not merely
+/// absent — is refused by exactly the same sentence as its class (2); see
+/// [`UnprovidedProvision`] for why the distinction cannot be drawn from here.
+fn unprovided_provision(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Option<UnprovidedProvision> {
+    let goal = goal_from_requires_entry(kb, dep)?;
+    let tparams = kb.type_params_of_sort(dep.required_sort);
+    if tparams.is_empty() {
+        return None;
+    }
+    let pinned = tparams.iter().all(|tp| {
+        goal.bindings
+            .iter()
+            .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
+    });
+    if !pinned {
+        return None;
+    }
+    // WHICH parameter the carrier goes in, on a two-rung ladder because the established
+    // reader cannot answer for the spec this ticket is about. [`spec_carrier_param`]
+    // finds the param some declared OPERATION receives on — and `Eq` declares no
+    // operation at all (its `eq` lives on the `PartialEq` it requires; `eq.anthill` has
+    // only the dormant `eq_refl` law), so it answers `None` for `Eq`, `NonEq`, and every
+    // other spec that is a pure lawfulness claim over a surface it inherits.
+    // A SOLE type parameter is that carrier by construction: there is no other slot for
+    // a binding to mean. A multi-parameter spec with no receiving operation falls
+    // through and is NOT refused — the diagnostic's whole content is "this sort lacks
+    // this provision" and there is no non-arbitrary way to say which sort that is.
+    // The param is read for the CARRIER alone; the repair line quotes the whole
+    // requirement, so a multi-parameter spec is not narrowed to one binding.
+    let param = spec_carrier_param(kb, dep.required_sort).or_else(|| {
+        let tps = kb.type_params_of_sort(dep.required_sort);
+        (tps.len() == 1).then(|| goal.bindings.first().map(|(k, _)| *k))?
+    })?;
+    let bound = goal
+        .bindings
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == kb.local_name_of(param))
+        .map(|(_, v)| *v)?;
+    // The carrier's own sort symbol: `Eq[T = Hold]` names `Hold`, and
+    // `Eq[T = Box[B = Leaf]]` names `Box` — the sort that would carry the provision, so
+    // the parametric case suggests the line on the container, which is where a
+    // conditional provision goes (058 §3.8).
+    let carrier = sort_functor_of_view(kb, &TermIdView(bound))?;
+    Some(UnprovidedProvision {
+        carrier,
+        spec: dep.required_sort,
+        has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
+    })
 }
 
 /// WI-415: substitute the per-call type bindings into a `requires`-entry spec

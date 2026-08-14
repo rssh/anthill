@@ -1964,6 +1964,19 @@ end
 ///
 /// The second arm pins the refusal so the change is a decision and not a drift, and
 /// the third keeps `max` covered on a carrier that IS `Ord`.
+///
+/// WI-1102 SPLIT THE FIXTURE, and the split is the point rather than plumbing. The
+/// `totalMax` line used to sit in the same namespace as the `PartialOrd` calls because
+/// the failure was an EVAL-time `Internal` — the program loaded, and only calling it
+/// raised. It is now a LOAD refusal, which takes the whole file with it, so the
+/// unsatisfiable call gets its own program.
+///
+/// AND THE MESSAGE IS NOW PINNED, which the paragraph this replaces explicitly refused
+/// to do: "the diagnostic is poor (an `Internal` from the unfilled requirement slot
+/// rather than a load-time 'Float does not provide Eq, which Ord requires') because no
+/// use-site `requires Ord` check exists — WI-883. Pinning the message would pin the
+/// defect." That check now exists (058 §3.10, `unprovided_provision`) and says exactly
+/// the sentence that paragraph asked for, so pinning it pins the FIX.
 #[test]
 fn m3_float_comparison_and_max() {
     let src = r#"
@@ -1976,7 +1989,6 @@ namespace test.m3_float_cmp
   operation atLeast() -> Bool = gte(1.5, 1.5)
   operation atMost() -> Bool = lte(1.5, 1.5)
   operation nanIsUnordered() -> Bool = gt(nan, 1.5)
-  operation totalMax() -> Float = max(1.5, 2.75)
   operation intMax() -> Int64 = max(1, 2)
 end
 "#;
@@ -1997,15 +2009,27 @@ end
         assert_eq!(got.as_bool(), Some(want), "{op}");
     }
 
-    // A `Float` is not `Ord`, so the total `max` has no implementation for it.
-    // Asserted as "errors" rather than on the message: the diagnostic is poor (an
-    // `Internal` from the unfilled requirement slot rather than a load-time "Float
-    // does not provide Eq, which Ord requires") because no use-site `requires
-    // Ord` check exists — WI-883. Pinning the message would pin the defect.
-    let mut interp = interp_for(src);
+    // A `Float` is not `Ord`, so the total `max` has no implementation for it — and
+    // `Ord requires Eq[T]`, which `Float` cannot satisfy (it provides `NonEq`). The
+    // call is refused AT LOAD, naming the carrier and the provision it lacks.
+    let float_max = r#"
+namespace test.m3_float_max
+  import anthill.prelude.{Float}
+  import anthill.prelude.Ord.{max}
+  operation totalMax() -> Float = max(1.5, 2.75)
+end
+"#;
+    let errs = crate::common::try_load_kb_with(float_max)
+        .err()
+        .expect("`Ord.max` on a `Float` must not load — `Float` provides no `Ord`");
+    let text = errs.join("\n");
     assert!(
-        interp.call("test.m3_float_cmp.totalMax", &[]).is_err(),
-        "`Ord.max` on a `Float` must not resolve — `Float` provides no `Ord`",
+        text.contains("anthill.prelude.Ord.max")
+            && text.contains(
+                "`anthill.prelude.Float` provides no `anthill.prelude.Eq`"
+            ),
+        "the refusal must name the call and the carrier's missing provision — the \
+         load-time sentence WI-883 recorded as absent; got:\n{text}"
     );
 
     let mut interp = interp_for(src);

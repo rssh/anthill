@@ -101,7 +101,20 @@ const ANSWER: i64 = 111;
 
 /// ONE PROGRAM SKELETON, so a row differs from the control in exactly what it passes
 /// in. `entry` is the secondary entry's body; everything else is fixed.
+///
+/// WI-1102 — THE PROVISION IS PART OF THE SKELETON NOW, and that is content rather than
+/// plumbing. `driveGeneric` calls `Caller.useIt(rec(n: 7))`, which pins `Show[T = Rec]`,
+/// and a call whose pinned carrier provides NOTHING is refused at LOAD (058 §3.10). Every
+/// test in this file that DRIVES the value already wrote the line for exactly that
+/// reason; the rows that only assert the load had not needed to, and without it each
+/// would now be measuring that refusal instead of its own production. Appended only when
+/// absent, so a row whose SUBJECT is the `provides` clause keeps its own single copy.
 fn fixture(ns: &str, entry: &str) -> String {
+    let entry = if entry.contains("provides Show[T = Rec]") {
+        entry.to_string()
+    } else {
+        format!("{entry}\n    provides Show[T = Rec]")
+    };
     format!(
         r#"
 namespace {ns}

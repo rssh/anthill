@@ -331,13 +331,23 @@ end
 /// that a body which DOES read an unsupplied slot is what makes observable.
 ///
 /// The op-scoped `Holder.probe` and its sort-level twin differ in ONE line (which
-/// declaration carries `requires Desc[T = HT]`) and must give one verdict. Both raise,
-/// naming the frame and the slot it does not bind. Measured, not assumed: the sort-level
-/// spelling answered exactly this before WI-1091 too, so the widening moved the op-scoped
-/// spelling ONTO the sort-level answer rather than inventing a third one.
+/// declaration carries `requires Desc[T = HT]`) and must give one verdict. Measured, not
+/// assumed: the sort-level spelling answered exactly this before WI-1091 too, so the
+/// widening moved the op-scoped spelling ONTO the sort-level answer rather than inventing
+/// a third one.
 ///
-/// FAILS IF THE WIDENING IS BACKED OUT — the op-scoped arm answers `Ok(Int(5))` then,
-/// served by value-direction, and the two spellings disagree.
+/// WI-1102 MOVED THE VERDICT EARLIER — from an eval-time raise naming the frame to a LOAD
+/// refusal naming the carrier and the provision it lacks (058 §3.10's use-site
+/// discharge). The AGREEMENT is what this test is for and it is untouched: both spellings
+/// still give one verdict, and it is now the verdict that says which declaration is
+/// missing rather than which frame slot was empty. `Mystery` provides no `Desc`, and
+/// nothing about which declaration carries the `requires` changes that.
+///
+/// FAILS IF THE WIDENING IS BACKED OUT — the op-scoped arm loads and answers `Ok(Int(5))`
+/// then, served by value-direction, and the two spellings disagree. FAILS IF ONLY ONE
+/// HALF OF WI-1102'S PARK IS BACKED OUT — that arm reverts to the eval-time
+/// `__req_desc not bound` while the other still refuses at load, which is the same
+/// disagreement one layer over.
 #[test]
 fn a_body_that_reads_an_unsuppliable_slot_agrees_on_both_spellings() {
     const OP_SCOPED: &str = r#"
@@ -366,15 +376,23 @@ namespace {ns}
 end
 "#
         );
-        let mut interp = crate::common::interp_for(&src);
-        let got = interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]);
-        let err = got.expect_err(&format!(
-            "{which}: a body that READS a slot nothing can supply must raise, not answer"
-        ));
-        let msg = err.to_string();
+        let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_else(|| {
+            panic!(
+                "{which}: a body that READS a slot nothing can supply must be refused, \
+                 not loaded"
+            )
+        });
+        let msg = errs.join("\n");
+        // `Quiet` provides `Desc[T = Box[B = E]] :- Desc[T = E]`, so `Box` HAS a
+        // provider and `Mystery` is where the chain runs out. The refusal says exactly
+        // that — see `typing::UnprovidedProvision`, whose first cut said "`Box` provides
+        // no `Desc`" and would have sent the author to duplicate an existing row.
         assert!(
-            msg.contains("__req_desc") && msg.contains("not bound"),
-            "{which}: the raise must name the slot the frame does not bind; got {msg}"
+            msg.contains(&format!("{ns}.Box"))
+                && msg.contains("does provide")
+                && msg.contains("conditional"),
+            "{which}: the refusal must name the carrier and say its CONDITION failed; \
+             got {msg}"
         );
     }
 }
