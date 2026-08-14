@@ -13791,10 +13791,21 @@ impl<'a> Loader<'a> {
 
     /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer
     /// `Some` signals "desugar ListLiteral here" (WI-007), inner `Option`
-    /// is the element-type hint to propagate. Recurses through wrappers like
-    /// `Option[T = List[T = X]]`: the literal is the wrapper's PAYLOAD —
+    /// is the element-type hint to propagate. Recurses through an `Option`
+    /// wrapper (`Option[T = List[T = X]]`): the literal is the wrapper's PAYLOAD —
     /// desugared here, then wrapped in `some(…)` by `wrap_bare_option_value`
     /// (WI-408).
+    ///
+    /// WI-1096 — THE RECURSION AND THAT WRAP ARE TWO HALVES OF ONE DECISION, so they
+    /// key on the SAME predicate (`is_option_type`). The recursion used to descend
+    /// into ANY wrapper's bindings, which made a `Set[T = List[T = Int64]]`-declared
+    /// field lower its `[1, 2]` to a `cons` spine — measured — and then NOT wrap it,
+    /// because the wrap half correctly saw a non-`Option`. That is a set OF lists
+    /// given a literal that means the SET: the payload reading only holds where the
+    /// loader also coerces a bare value into the wrapper, and `Option` is the one
+    /// place it does. Found by review of the WI-1096 default change: the behaviour
+    /// predates it, but that change makes "a declared non-`List` collection keeps its
+    /// literal as written" normative (spec §4.6), which this was quietly violating.
     fn find_list_element_type(kb: &KnowledgeBase, ty: TermId) -> Option<Option<TermId>> {
         if Self::is_list_sort_ref(kb, ty) {
             return Some(None);
@@ -13819,6 +13830,11 @@ impl<'a> Loader<'a> {
             return Some(hint);
         }
 
+        // The payload descent, gated on the wrapper the loader also coerces INTO —
+        // see the WI-1096 note above for why the two must agree.
+        if !super::typing::is_option_type(kb, &TermIdView(ty)) {
+            return None;
+        }
         for (_param, value) in &bindings {
             if let Value::Term { id: v, .. } = value {
                 if let Some(inner) = Self::find_list_element_type(kb, *v) {
@@ -14101,17 +14117,76 @@ impl<'a> Loader<'a> {
 
                 let new_functor = self.remap_symbol(functor, self.parsed.terms.span(parse_id));
 
-                // WI-007 context-aware ListLiteral desugaring: only rewrite
-                // `ListLiteral → cons/nil` when the surrounding field type is
-                // List-shaped (recursing through wrappers like
-                // `Option[T = List[T = X]]`). The inner `Option<TermId>` is
-                // the recursive element-type hint, so nested
-                // `[[...], ...]` for `List[T = List[T = X]]` propagates.
-                let elem_hint = expected.and_then(|e| Self::find_list_element_type(self.kb, e));
-                if self.kb.qualified_name_of(new_functor) == "anthill.reflect.ListLiteral"
-                    && elem_hint.is_some()
+                // WI-007 context-aware ListLiteral desugaring: rewrite
+                // `ListLiteral → cons/nil` unless a DECLARED type says the position
+                // holds some other collection. A List-shaped declared type (recursing
+                // through wrappers like `Option[T = List[T = X]]`) yields the
+                // element-type hint, so nested `[[...], ...]` for
+                // `List[T = List[T = X]]` propagates; the inner `Option<TermId>` is
+                // that hint.
+                //
+                // WI-1096 — A DECLARATION THAT NAMES NOTHING MEANS `List`, NOT "LEAVE IT
+                // ALONE". The declining branch used to fire on everything that was not
+                // List-shaped, which read a MISSING answer as a decision. TWO states
+                // reach it that way and NEITHER names another collection:
+                //
+                //  (1) NO DECLARED TYPE. Every position the declaration channel does not
+                //      reach — an operation-call argument (`contains([7], 9)`), a rule
+                //      head (`rule digits: [1, 2, 3]`, spec §4.6), a plain relation's
+                //      fact head, a bare `?xs = [1, 2]` — kept a flat `ListLiteral`,
+                //      which no `cons` pattern matches and no operation body evaluates.
+                //      Measured on all four: the cons-spelled twin answered correctly
+                //      and the literal answered 0 or an undischarged residual, silently.
+                //      Those positions have no field type to consult and never will, so
+                //      making the hint REACH them (WI-936's move, one channel over)
+                //      cannot fix them — only the default can.
+                //  (2) A DECLARED TYPE THAT IS A VARIABLE — `entity Box(v: T)`,
+                //      `Option.some(value: T)`. A `T` says the position is generic,
+                //      which is the same information an absent declaration carries; it
+                //      is not a rival collection. Found by review after (1) was fixed,
+                //      and it is the SAME defect one field deep: measured, a literal in
+                //      a `T`-typed field still answered the WI-1096 residual, and a
+                //      top-level `some([1, 2, 3])` still refused a `cons` pattern that
+                //      the identical un-wrapped literal accepted.
+                //
+                // `[…]` is the List literal; a position holding another collection says
+                // so with a concrete declared type, which is the one case below that
+                // still declines.
+                //
+                // NAMED ARGS ARE NOT THIS SURFACE. `[…]` parses to positional children
+                // only (the `[h | t]` tail form was removed, WI-560), so a `ListLiteral`
+                // carrying named args was written by NAME as the reflect entity
+                // (`ListLiteral(elements: …)`, docs/proposals/typing_pass_spec.anthill).
+                // Lowering it would read `pos_args` alone and SILENTLY DROP the payload —
+                // measured, `fact named(ListLiteral(elements: 1))` loaded as `nil`. Same
+                // guard, same reason, as the printer's `named_args.is_empty()` test.
+                //
+                // The two layers answer two questions: the OUTER `Some` is "lower this
+                // literal to a list here", the INNER `Option<TermId>` the element-type
+                // hint to propagate into the elements (absent for a bare `List` and for
+                // the un-named default alike — neither names an element type).
+                let lower_as_list: Option<Option<TermId>> = if self
+                    .kb
+                    .qualified_name_of(new_functor)
+                    != "anthill.reflect.ListLiteral"
+                    || !named_args.is_empty()
                 {
-                    let elem_expected = elem_hint.flatten();
+                    None
+                } else {
+                    match expected {
+                        // WI-342: a `denoted`-bearing (value-in-type) field type never
+                        // reaches here — the `exp` reads below narrow to a ground
+                        // `TermId` — so it arrives as `None` and takes the default. No
+                        // such collection sort exists today; a future one would need a
+                        // carrier-agnostic read here, not a wider default.
+                        Some(e) if super::typing::is_type_variable(self.kb, &TermIdView(e)) => {
+                            Some(None)
+                        }
+                        Some(e) => Self::find_list_element_type(self.kb, e),
+                        None => Some(None),
+                    }
+                };
+                if let Some(elem_expected) = lower_as_list {
                     let items: Vec<TermId> = pos_args
                         .iter()
                         // WI-716: route through `convert_arg_value` so a `List[Term]`

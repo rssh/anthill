@@ -470,10 +470,15 @@ namespace anthill.reflect
   entity TupleLiteral
 
   -- Collection literal syntax: [x, y, z] is represented as ListLiteral(x, y, z)
-  -- in the untyped term language. The typing process rewrites this to concrete
-  -- constructors based on the expected type. ListLiteral carries its elements
-  -- positionally and never a tail (the head-tail `[h | t]` surface was removed;
-  -- list destructuring uses the explicit `cons(?h, ?t)` constructor).
+  -- in the untyped term language. The LOADER lowers it to the List cons/nil spine
+  -- (kernel-language.md §4.6) unless a declared type names another collection, so a
+  -- ListLiteral term survives into the KB only in that case and in reflect-built
+  -- terms; the typing process rewrites those to concrete constructors from the
+  -- expected type. ListLiteral carries its elements positionally and never a tail
+  -- (the head-tail `[h | t]` surface was removed; list destructuring uses the
+  -- explicit `cons(?h, ?t)` constructor). WI-1096: an UNDECLARED position takes the
+  -- List reading — reading it as "some other collection" made every such literal a
+  -- silent wrong answer.
   entity ListLiteral
 
   -- ================================================================

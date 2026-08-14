@@ -15,6 +15,13 @@
 //! Restore `operation member(x: T, l: List)` and every row here fails: the first two
 //! on the name, [`list_contains_dot_dispatches`] and [`set_contains_dot_dispatches`]
 //! additionally on the ORDER, which is the half a pure rename would not have fixed.
+//!
+//! One row also fails on a DIFFERENT back-out:
+//! [`list_contains_over_a_literal_as_a_rule_body_goal`] needs WI-1096's list-literal
+//! lowering. It was deliberately absent while WI-1096 was open —
+//! [`list_contains_as_a_rule_body_goal`] uses the `cons` spelling so the rename could
+//! be pinned without tripping on that defect — and is the natural home for the literal
+//! spelling now that it answers.
 
 use anthill_core::eval::Value;
 
@@ -78,6 +85,42 @@ end
         crate::common::query_unary(&mut kb, "cr3.no").len(),
         0,
         "9 is not in [7] — a goal answering here is the WI-1096 shape"
+    );
+}
+
+/// The same SLD face over the `[…]` LITERAL spelling, which is how a user would
+/// actually write it. It is a separate row because it used to answer differently from
+/// the `cons`-spelled twin above: the literal stayed a flat `ListLiteral`, `contains`
+/// could not destructure it, and `no` came back as an undischarged residual that reads
+/// as a solution. WI-1096 lowers the literal at the one conversion site, so the two
+/// spellings now answer alike — which is the whole point of the row.
+///
+/// It fails when WI-1096's default is backed out; the `cons`-spelled twin above passes
+/// either way, which is what attributes this one to the spelling.
+#[test]
+fn list_contains_over_a_literal_as_a_rule_body_goal() {
+    let src = r#"
+namespace cr3lit
+  import anthill.prelude.{List, Int64, Bool}
+  import anthill.prelude.List.{contains}
+  fact mark(1)
+  rule yes(?m) :- mark(?m), contains([7], 7)
+  rule no(?m)  :- mark(?m), contains([7], 9)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    assert_eq!(
+        crate::common::query_unary(&mut kb, "cr3lit.yes")
+            .iter()
+            .filter(|(_, definite)| *definite)
+            .count(),
+        1,
+        "7 IS in [7], and decided — not carried out as a residual"
+    );
+    assert_eq!(
+        crate::common::query_unary(&mut kb, "cr3lit.no").len(),
+        0,
+        "9 is not in [7], the literal spelling included (WI-1096)"
     );
 }
 

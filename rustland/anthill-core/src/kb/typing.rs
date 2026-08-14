@@ -29750,6 +29750,27 @@ pub(crate) fn is_option_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
     }
 }
 
+/// WI-1096: is this resolved type a VARIABLE — a declared type parameter (`T`), an
+/// engine flex var, or a skolem — rather than a type that names something?
+///
+/// The distinction is which of two questions a declared type answers. A concrete type
+/// says WHAT this position holds; a variable says only that the position is generic,
+/// which is the same information an ABSENT declaration carries. The list-literal
+/// lowering (`Loader::convert_term_with_expected`) is the caller and needs exactly
+/// that: it declines to lower `[…]` where the declaration names another collection,
+/// and must NOT decline where the declaration names nothing at all. `entity Box(v: T)`
+/// and `Option.some(value: T)` are the two shapes that made this necessary — reading
+/// their `T` as "some non-List type" left the literal flat and reproduced the WI-1096
+/// wrong answer one field deep.
+///
+/// `pub(crate)`: the loader is the only reader, like [`is_option_type`] beside it.
+pub(crate) fn is_type_variable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    matches!(
+        type_head(kb, ty),
+        TypeHead::TypeVar(_) | TypeHead::FlexVar(_) | TypeHead::Skolem(_)
+    )
+}
+
 /// WI-722: is this resolved type EXACTLY an occurrence type — a bare
 /// `anthill.reflect.NodeOccurrence` or reflect `Expr`? A CONTAINER of one
 /// (`Option[NodeOccurrence]`, `List[NodeOccurrence]`) is deliberately NOT — only

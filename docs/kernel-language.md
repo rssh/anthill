@@ -183,7 +183,7 @@ The kernel has only four primitive types for `Const` values:
 |---------|------------|
 | `5m` | `Duration(5, "m")` |
 | `30s` | `Duration(30, "s")` |
-| `[a, b, c]` | `ListLiteral(a, b, c)` — desugared by typing to concrete constructors via `Collection` |
+| `[a, b, c]` | `ListLiteral(a, b, c)` — lowered to the `List` `cons`/`nil` spine unless a declared type names another collection (§4.6) |
 | `{a, b, c}` | `SetLiteral(a, b, c)` — desugared by typing to concrete constructors |
 
 ### 4.4 The Prelude Namespaces
@@ -712,9 +712,19 @@ CollectionLiteral ::= '[' ']'                                           -- empty
                     | '[' Term (',' Term)* ']'                          -- elements
 ```
 
-**Construction:** `[a, b, c]` is represented as `ListLiteral(a, b, c)` in the untyped term language. The typing process rewrites this to concrete constructors (`Collection.insert`/`Collection.empty`) based on the expected type. In a `List`-shaped position — an entity field declared `List[T = X]`, or a wrapper around one — the loader already rewrites it to the `cons`/`nil` spine, so a rule can destructure it; in any other position the literal is left as written.
+**Construction:** `[a, b, c]` is represented as `ListLiteral(a, b, c)` in the untyped term language. The typing process rewrites this to concrete constructors (`Collection.insert`/`Collection.empty`) based on the expected type. The loader performs the `List` case of that rewrite ahead of typing, so a rule can destructure a literal: `[a, b, c]` becomes the `cons`/`nil` spine, and `[]` becomes `nil`.
 
-**A declared type is in force for the whole load.** Which form a literal takes is decided by the declaration alone — never by which file the declaration is in, where in that file it stands, or the order the files were handed to the loader. The same holds for every other decision the loader makes from a declared field type: the `some(…)` wrap of a bare value in an `Option`-typed field, and the `none()` fill of an omitted one. Enforced by lowering every entity's field types before any file's terms are converted (`Loader::declare_field_types`; the field NAMES are settled one phase earlier still, in the definition scan). The rule has to be stated because its violation is SILENT: a field type not yet known is indistinguishable from a field that is legitimately not a collection, so the literal is left alone and reads as a decision.
+**`[…]` IS THE `List` LITERAL, AND A POSITION THAT NAMES NOTHING IS A `List` POSITION.** A declared type decides only when it *names* a different collection: in a position declared `Set[T = X]` (or any other concrete non-`List` collection type, including a collection *of* lists such as `Set[T = List[T = X]]`) the literal is left as written, for that type's own construction to consume. Everywhere else it is the `cons`/`nil` spine, and that covers three cases, not one:
+
+- an entity field declared `List[T = X]`, or an `Option` around one — where the literal is the `Option`'s payload, desugared and then wrapped in `some(…)`;
+- a position that declares **no type at all**: an operation-call argument, a rule head, a plain relation's fact head, a bare `?xs = [1, 2]`;
+- a position whose declared type is a **type parameter** (`entity Box(v: T)`, and `Option.some(value: T)`, through which every bare `some([…])` passes). A `T` says the position is generic; that is the same information an absent declaration carries, and is not a rival collection.
+
+The last two are the rule's default rather than gaps in it: those positions have no naming declaration to consult and never will. Reading their silence as "some other collection" made `contains([7], 9)` answer, `rule digits: [1, 2, 3]` undestructurable, and every such literal a silently wrong answer rather than a diagnostic.
+
+A `ListLiteral` written **by name** with named arguments (`ListLiteral(elements: …)`) is the reflect entity, not this surface — `[…]` parses to positional children only — and is never lowered.
+
+**A declared type is in force for the whole load.** Where a declared type *does* decide, it decides alone — never by which file the declaration is in, where in that file it stands, or the order the files were handed to the loader. The same holds for every other decision the loader makes from a declared field type: the `some(…)` wrap of a bare value in an `Option`-typed field, and the `none()` fill of an omitted one. Enforced by lowering every entity's field types before any file's terms are converted (`Loader::declare_field_types`; the field NAMES are settled one phase earlier still, in the definition scan). The rule has to be stated because its violation is SILENT: a field type not yet known is indistinguishable from a position that declares nothing, so a `Set`-typed field whose declaration arrived late would take the `List` default and read as a decision.
 
 **Destructuring:** there is **no** head-tail literal sugar. To destructure a list, match the `cons`/`nil` constructors directly (`cons(head: ?h, tail: ?t)` in a rule head, or `case cons(h, t) -> …` in a `match`). A first-class, type-directed collection *deconstruction* syntax (`[h | t]` desugaring to `Iteration.split` for any collection, in pattern position) is a planned extension, not yet in the language — see the collection-deconstruction work item. (An earlier `[h | t]` *literal* surface existed at parse level only, with no end-to-end semantics, and was removed.)
 

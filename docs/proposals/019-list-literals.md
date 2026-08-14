@@ -4,6 +4,13 @@
 **Depends on:** None (complementary to Proposal 020)
 **Affects:** Kernel Language Specification §4 (Terms), Grammar, Parse Converter
 
+> **Update (WI-1096):** "the typing process chooses the target from the expected
+> type" holds where a type is declared — and a position that declares NONE takes
+> `List`. The loader lowers `[…]` to the `cons`/`nil` spine unless a declared type
+> names another collection; see kernel-language.md §4.6, which is normative. Leaving
+> an undeclared literal as written made it a silent wrong answer in every position the
+> declaration channel does not reach.
+
 > **Update (WI-560):** the construction literals `[]` / `[a, b, c]` (and
 > `{…}` / `(…)`) are implemented as described. The **head-tail `[h | t]` form
 > below was removed** — it was a parse-only surface (`ListLiteral(h, tail: t)`)

@@ -1837,10 +1837,16 @@ impl SearchStream {
     }
 
     /// WI-027: collect a list `Value`'s elements when it is a fully ground spine
-    /// — a `cons`/`nil` chain (the runtime list shape) or a `ListLiteral(e…)`
-    /// (the un-desugared surface literal, since a bounded-quant collection slot
-    /// carries no List-typed context to trigger the WI-007 `ListLiteral →
-    /// cons/nil` rewrite). A `ListLiteral` carries all its elements positionally
+    /// — a `cons`/`nil` chain (the runtime list shape) or a `ListLiteral(e…)`, the
+    /// un-desugared literal. THE `ListLiteral` ARM IS NOT DEAD, and the reason it
+    /// exists changed: it used to be that a bounded-quant collection slot carries no
+    /// List-typed context, so `(forall ?x in [1, 2]: …)` arrived here as a literal.
+    /// WI-1096 made an undeclared literal lower to `cons`/`nil`, so that spelling now
+    /// takes the arm below — but a slot DECLARED a non-`List` collection still keeps
+    /// its literal as written (spec §4.6), and every reflect-built `ListLiteral` term
+    /// reaches here unchanged. Deleting the arm on the strength of the old sentence
+    /// would silently turn those into "spine not ground" (a delay).
+    /// A `ListLiteral` carries all its elements positionally
     /// and never a tail (the `[h | t]` surface was removed, WI-560). Elements
     /// themselves need not be ground — only the SPINE. Returns `None` when the
     /// spine is not ground (an unbound `cons` tail, or a non-list head): the

@@ -24,10 +24,23 @@
 //! instead of `none()`-filled, so `note: some(?)` matched a fact that never mentions
 //! `note` — WI-716's stated unsoundness, reachable by nothing but load order.
 //!
-//! CONTROL. `an_untyped_list_literal_stays_flat_in_either_order` passes BOTH before
-//! and after the fix, by design: it pins the case WI-007 protects (a literal in a
-//! position with no declared type is left alone), so it is what stops the fix from
-//! being "desugar everywhere".
+//! CONTROL. `an_untyped_list_literal_lowers_in_either_order` pins the one case the
+//! conversion still DECLINES — a field whose declared type names another collection —
+//! so it is what stops this file's fix from being "desugar everywhere".
+//!
+//! WI-1096 RE-KEYED IT, and the sentence above with it. This file used to describe the
+//! un-reached state as "the SAME state a genuinely untyped position gives — so it took
+//! the 'leave it alone' branch WI-007 installed deliberately for `Set`/`Vec` contexts,
+//! and nothing could tell the two apart". That reading was right about the ambiguity
+//! and wrong about which of the two branches was correct: an UNDECLARED literal is the
+//! `List` literal it is named for, and leaving it flat was itself a silent wrong answer
+//! in every position no field type reaches. The branch WI-007 installed is still right
+//! for a DECLARED non-`List` collection, and that — not the absent declaration — is
+//! what the control now pins. Nothing about the load-ORDER property this file owns
+//! changed; only which literal stands for "the conversion declined".
+//!
+//! It stopped being a pass-either-way control in the process, and that is a GAIN: see
+//! the back-out note below.
 //!
 //! BACKED OUT, MEASURED rather than asserted — the declaration pass made a no-op and
 //! the load-time lowering restored in `load_entity` / `load_sort_with_body`. Exactly
@@ -36,6 +49,20 @@
 //! `sql_store_example_test`'s `both_load_orders_of_the_example_answer_the_same` and
 //! `the_demo_column_list_destructures_through_its_declared_type`. The control here
 //! and the other 4023 pass either way.
+//!
+//! THAT COUNT WAS MEASURED BEFORE WI-1096 RE-KEYED THE CONTROL and has not been
+//! re-measured; it is now a LOWER BOUND. Read off the conversion: the re-keyed
+//! control's `set_head` fails on the same back-out too, because a field type not yet
+//! registered gives `expected = None`, which WI-1096's default sends to `List` — the
+//! losing order turns `Bagged.tags` into a `cons` spine. That holds only because
+//! `Bagged` is FORWARD-DECLARED in its fixture, which is what puts it under the same
+//! dependency as this file's measured subject rows: with the entity written first, the
+//! load walk registers its types before the fact converts and no back-out would show.
+//! A review pass caught the claim when it did not yet hold, and the fixture was
+//! reordered rather than the claim softened. So the control stopped being
+//! pass-either-way, which is exactly what makes it sharper than the one it replaced:
+//! it catches BOTH "desugars unconditionally" AND "the declaration arrived late",
+//! where the old one caught only the first.
 //!
 //! The sibling driver on REAL files is that `sql_store_example_test`, whose example is
 //! loaded by a sorted directory walk — `demo.anthill` before `sql.anthill`, i.e. the
@@ -105,17 +132,32 @@ namespace test.wi936.use
 end
 "#;
 
-/// A list literal in a position with NO declared type — the case WI-007 leaves alone
-/// on purpose. Same file, so no order is involved; it is here to be run in both
-/// worlds.
+/// Two literals the declared-type channel treats differently, in one file (so no order
+/// is involved in the file itself) — run in both worlds by the control below.
+/// `loose` has NO declared type at all; `Bagged.tags` DECLARES a non-`List`
+/// collection, which is the one case the conversion still leaves as written.
 const UNTYPED: &str = r#"
 namespace test.wi936.untyped
+  import anthill.prelude.{Set, Int64}
   import anthill.prelude.List.{cons}
 
   fact loose([1, 2, 3])
 
   rule loose_head(?h) :- loose(cons(head: ?h, tail: ?))
   rule loose_whole(?l) :- loose(?l)
+
+  -- FORWARD-DECLARED ON PURPOSE: the fact converts before the `entity` line is
+  -- reached, so it is the DECLARATION PASS and nothing else that has
+  -- `Bagged.tags`'s type ready when `[1, 2, 3]` is converted. Written in the other
+  -- order, this row would pass under the load-time lowering too and would pin only
+  -- half of what its docstring claims (see `a_forward_declared_entity_in_one_file_
+  -- desugars`, which is the same shape for the positive case).
+  fact bagged(Bagged(tags: [1, 2, 3]))
+
+  rule set_head(?h) :- bagged(Bagged(tags: cons(head: ?h, tail: ?)))
+  rule set_whole(?s) :- bagged(Bagged(tags: ?s))
+
+  entity Bagged(tags: Set[T = Int64])
 end
 "#;
 
@@ -268,26 +310,50 @@ end
     assert_eq!(marks, ["bare"], "…and its Option field is still wrapped");
 }
 
-/// CONTROL — a list literal in a position with NO declared type is LEFT ALONE, in
-/// either order (WI-007's `Set`/`Vec` case, and the reason a diagnostic cannot key on
-/// `expected == None` alone).
+/// CONTROL — the guard that says this file's fix moved WHEN a field type is known,
+/// not WHICH positions desugar: a field whose DECLARED type names another collection
+/// keeps its literal flat, in either order. Were the declaration pass to desugar
+/// unconditionally, `set_head` would start answering; were the declaration late,
+/// `Bagged.tags` would convert against `expected = None`, take WI-1096's `List`
+/// default, and `set_head` would start answering for THAT reason. One row, both
+/// failure modes — but only because `Bagged` is declared AFTER the fact that uses it
+/// (see the fixture note): written the other way the entity's types would be
+/// registered by the load walk itself and the second half would pin nothing.
 ///
-/// This test passes both before and after the change, by design. It is what says the
-/// fix moved WHEN the field type is known, not WHICH positions desugar: were the
-/// declaration pass to desugar unconditionally, `loose_head` would start answering.
+/// RE-KEYED BY WI-1096, which is why the subject is a `Set` field and not the
+/// undeclared `loose`. This row used to assert that the UNDECLARED `[1, 2, 3]` stays
+/// flat — but an absent declaration and a declared non-`List` collection took ONE
+/// branch, and only the second was ever right about it: WI-1096 measured the first
+/// answering 0 where its `cons`-spelled twin answered 1, in four positions no field
+/// type reaches (an operation-call argument, a rule head, a plain relation's fact
+/// head, a bare `?xs = […]`). So `loose_head` now ANSWERS, and the guard moved onto
+/// the case WI-007 installed the branch for.
 #[test]
-fn an_untyped_list_literal_stays_flat_in_either_order() {
+fn an_untyped_list_literal_lowers_in_either_order() {
     for order in [[UNTYPED, DECL, USE], [USE, DECL, UNTYPED]] {
         let mut kb = kb_in_order(&order);
         assert_eq!(
             answers(&mut kb, "test.wi936.untyped.loose_head").len(),
-            0,
-            "an untyped `[1, 2, 3]` must stay a flat n-ary node — a `cons` pattern matches nothing",
+            1,
+            "an undeclared `[1, 2, 3]` is the `List` literal it is named for, so a \
+             `cons` pattern destructures it (WI-1096)",
         );
         assert_eq!(
             answers(&mut kb, "test.wi936.untyped.loose_whole").len(),
             1,
-            "…and the fact is there: read as a whole it answers once",
+            "…and read as a whole it still answers exactly once",
+        );
+        assert_eq!(
+            answers(&mut kb, "test.wi936.untyped.set_head").len(),
+            0,
+            "a `Set[T = Int64]`-DECLARED field keeps its literal flat — a `cons` \
+             pattern matches nothing, in either order",
+        );
+        assert_eq!(
+            answers(&mut kb, "test.wi936.untyped.set_whole").len(),
+            1,
+            "…and the fact is there: the zero above is about the SHAPE, not a \
+             missing fact",
         );
     }
 }
