@@ -20,6 +20,13 @@
 //! against. A binder and an entity variant are excluded by 059 (identity, not a
 //! declaration that may be added) — [`entity_variant_is_not_a_capturer`] pins that.
 //!
+//! AND OVER A CAPTURED NAME NOTHING DECLARED (WI-939). Clause 3 is what ANSWERS
+//! WI-939 — "may a namespace-level rule and a sort member share one short name?" —
+//! as that ticket's option (c), refuse at declaration. The rows in the WI-939
+//! section below are that pair, in both text orders, and they are the only ones
+//! whose captured name is a predicate a RULE HEAD introduced rather than a
+//! declaration.
+//!
 //! ── WHAT 059's CENSUS MISSED, AND WHAT THIS TICKET AMENDED ────────────────────
 //!
 //! 059 R4 states the clause over "a name that already resolves there" and reports,
@@ -53,17 +60,31 @@
 //!
 //! MEASURED by making each edit and re-running, not predicted.
 //!
-//! Delete the `check_name_captures(kb)` call in `load_phase_inner` — 4 fail, 9 pass:
+//! Delete the `check_name_captures(kb)` call in `load_phase_inner` — 9 fail, 14 pass
+//! (re-measured with the WI-939 rows; the count this line carried was 4/9, taken
+//! before the import rows and these joined the file):
 //!
 //!   * [`operation_capture_is_refused`], [`const_capture_is_refused`],
-//!     [`nested_type_capture_is_refused`], [`main_entry_capture_is_refused`] — FAIL.
+//!     [`nested_type_capture_is_refused`], [`main_entry_capture_is_refused`],
+//!     [`rule_capture_is_refused_written_after_the_rule`],
+//!     [`rule_capture_is_refused_written_before_the_rule`],
+//!     [`an_import_in_a_file_that_does_write_here_is_a_capture`],
+//!     [`wildcard_import_of_a_variant_bearing_sort_is_a_capture`],
+//!     [`wildcard_import_of_the_leaked_into_namespace_is_a_capture`] — FAIL.
 //!     Each loads clean with the check gone, which is the defect.
 //!   * every `*_base_*` row, [`provider_override_is_not_refused`],
 //!     [`requires_shadow_is_not_refused`], [`sibling_constructor_is_not_a_capture`],
 //!     [`enclosing_namespace_is_not_a_capture`],
+//!     [`a_member_beside_a_differently_named_rule_is_not_a_capture`],
 //!     [`entity_variant_is_not_a_capturer`], [`ordinary_namespace_is_untouched`] —
 //!     PASS EITHER WAY, BY DESIGN. They are the controls: without them a check that
 //!     refused everything would look correct.
+//!
+//! Drop `captured_origin`'s rule arm, leaving the ledger-only read that shipped
+//! before WI-939 — exactly TWO fail, both on
+//! [`assert_names_the_rule_clause`] and neither on `assert_names_both`: the refusal
+//! still fires and still names the member, and says nothing about the rule whose
+//! name it took. That is the whole of what WI-939 item 1 repaired.
 //!
 //! Remove EITHER amendment — the variant-exposure skip in `resolve_captured_name`, or
 //! `captured_is_namespace_only` — and NINE of the rows fail, the same nine each time.
@@ -182,6 +203,142 @@ end
 "#,
     );
     assert_names_both(&errs, "operation f", "wi999.mainentry.Rec", "wi999.lib2.f");
+}
+
+// ── WI-939: THE CAPTURED NAME A RULE INTRODUCED ─────────────────────────────
+//
+// 059 R4 clause 3 is what ANSWERS WI-939 — "may a namespace-level rule and a sort
+// member share one short name?" — and answers it as that ticket's option (c),
+// FORBID THE COEXISTENCE AT DECLARATION. Nothing above drives that shape: every
+// row so far reaches the captured name through an `import`, and the pair WI-931
+// measured is a rule the ENCLOSING NAMESPACE introduced, reached through the
+// enclosing parent with no import anywhere.
+//
+// IT IS THE SORT SIDE THAT IS REFUSED, and that is not the symmetry it looks like.
+// `check_name_captures` skips any declaration whose scope owner is not a sort
+// ("nothing in R3 or R4 reaches an ordinary namespace"), so the namespace rule is
+// never the capturer and the member always is — WI-939's option (c) worded the
+// refusal the other way round ("refuse a namespace-level name that a sort in the
+// same namespace also declares"), and the pair is refused either way, always
+// naming the member. [`rule_capture_is_refused_written_after_the_rule`] and
+// [`rule_capture_is_refused_written_before_the_rule`] are the two text orders, and
+// that they agree is the point: R6/WI-980 leaves a rule head's BINDING order-
+// dependent, so a check reading it had to be shown not to inherit that.
+//
+// AND THE MESSAGE HAD TO LEARN A SECOND ORIGIN (WI-939). A rule head is resolved,
+// not declared (§8.6, WI-896), so `f` here is in no `DeclSite` and the refusal
+// named only the half the author did not change — the exact failure this message
+// exists to avoid. `captured_origin` falls back to a clause of the predicate and
+// says which it is.
+
+/// The base. A namespace-level `f/2` and a sort whose own rule reads it bare —
+/// `anthill.geometry`'s pre-WI-935 shape (a relational `vec_add/3` beside
+/// `Vec3.vec_add/2`), reduced to the two declarations that collide.
+const RULE_BASE: &str = r#"
+namespace wi939.rel
+  rule f(?x, ?x)
+
+  sort Rec
+    entity rec(n: Int64)
+    rule uses(?y) :- f(7, ?y)
+  end
+end
+"#;
+
+/// The added member, written into the sort's own body.
+const RULE_MEMBER: &str = "    operation f(x: Int64) -> Int64 = 0\n";
+
+/// Assert the refusal points at the RULE too, not only at the member. Keyed on the
+/// phrase the `CapturedOrigin::RuleClause` arm renders, because `assert_names_both`
+/// asks only for the captured symbol's qualified NAME and would pass with no site
+/// at all — which is what shipped before WI-939.
+fn assert_names_the_rule_clause(errs: &str) {
+    assert!(
+        errs.contains("a rule clause of it at"),
+        "capture refusal must point at the rule that introduced the name; got:\n{errs}"
+    );
+}
+
+/// The single definite integer answer of `wi939…Rec.uses`. Panics on any other
+/// shape, `[]` included: a base row that answered nothing would make the refusal
+/// rows below measure nothing, since the whole claim is that a WORKING read stops
+/// working — and WI-939's own measurement was ONE solution going silently to ZERO.
+///
+/// Reads the answer as a TERM, not as a `Value::Int`: a rule answers by unification,
+/// so the binding that comes back is the literal term the goal carried, and the
+/// eval-side `Int` carrier never appears on this path.
+fn uses_answers(src: &str, qn: &str) -> i64 {
+    use anthill_core::kb::term::{Literal, Term};
+    let mut kb = crate::common::load_kb_with(src);
+    let answers = crate::common::query_unary(&mut kb, qn);
+    let bound = match answers.as_slice() {
+        [(Value::Term { id, .. }, true)] => *id,
+        other => panic!("`{qn}` must answer exactly one definite term, got {other:?}\n{src}"),
+    };
+    match kb.get_term(bound) {
+        Term::Const(Literal::Int(i)) => *i,
+        other => panic!("`{qn}` must answer an Int literal, got {other:?}\n{src}"),
+    }
+}
+
+#[test]
+fn rule_capture_base_answers_the_namespace_rule() {
+    // PASSES EITHER WAY, BY DESIGN — the "before". DRIVEN, not loaded: the goal
+    // answers 7 through the enclosing namespace's `f`, so the next two rows'
+    // refusals are attributable to the added member and to nothing else.
+    assert_eq!(uses_answers(RULE_BASE, "wi939.rel.Rec.uses"), 7);
+}
+
+#[test]
+fn rule_capture_is_refused_written_after_the_rule() {
+    // WI-939's pair. `uses`'s unedited body reads a bare `f`, and the member takes
+    // that name — clause 1 (WI-1049) is silent, nothing named `f` being a member.
+    //
+    // BACKED OUT (delete the `check_name_captures` call): this test FAILS — the
+    // fixture loads clean, which is the silent flip WI-931 measured.
+    let errs = refusal(&RULE_BASE.replace("    rule uses", &format!("{RULE_MEMBER}    rule uses")));
+    assert_names_both(&errs, "operation f", "wi939.rel.Rec", "wi939.rel.f");
+    // BACKED OUT (drop `captured_origin`'s rule arm for the old ledger-only read):
+    // this assertion FAILS and the one above still passes — the message names the
+    // member's line and nothing else.
+    assert_names_the_rule_clause(&errs);
+}
+
+#[test]
+fn rule_capture_is_refused_written_before_the_rule() {
+    // THE OTHER TEXT ORDER, sort first. Same refusal: the check runs after pass 2
+    // over the finished KB, so it does not inherit R6/WI-980's order-dependent
+    // reading of where a rule head binds.
+    //
+    // BACKED OUT: this test FAILS — the fixture loads clean.
+    let errs = refusal(
+        r#"
+namespace wi939.rel2
+  sort Rec
+    entity rec(n: Int64)
+    operation f(x: Int64) -> Int64 = 0
+    rule uses(?y) :- f(7, ?y)
+  end
+
+  rule f(?x, ?x)
+end
+"#,
+    );
+    assert_names_both(&errs, "operation f", "wi939.rel2.Rec", "wi939.rel2.f");
+    assert_names_the_rule_clause(&errs);
+}
+
+#[test]
+fn a_member_beside_a_differently_named_rule_is_not_a_capture() {
+    // THE CONTROL, and it PASSES EITHER WAY BY DESIGN — without it a check that
+    // refused every member declared beside any namespace rule would look correct.
+    // The same two declarations, short names distinct, and the base goal still
+    // answers 7 with the member present.
+    let src = RULE_BASE
+        .replace("rule f(?x, ?x)", "rule g(?x, ?x)")
+        .replace("f(7, ?y)", "g(7, ?y)")
+        .replace("    rule uses", &format!("{RULE_MEMBER}    rule uses"));
+    assert_eq!(uses_answers(&src, "wi939.rel.Rec.uses"), 7);
 }
 
 // ── the const capture: a member that never joins the dispatch surface ────────

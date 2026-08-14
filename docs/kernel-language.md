@@ -1130,6 +1130,15 @@ is refused, naming the capturing declaration's line and what the name meant.
   flip is identical for both spellings, so this is not a rule about entries.
   Nothing here reaches an *ordinary* namespace, one at an address no type
   occupies.
+- **The captured name need not have been declared.** A predicate a **rule head**
+  introduced (§8.6: a head functor is resolved, not declared) is a name a member
+  of a sort in that namespace may capture through the enclosing parent, with no
+  `import` anywhere — so `sort Vec3 { operation vec_add(a, b) }` beside a
+  namespace-level `rule vec_add(?a, ?b, ?c)` is refused, in either text order.
+  This is the rule that decides whether a namespace-level rule and a sort member
+  may share one short name: they may not. Because the check is asked only of
+  declarations in a **sort** scope, it is always the member that is named as the
+  capturing side; the rule is named by one of its clauses.
 - **Over every declaration category that can win lookup**: an `operation`, a
   `const`, and a nested type (a `sort`/`enum` with a body, or an alias
   `sort A = T`). A `const` captures without ever joining the dispatch surface,

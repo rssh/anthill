@@ -846,10 +846,12 @@ pub enum LoadError {
         /// resolution answers with a symbol, and every symbol has a qualified name
         /// even when nothing declared it in source.
         captured: String,
-        /// Where THAT was declared, when a declaration for it was scanned. `None`
-        /// for a name no `.anthill` file declares — a resolver builtin's minted
-        /// symbol, or a declaration from an earlier load phase.
-        captured_site: Option<String>,
+        /// Where THAT is written, when the loader can point at it, and by WHICH
+        /// route it got its name — the two are one field because neither is
+        /// renderable without the other. `None` for a name no `.anthill` file
+        /// writes: a resolver builtin's minted symbol, or a declaration from an
+        /// earlier load phase.
+        captured_origin: Option<CapturedOrigin>,
     },
     /// WI-1000 / proposal 059 R3 — A SECONDARY ENTRY MAY ADD MEMBERS AND SPEC
     /// CLAIMS, NEVER IDENTITY. A `namespace X … end` written at the address of a
@@ -2103,8 +2105,8 @@ impl LoadError {
                 name,
                 site,
                 captured,
-                captured_site,
-            } => name_capture_message(sort, construct, name, site, captured, captured_site.as_deref()),
+                captured_origin,
+            } => name_capture_message(sort, construct, name, site, captured, captured_origin.as_ref()),
             LoadError::SecondaryEntryContent {
                 sort,
                 construct,
@@ -2356,7 +2358,7 @@ impl std::fmt::Display for LoadError {
                 name,
                 site,
                 captured,
-                captured_site,
+                captured_origin,
             } => write!(
                 f,
                 "{}",
@@ -2366,7 +2368,7 @@ impl std::fmt::Display for LoadError {
                     name,
                     site,
                     captured,
-                    captured_site.as_deref()
+                    captured_origin.as_ref()
                 )
             ),
             LoadError::SecondaryEntryContent {
@@ -4271,6 +4273,12 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
 /// two declarations are routinely in different files, and the one the author has
 /// open is the one that did not change.
 ///
+/// AND THE CAPTURED SITE IS NOT ALWAYS A DECLARATION (WI-939). The name a member
+/// captures may be a predicate a **rule head** introduced, which §8.6/WI-896 says is
+/// resolved rather than declared and so has no ledger entry;
+/// [`CapturedOrigin::RuleClause`] points at a clause of it instead, and says so.
+/// Rendering that as "declared at" would name a construct the language does not have.
+///
 /// THE ADVICE IS 059's, AND IT IS NOT "RENAME". "The repair is to delete the
 /// capturing member, not to rename it — whenever the member's own answer does not
 /// read its receiver. A receiver nothing reads is dispatch ceremony, not an
@@ -4283,15 +4291,20 @@ fn name_capture_message(
     name: &str,
     site: &str,
     captured: &str,
-    captured_site: Option<&str>,
+    captured_origin: Option<&CapturedOrigin>,
 ) -> String {
-    let declared_at = match captured_site {
-        Some(at) => format!(" (declared at {at})"),
+    let written_at = match captured_origin {
+        Some(CapturedOrigin::Declared(at)) => format!(" (declared at {at})"),
+        // Says "a clause", never "declared" and never "introduced by a rule": the arm
+        // fires where this phase's ledger has no declaration, which is the rule-head
+        // case (resolved, not declared) and also an earlier phase's declaration. Only
+        // "a clause is here" is true of both.
+        Some(CapturedOrigin::RuleClause(at)) => format!(" (a rule clause of it at {at})"),
         None => String::new(),
     };
     format!(
         "`{construct} {name}` at {site} captures a name that already resolves in the \
-         scope of sort '{sort}': '{name}' there means '{captured}'{declared_at}. \
+         scope of sort '{sort}': '{name}' there means '{captured}'{written_at}. \
          Proposal 059 R4: a declaration may not capture a name it does not override, \
          and '{sort}' neither provides nor requires the sort that owns '{captured}' — \
          so every unedited body in this scope that reads a bare '{name}' silently \
@@ -4494,6 +4507,29 @@ pub struct DeclSite {
     /// [`DeclCategory::TypeParam`] four, so the category cannot spell it.
     pub(crate) keyword: &'static str,
     pub(crate) site: SourceSpan,
+}
+
+/// WI-939 — WHERE THE CAPTURED NAME IS WRITTEN, and by which route it got its name.
+/// One field rather than a site plus a flag, because a site the message cannot
+/// phrase and a phrasing with no site are both unrenderable.
+///
+/// THE TWO ARMS ARE TWO DIFFERENT ACTS, and §8.6 (WI-896) is why the distinction is
+/// not cosmetic: a rule head functor is **resolved, not declared** — it *introduces*
+/// its name only where the ladder finds nothing — so a predicate a rule brought into
+/// existence has no entry in [`KnowledgeBase::decl_sites`] and calling its clause a
+/// "declaration" would name a construct the language does not have.
+#[derive(Clone, Debug)]
+pub enum CapturedOrigin {
+    /// A named declaration the defining pass scanned, from [`DeclSite`].
+    Declared(String),
+    /// A clause of the captured name, used where this phase's ledger holds no
+    /// declaration for it. That is the rule-head case above, and — since
+    /// [`KnowledgeBase::decl_sites`] is per phase — an earlier phase's declaration
+    /// that carries clauses too, so the message claims only that a clause is here.
+    /// ONE clause, not a census: a predicate legitimately has many, and this names
+    /// one other place to look, the same first-write-wins choice the ledger half
+    /// makes.
+    RuleClause(String),
 }
 
 /// WI-997 / proposal 059 R1 + R4 — THE PASS-1 DECLARATION LEDGER.
@@ -10691,6 +10727,43 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
     }
 }
 
+/// WI-939 — WHERE THE CAPTURED NAME IS WRITTEN: the pass-1 ledger first, a rule
+/// clause after it.
+///
+/// THE LEDGER CANNOT BE THE ONLY SOURCE, and the shape that showed it is 059 R4
+/// clause 3's own motivating collision. A namespace-level `rule vec_add(?a, ?b, ?c)`
+/// beside a `sort Vec3 { operation vec_add(a, b) }` is refused — the member captures
+/// the rule's name through the enclosing parent — but a rule head is **resolved, not
+/// declared** (§8.6, WI-896), so nothing put `vec_add` in [`DeclSite`] and the
+/// refusal named only the capturing half. Naming one line of a two-line problem is
+/// the failure mode this message exists to avoid.
+///
+/// THE LEDGER WINS WHERE IT ANSWERS, AND IT ANSWERS ONLY FOR THIS PHASE. A declared
+/// name may also carry clauses — a `[simp]` equation loads under its operation's own
+/// functor — and within one phase the declaration is the site the author wants, so
+/// the fallback is not reached for it. Across phases it can be: `decl_sites` is
+/// cleared at the top of every `load_phase_inner`, so under `load_incremental` a
+/// captured name DECLARED in an earlier phase is absent from the ledger and, if it
+/// carries clauses, is reported by one of them.
+///
+/// That is why the rendered phrase claims only what stays true there — "a rule clause
+/// of it", never "introduced by a rule". The arm says where a clause is, and a clause
+/// really is there; what it does not claim is that no declaration exists elsewhere.
+/// Before WI-939 the same case printed nothing at all, so the phrase is a weaker
+/// statement than the ledger's and a stronger one than silence.
+fn captured_origin(
+    kb: &KnowledgeBase,
+    sites: &HashMap<Symbol, &DeclSite>,
+    captured: Symbol,
+) -> Option<CapturedOrigin> {
+    if let Some(decl) = sites.get(&captured) {
+        return Some(CapturedOrigin::Declared(render_decl_site(kb, decl.site)));
+    }
+    kb.rules_by_functor_iter(captured)
+        .find_map(|rid| kb.rule_head_span(rid))
+        .map(|span| CapturedOrigin::RuleClause(render_decl_site(kb, span)))
+}
+
 /// WI-999 / proposal 059 R4 CLAUSE 3 — A DECLARATION MAY NOT CAPTURE A NAME IT
 /// DOES NOT OVERRIDE. Load-blocking.
 ///
@@ -10741,8 +10814,9 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
 /// KIND with no declaration behind it (`anthill.kernel.find_dictionary`); and the
 /// tag on `anthill.reflect.Expr.ho_apply` rides an ENTITY symbol, so a check keyed on
 /// `kind == Operation` misses it. This reads neither: the excuse is the override
-/// RELATION, which such a name simply lacks, and the captured declaration's line is
-/// looked up in the ledger and rendered only if it is there.
+/// RELATION, which such a name simply lacks, and where the captured name is written
+/// is [`captured_origin`]'s question — the ledger, else a rule clause, else nothing
+/// to point at.
 fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
     let decls = &kb.decl_sites;
     // Where each SYMBOL was declared, for the captured half of the message. First
@@ -10830,7 +10904,7 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
                 name: decl.local.clone(),
                 site: render_decl_site(kb, decl.site),
                 captured: kb.qualified_name_of(other).to_string(),
-                captured_site: sites.get(&other).map(|d| render_decl_site(kb, d.site)),
+                captured_origin: captured_origin(kb, &sites, other),
             });
         }
     }
