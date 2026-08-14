@@ -473,6 +473,35 @@ pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
     out
 }
 
+/// [`sort_provisions`] without the EQUALITY family (`PartialEq` / `Eq` / `NonEq`) —
+/// for a suite whose question is "what does this carrier provide" about some OTHER
+/// spec.
+///
+/// WI-1098: those three are no longer a property of what a fixture WROTE. Every
+/// composite carrier now derives one of the two classifications — `PartialEq`+`Eq`
+/// when its fields are all lawful, `PartialEq`+`NonEq` when one reaches an IEEE
+/// `Float` — so a two-field entity that says nothing about equality still contributes
+/// two rows, and a fixture asserting an exact provision set for its own carrier was
+/// reading a population that grew under it.
+///
+/// A filter by SPEC, not by provenance, and that is not a shortcut: a hand-written
+/// `provides Eq[T = X]` is indistinguishable from a derived one at the fact layer —
+/// deliberately, since the whole point of deriving is that the two are the same claim.
+/// A fixture that means to assert something ABOUT equality must therefore call
+/// [`sort_provisions`] and name the rows it expects.
+#[allow(dead_code)]
+pub fn sort_provisions_outside_equality(kb: &KnowledgeBase) -> Vec<(String, String)> {
+    sort_provisions(kb)
+        .into_iter()
+        .filter(|(_, spec)| {
+            !matches!(
+                spec.as_str(),
+                "anthill.prelude.PartialEq" | "anthill.prelude.Eq" | "anthill.prelude.NonEq"
+            )
+        })
+        .collect()
+}
+
 /// The `Var::Global` id backing `sort_sym` as a type parameter — the target of its
 /// `SortAlias(<sort_sym>, ?V)` fact. `None` when the sort has no alias at all, and
 /// also when its alias target is not a logic var (`sort T = Int64` aliases a concrete

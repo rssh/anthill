@@ -299,13 +299,21 @@ fn bridge_interp() -> Interpreter {
 // backed at eval, so its own `Eq` obligation needs no threaded dict here).
 const CONTAINS_SRC: &str = r#"
     namespace gap3.membertest
-      import anthill.prelude.{Int64, List, Bool, Eq}
+      import anthill.prelude.{Int64, Float, List, Bool, Eq}
       import anthill.prelude.List.{contains}
       import anthill.prelude.PartialEq.{eq}
-      -- A carrier that declares NO Eq instance: the fire-time guard must block
-      -- has_elem over it, proving the transitive requirement is real, not vacuous.
+      -- A carrier with NO lawful Eq: the fire-time guard must block has_elem over
+      -- it, proving the transitive requirement is real, not vacuous.
+      --
+      -- WI-1098: the FIELD is what makes it non-Eq, and it has to be. This was
+      -- `nt(v: Int64)` — a composite that said nothing about equality — and that
+      -- spelling stopped witnessing anything the moment WI-1098 derived `Eq` for
+      -- every total composite: the guard fired, `contains` answered TRUE, and the
+      -- test that measured "blocked" measured a program that is now Eq. A `Float`
+      -- field derives `NonEq` (WI-664's half of the same classification), which is
+      -- what a carrier with no lawful equality now IS.
       sort NoEq
-        entity nt(v: Int64)
+        entity nt(v: Float)
       end
       rule has_elem(?xs, ?x) :- requires(Eq[T]), eq(contains(?xs, ?x), true)
     end
@@ -337,13 +345,14 @@ fn list_of(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
     list
 }
 
-/// A `gap3.membertest.NoEq.nt(v: n)` entity term (a carrier with no `Eq`).
+/// A `gap3.membertest.NoEq.nt(v: n)` entity term (a carrier with no lawful `Eq` —
+/// its field is a `Float`, so the WI-664 classification derives `NonEq` for it).
 fn nt_entity(kb: &mut KnowledgeBase, n: i64) -> TermId {
     let f = kb
         .try_resolve_symbol("gap3.membertest.NoEq.nt")
         .expect("NoEq.nt");
     let v = kb.intern("v");
-    let nv = int_term(kb, n);
+    let nv = float_term(kb, n as f64);
     kb.alloc(Term::Fn {
         functor: f,
         pos_args: SmallVec::new(),

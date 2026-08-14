@@ -1205,3 +1205,6 @@ mod wi945_unconstrained_sort_element_test;
 
 #[path = "include/wi1096_list_literal_lowering_test.rs"]
 mod wi1096_list_literal_lowering_test;
+
+#[path = "include/wi1098_derive_eq_total_test.rs"]
+mod wi1098_derive_eq_total_test;

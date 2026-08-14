@@ -25934,6 +25934,36 @@ pub(crate) fn instance_fact_op_binding(
     instance_fact_op_in_bindings(kb, &bindings, op_short)
 }
 
+/// WI-1098 — every CARRIER any provision of `spec_sort` names, canonical.
+///
+/// NOT [`sort_provides`], and the difference is the whole reason this exists (WI-1069:
+/// a provision records a PROVIDER and a CARRIER, and "same provision" is not "same
+/// statement"). `sort_provides` asks "does THIS sort's own declaration provide", keyed
+/// on `sort_ref`; a WITNESS names its carrier only in the spec's `T` binding
+/// (`sort WrapperNonEq { provides NonEq[T = Wrapper] }` files under `WrapperNonEq`), so
+/// the carrier answers `false` to that question while being fully spoken for. This
+/// answers the carrier's question instead, through [`witness_dispatch_carrier`] — the
+/// same owner the eq-dispatch index reads, so the two cannot disagree about which sort
+/// a provision is ABOUT.
+///
+/// The one caller is `eq_derive`'s Total classification, which must not derive a claim
+/// over a carrier somebody has already made one about. MEASURED before the guard: a
+/// `provides NonEq[T = Wrapper]` witness left `Wrapper` seeded Total, so the derivation
+/// asserted `provides Eq[Wrapper]` — reflexivity of an equality the author had
+/// explicitly witnessed as non-reflexive — and `check_eq_noneq_exclusive` could not see
+/// the contradiction either, because it groups by `sort_ref` too.
+pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
+    provisions_of_spec(kb, spec_sort)
+        .map(|(provider, spec_t, _)| {
+            // `None` = the provision's carrier IS the provider (a self-provision, an
+            // instance fact, or a bare one naming no other sort) — that function's own
+            // documented contract.
+            witness_dispatch_carrier(kb, spec_sort, provider, spec_t).unwrap_or(provider)
+        })
+        .map(|c| kb.canonical_sort_sym(c))
+        .collect()
+}
+
 /// Every `SortProvidesInfo` provision OF `spec_sort`, decoded once into
 /// `(provider sort, the provision's `SortView` term, its type-param bindings)`.
 ///

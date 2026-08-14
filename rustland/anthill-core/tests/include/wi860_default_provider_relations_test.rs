@@ -120,10 +120,21 @@ fn index_rows(kb: &KnowledgeBase) -> Vec<String> {
 }
 
 /// The index's rows for ONE carrier, WITH each row's origin.
+///
+/// WI-1098 — the equality family is filtered out. `Leaf` is a composite, so it now
+/// derives `provides PartialEq`+`Eq`, and "the carrier's own provision is its default"
+/// is TRUE of those too: the index correctly holds three inferred rows where the
+/// fixture wrote one. The subject here is the `Desc` row's ORIGIN, and the two derived
+/// rows say nothing about it — a filter by spec, not a suppression of a wrong answer.
+/// The whole-corpus agreement test above keeps reading the UNFILTERED index, so the
+/// derived rows are still held to relation-vs-index equality.
 fn index_rows_for(kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
     kb.default_provider_index()
         .expect("a loaded KB must carry the default-provider index")
         .rendered_rows_for_carrier(kb, carrier_qn)
+        .into_iter()
+        .filter(|r| !r.starts_with("PartialEq | ") && !r.starts_with("Eq | "))
+        .collect()
 }
 
 /// A local spec + a self-providing carrier, with `extra` appended — so every fixture

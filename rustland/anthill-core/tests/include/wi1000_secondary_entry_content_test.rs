@@ -559,7 +559,10 @@ namespace test.wi1000.orphanclaim
 end
 "#;
     let kb = crate::common::load_kb_with(src);
-    let carriers: Vec<String> = crate::common::sort_provisions(&kb)
+    // WI-1098: outside the equality family, because `Rec` and `Other` are composites
+    // and every composite now derives `PartialEq`+`Eq` — rows about structural
+    // equality, not about where a `fact Show[…]` filed.
+    let carriers: Vec<String> = crate::common::sort_provisions_outside_equality(&kb)
         .into_iter()
         .filter(|(c, _)| c.starts_with("test.wi1000.orphanclaim."))
         .map(|(c, _)| c)

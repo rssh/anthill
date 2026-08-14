@@ -354,9 +354,14 @@ end
 /// Reading the KB rather than the load verdict is deliberate: pre-fix the backed
 /// rows LOADED CLEAN, and only the empty provision list distinguishes "checked
 /// and accepted" from "never recorded, so never checked".
+///
+/// WI-1098 — outside the EQUALITY family. `Rec` is a composite, and every composite
+/// now derives `PartialEq`+`Eq`, so the count this file exists to make would be 3 for
+/// every row whatever the claim did. The subject is where a `provides Show[…]` FILES,
+/// which those rows say nothing about.
 fn provision_carriers(kb: &KnowledgeBase, ns: &str) -> Vec<String> {
     let prefix = format!("{ns}.");
-    let mut out: Vec<String> = crate::common::sort_provisions(kb)
+    let mut out: Vec<String> = crate::common::sort_provisions_outside_equality(kb)
         .into_iter()
         .map(|(carrier, _spec)| carrier)
         .filter(|c| c.starts_with(&prefix))

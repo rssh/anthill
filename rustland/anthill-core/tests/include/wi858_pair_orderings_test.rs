@@ -739,16 +739,29 @@ end
 /// for — so the refusal is attributable to the NAME, not to the shape or to composite
 /// equality. WI-872; `wi664_composite_eq_test`'s `Pair`→`Duple` rename is the same
 /// defect met as a workaround, and reverting it is WI-872's acceptance.
+///
+/// WI-1098 NARROWED THE DEFECT AND DID NOT CLOSE IT, and the field type is where the
+/// two are told apart. The fixture was `(a: Int64, b: Int64)`; WI-1098 derives
+/// `provides PartialEq`+`Eq` for exactly that shape, and a local `sort Pair` carrying
+/// its OWN provision no longer needs the prelude's — so the arm LOADED, and reading
+/// that as "fixed" would have deleted the only witness of a live defect. MEASURED with
+/// one field moved to `Float`, which derives `NonEq` instead and leaves the carrier
+/// with no provision of its own: `Pair` and `Set` are refused with `no impl matches`
+/// naming the PRELUDE sort's parameter (`PartialEq[T = anthill.prelude.Pair.A]`,
+/// `Eq[T = anthill.prelude.Set.T]`) while `Duple` — same shape, unclaimed name — loads.
+/// The short-name carrier match is untouched; the population it can still bite is the
+/// composites WI-1098 leaves underivable. WI-872 stays open, and its acceptance is
+/// unchanged.
 #[test]
 fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
     let composite = |name: &str, ctor: &str| {
         program(
             "wi872.shadow",
             &format!(
-                "  sort {name}\n    entity {ctor}(a: Int64, b: Int64)\n  end\n  \
+                "  sort {name}\n    entity {ctor}(a: Float, b: Int64)\n  end\n  \
                  sort Use\n    \
                  operation same(n: Int64) -> Int64 =\n      \
-                 if PartialEq.eq({ctor}(a: 1, b: 2), {ctor}(a: 1, b: 2)) then 1 else 0\n  end"
+                 if PartialEq.eq({ctor}(a: 1.0, b: 2), {ctor}(a: 1.0, b: 2)) then 1 else 0\n  end"
             ),
         )
     };
@@ -759,8 +772,9 @@ fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
             "the CONTROL"
         ),
         1,
-        "a composite under a name no prelude sort provides for compares structurally — \
-         without this the two arms below would prove nothing about the NAME",
+        "a composite under a name no prelude sort provides for compares field-wise \
+         (`1.0 == 1.0`, no NaN) — without this the two arms below would prove nothing \
+         about the NAME",
     );
     for (name, ctor) in [("Pair", "mkpair"), ("Set", "mkset")] {
         let errs = match crate::common::try_load_kb_with(&composite(name, ctor)) {

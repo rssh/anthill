@@ -1,24 +1,27 @@
-//! WI-664 — composite `Eq`/`NonEq` derivation (proposal 004 / library, WI-644).
+//! WI-664 / WI-1098 — composite `Eq`/`NonEq` derivation (proposal 004 / library,
+//! WI-644).
 //!
 //! Equality lawfulness PROPAGATES from a composite's fields, mirroring Rust's
 //! `derive`: an entity / named-tuple is a lawful `Eq` iff every field is `Eq`, and
-//! is `NonEq` (partial) if any field is `NonEq` (reaches an IEEE `Float`). The two
-//! coupled halves this module owns:
+//! is `NonEq` (partial) if any field is `NonEq` (reaches an IEEE `Float`). The parts
+//! this module owns:
 //!
-//! * **Classification** ([`run`]) — a sort is PARTIAL iff it (transitively) reaches
-//!   an IEEE `Float` leaf (a `NonEq` provider) through composite fields, WITHOUT
-//!   crossing a lawful-Eq BOUNDARY. Computed as a monotone FIXPOINT over the
-//!   field-reference graph (not a truncating DFS), so it is sound for recursive and
-//!   mutually-recursive sorts. A boundary is a sort whose `eq` is DISPATCHED — a
-//!   declared `operation eq`, an op-bound provision (`fact PartialEq[T=X, eq=…]`),
-//!   or (WI-837) a WITNESS SORT's `eq` — read through the very predicate the
-//!   eq-dispatch index uses (`load::EqDispatchIndex`, built by
-//!   `load::build_eq_dispatch_index`), so the classifier's boundary is exactly the
-//!   resolver's dispatch boundary. Since WI-856 the composite half of the DOMAIN is
-//!   shared as well ([`composite_sorts`]). That is what keeps `TotalFloat` (a `Float`
-//!   wrapper that declares its own total `eq`) lawfully `Eq` — and shields a
-//!   composite that wraps it — while a plain `Point(x: Float, y: Float)` becomes
-//!   `NonEq`.
+//! * **Classification** ([`classify`]) — ONE fixpoint pair over the field-reference
+//!   graph (not a truncating DFS), so it is sound for recursive and mutually-recursive
+//!   sorts. A sort is PARTIAL iff it (transitively) reaches an IEEE `Float` leaf (a
+//!   `NonEq` provider) through composite fields, WITHOUT crossing a lawful-Eq
+//!   BOUNDARY — a LEAST fixpoint, since partiality grows from a known-partial leaf.
+//!   A sort is TOTAL iff every field is `Eq` — a GREATEST one, since totality must
+//!   hold for ALL fields and so shrinks from an optimistic seed ([`total_composites`]).
+//!   A boundary is a sort whose `eq` is DISPATCHED — a declared `operation eq`, an
+//!   op-bound provision (`fact PartialEq[T=X, eq=…]`), or (WI-837) a WITNESS SORT's
+//!   `eq` — read through the very predicate the eq-dispatch index uses
+//!   (`load::EqDispatchIndex`, built by `load::build_eq_dispatch_index`), so the
+//!   classifier's boundary is exactly the resolver's dispatch boundary. Since WI-856
+//!   the composite half of the DOMAIN is shared as well ([`composite_sorts`]). That is
+//!   what keeps `TotalFloat` (a `Float` wrapper that declares its own total `eq`)
+//!   lawfully `Eq` — and shields a composite that wraps it — while a plain
+//!   `Point(x: Float, y: Float)` becomes `NonEq`.
 //!
 //! * **Behavior wiring** — [`KnowledgeBase::field_wise_noneq_carriers`] (the
 //!   constructor functors of `Partial` sorts) is what the resolver's `sem_eq_core`
@@ -28,13 +31,18 @@
 //!   `eq(Point(nan,_), Point(nan,_))` reduces to `eq(nan,nan) ∧ … = false`,
 //!   agreeing with the field-wise C++ `operator==`.
 //!
-//! [`run`] also asserts the derived `NonEq`+`PartialEq` provision facts for each
-//! `Partial` composite so a user `provides Eq[Point]` conflicts with the derived
-//! `NonEq[Point]` at load (the WI-658 `check_eq_noneq_exclusive` route — "composes
-//! automatically"). It runs AFTER the provider-coverage checks (so a derived
-//! `NonEq`'s witness `nonEqRefl` is not held to op-backing: it is a propagated
-//! classification, witnessed by the partial field, not a hand-declared primitive)
-//! and BEFORE `check_eq_noneq_exclusive`.
+//! * **Provision assertion, at TWO points in the pipeline.** [`run`] asserts the
+//!   derived `NonEq`+`PartialEq` for each `Partial` composite so a user
+//!   `provides Eq[Point]` conflicts with the derived `NonEq[Point]` at load (the
+//!   WI-658 `check_eq_noneq_exclusive` route — "composes automatically"). It runs
+//!   AFTER the provider-coverage checks (so a derived `NonEq`'s witness `nonEqRefl`
+//!   is not held to op-backing: it is a propagated classification, witnessed by the
+//!   partial field, not a hand-declared primitive) and BEFORE
+//!   `check_eq_noneq_exclusive`. [`derive_total_eq`] asserts the derived
+//!   `Eq`+`PartialEq` for each `Total` composite, and must run BEFORE the typer AND
+//!   have its rows reach the sort-ops table (its call site refreshes that table for
+//!   exactly this reason) — that function's doc carries why, and why the `NonEq`
+//!   half cannot join it.
 //!
 //! SCOPE (proposal 004 / WI-664): entities + named tuples with CONCRETE fields. A
 //! partial leaf reached only THROUGH a parametric container (`Option[Float]`,
@@ -43,7 +51,11 @@
 //! BASE sort (`Option`), whose element param is abstract, so the concrete `Float`
 //! argument is not seen and such a composite classifies non-partial. It is left
 //! non-partial (conservative: structural eq, no derived `NonEq`), NOT silently
-//! claimed handled.
+//! claimed handled. WI-1098 meets the SAME boundary from the other side, where being
+//! wrong would be a false CLAIM rather than a missed refusal: a composite with a
+//! parametric field, and a parametric sort itself, derive NO `Eq` — their lawful
+//! equality is conditional on their arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`),
+//! and conditional derivation is not yet done.
 
 use std::collections::HashSet;
 
@@ -56,14 +68,48 @@ use crate::kb::term_view::{TermView, ViewHead};
 use crate::kb::ClauseKind;
 use crate::kb::KnowledgeBase;
 
-/// WI-664 entry point (a post-load pass). See the module header for placement.
-pub(crate) fn run(kb: &mut KnowledgeBase) {
+/// The lawfulness classification of every composite carrier — the fixpoint both
+/// assertion passes read, computed by [`classify`]. ONE owner for the rule, because
+/// the two halves are asserted at DIFFERENT points in the pipeline (see [`run`]) and
+/// a recomputation could disagree: a sort classified Total by one and Partial by the
+/// other would get an `Eq` beside a `NonEq`, which `check_eq_noneq_exclusive` reports
+/// as a load error against a program the author never wrote.
+pub(crate) struct EqClassification {
+    /// Every composite carrier sort, in the ORIGINAL (possibly alias) symbols
+    /// `composite_sorts` registered — what `assert_provides` and
+    /// `field_constructors_of_sort` are keyed by.
+    sorts: Vec<Symbol>,
+    /// Canonical sorts whose `eq` is DISPATCHED (the author's own).
+    boundary: HashSet<Symbol>,
+    /// Canonical sorts that (transitively) reach an IEEE `Float` leaf.
+    partial: HashSet<Symbol>,
+    /// Each composite's field sorts, canonical on both sides — the fixpoint's edges.
+    field_sorts: Vec<(Symbol, Vec<Symbol>)>,
+}
+
+/// WI-664 — compute the classification. Runs ONCE, at the EARLIER of the two
+/// assertion points ([`derive_total_eq`]), because every input is final by then: the
+/// entity field-type registry (`declare_field_types`), the sort-ops table and the
+/// eq-dispatch index (`build_eq_dispatch_index`, immediately above the call), and the
+/// source-level `SortProvidesInfo` facts.
+///
+/// THE FIELD REGISTRY IS NOT FROZEN, and the invariant is narrower than "nothing
+/// changes" (found by review, which is why it is stated exactly rather than loosely):
+/// `typing::elaborate_self_field_ties` (WI-1082) rewrites `entity_field_types` in
+/// place DURING `type_check_sorts`, i.e. between this call and [`run`]. What the
+/// fixpoint reads is only each field's HEAD SORT
+/// ([`composite_field_sorts`] → `sort_functor_of_view`), and that pass fills UNWRITTEN
+/// type ARGUMENTS (`rigidify_unwritten_sort_params`) without touching the head — so
+/// the edge set is the same either side of it. [`run`] asserts that in debug rather
+/// than trusting it: an elaboration that DID move a head would silently drop a
+/// composite's `NonEq` and with it `field_wise_noneq_carriers`, re-laundering
+/// `eq(Point(nan,_), Point(nan,_))` to true with nothing pointing at the cause.
+pub(crate) fn classify(kb: &mut KnowledgeBase) -> EqClassification {
     let noneq_sym = kb.try_resolve_symbol("anthill.prelude.NonEq");
-    let partialeq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq");
-    // The eq-dispatch supply index — built here, before any `assert_provides` below,
-    // so the boundary set is computed against the same provisions the load-time index
-    // build saw. `None` on a prelude-less KB (no `PartialEq.eq` ⇒ no `eq` spec op
-    // exists, so nothing can supply an impl of it and no sort is a boundary).
+    // The eq-dispatch supply index — built here, before any `assert_provides`, so the
+    // boundary set is computed against the same provisions the load-time index build
+    // saw. `None` on a prelude-less KB (no `PartialEq.eq` ⇒ no `eq` spec op exists, so
+    // nothing can supply an impl of it and no sort is a boundary).
     let eq_index = super::load::EqDispatchIndex::build(kb);
 
     // Every composite carrier sort: data sorts (with variant constructors) plus
@@ -113,13 +159,112 @@ pub(crate) fn run(kb: &mut KnowledgeBase) {
         }
     }
 
+    EqClassification {
+        sorts,
+        boundary,
+        partial,
+        field_sorts,
+    }
+}
+
+/// WI-1098 — assert the derived `Eq` (+ its `PartialEq` base) for every TOTAL
+/// composite. A PRE-TYPER pass, and that placement is the whole point: a provision
+/// only reaches a call site through the typer, which tags each spec-op call with a
+/// `CallClass` that `req_insertion` turns into the caller-frame dictionary. Asserted
+/// where the `NonEq` half is ([`run`], after the typer) the fact exists and NO call
+/// site was ever rewritten to read it — MEASURED: `List.contains(cons(red, nil), red)`
+/// still died with `DeferToRequirement: requirement param __req_eq not bound in caller
+/// frame … frame binds []`, byte-identical to the no-provision baseline.
+///
+/// The SECOND reader is the sort-ops table, whose pass 2 inherits the spec's `eq` onto
+/// each providing carrier; the call site refreshes that table right after this pass
+/// because it is built above (the eq-dispatch index the classification reads is built
+/// off it). Without the refresh the provision exists, dispatch RESOLVES it, and then
+/// `sort_ops_lookup(carrier, eq)` answers `None` → `NoMatch` — so deriving a provision
+/// BREAKS a direct `eq(a, b)` call that worked without one. `load.rs` carries that
+/// measurement.
+///
+/// The `NonEq` half cannot move here, and the asymmetry has a reason rather than
+/// being an accident of ordering: a derived `NonEq` carries the witness operation
+/// `nonEqRefl`, which no carrier backs, so it must stand AFTER `check_provider_operations`
+/// (see the module header). A derived `Eq`/`PartialEq` introduces no unbacked operation
+/// — its `eq` is the builtin structural one, exactly as a hand-written `provides
+/// PartialEq[T = Colour]` is, and that spelling passes both provider-coverage checks
+/// today (the explicit-`provides` control). So this half is held to the same bar as a
+/// written provision, which is what it should be.
+pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
+    let partialeq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq");
+    let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq");
+    // `Eq` requires `PartialEq`, so BOTH are asserted, exactly as the `NonEq` half
+    // asserts its own `PartialEq` base.
+    //
+    // NO `sort_provides` RE-CHECK per carrier, unlike [`run`]'s loop, and the two
+    // reasons it needs one are both already answered above: a carrier that ALREADY
+    // provides is out of the seed (directly via `spoken_for`, transitively via
+    // `provides_eq`), and the ALIAS case `run`'s guard exists for — two alias-distinct
+    // symbols of ONE composite sort, which would otherwise each assert a row — is
+    // removed at the source by `total_composites` returning one symbol per CANONICAL
+    // sort. Re-asking would be a live relation scan per carrier at a point where
+    // `kb.provides_index` is `None`, for an answer the seed computed.
+    for s in total_composites(kb, c) {
+        if let Some(pe) = partialeq_sym {
+            assert_provides(kb, s, pe);
+        }
+        if let Some(eq) = eq_sym {
+            assert_provides(kb, s, eq);
+        }
+    }
+}
+
+/// WI-664 entry point (a post-load pass). See the module header for placement, and
+/// [`derive_total_eq`] for why the `Eq` half of the same classification is asserted
+/// before the typer instead of here.
+///
+/// TICKET WI-1103 — THE PLACEMENT DODGE IS SINGLE-PHASE ONLY, and this half is the one
+/// it fails for. Standing after `check_provider_operations` keeps a derived `NonEq`'s
+/// unbacked `nonEqRefl` from being refused *as it is created*; the FACT then persists,
+/// and the NEXT `load_phase_inner` runs that check again with the row already in the
+/// relation, this time reaching it first. MEASURED at 51d17d22 (so: pre-WI-1098, and
+/// unchanged by it): `load_stdlib` then `load_incremental` over the full stdlib +
+/// host closure refuses all five derived-`NonEq` carriers. The `Eq` half has no such
+/// exposure — it introduces no unbacked operation, so a later phase re-checking it
+/// passes, which is the same thing as being held to a written provision's bar.
+pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
+    let noneq_sym = kb.try_resolve_symbol("anthill.prelude.NonEq");
+    let partialeq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq");
+    // The classification was computed before the typer, and the typer REWRITES the
+    // field registry (`elaborate_self_field_ties`). [`classify`]'s doc says why that is
+    // still sound — the rewrite fills type arguments, never a field's head sort — and
+    // this is that claim as a check rather than as prose. Debug-only: it re-walks every
+    // composite's fields, which is a per-load cost the release build should not pay for
+    // an invariant the suite exercises on every one of its stdlib loads.
+    debug_assert!(
+        {
+            let now: Vec<(Symbol, Vec<Symbol>)> = c
+                .sorts
+                .iter()
+                .map(|&s| {
+                    let fs = composite_field_sorts(kb, s)
+                        .into_iter()
+                        .map(|f| kb.canonical_sort_sym(f))
+                        .collect();
+                    (kb.canonical_sort_sym(s), fs)
+                })
+                .collect();
+            now == c.field_sorts
+        },
+        "eq_derive: a pass between `classify` and `run` moved a field's HEAD SORT, so \
+         the Partial/Total classification was computed on edges that no longer exist — \
+         a composite silently loses its derived `NonEq` and its field-wise comparison"
+    );
+
     // Build the field-wise carrier set + derive `NonEq`/`PartialEq` for each Partial
     // composite. (Leaf `NonEq` providers like `Float` are in `partial` but not in
     // `sorts`, so they neither add constructors nor re-derive.)
     let mut field_wise: HashSet<Symbol> = HashSet::new();
     let mut derive: Vec<Symbol> = Vec::new();
-    for &s in &sorts {
-        if partial.contains(&kb.canonical_sort_sym(s)) {
+    for &s in &c.sorts {
+        if c.partial.contains(&kb.canonical_sort_sym(s)) {
             for ctor in kb.field_constructors_of_sort(s) {
                 field_wise.insert(ctor);
             }
@@ -140,6 +285,142 @@ pub(crate) fn run(kb: &mut KnowledgeBase) {
             }
         }
     }
+}
+
+/// WI-1098 — the composites that derive a lawful `Eq`: the symmetric half of the
+/// `Partial`/`NonEq` classification above. An entity / named tuple whose every field
+/// is itself lawfully `Eq` HAS a lawful structural equality, and saying so is what
+/// discharges a `requires Eq[T]` at the carrier (`List.contains(l, red)`) — without
+/// it such a call loads clean and dies inside the evaluator with `DeferToRequirement:
+/// requirement param __req_eq not bound`.
+///
+/// A GREATEST fixpoint, where the `Partial` half above is a least one, and the
+/// direction is forced: `Partial` GROWS from a known-partial leaf (`Float`), while
+/// `Total` must hold for every field, so it SHRINKS from an optimistic seed. That is
+/// also what decides a RECURSIVE composite — `node(l: Tree, r: Tree)` is `Eq` iff
+/// `Tree` is `Eq`, which is true coinductively and underivable by any least fixpoint.
+///
+/// Excluded from the seed, each for its own reason:
+///  * a lawful-Eq BOUNDARY — its `eq` is the author's, dispatched
+///    ([`is_eq_boundary`]); deriving a provision over it would offer a SECOND
+///    candidate for the same carrier (058 §4.9) where the author supplied one.
+///  * a `Partial` composite — the other half of this same classification already
+///    derives its `NonEq`, and `Eq` ⊥ `NonEq` (WI-658).
+///  * a carrier that ALREADY provides `Eq` — the derivation is idempotent, not a
+///    duplicate-provision error (the explicit-`provides` control).
+///  * a PARAMETRIC sort (`List[T]`, `Option[T]`) — its lawful equality is CONDITIONAL
+///    on its arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`), and an unconditional
+///    `Eq[List]` would claim `List[Float]` lawful. Conditional derivation is not this
+///    ticket; the sort is left underivable rather than falsely claimed.
+///
+/// A field keeps its composite in the set only if the field's sort is NON-PARAMETRIC
+/// and either already provides `Eq` or is itself Total. The non-parametric demand is
+/// the same boundary the `Partial` half draws and for the same reason: `Pair`'s
+/// `provides Eq[Pair] :- Eq[A], Eq[B]` reads as an `Eq` provider through
+/// `sort_provides`, so a field typed `Pair[A = Float, B = Int64]` would otherwise
+/// carry a `Float` into a derived-lawful composite — the parametric-container
+/// propagation the module header documents as out of scope, here in the direction
+/// where being wrong is a false CLAIM rather than a missed one.
+fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
+    let EqClassification {
+        sorts,
+        boundary,
+        partial,
+        field_sorts,
+    } = c;
+    let Some(eq_sym) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
+        return Vec::new();
+    };
+    // `sort_provides` is a live relation scan while `kb.provides_index` is `None`
+    // (it is not built until the typer starts, after this pass), and the field walk
+    // asks the same handful of leaf sorts — `String`, `Int64`, `Symbol` — once per
+    // field across ~130 composites. Memoized per canonical symbol.
+    let mut eq_known: std::collections::HashMap<Symbol, bool> = std::collections::HashMap::new();
+    let mut provides_eq = |kb: &KnowledgeBase, s: Symbol| -> bool {
+        let key = kb.canonical_sort_sym(s);
+        match eq_known.get(&key) {
+            Some(&v) => v,
+            None => {
+                let v = super::typing::sort_provides(kb, s, eq_sym);
+                eq_known.insert(key, v);
+                v
+            }
+        }
+    };
+    let parametric = |kb: &KnowledgeBase, s: Symbol| !kb.type_param_syms_of(s).is_empty();
+    // Every carrier ANY equality provision already names — read carrier-side, which is
+    // a DIFFERENT question from the three above (WI-1069). See the seed's comment.
+    let spoken_for: HashSet<Symbol> = ["PartialEq", "Eq", "NonEq"]
+        .into_iter()
+        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
+        .flat_map(|spec| super::typing::provision_carriers_of_spec(kb, spec))
+        .collect();
+
+    let mut total: HashSet<Symbol> = sorts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            let cs = kb.canonical_sort_sym(s);
+            // `spoken_for` is not redundant with `provides_eq` / `partial` / `boundary`,
+            // and the gap it closes was a FALSE CLAIM, not a missed one. Those three all
+            // key on `sort_ref` — the PROVIDER — while a WITNESS names its carrier only
+            // in the spec's `T` binding. MEASURED: `sort WrapperNonEq { provides
+            // NonEq[T = Wrapper]; operation nonEqRefl() -> Wrapper = … }` put
+            // `WrapperNonEq` in `partial` and left `Wrapper` seeded Total, so the
+            // derivation asserted `provides Eq[Wrapper]` over an equality its author had
+            // just witnessed as NON-reflexive — and `check_eq_noneq_exclusive` stayed
+            // silent, grouping by `sort_ref` as well. The second symptom was a witness
+            // `provides PartialEq[T = C]` binding no `eq`: `C` was not a boundary and
+            // `sort_provides(C, PartialEq)` was false, so the derivation filed a SECOND
+            // `(PartialEq, C)` claim beside the author's.
+            //
+            // The rule this makes true is the one the derivation is FOR: derive where the
+            // author said NOTHING about this carrier's equality. "Nothing" has to mean
+            // "no provision names it as a carrier", not "no provision is filed under its
+            // own name".
+            !boundary.contains(&cs)
+                && !partial.contains(&cs)
+                && !spoken_for.contains(&cs)
+                && !parametric(kb, s)
+                && !provides_eq(kb, s)
+        })
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    loop {
+        let mut changed = false;
+        for (cs, fsorts) in field_sorts {
+            if !total.contains(cs) {
+                continue;
+            }
+            if fsorts
+                .iter()
+                .any(|&f| parametric(kb, f) || !(provides_eq(kb, f) || total.contains(&f)))
+            {
+                total.remove(cs);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Back to the ORIGINAL (possibly alias) symbols the caller asserts against —
+    // `assert_provides` keys the fact on the symbol it is handed, and `sorts` is what
+    // `composite_sorts` registered — but ONE PER CANONICAL SORT. The `Partial` half
+    // instead returns every alias and lets a `sort_provides` re-check in its loop
+    // suppress the duplicate (the WI-660 note: "re-deriving a duplicate `NonEq` for two
+    // alias-distinct symbols of one composite sort"). Deduping here answers the same
+    // question by construction, so [`derive_total_eq`] needs no per-carrier relation
+    // scan; FIRST wins, which is the row that re-check would have kept.
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    sorts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            let cs = kb.canonical_sort_sym(s);
+            total.contains(&cs) && seen.insert(cs)
+        })
+        .collect()
 }
 
 /// Every composite carrier sort: data sorts (with variant constructors) plus

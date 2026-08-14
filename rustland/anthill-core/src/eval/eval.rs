@@ -1893,6 +1893,20 @@ impl Interpreter {
             // fault was the value-directed-dispatched IMPL's (`WrapDesc.describe`),
             // not the op-scoped caller's (`Holder.probe`). The running op and its
             // requires-chain owner are both in hand here; print them.
+            //
+            // TICKET WI-1102 — THIS IS STILL AN `Internal`, AND FOR ONE POPULATION IT
+            // SHOULD NOT BE. A concrete carrier that provides no `Eq` reaches here
+            // through `List.contains`'s `requires Eq[T]`, and that is a PROGRAM
+            // condition, not a compiler-invariant violation: it wants a LOAD refusal
+            // naming the carrier sort and the missing provision. WI-1098 derives the
+            // provision for every TOTAL composite and so removed the common case, but
+            // three classes remain and all land here with this same text — a composite
+            // with a parametric field, a carrier whose `eq` is dispatched from a
+            // witness (the provision files under the WITNESS, not the carrier), and a
+            // `Float` composite for which the requirement is UNSATISFIABLE. The carrier
+            // is not reachable from this frame — only the spec is, via
+            // `op_dict_entries`' `RequiresEntry.required_sort` — which is why WI-1102
+            // puts the refusal at the CALL, at load, where the typer has both.
             find_requirement(&top.requirements, name_sym)
                 .ok_or_else(|| {
                     // Built INSIDE the closure: this is the per-deferred-dispatch path,

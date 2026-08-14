@@ -69,9 +69,17 @@ fn sql_store_shape() -> String {
 /// Every provision as `(carrier, spec)` SHORT names — the shared
 /// `common::sort_provisions` walk, shortened because every claim here is about a
 /// name this file spells literally.
+///
+/// WI-1098 — outside the EQUALITY family. Every claim in this file is that a carrier
+/// with no host realization may not certify a spec whose operations nothing
+/// implements; structural equality is the one spec that needs no realization to be
+/// honest — it is derived from the carrier's own fields — so `SqlStore provides
+/// PartialEq` is not a backend claim and must not read as one. `Vec3`'s derived
+/// `PartialEq`/`NonEq` rows have been in this population since WI-664 for the same
+/// reason; WI-1098 only widened it to the total half.
 fn provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
     let short = |s: String| s.rsplit('.').next().unwrap_or("").to_string();
-    crate::common::sort_provisions(kb)
+    crate::common::sort_provisions_outside_equality(kb)
         .into_iter()
         .map(|(c, s)| (short(c), short(s)))
         .collect()

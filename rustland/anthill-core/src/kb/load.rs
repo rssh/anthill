@@ -8543,6 +8543,51 @@ fn load_phase_inner(
     // Load-blocking.
     all_errors.extend(build_eq_dispatch_index(kb));
     mark!("build_eq_dispatch_index");
+    // WI-664/WI-1098: classify every composite carrier as lawful-`Eq` (Total) or
+    // `NonEq` (Partial). HERE, because every input the fixpoint reads is final by this
+    // line — the entity field-type registry, the sort-ops table, the eq-dispatch index
+    // built immediately above, and the source-level provision facts — and because the
+    // TOTAL half must be ASSERTED before the typer runs. A provision reaches a call
+    // site only through the typer's `CallClass` tagging and `req_insertion`'s rewrite,
+    // so a derived `Eq` asserted after them exists but is read by nobody: MEASURED,
+    // `List.contains(cons(red, nil), red)` over a `provides`-less entity still died
+    // with `DeferToRequirement: … __req_eq not bound … frame binds []`.
+    // The PARTIAL half stays below (`eq_derive::run`) — its derived `NonEq` carries an
+    // unbacked `nonEqRefl` witness and must dodge `check_provider_operations`; the
+    // derived `Eq`/`PartialEq` introduce no unbacked operation and are held to the same
+    // bar as the hand-written `provides PartialEq[T = X]` they are indistinguishable
+    // from. ONE classification feeds both, so the two halves cannot disagree about a
+    // carrier and hand `check_eq_noneq_exclusive` a conflict nobody wrote.
+    let eq_classification = super::eq_derive::classify(kb);
+    super::eq_derive::derive_total_eq(kb, &eq_classification);
+    mark!("eq_derive::classify + derive_total_eq");
+    // A provision is read by the sort-ops table too, and that is not a second place
+    // to remember — it is the read that DECIDES the derivation. `build_sort_ops_table`'s
+    // pass 2 inherits the spec's operations onto each providing carrier, so
+    // `Colour.eq ↦ PartialEq.eq` exists only if `Colour provides PartialEq` did when
+    // the table was built (and the table is built ABOVE this line, because the
+    // eq-dispatch index the classification reads is built off it); without
+    // it `dispatch_spec_op_cached` resolves the provision, asks `sort_ops_lookup(Colour,
+    // eq)`, gets `None`, and answers `NoMatch` — MEASURED as `type mismatch in
+    // PartialEq.eq.dispatch: no impl matches` on EVERY derived carrier, including the
+    // three wi664 fixtures that had loaded clean for a year. The hand-written
+    // `provides PartialEq[T = Colour]` differs in nothing but being visible here, which
+    // is what made the two spellings diverge.
+    // Idempotent by construction — pass 1 rewrites identical rows and pass 2 fills only
+    // what `sort_ops_lookup` answers `None` for — so this is a DELTA, not a rebuild that
+    // could displace an override. The eq-dispatch index above needs no such refresh: its
+    // own-member route is `carrier_own_op`, which filters the spec op itself, so the rows
+    // added here are invisible to it and the classification stays what it was computed on.
+    //
+    // The DEFAULTS substrate needs none either, and for the opposite reason: both of its
+    // builds (`seed_default_provider_index` below, `build_default_provider_index` after
+    // `eq_derive::run`) are downstream of this line, so unlike the derived `NonEq` rows —
+    // which land BETWEEN the two, which is why there are two — these are in the relation
+    // before either reads it.
+    build_sort_ops_table(kb);
+    // Its OWN bucket: this is a full sort-ops pass, and folding it into the derivation's
+    // mark would attribute the table build to the classification.
+    mark!("build_sort_ops_table (derived-provision delta)");
     // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
     // BEFORE op-body type-checking, because the typer's operation-boundary
     // masking (WI-353, `region::op_boundary_effects`) consumes them via
@@ -8624,7 +8669,7 @@ fn load_phase_inner(
     // and miss a just-derived edge (e.g. re-deriving a duplicate `NonEq` for two
     // alias-distinct symbols of one composite sort).
     kb.provides_index = None;
-    super::eq_derive::run(kb);
+    super::eq_derive::run(kb, &eq_classification);
     // Rebuild now the relation is frozen again: eq_derive is the LAST load pass to
     // assert `SortProvidesInfo`, so the post-eq_derive checks below
     // (`check_eq_noneq_exclusive`, `check_use_site_requires_eq`) and the persisted
