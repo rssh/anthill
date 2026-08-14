@@ -67,6 +67,7 @@ use crate::kb::term::Term;
 use crate::kb::term_view::{TermView, ViewHead};
 use crate::kb::ClauseKind;
 use crate::kb::KnowledgeBase;
+use crate::kb::RuleId;
 
 /// The lawfulness classification of every composite carrier — the fixpoint both
 /// assertion passes read, computed by [`classify`]. ONE owner for the rule, because
@@ -220,15 +221,20 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
 /// [`derive_total_eq`] for why the `Eq` half of the same classification is asserted
 /// before the typer instead of here.
 ///
-/// TICKET WI-1103 — THE PLACEMENT DODGE IS SINGLE-PHASE ONLY, and this half is the one
-/// it fails for. Standing after `check_provider_operations` keeps a derived `NonEq`'s
-/// unbacked `nonEqRefl` from being refused *as it is created*; the FACT then persists,
-/// and the NEXT `load_phase_inner` runs that check again with the row already in the
-/// relation, this time reaching it first. MEASURED at 51d17d22 (so: pre-WI-1098, and
-/// unchanged by it): `load_stdlib` then `load_incremental` over the full stdlib +
-/// host closure refuses all five derived-`NonEq` carriers. The `Eq` half has no such
-/// exposure — it introduces no unbacked operation, so a later phase re-checking it
-/// passes, which is the same thing as being held to a written provision's bar.
+/// WI-1103 — THE PLACEMENT ALONE WAS SINGLE-PHASE ONLY, and this half is the one it
+/// failed for. Standing after `check_provider_operations` keeps a derived `NonEq`'s
+/// unbacked `nonEqRefl` from being refused *as it is created*; but the FACT then
+/// persists, and the NEXT `load_phase_inner` runs that check again with the row
+/// already in the relation, this time reaching it FIRST. MEASURED at 51d17d22 (so:
+/// pre-WI-1098, and unchanged by it): `load_stdlib` then `load_incremental` over the
+/// full stdlib + host closure refused all five derived-`NonEq` carriers. So the
+/// placement is no longer load-bearing on its own — every row asserted below is
+/// MARKED (`mark_unbacked_derived_provision`) and the coverage walk skips it by that
+/// mark in EVERY phase. The placement stays because the two must not disagree: were
+/// this pass moved above the checks, the phase that derives a row would refuse it
+/// before the mark existed. The `Eq` half has no such exposure — it introduces no
+/// unbacked operation, so a later phase re-checking it passes, which is the same
+/// thing as being held to a written provision's bar.
 pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
     let noneq_sym = kb.try_resolve_symbol("anthill.prelude.NonEq");
     let partialeq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq");
@@ -273,15 +279,23 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
     }
     kb.field_wise_noneq_carriers = field_wise;
 
+    // WI-1103 — MARK every row asserted here. The exemption from provider-coverage
+    // op-backing is this pass's placement made a property of the ROW, so it holds in
+    // the phase that derives the row AND in every later phase, which walks the row
+    // before this pass re-runs. Both specs are marked, not just `NonEq`: the placement
+    // exempted both, and reproducing it exactly is what keeps a second phase's verdict
+    // equal to the first's rather than merely closer to it.
     for s in derive {
         if let Some(ne) = noneq_sym {
             if !super::typing::sort_provides(kb, s, ne) {
-                assert_provides(kb, s, ne);
+                let rid = assert_provides(kb, s, ne);
+                kb.mark_unbacked_derived_provision(rid);
             }
         }
         if let Some(pe) = partialeq_sym {
             if !super::typing::sort_provides(kb, s, pe) {
-                assert_provides(kb, s, pe);
+                let rid = assert_provides(kb, s, pe);
+                kb.mark_unbacked_derived_provision(rid);
             }
         }
     }
@@ -541,7 +555,12 @@ fn composite_field_sorts(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
 /// = carrier))` fact — byte-identical in shape to `Float`'s `fact NonEq[T = Float]`
 /// (the loader's `maybe_emit_fact_provides_info`, load.rs), so every provides-fact
 /// reader (`check_eq_noneq_exclusive`, `sort_provides`, …) reads it unchanged.
-fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) {
+///
+/// WI-1103 — returns the row's `RuleId` so [`run`] can MARK it (the shape stays
+/// byte-identical; the mark is KB-side, not a field). Deliberately not marked here:
+/// [`derive_total_eq`] asserts through this same function and its rows are held to
+/// provider coverage.
+fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) -> RuleId {
     let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
     let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
     let sort_ref_key = kb.intern("sort_ref");
@@ -581,7 +600,7 @@ fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) {
         provides_sort,
         carrier, // domain = the carrier
         None,
-    );
+    )
 }
 
 /// WI-664 — the outcome of decomposing two operands for a FIELD-WISE semantic

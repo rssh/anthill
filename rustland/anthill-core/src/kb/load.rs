@@ -8553,11 +8553,17 @@ fn load_phase_inner(
     // `List.contains(cons(red, nil), red)` over a `provides`-less entity still died
     // with `DeferToRequirement: … __req_eq not bound … frame binds []`.
     // The PARTIAL half stays below (`eq_derive::run`) — its derived `NonEq` carries an
-    // unbacked `nonEqRefl` witness and must dodge `check_provider_operations`; the
-    // derived `Eq`/`PartialEq` introduce no unbacked operation and are held to the same
-    // bar as the hand-written `provides PartialEq[T = X]` they are indistinguishable
-    // from. ONE classification feeds both, so the two halves cannot disagree about a
-    // carrier and hand `check_eq_noneq_exclusive` a conflict nobody wrote.
+    // unbacked `nonEqRefl` witness that `check_provider_operations` must not hold to
+    // op-backing; the derived `Eq`/`PartialEq` introduce no unbacked operation and are
+    // held to the same bar as the hand-written `provides PartialEq[T = X]` they are
+    // indistinguishable from. ONE classification feeds both, so the two halves cannot
+    // disagree about a carrier and hand `check_eq_noneq_exclusive` a conflict nobody
+    // wrote.
+    // WI-1103 — that exemption is NOT this ordering. It is a per-row MARK
+    // (`is_unbacked_derived_provision`), because the ordering only ever protected the
+    // row being CREATED: the fact persists, and the next `load_phase_inner` walks it
+    // before `eq_derive` re-runs. Do not read the split as "below the check ⇒ exempt"
+    // and delete the mark — that re-opens a five-carrier phase-2 refusal.
     let eq_classification = super::eq_derive::classify(kb);
     super::eq_derive::derive_total_eq(kb, &eq_classification);
     mark!("eq_derive::classify + derive_total_eq");
@@ -8660,6 +8666,14 @@ fn load_phase_inner(
     // backing — and BEFORE `check_eq_noneq_exclusive`, so a user `provides
     // Eq[Point]` over a Float-containing `Point` conflicts with the derived
     // `NonEq[Point]` and is rejected (the WI-658 route, "composes automatically").
+    // WI-1103 — the placement is NOT what carries the coverage exemption any more, and
+    // reading it that way is the trap: it protected only the row being created, so a
+    // SECOND phase walked the row this pass had already asserted and refused five
+    // stdlib carriers. Each row is MARKED here and skipped by that mark
+    // (`KnowledgeBase::is_unbacked_derived_provision`) in every phase. The position is
+    // still load-bearing for the OTHER half of the sentence above — being before
+    // `check_eq_noneq_exclusive` — and so that the deriving phase cannot refuse a row
+    // before its mark exists.
     // WI-660 — `eq_derive::run` both READS the provider relation (`sort_provides`, to
     // skip an already-provided derivation) AND ASSERTS new `SortProvidesInfo` facts
     // (derived `NonEq`/`PartialEq` for Float-containing composites) in the SAME loop.

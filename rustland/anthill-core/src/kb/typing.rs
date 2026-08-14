@@ -25165,6 +25165,23 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         if Some(p.spec) == effects_runtime {
             continue;
         }
+        // WI-1103 — a row `eq_derive::run` DERIVED. Its `NonEq` witness `nonEqRefl` is
+        // a propagated classification (the partial field is the witness), not a
+        // hand-declared primitive, so it is not held to op-backing — the decision is
+        // `eq_derive`'s module header's, and this is where it is read. It used to be
+        // read from the PASS ORDER (`run` stands below this check), which protects the
+        // row being created and not the row that already exists: a second
+        // `load_phase_inner` over the same KB reaches these rows here, BEFORE
+        // `eq_derive` re-runs, and refused a KB that had just loaded clean.
+        //
+        // ONLY this walk skips. The coherence grouping below and
+        // `check_provision_binding_agreement` still see the derived rows, because
+        // their questions — is there a second candidate for this dictionary, do the
+        // bindings agree — are about what the relation SAYS, and a derived row says
+        // it as loudly as a written one.
+        if kb.is_unbacked_derived_provision(p.rid) {
+            continue;
+        }
         // Abstract carrier (no constructors) → sub-interface, ops may stay
         // primitives. Only concrete carriers are checked.
         if !concrete.contains(&p.carrier) {
@@ -25349,6 +25366,7 @@ fn collect_provisions(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<Provision
             carrier,
             spec,
             spec_view,
+            rid,
         });
     }
     provisions
@@ -25785,6 +25803,11 @@ struct Provision {
     carrier: Symbol,
     spec: Symbol,
     spec_view: TermId,
+    /// WI-1103 — the row's own fact, so the op-backing walk can ask whether it was
+    /// DERIVED (`KnowledgeBase::is_unbacked_derived_provision`). Only that walk asks:
+    /// coherence and binding agreement are about what the relation SAYS, and a
+    /// derived row says it as loudly as a written one.
+    rid: RuleId,
 }
 
 /// WI-838 / WI-859 — what supplies the dictionary for one `(spec, carrier)`. The
@@ -57015,3 +57038,4 @@ mod wi1084_arrow_function_unify_tests {
         );
     }
 }
+

@@ -1149,6 +1149,27 @@ pub struct KnowledgeBase {
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
     resolved_requires_facts: HashSet<RuleId>,
 
+    /// WI-1103 — the `SortProvidesInfo` rows [`eq_derive::run`] asserts (a Partial
+    /// composite's derived `NonEq` + `PartialEq`). `check_provider_operations` skips
+    /// their op-backing walk: a derived `NonEq`'s `nonEqRefl` witness is a PROPAGATED
+    /// classification, witnessed by the partial field, not a hand-declared primitive
+    /// — `eq_derive`'s module header owns that decision.
+    ///
+    /// The exemption used to be POSITIONAL — `run` stands after the coverage checks,
+    /// so the rows it asserts were never walked. That protects the row being CREATED
+    /// and not the row that already EXISTS: the fact persists in the KB, and every
+    /// later `load_phase_inner` walks it BEFORE `eq_derive` re-runs, so a KB that
+    /// loaded clean could not be loaded into again (`load_stdlib` + `load_incremental`
+    /// over the full closure died on WI-664's own derived rows, five of them).
+    /// Keyed by RuleId, exactly like the sibling `resolved_requires_facts` above and
+    /// for the same reason: the question is per-ROW and crosses phases.
+    ///
+    /// SCOPE is `run`'s rows ALONE, so this reproduces the placement rather than
+    /// widening it. `derive_total_eq`'s derived `Eq`/`PartialEq` stand ABOVE the
+    /// checks and stay held to them — they introduce no unbacked operation and are
+    /// indistinguishable from the hand-written `provides PartialEq[T = X]`.
+    unbacked_derived_provisions: HashSet<RuleId>,
+
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
 
@@ -1501,6 +1522,7 @@ impl KnowledgeBase {
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),
+            unbacked_derived_provisions: HashSet::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             unsuppliable_requirements: Vec::new(),
@@ -1622,6 +1644,20 @@ impl KnowledgeBase {
     /// Mark a (post-reassert) SortRequiresInfo RuleId as finalized.
     pub fn mark_requires_resolved(&mut self, rid: RuleId) {
         self.resolved_requires_facts.insert(rid);
+    }
+
+    /// WI-1103 — was this `SortProvidesInfo` row DERIVED by [`eq_derive::run`], i.e.
+    /// is it exempt from the provider-coverage op-backing walk? See
+    /// [`Self::unbacked_derived_provisions`] for why the exemption is a property of
+    /// the row and not of the pass ordering.
+    pub(crate) fn is_unbacked_derived_provision(&self, rid: RuleId) -> bool {
+        self.unbacked_derived_provisions.contains(&rid)
+    }
+
+    /// WI-1103 — record a row [`eq_derive::run`] derived. Called at the assertion,
+    /// so the mark and the fact cannot come apart.
+    pub(crate) fn mark_unbacked_derived_provision(&mut self, rid: RuleId) {
+        self.unbacked_derived_provisions.insert(rid);
     }
 
     // ── Source & occurrence access ─────────────────────────────

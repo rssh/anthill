@@ -20,9 +20,27 @@ fn parse_files(paths: &[std::path::PathBuf]) -> Vec<anthill_core::parse::ir::Par
         .collect()
 }
 
+/// Phase 1 over the FULL closure — `stdlib/anthill/` **plus** `anthill-stl/anthill/`.
+///
+/// WI-1103 moved these fixtures off the stdlib-ALONE corpus, which is why the whole
+/// file was green through a defect that made every two-phase load impossible. Without
+/// the host bindings there is no `fact Eq[Int64]` and no `fact NonEq[Float]`, so
+/// `eq_derive` has no lawful-`Eq` leaf to propagate from and no partial leaf to
+/// propagate — almost nothing classifies, no `NonEq` is derived, and the derived rows
+/// whose re-check broke phase 2 never exist here. This file is the only fixture in the
+/// suite that loads two phases at all; loading less than the shipped closure in it
+/// left the path effectively untested (WI-979's shape).
+///
+/// CONTROL — MEASURED by backing the WI-1103 change out (the
+/// `is_unbacked_derived_provision` skip in `check_provider_operations`): the two
+/// callers of this helper that go on to `load_incremental`
+/// (`load_incremental_does_not_touch_stdlib_facts`, and the sibling closure in
+/// `load_incremental_equivalent_to_load_all`) FAIL with five
+/// `UnbackedProviderOperation`s. `resolve_instantiations_is_idempotent` and
+/// `at_least_one_requires_fact_marked_resolved` pass either way BY DESIGN — they stop
+/// at phase 1, which never re-walks a derived row.
 fn load_stdlib_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
 
     let parsed = parse_files(&files);
@@ -154,10 +172,14 @@ end
     );
 }
 
+/// WI-1103 — also over the FULL closure (see [`load_stdlib_kb`] for why, and for the
+/// measured back-out). One of this file's two CONTROLs for that change: it FAILS at
+/// the `load_incremental` line without it, because `check_provider_operations`
+/// re-walks phase 1's derived `NonEq` rows and refuses all five.
 #[test]
 fn load_incremental_equivalent_to_load_all() {
     // Build KB-A via one-shot load_all.
-    let stdlib = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+    let stdlib = crate::common::collect_stdlib_and_rust_bindings();
     let stdlib_parsed = parse_files(&stdlib);
     let user_parsed = parse::parse(USER_SOURCE).expect("parse user");
 
