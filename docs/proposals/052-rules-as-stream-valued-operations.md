@@ -530,11 +530,33 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    `Bool` — bare qualified `Set.member` does not resolve at all, bare unqualified and applied
    `Coll.has(1, c)` both type as `Bool`. The one route that reaches the relation face is a **second rule
    with its own name**: `rule hasRel(?x, ?c) :- has(?x, ?c)` then `Coll.hasRel` ⇒
-   `Relation[T = (x: Int64, c: Coll), E = {Error}]` (measured). `Set.subset` is the same shape; measured
-   alongside, `List.member` is the mirror case — body, zero clauses — and equally not a relation.
+   `Relation[T = (x: Int64, c: Coll), E = {Error}]` (measured). `Set.subset` is the same shape.
 
    So the language **already forces two names**. The convention names them, instead of leaving every
    author to invent `hasRel` / `memberRel` / `subsetRel` ad hoc.
+
+   **THE CONVENTION DOES NOT DEPEND ON HOW THE PREDICATE IS DEFINED.** `Set.member` (clauses, no body)
+   was the measurement that raised the question, but the naming is about what the operation IS — a
+   boolean face — not about the form its definition happens to take. `List.member` is the same
+   predicate written with a body and zero clauses, and it is `is<Name>` for the same reason: measured,
+   it is equally not citable as a relation, and a naming rule keyed on body-existence would rename an
+   operation when its definition was rewritten. **The key is the Bool RETURN TYPE.**
+
+   Three exclusions, each measured rather than assumed. Census over stdlib, `anthill-stl`, examples,
+   `anthill-todo` and `anthill-cpp-gen`: **59** Bool-returning operations, 7 already `is`-prefixed —
+
+   | class | count | why the convention does not reach it |
+   |---|---|---|
+   | **spec-owned** — `eq`, `neq`, `gt`/`gte`/`lt`/`lte`, `less`, `compare`, and every carrier implementing them | **27** | the spec owns the name; a provider implements what it provides (the `Set.eq` case below) |
+   | **effectful** — `Store.flush`, `Store.retract`, `Emitter.send`, `MutableCollection.insert` | **4+** | a Bool here is a success/status result, not a proposition. An effectful body is not a logical relation, which is the gate `bare_bodied_bool_relation` already applies |
+   | **connectives on `Bool`** — `and`, `or`, `not` | **4** | operations *on* truth values, not propositions *about* a subject |
+
+   That leaves **~14** genuine predicates — `Set.member` / `.subset`, `List.member`, `Map.contains`,
+   `String.contains` / `.startsWith` / `.endsWith`, `reflect.ground` / `.nonvar` / `.can_be_sort`,
+   `platform.exists` / `.has_property`, `parse.has_binding` — spanning both definition forms, which is
+   the point. (The count is approximate at its edges: `kernel.cut` / `push_choice` are resolver control
+   rather than predicates, and one effectful op escaped the census's effect test. WI-1096 settles the
+   exact list, since the convention's population is that ticket's first question.)
 
    **The relation is primary and plainly named; the boolean is `is<Name>` and is the DERIVED reading** —
    `Relation[Unit]` non-emptiness, which `negate`'s own contract already defines ("its stream yields one
@@ -565,8 +587,9 @@ missing requirement surfaces at query time, not load; the runtime path itself is
      `isMember` / `isSubset` with `member` / `subset` the relations. A convention the stdlib contradicts
      is a dead letter, so this needs its own ticket rather than a silent rename here. **Filed as
      WI-1096**, which also has to settle the shape the convention cannot reach: `Set.eq` is the same
-     body-less-Bool-with-clauses shape and is **spec-owned** (`provides PartialEq[T = Set]` /
-     `Eq[T = Set]`), so a spec member keeps the spec's name and the convention stops at it.
+     Bool-returning shape and is **spec-owned** (`provides PartialEq[T = Set]` / `Eq[T = Set]`), so a
+     spec member keeps the spec's name and the convention stops at it — the largest exclusion above,
+     27 of the 59.
    - **Scope: Bool-valued predicates only.** A non-Bool operation has no boolean face — its relational
      reading is the **arity+1 graph** (WI-938, `unify(op(args), ?r)`), a different question from this
      one, and the same-arity coincidence is exactly what makes the Bool case need a convention.
