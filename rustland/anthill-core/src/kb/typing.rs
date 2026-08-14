@@ -16035,10 +16035,12 @@ pub(crate) struct UnsuppliableRequirement {
 /// one for "will the callee miss it". Both names are kept because both questions are
 /// asked; see WI-822 LEG 2, which measured the same split on the op half.
 ///
-/// THREE WAYS A BODY READS THE FRAME, and the count is the point — an earlier cut had
-/// two and let a program through that loads clean and dies at eval (found by
-/// /code-review, reproduced, and now pinned by
-/// `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`):
+/// THREE WAYS A BODY READS THE FRAME **AS COUNTED HERE**, and the count is the point —
+/// an earlier cut had two and let a program through that loads clean and dies at eval
+/// (found by /code-review, reproduced, and now pinned by
+/// `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`). It has since happened
+/// again: the real count is FIVE, and the two this predicate still misses are WI-1095's,
+/// recorded below rather than left to be rediscovered:
 ///  1. it DEFERS — a `DeferToRequirement` at a sort-half slot;
 ///  2. it INHERITS — a same-sort call the typer gave no dictionary, which takes
 ///     `start_apply_same_sort`'s `inherit` arm and reads whatever the sibling reads;
@@ -16052,6 +16054,15 @@ pub(crate) struct UnsuppliableRequirement {
 /// call site builds, or parks, its own dictionary under its own σ. Answering `false`
 /// there is a REFUSAL WITHHELD, never a wrong value: the program keeps exactly the
 /// behaviour it had before WI-945, eval's own `not bound` raise included.
+///
+/// TWO MORE CHANNELS ARE UNCOUNTED, AND THEY ARE NOT ON THAT LIST — **WI-1095**. The
+/// count above is the code's, not the truth's: `ConcreteApplyWithin` also carries
+/// `op_dicts`, whose slots `build_dep_projection` can project as a `var_ref` into THIS
+/// frame, and `CallClass::EtaOpRef` is not matched here at all. Both are reads of this
+/// frame — the predicate's own subject — so neither is a withheld refusal in the sense
+/// the paragraph above claims. Measured, each loads clean and dies at eval, which is
+/// the outcome WI-945 exists to remove. Note `sort_names` below is the `__req_<spec>`
+/// half only, so the eta channel needs `__req_self` in that set as well as an arm here.
 fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bool {
     /// What one classified call in the body contributes to the answer.
     enum Step {
