@@ -27,7 +27,8 @@ If the project has no `anthill-todo/` directory yet, run `init` first.
 ## Commands
 
 ```bash
-anthill-todo -d "$PWD" list                              # List all work items
+anthill-todo -d "$PWD" list                              # List all work items (one line each: first line of the description)
+anthill-todo -d "$PWD" list --long                       # Same listing with each item's full description text
 anthill-todo -d "$PWD" list --unblocked                  # Only items whose dependencies are all satisfied
 anthill-todo -d "$PWD" list --tag typing                 # Tag's items in dependency (sequence) order
 anthill-todo -d "$PWD" add "description" [--depends WI-NNN] [--tag NAME]  # Add a new work item

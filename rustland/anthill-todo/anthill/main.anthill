@@ -19,7 +19,8 @@ namespace anthill.todo
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
-  import anthill.prelude.String.{length, substring, toUpper, toLower, padRight}
+  import anthill.prelude.String.{length, substring, indexOf, trim,
+                                 toUpper, toLower, padRight}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
@@ -306,7 +307,7 @@ namespace anthill.todo
         nil()),
       parent: none())
 
-  -- `list` accepts --status <name> and --all.
+  -- `list` accepts --status <name>, --all, --tag, --unblocked and --long.
   operation spec_list() -> OperationSpec =
     OperationSpec(
       name: "list",
@@ -335,7 +336,13 @@ namespace anthill.todo
                 kind: bool_flag(),
                 required: false,
                 description: "Show only unblocked items (all dependencies satisfied)"),
-              nil())))),
+              cons(
+                ParamSpec(
+                  name: "long",
+                  kind: bool_flag(),
+                  required: false,
+                  description: "Print each item's full description (default: first line, truncated)"),
+                nil()))))),
       parent: none())
 
   -- Per-WorkItem row precomputed for `cmd_list`. Walking a term's named
@@ -1485,12 +1492,19 @@ namespace anthill.todo
       let only_unblocked = match get_arg(args, "unblocked")
         case some(_) -> true
         case none() -> false
+      -- WI-1097: `--long` is read HERE, once, and handed to both views as a
+      -- value. One flag, one meaning — `list --tag t --long` widens the tagged
+      -- sequence exactly as it widens the plain listing.
+      let long = match get_arg(args, "long")
+        case some(_) -> true
+        case none() -> false
       match get_arg(args, "tag")
-        case some(t) -> cmd_list_tagged(s, t, get_arg(args, "status"), only_unblocked)
-        case none() -> cmd_list_plain(args, s, only_unblocked)
+        case some(t) ->
+          cmd_list_tagged(s, t, get_arg(args, "status"), only_unblocked, long)
+        case none() -> cmd_list_plain(args, s, only_unblocked, long)
 
     operation cmd_list_plain(args: List[Binding], s: Cell[State],
-                             only_unblocked: Bool) -> Int64
+                             only_unblocked: Bool, long: Bool) -> Int64
       effects {ConsoleOutput, Error}
     =
       let status_filter = get_arg(args, "status")
@@ -1509,8 +1523,12 @@ namespace anthill.todo
       -- order; print_groups re-orders chrono+topo per status group after.
       let satisfied_set = query_id_set("anthill.stage0.workflow.dep_satisfied")
       let kept = filter_rows(annotated, status_filter, show_all)
-      let filtered = if only_unblocked then partition_ready(kept, satisfied_set)
+      let narrowed = if only_unblocked then partition_ready(kept, satisfied_set)
                      else kept
+      -- WI-1097: shape once, on the rows that will actually print. Everything
+      -- downstream (grouping, ready/blocked split, ordering, the count) reads
+      -- id / status / depends, never the description.
+      let filtered = shape_rows(narrowed, long)
       if eq(count_rows(filtered), 0) then
         let _ = println(console(), "No work items found.")
         0
@@ -1535,7 +1553,7 @@ namespace anthill.todo
     -- the status filter is applied per row AFTER ordering.
     operation cmd_list_tagged(s: Cell[State], tag_name: String,
                               status_filter: Option[String],
-                              only_unblocked: Bool) -> Int64
+                              only_unblocked: Bool, long: Bool) -> Int64
       effects {ConsoleOutput, Error}
     =
       let ids = sort_strings_unique(WorkItemStore.items_with_tag(s, tag_name))
@@ -1564,8 +1582,14 @@ namespace anthill.todo
             concat("tag '", concat(tag_name,
               concat("' (", concat(to_string(count_strings(ordered)),
                 " item(s), sequence order):")))))
-          let shown = print_tagged_rows(ordered, row_map, satisfied_set,
-                                        status_filter, false, 0)
+          -- WI-1097: shaped HERE, over `ordered` — the ids this view will walk
+          -- — and not over the whole store the map is built from. A tag naming
+          -- five items must not pay a description scan per work item in the
+          -- project. `print_tagged_rows` below prints the description it is
+          -- handed and truncates nothing itself.
+          let shown = print_tagged_rows(ordered,
+                                        shape_row_map(row_map, ordered, long),
+                                        satisfied_set, status_filter, false, 0)
           let _ = println(console(), concat(to_string(shown), " item(s)"))
           0
 
@@ -1662,7 +1686,7 @@ namespace anthill.todo
                     let _ = println(console(),
                       concat("  ", concat(id,
                         concat(" [", concat(status,
-                          concat("] ", concat(truncate_desc(desc),
+                          concat("] ", concat(desc,
                             concat(blocked, marker))))))))
                     print_tagged_rows(rest, row_map, satisfied_set,
                                       status_filter, marked_after, shown + 1)
@@ -1682,12 +1706,93 @@ namespace anthill.todo
           if contains(satisfied_set, d) then unmet_deps(rest, satisfied_set)
           else cons(d, unmet_deps(rest, satisfied_set))
 
-    -- First 100 chars + '…' (native truncate_desc(s, 100); substring /
-    -- length are char-based builtins, so multibyte text truncates
-    -- identically to the native chars() walk).
-    operation truncate_desc(s: String) -> String =
-      if lt(length(s), 101) then s
-      else concat(substring(s, 0, 100), "…")
+    -- The SHORT row's description: the FIRST LINE, clipped to 100 chars,
+    -- with '…' iff anything was dropped. (substring / length / indexOf are
+    -- char-based builtins, so multibyte text cuts on scalar boundaries,
+    -- identically to the native chars() walk.)
+    --
+    -- WI-1097 made this the DEFAULT for both list views, and that is why the
+    -- first-line cut is here and not just a 100-char clip: a description whose
+    -- summary line is under 100 chars would otherwise carry its body's newlines
+    -- into the row, and one such item breaks the one-item-per-line shape the
+    -- whole view exists for. The store holds multi-paragraph descriptions, so
+    -- this is the common case, not a corner one.
+    --
+    -- The ellipsis is keyed on "shorter than the TRIMMED input", NOT on the
+    -- clip, so a short first line over a long body still announces there is
+    -- more to read — and a description that merely ends in a newline does not
+    -- promise a body it does not have.
+    --
+    -- Surrounding whitespace goes FIRST, and both ends of it matter:
+    --   LEADING — a description that OPENS with a newline (`add "$(cat
+    --   notes.md)"` is enough to produce one) has an empty first line, and
+    --   cutting there would render the item as a bare '…' with its every word
+    --   dropped. Losing the row's content entirely is worse than any wrapping
+    --   this cut was introduced to avoid.
+    --   TRAILING — nothing follows a final newline, so an item ending in one
+    --   would otherwise carry an ellipsis over no hidden text at all, and
+    --   `--long` would answer it with the same string.
+    operation short_desc(s: String) -> String =
+      let t = trim(s)
+      let nl = indexOf(t, "\n")
+      let line = if lt(nl, 0) then t else trim(substring(t, 0, nl))
+      let clipped = if lt(length(line), 101) then line
+                    else substring(line, 0, 100)
+      if lt(length(clipped), length(t)) then concat(clipped, "…") else clipped
+
+    -- The ONE display-shaping site per list view (WI-1097): `--long` keeps the
+    -- stored description, the default replaces it with `short_desc`. Every
+    -- renderer below prints whatever description reaches it, so no printer reads
+    -- the flag and the plain and tagged views cannot drift apart again — which
+    -- is exactly how they had drifted before (the tagged view truncated, the
+    -- plain one did not, so the DEFAULT view was the unreadable one).
+    operation shape_rows(rs: List[Row], long: Bool) -> List[Row] =
+      if long then rs else shorten_rows(rs)
+
+    -- The same shaping for the tagged view, whose rows are reached through a
+    -- map. Only the listed ids are rewritten — every other entry is left as it
+    -- was, and an id with no row stays absent so `print_tagged_rows` can still
+    -- report it `[missing]`.
+    operation shape_row_map(row_map: Map[String, Row], ids: List[String],
+                            long: Bool) -> Map[String, Row] =
+      if long then row_map else shorten_row_map(row_map, ids)
+
+    operation shorten_row_map(row_map: Map[String, Row],
+                              ids: List[String]) -> Map[String, Row] =
+      match ids
+        case nil() -> row_map
+        case cons(id, rest) ->
+          match get(row_map, id)
+            case none() -> shorten_row_map(row_map, rest)
+            case some(r) ->
+              match r
+                case Row(rid, status, desc, deps, n, fb) ->
+                  shorten_row_map(
+                    put(row_map, id,
+                      Row(
+                        id: rid,
+                        status: status,
+                        description: short_desc(desc),
+                        depends: deps,
+                        unblocks: n,
+                        has_feedback: fb)),
+                    rest)
+
+    operation shorten_rows(rs: List[Row]) -> List[Row] =
+      match rs
+        case nil() -> nil()
+        case cons(r, rest) ->
+          match r
+            case Row(rid, status, desc, deps, n, fb) ->
+              cons(
+                Row(
+                  id: rid,
+                  status: status,
+                  description: short_desc(desc),
+                  depends: deps,
+                  unblocks: n,
+                  has_feedback: fb),
+                shorten_rows(rest))
 
     -- Insertion sort, ascending, dropping duplicates (the native view
     -- collects tag members into a set before ordering).
