@@ -1203,6 +1203,9 @@ mod wi1094_named_slot_inference_test;
 #[path = "include/wi945_unconstrained_sort_element_test.rs"]
 mod wi945_unconstrained_sort_element_test;
 
+#[path = "include/wi1095_uncounted_frame_read_channels_test.rs"]
+mod wi1095_uncounted_frame_read_channels_test;
+
 #[path = "include/wi1096_list_literal_lowering_test.rs"]
 mod wi1096_list_literal_lowering_test;
 

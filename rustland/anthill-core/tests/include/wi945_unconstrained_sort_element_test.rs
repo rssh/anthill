@@ -50,12 +50,19 @@
 //! both `check_operation_bodies` sweeps: an operation is routinely called before its
 //! own body has been classified.
 //!
-//! "READS THE SLOT" COUNTS THREE WAYS, and a first cut of this fix counted two. A body
+//! "READS THE SLOT" COUNTS FIVE WAYS, and a first cut of this fix counted two. A body
 //! DEFERS to a slot, INHERITS a frame (a same-sort call the typer built no dictionary
 //! for), or FORWARDS — a call the typer DID build a dictionary for, one of whose slots
 //! is a `var_ref` read of this frame rather than a construction. The third is the one
 //! the two-way cut let through, and it loaded clean and died at eval exactly as the
 //! subject did; see `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`.
+//!
+//! THEN IT HAPPENED AGAIN, which is why the count is FIVE and not three: the three-way
+//! cut this file shipped missed a forward through the OP-SCOPED half of the same
+//! variant, and an ETA, each measured as the same clean load that dies at eval. They are
+//! WI-1095's, driven by `wi1095_uncounted_frame_read_channels_test`, and the predicate's
+//! `match` is exhaustive over `CallClass` now so a sixth is a compile error rather than
+//! a silent `_ => Nothing`. Read that file before adding a fourth fixture here.
 //!
 //! WHAT EACH TEST HERE MEASURES, and what backing the change out costs:
 //!  - `sort_level_unconstrained_element_is_refused_at_load` is the SUBJECT. It fails

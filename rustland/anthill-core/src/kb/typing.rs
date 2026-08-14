@@ -16253,46 +16253,66 @@ pub(crate) enum SlotToRead {
 /// one for "will the callee miss it". Both names are kept because both questions are
 /// asked; see WI-822 LEG 2, which measured the same split on the op half.
 ///
-/// THREE WAYS A BODY READS THE FRAME **AS COUNTED HERE**, and the count is the point —
-/// an earlier cut had two and let a program through that loads clean and dies at eval
-/// (found by /code-review, reproduced, and now pinned by
-/// `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`). It has since happened
-/// again: the real count is FIVE, and the two this predicate still misses are WI-1095's,
-/// recorded below rather than left to be rediscovered:
+/// FIVE WAYS A BODY READS THE FRAME, and the count is the point — it has been short
+/// twice. The first cut had two and let a program through that loads clean and dies at
+/// eval (found by /code-review, reproduced, pinned by
+/// `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`); the three-way cut that
+/// replaced it was short by the two WI-1095 measured, each again a clean load that dies
+/// at eval. So the list is now the CLASSIFICATION's own, arm for arm — see the
+/// exhaustive `match` below, which has no `_` and makes a sixth [`CallClass`] a compile
+/// error rather than a silent `Nothing`:
 ///  1. it DEFERS — a `DeferToRequirement` at a sort-half slot;
 ///  2. it INHERITS — a same-sort call the typer gave no dictionary, which takes
 ///     `start_apply_same_sort`'s `inherit` arm and reads whatever the sibling reads;
-///  3. it FORWARDS — a call the typer DID give a dictionary, one of whose slots is a
-///     `var_ref` into THIS frame ([`dict_forwards_frame_slot`]). "Got a dictionary" is
-///     not "needs nothing from me".
+///  3. it FORWARDS through `dispatch_dict` — a call the typer DID give a dictionary,
+///     one of whose slots is a `var_ref` into THIS frame ([`dict_forwards_frame_slot`]).
+///     "Got a dictionary" is not "needs nothing from me";
+///  4. it FORWARDS through `op_dicts` (WI-1095) — the SAME variant's op-scoped half,
+///     which [`build_op_scoped_dicts`] projects against the enclosing frame chain and
+///     which therefore reaches this frame by the same `var_ref`. Reading only
+///     `dispatch_dict` missed it, and missed it in the shape where `dispatch_dict` is
+///     `None` (a callee whose SORT requires nothing while its OPERATION does), which
+///     the `inherit` arm then swallowed as a cross-sort non-inherit;
+///  5. it ETAS (WI-1095) — `CallClass::EtaOpRef`, whose `dict` is
+///     `var_ref(__req_self)` for a same-sort eta and a `build_concrete_dispatch_dict`
+///     result (forwards included) for a cross-sort one, with `op_dicts` riding beside
+///     it. An eta never INHERITS, however same-sort it is: the `OpRef` escapes to a
+///     foreign apply frame, which is exactly why the typer mints it a `var_ref` here.
+///
+/// `__req_self` IS IN THE FRAME-SLOT SET for that last channel, and it is a second edit
+/// rather than a detail of the first: `sort_names` is `chain.names()`, the
+/// `__req_<spec>` list, and the sort half's own dictionary is not among them. Wiring the
+/// arm without it finds nothing and changes no verdict — MEASURED, by backing out this
+/// one line with the arm in place (`an_eta_of_a_same_sort_sibling_is_refused` alone
+/// fails, still `var_ref(__req_self) unbound`). It belongs there on the merits:
+/// `__req_self` IS the parent-bundle dictionary this park is about, so a body that reads
+/// it misses exactly what the call site could not supply. It has a SECOND reader beside
+/// the eta — [`build_dep_projection`]'s WI-1091 Strategy 0 forwards `var_ref(__req_self)`
+/// inside a BUILT dictionary — and the name earns its place for both.
 ///
 /// WHAT IT DELIBERATELY DOES NOT FOLLOW, so the bound is stated rather than assumed: a
 /// same-sort `PinNow` (statically resolved to a concrete impl, which eval plain-applies
 /// rather than inheriting into), and a cross-sort callee's own body — that callee's
 /// call site builds, or parks, its own dictionary under its own σ. Answering `false`
 /// there is a REFUSAL WITHHELD, never a wrong value: the program keeps exactly the
-/// behaviour it had before WI-945, eval's own `not bound` raise included.
-///
-/// TWO MORE CHANNELS ARE UNCOUNTED, AND THEY ARE NOT ON THAT LIST — **WI-1095**. The
-/// count above is the code's, not the truth's: `ConcreteApplyWithin` also carries
-/// `op_dicts`, whose slots `build_dep_projection` can project as a `var_ref` into THIS
-/// frame, and `CallClass::EtaOpRef` is not matched here at all. Both are reads of this
-/// frame — the predicate's own subject — so neither is a withheld refusal in the sense
-/// the paragraph above claims. Measured, each loads clean and dies at eval, which is
-/// the outcome WI-945 exists to remove. Note `sort_names` below is the `__req_<spec>`
-/// half only, so the eta channel needs `__req_self` in that set as well as an arm here.
+/// behaviour it had before WI-945, eval's own `not bound` raise included. Both
+/// exclusions are about a call whose frame is NOT this one; every read OF this frame is
+/// counted above.
 fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bool {
     /// What one classified call in the body contributes to the answer.
     enum Step {
         /// It reads a sort-half slot: the whole question is settled.
         Reads,
-        /// A same-sort call with no dictionary of its own, which will inherit this
-        /// frame — so whatever IT reads, this body effectively reads.
-        Inherits(Symbol),
-        /// A call the typer DID build a dictionary for. That dictionary may still read
-        /// this frame: a WI-418 forward projects a slot as `var_ref(__req_*)`, resolved
-        /// against the CALLER's frame at eval.
-        Forwards(TermId),
+        /// A classified call, in the two ways it can still reach this frame — and both
+        /// can hold at once, which a `dispatch_dict.is_none()` either/or got wrong
+        /// (WI-1095 channel 4): `inherit` is the same-sort target that would take this
+        /// frame WHOLE (only where the typer built no sort-half dictionary), and `dicts`
+        /// is every dictionary the call does carry, each of which may still project a
+        /// `var_ref` into this frame.
+        Call {
+            inherit: Option<Symbol>,
+            dicts: SmallVec<[TermId; 2]>,
+        },
         Nothing,
     }
     // TRANSITIVE OVER SAME-SORT CALLS, because those alone INHERIT this frame instead
@@ -16318,8 +16338,11 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
         let chain = op_dict_entries(kb, cur);
         let sort_len = chain.sort_len();
         // The frame slots a WI-418 forward inside a built dictionary could name. The
-        // SORT half only, for the same reason `sort_len` gates the defer arm.
-        let sort_names: Vec<Symbol> = chain.names(kb).iter().copied().take(sort_len).collect();
+        // SORT half only, for the same reason `sort_len` gates the defer arm — plus
+        // `__req_self`, the sort half's OWN dictionary, which `names()` never lists and
+        // which a same-sort eta reads directly (WI-1095; see the doc above).
+        let mut sort_names: Vec<Symbol> = chain.names(kb).iter().copied().take(sort_len).collect();
+        sort_names.push(kb.intern("__req_self"));
         let mut stack: Vec<Rc<NodeOccurrence>> = vec![body];
         while let Some(occ) = stack.pop() {
             let NodeKind::Expr {
@@ -16333,31 +16356,65 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
             // The classification is read into a local BEFORE anything else runs: a
             // `RefCell` borrow held as a `match` scrutinee outlives the arms, and the
             // arms below call back into `kb`.
+            // EXHAUSTIVE OVER `CallClass`, no `_` arm: the count above has been short
+            // twice, and a variant added later must not join the list by silence.
             let step = match classification.borrow().as_deref() {
                 // `slot < sort_len` is the sort-half test — see the doc above.
                 Some(CallClass::DeferToRequirement { slot, .. }) if *slot < sort_len => {
                     Step::Reads
                 }
+                // An OP-SCOPED defer: a slot of a different channel, filled by
+                // `op_dicts` and asked about by [`op_body_reads_op_requirement_slot`].
+                Some(CallClass::DeferToRequirement { .. }) => Step::Nothing,
                 Some(CallClass::ConcreteApplyWithin {
                     fn_target_sym,
                     dispatch_dict,
+                    op_dicts,
                     ..
-                }) => match dispatch_dict {
-                    None => Step::Inherits(*fn_target_sym),
-                    Some(d) => Step::Forwards(*d),
+                }) => Step::Call {
+                    // The INHERIT arm is about the sort half alone: eval takes
+                    // `start_apply_same_sort`'s inherit path exactly when no sort-half
+                    // dictionary was built, whatever the op half carries.
+                    inherit: dispatch_dict.is_none().then_some(*fn_target_sym),
+                    dicts: dispatch_dict
+                        .iter()
+                        .chain(op_dicts.iter().flatten())
+                        .copied()
+                        .collect(),
                 },
-                _ => Step::Nothing,
+                // WI-1095 channel 5. `inherit: None` is not an omission: an eta'd
+                // `OpRef` escapes to a foreign apply frame instead of inheriting this
+                // one, which is why a SAME-SORT eta carries `var_ref(__req_self)` at all.
+                Some(CallClass::EtaOpRef { dict, op_dicts, .. }) => Step::Call {
+                    inherit: None,
+                    dicts: dict
+                        .iter()
+                        .chain(op_dicts.iter().flatten())
+                        .copied()
+                        .collect(),
+                },
+                // Carries no dictionary: a `PinNow` is plain-applied to a concrete impl
+                // whose parent has no `requires` (see the "does not follow" paragraph),
+                // and an `UnresolvedSpecOp` is an error tag `req_insertion` turns into
+                // `MissingRequiresForSpecOp` — neither reaches this frame.
+                Some(CallClass::PinNow { .. }) | Some(CallClass::UnresolvedSpecOp { .. }) => {
+                    Step::Nothing
+                }
+                // Not a classified call at all.
+                None => Step::Nothing,
             };
             match step {
                 Step::Reads => return true,
-                Step::Inherits(target) => {
-                    if parent.is_some() && impl_parent_of_op(kb, target) == parent {
-                        queue.push(target);
+                Step::Call { inherit, dicts } => {
+                    if let Some(target) = inherit {
+                        if parent.is_some() && impl_parent_of_op(kb, target) == parent {
+                            queue.push(target);
+                        }
                     }
-                }
-                Step::Forwards(dict) => {
-                    if dict_forwards_frame_slot(kb, dict, &sort_names) {
-                        return true;
+                    for d in dicts {
+                        if dict_forwards_frame_slot(kb, d, &sort_names) {
+                            return true;
+                        }
                     }
                 }
                 Step::Nothing => {}
@@ -16379,7 +16436,7 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
 /// its other slots arrive intact and a body reading one of THOSE is not evidence about
 /// this one.
 ///
-/// TWO CHANNELS COUNTED, and the count is stated because WI-945's own doc records what
+/// THREE CHANNELS COUNTED, and the count is stated because WI-945's own doc records what
 /// happens when it is guessed (its predicate shipped with two of five):
 ///  1. it DEFERS — a `DeferToRequirement` whose slot is `sort_len + op_index` in the
 ///     COMPOSED numbering ([`op_scoped_defer_location`]). This is the ticket's whole
@@ -16387,24 +16444,30 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
 ///     its own `requires Eq[T]`, and that call reads `__req_eq`.
 ///  2. it FORWARDS — a nested call whose own dictionary projects one of ITS slots as a
 ///     `var_ref` into THIS frame ([`dict_forwards_frame_slot`]), covering `op_dicts` as
-///     well as `dispatch_dict`, which is the pair WI-1095 recorded as uncounted on the
-///     sort half.
+///     well as `dispatch_dict`.
+///  3. it ETAS (WI-1095) — `CallClass::EtaOpRef`, whose `op_dicts` [`build_op_scoped_dicts`]
+///     builds against the enclosing FRAME chain, exactly as at a written call site, so one
+///     of them can project a `var_ref` at THIS slot as in (2). Its `dict` cannot: the eta
+///     site hands [`build_concrete_dispatch_dict`] the `enclosing_dict_chain` — the sort
+///     half alone, because an instance dictionary must not forward an op slot
+///     ([`attach_eta_dispatch_dict`]'s own comment states the invariant and why). It is
+///     searched anyway, at the cost of walking a term that today cannot hold this name,
+///     so that this predicate's answer does not silently depend on an invariant declared
+///     somewhere else.
 ///
-/// UNCOUNTED, and named rather than left to be rediscovered — the sort half's doc
-/// records what happens when a channel list is quietly short:
-///  3. `CallClass::EtaOpRef`, which is a read of this frame too (WI-1095 lists it as the
-///     sort half's own uncounted channel). Matching it here would need `__req_self` in
-///     the name set as well as an arm, and this ticket measured no program that needs
-///     it.
+/// `__req_self` IS NOT IN THIS NAME SET, and that is the one place this predicate does
+/// NOT copy the sort half's WI-1095 edit: `__req_self` is the SORT half's dictionary, a
+/// different channel with a different supplier, and a body reading it says nothing about
+/// whether this op-scoped slot is owed. The op half is per-index for the same reason.
 ///
 /// NOT FOLLOWED, deliberately: a same-sort callee's body. The sort half follows those
 /// because eval's `start_apply_same_sort` inherit arm hands the sibling the same
 /// dictionary; an op-scoped slot belongs to THIS operation's declaration and the sibling
 /// has its own chain, so following would ask about a slot with a different owner.
 ///
-/// Answering `false` anywhere here — an uncounted channel or an unfollowed callee — is a
-/// REFUSAL WITHHELD, never a wrong value: the program keeps exactly the behaviour it has
-/// today, eval's own `not bound` raise included.
+/// Answering `false` for an unfollowed callee is a REFUSAL WITHHELD, never a wrong
+/// value: the program keeps exactly the behaviour it has today, eval's own `not bound`
+/// raise included.
 fn op_body_reads_op_requirement_slot(
     kb: &mut KnowledgeBase,
     op: Symbol,
@@ -16438,8 +16501,12 @@ fn op_body_reads_op_requirement_slot(
         else {
             continue;
         };
+        // EXHAUSTIVE OVER `CallClass`, no `_` arm — same reason as the sort half's.
         let step = match classification.borrow().as_deref() {
             Some(CallClass::DeferToRequirement { slot, .. }) if *slot == want => Step::Reads,
+            // A defer at some OTHER slot: this half is per-index (see the doc), so it is
+            // not evidence about `want`.
+            Some(CallClass::DeferToRequirement { .. }) => Step::Nothing,
             Some(CallClass::ConcreteApplyWithin {
                 dispatch_dict,
                 op_dicts,
@@ -16451,7 +16518,20 @@ fn op_body_reads_op_requirement_slot(
                     .copied()
                     .collect(),
             ),
-            _ => Step::Nothing,
+            // WI-1095 channel 3 — the eta's two dictionaries. `op_dicts` is the half that
+            // can name this slot; `dict` is searched too, though today it cannot (see the
+            // doc above), so the answer does not rest on an invariant declared elsewhere.
+            Some(CallClass::EtaOpRef { dict, op_dicts, .. }) => Step::Forwards(
+                dict.iter()
+                    .chain(op_dicts.iter().flatten())
+                    .copied()
+                    .collect(),
+            ),
+            // Carries no dictionary — see the sort half's arm of the same shape.
+            Some(CallClass::PinNow { .. }) | Some(CallClass::UnresolvedSpecOp { .. }) => {
+                Step::Nothing
+            }
+            None => Step::Nothing,
         };
         match step {
             Step::Reads => return true,
