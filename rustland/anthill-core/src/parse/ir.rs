@@ -76,8 +76,23 @@ pub struct SimpleTermStore {
     ///
     /// Governed by the same `TermId`-stability caveat stated on [`Self::minted`] — a
     /// future rewrite pass that reconstructs parse subtrees must carry these marks
-    /// over. That note is written once, there, and now governs all three sets.
+    /// over. That note is written once, there, and now governs all four sets.
     projections: HashSet<TermId>,
+
+    /// WI-1099: the `Fn{ListLiteral, …}` terms written as the BRACKET SURFACE `[a, b]`,
+    /// as opposed to a call to the reflect entity by its name, `ListLiteral(a, b)`. The
+    /// two are byte-identical once `remap_symbol` resolves the name, and only the
+    /// surface tells them apart — the same shape, and the same remedy, as
+    /// [`Self::type_applications`] (`Box[T = Int64]` vs `Box(value: 1)`, WI-927).
+    ///
+    /// The loader's list-literal lowering (`kb::load::list_literal_lowering`) reads it:
+    /// WI-1096 made `[a, b]` lower to the `cons`/`nil` spine by default, and without
+    /// this mark the by-name spelling lowered too — which made the reflect entity
+    /// unwritable in a term position. Measured by
+    /// `wi040_reserved_vocab_test::query_pattern_bare_list_literal_resolves_qualified`,
+    /// which pins `ListLiteral(?x)` resolving to `anthill.reflect.ListLiteral` and went
+    /// red the moment the query converter started lowering.
+    collection_literals: HashSet<TermId>,
 }
 
 impl SimpleTermStore {
@@ -145,6 +160,21 @@ impl SimpleTermStore {
     /// only this bit tells them apart.
     pub fn is_projection(&self, id: TermId) -> bool {
         self.projections.contains(&id)
+    }
+
+    /// WI-1099: record that `id` was written as the bracket surface `[a, b]`, not as a
+    /// call to the reflect entity by name.
+    pub fn mark_collection_literal(&mut self, id: TermId) {
+        self.collection_literals.insert(id);
+    }
+
+    /// WI-1099: was this `Fn{ListLiteral, …}` written as `[a, b]`? Only the bracket
+    /// surface is the LIST literal the loader lowers; `ListLiteral(a, b)` written by
+    /// name is the reflect entity and keeps its shape. See
+    /// [`Self::collection_literals`] for why the distinction cannot be recovered from
+    /// the term.
+    pub fn is_collection_literal(&self, id: TermId) -> bool {
+        self.collection_literals.contains(&id)
     }
 
     /// Iterate every allocated `(TermId, &Term)` in allocation order.

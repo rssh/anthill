@@ -95,6 +95,10 @@
 //! own, which the guard fixes. Backing out the `named_args.is_empty()` test instead
 //! fails exactly that one row and nothing else (measured: 13 passed, 1 failed).
 //!
+//! The query row [`a_query_pattern_matches_the_shape_the_loader_stored`] is pinned by
+//! its OWN back-out: drop the `list_literal_lowering` call in `convert_query_term` and
+//! it is the only row that fails (measured: 14 passed, 1 failed).
+//!
 //! ACROSS THE WHOLE WORKSPACE the change moves exactly ONE pre-existing test:
 //! `wi936_field_type_load_order_test`'s control, re-keyed here. All 29 test binaries
 //! were run with the fix in and that was the only failure.
@@ -317,6 +321,112 @@ fn a_bounded_quantifier_over_a_literal_was_already_correct() {
     );
     assert_eq!(decided(&mut kb, "wi1096.all_pos"), 1);
     assert_eq!(any(&mut kb, "wi1096.all_big"), 0);
+}
+
+/// THE FOURTH TERM POSITION — a QUERY pattern, which must build what the loader
+/// STORED or it cannot match it. Found by a second review pass, and it was a live
+/// regression: the loader started lowering an undeclared literal while
+/// `convert_query_term` still built the flat one, so `anthill query 'stored(?x)'`
+/// printed `?x = [1, 2, 3]` and feeding that exact answer back as `stored([1, 2, 3])`
+/// found NOTHING. Both spellings print as `[…]`, so nothing showed.
+///
+/// MEASURED at the commit that introduced it: `stored([1, 2, 3])` → 0,
+/// `held(Holder(xs: [1, 2]))` → 0, `tagged(Tagged(tags: [1, 2]))` → 1. The middle row
+/// is older than WI-1096 — a DECLARED `List` field has been unmatchable by a literal
+/// query since WI-007 — and routing both converters through one decision function
+/// closes that too.
+///
+/// The two rows that keep this honest: the wrong literal must NOT match (or "matches
+/// anything" would pass), and the `Set`-declared field must STILL match, since there
+/// both sides decline together.
+#[test]
+fn a_query_pattern_matches_the_shape_the_loader_stored() {
+    let src = r#"
+namespace wi1096.query
+  import anthill.prelude.{List, Int64, Set}
+  fact stored([1, 2, 3])
+  entity Holder(xs: List[T = Int64])
+  fact held(Holder(xs: [1, 2]))
+  entity Tagged(tags: Set[T = Int64])
+  fact tagged(Tagged(tags: [1, 2]))
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    // The namespace in query scope, the way `anthill query -i wi1096.query.*` puts it
+    // there — a program file's own imports are file-local and do not reach a query.
+    crate::common::supply_invocation_imports(&mut kb, &["wi1096.query.*"]);
+    // Through the SHIPPED query path — `fact <pattern>`, `scan_definitions`, then
+    // `load::convert_query_term` — which is what `anthill query --pattern` takes, so
+    // this exercises the converter that was out of step and not a private helper.
+    fn hits(kb: &mut KnowledgeBase, pattern: &str) -> usize {
+        use anthill_core::kb::resolve::ResolveConfig;
+        let goal = crate::common::query_pattern_term(kb, pattern);
+        kb.resolve(&[goal], &ResolveConfig::default()).len()
+    }
+    assert_eq!(
+        hits(&mut kb, "stored([1, 2, 3])"),
+        1,
+        "the literal a query prints must be the literal a query matches",
+    );
+    assert_eq!(
+        hits(&mut kb, "stored([1, 2, 9])"),
+        0,
+        "…and a DIFFERENT literal must not — the row that stops 'matches anything'",
+    );
+    assert_eq!(
+        hits(&mut kb, "held(Holder(xs: [1, 2]))"),
+        1,
+        "a DECLARED `List` field too — unmatchable by a literal query since WI-007",
+    );
+    assert_eq!(
+        hits(&mut kb, "tagged(Tagged(tags: [1, 2]))"),
+        1,
+        "a `Set`-declared field still matches by literal: both sides decline together",
+    );
+}
+
+/// ONLY THE BRACKET SURFACE IS THE LIST LITERAL — `[a, b]` lowers, a written
+/// `ListLiteral(a, b)` does not. The two build the identical term once the name
+/// resolves, so a parse-level mark is the only thing that separates them (WI-1099, on
+/// the WI-927 `Box[T = Int64]` vs `Box(value: 1)` model).
+///
+/// This was NOT a theoretical distinction. The first version of the query-side fix
+/// lowered both, and `wi040_reserved_vocab_test::query_pattern_bare_list_literal_
+/// resolves_qualified` — which pins `ListLiteral(?x)` resolving to
+/// `anthill.reflect.ListLiteral` — went red, because the pattern had become a `cons`
+/// spine. That test is the sibling driver on the QUERY side; this row is the loader
+/// side, and the `[…]` half beside it is what says the mark did not simply disable
+/// the lowering.
+#[test]
+fn only_the_bracket_surface_is_the_list_literal() {
+    let src = r#"
+namespace wi1096.surface
+  import anthill.prelude.{List, Int64}
+  import anthill.prelude.List.{cons, nil}
+  fact mark(1)
+  fact bracket([1, 2])
+  fact by_name(ListLiteral(1, 2))
+  rule bracket_is_a_list(?m) :- mark(?m), bracket(cons(head: 1, tail: ?))
+  rule by_name_is_not(?m)    :- mark(?m), by_name(cons(head: 1, tail: ?))
+  rule by_name_is_entity(?m) :- mark(?m), by_name(ListLiteral(1, 2))
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    assert_eq!(
+        decided(&mut kb, "wi1096.surface.bracket_is_a_list"),
+        1,
+        "`[1, 2]` is the List literal",
+    );
+    assert_eq!(
+        any(&mut kb, "wi1096.surface.by_name_is_not"),
+        0,
+        "…and `ListLiteral(1, 2)` written by name is NOT — it is the reflect entity",
+    );
+    assert_eq!(
+        decided(&mut kb, "wi1096.surface.by_name_is_entity"),
+        1,
+        "…which is still matchable AS that entity, by the same spelling",
+    );
 }
 
 /// CONTROL — the position WI-007 and WI-936 already covered: an entity field DECLARED

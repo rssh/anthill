@@ -11883,6 +11883,70 @@ pub(crate) fn build_some(kb: &mut KnowledgeBase, value: TermId) -> TermId {
     })
 }
 
+/// WI-1096 — SHOULD a `[…]` here become the `cons`/`nil` spine, and with what element
+/// hint? `Some(hint)` is yes (inner `None` = no element type to propagate); `None` is
+/// leave the `ListLiteral` as written.
+///
+/// THE ONE PLACE THE QUESTION IS ANSWERED, because there are TWO converters and a
+/// disagreement between them is invisible: `convert_term_with_expected` builds what a
+/// fact/rule STORES and `convert_query_term` builds what a query MATCHES WITH, so a
+/// rule answered by one is searched by the other. Measured when they disagreed (this
+/// helper's own reason for existing): after the loader started lowering an undeclared
+/// literal, `anthill query 'stored(?x)'` printed `?x = [1, 2, 3]` and feeding that
+/// exact answer back as `stored([1, 2, 3])` found NOTHING — the query side still built
+/// the flat literal. `[…]` prints the same either way, so nothing showed.
+///
+/// The rule, spec §4.6: lower unless a DECLARED type NAMES another collection. Two
+/// states are not that and take the `List` default — no declared type at all, and a
+/// declared type that is a VARIABLE (`entity Box(v: T)`, `Option.some(value: T)`),
+/// which says the position is generic rather than naming a rival.
+///
+/// ONLY THE BRACKET SURFACE IS LOWERED (`from_bracket_surface`, WI-1099). `[a, b]` and
+/// a written `ListLiteral(a, b)` build the identical term once the name resolves, and
+/// only the surface separates the LIST literal from the reflect ENTITY — the same
+/// shape, and the same remedy, as `Box[T = Int64]` vs `Box(value: 1)` (WI-927). Without
+/// it the entity became unwritable in a term position, which
+/// `wi040_reserved_vocab_test::query_pattern_bare_list_literal_resolves_qualified`
+/// caught by going red. The named-arg spelling `ListLiteral(elements: …)` is excluded
+/// by the same rule and additionally by `has_named_args`, because `[…]` parses
+/// positional-only (WI-560) and lowering it would read `pos_args` alone and silently
+/// drop the payload.
+fn list_literal_lowering(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    has_named_args: bool,
+    from_bracket_surface: bool,
+    expected: Option<TermId>,
+) -> Option<Option<TermId>> {
+    if !from_bracket_surface
+        || has_named_args
+        || kb.qualified_name_of(functor) != "anthill.reflect.ListLiteral"
+    {
+        return None;
+    }
+    match expected {
+        Some(e) if super::typing::is_type_variable(kb, &TermIdView(e)) => Some(None),
+        Some(e) => Loader::find_list_element_type(kb, e),
+        None => Some(None),
+    }
+}
+
+/// WI-1096 — the declared type of `functor`'s `field` argument, narrowed to a ground
+/// `TermId`, or `None` when the functor declares no such field. The query converter's
+/// read of the same registry [`Loader::convert_term_with_expected`] uses, so both feed
+/// [`list_literal_lowering`] the same hint. WI-342: a `denoted`-bearing field type
+/// rides as `Value::Node` and is no literal-typing hint — narrowed out here exactly as
+/// the loader narrows it.
+fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Option<TermId> {
+    kb.entity_field_types(functor)?
+        .iter()
+        .find(|(s, _)| *s == field)
+        .and_then(|(_, t)| match t {
+            Value::Term { id, .. } => Some(*id),
+            _ => None,
+        })
+}
+
 // ══════════════════════════════════════════════════════════════════
 // Public: convert a parse-time term into a KB term with scope-aware resolution
 // ══════════════════════════════════════════════════════════════════
@@ -11894,6 +11958,14 @@ pub(crate) fn build_some(kb: &mut KnowledgeBase, value: TermId) -> TermId {
 /// `var_map` preserves variable identity: two `?x` in a query share the same
 /// `VarId`. Pass an empty map on the first call; reuse the same map across
 /// multiple terms that should share variables.
+///
+/// WI-1096 — THE FOURTH TERM POSITION (`wi366_value_in_type_facts_test` names it that),
+/// and it must build the SAME shape the loader stores or a query cannot match a fact.
+/// It therefore takes the same `expected` hint and routes the list-literal decision
+/// through the same [`list_literal_lowering`]. The hint comes from the enclosing
+/// constructor's declared field type, read here from `entity_field_types` exactly as
+/// the loader reads it — the registry is populated by then, since a query runs against
+/// a fully loaded KB.
 pub fn convert_query_term(
     kb: &mut KnowledgeBase,
     parse_terms: &SimpleTermStore,
@@ -11901,6 +11973,21 @@ pub fn convert_query_term(
     parse_id: TermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
+) -> TermId {
+    convert_query_term_expecting(kb, parse_terms, parse_symbols, parse_id, scope, var_map, None)
+}
+
+/// [`convert_query_term`] carrying the enclosing argument position's declared type —
+/// the query-side twin of `Loader::convert_term_with_expected`'s `expected`.
+#[allow(clippy::too_many_arguments)]
+fn convert_query_term_expecting(
+    kb: &mut KnowledgeBase,
+    parse_terms: &SimpleTermStore,
+    parse_symbols: &crate::intern::SymbolTable,
+    parse_id: TermId,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    expected: Option<TermId>,
 ) -> TermId {
     let parse_term = parse_terms.get(parse_id).clone();
     match parse_term {
@@ -11930,18 +12017,74 @@ pub fn convert_query_term(
         } => {
             let functor_name = parse_symbols.local_name(functor);
             let kb_functor = resolve_query_name(kb, functor_name, scope);
+
+            // WI-1096: a `[…]` here becomes what the LOADER would have stored in this
+            // position — same decision function, same declared-type hint — so a query
+            // pattern and the fact it searches for cannot take different shapes.
+            if let Some(elem_expected) = list_literal_lowering(
+                kb,
+                kb_functor,
+                !named_args.is_empty(),
+                parse_terms.is_collection_literal(parse_id),
+                expected,
+            ) {
+                let items: Vec<TermId> = pos_args
+                    .iter()
+                    .map(|&id| {
+                        convert_query_term_expecting(
+                            kb,
+                            parse_terms,
+                            parse_symbols,
+                            id,
+                            scope,
+                            var_map,
+                            elem_expected,
+                        )
+                    })
+                    .collect();
+                return kb.build_list(&items);
+            }
+
+            // The declared field type of the i-th POSITIONAL argument, by declaration
+            // order — the same rank the positional→named desugar below assigns.
+            let pos_field_type = |kb: &KnowledgeBase, i: usize| {
+                kb.entity_field_names(kb_functor)
+                    .and_then(|fields| fields.get(i).copied())
+                    .and_then(|f| declared_field_type(kb, kb_functor, f))
+            };
             let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                 .iter()
-                .map(|&id| convert_query_term(kb, parse_terms, parse_symbols, id, scope, var_map))
+                .enumerate()
+                .map(|(i, &id)| {
+                    let exp = pos_field_type(kb, i);
+                    convert_query_term_expecting(
+                        kb,
+                        parse_terms,
+                        parse_symbols,
+                        id,
+                        scope,
+                        var_map,
+                        exp,
+                    )
+                })
                 .collect();
             let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                 .iter()
                 .map(|&(sym, id)| {
                     let n = parse_symbols.local_name(sym);
                     let kb_sym = kb.intern(n);
+                    let exp = declared_field_type(kb, kb_functor, kb_sym);
                     (
                         kb_sym,
-                        convert_query_term(kb, parse_terms, parse_symbols, id, scope, var_map),
+                        convert_query_term_expecting(
+                            kb,
+                            parse_terms,
+                            parse_symbols,
+                            id,
+                            scope,
+                            var_map,
+                            exp,
+                        ),
                     )
                 })
                 .collect();
@@ -13901,9 +14044,13 @@ impl<'a> Loader<'a> {
     }
 
     /// Like `convert_term` but takes an optional expected-type hint that drives
-    /// context-aware ListLiteral desugaring (WI-007). When `expected` is a
-    /// `List`-shaped type, `ListLiteral` is rewritten to `cons/nil`; otherwise
-    /// it stays in the KB as `ListLiteral` for downstream consumers.
+    /// context-aware ListLiteral desugaring (WI-007). `ListLiteral` is rewritten to
+    /// `cons`/`nil` UNLESS `expected` names another collection — see
+    /// [`list_literal_lowering`], which owns the rule and is shared with the query
+    /// converter. WI-1096: this doc used to say the reverse ("when `expected` is a
+    /// `List`-shaped type … otherwise it stays in the KB as `ListLiteral`"), which was
+    /// the pre-WI-1096 default and is the sentence `docs/kernel-language.md` §4.6 calls
+    /// "the defect, written down".
     ///
     /// WI-710: maintains `term_depth` (see the field) across the WHOLE conversion —
     /// every recursive child goes through here, so the inner fn can tell a top-level
@@ -14161,31 +14308,23 @@ impl<'a> Loader<'a> {
                 // measured, `fact named(ListLiteral(elements: 1))` loaded as `nil`. Same
                 // guard, same reason, as the printer's `named_args.is_empty()` test.
                 //
-                // The two layers answer two questions: the OUTER `Some` is "lower this
-                // literal to a list here", the INNER `Option<TermId>` the element-type
-                // hint to propagate into the elements (absent for a bare `List` and for
-                // the un-named default alike — neither names an element type).
-                let lower_as_list: Option<Option<TermId>> = if self
-                    .kb
-                    .qualified_name_of(new_functor)
-                    != "anthill.reflect.ListLiteral"
-                    || !named_args.is_empty()
-                {
-                    None
-                } else {
-                    match expected {
-                        // WI-342: a `denoted`-bearing (value-in-type) field type never
-                        // reaches here — the `exp` reads below narrow to a ground
-                        // `TermId` — so it arrives as `None` and takes the default. No
-                        // such collection sort exists today; a future one would need a
-                        // carrier-agnostic read here, not a wider default.
-                        Some(e) if super::typing::is_type_variable(self.kb, &TermIdView(e)) => {
-                            Some(None)
-                        }
-                        Some(e) => Self::find_list_element_type(self.kb, e),
-                        None => Some(None),
-                    }
-                };
+                // The decision itself lives in `list_literal_lowering`, SHARED with the
+                // query converter — the two must not disagree about what `[…]` is, and
+                // when they did, a query could not match the fact it had just printed.
+                // Its doc carries the rule and the measurement.
+                //
+                // WI-342: a `denoted`-bearing (value-in-type) field type never reaches
+                // here — the `exp` reads below narrow to a ground `TermId` — so it
+                // arrives as `None` and takes the default. No such collection sort
+                // exists today; a future one would need a carrier-agnostic read at the
+                // hint, not a wider default here.
+                let lower_as_list = list_literal_lowering(
+                    self.kb,
+                    new_functor,
+                    !named_args.is_empty(),
+                    self.parsed.terms.is_collection_literal(parse_id),
+                    expected,
+                );
                 if let Some(elem_expected) = lower_as_list {
                     let items: Vec<TermId> = pos_args
                         .iter()

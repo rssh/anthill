@@ -1843,9 +1843,12 @@ impl SearchStream {
     /// List-typed context, so `(forall ?x in [1, 2]: …)` arrived here as a literal.
     /// WI-1096 made an undeclared literal lower to `cons`/`nil`, so that spelling now
     /// takes the arm below — but a slot DECLARED a non-`List` collection still keeps
-    /// its literal as written (spec §4.6), and every reflect-built `ListLiteral` term
-    /// reaches here unchanged. Deleting the arm on the strength of the old sentence
-    /// would silently turn those into "spine not ground" (a delay).
+    /// its literal as written (spec §4.6), and a `ListLiteral` built IN MEMORY by the
+    /// reify path (`occurrence_to_term`) never passes a converter at all, so it arrives
+    /// here as itself. (Only in memory: printed to disk it renders as `[…]`, so a
+    /// reload puts it back through the loader and it comes back a `cons` spine.)
+    /// Deleting the arm on the strength of the old sentence would silently turn those
+    /// into "spine not ground" (a delay).
     /// A `ListLiteral` carries all its elements positionally
     /// and never a tail (the `[h | t]` surface was removed, WI-560). Elements
     /// themselves need not be ground — only the SPINE. Returns `None` when the

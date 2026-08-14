@@ -2015,7 +2015,13 @@ impl<'a> Converter<'a> {
                 let elements: SmallVec<[TermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term("ListLiteral", elements, span));
+                let id = self.alloc_fn_term("ListLiteral", elements, span);
+                // WI-1099: the bracket SURFACE, which is what the loader lowers to the
+                // `cons`/`nil` spine. A written `ListLiteral(a, b)` builds the identical
+                // term and is the reflect ENTITY, so the mark is the only thing that
+                // tells them apart — see `SimpleTermStore::collection_literals`.
+                self.terms.mark_collection_literal(id);
+                results.push(id);
             }
             BuildFrame::TupleLiteral { node, slots } => {
                 let span = self.span(node);
