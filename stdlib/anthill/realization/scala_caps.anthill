@@ -33,7 +33,9 @@ namespace anthill.realization.scala_caps
                     receiver: ReceiverForm.ContextCapability(name: "Cap"))
     ],
 
-    -- Function-arrow distinction (per WI-169 follow-up):
+    -- Function-arrow distinction (per WI-1101 follow-up — that item was filed
+    -- as WI-169 and renumbered when the id turned out to name two unrelated
+    -- work items; WI-169 now denotes the other one, synth-rule memoization):
     --   `A -> B`  pure / no effects (cc-tracked)
     --   `A => B`  may have any effect (default cc capture set = {cap})
     -- Codegen emits `->` for operation types whose effect row is empty

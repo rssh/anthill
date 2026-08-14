@@ -263,7 +263,13 @@ done
   Use the last-token-per-record extractor above, or `anthill-todo list --status X`.
 - **`anthill-todo list` output embeds WI references in descriptions.** Anchor on the
   `^  WI-NNN [Status]` line prefix, not a bare `WI-[0-9]+` match, or the count roughly triples.
-- **Known data defect:** `WI-169` names two unrelated items (`workitems.anthill:1069` scaland
-  forward-mapping spec; `:3298` synth-rule lifetime). Both Delivered, so nothing is broken today.
-  ID collisions from parallel branches are a recurring failure mode — cf.
-  `renumber the remote's colliding WI-754 follow-up to WI-863`.
+- **Fixed data defect (was: `WI-169` names two unrelated items).** The scaland forward-mapping
+  spec has been renumbered to `WI-1101`; `WI-169` is now the synth-rule lifetime item alone, which
+  is what `kb/execute.rs`, `kb/mod.rs`, `eval_q3_test.rs` and WI-678 all mean by the id. The note
+  here used to read "Both Delivered, so nothing is broken today" — the opposite was true, and
+  both-Delivered was the thing that broke it: two records in ONE status group collapse to one in
+  `chrono_topo`'s id-keyed emit walk, so a listing printed 1088 rows under a `1089 item(s)` footer
+  and `show WI-169` answered only the scaland record. `anthill-todo` now refuses any command on a
+  store with a duplicate id (`duplicate_item_id`, main.anthill), so this cannot recur silently.
+  ID collisions from parallel branches remain a recurring failure mode — cf.
+  `renumber the remote's colliding WI-754 follow-up to WI-863` — but they now fail loudly.

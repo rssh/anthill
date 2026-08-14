@@ -82,6 +82,9 @@ mod cmd_version_stamp_test;
 #[path = "include/cmd_version_test.rs"]
 mod cmd_version_test;
 
+#[path = "include/store_duplicate_id_test.rs"]
+mod store_duplicate_id_test;
+
 #[path = "include/wi1097_list_short_default_test.rs"]
 mod wi1097_list_short_default_test;
 

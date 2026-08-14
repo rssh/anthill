@@ -416,7 +416,40 @@ namespace anthill.todo
           -- the command that RESOLVES that state and owns its own messaging:
           -- nagging "run migrate" while running migrate would contradict itself.
           let _ = if eq(name, "migrate") then 0 else version_check()
-          dispatch(name, args, store, agent, wis_cell)
+          -- A work item id is the KEY every command reads by: `lookup`,
+          -- `build_row_map`, the dependency graph and `chrono_topo`'s emit set
+          -- are all keyed on it. Two records sharing one id is therefore not a
+          -- display wart to route around but a broken store, and it fails
+          -- SILENTLY in every one of those readers — the second record simply
+          -- never appears, while `count_rows` still counts it. That is how
+          -- WI-169 named two unrelated items for months: both Delivered, so
+          -- both landed in one status group, and `chrono_topo` dropped one from
+          -- every listing while `show WI-169` answered the other. Refusing here,
+          -- before any command touches the store, is the loud error the repo's
+          -- rules ask for in place of that silent skip.
+          match duplicate_item_ids(wis_cell)
+            case nil() -> dispatch(name, args, store, agent, wis_cell)
+            case cons(d, ds) ->
+              -- ALL of them, not the first: the cause this gate names — a
+              -- parallel-branch merge — lands several collisions at once, and
+              -- reporting one per run would charge the reader a refuse / edit /
+              -- re-run cycle each. The walk already visits every item, so the
+              -- full list is free.
+              let named = concat("error: duplicate work item id(s): ",
+                                 join_strings(cons(d, ds), ", "))
+              let effect = concat(" — records share an id, so every id-keyed ",
+                                  "read (show, claim, list, the dependency graph) sees only one.")
+              -- The remedy is a hand edit, and it is named as one: the repair
+              -- cannot route through `update`/`delete`, because those address a
+              -- record BY the id that is ambiguous. The file is the project's
+              -- own `workitems.anthill` — no path is printed, since every
+              -- command reaches its project through `-d`/discovery and a
+              -- cwd-relative path would be wrong for anyone who passed one.
+              let remedy = concat(" Renumber all but one of each group in the",
+                                  " project's workitems.anthill.")
+              let _ = eprintln(console(),
+                               concat(named, concat(effect, remedy)))
+              2
 
     -- Each subcommand reads its own positional/flag args; the
     -- OperationSpec for each subcommand declares the params it expects
@@ -459,6 +492,38 @@ namespace anthill.todo
       else if eq(name, "insert") then cmd_insert(args, s)
       else if eq(name, "migrate") then cmd_migrate(s)
       else not_yet(name)
+
+    -- ── Store integrity gate ──────────────────────────────────────
+
+    -- Every work item id that occurs more than once, in first-repeat order.
+    -- `main` refuses on a non-empty answer before dispatching; the comment
+    -- there says why a duplicate id is fatal rather than cosmetic.
+    --
+    -- ONE walk with a seen-set, not the pairwise compare the shape invites:
+    -- this runs ahead of EVERY command, and the store it guards is four figures
+    -- of items, so an O(N^2) gate would cost more than most of the commands it
+    -- protects. `Map.put`/`Map.contains` are host-backed hash operations, so
+    -- the seen-set really is the O(N) an assoc list would not have been.
+    --
+    -- `reported` is a SECOND set, not a reuse of `seen`: an id appearing three
+    -- times must name itself once in the answer, not twice.
+    operation duplicate_item_ids(s: Cell[State]) -> List[String]
+      effects Error
+    =
+      repeated_ids(WorkItemStore.all(s), empty(), empty())
+
+    operation repeated_ids(items: List[WorkItem],
+                           seen: Map[String, Bool],
+                           reported: Map[String, Bool]) -> List[String] =
+      match items
+        case nil() -> nil()
+        case cons(w, rest) ->
+          match w
+            case WorkItem(id, _, _, _, _, _, _, _) ->
+              if contains(seen, id) then
+                if contains(reported, id) then repeated_ids(rest, seen, reported)
+                else cons(id, repeated_ids(rest, seen, put(reported, id, true)))
+              else repeated_ids(rest, put(seen, id, true), reported)
 
     -- `tag <id> <name>` — attach a named-list tag to a work item.
     -- Validation order mirrors the legacy run_tag: non-empty name,
@@ -1110,8 +1175,12 @@ namespace anthill.todo
     -- Split a Row list into (first half, second half) preserving order,
     -- via tortoise/hare. The left half holds the strictly-earlier input
     -- positions, which — combined with a left-biased merge — makes the
-    -- sort stable. Stability is required: the data has duplicate ids
-    -- (WI-169) and the bundle must match the legacy stable sort.
+    -- sort stable. Stability is required because the bundle must reproduce the
+    -- legacy stable `slice::sort_by`, and that is now the WHOLE reason: the
+    -- justification used to add "the data has duplicate ids (WI-169)", which
+    -- no longer holds — the store was renumbered and `main`'s
+    -- `duplicate_item_id` gate refuses before any command can reach this sort.
+    -- Ties here are equal-id rows, which the gate has made unreachable.
     operation split_half(rs: List[Row]) -> Pair[List[Row], List[Row]] =
       split_half_go(rs, rs)
 
@@ -1144,11 +1213,21 @@ namespace anthill.todo
     -- `unblocks` survives as display-only annotation, no longer a sort key.
     --
     -- Rows are identified by id here, exactly as `build_row_map` keys the
-    -- ready/blocked classification this same command relies on. Two rows
-    -- sharing BOTH id and status (which `add` precludes — ids are
-    -- auto-assigned) would therefore collapse to one in this walk; the
-    -- one benign historical duplicate (WI-169) carries two different
-    -- statuses, so it lands in two distinct groups and both rows show.
+    -- ready/blocked classification this same command relies on. Marking on
+    -- entry is what stops a dep pulled forward by `emit_deps` re-emitting, so
+    -- the skip is load-bearing and stays — but it means two rows sharing an id
+    -- AND a status group collapse to one HERE while `count_rows` still counts
+    -- both, which is a silent drop.
+    --
+    -- This comment used to argue the case away: `add` auto-assigns ids, and the
+    -- one historical duplicate (WI-169) was said to carry two different
+    -- statuses and so land in two groups. Both halves were wrong. Ids collide
+    -- across parallel branches, where no `add` sees the other's counter; and
+    -- WI-169's two records were BOTH Delivered, so one of them vanished from
+    -- every listing — the footer said 1089 items over 1088 rows for months, and
+    -- `show WI-169` answered the record that almost nothing cited. `main`'s
+    -- `duplicate_item_id` gate now refuses ahead of dispatch, so no walk here
+    -- can be reached with an ambiguous id.
     operation chrono_topo(rows: List[Row]) -> List[Row] =
       let sorted = sort_by_id(rows)
       let section_map = build_row_map(sorted)
@@ -1319,8 +1398,10 @@ namespace anthill.todo
       else if eq(substring(d, 0, 1), "0") then drop_leading_zeros(substring(d, 1, length(d)))
       else d
 
-    -- Stable merge sort by id. Ties retain input order (legacy
-    -- slice::sort_by is stable; the data has duplicate WI-169 ids).
+    -- Stable merge sort by id. Ties retain input order, matching the legacy
+    -- stable `slice::sort_by` — see `split_half` for why that parity is the
+    -- only remaining reason, now that an id cannot repeat in a store any
+    -- command is allowed to read.
     operation merge_by_id(xs: List[Row], ys: List[Row]) -> List[Row] =
       match xs
         case nil() -> ys
