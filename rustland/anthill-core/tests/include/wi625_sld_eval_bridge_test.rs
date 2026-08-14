@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 // A host-bodied op with ZERO spec dispatch in its body: a pure `match` over an
 // enum returning Int literals. (A `requires`-carrying op whose body dispatches to
 // a NON-builtin required spec op would residualize — the bridge's placeholder
-// requirements don't supply that dictionary, WI-300 Tier B / gap 3. `List.member`
+// requirements don't supply that dictionary, WI-300 Tier B / gap 3. `List.contains`
 // is NOT such a case: its `eq(head, x)` is builtin-backed at eval, so it runs
 // through the bridge fine — see `transitive_requires_contains_decides_via_member`.)
 const MATCH_SRC: &str = r#"
@@ -292,22 +292,22 @@ fn bridge_interp() -> Interpreter {
 // ── WI-300 Tier B — transitive-requires rule (the integration goal) ──────────
 //
 // A rule whose `requires(Eq[T])` is grounded NOT by a direct Eq-op call but by a
-// body call to `List.member` (which itself declares `requires Eq[T]`). The typer
+// body call to `List.contains` (which itself declares `requires Eq[T]`). The typer
 // accepts `member` as a TRANSITIVE witness and rewrites the guard to check the
-// element type at the concrete `member(?x, ?xs)` call; at resolution the operand
+// element type at the concrete `contains(?xs, ?x)` call; at resolution the operand
 // runs through the gap-1 bridge (`member`'s abstract `eq(head, x)` is builtin-
 // backed at eval, so its own `Eq` obligation needs no threaded dict here).
 const CONTAINS_SRC: &str = r#"
     namespace gap3.membertest
       import anthill.prelude.{Int64, List, Bool, Eq}
-      import anthill.prelude.List.{member}
+      import anthill.prelude.List.{contains}
       import anthill.prelude.PartialEq.{eq}
       -- A carrier that declares NO Eq instance: the fire-time guard must block
       -- has_elem over it, proving the transitive requirement is real, not vacuous.
       sort NoEq
         entity nt(v: Int64)
       end
-      rule has_elem(?xs, ?x) :- requires(Eq[T]), eq(member(?x, ?xs), true)
+      rule has_elem(?xs, ?x) :- requires(Eq[T]), eq(contains(?xs, ?x), true)
     end
 "#;
 
@@ -365,7 +365,7 @@ fn transitive_requires_rule_types_via_member() {
 #[test]
 fn transitive_requires_contains_decides_via_member() {
     let mut kb = common::load_kb_with(CONTAINS_SRC);
-    // contains([1,2,3], 2): guard fires (Int64 provides Eq), member(2,[1,2,3]) runs
+    // contains([1,2,3], 2): guard fires (Int64 provides Eq), contains([1,2,3], 2) runs
     // to `true` via the bridge, eq(true, true) succeeds ⇒ one definite solution.
     let xs = list_term(&mut kb, &[1, 2, 3]);
     let two = int_term(&mut kb, 2);
@@ -381,7 +381,7 @@ fn transitive_requires_contains_decides_via_member() {
         "the member() operand ran at resolution — a definite solution"
     );
 
-    // contains([1,2,3], 5): member(5,[1,2,3]) = false, eq(false, true) fails ⇒ none.
+    // contains([1,2,3], 5): contains([1,2,3], 5) = false, eq(false, true) fails ⇒ none.
     let xs2 = list_term(&mut kb, &[1, 2, 3]);
     let five = int_term(&mut kb, 5);
     let g2 = goal(&mut kb, "gap3.membertest.has_elem", &[xs2, five]);
@@ -995,7 +995,7 @@ fn transitive_op_requires_single_param_loads() {
 // distinct. Pre-gap-2 the resolver's `eq`/`neq` builtin (`sem_eq_core`) keyed
 // dispatch only on a carrier's OWN `eq` member (`build_eq_dispatch_index` /
 // `carrier_own_op`), so an instance-fact carrier fell through to the STRUCTURAL
-// verdict — diverging from the same program's `List.member` (which honors the
+// verdict — diverging from the same program's `List.contains` (which honors the
 // instance fact via the threaded dict). Gap 2 keys the instance-fact carrier's
 // constructors to its bound op and dispatches through it (bodied ⇒ eval bridge).
 const INSTFACT_SRC: &str = r#"

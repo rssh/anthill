@@ -36,7 +36,7 @@ end
     // NodeOccurrence — post-WI-251 the typer writes CallClass onto each
     // Apply occurrence's RefCell, not into a side-table. WI-325: stdlib
     // sorts now contribute their own classifications (e.g.
-    // `requires Eq[T]` on `List` makes `List.member`'s `eq` call
+    // `requires Eq[T]` on `List` makes `List.contains`'s `eq` call
     // classify as Defer too); scope to this op's body so we find the
     // row we care about even if iteration order surfaces a stdlib row
     // first.
@@ -193,7 +193,7 @@ end
     // After the standard pipeline, the Eq.eq rewrite must exist —
     // at minimum the test source's `use_eq` body produces one, plus
     // any stdlib operations with `requires Eq[T]` bodies (e.g.
-    // `List.member`'s `eq(head, x)`) contribute additional rewrites.
+    // `List.contains`'s `eq(head, x)`) contribute additional rewrites.
     assert!(
         eq_eq_count >= 1,
         "standard load_all (with insertion pass) must produce >= 1 Eq.eq rewrite; got {eq_eq_count}"

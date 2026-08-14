@@ -29,7 +29,7 @@
 //!   it defers to an op slot on ONE route — a dispatch that TIES
 //!   (`op_scoped_defer_location`) — because everywhere else value-direction
 //!   already serves the requirement and demonstrably serves it right (WI-817's
-//!   relay chain still computes its 551, `List.member` and the whole
+//!   relay chain still computes its 551, `List.contains` and the whole
 //!   `PartialOrd` comparison surface still run, and a host `interp.call` — which
 //!   has no call site to build a dictionary from — still works).
 //!

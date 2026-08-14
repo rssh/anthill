@@ -287,18 +287,18 @@ end
 /// EVAL — REALISTIC retroactive instance through a STDLIB collection op (the
 /// actual use case for instance facts): `Color` gets `Eq` retroactively via
 /// `fact Eq[T = Color, eq = colorEq]` — neither `Color` nor `Eq` is modified —
-/// then `List.member` (which `requires Eq[T]` and calls `eq` internally) finds a
+/// then `List.contains` (which `requires Eq[T]` and calls `eq` internally) finds a
 /// `Color` in a `List[Color]`. The `Eq[T = Color]` requirement dict is built from
 /// the instance fact and threaded into `member`. (`eq` takes `T`-typed args, so
 /// value-directed dispatch would also resolve this — this is end-to-end
 /// integration coverage of an instance fact in a real stdlib collection, not the
 /// strict A2 isolation that `instance_fact_op_dispatches_via_threaded_dict`
-/// provides.) `member(color 2, [color 1, color 2]) = true ⇒ 1`; a miss ⇒ `0`.
+/// provides.) `contains([color 1, color 2], color 2) = true ⇒ 1`; a miss ⇒ `0`.
 #[test]
 fn instance_fact_eq_powers_list_member() {
     let src = r#"namespace test.wi431.member
   import anthill.prelude.{List, Int64, Bool, Eq, PartialEq}
-  import anthill.prelude.List.{member}
+  import anthill.prelude.List.{contains}
 
   sort Color
     entity color(code: Int64)
@@ -312,15 +312,15 @@ fn instance_fact_eq_powers_list_member() {
   fact Eq[T = Color, eq = colorEq]
 
   operation hasMatch() -> Int64 =
-    if member(color(code: 2), [color(code: 1), color(code: 2)]) then 1 else 0
+    if contains([color(code: 1), color(code: 2)], color(code: 2)) then 1 else 0
   operation hasNoMatch() -> Int64 =
-    if member(color(code: 9), [color(code: 1), color(code: 2)]) then 1 else 0
+    if contains([color(code: 1), color(code: 2)], color(code: 9)) then 1 else 0
 end
 "#;
     let mut interp = crate::common::interp_for(src);
     let hit = match interp.call("test.wi431.member.hasMatch", &[]) {
         Ok(anthill_core::eval::Value::Int(n)) => n,
-        other => panic!("member(color 2, [color 1, color 2]) should eval via the instance-fact Eq; got {other:?}"),
+        other => panic!("contains([color 1, color 2], color 2) should eval via the instance-fact Eq; got {other:?}"),
     };
     assert_eq!(
         hit, 1,
@@ -328,7 +328,7 @@ end
     );
     let miss = match interp.call("test.wi431.member.hasNoMatch", &[]) {
         Ok(anthill_core::eval::Value::Int(n)) => n,
-        other => panic!("member(color 9, …) should eval via the instance-fact Eq; got {other:?}"),
+        other => panic!("contains(…, color 9) should eval via the instance-fact Eq; got {other:?}"),
     };
     assert_eq!(
         miss, 0,

@@ -19,7 +19,8 @@ case-split (a catch-all needs earlier-arm negation guards — undecidable on an 
 declined to a WI-519 residual, not over-generated); effectful / `requires`-carrying bodies are
 declined (not yet threaded); an op-call OTHER operand is declined.
 
-**`member` — the eq-vs-unification soundness fix, DELIVERED (2026-07-09).** `member`'s `:-`
+**`contains` (then spelled `member`) — the eq-vs-unification soundness fix, DELIVERED
+(2026-07-09).** Its `:-`
 unification twins are **retired**: they branched on `cons(head: ?x, …)` (structural unify),
 diverging unsoundly from the body's declared `eq(head, x)` for a type whose `eq` is not structural
 equality. The relational view is now derived from the body — the resolver routes a *bare* rule-less
@@ -28,17 +29,17 @@ bodied **Bool** goal (`member(?x, ?l)`) to `eq(member(?x, ?l), true)`
 via the eval bridge *using the declared `Eq`* and an unground one suspends to a WI-519 residual (§5,
 the "sound checker, not generator"). The route is gated **effect-free** (an effectful body is not a
 logical relation — `Stream.isEmpty` is excluded) but NOT requires-free (unlike the unfold's
-`folded_call_match` gate): `member`'s `requires Eq[T]` is discharged at the body's own `eq(head, x)`
+`folded_call_match` gate): `contains`'s `requires Eq[T]` is discharged at the body's own `eq(head, x)`
 call by value-directed dispatch, which the bridge honours. A carrier whose `eq` is defined by
 `<=>` *rules* (rather than a runnable body) is still decided — the bridge fires those rules by
 ordinary SLD — so retiring the structural twins strands nothing decidable. This is the §5 semantics **without** the nested-choice
 `if`-flattening / an owed `requires Eq[T]` on the unfold: those are needed only to *case-split* a
-relational `member` over an **unground list**, which is inherently non-terminating (infinitely many
+relational `contains` over an **unground list**, which is inherently non-terminating (infinitely many
 lists contain `?x`; the `= true` operand — unlike `append`'s finite `zs` — does not bound the
 recursion). The bridge-plus-residual realizes §5's "evaluate or suspend `eq` per branch" and
 *terminates*; the `if`-flattening unfold path stays deferred until a bodied Bool op has a
 **terminating** relational consumer (design §10 Q4: add a mechanism only when a consumer serves it).
-The requires-gate in `folded_call_match` therefore still declines `member` for the unfold — correct,
+The requires-gate in `folded_call_match` therefore still declines `contains` for the unfold — correct,
 since the bridge (not the unfold) serves it. **Deferred:**
 the typer inlining site (§3.2) — abandoned as type-unsound (it rewrote a call before the signature
 check); the prover site (§3.4). **Related:** proposal [043](../proposals/043-simp-rewrite.md)
@@ -62,7 +63,8 @@ derive the Γ-transfer from).
 
 - `length` (body at :30, rules at :35-36) and `append` (body at :56, rules at :60-61): the `<=>`
   rules are the body's match arms **restated verbatim** — pure duplication, mechanically derivable.
-- `member` (body at :48, rules at :52-53): **not** a safe duplicate. The body branches on
+- `member` (body at :48, rules at :52-53; the operation is now `contains`, WI-939's
+  follow-up — container-first so it dot-dispatches): **not** a safe duplicate. The body branches on
   `eq(head, x)` — the declared `Eq` operation; the rules branch on `cons(head: ?x, …)` —
   **unification**. For a type whose `Eq` is not structural equality the rules give wrong answers.
   A latent soundness gap, not just redundancy.
@@ -184,7 +186,7 @@ interacts with WI-502 as before.
 **Precedence:** body-unfold fires only for **rule-less** bodied functors. "Both exist" is now a
 **load refusal**, not a warning and no longer a migration state — WI-939 item 4,
 `check_operation_body_and_clauses`. The migration this paragraph was written for is over: WI-580
-retired `List.member`'s twins, and the corpus census of the shape (a bodied operation whose functor
+retired `List.contains`'s twins, and the corpus census of the shape (a bodied operation whose functor
 also carries clauses) is **zero**, so the warning had no population left to carry. A warning was also
 the wrong instrument for what the pair does — it is a **loss, not a trade**: measured, the arity+1
 goal answers a definite value through the derived view with the body alone, and a RESIDUAL once a

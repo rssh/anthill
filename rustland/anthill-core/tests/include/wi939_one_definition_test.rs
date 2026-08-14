@@ -18,7 +18,7 @@
 //! reason this needed a check of its own rather than a widening of that one.
 //!
 //! THE BODY IS THE DISCRIMINATOR, AND THE PRELUDE IS WHY. A BODY-LESS operation
-//! carrying clauses is ONE definition written relationally — `Set.member` (2 clauses,
+//! carrying clauses is ONE definition written relationally — `Set.contains` (2 clauses,
 //! no body), `Set.subset`, `Set.eq`, all shipped — so a check keyed on "has clauses"
 //! would refuse the standard library. [`a_body_less_operation_with_clauses_is_legal`]
 //! drives that shape to a value, and [`the_shipped_prelude_still_loads`] is the
@@ -61,7 +61,7 @@ end
 "#;
 
 /// The prelude's own spelling: a BODY-LESS operation whose clauses ARE its
-/// definition. `Set.member` in miniature.
+/// definition. `Set.contains` in miniature.
 const CLAUSES_ONLY: &str = r#"
 namespace wi939d.rel
   sort Coll
@@ -170,7 +170,7 @@ fn the_pair_leaves_one_symbol_with_one_declaration() {
 #[test]
 fn a_body_less_operation_with_clauses_is_legal() {
     // THE PRELUDE'S SPELLING, and the reason the discriminator is the BODY rather
-    // than "has clauses": `Set.member` is exactly this shape. DRIVEN — the goal
+    // than "has clauses": `Set.contains` is exactly this shape. DRIVEN — the goal
     // answers — because a control that only loaded would keep passing if the clauses
     // stopped meaning anything.
     //
@@ -256,15 +256,15 @@ end
 
 #[test]
 fn the_shipped_prelude_still_loads() {
-    // THE CORPUS IS THE CONTROL. `Set.member` / `Set.subset` / `Set.eq` are body-less
+    // THE CORPUS IS THE CONTROL. `Set.contains` / `Set.subset` / `Set.eq` are body-less
     // operations carrying clauses; a check keyed on "has clauses" refuses the whole
     // standard library, and every other row above would still pass.
     //
     // PASSES EITHER WAY, BY DESIGN.
     let kb = crate::common::load_kb_with("namespace wi939d.corpus\nend\n");
     let member = kb
-        .try_resolve_symbol("anthill.prelude.Set.member")
-        .expect("Set.member must resolve");
+        .try_resolve_symbol("anthill.prelude.Set.contains")
+        .expect("Set.contains must resolve");
     assert!(
         !kb.program_clauses_by_functor(member).is_empty() && kb.op_body_node(member).is_none(),
         "the shape this control exists for: clauses, no body"

@@ -571,7 +571,7 @@ fn wi580_op_call_other_operand_declines() {
 const MEMBER_EQ_SRC: &str = r#"
     namespace test.wi580mem
       import anthill.prelude.{Int64, Bool, Eq, PartialEq, List}
-      import anthill.prelude.List.{member, cons, nil}
+      import anthill.prelude.List.{contains, cons, nil}
       sort AE
         entity ae(k: Int64, tag: Int64)
         operation aeq(a: AE, b: AE) -> Bool = eq(a.k, b.k)
@@ -580,11 +580,11 @@ const MEMBER_EQ_SRC: &str = r#"
       end
       -- eq-equal (same key) but STRUCTURALLY DIFFERENT (tag 9 vs 8): the old `:-`
       -- twins answered FALSE (structural unify fails); the body's `eq` says TRUE.
-      rule eq_but_diff() :- member(ae(k: 1, tag: 9), cons(head: ae(k: 1, tag: 8), tail: nil))
+      rule eq_but_diff() :- contains(cons(head: ae(k: 1, tag: 8), tail: nil), ae(k: 1, tag: 9))
       -- different key ⇒ not eq ⇒ not a member.
-      rule not_eq() :- member(ae(k: 2, tag: 0), cons(head: ae(k: 1, tag: 8), tail: nil))
+      rule not_eq() :- contains(cons(head: ae(k: 1, tag: 8), tail: nil), ae(k: 2, tag: 0))
       -- structurally identical ⇒ a member either way.
-      rule identical() :- member(ae(k: 1, tag: 8), cons(head: ae(k: 1, tag: 8), tail: nil))
+      rule identical() :- contains(cons(head: ae(k: 1, tag: 8), tail: nil), ae(k: 1, tag: 8))
     end
 "#;
 
@@ -605,8 +605,8 @@ fn zero_arg_solutions(kb: &mut KnowledgeBase, pred: &str) -> usize {
 
 #[test]
 fn wi580_member_uses_declared_eq_not_unification() {
-    // WI-580 headline fix: a bare `member(x, l)` goal is the operation's
-    // relational view, DERIVED from the body (routed to `eq(member(x, l), true)`,
+    // WI-580 headline fix: a bare `contains(l, x)` goal is the operation's
+    // relational view, DERIVED from the body (routed to `eq(contains(l, x), true)`,
     // decided by the eval bridge using the declared `Eq`), NOT the retired `:-`
     // unification twins. For a custom `Eq` that is not structural equality, the
     // twins gave WRONG answers; the body-derived form is sound.
@@ -656,7 +656,7 @@ fn wi580_member_over_rule_defined_eq_decides() {
     let src = r#"
         namespace test.wi580ce
           import anthill.prelude.{Bool, List, Eq, PartialEq}
-          import anthill.prelude.List.{member, cons, nil}
+          import anthill.prelude.List.{contains, cons, nil}
           sort Color
             entity red
             entity blue
@@ -666,9 +666,9 @@ fn wi580_member_over_rule_defined_eq_decides() {
             provides PartialEq[T = Color, eq = ceq]
             provides Eq[T = Color]
           end
-          rule red_in_red() :- member(red, cons(head: red, tail: nil))
-          rule red_in_blue() :- member(red, cons(head: blue, tail: nil))
-          rule blue_in_rb() :- member(blue, cons(head: red, tail: cons(head: blue, tail: nil)))
+          rule red_in_red() :- contains(cons(head: red, tail: nil), red)
+          rule red_in_blue() :- contains(cons(head: blue, tail: nil), red)
+          rule blue_in_rb() :- contains(cons(head: red, tail: cons(head: blue, tail: nil)), blue)
         end
     "#;
     let mut kb = load_with(src);
@@ -699,16 +699,16 @@ fn wi580_member_over_rule_defined_eq_decides() {
 #[test]
 fn wi580_member_relational_unground_residualizes_not_wrong() {
     // The dual of the soundness fix (design §5): with the `:-` twins retired, a
-    // bare `member(x, ?l)` over an UNGROUND list can no longer be enumerated by
+    // bare `contains(?l, x)` over an UNGROUND list can no longer be enumerated by
     // structural unification (which was unsound anyway). It routes to
-    // `eq(member(x, ?l), true)`, whose eval bridge is ground-gated — so it
+    // `eq(contains(?l, x), true)`, whose eval bridge is ground-gated — so it
     // suspends to a WI-519 residual rather than inventing a definite answer.
     // "Sound checker, not generator."
     let src = r#"
         namespace test.wi580memr
           import anthill.prelude.{Int64, Bool, List}
-          import anthill.prelude.List.{member, cons, nil}
-          rule contains5(?l) :- member(5, ?l)
+          import anthill.prelude.List.{contains, cons, nil}
+          rule contains5(?l) :- contains(?l, 5)
         end
     "#;
     let mut kb = load_with(src);
@@ -724,7 +724,7 @@ fn wi580_member_relational_unground_residualizes_not_wrong() {
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(
         sols.iter().all(|s| !s.is_definite()),
-        "an unground relational `member(5, ?l)` must residualize (undecided), not \
+        "an unground relational `contains(?l, 5)` must residualize (undecided), not \
          fabricate a definite list; got {} solution(s), some definite",
         sols.len(),
     );

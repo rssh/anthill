@@ -105,7 +105,7 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
     let enclosing_requires: Vec<RequiresEntry> = Vec::new();
 
     // Stdlib load may have exercised Eq.eq dispatch via operation bodies
-    // (e.g. List.member, List.nth after WI-324). Reset the cache so we
+    // (e.g. List.contains, List.nth after WI-324). Reset the cache so we
     // measure cache growth from the test's own dispatch calls, not
     // whatever residue stdlib left behind.
     kb.invalidate_resolve_cache();

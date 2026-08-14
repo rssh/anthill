@@ -1184,7 +1184,7 @@ fn branch_guarded_external_co_occurrence_rejected() {
 // twice mints two issues). WI-702 rejects such a rule at LOAD; the firing sites stay
 // effect-blind. The gate keys on the EFFECT ROW (any effect — function-hood), NOT
 // `requires` (Set/Map carry `requires Eq[T]` into member/insert/get, and the stdlib's
-// own `member(?x, insert(?s,?x)) <=> true [simp]` laws mention them — so a
+// own `contains(insert(?s,?x), ?x) <=> true [simp]` laws mention them — so a
 // requires-inclusive gate would reject the standard library; the whole-stdlib load in
 // github_todo_test is the standing positive control for that).
 

@@ -305,8 +305,8 @@ fn simp_law_present(kb: &mut KnowledgeBase, op_qn: &str) -> bool {
 fn stdlib_set_and_map_reducing_laws_are_simp_tagged() {
     let mut kb = crate::common::load_kb_with(SRC);
     assert!(
-        simp_law_present(&mut kb, "anthill.prelude.Set.member"),
-        "the stdlib Set.member reducing law must be [simp]-tagged (WI-596 part A)",
+        simp_law_present(&mut kb, "anthill.prelude.Set.contains"),
+        "the stdlib Set.contains reducing law must be [simp]-tagged (WI-596 part A)",
     );
     assert!(
         simp_law_present(&mut kb, "anthill.prelude.Set.union"),

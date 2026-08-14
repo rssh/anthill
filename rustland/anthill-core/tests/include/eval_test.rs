@@ -835,7 +835,7 @@ end
 
 /// WI-420 (sound path): the gate rejects passing a BARE requires-carrying op as
 /// a function value, but a genuine LAMBDA that calls such an op is fine. Here a
-/// lambda calling `List.member` (List requires Eq[T]) is passed to a HOF with
+/// lambda calling `List.contains` (List requires Eq[T]) is passed to a HOF with
 /// NO requirement of its own and invoked there; it must evaluate correctly —
 /// proving the gate did not affect closures and the lambda's requirement is
 /// discharged regardless of the caller's (empty) requirement scope. (The
@@ -846,16 +846,16 @@ fn wi420_lambda_over_requires_op_passed_to_hof_evals() {
     let src = r#"
 namespace test.wi420.lam
   import anthill.prelude.{List, Int64, Bool, Function}
-  import anthill.prelude.List.{member}
+  import anthill.prelude.List.{contains}
 
   operation use_pred(f: Function[A = Int64, B = Bool], v: Int64) -> Bool =
     f(v)
 
   operation found() -> Bool =
-    use_pred(lambda e -> member(e, [1, 2, 3]), 2)
+    use_pred(lambda e -> contains([1, 2, 3], e), 2)
 
   operation absent() -> Bool =
-    use_pred(lambda e -> member(e, [1, 2, 3]), 9)
+    use_pred(lambda e -> contains([1, 2, 3], e), 9)
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -877,7 +877,7 @@ end
     );
 }
 
-/// WI-420 (full fix): a `requires`-carrying op (`List.member`, since `List
+/// WI-420 (full fix): a `requires`-carrying op (`List.contains`, since `List
 /// requires Eq[T]`) passed BARE as a function value to a HOF with no
 /// requirement of its own, applied to a concrete Int64 list. The `Value::OpRef`
 /// captures the `Eq[Int64]` dispatch dict (resolved by the typer at the eta site,
@@ -890,13 +890,13 @@ fn wi420_eta_concrete_member_evals() {
     let src = r#"
 namespace test.wi420eta
   import anthill.prelude.{List, Int64, Bool, Function}
-  import anthill.prelude.List.{member}
+  import anthill.prelude.List.{contains}
 
-  operation use_pair(f: Function[A = (Int64, List[T = Int64]), B = Bool], x: Int64, xs: List[T = Int64]) -> Bool =
-    f((x, xs))
+  operation use_pair(f: Function[A = (List[T = Int64], Int64), B = Bool], x: Int64, xs: List[T = Int64]) -> Bool =
+    f((xs, x))
 
-  operation present() -> Bool = use_pair(member, 2, [1, 2, 3])
-  operation absent() -> Bool = use_pair(member, 9, [1, 2, 3])
+  operation present() -> Bool = use_pair(contains, 2, [1, 2, 3])
+  operation absent() -> Bool = use_pair(contains, 9, [1, 2, 3])
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -954,11 +954,11 @@ end
 }
 
 /// WI-421 (resolution a2): an external, `requires`-carrying operation
-/// (`List.member`, since `List requires Eq[T]`) used as a higher-order argument
+/// (`List.contains`, since `List requires Eq[T]`) used as a higher-order argument
 /// inside a sort body whose element type `T` is ABSTRACT — the case WI-420 left
 /// "machinery-ready but unreachable" for BARE eta. The acceptance semantics
 /// (abstract requires-op as a HOF arg, evaluating true/false) are met TODAY via
-/// the lambda + qualified-dot idiom: `lambda e -> List.member(e, xs)`. The
+/// the lambda + qualified-dot idiom: `lambda e -> List.contains(xs, e)`. The
 /// `Closure` snapshots `Box`'s dispatching dictionary (`__req_self`/`__req_eq`)
 /// at construction and reinstalls it when applied (the sound requirement-capture
 /// path WI-420's feedback contrasts against bare `OpRef`), so `member`'s
@@ -976,10 +976,10 @@ namespace test.wi421
     sort T = ?
     requires Eq[T]
     operation use_pred(f: Function[A = T, B = Bool], x: T) -> Bool = f(x)
-    -- `xs` is abstract-T-typed; `List.member` needs `Eq[T]`, supplied by the
+    -- `xs` is abstract-T-typed; `List.contains` needs `Eq[T]`, supplied by the
     -- enclosing `Box requires Eq[T]` and captured by the lambda's Closure.
     operation has(x: T, xs: List[T]) -> Bool =
-      use_pred(lambda e -> List.member(e, xs), x)
+      use_pred(lambda e -> List.contains(xs, e), x)
   end
   operation present() -> Bool = Box.has(2, [1, 2, 3])
   operation absent() -> Bool = Box.has(9, [1, 2, 3])
@@ -1003,26 +1003,26 @@ end
 /// WI-422 (loader/resolution): a selectively-imported operation referenced by
 /// BARE short name inside a sort scope that declares `requires Spec[T]`. The
 /// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → _global) that
-/// bypasses the namespace's `member → List.member` import alias and used to
+/// bypasses the namespace's `contains → List.contains` import alias and used to
 /// resurface the loader-internal global `member` *fact functor* as a phantom
 /// second candidate — emitting `ambiguous symbol 'member'` and then cascading
 /// into a hard `unknown functor` failure. WI-834 removes that schema-less
 /// functor entirely in favour of `MemberInfo`, so bare `member` here resolves
-/// unambiguously to `List.member`. This pins both halves of the acceptance: the
+/// unambiguously to `List.contains`. This pins both halves of the acceptance: the
 /// file loads warning-clean AND the call evaluates (the
 /// abstract `Eq[T]` evidence the enclosing `Box requires Eq[T]` supplies threads
 /// through to `member`'s `eq(head, x)`, as in the WI-421 lambda idiom above —
-/// here via a direct bare call instead of `lambda e -> List.member(e, xs)`).
+/// here via a direct bare call instead of `lambda e -> List.contains(xs, e)`).
 #[test]
 fn wi422_bare_imported_op_in_requires_bearing_sort_resolves() {
     let src = r#"
 namespace test.wi422
   import anthill.prelude.{List, Int64, Bool, Eq}
-  import anthill.prelude.List.{member}
+  import anthill.prelude.List.{contains}
   sort Box
     sort T = ?
     requires Eq[T]
-    operation has(x: T, xs: List[T]) -> Bool = member(x, xs)
+    operation has(x: T, xs: List[T]) -> Bool = contains(xs, x)
   end
   operation present() -> Bool = Box.has(2, [1, 2, 3])
   operation absent() -> Bool = Box.has(9, [1, 2, 3])
@@ -1353,7 +1353,7 @@ end
 
 /// WI-415: the CALL-SITE dual of WI-414. `member`'s `eq(head, x)` is genuinely
 /// ABSTRACT (head : the element T), so it correctly DEFERS — but a call
-/// `member(2, [1,2,3])` from a namespace with no `requires` must CONSTRUCT the
+/// `contains([1,2,3], 2)` from a namespace with no `requires` must CONSTRUCT the
 /// `Eq[Int64]` requirement from `fact Eq[Int64]` and thread it into member's frame,
 /// rather than leave `__req_eq` unbound. The typer builds the parent-bundle
 /// dispatching dict at compile stage (where the call-site subst still pins
@@ -1365,10 +1365,10 @@ fn wi415_member_call_constructs_concrete_eq_requirement() {
     let src = r#"
 namespace test.wi415
   import anthill.prelude.{List, Int64, Bool}
-  import anthill.prelude.List.{member}
+  import anthill.prelude.List.{contains}
 
-  operation has2() -> Bool = member(2, [1, 2, 3])
-  operation has9() -> Bool = member(9, [1, 2, 3])
+  operation has2() -> Bool = contains([1, 2, 3], 2)
+  operation has9() -> Bool = contains([1, 2, 3], 9)
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -1387,10 +1387,10 @@ end
 /// the WI-415 gaps (and reachable only after WI-416 fixed the typer overflow
 /// this scenario used to hit).
 ///
-/// `Coll requires Eq[T]` and its op `contains` delegates to `List.member` on
+/// `Coll requires Eq[T]` and its op `contains` delegates to `List.contains` on
 /// its OWN abstract element `x : Coll.T`. The outer `Coll.contains([1,2,3], 2)`
 /// is concrete (`Coll.T := Int64`), so WI-415 threads `Eq[Int64]` into `contains`'s
-/// frame as `__req_eq`. The inner `member(x, items)` is cross-sort (member's
+/// frame as `__req_eq`. The inner `contains(items, x)` is cross-sort (member's
 /// parent is `List`, not `Coll`) AND abstract (`x : Coll.T`): WI-418 makes the
 /// typer build a dispatching dict for it whose `Eq` slot is a Strategy-1
 /// `var_ref(__req_eq)` — forwarding `contains`'s frame `__req_eq` onward to
@@ -1405,7 +1405,7 @@ namespace test.wi418
   sort Coll
     sort T = ?
     requires Eq[T]
-    operation contains(items: List[T], x: T) -> Bool = List.member(x, items)
+    operation contains(items: List[T], x: T) -> Bool = List.contains(items, x)
   end
   operation has2() -> Bool = Coll.contains([1, 2, 3], 2)
   operation has9() -> Bool = Coll.contains([1, 2, 3], 9)

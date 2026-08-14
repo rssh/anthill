@@ -15,7 +15,7 @@
 //! the typer to resolve `Set`'s `requires Eq[T]` ELEMENT dictionary (the
 //! requirement-dictionary tier, WI-300 Tier B), which is a SEPARATE gap; this
 //! slice is only about what the interpreter's `eq` does once two symbolic set
-//! values reach it (as `List.member`'s abstract `eq(head, x)` does at runtime).
+//! values reach it (as `List.contains`'s abstract `eq(head, x)` does at runtime).
 //!
 //! Two eval entry points are exercised:
 //!   * `PartialEq.eq`/`neq` — the registered builtin (`builtin_eq`/`neq` →

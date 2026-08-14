@@ -64,7 +64,7 @@ fn wi583_pure_bool_op_in_goal_succeeds_and_fails() {
 /// Suspend: an UNBOUND argument leaves `eq(is_five(?x), true)` with an
 /// unreduced op-call operand → the eval bridge suspends to a residual, NOT a
 /// fabricated definite answer (WI-067 discipline; the dual of the WI-580
-/// `member(5, ?l)` residual case).
+/// `contains(?l, 5)` residual case).
 #[test]
 fn wi583_unbound_arg_in_bool_goal_suspends() {
     let mut kb = crate::common::load_kb_with(BOOL_OP_SRC);

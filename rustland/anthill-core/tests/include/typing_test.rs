@@ -2162,7 +2162,7 @@ fn try_load_with_source(source: &str) -> Result<(), Vec<String>> {
     crate::common::try_load_kb_with(source).map(|_| ())
 }
 
-/// WI-420 (full fix): eta-lifting a `requires`-carrying op (here `List.member`,
+/// WI-420 (full fix): eta-lifting a `requires`-carrying op (here `List.contains`,
 /// since `List requires Eq[T]`) to a function value now LOADS. The typer
 /// resolves the op's requirement dispatch dict at the eta site — the expected
 /// arrow `Function[(Int64, List[T=Int64]), Bool]` pins `List.T := Int64` — and
@@ -2175,18 +2175,18 @@ fn wi420_eta_of_requires_carrying_op_loads() {
     let src = r#"
 namespace test.wi420.eta
   import anthill.prelude.{List, Int64, Bool, Function}
-  import anthill.prelude.List.{member}
+  import anthill.prelude.List.{contains}
 
-  operation use_pair(f: Function[A = (Int64, List[T = Int64]), B = Bool], x: Int64, xs: List[T = Int64]) -> Bool =
-    f((x, xs))
+  operation use_pair(f: Function[A = (List[T = Int64], Int64), B = Bool], x: Int64, xs: List[T = Int64]) -> Bool =
+    f((xs, x))
 
   operation main() -> Bool =
-    use_pair(member, 2, [1, 2, 3])
+    use_pair(contains, 2, [1, 2, 3])
 end
 "#;
     assert!(
         try_load_with_source(src).is_ok(),
-        "eta of a concrete requires-carrying op (List.member at T=Int64) must load: \
+        "eta of a concrete requires-carrying op (List.contains at T=Int64) must load: \
          WI-420 resolves + captures its Eq[Int64] dispatch dict on the OpRef"
     );
 }
@@ -2275,7 +2275,7 @@ namespace test.wi420.curried
     requires anthill.prelude.Eq[T = Int64]
     sort T = ?
     operation build(seed: Int64) -> Function[A = Int64, B = Bool] =
-      if List.member(seed, [1, 2, 3]) then lambda y -> true else lambda y -> false
+      if List.contains([1, 2, 3], seed) then lambda y -> true else lambda y -> false
   end
   import test.wi420.curried.Wrap.{build}
 

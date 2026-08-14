@@ -13,7 +13,7 @@
 //! incidental one, so the resolver cannot tell them apart; the wi224 diamond-
 //! coherence test pins that the carrier's requires ARE threaded.)
 //!
-//! Fix: the `Eq` requirement is OP-SCOPED on `List.member` (`operation
+//! Fix: the `Eq` requirement is OP-SCOPED on `List.contains` (`operation
 //! member(x: T, l: List) -> Bool requires Eq[T]`, WI-448) — kept on the SORT
 //! param `T` so `member` still eta-expands normally — instead of on the `List`
 //! sort. The typer (`kb/typing.rs`, before dispatch) lets an operation's OWN

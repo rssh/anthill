@@ -27,14 +27,14 @@ sort anthill.prelude.Set
   operation empty() -> Set
   operation insert(s: Set, x: T) -> Set
   operation eq(a: Set, b: Set) -> Bool
-  operation member(x: T, s: Set) -> Bool
+  operation contains(s: Set, x: T) -> Bool
   operation subset(s1: Set, s2: Set) -> Bool
   operation union(s1: Set, s2: Set) -> Set
   operation intersection(s1: Set, s2: Set) -> Set
   operation difference(s1: Set, s2: Set) -> Set
 
-  -- WI-616: relational (`:-`) rules make `eq`/`subset`/`member` COMPUTABLE by
-  -- ordinary SLD over the symbolic `insert`/`empty` algebra (the List.member
+  -- WI-616: relational (`:-`) rules make `eq`/`subset`/`contains` COMPUTABLE by
+  -- ordinary SLD over the symbolic `insert`/`empty` algebra (the List.contains
   -- precedent) — this is what the dispatched `eq` resolves against. Element
   -- comparison goes through the SEMANTIC spec op `PartialEq.eq` (not structural
   -- unification), so equality dispatches all the way down (`Set[Set[Int]]`
@@ -48,19 +48,19 @@ sort anthill.prelude.Set
   -- tests it serves; a hashed host-bodied `eq` is the WI-625 bridge's job.
   rule eq(?a, ?b) :- subset(?a, ?b), subset(?b, ?a)
   rule subset(empty(), ?)
-  rule subset(insert(?s, ?x), ?s2) :- member(?x, ?s2), subset(?s, ?s2)
-  rule member(?x, insert(?, ?y)) :- PartialEq.eq(?x, ?y)
-  rule member(?x, insert(?s, ?)) :- member(?x, ?s)
+  rule subset(insert(?s, ?x), ?s2) :- contains(?s2, ?x), subset(?s, ?s2)
+  rule contains(insert(?, ?y), ?x) :- PartialEq.eq(?x, ?y)
+  rule contains(insert(?s, ?), ?x) :- contains(?s, ?x)
 
   -- Laws. The genuinely-reducing (terminating, LHS→RHS shrinking) laws are tagged
   -- [simp] so the type-directed rewriter fires them once the redex's carrier is
   -- known to provide Set (WI-596; the sort-level `requires Eq[T]` is honored via
   -- that provides fact, not op-scoped as List did). Commutativity is deliberately
   -- NOT [simp] — a directional rewrite of it would loop.
-  rule member(?x, insert(?s, ?x)) <=> true [simp]
+  rule contains(insert(?s, ?x), ?x) <=> true [simp]
   rule insert(insert(?s, ?x), ?x) <=> insert(?s, ?x) [simp]        -- idempotent
   rule insert(insert(?s, ?x), ?y) <=> insert(insert(?s, ?y), ?x)   -- commutative (NOT [simp]: would loop)
-  rule member(?, empty()) <=> false [simp]
+  rule contains(empty(), ?) <=> false [simp]
   rule subset(empty(), ?) <=> true [simp]
   rule union(empty(), ?s) <=> ?s [simp]
   rule union(?s, empty()) <=> ?s [simp]

@@ -15,8 +15,8 @@ enum anthill.prelude.List
   import anthill.prelude.PartialOrd.{gt}
 
   sort T = ?                                           -- type parameter (abstract)
-  -- WI-562: only `member` compares elements, so the `Eq` requirement is
-  -- OP-SCOPED on `member` (WI-448) over an op-type-param — NOT a sort-level
+  -- WI-562: only `contains` compares elements, so the `Eq` requirement is
+  -- OP-SCOPED on `contains` (WI-448) over an op-type-param — NOT a sort-level
   -- `requires Eq[T]`. A blanket sort requires made `List[NonEq]` ill-formed for
   -- EVERY spec-op dispatch through it (a carrier's sort-`requires` is correctly
   -- threaded at every dispatch — diamond coherence), so `nth` on a
@@ -37,9 +37,15 @@ enum anthill.prelude.List
   -- eval bridge, and a non-ground occurrence is served by the SLD one-step
   -- body-unfold (docs/design/abstract-interpreter-and-rules.md §3.3).
 
-  -- member: deterministic Bool. The operation body is the single source of
-  -- truth; its RELATIONAL view (a bare `member(x, l)` goal) is derived from the
-  -- body on demand — the resolver routes it to `eq(member(x, l), true)`, so a
+  -- contains: deterministic Bool. Named and ordered as `Map.contains(m, key)` /
+  -- `String.contains(s, sub)` are — CONTAINER FIRST, which is what makes
+  -- `l.contains(x)` dot-dispatch (§6.7 binds the receiver to the first
+  -- parameter). It was `member(x: T, l: List)` until WI-939's follow-up: one
+  -- name for one question across the containers, and the element-first order
+  -- silently cost dot dispatch.
+  -- The operation body is the single source of
+  -- truth; its RELATIONAL view (a bare `contains(l, x)` goal) is derived from the
+  -- body on demand — the resolver routes it to `eq(contains(l, x), true)`, so a
   -- ground call decides via the eval bridge and an unground one suspends to a
   -- WI-519 residual (docs/design/abstract-interpreter-and-rules.md §3.3/§5).
   -- WI-580: the two Prolog-style `:-` twins were RETIRED — they branched on
@@ -47,17 +53,17 @@ enum anthill.prelude.List
   -- body's `eq(head, x)` (the declared `Eq`) for a type whose `eq` is not
   -- structural equality (`eq(a, b)` true but `a ≠ b`). The body-derived form
   -- uses the declared `Eq` by construction — the headline soundness fix.
-  -- WI-562: `member` is the only List op that compares elements (`eq(head, x)`),
+  -- WI-562: `contains` is the only List op that compares elements (`eq(head, x)`),
   -- so it carries the `Eq[T]` requirement OP-SCOPED (WI-448) — not the whole
-  -- `List` sort. The element stays the SORT param `T` (so `member` still
+  -- `List` sort. The element stays the SORT param `T` (so `contains` still
   -- eta-expands to a function value normally); the op-scoped `requires Eq[T]`
   -- licenses the body's abstract `eq` (the typer's op-requires coverage), while
   -- a `List[NonEq]` stays well-formed for the element-agnostic ops (a sort-level
   -- `requires Eq[T]` wrongly blocked `IndexedSeq.nth` on `List[Waypoint]`).
-  operation member(x: T, l: List) -> Bool requires Eq[T] =
+  operation contains(l: List, x: T) -> Bool requires Eq[T] =
     match l
       case nil() -> false
-      case cons(head, tail) -> if eq(head, x) then true else member(x, tail)
+      case cons(head, tail) -> if eq(head, x) then true else contains(tail, x)
 
   -- append: concatenation. ?result is the concatenation of ?xs and ?ys.
   operation append(xs: List, ys: List) -> List =
