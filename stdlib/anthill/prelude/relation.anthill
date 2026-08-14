@@ -56,7 +56,10 @@
 --
 -- So name them separately: `<name>` is the RELATION (primary, plainly named) and
 -- `is<Name>` the BOOLEAN, which is the derived reading — `Relation[Unit]`
--- non-emptiness, exactly as `negate` below defines it. This is a CONVENTION, not a
+-- non-emptiness, exactly as `negate` below defines it. The rule is only that a
+-- BOOLEAN MAY NOT OCCUPY THE PLAIN NAME; whether that name is then filled by a
+-- relation is a separate fact, true where a relation face is citable (clauses) and
+-- not yet where it is body-derived — an empty plain name violates nothing. This is a CONVENTION, not a
 -- check: nothing is ambiguous (the two never contend for one name), and a kernel that
 -- read meaning from a name's text would make renaming semantic (§8.6).
 --

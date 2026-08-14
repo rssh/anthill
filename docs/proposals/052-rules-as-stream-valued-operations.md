@@ -558,6 +558,15 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    rather than predicates, and one effectful op escaped the census's effect test. WI-1096 settles the
    exact list, since the convention's population is that ticket's first question.)
 
+   **THE RULE IS: A Bool-VALUED PREDICATE IS NAMED `is<Name>`.** It holds over the whole population at
+   once, both definition forms, and it is the only thing the convention asserts — a boolean may not
+   occupy the plain name. Whether that plain name is then FILLED by a relation is a separate fact,
+   answered per type by whether a relation face is citable there: `Set`'s clauses are citable so `member`
+   becomes its relation, while a body-defined predicate has none *yet* and its plain name simply stands
+   empty. An absence violates nothing; a plain-named boolean does. A convention applied to part of its
+   population is not a convention, so there is no staged reading in which only the clause-defined
+   predicates migrate.
+
    **The relation is primary and plainly named; the boolean is `is<Name>` and is the DERIVED reading** —
    `Relation[Unit]` non-emptiness, which `negate`'s own contract already defines ("its stream yields one
    `unit` iff `r` has NO solution, and is empty iff `r` is provable"). That matches the `Set` spelling,
@@ -577,6 +586,15 @@ missing requirement surfaces at query time, not load; the runtime path itself is
      and a `Relation` reading in the same bare position.
    - **an explicit adapter** (`has.relation`). `Relation` is a sort, not a spec, so the adapter has no
      natural home the way an inherited `.map` does.
+   - **making a BODY-DERIVED relation citable as a value — a separate follow-up, and not a gate.** A
+     bodied predicate's relational reading is served in GOAL position (`bare_bodied_bool_relation`
+     routes a bare Bool goal to `eq(op(args), true)`, using the declared `Eq` by construction — the
+     sound path WI-580 chose), but it is not a first-class `Relation` VALUE: `cites_a_relation` needs a
+     `Goal`/`Rule` kind and a bodied operation mints neither, so measured, `List.member` answers as a
+     goal and does not resolve where a `Relation` is expected. Closing that is what later fills the
+     plain name for body-defined predicates. The naming rule does not wait on it — and note the
+     asymmetry it leaves meanwhile, since the docs should not imply otherwise: a clause-defined
+     predicate can carry both faces today, a body-defined one only the boolean.
    - **a builder DSL — `mySet.has.member` — DEFERRED, not refused.** Naming the face at the *use* site
      rather than in the declaration is strictly more expressive than a convention, and considerably more
      machinery. Revisit if the convention proves too coarse.
