@@ -818,6 +818,34 @@ pub enum LoadError {
         /// dependent. Never assume 2.
         facts: usize,
     },
+    /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION. An operation is defined EITHER
+    /// by a body OR by hand-written clauses, never by both: the two are two
+    /// definitions of one name, and a rule's operation name is its label else its
+    /// head functor (proposal 052 §"Naming the relation"), so a clause landing on a
+    /// bodied operation's functor is a second definition of it rather than a second
+    /// view of it.
+    ///
+    /// Measured, allowing it is a pure LOSS and not a trade. With the body alone the
+    /// arity+1 goal answers a definite value through WI-938's derived view; add one
+    /// clause and design §3.3's precedence ("rules win") suppresses that view, and
+    /// the clause answers a RESIDUAL. The clause supplies no reading — it removes a
+    /// working one. Same thing WI-935 measured of geometry's relational twins ("they
+    /// computed nothing — the residual was the point") and WI-580 of `List.member`,
+    /// where the twins branched on structural unification against a body using the
+    /// declared `Eq`, so the two definitions could DISAGREE.
+    ///
+    /// Carries no `span` and is NOT wrapped in [`LoadError::Located`], for
+    /// [`Self::DuplicateOperationDeclaration`]'s reason: the body and the clauses
+    /// routinely sit in different files.
+    OperationBodyAndClauses {
+        /// The operation's QUALIFIED name.
+        op: String,
+        /// Where the operation carrying the body is declared, rendered.
+        decl_site: String,
+        /// One rendered location per clause under that functor, in load order.
+        /// Always at least one — its non-emptiness IS the verdict.
+        clause_sites: Vec<String>,
+    },
     /// WI-999 / proposal 059 R4 clause 3 — A DECLARATION MAY NOT CAPTURE A NAME IT
     /// DOES NOT OVERRIDE. A name can already mean something in a sort's scope
     /// without being a member of it — reached by an `import`, by an enclosing
@@ -2099,6 +2127,11 @@ impl LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 duplicate_operation_message(op, sites, *facts)
             }
+            LoadError::OperationBodyAndClauses {
+                op,
+                decl_site,
+                clause_sites,
+            } => body_and_clauses_message(op, decl_site, clause_sites),
             LoadError::NameCapture {
                 sort,
                 construct,
@@ -2352,6 +2385,11 @@ impl std::fmt::Display for LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 write!(f, "{}", duplicate_operation_message(op, sites, *facts))
             }
+            LoadError::OperationBodyAndClauses {
+                op,
+                decl_site,
+                clause_sites,
+            } => write!(f, "{}", body_and_clauses_message(op, decl_site, clause_sites)),
             LoadError::NameCapture {
                 sort,
                 construct,
@@ -4257,10 +4295,53 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
          kept {facts} signature record{} under that one name — so which signature \
          it reports came down to which was written first. Rename one. Same-named \
          operations on DIFFERENT sorts are fine — those are distinct symbols \
-         chosen by carrier — and a `rule` whose head names this operation is a law \
-         about it, not a second declaration.",
+         chosen by carrier — and a `rule` whose head names this operation is not a \
+         second DECLARATION (if this operation also has a body, that pair is a \
+         second DEFINITION, which is WI-939 item 4's separate refusal).",
         sites.len(),
         if facts == 1 { "" } else { "s" },
+    )
+}
+
+/// WI-939 item 4 — THE ONE-DEFINITION SENTENCE, one owner, for
+/// [`duplicate_type_message`]'s reason (two render paths, only one under test).
+///
+/// SAYS WHICH REPAIR, and there are two opposite ones, because which text is the
+/// definition is the author's call and the loader cannot guess: delete the clauses
+/// and keep the body, or delete the `=` body and let the clauses BE the definition.
+/// The second is not a fallback — it is how `anthill.prelude.Set.member` is written,
+/// and naming it here is what keeps this refusal from reading as "clauses are wrong".
+///
+/// AND NAMES THE EXEMPTION, since the neighbouring spelling is common: an equation
+/// (`<=>` / `=` with a `[simp]` tag or without) is a LAW about the operation and
+/// loads under the connective's functor, not the operation's, so it never reaches
+/// this check. Measured — `List.nth`, `insert`, `empty`, `split`, `Relation.where`
+/// and three `Stream` ops all carry equations beside a body, and the census of this
+/// predicate over the whole corpus is ZERO.
+fn body_and_clauses_message(op: &str, decl_site: &str, clause_sites: &[String]) -> String {
+    let rendered = clause_sites
+        .iter()
+        .map(|at| format!("`rule` at {at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "operation '{op}' has BOTH a body and {} hand-written clause{}: the body is \
+         declared at {decl_site}, and {rendered}. One operation, ONE definition — a \
+         rule's operation name is its label else its head functor (proposal 052), so \
+         a clause under a bodied operation's functor is a second DEFINITION of it, \
+         not a second view of it. They cannot both answer: design §3.3 gives the \
+         clauses precedence, which SUPPRESSES the body's derived relational view — \
+         measured, the arity+1 goal stops answering a definite value and answers a \
+         residual instead, so the clauses take a working reading away rather than \
+         adding one. Keep ONE. Either delete the clauses and let the body's derived \
+         view serve the relational goal (WI-938), or drop the `=` body and let the \
+         clauses BE the definition — a body-less operation defined by its clauses is \
+         legal and is how a predicate is written relationally \
+         (`anthill.prelude.Set.member`). An equation (`<=>`, or `=` with a `[simp]` \
+         tag) is a LAW about this operation rather than a clause of it, and is not \
+         what this refusal is about.",
+        clause_sites.len(),
+        if clause_sites.len() == 1 { "" } else { "s" },
     )
 }
 
@@ -8616,6 +8697,12 @@ fn load_phase_inner(
     // supports.
     all_errors.extend(check_name_captures(kb));
     mark!("check_name_captures");
+    // WI-939 item 4: one operation, ONE definition — a body or clauses, never both.
+    // Here rather than beside `check_duplicate_operation_declarations` (which runs
+    // before `resolve_instantiations`) because it reads the RULE index, and a rule
+    // head only lands on the operation's functor once every name is resolved.
+    all_errors.extend(check_operation_body_and_clauses(kb));
+    mark!("check_operation_body_and_clauses");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
@@ -10725,6 +10812,98 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
             site.span.end
         ),
     }
+}
+
+/// WI-939 item 4 — ONE OPERATION, ONE DEFINITION: a body OR clauses, never both.
+/// Load-blocking.
+///
+/// WHY IT IS NOT [`check_duplicate_operation_declarations`]. That one is keyed on two
+/// written `operation` DECLARATIONS reaching one symbol. A rule declares nothing —
+/// its head runs the ordinary ladder and, finding the operation, contributes a clause
+/// to it (§8.6, WI-896) — so the pair leaves ONE declaration and clause 1 is silent.
+/// Measured on the shape: `it4.Box.twice` comes out with kinds `[Operation]`, a body,
+/// and one clause; no second symbol and no `Goal` kind exist to notice.
+///
+/// AND IT IS A LOSS, NOT A TRADE, which is what makes it a refusal rather than a
+/// precedence note. Control (body alone): the arity+1 goal `twice(box(0), ?r)`
+/// answers `Int(2)`, DEFINITE, through WI-938's derived view. Add one clause and the
+/// same goal answers a RESIDUAL, `definite=false` — design §3.3's "rules win"
+/// suppresses the derived view and the clause computes nothing in its place. WI-935
+/// measured the same of geometry's relational twins and WI-580 of `List.member`,
+/// where the twins could DISAGREE with the body (structural unification against the
+/// declared `Eq`).
+///
+/// THE BODY IS THE DISCRIMINATOR, AND THE STANDARD LIBRARY IS WHY. A BODY-LESS
+/// operation carrying clauses is ONE definition written relationally — that is
+/// exactly `Set.member` (2 clauses, no body), `Set.subset` and `Set.eq`, all shipped
+/// — so keying on "has clauses" alone would refuse the prelude. Keying on "has a body
+/// AND has clauses" is also what design §3.3 already implies with "body-unfold fires
+/// only for rule-less bodied functors".
+///
+/// WHAT IT DOES NOT REACH, stated rather than assumed: an EQUATION. `<=>` and `=`
+/// laws load under the connective's functor, not the operation's, so
+/// `program_clauses_by_functor(op)` does not see them — measured, `List.nth` /
+/// `insert` / `empty` / `split`, `Relation.where` and three `Stream` ops all carry
+/// equations beside a body and this predicate counts ZERO of them. That is deliberate
+/// (§5.3 owns when an equation BACKS an operation) and not an oversight.
+///
+/// CORPUS COST ZERO, measured with the instrument proven positive first: planting
+/// `operation twice(b) = 2` beside `rule twice(?b, ?r)` is found, and beside
+/// `rule twice(?b)` is found, while the loaded stdlib plus Rust bindings hold none.
+/// WI-939 item 4 — how many ARGUMENTS this rule's head carries. `None` when the head
+/// is not an application at all (a bare marker), which is not a graph clause either.
+fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
+    match kb.terms.get(kb.rule_head(rid)) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => Some(pos_args.len() + named_args.len()),
+        _ => None,
+    }
+}
+
+fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // By symbol index, not `HashMap` order: two runs over one corpus must report
+    // identically.
+    let mut hits: Vec<(Symbol, Vec<SourceSpan>)> = kb
+        .op_bodies_iter()
+        .map(|(sym, _)| sym)
+        .filter_map(|sym| {
+            // AT THE GRAPH ARITY ONLY — see the doc above: `params + 1`, the slot
+            // WI-938's derived view occupies. A clause at the operation's OWN arity
+            // is a LEMMA about it (§"A rule head functor is resolved, not declared"),
+            // which is what `PartialOrd.gte`'s SMT lemmas are.
+            let graph_arity = super::op_info::lookup_operation_info(kb, sym)?.params.len() + 1;
+            let sites: Vec<SourceSpan> = kb
+                .rules_by_functor_iter(sym)
+                .filter(|rid| head_arg_count(kb, *rid) == Some(graph_arity))
+                .filter_map(|rid| kb.rule_head_span(rid))
+                .collect();
+            // A clause whose span the loader did not record would make the refusal
+            // name fewer places than it counted, so an empty span list reads as "no
+            // clauses" rather than as a spanless refusal. Unreachable today — every
+            // source clause carries a head span — and kept total.
+            (!sites.is_empty()).then_some((sym, sites))
+        })
+        .collect();
+    if hits.is_empty() {
+        return Vec::new(); // the universal case
+    }
+    hits.sort_by_key(|(s, _)| s.index());
+    hits.into_iter()
+        .map(|(op, sites)| LoadError::OperationBodyAndClauses {
+            op: kb.qualified_name_of(op).to_string(),
+            decl_site: kb
+                .op_decl_sites
+                .get(&op)
+                .and_then(|v| v.first())
+                .or_else(|| kb.functor_spans.get(&op))
+                .map(|s| render_decl_site(kb, *s))
+                .unwrap_or_else(|| "<unknown>".to_string()),
+            clause_sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+        })
+        .collect()
 }
 
 /// WI-939 — WHERE THE CAPTURED NAME IS WRITTEN: the pass-1 ledger first, a rule

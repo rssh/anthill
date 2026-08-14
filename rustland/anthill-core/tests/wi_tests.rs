@@ -1099,6 +1099,9 @@ mod wi997_declaration_ledger_test;
 #[path = "include/wi999_name_capture_test.rs"]
 mod wi999_name_capture_test;
 
+#[path = "include/wi939_one_definition_test.rs"]
+mod wi939_one_definition_test;
+
 #[path = "include/wi1000_secondary_entry_content_test.rs"]
 mod wi1000_secondary_entry_content_test;
 

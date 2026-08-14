@@ -181,10 +181,25 @@ goal migration lands — 033 Q4 explicitly keeps that door open ("do not key off
 Vec<TermId>` as a load-bearing contract"; the WI-246 line). Type-directed arm applicability
 interacts with WI-502 as before.
 
-**Precedence during migration:** while a functor has both hand-written rules and a body
-(`member` today), rules win — body-unfold fires only for rule-less bodied functors, preserving
-the status quo until WI-580's retirement flips each duplicate; "both exist" should eventually be
-a loader warning (it is exactly the duplication WI-580 outlaws).
+**Precedence:** body-unfold fires only for **rule-less** bodied functors. "Both exist" is now a
+**load refusal**, not a warning and no longer a migration state — WI-939 item 4,
+`check_operation_body_and_clauses`. The migration this paragraph was written for is over: WI-580
+retired `List.member`'s twins, and the corpus census of the shape (a bodied operation whose functor
+also carries clauses) is **zero**, so the warning had no population left to carry. A warning was also
+the wrong instrument for what the pair does — it is a **loss, not a trade**: measured, the arity+1
+goal answers a definite value through the derived view with the body alone, and a RESIDUAL once a
+clause is added, so the clause takes the working reading away and computes nothing in its place.
+
+The rule that replaces it: **one operation, one definition** — a bodied operation may not also carry
+a clause at its **arity + 1**, the slot the derived view answers. Three neighbouring shapes stay
+legal, and the first is what narrowed the check: a clause at the operation's **own arity** is a
+LEMMA about it (`rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` against the bodied `PartialOrd.gte` —
+kernel-language §"A rule head functor is resolved, not declared"), and the first cut, keyed on "a
+bodied operation with any clauses", refused 26 such sites across the workspace. A BODY-LESS
+operation carrying clauses is one definition written relationally (`anthill.prelude.Set.member` /
+`.subset` / `.eq`). And an equation (`<=>`, or `=` with `[simp]`) is a law about the operation,
+loaded under the connective's functor — see §3.4, which already draws that line ("extra laws … are
+theorems proved from the body — never hand-written defining rules").
 
 ### 3.4 Prover / SMT — defining equations extracted on demand
 
