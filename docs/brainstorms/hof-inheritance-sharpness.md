@@ -1,7 +1,31 @@
 # Brainstorm plan: HOF inheritance — sharpness vs simplicity
 
-**Status:** Deferred (no driver yet)
-**Relates to:** [027.1 §Open question 1](../proposals/027.1-alloc-effect-and-allocator-revision.md) (HOF inheritance + closure-capture appendix), [027.1 §Discharge through higher-order combinators](../proposals/027.1-alloc-effect-and-allocator-revision.md)
+**Status:** RESOLVED BY CONSTRUCTION (WI-266, 2026-08-15) — this session was never held, and no longer needs to be. The plan below is kept as the historical record of the question.
+**Relates to:** [027.1 §Discharge through higher-order combinators](../proposals/027.1-alloc-effect-and-allocator-revision.md) (rewritten to the shipped rule), [027.1 §Resolved — HOF inheritance](../proposals/027.1-alloc-effect-and-allocator-revision.md) (the decision record that collapses Open question 1)
+
+## Outcome
+
+The session was gated on a driver appearing against the conservative-union rule. **No driver could appear, because the conservative rule was never implemented.** While this plan sat deferred, proposals [045](../proposals/045-effect-sets-and-expressions.md) and [046](../proposals/046-region-tracking-and-effect-derive.md) landed the sharp analysis instead, and today's stdlib is written against it:
+
+```anthill
+-- stdlib/anthill/prelude/iterable.anthill:61
+operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]})
+    -> Stream[Dst, {E, EffP}]
+```
+
+Against this plan's three candidate annotation families, the answer is:
+
+| Family | Outcome |
+|---|---|
+| Result-aliasing markers | **Not adopted.** The feed-relationship is derived from the operation's *body* (WI-352), so the common case carries no annotation at all; a body-less operation declares it as `[feeds: …]` metadata (046 §4.2), whose carrier landed with WI-087/WI-309. |
+| Closure-disposition markers | **Adopted, in effect-row currency.** The 045 `lacks` constraint on a callback binder — `-Modify[x]` — with call-site checking (WI-440) and stdlib consumers in `filter` / `find` / `map` (WI-441). Not an anthill `Fn` / `FnMut` / `FnOnce`. |
+| Region polymorphism | **Not adopted.** Tofte–Talpin *substitution* is what the boundary classifier performs (WI-353), but signatures stayed region-monomorphic — the months of typer work this plan priced were not spent. |
+
+The plan's §6 check — does the chosen direction cover the closure-capture appendix without separate machinery? — passes: a captured target is a place like any other, and keep/drop comes from its provenance rather than from a declared callee disposition.
+
+Two topics from §3 and §5 are *not* closed by this and are recorded in 027.1's resolved-question entry: dependent-effect abstraction (a callback whose effect denotes its own binder, pinned by `wi424_iterable_members_test`), and cross-language fit for the emitters (Rust erases arrow effect rows; C++ refuses a denoted-bearing arrow parameter).
+
+---
 
 ## Goal
 
@@ -17,6 +41,8 @@ Don't schedule speculatively. Run when at least one concrete driver surfaces:
 - An `examples/github-todo/`-style pluggable-backend case where the over-reported HOF effects break interchangeability.
 
 Until then, the proposal's "ship conservative, revisit later" stance stands.
+
+> *Historical.* None of these four drivers ever fired, and none could have: the conservative rule they were watching was not the one in the tree. See §Outcome above.
 
 ## Inputs to gather before the session
 
