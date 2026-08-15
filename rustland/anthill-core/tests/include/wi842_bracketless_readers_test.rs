@@ -63,7 +63,7 @@ const INSTANCES: &str = crate::common::DESC_INSTANCES;
 const RIVAL: &str = r#"
   sort Rival
     entity rival
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
   end
 "#;
@@ -109,12 +109,12 @@ const TWIG: &str = r#"
   end
 
   sort TwigA
-    fact Desc[T = Twig]
+    provides Desc[T = Twig]
     operation describe(x: Twig) -> Int64 = 3
   end
 
   sort TwigB
-    fact Desc[T = Twig]
+    provides Desc[T = Twig]
     operation describe(x: Twig) -> Int64 = 5
   end
 "#;
@@ -348,8 +348,8 @@ namespace {ns}
   end
   sort C
     entity c
-    fact Iter[Self = C, Element = {first}]
-    fact Iter[Self = C, Element = {second}]
+    provides Iter[Self = C, Element = {first}]
+    provides Iter[Self = C, Element = {second}]
   end
   sort Use
     operation takes(i: Iter[Self = C, Element = String]) -> Int64 = 1
@@ -421,8 +421,8 @@ namespace wi842.view.apps
   end
   sort C
     entity c
-    fact Iter[Self = A, Element = Int64]
-    fact Iter[Self = B, Element = String]
+    provides Iter[Self = A, Element = Int64]
+    provides Iter[Self = B, Element = String]
   end
 end
 "#;
@@ -453,8 +453,8 @@ namespace wi842.view.merge
   end
   sort C
     entity c
-    fact Iter[Self = C]
-    fact Iter[Self = C, Element = Int64]
+    provides Iter[Self = C]
+    provides Iter[Self = C, Element = Int64]
   end
   sort Use
     operation takes(i: Iter[Self = C, Element = Int64]) -> Int64 = 1

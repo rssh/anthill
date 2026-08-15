@@ -1365,6 +1365,18 @@ pub struct KnowledgeBase {
     // "measured, and no carrier has a default". Nothing consumes it yet — 058 rung 2a
     // is WI-861.
     default_providers: Option<defaults::DefaultProviderIndex>,
+    // WI-1033 / WI-862 — the per-scope `provides`-CLAUSE counter. A provision's
+    // conditions are a conjunction WITHIN one clause and a disjunction ACROSS clauses,
+    // so a reader has to know which clause a condition came from, and two clauses of one
+    // scope must never share an index or their condition sets merge.
+    //
+    // ON THE KB, not on the loader, because a scope's clauses can come from MORE THAN
+    // ONE FILE and a `Loader` is built per file. Two openers exist today — a sort body
+    // (or a 059 R3 secondary entry to it) and a proposal-038 `provides <Carrier>
+    // language <L> … end` binding block — and the shipped tree already splits `Float`
+    // across `stdlib/` and `anthill-stl/`. A per-file counter restarts at 0 for the
+    // second file and hands its first clause the index the first file's already used.
+    provides_clause_seen: HashMap<ScopeId, usize>,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -1544,6 +1556,7 @@ impl KnowledgeBase {
             host_op_mappings: Vec::new(),
             host_const_mappings: Vec::new(),
             default_providers: None,
+            provides_clause_seen: HashMap::new(),
         }
     }
 
@@ -5077,6 +5090,16 @@ impl KnowledgeBase {
     }
 
     /// WI-860 — install the materialized `default_provider` relation (058 §3.6).
+    /// WI-1033 / WI-862 — THE ONE OWNER of the `provides`-clause numbering, across every
+    /// file. Both openers of a provision ask here; see the field's comment for why the
+    /// counter cannot live on the per-file `Loader`.
+    pub(crate) fn next_provides_clause_index(&mut self, scope: ScopeId) -> usize {
+        let seen = self.provides_clause_seen.entry(scope).or_insert(0);
+        let clause = *seen;
+        *seen += 1;
+        clause
+    }
+
     /// Called only by `defaults::build_default_provider_index`.
     pub(crate) fn set_default_provider_index(&mut self, index: defaults::DefaultProviderIndex) {
         self.default_providers = Some(index);

@@ -12706,11 +12706,32 @@ fn check_apply_iter(
         // (the WI-067/WI-292 polarity: act on a DECIDED obligation, never on an
         // UNDETERMINED one). Op-body checking (`in_rule_body()` false) raises on ANY
         // unproved precondition, unchanged.
+        // WI-862 — SPLIT FIRST, CLASSIFY SECOND. `is_value_precondition_clause` reads a
+        // clause's HEAD, and the loader lowers several comma-separated goals on ONE
+        // clause as a single `conjunction(g1, …, gn)` (`convert_clause_list`). So a
+        // MIXED clause — `requires neq(a, 0), lo: Ord[T = Int64]`, the shape WI-840's
+        // overloaded list makes ordinary — presents the head `conjunction`, which is not
+        // a `Sort`, and the whole thing was classified a value precondition and PROVED
+        // as one goal. That proves the spec half from Γ, which the comment above says
+        // never happens ("spec/typeclass requires … are dispatched / coverage-checked
+        // elsewhere, never proved from Γ").
+        //
+        // IT PASSED ONLY BY ACCIDENT, and 058 §4 removed the accident: `fact Ord[T =
+        // Int64]` put a raw `Ord[T = Int64]` in the RULE INDEX, so the spec conjunct
+        // resolved as an ordinary SLD goal and the conjunction proved. Migrating that row
+        // to `provides` — which files a provision and no fact — left the same conjunction
+        // unprovable, and a TRUE precondition (`neq(7, 0)`) started reporting
+        // `UnsatisfiedPrecondition`. MEASURED: `anthill query 'Ord[T = Int64]'` answers 1
+        // solution under the `fact` spelling and NO SOLUTIONS under `provides`, while
+        // `neq(7, 0)` answers 1 under both.
+        //
+        // `clause_conjuncts` is the existing owner of the split and its doc already
+        // names this hazard from the other side; it was simply not reached here.
         let value_reqs: Vec<Value> = op
             .requires
             .iter()
+            .flat_map(|c| clause_conjuncts(kb, c))
             .filter(|c| is_value_precondition_clause(kb, c))
-            .cloned()
             .collect();
         if !value_reqs.is_empty() {
             let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);

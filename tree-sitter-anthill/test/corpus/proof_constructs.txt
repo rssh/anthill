@@ -720,3 +720,115 @@ end
               type: (simple_type
                 (name
                   (identifier))))))))))
+
+=====================================
+Default provides — one leading modifier (058 §4 / WI-862)
+=====================================
+
+namespace test
+  sort ListOrd
+    default provides Ord[T = List]
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (provides_clause
+        spec: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier)))))))))
+
+=====================================
+Default provides carries the conditions tail too (058 §3.8 + §4 / WI-862)
+=====================================
+
+namespace test
+  sort PairEq
+    default provides Eq[T = Pair] :- Eq[T = A], Eq[T = B]
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (provides_clause
+        spec: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier)))))
+        conditions: (provides_conditions
+          (application
+            name: (name
+              (identifier))
+            (sort_binding
+              param: (name
+                (identifier))
+              type: (simple_type
+                (name
+                  (identifier)))))
+          (application
+            name: (name
+              (identifier))
+            (sort_binding
+              param: (name
+                (identifier))
+              type: (simple_type
+                (name
+                  (identifier))))))))))
+
+=====================================
+`default` stays an ordinary identifier — it is NOT reserved (WI-862)
+=====================================
+
+namespace test
+  sort S
+    operation orElse(default: String) -> String = default
+  end
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (sort_with_body
+      name: (name
+        (identifier))
+      (operation_declaration
+        name: (name
+          (identifier))
+        (param
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        body: (name
+          (identifier))))))

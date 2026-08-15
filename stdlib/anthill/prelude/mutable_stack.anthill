@@ -101,7 +101,7 @@ sort anthill.prelude.MutableStack
   -- builder and the shared read layer. `E = {}` is written so the pure access
   -- row lowers into the type (the iterator-consumption row does not float —
   -- cf. List's `provides Stream[T, {}]`).
-  fact Modifiable[T = MutableStack]
+  provides Modifiable[T = MutableStack]
   provides MutableCollection[C = MutableStack[T], Element = T, E = {}]
   provides Iterable[C = MutableStack[T], Element = T, E = {}]
 end

@@ -50,12 +50,12 @@ const TWO_MONOIDS: &str = r#"
     operation unit() -> T
   end
   sort AddM
-    fact Monoid[T = Int64]
+    provides Monoid[T = Int64]
     operation combine(a: Int64, b: Int64) -> Int64 = add(a, b)
     operation unit() -> Int64 = 0
   end
   sort MulM
-    fact Monoid[T = Int64]
+    provides Monoid[T = Int64]
     operation combine(a: Int64, b: Int64) -> Int64 = mul(a, b)
     operation unit() -> Int64 = 1
   end
@@ -290,13 +290,13 @@ namespace wi843.concretetie
   end
   sort Leaf
     entity leaf
-    fact Zeroable[T = Leaf]
+    provides Zeroable[T = Leaf]
     operation zero() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
   sort Pebble
     entity pebble
-    fact Zeroable[T = Pebble]
+    provides Zeroable[T = Pebble]
     operation zero() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end
@@ -476,7 +476,7 @@ namespace wi843.mixed
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
   fact Combiner[T = Tag, combine = tagCombine]
   sort WitCombiner
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)
   end
 end
@@ -507,11 +507,11 @@ namespace wi843.twoeq
     entity coin(n: Int64)
   end
   sort CoinEqA
-    fact PartialEq[T = Coin]
+    provides PartialEq[T = Coin]
     operation eq(a: Coin, b: Coin) -> Bool = true
   end
   sort CoinEqB
-    fact PartialEq[T = Coin]
+    provides PartialEq[T = Coin]
     operation eq(a: Coin, b: Coin) -> Bool = false
   end
 end
@@ -552,11 +552,11 @@ namespace wi843.subtie
     operation show(x: ST) -> Int64
   end
   sort ShowA
-    fact Show[ST = Int64]
+    provides Show[ST = Int64]
     operation show(x: Int64) -> Int64 = 1
   end
   sort ShowB
-    fact Show[ST = Int64]
+    provides Show[ST = Int64]
     operation show(x: Int64) -> Int64 = 2
   end
   sort Pretty
@@ -566,7 +566,7 @@ namespace wi843.subtie
   sort PrettyW
     sort E = ?
     requires Show[ST = E]
-    fact Pretty[PT = E]
+    provides Pretty[PT = E]
     operation pretty(x: E) -> Int64 = Show.show(x)
   end
   sort Driver
@@ -626,12 +626,12 @@ namespace wi843.specpair
     operation tag(x: T) -> Int64
   end
   sort GroundListM
-    fact Monoid[T = List[T = Int64]]
+    provides Monoid[T = List[T = Int64]]
     operation tag(x: List[T = Int64]) -> Int64 = 111
   end
   sort AnyListM
     sort E = ?
-    fact Monoid[T = List[T = E]]
+    provides Monoid[T = List[T = E]]
     operation tag(x: List[T = E]) -> Int64 = 222
   end
   sort Driver

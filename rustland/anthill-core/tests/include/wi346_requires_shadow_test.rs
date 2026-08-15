@@ -8,7 +8,7 @@
 //! override. The loader emits a non-fatal `LoadWarning::RequiresShadow` (the
 //! first consumer of the WI-345 channel), surfaced via `LoadResult::warnings`.
 //!
-//! A sort that *provides* the spec (`fact Spec[sort]`) is NOT flagged: there
+//! A sort that *provides* the spec (`provides Spec[sort]`) is NOT flagged: there
 //! the own op IS the override (own-op-beats-inherited).
 
 use anthill_core::kb::load::{self, NullResolver};
@@ -108,7 +108,7 @@ fn requires_disjoint_op_name_no_warning() {
 
 #[test]
 fn provider_override_no_warning() {
-    // `Prov` *provides* `Sp` (`fact Sp[...]`) and supplies its own `s_op`. That
+    // `Prov` *provides* `Sp` and supplies its own `s_op`. That
     // is a legitimate override (own-op-beats-inherited), NOT a requires-shadow,
     // so it must not be flagged. `Prov` does not `requires Sp`, so it never
     // enters the shadow check.
@@ -124,7 +124,7 @@ fn provider_override_no_warning() {
           end
           sort Prov
             entity p(id: Int64)
-            fact Sp[T = Prov]
+            provides Sp[T = Prov]
             operation s_op(x: Prov) -> Prov = x
           end
         end
@@ -140,7 +140,7 @@ fn provider_override_no_warning() {
 
 #[test]
 fn requires_and_provides_no_warning() {
-    // `Both` both `requires Sp` AND `provides Sp` (`fact Sp[...]`) with its own
+    // `Both` both `requires Sp` AND `provides Sp` with its own
     // `s_op`. The `sort_provides` guard skips it: it is in its own requires
     // chain, but providing the spec makes the own op a real override.
     let src = r#"
@@ -152,7 +152,7 @@ fn requires_and_provides_no_warning() {
           sort Both
             entity b(id: Int64)
             requires Sp[T = Both]
-            fact Sp[T = Both]
+            provides Sp[T = Both]
             operation s_op(x: Both) -> Both = x
           end
         end

@@ -64,14 +64,14 @@ const BY_LENGTH: &str = r#"
   sort ByLength
     import anthill.prelude.String.{length}
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = String]
+    provides Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end
 "#;
 
 const ALPHABETICAL: &str = r#"
   sort Alphabetical
-    fact Ord[T = String]
+    provides Ord[T = String]
     operation compare(a: String, b: String) -> Int64 =
       if lt(a, b) then -1 else if gt(a, b) then 1 else 0
   end
@@ -311,7 +311,7 @@ fn union_merges_ascending_and_deduplicates() {
         "wi844.merge",
         "  sort Ascending\n    \
          import anthill.prelude.Numeric.{sub}\n    \
-         fact Ord[T = Int64]\n    \
+         provides Ord[T = Int64]\n    \
          operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
          sort Driver\n    \
          import anthill.prelude.String.{concat}\n    \
@@ -776,11 +776,11 @@ fn a_string_set_and_an_int_set_keep_their_own_orderings() {
         &format!(
             "  sort Ascending\n    \
              import anthill.prelude.Numeric.{{sub}}\n    \
-             fact Ord[T = Int64]\n    \
+             provides Ord[T = Int64]\n    \
              operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
              sort Descending\n    \
              import anthill.prelude.Numeric.{{sub}}\n    \
-             fact Ord[T = Int64]\n    \
+             provides Ord[T = Int64]\n    \
              operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n  end\n  \
              sort Driver\n{FIRST}{}{}{}  end",
             string_pipeline("strings", "ByLength"),

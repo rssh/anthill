@@ -58,10 +58,10 @@ namespace anthill.prelude
     }
 
     -- WI-644 / proposal 004: Int64 is lawful — partial bases + total markers.
-    fact PartialEq[T = Int64]
-    fact Eq[T = Int64]
-    fact PartialOrd[T = Int64]
-    fact Ord[T = Int64]
-    fact Numeric[T = Int64]
+    provides PartialEq[T = Int64]
+    provides Eq[T = Int64]
+    provides PartialOrd[T = Int64]
+    provides Ord[T = Int64]
+    provides Numeric[T = Int64]
   end
 end

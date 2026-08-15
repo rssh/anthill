@@ -68,5 +68,5 @@ sort anthill.prelude.Delay
             -> Delay[T = B, E = {E1, E2}] =
     delayed(lambda () -> delayForce(f(delayForce(m))))
 
-  fact DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
+  provides DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
 end

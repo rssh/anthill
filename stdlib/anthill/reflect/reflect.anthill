@@ -364,7 +364,7 @@ namespace anthill.reflect
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.
-    fact Modifiable[T = KB]
+    provides Modifiable[T = KB]
 
     -- Bridge: opaque Term ↔ structural TermRepr
     operation reify(kb: KB, t: Term) -> TermRepr

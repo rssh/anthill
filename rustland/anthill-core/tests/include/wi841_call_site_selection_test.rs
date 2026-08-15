@@ -66,7 +66,7 @@ const SPECS: &str = r#"
     operation combine(a: T, b: T) -> Int64
   end
   sort AddM
-    fact Monoid[T = Int64]
+    provides Monoid[T = Int64]
     operation combine(a: Int64, b: Int64) -> Int64 = add(a, b)
   end
   sort Marker
@@ -83,7 +83,7 @@ const SPECS: &str = r#"
 const PARAMETRIC_RIVAL: &str = r#"
   sort AnyM
     sort E = ?
-    fact Monoid[T = E]
+    provides Monoid[T = E]
     operation combine(a: E, b: E) -> Int64 = 99
   end
 "#;
@@ -92,7 +92,7 @@ const PARAMETRIC_RIVAL: &str = r#"
 /// provide Monoid" check and can only be caught by a binding-precise one.
 const OTHER_BINDINGS: &str = r#"
   sort StrM
-    fact Monoid[T = String]
+    provides Monoid[T = String]
     operation combine(a: String, b: String) -> Int64 = 7
   end
 "#;
@@ -765,7 +765,7 @@ fn selecting_a_concrete_provider_is_refused_not_preferred() {
         r#"
   sort Pebble
     entity pebble
-    fact Monoid[T = Pebble]
+    provides Monoid[T = Pebble]
     operation combine(a: Pebble, b: Pebble) -> Int64 = 3
   end
 "#,
@@ -784,7 +784,7 @@ fn selecting_a_concrete_provider_is_refused_not_preferred() {
         r#"
   sort Pebble
     entity pebble
-    fact Monoid[T = Pebble]
+    provides Monoid[T = Pebble]
     operation combine(a: Pebble, b: Pebble) -> Int64 = 3
   end
 "#,
@@ -1007,7 +1007,7 @@ fn a_selection_does_not_reach_sub_resolutions() {
   sort WrapM
     sort E = ?
     requires Monoid[T = E]
-    fact Monoid[T = Wrap[A = E]]
+    provides Monoid[T = Wrap[A = E]]
     operation combine(a: Wrap[A = E], b: Wrap[A = E]) -> Int64 =
       add(1000, Monoid.combine(a.inner, b.inner))
   end
@@ -1304,8 +1304,8 @@ fn a_pin_is_validated_before_the_classification_early_returns() {
   end
   sort Sq
     entity sq
-    fact Shape[SH = Sq]
-    fact Monoid[T = Sq]
+    provides Shape[SH = Sq]
+    provides Monoid[T = Sq]
     operation combine(a: Sq, b: Sq) -> Int64 = 3
     operation area(x: Sq) -> Int64 = 4
   end

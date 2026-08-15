@@ -985,6 +985,11 @@ pub struct ProvidesClause {
     /// instead of to the whole sort. Empty for the unconditioned form, which is what
     /// keeps every existing provision byte-identical.
     pub conditions: Vec<TypeExpr>,
+    /// WI-862 (058 §3.6, §4) — the `default` leading modifier. Sugar for the
+    /// `DefaultProvider` row naming the ENCLOSING sort as this `(spec, carrier)`'s
+    /// fallback; the carrier is not written here because 058 §3.6 derives it from the
+    /// provision itself, which is precisely this clause.
+    pub is_default: bool,
     pub span: Span,
 }
 
@@ -1002,6 +1007,11 @@ pub enum ProvidesItem {
     Rule(Rule),
     RuleBlock(RuleBlock),
     Fact(Fact),
+    /// WI-862 (058 §4) — a nested spec claim, `provides PartialEq[T = Bool]` inside a
+    /// `provides Bool language rust … end` binding block. The non-deprecated spelling of
+    /// what [`ProvidesItem::Fact`] carried here: the block opens the CARRIER's scope, so
+    /// both record a provision OF THE CARRIER.
+    ProvidesClause(ProvidesClause),
     Proof(ProofDecl),
     Artifact(String),
     Carrier(Vec<CarrierBinding>),

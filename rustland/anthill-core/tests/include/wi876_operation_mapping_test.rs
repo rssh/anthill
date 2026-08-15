@@ -591,7 +591,7 @@ namespace wi876.rival
     import anthill.prelude.{Int64, String}
     import anthill.prelude.String.{length}
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = String]
+    provides Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end
   sort Driver

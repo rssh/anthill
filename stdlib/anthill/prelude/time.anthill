@@ -13,7 +13,7 @@ sort anthill.prelude.Time
   -- resource, no per-instance handle to thread.
   sort Clock
   end
-  fact Effect[T = Clock]
+  provides Effect[T = Clock]
 
   -- Wall-clock timestamp in `YYYY-MM-DDTHH:MM:SSZ` form (UTC, second
   -- granularity, `Z` suffix). Format matches the legacy anthill-todo

@@ -32,9 +32,9 @@ sort anthill.prelude.Console
   sort ConsoleInput
   end
 
-  fact Effect[T = ConsoleOutput]
-  fact Effect[T = ConsoleError]
-  fact Effect[T = ConsoleInput]
+  provides Effect[T = ConsoleOutput]
+  provides Effect[T = ConsoleError]
+  provides Effect[T = ConsoleInput]
 
   -- stdout
   operation print(c: Console, s: String) -> Unit

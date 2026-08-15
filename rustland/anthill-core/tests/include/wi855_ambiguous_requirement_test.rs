@@ -59,7 +59,7 @@ const INSTANCES: &str = crate::common::DESC_INSTANCES;
 const RIVAL_CONCRETE: &str = r#"
   sort Rival
     entity rival
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
   end
 "#;
@@ -70,7 +70,7 @@ const RIVAL_CONCRETE: &str = r#"
 /// at a dispatch that selects neither.
 const RIVAL_ABSTRACT: &str = r#"
   sort Rival
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
   end
 "#;
@@ -90,12 +90,12 @@ const TWIG: &str = r#"
   end
 
   sort TwigA
-    fact Desc[T = Twig]
+    provides Desc[T = Twig]
     operation describe(x: Twig) -> Int64 = 3
   end
 
   sort TwigB
-    fact Desc[T = Twig]
+    provides Desc[T = Twig]
     operation describe(x: Twig) -> Int64 = 5
   end
 "#;
@@ -114,7 +114,7 @@ const QUIET: &str = r#"
   sort Quiet
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Box[B = E]]
+    provides Desc[T = Box[B = E]]
     operation describe(b: Box[B = E]) -> Int64 = 5
   end
 "#;

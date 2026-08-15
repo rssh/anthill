@@ -21,5 +21,5 @@ enum anthill.prelude.Option
       case none() -> none
       case some(x) -> some(f(x))
 
-  fact Monad[M = Option, pure = optionPure, flatMap = optionFlatMap, map = optionMap]
+  provides Monad[M = Option, pure = optionPure, flatMap = optionFlatMap, map = optionMap]
 end

@@ -75,7 +75,7 @@ fn self_provider_program(ns: &str, rival: &str) -> String {
 
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 1
   end
 {rival}end
@@ -88,7 +88,7 @@ fn self_provider_program(ns: &str, rival: &str) -> String {
 /// so it would form no group at all (`wi855`'s other arm pins that).
 const RIVAL: &str = r#"
   sort Rival
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 7
   end
 "#;
@@ -375,7 +375,7 @@ fn the_mixed_fact_and_witness_pair_is_still_refused() {
   fact Combiner[T = Tag, combine = tagCombine]
 
   sort WitCombiner
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)
   end
 end

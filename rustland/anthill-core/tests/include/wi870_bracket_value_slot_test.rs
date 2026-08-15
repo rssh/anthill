@@ -88,13 +88,13 @@ const PRELUDE: &str = r#"
 
   sort Ascending
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = Int64]
+    provides Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)
   end
 
   sort Descending
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = Int64]
+    provides Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 

@@ -72,10 +72,10 @@ namespace anthill.prelude
     -- WI-658: Float provides NonEq — a WITNESSED non-reflexivity (`nonEqRefl() =
     -- nan`, backed in the prelude sort). NonEq is mutually exclusive with the
     -- lawful Eq, so a user `provides Eq[Float]` is now a load error.
-    fact PartialEq[T = Float]
-    fact PartialOrd[T = Float]
-    fact NonEq[T = Float]
-    fact Numeric[T = Float]
-    fact Ring[Float]
+    provides PartialEq[T = Float]
+    provides PartialOrd[T = Float]
+    provides NonEq[T = Float]
+    provides Numeric[T = Float]
+    provides Ring[Float]
   end
 end

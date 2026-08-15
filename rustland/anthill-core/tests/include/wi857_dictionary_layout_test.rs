@@ -185,7 +185,7 @@ namespace wi857.witness
   import anthill.prelude.Numeric.{sub}
 
   sort Descending
-    fact Ord[T = Int64]
+    provides Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 
@@ -247,8 +247,8 @@ namespace wi857.parametric
     sort B = ?
     requires Ord[T = A]
     requires Ord[T = B]
-    fact PartialOrd[T = Duo[A = A, B = B]]
-    fact Ord[T = Duo[A = A, B = B]]
+    provides PartialOrd[T = Duo[A = A, B = B]]
+    provides Ord[T = Duo[A = A, B = B]]
     operation compare(a: Duo[A = A, B = B], b: Duo[A = A, B = B]) -> Int64 =
       match a
         case duo(al, ar) ->
@@ -342,8 +342,8 @@ namespace wi857.locality
     sort B = ?
     requires Ord[T = A]
     requires Ord[T = B]
-    fact PartialOrd[T = Duet[A = A, B = B]]
-    fact Ord[T = Duet[A = A, B = B]]
+    provides PartialOrd[T = Duet[A = A, B = B]]
+    provides Ord[T = Duet[A = A, B = B]]
     operation compare(a: Duet[A = A, B = B], b: Duet[A = A, B = B]) -> Int64 =
       match a
         case pr(al, ar) ->
@@ -356,8 +356,8 @@ namespace wi857.locality
     sort B = ?
     requires Ord[T = A]
     requires Ord[T = B]
-    fact PartialOrd[T = Duet[A = A, B = B]]
-    fact Ord[T = Duet[A = A, B = B]]
+    provides PartialOrd[T = Duet[A = A, B = B]]
+    provides Ord[T = Duet[A = A, B = B]]
     operation compare(a: Duet[A = A, B = B], b: Duet[A = A, B = B]) -> Int64 =
       match a
         case pr(al, ar) ->
@@ -489,7 +489,7 @@ namespace wi857.gap
     sort E = ?
     entity wrap(v: E)
     -- Wrap provides Base — for Int64. NOT for a Wrap.
-    fact Base[T = Int64]
+    provides Base[T = Int64]
     operation b(x: Int64) -> Int64 = x
   end
 
@@ -501,7 +501,7 @@ namespace wi857.gap
 
   sort WTop
     sort E = ?
-    fact Top[T = Wrap[E = E]]
+    provides Top[T = Wrap[E = E]]
     operation t(x: Wrap[E = E]) -> Int64 = 7
   end
 

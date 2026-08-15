@@ -4,7 +4,7 @@ namespace anthill.prelude
     artifact "rustland/anthill-stl/src/prelude/bool.rs"
     carrier { Bool: "bool" }
     -- WI-644 / proposal 004: Bool is lawful — PartialEq base + Eq marker.
-    fact PartialEq[T = Bool]
-    fact Eq[T = Bool]
+    provides PartialEq[T = Bool]
+    provides Eq[T = Bool]
   end
 end

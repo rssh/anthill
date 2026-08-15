@@ -1134,6 +1134,55 @@ Both refusals are the same rule seen from two sides: a provision needs a provide
 and a carrier, a namespace supplies neither, and what the text does not say the
 loader will not guess.
 
+**`provides` is the one spelling; the in-sort `fact` one is DEPRECATED and warns**
+(WI-862, 058 §4). The loader raises a non-fatal `ProvisionFactSpelling` at each
+remaining site, located, and the shipped tree carries none. The warning is scoped
+to the arm above where the two spellings agree — a scope that NAMES A TYPE. At a
+plain namespace or a file's root scope nothing is deprecated and nothing warns,
+because `provides` is refused there: the namespace-level instance facts (058 §3.1)
+keep the `fact` spelling permanently, and a deprecation there would advertise a
+repair the next compile rejects. A `provides` clause is admitted inside a
+proposal-038 `provides <Carrier> language <L> … end` binding block too, since that
+block opens the carrier's scope and a spec claim in it is a provision of the
+carrier; that is what gives the retirement a spelling to move the host bindings to.
+
+*Migrating one is not always a pure rename, and the reason is the rule-index
+asymmetry above.* Four readers keyed on the `fact` spelling alone — two of them the
+pair of functions in the first bullet — each found by migrating the tree and measuring,
+not by reading:
+
+- `region_sorts` / `is_modifiable_sort` scanned raw `Modifiable[T = …]` facts, so
+  `is_modifiable(Cell)` answered **false** — a wrong answer, not an error. Both now
+  read either channel.
+- Rust codegen rendered an in-sort claim as a supertrait bound from the `fact` arm
+  only, silently dropping `trait NonMonotonicStore: Store`.
+- A `requires` clause mixing a value precondition with a spec requirement
+  (`requires neq(a, 0), lo: Ord[T = Int64]`) was classified by its `conjunction`
+  head as wholly a value precondition and PROVED from Γ. It only ever passed because
+  `fact Ord[T = Int64]` made the spec conjunct resolvable as an ordinary goal; the
+  clause is split into conjuncts before classification now, which is what the
+  paragraph above ("never proved from Γ") always said.
+
+The standing rule for the remaining case: **if some rule resolves `Spec[…]` as a
+GOAL, keep the fact and write the `provides` clause beside it** — the two are not
+the same statement, and the deprecation is of the *spelling of a provision*, not of
+the fact.
+
+**A provision may mark itself the default: `default provides Spec[…]`** (WI-862,
+058 §3.6/§4). One leading modifier, the `internal`/`public` pattern, desugaring in
+the loader to the `DefaultProvider` row the defaults substrate already arbitrates —
+so the inline mark and the by-reference `fact DefaultProvider(spec: …, provider: …)`
+are ONE statement, deduplicated, and colliding marks are refused by the same
+`one_default` check whichever spelling wrote them. The carrier is not written and
+must not be: it is derived from this very provision, so a conditional provision's
+mark lands at the carrier the provision wrote. `default` is a modifier in that one
+position and stays an ordinary identifier everywhere else. The modifier set is
+`default` alone — a modifier attaches where its relation's key lives, and `Coherent`
+is keyed per SPEC, so its sugar belongs on the spec's own declaration and is not
+admitted on a provision. What a default *means* at dispatch is 058 §3.6; the
+`kernel-language.md` statement of it arrives with the §Instance-coherence amendment
+(WI-845), which should absorb this paragraph's first sentence when it lands.
+
 **A sort with constructors is a DATA sort, and both spellings read that**
 (WI-407/WI-1106). Neither a `fact` nor a `provides` naming one records a provision:
 nothing is-a a data sort. The rule holds of a **parametric** sort exactly as it
