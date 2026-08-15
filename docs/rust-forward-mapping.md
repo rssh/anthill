@@ -742,7 +742,7 @@ Receiver rules are evaluated after effect rules. If an effect already determines
 
 ### 6.1 Persistence Store Hierarchy
 
-The persistence layer uses a three-sort hierarchy: `Store` (base), `QueryableStore` (pattern-based retrieval), and `BulkStore` (load-all-into-memory). The sort hierarchy replaces runtime capability tags.
+The persistence layer uses a sort hierarchy: `Store` (base) with `NonMonotonicStore` (mutation) and `QueryableStore` (pattern-based retrieval) above it. The sort hierarchy replaces runtime capability tags. (007 §2 declared a fourth, `BulkStore { pull }`; WI-932 deleted it — no host implemented an anthill-callable `pull` and nothing called it. See `stdlib/anthill/persistence/store.anthill`.)
 
 ```
 -- Anthill:
@@ -753,9 +753,13 @@ namespace anthill.persistence
   operation route(fact: Term) -> Store
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
     effects (Modify{store}, Error)
-  operation retract(store: Store, id: FactId) -> Bool
-    effects (Modify{store}, Error)
   operation flush(store: Store, delta: List[T = Term]) -> Bool
+    effects (Modify{store}, Error)
+
+  sort NonMonotonicStore
+    fact Store                                -- NonMonotonicStore is-a Store
+
+  operation retract(store: NonMonotonicStore, reference: FactRef) -> Bool
     effects (Modify{store}, Error)
 
   sort QueryableStore
@@ -764,21 +768,15 @@ namespace anthill.persistence
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
     effects (Error)
 
-  sort BulkStore
-    fact Store                                -- BulkStore is-a Store
-
-  operation pull(store: BulkStore) -> List[T = Term]
-    effects (Error)
-
 end
 
 -- In namespace anthill.examples.persistence.sql:
 entity SqlStore(connection: String, schema: String, dialect: SqlDialect)
-fact QueryableStore                           -- SqlStore is-a QueryableStore
+fact QueryableStore[SqlStore]                 -- SqlStore is-a QueryableStore
 
 -- In namespace anthill.persistence.filesystem:
 entity FileStore(root: String, convention: FileConvention)
-fact BulkStore                                -- FileStore is-a BulkStore
+fact NonMonotonicStore[FileStore]             -- FileStore is-a NonMonotonicStore
 ```
 
 Generated Rust:
@@ -787,16 +785,15 @@ Generated Rust:
 pub mod persistence {
     pub trait Store {
         fn persist(&mut self, fact: Term, meta: Meta) -> Result<FactId, Error>;
-        fn retract(&mut self, id: FactId) -> Result<bool, Error>;
         fn flush(&mut self, delta: Vec<Term>) -> Result<bool, Error>;
+    }
+
+    pub trait NonMonotonicStore: Store {
+        fn retract(&mut self, reference: FactRef) -> Result<bool, Error>;
     }
 
     pub trait QueryableStore: Store {
         fn retrieve(&self, pattern: Term) -> Result<Vec<Term>, Error>;
-    }
-
-    pub trait BulkStore: Store {
-        fn pull(&self) -> Result<Vec<Term>, Error>;
     }
 
     pub fn route(fact: Term) -> impl Store { todo!() }
@@ -824,11 +821,13 @@ pub mod filesystem {
     }
 
     impl Store for FileStore { /* ... */ }
-    impl BulkStore for FileStore { /* ... */ }
+    impl NonMonotonicStore for FileStore { /* ... */ }
 }
 ```
 
-Note: `fact Store` inside `sort QueryableStore` becomes supertrait `QueryableStore: Store`. `fact QueryableStore` in the SqlStore namespace becomes `impl QueryableStore for SqlStore` (which implies `impl Store for SqlStore` since `QueryableStore: Store`).
+Note: `fact Store` inside `sort QueryableStore` becomes supertrait `QueryableStore: Store`. At namespace level the carrier is written in brackets — `fact QueryableStore[SqlStore]` becomes `impl QueryableStore for SqlStore` (which implies `impl Store for SqlStore` since `QueryableStore: Store`).
+
+> **Write the brackets.** The two positions are not interchangeable: `fact Store` *inside a sort body* names a supertrait and works, but a namespace-level **bracket-less** `fact <Spec>` after an entity declaration produces no provider edge and no diagnostic — it is silently dropped. That is **WI-933**, still open; the examples above use the bracketed form because it is the one the loader honours, and it is what the real stdlib writes (`fact NonMonotonicStore[FileStore]` in `rustland/anthill-stl/anthill/persistence.anthill`).
 
 The `sql` half of this example is a SKETCH (§2.13) and is NOT run through the bootstrap mapper — `anthill-stl`'s build script generates only stdlib files, of which `store` and `filesystem` are the persistence ones. `FileStore` is the realized backend; its satisfaction facts stand in the host closure, `rustland/anthill-stl/anthill/persistence.anthill`, beside the `operation_map` that backs them.
 

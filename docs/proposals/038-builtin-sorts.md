@@ -110,7 +110,9 @@ The stdlib carries **specs** (an abstract algebra every host is expected to real
 
 This follows from the backing rule above rather than adding to it: a `fact Spec[Carrier]` may stand only where the spec's operations are backed, so an unrealized carrier can declare no satisfaction fact anywhere, and what remains in the stdlib is a declaration that promises nothing. The spec it would be written against still belongs in the stdlib — that is the language-agnostic part, and it is what a future backend author reads.
 
-Applied at WI-934: `anthill.persistence.sql` (`SqlStore` / `SqlDialect` / `QueryBinding` / `ColumnDef`) moved to `examples/sql-store/`, because no implementation supplies a SQL backend; `anthill.persistence`'s `Store` / `NonMonotonicStore` / `QueryableStore` / `BulkStore` stayed, because the filesystem backends realize them.
+Applied at WI-934: `anthill.persistence.sql` (`SqlStore` / `SqlDialect` / `QueryBinding` / `ColumnDef`) moved to `examples/sql-store/`, because no implementation supplies a SQL backend; `anthill.persistence`'s `Store` / `NonMonotonicStore` / `QueryableStore` stayed, because the filesystem backends realize them.
+
+The rule this states is about an unrealized **carrier**: the carrier moves out, the abstract spec it was written against stays. A spec whose own sole **operation** no host implements is a third case, and it is not covered here — an abstract declaration nobody can provide and nobody can call is a shape with no realization, so it goes rather than stays. That is `BulkStore { pull }`, deleted at WI-932; it had been kept above on the blanket ground that "the filesystem backends realize them", which was true of the other three and false of it.
 
 ### Semantics
 

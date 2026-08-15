@@ -12,7 +12,7 @@ by the compiler instead of living in a design document.
 
 The abstract algebra it is written against **is** standard library —
 `stdlib/anthill/persistence/store.anthill`, where `Store` / `NonMonotonicStore` /
-`QueryableStore` / `BulkStore` declare the operations every backend supplies. That
+`QueryableStore` declare the operations every backend supplies. That
 file stays: it is the language-agnostic spec, and the two filesystem backends
 realize it.
 

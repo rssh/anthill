@@ -2,12 +2,15 @@
 //! so retract can drop the exact byte range a fact occupies on disk
 //! without reconstructing it from a content fingerprint.
 //!
-//! The underlying `FileStore` keeps doing the actual file I/O — pull,
-//! persist's append-to-pending, and flush's atomic rewrite all stay in
+//! The underlying `FileStore` keeps doing the actual file I/O —
+//! persist's append-to-pending and flush's atomic rewrite both stay in
 //! the inner store. `IndexedFileStore` adds:
 //!
-//! - `pull_with_source(&mut KnowledgeBase)` — load each `.anthill` file
-//!   in the root, record `(rule_id → (path, span))` for every fact;
+//! - `record_source(rule_id, path, span)` — the source map is filled by
+//!   the HOST, which reads and loads the `.anthill` tree itself and then
+//!   pairs each fact's `RuleId` with the byte range it occupies. There is
+//!   no store-side bulk read: `anthill-todo`'s cold start scans, parses
+//!   and loads, then seeds this map (`anthill-todo/src/main.rs`).
 //! - `Store::retract` — consult the source map; if the rule was loaded
 //!   from a file, buffer a span-based retract; otherwise fall back to
 //!   the inner store's content-keyed retract for runtime-asserted
@@ -34,13 +37,13 @@ use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
 use crate::span::Span;
 
 use super::file_store::{FileConvention, FileStore};
-use super::{BulkStore, IndexedStore, PersistenceError, Store};
+use super::{IndexedStore, PersistenceError, Store};
 
 pub struct IndexedFileStore {
     inner: FileStore,
     /// Per-rule source location: which file the rule was loaded from
     /// and the byte range its `fact …(…)` block occupies. Populated by
-    /// `pull_with_source`; consulted by `retract`.
+    /// `record_source`; consulted by `retract`.
     source_map: HashMap<RuleId, (PathBuf, Span)>,
     /// Span retracts queued for the next flush. `(file, byte_range)`
     /// tuples — flush drops the range from the file.
@@ -65,16 +68,18 @@ impl IndexedFileStore {
         }
     }
 
-    /// Record source location for a single fact. Callers that drove
-    /// their own load path (e.g. the bundle's main.rs which loads
-    /// stdlib + bundle + project together via `load_all_per_file`)
-    /// populate the source map fact-by-fact without re-parsing.
+    /// Record source location for a single fact. This is the ONLY way the
+    /// source map is filled — the host drives the load (e.g. the bundle's
+    /// main.rs, which loads stdlib + bundle + project together via
+    /// `load_all_per_file`) and populates the map fact-by-fact without
+    /// re-parsing. WI-932 deleted the store-side bulk read; there is no
+    /// alternative path.
     pub fn record_source(&mut self, rule_id: RuleId, path: PathBuf, span: Span) {
         self.source_map.insert(rule_id, (path, span));
     }
 
     /// Populate the primary-key index for a rule. The host calls this
-    /// after `record_source` for each pulled fact; if the rule's head
+    /// after `record_source` for each loaded fact; if the rule's head
     /// has a String-typed `id` field, the entry `by_id[id_str] = rule_id`
     /// is added. Facts without an `id` field are skipped silently —
     /// they remain unindexable but still retract-tracked via `source_map`.
@@ -225,12 +230,6 @@ impl Store for IndexedFileStore {
         // Inner flush handles persisted writes and any content-keyed
         // retracts that fell through (runtime-asserted facts).
         self.inner.flush(kb)
-    }
-}
-
-impl BulkStore for IndexedFileStore {
-    fn pull(&self) -> Result<Vec<crate::parse::ir::ParsedFile>, PersistenceError> {
-        self.inner.pull()
     }
 }
 

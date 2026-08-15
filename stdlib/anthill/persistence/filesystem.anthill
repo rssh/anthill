@@ -1,4 +1,4 @@
--- Filesystem: bulk file-based persistence backend
+-- Filesystem: file-based persistence backend
 namespace anthill.persistence.filesystem
   import anthill.reflect.{Term}
   import anthill.prelude.Meta.{Meta}
@@ -17,16 +17,8 @@ namespace anthill.persistence.filesystem
   --
   -- `Modifiable` stays: it is a marker with no operations to back.
   --
-  -- NEITHER BACKEND PROVIDES `BulkStore`, anywhere, and the reason is a MISSING
-  -- OPERATION rather than a missing capability. `BulkStore` declares exactly one
-  -- member, `pull(store) -> List[Term]`, and no anthill-callable implementation
-  -- of it exists: the Rust `BulkStore::pull` trait method both file backends
-  -- implement returns parsed FILES and is driven from Rust (the CLI's cold
-  -- start), never reached from an anthill call. Restoring the provision is
-  -- WI-932, which exposes `pull` to the evaluator. What stood here before said
-  -- less than it looked like it did: `FileStore`'s line was a namespace-level
-  -- `fact BulkStore` with NO carrier, which the loader records as no provision at
-  -- all (WI-933), so only `IndexedFileStore` ever claimed to be bulk-loadable.
+  -- `BulkStore` IS GONE ENTIRELY (WI-932) — spec, Rust trait and both impls.
+  -- The rationale lives once, in `store.anthill`'s header.
   --
   -- THE BACKENDS RE-DECLARE NOTHING. The storage operations are COMMON
   -- operations over a store's state — one host function each, taking the store as
@@ -40,7 +32,8 @@ namespace anthill.persistence.filesystem
 
   -- IndexedFileStore: FileStore plus a per-rule source map (for
   -- span-based retract) and a primary-key `id` index (for fast
-  -- retrieve). Indexes are populated by the host at pull time.
+  -- retrieve). Indexes are populated by the host as it loads the tree
+  -- (`record_source` / `index_by_id`); there is no store-side bulk read.
   entity IndexedFileStore(root: String, convention: FileConvention)
   fact Modifiable[T = IndexedFileStore]
 

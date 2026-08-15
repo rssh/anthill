@@ -310,7 +310,7 @@ Each resource type needs its own contract spelled out. The framework requires th
 | | |
 |---|---|
 | Identity scheme | **Identity-by-key** (`String`): the canonical-form string of `(functor, field-values)` is the key. Two `Store(...)` values with the same field values denote the same backing store; this is the existing `store_registry` lookup. Implemented today via the registry; consistent with the framework's identity-by-key scheme. |
-| Operations exposed | `persist(store, fact, meta) -> FactId`, `flush(store, delta) -> Bool`, `retract(store, id) -> Bool`, `pull` (BulkStore). |
+| Operations exposed | `persist(store, fact, meta) -> FactId`, `flush(store, delta) -> Bool`, `retract(store, id) -> Bool`. (A `pull` on a `BulkStore` was declared but never implemented in any host; WI-932 deleted both. Reading a tree of `.anthill` files is the caller's job.) |
 | State location | A per-instance backend registry: an associative structure mapping the instance key to a host-language object carrying the backend internals (pending writes, source map, indexes, file handles). The Rust realization uses `HashMap<String, Box<dyn Store>>`; other hosts pick equivalent shapes (e.g., a Scala `Map[String, Store]` with a sealed trait, a C struct of function pointers + per-instance void pointer). |
 | Dispatch path | Direct builtin today. Operations declare `Modify[store]` for effect-row honesty. |
 | Lifecycle | **Pinned by runtime root**: the host process registers store instances at startup and retains host-side references for the duration. Not a property of Store-as-a-type — a Store the program drops with no host-side root would be reclaimed under refcounted rules. |

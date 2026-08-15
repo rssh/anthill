@@ -33,10 +33,11 @@
 //!     declared per carrier. `a_spec_level_host_mapping_backs_no_carrier` is the
 //!     test that keeps those two questions apart.
 //!
-//!   * `BulkStore` — no anthill-callable `pull` exists at all, so neither file
-//!     backend provides it (WI-932). The absence is the honest answer, and
-//!     `no_backend_provides_bulk_store` is what keeps it from being restored
-//!     without an implementation.
+//!   * `BulkStore` — no anthill-callable `pull` existed at all, so neither file
+//!     backend provided it. WI-931 kept the declaration and withdrew only the
+//!     provisions, expecting WI-932 to supply the implementation; WI-932 instead
+//!     measured that nothing anywhere called `pull` and deleted the whole thing,
+//!     Rust trait included. `bulk_store_is_gone_from_the_stdlib` pins that.
 //!
 //! The CONTROL is `control_the_stdlib_loads_clean` in
 //! `wi928_entity_load_record_test`, which is the measurement this whole ticket is
@@ -50,7 +51,7 @@
 //! here — which is the point of that test and the reason it is not redundant with
 //! the load-clean control. The three subject families were driven the same way,
 //! by staging the fixes in one at a time against the 12 reports: closing `Vec3`
-//! took it to 8, the persistence binding file to 1, and withdrawing the
+//! took it to 8, the persistence binding file to 1, and disposing of the
 //! `BulkStore` provision to 0.
 
 use anthill_core::kb::KnowledgeBase;
@@ -202,26 +203,56 @@ fn stdlib_alone_declares_no_store_provision() {
     }
 }
 
-/// SUBJECT — `BulkStore` is provided by NOBODY, in either closure. Its sole
-/// member `pull` has no anthill-callable implementation (WI-932), so any
-/// provision would certify an operation that dies at the call. This is the one
-/// finding of the twelve that was closed by REMOVING a claim rather than by
-/// making it true, and it is the one most likely to be undone by someone reading
-/// the Rust `BulkStore::pull` trait method and assuming it is reachable.
+/// SUBJECT — `BulkStore` is GONE, spec and all (WI-932). WI-931 withdrew the
+/// provisions and kept the declaration, on the reasoning that `pull` was a
+/// missing IMPLEMENTATION of a real capability — the Rust `BulkStore::pull` trait
+/// method both file backends carried, said to be "driven from Rust (the CLI's
+/// cold start)". That premise was false, which is why this assertion inverted:
+/// the bridge that ever loaded a pull into a KB (`pull_with_source`) was deleted
+/// as dead code by WI-187's own simplify pass, the cold start reads and loads the
+/// tree itself, and the trait's only non-test caller was its own delegation. A
+/// spec no host can implement and no program can call is a shape with no
+/// realization, so it left with the trait rather than staying as a declaration
+/// that `check_provider_operations` forbids anyone from ever providing.
+///
+/// This test now pins the ABSENCE of the name. Its positive neighbour is
+/// `a_spec_level_host_mapping_backs_no_carrier` below: `QueryableStore.retrieve`
+/// — the sibling that IS backed — must still resolve, so a load that resolved
+/// nothing at all could not pass both.
 #[test]
-fn no_backend_provides_bulk_store() {
+fn bulk_store_is_gone_from_the_stdlib() {
     let kb = try_load_kb_with("namespace wi931.bulk\nend\n").expect("stdlib loads");
     let provs = provisions(&kb);
     assert!(
         !provs.iter().any(|(_, s)| s == "BulkStore"),
-        "nothing may provide BulkStore while `pull` is unimplemented; provisions were {provs:?}",
+        "nothing may provide BulkStore; provisions were {provs:?}",
     );
-    // The spec itself is untouched — this is a missing IMPLEMENTATION, not a
-    // deleted capability, so `pull` must still be declared for WI-932 to fill in.
     assert!(
         kb.try_resolve_symbol("anthill.persistence.BulkStore.pull")
+            .is_none(),
+        "`BulkStore.pull` must no longer be declared — WI-932 deleted the spec",
+    );
+    assert!(
+        kb.try_resolve_symbol("anthill.persistence.BulkStore")
+            .is_none(),
+        "the `BulkStore` sort itself must be gone, not just its operation",
+    );
+    // The neighbours, ONE PER SPELLING. Each absence above is paired with a
+    // positive of the SAME shape, so neither can pass vacuously: a bare-sort
+    // registration change (the `intern` != qualified-name footgun) would make
+    // the `BulkStore` sort-position assertion true for the wrong reason, and
+    // only a bare-sort positive catches that.
+    assert!(
+        kb.try_resolve_symbol("anthill.persistence.QueryableStore")
             .is_some(),
-        "`BulkStore.pull` must still be DECLARED — only its provision was withdrawn",
+        "bare-sort neighbour: `QueryableStore` must resolve, else the \
+         `BulkStore` sort-position assertion above proves nothing",
+    );
+    assert!(
+        kb.try_resolve_symbol("anthill.persistence.QueryableStore.retrieve")
+            .is_some(),
+        "sort.op neighbour: `QueryableStore.retrieve` must still resolve — \
+         only BulkStore was deleted",
     );
 }
 

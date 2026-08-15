@@ -319,11 +319,10 @@ Existing facilities marked with [done], gaps marked with [needed].
 | Facility | Status |
 |----------|--------|
 | `Store::persist / flush` | [done] |
-| `BulkStore::pull` | [done] |
 | `FileStore` (Flat, ByDomain conventions) | [done] |
 | `FileConvention::Stage0` (workitems/ dir, status-based suffixes) | [needed] |
 | Routing rules (sort → store dispatch) | [needed] |
-| Bootstrap sequence (load project.anthill first, then pull) | [needed] |
+| Bootstrap sequence (load project.anthill first, then the rest) | [needed] |
 | Round-trip: load → mutate → persist → reload | [done] |
 
 ### 5.6 CLI

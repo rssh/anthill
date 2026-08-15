@@ -20,7 +20,8 @@ The migration is the first concrete consumer of the `rust+anthill` realization p
                 │  • register effect handlers (Console, Modify)       │
                 │  • register persistence builtins                    │
                 │  • register `anthill.prelude.Time.now` builtin      │
-                │  • construct FileStore, BulkStore::pull → load      │
+                │  • scan + parse + load the project .anthill tree    │
+                │  • construct IndexedFileStore, seed its source map  │
                 │  • interp.call("anthill.todo.main", [argv...])      │
                 │  • return Int64 as exit code                          │
                 └─────────────────────────────────────────────────────┘
@@ -41,7 +42,7 @@ The migration is the first concrete consumer of the `rust+anthill` realization p
                 └─────────────────────────────────────────────────────┘
 ```
 
-The user data files (`anthill-todo/workitems.anthill` etc.) are **not** bundled — they are the operand the shim reads from disk via `BulkStore::pull` at startup.
+The user data files (`anthill-todo/workitems.anthill` etc.) are **not** bundled — they are the operand the shim reads from disk at startup (it scans, parses and loads them itself).
 
 ## 3. Why this shape
 
@@ -49,11 +50,11 @@ The user data files (`anthill-todo/workitems.anthill` etc.) are **not** bundled 
 
 The current Rust does surgical text editing on `workitems.anthill`: `find_fact_block`, `update_status_in_source`, `update_depends_in_source`, etc. We deliberately avoid porting that approach. Instead we use the persistence layer (proposal 007):
 
-- **Read**: `BulkStore::pull` at startup loads every `.anthill` file under the project's scan dir into the KB. After this, every command reads from the KB only.
+- **Read**: at startup the host scans, parses and loads every `.anthill` file under the project's scan dir into the KB, then seeds `IndexedFileStore::record_source` so retract can find each fact's byte range. After this, every command reads from the KB only. (007 §2 put this read behind a `BulkStore::pull` operation; WI-932 deleted that — reading the tree is the caller's job, and no anthill-callable `pull` ever existed.)
 - **Mutate**: anthill code calls `KB.assert(kb, new_fact, sort)` (already wired in `eval::builtins::kb_execute` family) and `KB.retract(kb, fact_id)` for in-memory mutation.
 - **Write back**: `Store::persist(store, fact, meta)` + `Store::flush(store)` (proposal 007 §4) writes durable changes.
 
-This is exactly the bulk-pull / persist-flush flow proposal 007 §11 describes for `bulk` stores. WorkItem mutation collapses to: query → build new term → assert + retract old → persist + flush.
+This is the read / persist-flush flow proposal 007 §11 describes, with the read on the host side. WorkItem mutation collapses to: query → build new term → assert + retract old → persist + flush.
 
 ### 3.2 What's host-side, what's anthill-side
 
@@ -198,5 +199,5 @@ If WI-X-RETRACT slips, steps 1–2 still ship as a partial migration; step 3 is 
 
 - Switching the bootstrap convention from `Flat` (one `workitems.anthill`) to Stage 0's per-fact files (`workitems/WI-001.anthill`) — proposal 007 §6 mentions this but it's a separate decision, not required for the port.
 - KB epoch / cache invalidation primitive (§6 above).
-- The `Store::route` rule machinery driving resolver dispatch (proposal 007 §5; landed for queryable backends per 007 §11 Q4 status, but the file-store path stays bulk-pull).
+- The `Store::route` rule machinery driving resolver dispatch (proposal 007 §5; landed for queryable backends per 007 §11 Q4 status, but the file-store path stays a host-side whole-tree read).
 - Any change to the user-facing CLI surface or output formatting — the migration must produce byte-identical output for `list` / `show` / `status` / `graph` against the existing fixtures, otherwise downstream callers (the `/todo` skill) break.

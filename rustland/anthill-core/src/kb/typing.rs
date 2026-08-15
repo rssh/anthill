@@ -25475,8 +25475,10 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
 /// (a rule is not backing, WI-818), the six persistence operations moved from a
 /// hardcoded eval registration no load-time reader could see to `operation_map`
 /// clauses that every reader can (`rustland/anthill-stl/anthill/persistence.anthill`),
-/// and `BulkStore`, whose sole member has no anthill-callable implementation at
-/// all, is provided by neither file backend until WI-932 gives it one.
+/// and `BulkStore`, whose sole member no host implemented, was deleted outright
+/// by WI-932 — a spec this check forbids anyone from ever providing is a shape
+/// with no realization, not a pending gap. (Rationale in full:
+/// `stdlib/anthill/persistence/store.anthill`'s header.)
 pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -48234,7 +48236,7 @@ fn check_entity_facts(
 /// WI-385 (user decision "transitive everywhere") + WI-407: the `provides` /
 /// `is-a` relation is TRANSITIVE over the `SortProvidesInfo` edge set. If `A`
 /// provides `M` and `M` provides `spec`, then `A` provides `spec` —
-/// `IndexedFileStore → BulkStore → Store`. Every `sort_provides` caller —
+/// `IndexedFileStore → QueryableStore → Store`. Every `sort_provides` caller —
 /// subtype admissibility (`types_compatible`), requires-coverage, the
 /// receiver-sort checks, and the loader skip — sees the full chain rather than
 /// just the first hop. WI-407 made the loader emit edges for non-parametric

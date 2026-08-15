@@ -1,10 +1,10 @@
 -- Persistence: abstract storage algebra (proposal 007 §2 — trait/policy model)
 --
 -- Capability comes in two kinds, two mechanisms:
---   * PROVISION — a trait carrying an operation. `retract` / `retrieve` / `pull`
---     are not on every store, so having one = providing its trait. An
---     append-only backend simply does not provide `NonMonotonicStore` and has
---     no `retract` at all.
+--   * PROVISION — a trait carrying an operation. `retract` / `retrieve` are not
+--     on every store, so having one = providing its trait. An append-only
+--     backend simply does not provide `NonMonotonicStore` and has no `retract`
+--     at all.
 --   * POLICY — a per-predicate value over universal ops. `persist` is on every
 --     Store, but whether it (and `retract`) is permitted for a functor is that
 --     functor's `monotonicity` (proposal 053), answered by `monotonicity`.
@@ -13,7 +13,18 @@
 --   Store              — base: persist, flush, monotonicity (all backends)
 --   NonMonotonicStore  — adds retract (mutation capability; e.g. filesystem, SQL)
 --   QueryableStore     — adds retrieve (pattern-based query; e.g. SQL)
---   BulkStore          — adds pull (load all into memory; e.g. filesystem)
+--
+-- NO `BulkStore` (WI-932). 007 §2 declared a fourth trait whose sole member was
+-- `pull(store) -> List[Term]` — "load all into memory". It was deleted, not left
+-- standing as an unbacked spec: no host ever implemented an anthill-callable
+-- `pull` (it was in neither eval registry), so nothing could provide the trait
+-- and nothing could call it. Reading a tree of `.anthill` files is the CALLER's
+-- job — `anthill-todo`'s cold start scans, parses and loads, then seeds
+-- `IndexedFileStore::record_source` — and the Rust `BulkStore` trait that once
+-- backed nothing but its own tests went with it. A future backend that wants
+-- bulk rehydration re-declares it against a real implementation; that is the
+-- mirror role sketched in `docs/proposals/future/extent-sources.md`, which is
+-- direction and not a commitment (057, the implementable slice, has no `pull`).
 namespace anthill.persistence
   import anthill.reflect.{Term, FactRef, StoredRef, Symbol, Monotonicity}
   import anthill.prelude.{List, Stream, Option}
@@ -90,18 +101,6 @@ namespace anthill.persistence
     -- WI-589) and does NOT apply to a plain query `Stream`, which carries no
     -- finiteness guarantee.
     operation retrieve(store: QueryableStore, pattern: Term) -> Stream[Term, Error]
-      effects Error
-  }
-
-  -- ================================================================
-  -- BulkStore: load-all-into-memory
-  -- ================================================================
-
-  sort BulkStore {
-    fact Store                                -- BulkStore is-a Store
-
-    -- Pull all facts from store into the KB
-    operation pull(store: BulkStore) -> List[T = Term]
       effects Error
   }
 

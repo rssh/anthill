@@ -83,8 +83,9 @@ namespace anthill.persistence.filesystem
     artifact "rustland/anthill-core/src/persistence/indexed_file_store.rs"
   end
 
-  -- The traits each backend supplies. NO `BulkStore` on either: its sole member
-  -- `pull` has no anthill-callable implementation at all (WI-932).
+  -- The traits each backend supplies. There is no `BulkStore` to supply: WI-932
+  -- deleted the trait, its sole member `pull` having had no anthill-callable
+  -- implementation in any host and no caller in this one.
   fact NonMonotonicStore[FileStore]           -- filesystem can retract (053 / 007 §2)
 
   fact QueryableStore[IndexedFileStore]

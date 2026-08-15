@@ -3,7 +3,7 @@
 //!
 //! Full path: an anthill program receives a `FileStore(...)` value,
 //! calls `persist` + `flush` on it, the on-disk file ends up containing
-//! the fact, and a fresh process can `pull` it back via `BulkStore`.
+//! the fact, and a fresh process can read it back.
 
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::intern::Symbol;
@@ -11,7 +11,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::TermId;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
-use anthill_core::persistence::{BulkStore, PersistenceError, Store};
+use anthill_core::persistence::{PersistenceError, Store};
 
 use crate::common::interp_for;
 use anthill_core::kb::ClauseKind;
@@ -115,15 +115,15 @@ fn persist_then_flush_writes_fact_to_disk() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("fact Foo(value: 7)"), "got:\n{content}");
 
-    // Round-trip: a fresh KB pulls the fact back.
-    let pull_store = FileStore::new(root, FileConvention::Flat);
-    let parsed_files = pull_store.pull().expect("pull");
+    // Round-trip: a fresh KB reads the fact back. WI-932: reading the tree is
+    // the caller's job — there is no store-side bulk read to borrow.
+    let parsed_files = crate::common::read_anthill_dir_parsed(&root);
     let mut kb2 = KnowledgeBase::new();
     for pf in &parsed_files {
         load::load(&mut kb2, pf, &NullResolver).expect("load");
     }
     // Find the Foo fact by walking facts under the default Fact sort.
-    // After pull+load, "Foo" gets a fresh symbol in kb2's namespace; we
+    // After the reload, "Foo" gets a fresh symbol in kb2's namespace; we
     // don't know its qname, so we identify by the printed head shape.
     let fact_sort = ClauseKind::Fact;
     let printer = anthill_core::persistence::print::TermPrinter::new(&kb2);

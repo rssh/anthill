@@ -1,11 +1,10 @@
 /// FileStore — filesystem persistence backend.
 ///
-/// Reads/writes `.anthill` files. Implements `BulkStore`:
+/// Reads/writes `.anthill` files. Implements `Store`:
 /// - `persist()` buffers facts as text
 /// - `retract()` buffers a canonical-printed-form for the rule's head
 /// - `flush()` rewrites affected files (drop matching fact blocks, then
 ///   append persisted texts) atomically via temp + rename
-/// - `pull()` reads all `.anthill` files under the root directory
 ///
 /// Retract semantics: a fact in the source file is matched by the
 /// canonical printed form of its head term (`TermPrinter::print_term`).
@@ -26,7 +25,7 @@ use crate::parse::error::ParseError;
 use crate::parse::ir::Item;
 
 use super::print;
-use super::{BulkStore, PersistenceError, Store};
+use super::{PersistenceError, Store};
 
 // ── File naming convention ─────────────────────────────────────
 
@@ -105,19 +104,6 @@ impl FileStore {
                 self.root.join(format!("{sanitized}.anthill"))
             }
         }
-    }
-
-    /// Recursively collect all `.anthill` files under a directory.
-    ///
-    /// WI-747: the walk is the shared `fs_util::collect_files` (fail-fast, the
-    /// shape this backend already used); only the "a not-yet-created root is
-    /// legitimately empty, not an error" policy — a `pull()` before the store's
-    /// directory exists — stays here. Its `String` fault becomes `Io`.
-    fn collect_anthill_files(dir: &Path) -> Result<Vec<PathBuf>, PersistenceError> {
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        crate::fs_util::collect_files(dir, &["anthill"]).map_err(PersistenceError::Io)
     }
 }
 
@@ -249,32 +235,6 @@ impl Store for FileStore {
         }
 
         Ok(())
-    }
-}
-
-impl BulkStore for FileStore {
-    fn pull(&self) -> Result<Vec<crate::parse::ir::ParsedFile>, PersistenceError> {
-        let files = Self::collect_anthill_files(&self.root)?;
-        let mut parsed_files = Vec::new();
-
-        for path in files {
-            let source = fs::read_to_string(&path).map_err(|e| {
-                PersistenceError::Io(format!("failed to read {}: {e}", path.display()))
-            })?;
-            // WI-852: rendered HERE, where the path and the text are both in
-            // hand — `path:line:col`, not a byte offset naming nothing.
-            let parsed = match parse::parse(&source) {
-                Ok(p) => p,
-                Err(errors) => {
-                    return Err(PersistenceError::Parse(
-                        ParseError::all_located(&errors, &path, &source).collect(),
-                    ))
-                }
-            };
-            parsed_files.push(parsed);
-        }
-
-        Ok(parsed_files)
     }
 }
 

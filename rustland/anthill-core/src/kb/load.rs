@@ -20226,7 +20226,7 @@ impl<'a> Loader<'a> {
         let spec_params = self.kb.type_params_of_sort(fact_functor);
         // WI-407: a NON-parametric spec (`spec_params` empty) still declares a
         // real is-a — `sort QueryableStore { fact Store }`, top-level `fact
-        // BulkStore[IndexedFileStore]`. Pre-WI-407 the gate was
+        // QueryableStore[IndexedFileStore]`. Pre-WI-407 the gate was
         // `spec_params.is_empty()`, so those edges never reached
         // `SortProvidesInfo` and the declared hierarchy was invisible to
         // subtyping (the gap WI-385's arg/field validation surfaced). Emit a
@@ -20311,7 +20311,7 @@ impl<'a> Loader<'a> {
             // higher-kinded carrier param (`CpsMonad`'s `F`) that
             // `type_params_of_sort` does not list. WI-407: a NON-parametric
             // spec has no type param, so the raw leading positional IS the
-            // carrier (`fact BulkStore[IndexedFileStore]` ⇒ `IndexedFileStore`).
+            // carrier (`fact QueryableStore[IndexedFileStore]` ⇒ `IndexedFileStore`).
             let carrier_val = named_terms
                 .iter()
                 .filter(|(_, v)| binding_op_symbol(self.kb, *v).is_none())
@@ -20331,7 +20331,9 @@ impl<'a> Loader<'a> {
                 // silently dropping the whole provision (and with it the
                 // coverage / coherence / signature checks). A type-only or bare
                 // provider fact (no op binding) keeps the lenient path: it may
-                // legitimately have no carrier here (a bare `fact BulkStore`).
+                // legitimately have no carrier here (a namespace-level provider
+                // fact written without brackets — the spelling WI-933 is open
+                // against; after WI-931/WI-932 the tree contains no instance).
                 None => {
                     // Loud only for a PARAMETRIC instance fact — `binds_any_op`
                     // AND a carrier type-param slot (`spec_params.first()`). A

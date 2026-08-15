@@ -931,8 +931,9 @@ impl<'a> RustCodegen<'a> {
                         if let Some(trait_name) =
                             extract_fact_sort_name(self.symbols, self.terms, f)
                         {
-                            // Only associate if the fact name is a known sort
-                            // (not an entity-level fact like `fact BulkStore`)
+                            // Only associate if the fact name is a known sort —
+                            // a `fact` naming anything else (a data constructor,
+                            // an undeclared name) is not a supertrait edge.
                             if sort_names.contains(&trait_name) {
                                 sort_supertraits
                                     .entry(sname.clone())

@@ -217,13 +217,13 @@ end
 #[test]
 fn namespace_fact_to_impl_marker() {
     let out = gen(r#"namespace anthill.persistence.filesystem
-  import anthill.persistence.{BulkStore}
+  import anthill.persistence.{NonMonotonicStore}
   entity FileStore(root: String, convention: String)
-  fact BulkStore
+  fact NonMonotonicStore
 end
 "#);
     assert!(
-        out.contains("// impl BulkStore for FileStore"),
+        out.contains("// impl NonMonotonicStore for FileStore"),
         "output:\n{out}"
     );
 }
@@ -283,9 +283,12 @@ fn full_persistence_store_hierarchy() {
         out.contains("trait QueryableStore: Store"),
         "should have QueryableStore: Store: {out}"
     );
+    // No fourth trait: WI-932 deleted `BulkStore`. This suite reads the REAL
+    // `store.anthill`, so these two are what fail if the sort comes back
+    // without an implementation behind it.
     assert!(
-        out.contains("trait BulkStore: Store"),
-        "should have BulkStore: Store: {out}"
+        !out.contains("trait BulkStore"),
+        "BulkStore was deleted (WI-932); it must not reappear: {out}"
     );
 
     // Base Store has persist, flush, and the monotonicity policy query — but
@@ -318,8 +321,7 @@ fn full_persistence_store_hierarchy() {
     // QueryableStore should have retrieve
     assert!(out.contains("fn retrieve("), "should have retrieve: {out}");
 
-    // BulkStore should have pull
-    assert!(out.contains("fn pull("), "should have pull: {out}");
+    assert!(!out.contains("fn pull("), "pull went with BulkStore: {out}");
 
     // route should be a free function
     assert!(out.contains("fn route("), "should have route: {out}");

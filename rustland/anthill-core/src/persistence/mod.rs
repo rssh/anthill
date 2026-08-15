@@ -3,7 +3,6 @@ pub mod indexed_file_store;
 /// Persistence — traits and backends for storing/loading KB facts.
 ///
 /// The `Store` trait provides persist/retract/flush for individual facts.
-/// `BulkStore` extends it with `pull()` to load entire file sets.
 ///
 /// `FileStore` is the filesystem backend: reads/writes `.anthill` files.
 pub mod print;
@@ -12,7 +11,6 @@ pub mod term_ser;
 use crate::intern::Symbol;
 use crate::kb::term::TermId;
 use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
-use crate::parse::ir::ParsedFile;
 
 // ── Error ──────────────────────────────────────────────────────
 
@@ -197,17 +195,10 @@ pub trait Store {
     }
 }
 
-/// Bulk loading: read all persisted facts back as parsed files.
-pub trait BulkStore: Store {
-    /// Load all persisted `.anthill` files and return them as parsed IR.
-    /// The caller loads them into a KB via `kb::load::load()`.
-    fn pull(&self) -> Result<Vec<ParsedFile>, PersistenceError>;
-}
-
 /// Stores that index each persisted fact by a backend-specific location
 /// (file path + byte range, SQL row id, content-addressed blob hash, ...)
 /// so retract can drop a specific fact in place without reconstructing
-/// it from a content fingerprint. The persist + pull side of each
+/// it from a content fingerprint. The persist side of each
 /// implementation populates the index; the trait surfaces the lookup so
 /// retract code can be backend-generic.
 ///

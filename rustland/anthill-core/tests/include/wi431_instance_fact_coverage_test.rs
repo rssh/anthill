@@ -814,9 +814,13 @@ end
 
 /// (E) non-regression: a TYPE-ONLY provider fact (no op binding) whose carrier
 /// param is unbound keeps the lenient path — it is not an instance fact, so the
-/// loud carrier check does not fire. (`fact BulkStore` / bare provider facts rely
-/// on this; here a parametric type-only `fact Holder` with no binding must not
-/// newly error.)
+/// loud carrier check does not fire. (Here a parametric type-only `fact Holder`
+/// with no binding must not newly error. NOTE the lenient path now has no
+/// real-world consumer: after WI-931/WI-932 no namespace-level bracket-less
+/// `fact <Spec>` survives in stdlib/, anthill-stl/, anthill-todo/ or examples/ —
+/// every `Modifiable` fact binds its carrier. WI-933 decides whether that
+/// spelling gets implemented or refused; until then this pin is the only thing
+/// holding the path's shape.)
 #[test]
 fn type_only_fact_unbound_carrier_stays_lenient() {
     let snippet = r#"namespace test.wi431.type_only

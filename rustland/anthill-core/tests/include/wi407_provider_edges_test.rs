@@ -3,7 +3,7 @@
 //! non-parametric specs is visible to subtyping.
 //!
 //! The Store hierarchy is entirely non-parametric:
-//!   `sort QueryableStore { fact Store }`  / `sort BulkStore { fact Store }`
+//!   `sort QueryableStore { fact Store }` / `sort NonMonotonicStore { fact Store }`
 //!   `fact QueryableStore[IndexedFileStore]`
 //! Pre-WI-407, `maybe_emit_fact_provides_info` early-returned on
 //! `spec_params.is_empty()`, so NONE of these became provider edges and
@@ -20,10 +20,11 @@
 //! (`rustland/anthill-stl/anthill/persistence.anthill`), because a satisfaction
 //! fact may only stand where the spec's operations are backed and
 //! `anthill.persistence`'s are host primitives — so this file loads the host
-//! bindings too. The `BulkStore` leg is gone entirely: neither file backend
-//! provides it while `pull` has no anthill-callable implementation (WI-932), so
-//! the 1-hop case is now spelled on `QueryableStore`, which is the same edge
-//! shape (a top-level `fact <Spec>[X]` over a non-parametric spec).
+//! bindings too. The `BulkStore` leg is gone entirely — WI-932 deleted the sort,
+//! its sole member `pull` having had no anthill-callable implementation in any
+//! host and no caller in this one — so the 1-hop case is spelled on
+//! `QueryableStore`, the same edge shape (a top-level `fact <Spec>[X]` over a
+//! non-parametric spec).
 
 /// Stdlib + host bindings + `extras`, returning the load errors. The local copy of
 /// this sequence was kept only because it loaded the stdlib ALONE; once WI-931

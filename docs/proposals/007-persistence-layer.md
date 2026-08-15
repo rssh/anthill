@@ -10,7 +10,9 @@
 > - **[053 — Fact Mutability](053-fact-mutability.md)** owns the write-policy ladder; `monotonicity` here is that query.
 > - **WI-780 (write seam)** retires the **`FactId` identity** of §4: `persist` returns the content / domain key and `retract` is content-keyed, so `FactId = Handle(RuleId)` is dropped.
 >
-> **What still stands:** §1 (persistence as a kernel algebra), §2's *declared* trait contract (`Store` / `NonMonotonicStore` / `QueryableStore` / `BulkStore` — 057 *conforms* to it rather than replacing it), and the **filesystem** backend (§6 — the one backend actually implemented). §7's SQL store is an **illustrative example, not a requirement** (`sql.anthill` is a sketch; no such backend is built), and its `retrieve`-based read design predates 057 — a SQL store is an `ExtentSource` *owner* under the extent model, not a retrieve-beside-unification `QueryableStore`. Read the superseded sections for motivation; take the mechanism from 057 and the vision.
+> - **WI-932** retires **`BulkStore`** (§2, §5's `pull`, §6's `fact BulkStore[FileStore]`): no host ever implemented an anthill-callable `pull`, so nothing could provide the trait, and nothing called the Rust one either — the sort, the trait and both impls are deleted. Reading a tree of `.anthill` files is the **caller's** job. 057 does not carry `pull`; the mirror-role rehydration sketched in the [vision](future/extent-sources.md) is direction, not a commitment.
+>
+> **What still stands:** §1 (persistence as a kernel algebra), §2's *declared* trait contract minus `BulkStore` (`Store` / `NonMonotonicStore` / `QueryableStore` — 057 *conforms* to it rather than replacing it), and the **filesystem** backend (§6 — the one backend actually implemented). §7's SQL store is an **illustrative example, not a requirement** (`sql.anthill` is a sketch; no such backend is built), and its `retrieve`-based read design predates 057 — a SQL store is an `ExtentSource` *owner* under the extent model, not a retrieve-beside-unification `QueryableStore`. Read the superseded sections for motivation; take the mechanism from 057 and the vision.
 
 ## Motivation
 

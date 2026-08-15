@@ -6,7 +6,7 @@
 //! `retract` / `update` / `retrieve` against a `SqlStore` value reach no registered
 //! mirror. WI-931 removed the file's two provision facts for exactly that reason;
 //! what remained was a shape with no realization. The rule that follows from — and
-//! the reason the `Store` / `NonMonotonicStore` / `QueryableStore` / `BulkStore`
+//! the reason the `Store` / `NonMonotonicStore` / `QueryableStore`
 //! algebra STAYS in the stdlib — is stated once, in
 //! `docs/proposals/038-builtin-sorts.md`, "What the stdlib carries".
 //!

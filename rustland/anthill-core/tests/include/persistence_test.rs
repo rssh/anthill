@@ -1,19 +1,19 @@
 /// Integration tests for the persistence module.
 ///
-/// Tests: term printer round-trips, FileStore pull/persist/flush, full KB round-trip.
-use std::path::PathBuf;
-
+/// Tests: term printer round-trips, FileStore persist/flush/retract, full KB round-trip.
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::parse;
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
 use anthill_core::persistence::print::{self, TermPrinter};
-use anthill_core::persistence::{BulkStore, Store};
+use anthill_core::persistence::Store;
 
 use anthill_core::kb::ClauseKind;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
+
+use crate::common::read_anthill_dir_parsed;
 
 // ── Term printer tests ─────────────────────────────────────────
 
@@ -204,62 +204,6 @@ fn printer_nested_fn() {
     assert_eq!(printer.print_term(outer), "outer(inner(1))");
 }
 
-// ── FileStore pull tests ───────────────────────────────────────
-
-#[test]
-fn pull_reads_anthill_files() {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    let root = dir.path();
-
-    // Write some .anthill files
-    std::fs::write(root.join("a.anthill"), "fact Foo\n").unwrap();
-    std::fs::write(root.join("b.anthill"), "fact Bar\nfact Baz\n").unwrap();
-
-    let store = FileStore::new(root.to_path_buf(), FileConvention::Flat);
-    let files = store.pull().expect("pull should succeed");
-    assert_eq!(files.len(), 2);
-
-    // Count total facts across parsed files
-    let total_facts: usize = files
-        .iter()
-        .map(|f| {
-            f.items
-                .iter()
-                .filter(|i| matches!(i, anthill_core::parse::ir::Item::Fact(_)))
-                .count()
-        })
-        .sum();
-    assert_eq!(total_facts, 3);
-}
-
-#[test]
-fn pull_empty_dir() {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    let store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
-    let files = store.pull().expect("pull empty dir");
-    assert!(files.is_empty());
-}
-
-#[test]
-fn pull_nonexistent_dir() {
-    let store = FileStore::new(PathBuf::from("/nonexistent/path"), FileConvention::Flat);
-    let files = store.pull().expect("pull nonexistent dir returns empty");
-    assert!(files.is_empty());
-}
-
-#[test]
-fn pull_nested_dirs() {
-    let dir = tempfile::tempdir().expect("create temp dir");
-    let sub = dir.path().join("sub");
-    std::fs::create_dir(&sub).unwrap();
-    std::fs::write(dir.path().join("top.anthill"), "fact A\n").unwrap();
-    std::fs::write(sub.join("nested.anthill"), "fact B\n").unwrap();
-
-    let store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
-    let files = store.pull().expect("pull nested");
-    assert_eq!(files.len(), 2);
-}
-
 // ── FileStore persist + flush tests ────────────────────────────
 
 #[test]
@@ -393,9 +337,8 @@ fn full_round_trip() {
         .unwrap();
     store.flush(&kb1).unwrap();
 
-    // Step 3: Pull back into a new KB
-    let store2 = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
-    let parsed_files = store2.pull().expect("pull should succeed");
+    // Step 3: Read back into a new KB
+    let parsed_files = read_anthill_dir_parsed(dir.path());
     assert_eq!(parsed_files.len(), 1);
 
     let mut kb2 = KnowledgeBase::new();
@@ -575,7 +518,7 @@ fn retract_preserves_inter_fact_text() {
 
     // Load facts into a KB so the store can canonicalize them.
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
-    let parsed = store.pull().expect("pull");
+    let parsed = read_anthill_dir_parsed(dir.path());
     let mut kb = KnowledgeBase::new();
     for pf in &parsed {
         load::load(&mut kb, pf, &NullResolver).unwrap();

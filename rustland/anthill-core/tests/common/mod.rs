@@ -20,6 +20,34 @@ pub fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
     anthill_core::fs_util::collect_files(dir, &["anthill"]).expect("collect .anthill files")
 }
 
+/// Read and parse every `.anthill` file under `dir`, in path order.
+///
+/// WI-932: the persistence backends used to expose this as `BulkStore::pull`,
+/// and its only callers were tests — no production path ever pulled. Reading a
+/// tree is the CALLER's job (`anthill-todo`'s cold start scans, parses and
+/// loads, then seeds `IndexedFileStore::record_source`), so the scaffolding is
+/// a test helper.
+///
+/// A parse fault is rendered `path:line:col` via [`ParseError::all_located`],
+/// which is what `pull` did (WI-852). A raw `{:?}` of the error vector prints
+/// byte offsets that name nothing — the shape WI-852 removed.
+#[allow(dead_code)]
+pub fn read_anthill_dir_parsed(dir: &std::path::Path) -> Vec<parse::ir::ParsedFile> {
+    collect_anthill_files(dir)
+        .iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            parse::parse(&source).unwrap_or_else(|errors| {
+                let located: Vec<String> =
+                    anthill_core::parse::error::ParseError::all_located(&errors, path, &source)
+                        .collect();
+                panic!("parse {}:\n{}", path.display(), located.join("\n"))
+            })
+        })
+        .collect()
+}
+
 /// Workspace root (the `oss/anthill/` directory containing rustland/, stdlib/,
 /// anthill-todo/, etc.). Computed from the anthill-core crate's manifest
 /// directory.

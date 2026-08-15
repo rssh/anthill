@@ -321,7 +321,7 @@ Rationale:
 
 ## Decomposition
 
-The `WorkItemStore` spec and `FileBasedWorkitemStore` impl are project-side: they live in `anthill-todo/`'s anthill source alongside `domain.anthill` and `rules.anthill`. The bundle's binary embeds them via the existing `BulkStore::pull` path. No bundle-side declaration; the project owns its store layout.
+The `WorkItemStore` spec and `FileBasedWorkitemStore` impl are project-side: they live in `anthill-todo/`'s anthill source alongside `domain.anthill` and `rules.anthill`. The bundle's binary embeds them via the existing host-side project scan (it reads, parses and loads the tree itself; there is no store-side bulk read). No bundle-side declaration; the project owns its store layout.
 
 Files affected:
 - `stdlib/anthill/persistence/filesystem.anthill` — declare `entity IndexedFileStore(root: String, convention: FileConvention)` plus `fact QueryableStore[IndexedFileStore]`. Today only `FileStore` is declared even though the bundle's host already wires an `IndexedFileStore` Rust impl. Adding the entity makes the Value-side type honest; the QueryableStore fact unlocks `retrieve` for downstream consumers.
