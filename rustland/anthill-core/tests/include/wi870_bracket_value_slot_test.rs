@@ -15,8 +15,11 @@
 //! `selected: &[]`.
 //!
 //! The fixture is `Duo`, a two-component product, ordered by a conditional witness
-//! `LexFst` whose element orderings are NAMED slots (`requires OA: Ord[A]`,
-//! `requires OB: Ord[B]`) — the shape §3.8 calls the lawful form of an
+//! `LexFst` whose element orderings are NAMED slots (`requires OA: WeakOrd[A]`,
+//! `requires OB: WeakOrd[B]`) — WI-1109: the WEAK floor, because a lexicographic
+//! order reads only `compare` on its components and claims nothing about their
+//! kernels, so `Ord` slots would demand more than the body uses and the `Duo`
+//! order it provides would over-claim in turn — the shape §3.8 calls the lawful form of an
 //! alternative. Two PROGRAM-declared `Ord[Int64]` rivals sit beside `Int64`'s own,
 //! so each element sub-goal genuinely ties three ways and only a per-slot pin can
 //! answer it. The two rivals are opposites, which is what makes each arm's expected
@@ -65,7 +68,7 @@ fn load_errs(src: &str) -> Vec<String> {
 /// `Ord[Int64]` suppliers — `Int64`'s own host provision plus two opposite
 /// program witnesses.
 const PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, String, Bool, Ord, PartialOrd, PartialEq, Eq, Pair, List, SortedSet}
+  import anthill.prelude.{Int64, String, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq, Pair, List, SortedSet}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Numeric.{sub}
 
@@ -99,20 +102,20 @@ const PRELUDE: &str = r#"
   end
 
   sort LexFst
-    import anthill.prelude.{Int64, Ord, PartialOrd, PartialEq}
+    import anthill.prelude.{Int64, Ord, WeakOrd, PartialOrd, PartialEq}
     sort A = ?
     sort B = ?
-    requires OA: Ord[T = A]
-    requires OB: Ord[T = B]
+    requires OA: WeakOrd[T = A]
+    requires OB: WeakOrd[T = B]
     provides PartialOrd[T = Duo[A = A, B = B]]
-    provides Ord[T = Duo[A = A, B = B]]
+    provides WeakOrd[T = Duo[A = A, B = B]]
     operation compare(a: Duo[A = A, B = B], b: Duo[A = A, B = B]) -> Int64 =
       match a
         case duo(al, ar) ->
           match b
             case duo(bl, br) ->
-              let c = Ord.compare(al, bl)
-              if PartialEq.eq(c, 0) then Ord.compare(ar, br) else c
+              let c = WeakOrd.compare(al, bl)
+              if PartialEq.eq(c, 0) then WeakOrd.compare(ar, br) else c
   end
 "#;
 
@@ -126,14 +129,14 @@ fn program(ns: &str, ops: &str) -> String {
 fn by_fst(name: &str, bracket: &str) -> String {
     format!(
         "    operation {name}(n: Int64) -> Int64 =\n      \
-         Ord.compare[Ord = LexFst{bracket}](duo(l: 1, r: 9), duo(l: 2, r: 1))\n"
+         WeakOrd.compare[WeakOrd = LexFst{bracket}](duo(l: 1, r: 9), duo(l: 2, r: 1))\n"
     )
 }
 
 fn by_snd(name: &str, bracket: &str) -> String {
     format!(
         "    operation {name}(n: Int64) -> Int64 =\n      \
-         Ord.compare[Ord = LexFst{bracket}](duo(l: 5, r: 9), duo(l: 5, r: 1))\n"
+         WeakOrd.compare[WeakOrd = LexFst{bracket}](duo(l: 5, r: 9), duo(l: 5, r: 1))\n"
     )
 }
 
@@ -294,7 +297,7 @@ fn a_binding_that_provides_nothing_at_the_sub_goal_is_refused() {
     assert!(
         at_bindings.iter().any(|e| e.contains(
             "the call bound slot `OA` of `wi870.nonsense.LexFst` to \
-             `wi870.nonsense.LexFst`, which provides no anthill.prelude.Ord \
+             `wi870.nonsense.LexFst`, which provides no anthill.prelude.WeakOrd \
              instance at these bindings"
         )),
         "…and one that provides it at OTHER bindings is refused by the resolution, in \
@@ -324,7 +327,7 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
     let key = load_errs(&program(
         "wi870.check3key",
         "    operation go(n: Int64) -> Int64 =\n      \
-         Ord.compare[Ord = Pair](pair(fst: \"a\", snd: \"z\"), \
+         WeakOrd.compare[WeakOrd = Pair](pair(fst: \"a\", snd: \"z\"), \
          pair(fst: \"b\", snd: \"a\"))\n",
     ));
     assert!(
@@ -337,7 +340,7 @@ fn a_concrete_provider_is_refused_in_the_key_and_accepted_in_a_slot() {
     let src = program(
         "wi870.check3slot",
         "    operation go(n: Int64) -> Int64 =\n      \
-         Ord.compare[Ord = LexFst[OA = Pair, OB = Ascending]](\n        \
+         WeakOrd.compare[WeakOrd = LexFst[OA = Pair, OB = Ascending]](\n        \
          duo(l: pair(fst: \"a\", snd: \"z\"), r: 3), duo(l: pair(fst: \"b\", snd: \"a\"), r: 3))\n",
     );
     assert_eq!(
@@ -362,7 +365,7 @@ fn a_slot_binding_composes_to_any_depth() {
     let nested = |op: &str, inner: &str| {
         format!(
             "    operation {op}(n: Int64) -> Int64 =\n      \
-             Ord.compare[Ord = LexFst[OA = LexFst[OA = Ascending, OB = {inner}], \
+             WeakOrd.compare[WeakOrd = LexFst[OA = LexFst[OA = Ascending, OB = {inner}], \
              OB = Ascending]](\n        \
              duo(l: duo(l: 5, r: 9), r: 3), duo(l: duo(l: 5, r: 1), r: 3))\n"
         )

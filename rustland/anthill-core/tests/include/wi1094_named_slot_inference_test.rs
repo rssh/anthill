@@ -66,16 +66,21 @@ use anthill_core::eval::Value;
 /// `3`, descending `7`.
 const DESCENDING: &str = r#"
   sort Descending
-    import anthill.prelude.{Int64, Ord}
+    import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = Int64]
+    -- WI-1109: the WEAK floor. A chosen rival comparator is exactly what `WeakOrd` is
+    -- for, and it is the floor `SortedSet`'s `O` slot names. Declaring `Ord[Int64]`
+    -- here would ALSO put a second provider on the floor `Int64` itself occupies, so a
+    -- bracket-less `Ord[Int64]` — which `Boxed requires Ord[BT]` below resolves — would
+    -- be ambiguous between the carrier's own order and this rival.
+    fact WeakOrd[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 "#;
 
 const DOUBLED: &str = r#"
   sort Doubled
-    import anthill.prelude.{Int64, Ord}
+    import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
     fact Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)
@@ -93,7 +98,7 @@ const HEAD: &str = r#"
 fn program(ns: &str, witnesses: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ord, String, Int64, List, SortedSet}}\n\
+         import anthill.prelude.{{Ord, WeakOrd, String, Int64, List, SortedSet}}\n\
          {witnesses}{body}\nend\n"
     )
 }
@@ -263,7 +268,7 @@ fn an_erased_named_slot_is_refused_not_reconstructed() {
     assert!(
         errs.iter().any(|e| {
             e.contains("universally quantified")
-                && e.contains("`O: anthill.prelude.Ord`")
+                && e.contains("`O: anthill.prelude.WeakOrd`")
                 && e.contains("anthill.prelude.SortedSet.insert")
         }),
         "a signature that omits `O` and then dispatches through it must be refused at \
@@ -333,7 +338,7 @@ fn a_quantified_slot_the_caller_supplies_still_forwards() {
         &format!("{DESCENDING}{DOUBLED}"),
         "  sort Report\n    \
          sort T = ?\n    \
-         requires O: Ord[T]\n    \
+         requires O: WeakOrd[T]\n    \
          operation first(s: SortedSet[T = T, O = O], dflt: T) -> T =\n      \
          match SortedSet.toList(s)\n        \
          case nil() -> dflt\n        \
@@ -375,7 +380,7 @@ fn inference_does_not_override_a_dictionary_the_caller_supplies() {
         &format!("{DESCENDING}{DOUBLED}"),
         "  sort Wrap\n    \
          sort E = ?\n    \
-         requires OE: Ord[E]\n    \
+         requires OE: WeakOrd[E]\n    \
          operation build(x: E, y: E) -> List[T = E] =\n      \
          SortedSet.toList(SortedSet.insert(SortedSet.insert(SortedSet.empty[T = E](), x), y))\n  \
          end\n  \
@@ -423,10 +428,10 @@ fn a_tie_the_ladder_cannot_break_is_still_reported() {
     entity widget(v: Int64)
   end
   sort WidgetUp
-    import anthill.prelude.{Int64, Ord}
+    import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
     import anthill.prelude.Widget.{widget}
-    fact Ord[T = Widget]
+    fact WeakOrd[T = Widget]
     operation compare(a: Widget, b: Widget) -> Int64 =
       match a
         case widget(x) ->
@@ -434,10 +439,10 @@ fn a_tie_the_ladder_cannot_break_is_still_reported() {
             case widget(y) -> sub(x, y)
   end
   sort WidgetDown
-    import anthill.prelude.{Int64, Ord}
+    import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
     import anthill.prelude.Widget.{widget}
-    fact Ord[T = Widget]
+    fact WeakOrd[T = Widget]
     operation compare(a: Widget, b: Widget) -> Int64 =
       match a
         case widget(x) ->
@@ -492,14 +497,14 @@ fn an_anonymous_caller_requirement_is_not_the_values_own_dictionary() {
         DESCENDING,
         "  sort Loose\n    \
          sort LT = ?\n    \
-         requires Ord[LT]\n    \
+         requires WeakOrd[LT]\n    \
          operation addAndCount(s: SortedSet[T = LT], x: LT) -> Int64 =\n      \
          SortedSet.toList(SortedSet.insert(s, x)).length()\n  end",
     ));
     assert!(
         errs.iter().any(|e| {
             e.contains("universally quantified")
-                && e.contains("`O: anthill.prelude.Ord`")
+                && e.contains("`O: anthill.prelude.WeakOrd`")
                 && e.contains("anthill.prelude.SortedSet.insert")
         }),
         "an ANONYMOUS caller requirement records nothing about the argument's type, so \
@@ -513,7 +518,7 @@ fn an_anonymous_caller_requirement_is_not_the_values_own_dictionary() {
         DESCENDING,
         "  sort Tight\n    \
          sort LT = ?\n    \
-         requires LO: Ord[LT]\n    \
+         requires LO: WeakOrd[LT]\n    \
          operation addAndHead(s: SortedSet[T = LT, O = LO], x: LT, dflt: LT) -> LT =\n      \
          match SortedSet.toList(SortedSet.insert(s, x))\n        \
          case nil() -> dflt\n        \
@@ -745,8 +750,8 @@ fn a_value_precondition_before_an_op_scoped_binder_keeps_its_own_diagnostic() {
         "  sort Holder\n    \
          import anthill.prelude.PartialEq.{neq}\n    \
          operation pick(a: Int64, b: Int64) -> Int64\n      \
-         requires neq(a, 0), lo: Ord[T = Int64]\n    \
-         = Ord.compare(a, b)\n  end\n  \
+         requires neq(a, 0), lo: WeakOrd[T = Int64]\n    \
+         = WeakOrd.compare(a, b)\n  end\n  \
          sort Driver\n    \
          operation run(n: Int64) -> Int64 = Holder.pick(7, 3)\n  end",
     ));

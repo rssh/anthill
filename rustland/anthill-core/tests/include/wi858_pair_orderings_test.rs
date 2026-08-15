@@ -22,7 +22,7 @@
 //!
 //! **WI-861 CLOSED HALF OF THAT AND WI-1094 THE OTHER, and the file records which was
 //! which, because the two halves needed DIFFERENT mechanisms.** 058 §3.2's rung 2a makes
-//! a carrier's own provision the default, so a bracket-less `Ord.compare` on two pairs
+//! a carrier's own provision the default, so a bracket-less `WeakOrd.compare` on two pairs
 //! takes the canonical order and needs no unwritable bracket
 //! (`a_bracketless_compare_takes_the_prelude_ordering`). That is a DISPATCH, and a
 //! dictionary is the whole answer. A bracket-less `SortedSet` of pairs is not:
@@ -46,7 +46,7 @@ use anthill_core::eval::Value;
 fn program(ns: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ord, PartialOrd, PartialEq, String, Int64, Float, \
+         import anthill.prelude.{{Ord, WeakOrd, PartialOrd, PartialEq, String, Int64, Float, \
          List, Pair, SortedSet}}\n  \
          import anthill.prelude.Pair.{{pair}}\n{body}\nend\n"
     )
@@ -58,7 +58,7 @@ fn program(ns: &str, body: &str) -> String {
 /// so a lone `Ord` witness would contradict what it inherits.
 const BY_SND: &str = r#"
   sort BySnd
-    import anthill.prelude.{Int64, Pair, Ord, PartialOrd, PartialEq}
+    import anthill.prelude.{Int64, Pair, Ord, WeakOrd, PartialOrd, PartialEq}
     import anthill.prelude.Pair.{pair}
     sort A = ?
     sort B = ?
@@ -71,8 +71,8 @@ const BY_SND: &str = r#"
         case pair(al, ar) ->
           match b
             case pair(bl, br) ->
-              let c = Ord.compare(ar, br)
-              if PartialEq.eq(c, 0) then Ord.compare(al, bl) else c
+              let c = WeakOrd.compare(ar, br)
+              if PartialEq.eq(c, 0) then WeakOrd.compare(al, bl) else c
 "#;
 
 /// The SECOND local ordering — lexicographic `fst`-then-`snd`, the one a canonical
@@ -80,7 +80,7 @@ const BY_SND: &str = r#"
 /// reason (see this file's header).
 const BY_FST: &str = r#"
   sort ByFst
-    import anthill.prelude.{Int64, Pair, Ord, PartialOrd, PartialEq}
+    import anthill.prelude.{Int64, Pair, Ord, WeakOrd, PartialOrd, PartialEq}
     import anthill.prelude.Pair.{pair}
     sort A = ?
     sort B = ?
@@ -93,8 +93,8 @@ const BY_FST: &str = r#"
         case pair(al, ar) ->
           match b
             case pair(bl, br) ->
-              let c = Ord.compare(al, bl)
-              if PartialEq.eq(c, 0) then Ord.compare(ar, br) else c
+              let c = WeakOrd.compare(al, bl)
+              if PartialEq.eq(c, 0) then WeakOrd.compare(ar, br) else c
 "#;
 
 /// Render a `List[Pair[Int64, Int64]]` as `(1,9)(2,1)`.
@@ -291,7 +291,7 @@ fn swapping_the_brackets_swaps_the_answers() {
 }
 
 /// …AND THE PRICE OF COEXISTENCE, which is 058's whole subject: with both declared, a
-/// bracket-LESS `Ord.compare` on a `Pair` is a loud tier-3 error naming both. This
+/// bracket-LESS `WeakOrd.compare` on a `Pair` is a loud tier-3 error naming both. This
 /// is the configuration every phase before 3b refused at the DECLARATION; it is now
 /// refused at the one call that has to choose, with the repair spelled out.
 ///
@@ -305,7 +305,7 @@ fn swapping_the_brackets_swaps_the_answers() {
 /// exists, so the finding it used to record is kept in full rather than replaced.
 ///
 /// WHAT IT MEASURED BEFORE: with two program-declared orderings beside the prelude's own,
-/// a bracket-less `Ord.compare` on a `Pair` was a THREE-way tier-3 refusal — and the
+/// a bracket-less `WeakOrd.compare` on a `Pair` was a THREE-way tier-3 refusal — and the
 /// canonical order was then UNREACHABLE, because the repair the diagnostic advertises
 /// (`[Ord = Pair]`) is itself refused by §3.5 check 3: `Pair` is a CONCRETE provider, so
 /// an explicit witness is rejected on the grounds that the value directs the dispatch. A
@@ -338,7 +338,7 @@ fn a_bracketless_compare_takes_the_prelude_ordering() {
             &format!(
                 "{BY_SND}  end\n{BY_FST}  end\n  sort Use\n    \
                  operation cmp(a: Pair[Int64, Int64], b: Pair[Int64, Int64]) -> Int64 =\n      \
-                 Ord.compare{bracket}(a, b)\n  end\n  sort Driver\n    \
+                 WeakOrd.compare{bracket}(a, b)\n  end\n  sort Driver\n    \
                  operation drive(n: Int64) -> Int64 =\n      \
                  Use.cmp(pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
             ),
@@ -360,7 +360,7 @@ fn a_bracketless_compare_takes_the_prelude_ordering() {
     // call with a bracket answers the OTHER order. Without it this test would pass just
     // as well on a tree where `BySnd` had stopped being reachable.
     assert!(
-        cmp("wi858.bare.pinned", "[Ord = BySnd]") > 0,
+        cmp("wi858.bare.pinned", "[WeakOrd = BySnd]") > 0,
         "tier 1 outranks the default: `BySnd` compares 9 against 1"
     );
 }
@@ -488,10 +488,10 @@ fn a_heterogeneous_pair_orders_through_two_element_orderings() {
         &format!(
             "{BY_FST}  end\n  sort Driver\n    \
              operation sndDecides(n: Int64) -> Int64 =\n      \
-             Ord.compare[Ord = ByFst](pair(fst: 1, snd: \"zz\"), \
+             WeakOrd.compare[WeakOrd = ByFst](pair(fst: 1, snd: \"zz\"), \
              pair(fst: 1, snd: \"aaa\"))\n    \
              operation fstDecides(n: Int64) -> Int64 =\n      \
-             Ord.compare[Ord = ByFst](pair(fst: 1, snd: \"zz\"), \
+             WeakOrd.compare[WeakOrd = ByFst](pair(fst: 1, snd: \"zz\"), \
              pair(fst: 2, snd: \"aaa\"))\n  end"
         ),
     );
@@ -555,7 +555,7 @@ fn pair_equality_is_componentwise() {
 /// That half is DONE: `pair.anthill` now writes `provides Eq[Pair] :- Eq[A], Eq[B]`
 /// and the goal `Eq[Pair[Float, Int64]]` genuinely does not resolve — measured by its
 /// sibling floor in `wi869_per_provision_conditions_test`, where the same shape
-/// refuses `Ord.compare` on a float pair naming `Ord[Float]`.
+/// refuses `WeakOrd.compare` on a float pair naming `Ord[Float]`.
 ///
 /// `Set[T = Pair[Float, Int64]]` STILL LOADS, for a different and now-measured
 /// reason: there is NO POSITIVE use-site check for `requires Eq`. The only refusal at
@@ -824,7 +824,7 @@ fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
         &format!(
             "{BY_SND}  end\n  sort Driver\n    \
              operation go(n: Int64) -> Int64 =\n      \
-             Ord.compare[Ord = BySnd[NoSuchSlot = Int64]](\n        \
+             WeakOrd.compare[WeakOrd = BySnd[NoSuchSlot = Int64]](\n        \
              pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
         ),
     );
@@ -842,7 +842,7 @@ fn a_named_slot_bound_in_a_bracket_value_steers_its_sub_goal() {
         &format!(
             "{BY_SND}  end\n{BY_FST}  end\n  sort Driver\n    \
              operation go(n: Int64) -> Int64 =\n      \
-             Ord.compare[Ord = BySnd[OA = ByFst]](\n        \
+             WeakOrd.compare[WeakOrd = BySnd[OA = ByFst]](\n        \
              pair(fst: 1, snd: 9), pair(fst: 2, snd: 1))\n  end"
         ),
     );
@@ -867,8 +867,8 @@ fn primitive_orderings_are_unchanged() {
     let src = program(
         "wi858.primitives",
         "  sort Driver\n    \
-         operation strings(n: Int64) -> Int64 = Ord.compare(\"b\", \"a\")\n    \
-         operation ints(n: Int64) -> Int64 = Ord.compare(7, 3)\n  end",
+         operation strings(n: Int64) -> Int64 = WeakOrd.compare(\"b\", \"a\")\n    \
+         operation ints(n: Int64) -> Int64 = WeakOrd.compare(7, 3)\n  end",
     );
     assert_eq!(
         eval_int(&src, "wi858.primitives.Driver.strings", "String compare"),

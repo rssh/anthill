@@ -30,8 +30,44 @@ end
 
 -- Eq: lawful (reflexive) equality. The `eq`/`neq` operations are inherited from
 -- PartialEq via the requires-chain (WI-614); Eq adds only the law.
+--
+-- NOT DERIVED FROM `Ord`, though `Ord requires Eq` and `compare_eq` relates them
+-- (WI-456): the derivation would make a SECOND `eq` supplier for the carrier, and
+-- equality is dispatched by the UNIFIER, which has no bracket to select at — so
+-- `AmbiguousEqDispatch` refuses it. The predicate, and the `PartialOrd` case that does
+-- pass it, are stated at `ordered.anthill`'s `requires Eq[T]`; 058 §3.7/§3.8.
 sort anthill.prelude.Eq
   sort T = ?
+
+  -- `requires`, NOT `provides`, and the reason is NAMING — measured, after a first
+  -- explanation that was wrong.
+  --
+  -- The ordering tower forwards (`Ord provides WeakOrd[T = T]`), so the symmetric move
+  -- was to forward here and let every `Eq` carrier stop writing its `PartialEq` row.
+  -- Two variants, both driven:
+  --
+  --   requires + provides  -> 1867 of 2849 tests fail, `construction is cyclic:
+  --                           PartialEq[X] -> PartialEq[X]`. A forwarding row makes the
+  --                           FORWARDER a candidate provider of the floor, so `Eq` joins
+  --                           the providers of `PartialEq`, and `Eq requires PartialEq`
+  --                           closes the loop.
+  --   provides alone       -> 32 fail, every one `unresolved import
+  --                           'anthill.prelude.Eq.eq'`.
+  --
+  -- THE SECOND NUMBER IS THE ACTUAL REASON. `requires` is what makes `Eq.eq` A NAME:
+  -- proposal 004 kept `Eq.eq` resolving to the inherited `PartialEq.eq` through the
+  -- requires-chain (WI-614) precisely so call sites stay source-compatible, and
+  -- `provides` is a statement about CARRIERS that puts nothing in this spec's scope.
+  -- Drop the `requires` and `import anthill.prelude.Eq.{eq}` stops resolving across the
+  -- corpus. The two clauses are mutually exclusive here, and the one that keeps a
+  -- written name working wins.
+  --
+  -- NOT because the cycle is peculiar to this tower — it is NOT. `Ord` carries both
+  -- clauses and cycles the same way; it is merely MASKED, because `WeakOrd requires
+  -- PartialOrd` fails first for most carriers. Driven: a carrier providing `Eq` and
+  -- `PartialOrd` but no `compare` gets `construction is cyclic: WeakOrd[T = Half] ->
+  -- WeakOrd[T = Half]`. That is a live wart on the ordering side, tracked separately —
+  -- do not read this clause as saying equality is the special case.
   requires PartialEq[T]
 
   -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. Dormant /

@@ -23276,6 +23276,369 @@ fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) -> bool {
 /// deduped, the spec sort itself excluded). Used to resolve a nullary
 /// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
 /// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
+/// WI-1109 — a kb-free comparable key for ONE provision/requires binding, so the sites
+/// that must ask "the same bindings?" cannot drift into asking it three ways. The key is
+/// the parameter's LOCAL name (spec parameters are named per spec, and the identity
+/// forwarding relates them by name) paired with the value's canonical sort symbol when
+/// the value heads a sort, else its hash-consed `TermId`. Deliberately not the raw
+/// `TermId` alone: two structurally-equal bindings written in two places need not share
+/// one id, and a hand-written row must be recognised as covering a derived one.
+fn binding_key(kb: &KnowledgeBase, name: Symbol, value: TermId) -> (String, String) {
+    let v = match kb.get_term(value) {
+        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+            kb.qualified_name_of(kb.canonical_sort_sym(*functor)).to_string()
+        }
+        _ => format!("#{value:?}"),
+    };
+    (kb.local_name_of(name).to_string(), v)
+}
+
+/// True iff `covering` binds everything `asked` binds, to the same values.
+///
+/// COVERAGE AND NOT EQUALITY, which a first draft got wrong and the suite caught: a
+/// `requires` entry's spec view carries the spec's OPERATION bindings beside its type
+/// parameters — MEASURED, `Ord requires PartialOrd[T]` decodes as
+/// `[T, gt, gte, lt, lte]` — while a goal carries only what it asks about (`[T]`). An
+/// equal-length test therefore refused every real entry while claiming to be precise.
+/// Coverage keeps the property that matters: a binding the asker names must be present
+/// AND agree, so an entry bound to a DIFFERENT parameter cannot answer.
+fn bindings_cover(
+    kb: &KnowledgeBase,
+    covering: &[(Symbol, TermId)],
+    asked: &[(Symbol, TermId)],
+) -> bool {
+    asked.iter().all(|(an, av)| {
+        let ak = binding_key(kb, *an, *av);
+        covering
+            .iter()
+            .any(|(cn, cv)| binding_key(kb, *cn, *cv) == ak)
+    })
+}
+
+/// WI-1109 — the local name of a value that IS an abstract type parameter, or `None`
+/// when it is anything else. The name half of [`is_type_param_value`], which answers
+/// only the shape; both forms this reads (`Ref`/`Ident`, and the WI-359 nullary `Fn`)
+/// are the ones that predicate accepts.
+fn type_param_local_name(kb: &KnowledgeBase, value: TermId) -> Option<&str> {
+    // The `is_sort_param_symbol` guard is NOT optional and its omission was a real hole
+    // (review of WI-1109): reading the local name alone accepts a binding to a CONCRETE
+    // sort whenever that sort's name happens to equal the spec parameter's, so
+    // `provides Sp[T = T]` with a real nullary sort `T` in scope would read as an
+    // identity forwarding and derive rows at the wrong bindings. Same arms, same
+    // predicate as [`is_type_param_value`] — this only adds the NAME to the answer.
+    let sym = match kb.get_term(value) {
+        Term::Ref(sym) | Term::Ident(sym) => *sym,
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
+        _ => return None,
+    };
+    is_sort_param_symbol(kb, sym).then(|| kb.local_name_of(sym))
+}
+
+/// WI-1109 — is this provision an IDENTITY FORWARDING? A row `F provides S[p = p, …]`
+/// whose every binding sends one of `S`'s parameters to a SAME-NAMED abstract type
+/// parameter of `F`. `Ord provides WeakOrd[T = T]` is the shipped one.
+///
+/// THE IDENTITY IS THE SOUNDNESS ARGUMENT, not a convenience. Because the mapping is
+/// name-for-name, a goal at `S` holds at exactly the bindings the same goal at `F` does,
+/// so [`derive_forwarded_provisions`] may COPY a carrier's bindings rather than translate
+/// them. A non-identity forwarding — a renaming, or a binding to a real carrier — is
+/// deliberately not one: its bindings would have to be MAPPED, and copying them would
+/// assert a row answering a different goal.
+fn is_identity_forwarding(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    base: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> bool {
+    !bindings.is_empty()
+        && !same_sort_canonical(kb, carrier, base)
+        && bindings.iter().all(|(name, value)| {
+            type_param_local_name(kb, *value).is_some_and(|ln| ln == kb.local_name_of(*name))
+        })
+}
+
+/// One decoded `SortProvidesInfo` row, for WI-1109's derivation pass. Named apart from
+/// the module's existing `ProvisionRow` (which carries a provider and a spec VIEW) —
+/// this one is the raw (carrier, spec base, bindings) triple the pass indexes on.
+struct DecodedProvision {
+    carrier: Symbol,
+    base: Symbol,
+    bindings: SmallVec<[(Symbol, TermId); 2]>,
+}
+
+/// WI-1109 — every provision row, decoded ONCE.
+///
+/// The pass runs with `kb.provides_index` dropped (it asserts into the relation it
+/// reads), so each per-row helper it used to call degraded to a full scan of every
+/// provision fact — and it called three of them per row per round: O(rounds × rows ×
+/// relation). Decoding once and indexing makes it O(rounds × relation).
+///
+/// MEASURED, not reasoned (`ANTHILL_LOAD_TIMING=1` over the stdlib): the per-row shape
+/// cost **266.8 ms** and this one costs **4.4 ms** — 61×, against a whole-load budget of
+/// roughly 135 ms, so the un-hoisted pass very nearly tripled the time to load the
+/// standard library. The control was the same loop with the indexes rebuilt inside it;
+/// if anything it UNDERSTATES the original, which also re-scanned for the
+/// already-provided check.
+fn decoded_provision_rows(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<DecodedProvision> {
+    let mut out = Vec::new();
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let (Some(sr_tid), Some(spec_tid)) = (
+            get_named_arg(kb, &named, "sort_ref"),
+            get_named_arg(kb, &named, "spec"),
+        ) else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr_tid) else {
+            continue;
+        };
+        let Some((base, bindings)) = unwrap_spec_view(kb, spec_tid) else {
+            continue;
+        };
+        out.push(DecodedProvision {
+            carrier: kb.canonical_sort_sym(carrier),
+            base: kb.canonical_sort_sym(base),
+            bindings,
+        });
+    }
+    out
+}
+
+/// The (carrier, provided-spec) pairs whose provision carries a `:- goals` tail, from ONE
+/// sweep of the condition facts. A conditional provision neither forwards nor is forwarded
+/// through — see [`derive_forwarded_provisions`] — and asking per carrier re-swept the
+/// whole `ProvidesConditionInfo` relation each time.
+fn conditioned_provision_pairs(
+    kb: &KnowledgeBase,
+    carriers: &[Symbol],
+) -> std::collections::HashSet<(Symbol, Symbol)> {
+    let mut out = std::collections::HashSet::new();
+    for carrier in carriers {
+        for pc in provision_conditions(kb, *carrier) {
+            if !pc.conditions.is_empty() {
+                out.insert((*carrier, kb.canonical_sort_sym(pc.provided)));
+            }
+        }
+    }
+    out
+}
+
+/// WI-1109 (058 §3.8) — MATERIALIZE THE FORWARDED PROVISION ROWS.
+///
+/// A spec may forward to a lower floor of its own tower (`Ord provides WeakOrd[T = T]`).
+/// 058 §3.8 states the consequence as one clause over the relation —
+/// `provides(?W, PartialOrd[T = ?X]) :- provides(?W, Ord[T = ?X])` — and names "the
+/// provision ROW a `requires PartialOrd[X]` goal finds" as the only missing piece. This
+/// pass supplies exactly that row: for every carrier providing a forwarder, the
+/// forwarded floor is asserted at the SAME bindings.
+///
+/// DERIVING THE ROW RATHER THAN TEACHING EACH READER IS THE POINT, and it was learned
+/// the expensive way. The provides relation has many readers — the provider-requirements
+/// load check, witness selection, the resolver's pin filter, dispatch, codegen — and a
+/// forwarding invisible to any ONE of them is a silent wrong answer there. Measured
+/// while building this: patching two readers surfaced a third. A materialized row is
+/// read by all of them unchanged, which is why `eq_derive` asserts rows for composite
+/// `Eq`/`NonEq` instead of teaching `sort_provides` about composites.
+///
+/// FILL SILENCE, NEVER OVERWRITE SPEECH ([`provides_spec_directly`]): a carrier already
+/// providing the lower floor keeps its own row and gets no derived twin. That is what
+/// keeps `Float` — which writes `provides PartialOrd` and no `compare` — untouched, and
+/// what stops a derived row becoming a rival at a coherent spec.
+///
+/// A CONDITIONAL PROVISION DERIVES NOTHING, and the `!kb.is_fact` guard below is what
+/// enforces it — deliberately, not incidentally. `Pair provides Ord[Pair] :- Ord[A],
+/// Ord[B]` is a RULE, and this pass asserts FACTS: copying only the head would drop the
+/// `:- goals` tail and claim the lower floor UNCONDITIONALLY, at element bindings where
+/// the source provision does not hold. That is precisely the over-claim WI-1033's
+/// `ProvisionConditionsTooWeak` exists to refuse, manufactured by the deriver instead of
+/// written by an author. So the pass UNDER-derives here: a conditional provider writes
+/// both floors by hand, each with its own tail (`pair.anthill` does, and its two tails
+/// differ — weak iff both components weak, strong iff both strong, which is why one
+/// copied tail could not serve both anyway). Deriving a conditional row means asserting
+/// a rule with the source's body, and is the next increment, not this one.
+pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return;
+    };
+    // Bounded fixpoint, so a tower deeper than one hop still derives; the bound is a
+    // runaway guard, not a depth claim — the shipped tower needs one round and settles
+    // on the second, which is what ends the loop.
+    const ROUNDS: usize = 8;
+    for _round in 0..ROUNDS {
+        let pending = forwarded_rows_to_derive(kb, provides_sym);
+        if pending.is_empty() {
+            return;
+        }
+        for (carrier, target, source_spec, bindings) in pending {
+            let rid = assert_forwarded_provides(kb, carrier, target, &bindings);
+            // Provenance, so a later refusal against this row can say where it came
+            // from instead of naming a `provides` clause the author never wrote.
+            kb.mark_derived_provision(rid, source_spec);
+        }
+    }
+    // FALLING OUT OF THE LOOP MEANS THE LAST ROUND STILL HAD WORK, so rows a further
+    // round would derive are missing — and a missing row is invisible to every reader
+    // (they simply do not find the provision), which is the silent wrong answer this
+    // pass exists to prevent. Say so rather than dropping it. `debug_assert` and not a
+    // returned error because this function has no error channel and the condition is
+    // measured unreachable: the shipped tower settles on round two, and ROUNDS is far
+    // above any forwarding depth a library could plausibly declare.
+    debug_assert!(
+        false,
+        "WI-1109: forwarded-provision derivation did not settle in {ROUNDS} rounds — \
+         rows from a further round are missing, and every reader will answer as though \
+         those provisions do not exist"
+    );
+}
+
+/// One round: every (carrier, forwarded floor) row not already present, with the source
+/// spec that produced it. Reads only — the caller asserts.
+fn forwarded_rows_to_derive(
+    kb: &KnowledgeBase,
+    provides_sym: Symbol,
+) -> Vec<(Symbol, Symbol, Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    let rows = decoded_provision_rows(kb, provides_sym);
+
+    // `Symbol` is not `Ord`, so dedup through a set rather than a sort.
+    let carriers: Vec<Symbol> = {
+        let mut seen = std::collections::HashSet::new();
+        rows.iter()
+            .map(|r| r.carrier)
+            .filter(|c| seen.insert(*c))
+            .collect()
+    };
+    let conditioned = conditioned_provision_pairs(kb, &carriers);
+
+    // forwarder -> the floors it forwards to by identity. A CONDITIONAL forwarding
+    // forwards nothing, for the reason `derive_forwarded_provisions` gives about the
+    // carrier edge: the `:- goals` tail rides in separate facts, so reading the row as
+    // unconditional would give every carrier an unconditional lower floor.
+    let mut forwards: std::collections::HashMap<Symbol, SmallVec<[Symbol; 2]>> =
+        std::collections::HashMap::new();
+    for r in &rows {
+        if is_identity_forwarding(kb, r.carrier, r.base, &r.bindings)
+            && !conditioned.contains(&(r.carrier, r.base))
+        {
+            let e = forwards.entry(r.carrier).or_default();
+            if !e.contains(&r.base) {
+                e.push(r.base);
+            }
+        }
+    }
+    if forwards.is_empty() {
+        return Vec::new();
+    }
+
+    // (carrier, spec) -> the bindings it is ALREADY provided at. Fill silence, never
+    // overwrite speech — and binding-precisely, so a row at OTHER bindings cannot
+    // suppress the one actually needed.
+    let mut existing: std::collections::HashMap<(Symbol, Symbol), Vec<&[(Symbol, TermId)]>> =
+        std::collections::HashMap::new();
+    for r in &rows {
+        existing
+            .entry((r.carrier, r.base))
+            .or_default()
+            .push(&r.bindings);
+    }
+
+    let mut pending: Vec<(Symbol, Symbol, Symbol, SmallVec<[(Symbol, TermId); 2]>)> = Vec::new();
+    for r in &rows {
+        // The forwarding row itself is what is being read THROUGH, never a carrier of it.
+        if same_sort_canonical(kb, r.carrier, r.base) {
+            continue;
+        }
+        if conditioned.contains(&(r.carrier, r.base)) {
+            continue;
+        }
+        let Some(targets) = forwards.get(&r.base) else {
+            continue;
+        };
+        for target in targets {
+            let already = existing
+                .get(&(r.carrier, *target))
+                .is_some_and(|rows| rows.iter().any(|b| bindings_cover(kb, b, &r.bindings)));
+            if already
+                || pending
+                    .iter()
+                    .any(|(c, t, _, _)| *c == r.carrier && *t == *target)
+            {
+                continue;
+            }
+            pending.push((r.carrier, *target, r.base, r.bindings.clone()));
+        }
+    }
+    pending
+}
+
+/// Assert `SortProvidesInfo(sort_ref = carrier, spec = SortView(target, <bindings>))`.
+/// The `eq_derive::assert_provides` shape, with the SOURCE row's bindings copied rather
+/// than a single carrier binding synthesized — the identity criterion is what makes the
+/// copy right (see [`identity_forward_targets`]).
+fn assert_forwarded_provides(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    target: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> RuleId {
+    let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
+    let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
+    let sort_ref_key = kb.intern("sort_ref");
+    let spec_key = kb.intern("spec");
+    let spec_name = kb.make_name_term_from_sym(target);
+    // TAKE THE KEYS FROM THE TARGET, NOT FROM THE SOURCE — the `eq_derive::assert_provides`
+    // discipline, which reads `type_params_of_sort(spec)`. Two things go wrong otherwise,
+    // and the first draft of this function did both (review of WI-1109).
+    //
+    // (1) The source row's keys are the FORWARDER's parameter symbols (`Ord`'s `T`), and
+    // a reader comparing binding names by symbol identity would not see them as the
+    // target's — the row would exist and answer no goal.
+    //
+    // (2) A forwarder parameter the forwarding provision does NOT map would be copied
+    // anyway: `Fwd { sort T = ?  sort U = ?  provides Low[T = T] }` given a row
+    // `C provides Fwd[T = Int64, U = Bool]` would emit `Low[T = Int64, U = Bool]` — a
+    // binding for a parameter `Low` does not declare. Selecting BY THE TARGET'S OWN
+    // PARAMETER LIST drops it, which is right: the forwarding said nothing about `U`.
+    // A target parameter the source left unbound is simply absent, which is what "not
+    // bound" already means everywhere else.
+    let target_params: Vec<String> = kb.type_params_of_sort(target);
+    let named_args: SmallVec<[(Symbol, TermId); 2]> = target_params
+        .iter()
+        .filter_map(|param| {
+            bindings
+                .iter()
+                .find(|(name, _)| kb.local_name_of(*name) == param.as_str())
+                .map(|(_, value)| (kb.intern(param), *value))
+        })
+        .collect();
+    let spec_view = kb.alloc(Term::Fn {
+        functor: sort_view_sym,
+        pos_args: SmallVec::from_elem(spec_name, 1),
+        named_args,
+    });
+    let sort_ref_term = kb.make_name_term_from_sym(carrier);
+    kb.register_entity_fields(provides_sym, vec![sort_ref_key, spec_key]);
+    kb.assert_fact_carrier(
+        provides_sym,
+        Vec::new(),
+        vec![
+            (sort_ref_key, crate::eval::value::Value::term(sort_ref_term)),
+            (spec_key, crate::eval::value::Value::term(spec_view)),
+        ],
+        crate::kb::ClauseKind::Requirement,
+        carrier,
+        None,
+    )
+}
+
 pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
@@ -25134,10 +25497,52 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
                         }
                     }
                 });
-            let satisfied = if concrete {
-                spec_resolves_at_bindings(kb, required, goal.bindings.clone())
-                    || self_provides_required
-            } else {
+            // WI-1109 — A SPEC-TO-SPEC FORWARDING IS DISCHARGED BY THE PROVIDER'S OWN
+            // `requires`, NOT BY A PROVISION. `Ord provides WeakOrd[T = T]` says "every
+            // `Ord[T]` is a `WeakOrd[T]`", and `WeakOrd requires Eq[T]`. Asking whether
+            // `Ord` PROVIDES `Eq` is the wrong question: `Ord` is a spec, it provides
+            // nothing and never will. The obligation belongs to whatever CARRIER
+            // eventually provides `Ord` — and `Ord requires Eq[T]` is exactly how that
+            // obligation is written and how it reaches the carrier, where THIS check
+            // enforces it on the carrier's own `provides Ord` row. So the requirement is
+            // not waived, it is relocated to the site that can discharge it. This is the
+            // lifting 058 §3.8 defers ("a provider's chain does not discharge the spec's
+            // own requirements ... a separate, deferred increment").
+            //
+            // NARROW BY CONSTRUCTION, and the narrowness is the soundness argument: it
+            // fires only when EVERY binding of the provision is the provider's own
+            // ABSTRACT type parameter. A provision naming a real carrier at any binding
+            // is not a forwarding and is untouched — `ByLength provides Ord[T = String]`
+            // (a concrete binding), `Pair provides Ord[Pair] :- …` (a parameterised sort
+            // head, not a bare param), and `Set provides Eq[T = Set]` (the WI-644
+            // self-carrier route below) all keep the provision-based discharge they had.
+            // Before WI-1109 no stdlib provision could satisfy the guard at all, since
+            // `Stream provides Iterable` — the one shipped spec-to-spec row — forwards a
+            // spec that declares no `requires`, so this branch was never reached.
+            let is_forwarding = !p.sigma.is_empty()
+                && p.sigma.iter().all(|(_, v)| is_type_param_value(kb, *v));
+            // BINDING-PRECISE, and the first draft was not (review of WI-1109). Matching
+            // the required spec's SORT alone would let ANY `requires` of that spec, at
+            // ANY bindings, discharge the forwarding — the exact hole
+            // `self_provides_required` above is written to avoid, one relation over. It
+            // is reachable with two parameters: `sort S { sort A = ?  sort B = ?
+            // requires Eq[A]  provides Sp[X = A, Y = B] }` where `Sp requires Eq[Y]`
+            // asks for `Eq[B]`, and an `Eq` entry bound to `A` would answer it. So the
+            // entry must agree with THIS goal's bindings, which `RequiresEntry.spec`
+            // carries and the first draft never read.
+            let forwarded_to_requires = is_forwarding
+                && !goal.bindings.is_empty()
+                && direct_requires_chain(kb, p.carrier).iter().any(|e| {
+                    kb.canonical_sort_sym(e.required_sort) == required_canon
+                        && unwrap_spec_view_value(kb, &e.spec).is_some_and(|(_, entry)| {
+                            bindings_cover(kb, &entry, &goal.bindings)
+                        })
+                });
+            let satisfied = forwarded_to_requires
+                || if concrete {
+                    spec_resolves_at_bindings(kb, required, goal.bindings.clone())
+                        || self_provides_required
+                } else {
                 let mut cands: SmallVec<[Symbol; 4]> = SmallVec::from_elem(p.carrier, 1);
                 for (_, v) in &p.sigma {
                     // Unwrap a parameterized carrier binding to its BASE sort. A
@@ -25600,6 +26005,13 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 carrier: carrier_qn.clone(),
                 spec: kb.qualified_name_of(p.spec).to_string(),
                 op: op_short,
+                // WI-1109: a row this loader DERIVED must not be reported as if the
+                // author wrote it. The refusal itself stands — a concrete carrier owes
+                // the operation however the row arrived — so this names the source
+                // rather than exempting the row.
+                derived_from: kb
+                    .derived_provision_origin_of(p.rid)
+                    .map(|origin| kb.qualified_name_of(origin).to_string()),
             });
         }
     }

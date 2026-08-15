@@ -11,7 +11,7 @@
 //!
 //! This closes the gap WI-279 deliberately left open: WI-279's default fallback
 //! resolves only operations *declared on* the receiver's sort, so a
-//! spec-satisfaction method (the `(3).min(5) -> Ord.min` shape) did not
+//! spec-satisfaction method (the `(3).min(5) -> WeakOrd.min` shape) did not
 //! dispatch.
 
 use anthill_core::kb::load::{self, LoadError, NullResolver};
@@ -55,7 +55,7 @@ fn dot_method_dispatches_via_provided_spec() {
     // `Widget` declares no `pick`, but provides `Comparable` (which does).
     // `?a.pick(?b)` resolves `pick` to `Comparable.pick` via the satisfaction
     // fact and synthesizes `pick(a, b)` → Widget. (The `(3).min(5) ->
-    // Ord.min` shape, self-contained so it needs no anthill-stl Int64 facts.)
+    // WeakOrd.min` shape, self-contained so it needs no anthill-stl Int64 facts.)
     let src = r#"
         namespace wi281.provided
           sort Comparable
@@ -151,7 +151,7 @@ fn dot_no_provided_spec_still_reports_no_match() {
     );
 }
 
-// ── The acceptance shape on a real builtin: Int64 → Ord.min ───────────
+// ── The acceptance shape on a real builtin: Int64 → WeakOrd.min ───────────
 
 /// Like `load_capturing_errors` but also loads the Rust host bindings
 /// (`anthill-stl/anthill/`), where `fact Eq/Ord/Numeric[T = Int64]` live.
@@ -179,7 +179,7 @@ fn load_capturing_errors_with_stl(extra: &str) -> (KnowledgeBase, Vec<LoadError>
 fn dot_min_dispatches_via_int_ordered() {
     // `?x.min(?y)` where `x, y: Int64`. `Int64` declares no `min`, but provides
     // `Ord` (`fact Ord[T = Int64]` in anthill-stl), so `min` resolves to
-    // `Ord.min` and dispatches — the `(3).min(5) -> Ord.min` acceptance
+    // `WeakOrd.min` and dispatches — the `(3).min(5) -> WeakOrd.min` acceptance
     // shape, threading `Ord[Int64]` (and its required `Eq[Int64]`, also
     // provided). Without WI-281 this is a `DotDispatchNoMatch` (Int64.min = None).
     let src = r#"
@@ -193,7 +193,7 @@ fn dot_min_dispatches_via_int_ordered() {
     let (_kb, errs) = load_capturing_errors_with_stl(src);
     assert!(
         errs.is_empty(),
-        "expected ?x.min(?y) to dispatch to Ord.min via fact Ord[Int64]; got:\n{}",
+        "expected ?x.min(?y) to dispatch to WeakOrd.min via fact Ord[Int64]; got:\n{}",
         errors_text(&errs)
     );
 }

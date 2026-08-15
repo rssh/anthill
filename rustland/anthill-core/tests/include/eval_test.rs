@@ -1952,7 +1952,7 @@ end
 
 /// WI-876 — `Float` comparison, on the surface `Float` actually PROVIDES.
 ///
-/// This test used to read `Ord.max(1.5, 2.75)` and answer `2.75`. It no longer
+/// This test used to read `WeakOrd.max(1.5, 2.75)` and answer `2.75`. It no longer
 /// can, and that is the fix rather than a casualty of it: `Float` provides
 /// `PartialOrd` and deliberately NOT `Ord` (WI-644 / proposal 004 — an IEEE order
 /// is PARTIAL, `NaN` is unordered), and `max` is an `Ord` operation. The old
@@ -1960,7 +1960,7 @@ end
 /// whether or not it provided the spec — and served this one with `total_cmp`, under
 /// which `NaN` ranks LARGEST, exactly the "same program, opposite answers by backend"
 /// that `wi645_float_nan_ieee_test` exists to forbid. With the host implementations
-/// keyed per carrier, `Ord.max` reaches only carriers that provide `Ord`.
+/// keyed per carrier, `WeakOrd.max` reaches only carriers that provide `Ord`.
 ///
 /// The second arm pins the refusal so the change is a decision and not a drift, and
 /// the third keeps `max` covered on a carrier that IS `Ord`.
@@ -2021,10 +2021,10 @@ end
 "#;
     let errs = crate::common::try_load_kb_with(float_max)
         .err()
-        .expect("`Ord.max` on a `Float` must not load — `Float` provides no `Ord`");
+        .expect("`WeakOrd.max` on a `Float` must not load — `Float` provides no `Ord`");
     let text = errs.join("\n");
     assert!(
-        text.contains("anthill.prelude.Ord.max")
+        text.contains("anthill.prelude.WeakOrd.max")
             && text.contains(
                 "`anthill.prelude.Float` provides no `anthill.prelude.Eq`"
             ),

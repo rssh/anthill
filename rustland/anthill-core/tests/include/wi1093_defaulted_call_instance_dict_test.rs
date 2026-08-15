@@ -1,7 +1,7 @@
 //! WI-1093 — A DEFAULTED SPEC-OP CALL DOES NOT THREAD THE INSTANCE DICTIONARY, so THE
 //! ELEMENTS' DICTIONARIES ARE MISSING from the frame the implementation runs in.
 //!
-//! WHAT A PARENT BUNDLE CARRIES AND WHAT IT DOES NOT. `Ord.max` is a DEFAULTED spec op
+//! WHAT A PARENT BUNDLE CARRIES AND WHAT IT DOES NOT. `WeakOrd.max` is a DEFAULTED spec op
 //! and `Pair` declares no `max`, so the typer falls through the WI-1012 supplier arm and
 //! classifies a Direct call, building the WI-415 parent bundle: `Dictionary(impl: Ord,
 //! subs: [Eq[Pair], PartialOrd[Pair]])` — the SPEC's own `requires` chain resolved at the
@@ -42,7 +42,7 @@
 //! WHY A LOCAL TOWER AND NOT `Ord`/`Pair`. No stdlib carrier with CONDITIONED provisions
 //! overrides a DEFAULTED spec op, so the pinned arm has no library face: `Pair` overrides
 //! only `compare` and `eq`, both body-LESS, which take the `lookup_spec_op_dispatch` route
-//! that already resolves a tree. (And an eta cannot be written inside `Ord.max`, which is
+//! that already resolves a tree. (And an eta cannot be written inside `WeakOrd.max`, which is
 //! what the second arm would need.) The tower below is the same shape with three sorts: a
 //! spec that `requires` a sibling, a CONDITIONED carrier whose member reads its own
 //! provision's condition slot through a receiver-less op, and a LEAF carrier that reads
@@ -60,7 +60,7 @@ use anthill_core::eval::Value;
 ///
 /// `Wrap` is the CONDITIONED carrier. Its `rank` reads the condition of `provides
 /// Sp[Wrap] :- Sp[E]` — the ELEMENT's dictionary, the local twin of `Pair.compare`'s
-/// `Ord.compare(al, bl)`. It reads its OWN provision's condition and not a sibling's,
+/// `WeakOrd.compare(al, bl)`. It reads its OWN provision's condition and not a sibling's,
 /// which matters: 058 §3.8 leaves a sibling provision's slot present-but-unfilled at a
 /// dispatch that did not earn it, so a `Base.base(i)` here would refuse LEGITIMATELY and
 /// the fixture would be measuring that rule instead of this defect. (Measured while
@@ -132,7 +132,7 @@ namespace wi1093.tower
     -- Its own provision's, not a sibling's: 058 §3.8 makes a slot belonging to a
     -- SIBLING provision present-but-unfilled at a dispatch that did not earn it, so
     -- `Base.base(i)` here would be a legitimate refusal and not this ticket's defect.
-    -- This is exactly `Pair.compare`'s `Ord.compare(al, bl)`.
+    -- This is exactly `Pair.compare`'s `WeakOrd.compare(al, bl)`.
     --
     -- THE CARRIER'S RIVAL ANSWER, so 10-vs-20 names which dictionary was read.
     operation mark() -> Int64 = 20

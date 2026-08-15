@@ -379,7 +379,7 @@ fn a_self_providing_carrier_now_answers_the_bracketless_call() {
 /// swallowed by this refusal.
 ///
 /// Not hypothetical — it is `wi857_dictionary_layout_test::a_chain_free_witness_provider_
-/// still_runs` in miniature (`Ord.compare[Ord = Descending](7, 3)` over `Int64`,
+/// still_runs` in miniature (`WeakOrd.compare[WeakOrd = Descending](7, 3)` over `Int64`,
 /// whose own `compare` is the second supplier). A ≥2-count guard with no tier-1 clause
 /// refused that delivered program; this test is the local copy so the clause has a
 /// failure of its own rather than only a distant one.

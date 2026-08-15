@@ -1170,6 +1170,19 @@ pub struct KnowledgeBase {
     /// indistinguishable from the hand-written `provides PartialEq[T = X]`.
     unbacked_derived_provisions: HashSet<RuleId>,
 
+    /// WI-1109 — PROVENANCE, not exemption, and the distinction is the whole reason this
+    /// is a second map rather than a reuse of the one above. A row
+    /// [`typing::derive_forwarded_provisions`] materializes from a forwarding
+    /// (`C provides Ord` + `Ord provides WeakOrd` ⇒ `C provides WeakOrd`) is held to
+    /// every check a written row is — a concrete `Ord` carrier really does owe a
+    /// `compare`, so exempting it would suppress a CORRECT refusal. What it must not do
+    /// is report that refusal against text the author never wrote: measured, a concrete
+    /// carrier writing `provides Ord[T = MyBox]` and no `compare` was refused for
+    /// "provides `WeakOrd` but backs no operation `WeakOrd.compare`", word for word what
+    /// a carrier that HAD written `provides WeakOrd` gets. This records which spec the
+    /// row came from so the diagnostic can say so.
+    derived_provision_origin: std::collections::HashMap<RuleId, Symbol>,
+
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
 
@@ -1535,6 +1548,7 @@ impl KnowledgeBase {
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
+            derived_provision_origin: std::collections::HashMap::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             unsuppliable_requirements: Vec::new(),
@@ -1669,6 +1683,16 @@ impl KnowledgeBase {
 
     /// WI-1103 — record a row [`eq_derive::run`] derived. Called at the assertion,
     /// so the mark and the fact cannot come apart.
+    /// WI-1109 — record that `rid` was derived from the carrier's provision of `origin`.
+    pub(crate) fn mark_derived_provision(&mut self, rid: RuleId, origin: Symbol) {
+        self.derived_provision_origin.insert(rid, origin);
+    }
+
+    /// The spec whose forwarding produced `rid`, when it was derived.
+    pub(crate) fn derived_provision_origin_of(&self, rid: RuleId) -> Option<Symbol> {
+        self.derived_provision_origin.get(&rid).copied()
+    }
+
     pub(crate) fn mark_unbacked_derived_provision(&mut self, rid: RuleId) {
         self.unbacked_derived_provisions.insert(rid);
     }

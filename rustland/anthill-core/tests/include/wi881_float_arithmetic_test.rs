@@ -298,7 +298,7 @@ end
 
 /// THE `abs` LAW, settled. `abs` CLEARS the sign bit, and `-0.0` compares EQUAL to
 /// `+0.0`, so no comparison-based law reaches it. The original
-/// `abs(?a) <=> max(?a, neg(?a))` named `Ord.max`, which no `Float` value can
+/// `abs(?a) <=> max(?a, neg(?a))` named `WeakOrd.max`, which no `Float` value can
 /// reach; the `ite(lt(?a, 0.0), neg(?a), ?a)` restatement the ticket floated is
 /// driven here and answers `-0.0` where `abs` must answer `+0.0`. The law is gone,
 /// replaced by the part that is true (`abs(neg(?a)) <=> abs(?a)`), and `abs` is

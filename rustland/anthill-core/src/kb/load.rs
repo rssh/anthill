@@ -173,6 +173,50 @@ pub struct TypeMismatchOrigin {
     pub site: &'static std::panic::Location<'static>,
 }
 
+/// WI-1109 — the DERIVED-ROW clause both [`LoadError::UnbackedProviderOperation`]
+/// faces append, in one place so a change cannot reach one wording and miss the other
+/// (the `bare_member_call_message` discipline). Empty for a written provision.
+fn derived_row_clause(spec: &str, derived_from: Option<&str>) -> String {
+    match derived_from {
+        Some(origin) => format!(
+            " — note '{spec}' is not written on this carrier: it is DERIVED from its \
+             `provides {origin}`, because '{origin}' forwards to '{spec}'. Back the \
+             operation, or drop the `provides {origin}`"
+        ),
+        None => String::new(),
+    }
+}
+
+/// The short face.
+fn unbacked_provider_operation_message(
+    carrier: &str,
+    spec: &str,
+    op: &str,
+    derived_from: Option<&str>,
+) -> String {
+    format!(
+        "'{carrier}' provides '{spec}' but backs no operation '{spec}.{op}' (no default \
+         on '{spec}', no own '{op}' on '{carrier}'){}",
+        derived_row_clause(spec, derived_from)
+    )
+}
+
+/// The located face.
+fn unbacked_provider_operation_detail(
+    carrier: &str,
+    spec: &str,
+    op: &str,
+    derived_from: Option<&str>,
+) -> String {
+    format!(
+        "'{carrier}' provides '{spec}' but does not back operation '{spec}.{op}': there \
+         is no default on '{spec}' (an `operation {op}(…) = …` body or a derivation rule) \
+         and '{carrier}' supplies no own '{op}' (add a body/rule on '{spec}' or an \
+         `operation {op}(…)` on '{carrier}'){}",
+        derived_row_clause(spec, derived_from)
+    )
+}
+
 /// A diagnostic that BLOCKS the load — every variant, without exception. A
 /// `load_all` `Err` means the program will not run: callers print and exit,
 /// they do not triage.
@@ -418,6 +462,11 @@ pub enum LoadError {
         carrier: String,
         spec: String,
         op: String,
+        /// WI-1109 — the spec the author actually wrote, when `spec` is a row the loader
+        /// DERIVED from it rather than text on the page. `None` for a written provision.
+        /// Without it the two cases render identically and the author is sent looking
+        /// for a `provides` clause that is not in their file.
+        derived_from: Option<String>,
     },
     /// WI-658: a carrier provides BOTH `Eq` (lawful, reflexive equality) and
     /// `NonEq` (a WITNESSED non-reflexive equality — `nonEqRefl()` exhibits a
@@ -1909,10 +1958,12 @@ impl LoadError {
                     boolean_operator_in_goal_message(operator)
                 )
             }
-            LoadError::UnbackedProviderOperation { carrier, spec, op } => {
-                format!("'{}' provides '{}' but does not back operation '{}.{}': there is no default on '{}' (an `operation {}(…) = …` body or a derivation rule) and '{}' supplies no own '{}' (add a body/rule on '{}' or an `operation {}(…)` on '{}')",
-                    carrier, spec, spec, op, spec, op, carrier, op, spec, op, carrier)
-            }
+            LoadError::UnbackedProviderOperation {
+                carrier,
+                spec,
+                op,
+                derived_from,
+            } => unbacked_provider_operation_detail(carrier, spec, op, derived_from.as_deref()),
             LoadError::IncompatibleEqNonEq { carrier } => {
                 format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
                     carrier)
@@ -2762,9 +2813,13 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
-            LoadError::UnbackedProviderOperation { carrier, spec, op } => {
-                write!(f, "'{}' provides '{}' but backs no operation '{}.{}' (no default on '{}', no own '{}' on '{}')",
-                    carrier, spec, spec, op, spec, op, carrier)
+            LoadError::UnbackedProviderOperation {
+                carrier,
+                spec,
+                op,
+                derived_from,
+            } => {
+                write!(f, "{}", unbacked_provider_operation_message(carrier, spec, op, derived_from.as_deref()))
             }
             LoadError::IncompatibleEqNonEq { carrier } => {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
@@ -8905,6 +8960,24 @@ fn load_phase_inner(
     let eq_classification = super::eq_derive::classify(kb);
     super::eq_derive::derive_total_eq(kb, &eq_classification);
     mark!("eq_derive::classify + derive_total_eq");
+    // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
+    // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the
+    // TOTAL eq derivation, for the reason its comment above states and this pass
+    // rediscovered the hard way: "a provision reaches a call site only through the
+    // typer's `CallClass` tagging and `req_insertion`'s rewrite, so a derived [row]
+    // asserted after them exists but is read by nobody." MEASURED — placed next to
+    // `eq_derive::run` (below `req_insertion`) the rows were asserted correctly and
+    // every call site still refused, `SortedSet.empty[O = ByLength]` reporting that
+    // ByLength "provides no instance at these bindings" for a `WeakOrd` row it demonstrably
+    // had. The index is dropped first and rebuilt after for eq_derive's reason: the pass
+    // both READS the relation (to skip a carrier that already provides the floor) and
+    // ASSERTS into it, so its reads must hit the live scan — and `build_sort_ops_table`
+    // below then inherits the forwarded spec's operations onto every carrier that gained
+    // a row, which is the read that makes `WeakOrd.compare` dispatch on them.
+    kb.provides_index = None;
+    super::typing::derive_forwarded_provisions(kb);
+    super::typing::build_provides_index(kb);
+    mark!("derive_forwarded_provisions");
     // A provision is read by the sort-ops table too, and that is not a second place
     // to remember — it is the read that DECIDES the derivation. `build_sort_ops_table`'s
     // pass 2 inherits the spec's operations onto each providing carrier, so

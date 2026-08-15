@@ -42,7 +42,7 @@ use anthill_core::eval::Value;
 fn program(ns: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ord, PartialOrd, PartialEq, Int64, Float, \
+         import anthill.prelude.{{Ord, WeakOrd, PartialOrd, PartialEq, Int64, Float, \
          List, Pair, SortedSet, String}}\n  \
          import anthill.prelude.Pair.{{pair}}\n{body}\nend\n"
     )
@@ -139,15 +139,18 @@ fn a_total_comparison_of_a_float_pair_names_the_unmet_condition() {
         "wi869.floatord",
         "  sort Driver\n    \
          operation cmp(n: Int64) -> Int64 =\n      \
-         Ord.compare(pair(fst: 1.5, snd: 1), pair(fst: 2.5, snd: 1))\n  end",
+         WeakOrd.compare(pair(fst: 1.5, snd: 1), pair(fst: 2.5, snd: 1))\n  end",
     );
     let errs = load_errs(&src);
     assert!(
         errs.iter().any(|e| {
-            e.contains("anthill.prelude.Ord.compare")
-                && e.contains("unresolved: anthill.prelude.Ord[T = anthill.prelude.Float]")
+            e.contains("anthill.prelude.WeakOrd.compare")
+                && e.contains("unresolved: anthill.prelude.Eq[T = anthill.prelude.Float]")
         }),
-        "the refusal must name the unmet component condition `Ord[Float]`; got {errs:?}",
+        "the refusal must name the unmet component condition; WI-1109 moved which one \
+         it is — `WeakOrd requires Eq`, and `Float` fails `Eq` before it could fail any \
+         ordering condition, so `Eq[Float]` is now the first unmet one and the deeper \
+         reason the pair cannot be compared; got {errs:?}",
     );
 }
 
@@ -160,11 +163,11 @@ fn an_int_pair_orders_lexicographically() {
         "wi869.intord",
         "  sort Driver\n    \
          operation fstWins(n: Int64) -> Int64 =\n      \
-         Ord.compare(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n    \
+         WeakOrd.compare(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n    \
          operation sndBreaksTie(n: Int64) -> Int64 =\n      \
-         Ord.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 9))\n    \
+         WeakOrd.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 9))\n    \
          operation equalPairs(n: Int64) -> Int64 =\n      \
-         Ord.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1))\n  end",
+         WeakOrd.compare(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1))\n  end",
     );
     assert_eq!(
         eval_int(&src, "wi869.intord.Driver.fstWins", "`fst` decides"),
@@ -390,10 +393,10 @@ fn a_pair_of_pairs_orders_recursively() {
         "wi869.nested",
         "  sort Driver\n    \
          operation innerDecides(n: Int64) -> Int64 =\n      \
-         Ord.compare(pair(fst: pair(fst: 1, snd: 2), snd: 7),\n                      \
+         WeakOrd.compare(pair(fst: pair(fst: 1, snd: 2), snd: 7),\n                      \
          pair(fst: pair(fst: 1, snd: 3), snd: 7))\n    \
          operation outerSndDecides(n: Int64) -> Int64 =\n      \
-         Ord.compare(pair(fst: pair(fst: 1, snd: 2), snd: 9),\n                      \
+         WeakOrd.compare(pair(fst: pair(fst: 1, snd: 2), snd: 9),\n                      \
          pair(fst: pair(fst: 1, snd: 2), snd: 7))\n  end",
     );
     assert_eq!(
@@ -526,7 +529,7 @@ fn a_condition_naming_an_unknown_spec_is_refused() {
 /// and nothing else: `gt`/`gte`/`lt`/`lte` come from `PartialOrd`'s default bodies and
 /// `max`/`min` from `Ord`'s (WI-876's per-carrier host keying is what unshadowed
 /// them). Every arm here reaches `Pair.compare` through a DEFAULT body, which is a
-/// different frame-producer from the direct `Ord.compare` above — the value-directed
+/// different frame-producer from the direct `WeakOrd.compare` above — the value-directed
 /// bridge — and that route had to learn the dictionary chain too.
 #[test]
 fn the_inherited_comparison_surface_works_from_compare_alone() {
@@ -538,9 +541,9 @@ fn the_inherited_comparison_surface_works_from_compare_alone() {
          operation gte(n: Int64) -> Int64 = if PartialOrd.gte(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1)) then 1 else 0\n    \
          operation lte(n: Int64) -> Int64 = if PartialOrd.lte(pair(fst: 1, snd: 1), pair(fst: 1, snd: 1)) then 1 else 0\n    \
          operation maxFst(n: Int64) -> Int64 =\n      \
-         match Ord.max(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n    \
+         match WeakOrd.max(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n    \
          operation minFst(n: Int64) -> Int64 =\n      \
-         match Ord.min(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n  end",
+         match WeakOrd.min(pair(fst: 2, snd: 1), pair(fst: 1, snd: 9))\n        case pair(f, s) -> f\n  end",
     );
     // Both directions of each, so an implementation that answered a constant fails.
     assert_eq!(
@@ -581,8 +584,8 @@ fn pair_supplies_only_compare_and_eq() {
         ("gte", "anthill.prelude.PartialOrd.gte"),
         ("lt", "anthill.prelude.PartialOrd.lt"),
         ("lte", "anthill.prelude.PartialOrd.lte"),
-        ("max", "anthill.prelude.Ord.max"),
-        ("min", "anthill.prelude.Ord.min"),
+        ("max", "anthill.prelude.WeakOrd.max"),
+        ("min", "anthill.prelude.WeakOrd.min"),
     ] {
         let short_sym = kb.intern(short);
         let got = kb
@@ -643,17 +646,18 @@ fn a_bracketless_sorted_set_of_pairs_sorts() {
 fn cell_tower(eq_cond: &str) -> String {
     format!(
         "\nnamespace wi1033.cell\n  \
-         import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ord}}\n\
+         import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ord, WeakOrd}}\n\
   sort Lawful\n    sort T = ?\n    operation witness(x: T) -> Int64\n  end\n\
   enum Cell\n    sort E = ?\n    entity cell(v: E)\n    \
     provides PartialEq[Cell] :- PartialEq[E]\n    \
     provides Eq[Cell] :- {eq_cond}\n    \
     provides PartialOrd[Cell] :- PartialOrd[E]\n    \
+    provides WeakOrd[Cell] :- WeakOrd[E]\n    \
     provides Ord[Cell] :- Ord[E]\n    \
     operation eq(a: Cell, b: Cell) -> Bool =\n      \
       match a\n        case cell(x) ->\n          match b\n            case cell(y) -> PartialEq.eq(x, y)\n    \
     operation compare(a: Cell, b: Cell) -> Int64 =\n      \
-      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> Ord.compare(x, y)\n  end\nend\n"
+      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> WeakOrd.compare(x, y)\n  end\nend\n"
     )
 }
 
@@ -721,14 +725,17 @@ fn a_conditional_provisions_goals_answer_a_reflect_query() {
         named_args: smallvec::SmallVec::new(),
     });
     let solutions = kb.resolve(&[goal], &Default::default());
-    // `Pair` writes four conditioned provisions of two goals each. Asserted as a COUNT
-    // and not merely `!is_empty()`: a rule that dropped the `provided` join would still
-    // answer, and would answer the same eight rows for every spec.
+    // `Pair` writes FIVE conditioned provisions of two goals each — WI-1109 added
+    // `provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B]` beside the other four, because
+    // a lexicographic pair is weakly ordered iff both components are, a strictly weaker
+    // condition than the `Ord` one. Asserted as a COUNT and not merely `!is_empty()`: a
+    // rule that dropped the `provided` join would still answer, and would answer the
+    // same ten rows for every spec.
     assert_eq!(
         solutions.len(),
-        8,
+        10,
         "`provides_when(Pair, ?spec, ?cond)` must answer once per condition of each of \
-         `Pair`'s four provisions",
+         `Pair`'s five provisions",
     );
 }
 

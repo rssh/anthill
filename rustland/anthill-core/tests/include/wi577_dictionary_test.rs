@@ -289,7 +289,7 @@ fn opref_backed_by_builtin_is_callable() {
 #[test]
 fn resolve_op_remembers_the_named_spec_op() {
     let src = "namespace test.wi577.named\n\
-               import anthill.prelude.{Int64, Ord}\n\
+               import anthill.prelude.{Int64, Ord, WeakOrd}\n\
                import anthill.prelude.Numeric.{sub}\n\
                sort Descending\n\
                fact Ord[T = Int64]\n\
@@ -304,7 +304,7 @@ fn resolve_op_remembers_the_named_spec_op() {
     subs.push(crate::common::dict(&interp, desc, []));
     subs.push(crate::common::dict(&interp, desc, []));
     let dict = crate::common::dict(&interp, desc, subs).into_value();
-    let cmp = sym_val(&mut interp, "anthill.prelude.Ord.compare");
+    let cmp = sym_val(&mut interp, "anthill.prelude.WeakOrd.compare");
     let opref = interp
         .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
         .unwrap();
@@ -323,7 +323,7 @@ fn resolve_op_remembers_the_named_spec_op() {
             );
             assert_eq!(
                 interp.kb().qualified_name_of(named),
-                "anthill.prelude.Ord.compare",
+                "anthill.prelude.WeakOrd.compare",
                 "the named op is the SPEC op the call passed in",
             );
         }
@@ -379,7 +379,7 @@ fn opref_dict_none_for_dictless_ref() {
 #[test]
 fn opref_named_reads_the_spec_op_through_the_accessor() {
     let src = "namespace test.wi577.namedop\n\
-               import anthill.prelude.{Int64, Ord}\n\
+               import anthill.prelude.{Int64, Ord, WeakOrd}\n\
                import anthill.prelude.Numeric.{sub}\n\
                sort Descending\n\
                fact Ord[T = Int64]\n\
@@ -392,7 +392,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
     subs.push(crate::common::dict(&interp, desc, []));
     subs.push(crate::common::dict(&interp, desc, []));
     let dict = crate::common::dict(&interp, desc, subs).into_value();
-    let cmp = sym_val(&mut interp, "anthill.prelude.Ord.compare");
+    let cmp = sym_val(&mut interp, "anthill.prelude.WeakOrd.compare");
     let opref = interp
         .call(&format!("{DICT}.resolveOp"), &[dict, cmp])
         .unwrap();
@@ -406,7 +406,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
             );
             assert_eq!(
                 sym_qn(&interp, named_field(&interp, named, "value")),
-                "anthill.prelude.Ord.compare",
+                "anthill.prelude.WeakOrd.compare",
                 "and it is the SPEC op the call passed in, not the resolved member",
             );
         }

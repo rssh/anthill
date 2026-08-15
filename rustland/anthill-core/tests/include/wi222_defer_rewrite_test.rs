@@ -209,22 +209,22 @@ end
 
 #[test]
 fn requirement_name_tracks_requires_chain_entry() {
-    // Sort declares two requires: `Eq[T]` then `Ord[T]`. A call to
-    // `Ord.compare(...)` from inside the sort's body must emit a
-    // dispatching-dict expression `var_ref(name = Ref(__req_ord))`
-    // — Ord's slot in the transitive `requires_chain` (chain shape
-    // `[Eq, Ord, Eq]` here, with Ord at index 1) is named via
-    // `synth_req_names` as `__req_ord` (no collision: only one
-    // Ord in the chain).
+    // Sort declares two requires: `Eq[T]` then `WeakOrd[T]` (WI-1109 moved
+    // `compare` to the `WeakOrd` floor, so the DIRECT slot this test is about is
+    // that one). A call to
+    // `WeakOrd.compare(...)` from inside the sort's body must emit a
+    // dispatching-dict expression `var_ref(name = Ref(__req_weakord))`
+    // — WeakOrd's slot in the transitive `requires_chain` is named via
+    // `synth_req_names` as `__req_weakord` (no collision: only one
+    // WeakOrd in the chain).
     let src = r#"
 namespace test.wi222.multi_requires
-  import anthill.prelude.Ord.{compare}
-  import anthill.prelude.{Eq, Ord, Int64}
+  import anthill.prelude.{Eq, Ord, WeakOrd, Int64}
   sort Wi222Multi
     sort T = ?
     requires Eq[T]
-    requires Ord[T]
-    operation use_compare(a: T, b: T) -> Int64 = compare(a, b)
+    requires WeakOrd[T]
+    operation use_compare(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
   end
 end
 "#;
@@ -232,8 +232,8 @@ end
     let kb = interp.kb();
 
     let compare_sym = kb
-        .try_resolve_symbol("anthill.prelude.Ord.compare")
-        .expect("Ord.compare registered");
+        .try_resolve_symbol("anthill.prelude.WeakOrd.compare")
+        .expect("WeakOrd.compare registered");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref in stdlib");
@@ -245,7 +245,7 @@ end
         }
     }
     let rewritten_tid = rewritten_for_compare
-        .expect("Ord.compare call inside multi-requires sort must be rewritten");
+        .expect("WeakOrd.compare call inside multi-requires sort must be rewritten");
 
     // Drill into the rewritten apply_within's requirements[0] to find
     // the dispatching dict's name.
@@ -281,8 +281,8 @@ end
         Term::Ref(s) => crate::common::assert_req_param_spec(
             kb,
             *s,
-            "__req_ord",
-            "an `Ord` chain slot maps to a requirement param synthesized from \
+            "__req_weakord",
+            "a `WeakOrd` chain slot maps to a requirement param synthesized from \
              `Ord`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
@@ -305,12 +305,11 @@ fn dispatching_dict_is_caller_direct_requirement_var_ref() {
     // (v0)" — every apply_within has exactly one requirements entry.
     let src = r#"
 namespace test.wi222.proj_deps
-  import anthill.prelude.Ord.{compare}
-  import anthill.prelude.{Ord, Int64}
+  import anthill.prelude.{Ord, WeakOrd, Int64}
   sort Wi222Outer
     sort T = ?
-    requires Ord[T]
-    operation use_compare(a: T, b: T) -> Int64 = compare(a, b)
+    requires WeakOrd[T]
+    operation use_compare(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
   end
 end
 "#;
@@ -318,8 +317,8 @@ end
     let kb = interp.kb();
 
     let compare_sym = kb
-        .try_resolve_symbol("anthill.prelude.Ord.compare")
-        .expect("Ord.compare registered");
+        .try_resolve_symbol("anthill.prelude.WeakOrd.compare")
+        .expect("WeakOrd.compare registered");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
@@ -337,7 +336,7 @@ end
         }
     }
     let rewritten_tid = rewritten_for_compare
-        .expect("Ord.compare call inside `requires Ord[T]` sort must be rewritten");
+        .expect("WeakOrd.compare call inside `requires Ord[T]` sort must be rewritten");
 
     let named_args = match kb.get_term(rewritten_tid) {
         Term::Fn { named_args, .. } => named_args.clone(),
@@ -386,8 +385,8 @@ end
         Term::Ref(s) => crate::common::assert_req_param_spec(
             kb,
             *s,
-            "__req_ord",
-            "the var_ref must name a requirement param synthesized from `Ord`",
+            "__req_weakord",
+            "the var_ref must name a requirement param synthesized from `WeakOrd`",
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
@@ -548,7 +547,7 @@ fn synth_req_names_for_multi_requires_is_direct_no_dup() {
     // `[__req_eq, __req_ord]`, no collision and no duplication.
     let src = r#"
 namespace test.wi239.multi
-  import anthill.prelude.{Eq, Ord, Int64}
+  import anthill.prelude.{Eq, Ord, WeakOrd, Int64}
   sort Wi239Multi
     sort T = ?
     requires Eq[T]
@@ -592,7 +591,7 @@ fn transitive_eq_call_classifies_as_nested_deferral() {
     let src = r#"
 namespace test.wi239.nested
   import anthill.prelude.Eq.{eq}
-  import anthill.prelude.{Eq, Ord, Bool}
+  import anthill.prelude.{Eq, Ord, WeakOrd, Bool}
   sort Wi239Nested
     sort T = ?
     requires Ord[T]

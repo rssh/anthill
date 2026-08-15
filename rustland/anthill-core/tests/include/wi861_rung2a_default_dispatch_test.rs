@@ -23,7 +23,7 @@
 //! because a flip is asserted where its program already is:
 //!
 //!   * `wi844_sorted_set_driver_test::a_bare_compare_takes_the_hosts_own_ordering` —
-//!     bracket-less `Ord.compare` on a `String` beside two loadable witnesses;
+//!     bracket-less `WeakOrd.compare` on a `String` beside two loadable witnesses;
 //!   * `wi858_pair_orderings_test::a_bracketless_compare_takes_the_prelude_ordering` —
 //!     the same over the prelude's `Pair`, which is the SHIPPED-LIBRARY reason this rung
 //!     exists (WI-858: without it there is no spelling that reaches `Pair`'s canonical
