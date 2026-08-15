@@ -4665,6 +4665,36 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
 // recursion is bounded by argument count / branch count rather than
 // source nesting depth.
 
+/// WI-1104 — is the node at this Visit a rule-body GOAL, or a VALUE?
+///
+/// The typer's half of [`BodyPos`], and only the half it can act on: the rule-body walk
+/// ([`dispatch_calls_in_occ`]) owns goal DESCENT and hands the typer ONE node at a time,
+/// so within a `type_check_node` walk the only goal is the node handed over — every
+/// sub-expression beneath it is data.
+///
+/// **It rides the `Visit` frame rather than the [`TypingEnv`], and that is the whole
+/// point.** [`TypingEnv::rule_body_dispatch`] is a PER-RULE flag: it is set once per rule
+/// and inherited by every env clone, so a call NESTED inside a goal reads it exactly as
+/// the goal itself does. WI-1100 scoped the functional-relation arity + 1 by that flag,
+/// which admitted the tolerance in VALUE position too — MEASURED, `rule r(?y) :-
+/// leaf().describe(?d), ?y = concat("a", "b", "c")` loaded clean while the same
+/// expression in an operation body was refused. This rides the frame beside `expected`
+/// and `fuel`, which are per-node for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NodePos {
+    /// The atom [`dispatch_calls_in_occ`] handed over at [`BodyPos::Goal`] /
+    /// [`BodyPos::GoalTuple`] — and whatever REPLACES it while it is typed (a `[simp]`
+    /// fire's RHS, the call a dot lowers to, a WI-411 spec-op redirect), since a rewrite
+    /// of the goal is still the goal. Carried only by the three build frames that can BE
+    /// the handed-over atom or produce its replacement (`Apply` / `ApplyHints` /
+    /// `DotApply`); no other form reaches the typer at a goal position
+    /// ([`call_dispatch_shape`] admits `Expr::Apply` and `Expr::DotApply` alone).
+    RuleBodyGoal,
+    /// Everything else: an operation body, an entity fact, a standalone typer entry —
+    /// and every argument of a goal, however deep.
+    Value,
+}
+
 enum TypeWorkOp {
     /// `expected` is the WI-270 top-down type hint — the caller's
     /// expected type for the value at this position. It seeds Apply /
@@ -4681,6 +4711,10 @@ enum TypeWorkOp {
         /// Apply/Constructor fires and re-`Visit`s its synthesized RHS.
         /// Bounds the fire chain (→ termination) without host recursion.
         fuel: usize,
+        /// WI-1104: where this node sits in its rule body. [`NodePos::Value`] for every
+        /// CHILD visit ([`push_visit`] supplies it), inherited only by a re-Visit that
+        /// REPLACES the node ([`push_visit_at`]).
+        pos: NodePos,
     },
     Build(TypeBuildFrame),
 }
@@ -4696,6 +4730,11 @@ enum TypeWorkOp {
 /// arms (Apply / Constructor / Let / Match / Lambda / If / collection
 /// literals — every form is a work-stack Build frame after WI-285, so
 /// there is no recursive `type_check_node` re-entry).
+///
+/// WI-1104: this is the CHILD push — the node visited here is a sub-expression of the
+/// node that pushes it, so it is [`NodePos::Value`] by construction. A push that
+/// REPLACES a node (a `[simp]` fire's RHS, a dot's lowered call) keeps the replaced
+/// node's position and goes through [`push_visit_at`].
 fn push_visit(
     work: &mut Vec<TypeWorkOp>,
     occ: Rc<NodeOccurrence>,
@@ -4703,12 +4742,28 @@ fn push_visit(
     expected: Option<Value>,
     fuel: usize,
 ) {
+    push_visit_at(work, occ, env, expected, fuel, NodePos::Value);
+}
+
+/// WI-1104: [`push_visit`] at an explicit [`NodePos`]. Two kinds of caller, and only
+/// two: the typer's ENTRY (which is told the position by the rule-body walk) and a
+/// re-Visit that REPLACES the node it was reached from, which inherits that node's
+/// position because a rewrite of a goal is still the goal.
+fn push_visit_at(
+    work: &mut Vec<TypeWorkOp>,
+    occ: Rc<NodeOccurrence>,
+    env: Env,
+    expected: Option<Value>,
+    fuel: usize,
+    pos: NodePos,
+) {
     work.push(TypeWorkOp::Build(TypeBuildFrame::Stamp));
     work.push(TypeWorkOp::Visit {
         occ,
         env,
         expected,
         fuel,
+        pos,
     });
 }
 
@@ -4748,6 +4803,10 @@ enum TypeBuildFrame {
         /// ordinary call, in which case the results stack is drained in natural order
         /// exactly as before staging existed.
         staged_results: Vec<(usize, Result<TypeResult, TypeError>)>,
+        /// WI-1104: this call's own [`NodePos`] — read by [`check_apply_iter`] (the
+        /// functional-relation arity + 1 is legal at a rule-body GOAL and nowhere else)
+        /// and inherited by the two re-Visits this frame can push.
+        pos: NodePos,
     },
     /// WI-793: the staged half of an `Apply`. Reached once the projection-receiver
     /// arguments have been typed: it completes the param→argument-type map with their
@@ -4773,6 +4832,9 @@ enum TypeBuildFrame {
         /// What the no-typing readers already answered, to be completed with the staged
         /// results rather than recomputed.
         known: HashMap<Symbol, Value>,
+        /// WI-1104: carried through to the [`TypeBuildFrame::Apply`] this frame pushes —
+        /// staging changes WHEN the arguments are typed, never where the call sits.
+        pos: NodePos,
     },
     /// All Constructor args finished; drain results and call
     /// `check_constructor_iter`. WI-270: `expected` flows into the
@@ -4810,6 +4872,12 @@ enum TypeBuildFrame {
         /// WI-283: fire-fuel inherited from this node's `Visit`; spent
         /// (`fuel - 1`) on the re-`Visit` of the synthesized call.
         fuel: usize,
+        /// WI-1104: this dot's own [`NodePos`], inherited by each of the three calls it
+        /// can lower to (a fired dot rule, the dispatched method, a `field_access`) —
+        /// `?x.describe(?r)` written as a rule-body goal IS that goal, so the
+        /// functional-relation column reaching `check_apply_iter` through the lowering
+        /// must arrive with the same position the qualified spelling does.
+        pos: NodePos,
     },
     /// Value finished; compute the body's ext_env and schedule the
     /// body Visit, plus a `LetFinal` frame to combine results. If the
@@ -5038,11 +5106,32 @@ fn unwrap_types(types: Rc<TypingEnv>) -> TypingEnv {
 /// `check_*` helpers (which may call back through here, adding ≤ 1
 /// host frame per Apply / Constructor / If / collection level — those
 /// recursions are bounded by argument count, not source depth).
+///
+/// WI-1104: this entry types a node at [`NodePos::Value`], which is what an operation
+/// body, an entity fact and a standalone typer call all are. **A RULE-BODY GOAL MUST NOT
+/// COME THROUGH HERE** — it would silently lose the functional-relation arity + 1
+/// tolerance and be refused for a count the spec allows (review-found: the default is
+/// safe for every caller that exists, but it is not something a caller can be defaulted
+/// INTO correctly). The goal entry is [`type_check_node_at`], and the one thing that
+/// knows the answer is [`dispatch_calls_in_occ`].
 pub fn type_check_node(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     expected: Option<Value>,
+) -> Result<TypeResult, TypeError> {
+    type_check_node_at(kb, env, occ, expected, NodePos::Value)
+}
+
+/// WI-1104: [`type_check_node`] told WHERE the node sits ([`NodePos`]). The rule-body
+/// dispatch walk is the one caller that answers anything but [`NodePos::Value`] — it
+/// owns goal descent, so it is the only place that knows.
+fn type_check_node_at(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    expected: Option<Value>,
+    pos: NodePos,
 ) -> Result<TypeResult, TypeError> {
     // WI-283: gate the in-typer `[simp]` firing on whether any rule can fire —
     // read once per walk. WI-443: a loaded `dot_apply` also enables the gate —
@@ -5062,7 +5151,7 @@ pub fn type_check_node(
     } else {
         Vec::new()
     };
-    type_check_node_gated(kb, env, occ, expected, simp_enabled, &simp_rids)
+    type_check_node_gated_at(kb, env, occ, expected, simp_enabled, &simp_rids, pos)
 }
 
 /// WI-657(9): [`type_check_node`] with the `[simp]` gate (`simp_enabled` +
@@ -5073,6 +5162,10 @@ pub fn type_check_node(
 /// + two `simp_equation_rids` bucket scans (each an allocating `rules_by_functor`)
 /// per checked operation. [`type_check_node`] stays the gate-computing entry for
 /// standalone callers.
+///
+/// WI-1104: [`NodePos::Value`], for the reason spelled out at [`type_check_node`] — its
+/// two callers are an operation body and a match-arm guard, and a rule-body goal added
+/// here would silently lose the arity + 1 tolerance.
 pub fn type_check_node_gated(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -5080,6 +5173,27 @@ pub fn type_check_node_gated(
     expected: Option<Value>,
     simp_enabled: bool,
     simp_rids: &[RuleId],
+) -> Result<TypeResult, TypeError> {
+    type_check_node_gated_at(
+        kb,
+        env,
+        occ,
+        expected,
+        simp_enabled,
+        simp_rids,
+        NodePos::Value,
+    )
+}
+
+/// WI-1104: [`type_check_node_gated`] told WHERE the node sits — see [`type_check_node_at`].
+fn type_check_node_gated_at(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    expected: Option<Value>,
+    simp_enabled: bool,
+    simp_rids: &[RuleId],
+    pos: NodePos,
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
@@ -5091,12 +5205,13 @@ pub fn type_check_node_gated(
     // as the fuel-bounded `simp_rewrite::run` did) instead of recursing the
     // host stack to overflow. Children inherit the fuel unchanged; only a
     // fire spends it. Matches the WI-285 iterative discipline.
-    push_visit(
+    push_visit_at(
         &mut work,
         Rc::clone(occ),
         Env::new(env),
         expected,
         super::simp_rewrite::SIMP_FUEL,
+        pos,
     );
     while let Some(op) = work.pop() {
         match op {
@@ -5105,7 +5220,8 @@ pub fn type_check_node_gated(
                 env,
                 expected,
                 fuel,
-            } => visit_type(kb, occ, env, expected, fuel, &mut work, &mut results),
+                pos,
+            } => visit_type(kb, occ, env, expected, fuel, pos, &mut work, &mut results),
             TypeWorkOp::Build(frame) => {
                 build_type(kb, frame, simp_enabled, simp_rids, &mut work, &mut results)
             }
@@ -5960,6 +6076,9 @@ fn build_relation_projection(
         &[],
         Some(occ.span.span),
         None,
+        // WI-1104: a synthesized `project_run` call standing in for a tuple field — a
+        // VALUE wherever the enclosing tuple is written, goal position included.
+        NodePos::Value,
     ))
 }
 
@@ -8226,6 +8345,11 @@ fn visit_type(
     // child Visits and to the Apply/Constructor/Let/Match build frames so
     // a fire can spend it (`fuel - 1`) when it re-`Visit`s the RHS.
     fuel: usize,
+    // WI-1104: where this node sits in its rule body ([`NodePos`]). Passed on to the
+    // three build frames that can BE a rule-body goal (`Apply` / `ApplyHints` /
+    // `DotApply`); a CHILD visit is data by construction and takes `NodePos::Value` from
+    // [`push_visit`] without being told.
+    pos: NodePos,
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
@@ -8676,6 +8800,7 @@ fn visit_type(
                     expected,
                     fuel,
                     staged_results: Vec::new(),
+                    pos,
                 }));
                 for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
                     push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
@@ -8735,6 +8860,7 @@ fn visit_type(
                     op_params: op_params.clone().unwrap_or_default(),
                     sort_app_hint,
                     known: known_param_arg_types,
+                    pos,
                 }));
                 // Reverse, so they pop in ASCENDING unified order — the order
                 // `known_arg_types_and_staged` sorted `staged` into and the order the
@@ -9114,6 +9240,7 @@ fn visit_type(
                 env: env.clone(),
                 expected,
                 fuel,
+                pos,
             }));
             push_visit_no_hint(work, receiver, env, fuel);
         }
@@ -9419,6 +9546,7 @@ fn build_type(
             op_params,
             sort_app_hint,
             mut known,
+            pos,
         } => {
             // Staging is keyed off the callee's declared params, so reaching here with
             // none is not a degraded case to tolerate — it would silently give EVERY
@@ -9474,6 +9602,7 @@ fn build_type(
                 expected,
                 fuel,
                 staged_results: staged_pairs,
+                pos,
             }));
             // Visit only what has NOT been typed — a staged argument is typed exactly once,
             // on this same work-stack, with this same fuel and `[simp]` gate.
@@ -9511,6 +9640,7 @@ fn build_type(
             expected,
             fuel,
             staged_results,
+            pos,
         } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - (total - staged_results.len());
@@ -9613,7 +9743,7 @@ fn build_type(
                 if simp_enabled && fuel > 0 {
                     match fire_simp(kb, &node, simp_rids) {
                         Ok(Some(rhs)) => {
-                            push_visit(work, rhs, env, expected, fuel - 1);
+                            push_visit_at(work, rhs, env, expected, fuel - 1, pos);
                             return;
                         }
                         Ok(None) => {}
@@ -9673,7 +9803,7 @@ fn build_type(
                         pass,
                         node.owner,
                     );
-                    push_visit(work, synth, env, expected, fuel.saturating_sub(1));
+                    push_visit_at(work, synth, env, expected, fuel.saturating_sub(1), pos);
                     return;
                 }
             }
@@ -9690,6 +9820,7 @@ fn build_type(
                 &named_results,
                 span,
                 expected,
+                pos,
             );
             results.push(r);
         }
@@ -9712,6 +9843,14 @@ fn build_type(
             // WI-283: reassemble + fire (gated on `[simp]` rules existing) —
             // mirrors the Apply arm (a `[simp]` rule may target a domain
             // constructor too, e.g. `transpose(transpose(?m)) = ?m`).
+            //
+            // WI-1104: this frame carries no [`NodePos`] and its re-Visit is an ordinary
+            // [`push_visit`], because an `Expr::Constructor` never reaches the typer AS a
+            // rule-body goal: [`call_dispatch_shape`] admits `Expr::Apply` and
+            // `Expr::DotApply` only, and a goal-position ENTITY head arrives as an
+            // `Expr::Apply` that [`check_apply_iter`] routes to `check_constructor_iter`
+            // inline (no frame). A constructor has no declared RETURN for a relational
+            // column to be, so the tolerance would mean nothing here either.
             let node = {
                 if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
                     results.push(Err(e));
@@ -9759,6 +9898,7 @@ fn build_type(
             env,
             expected,
             fuel,
+            pos,
         } => {
             // Only the receiver was pre-typed (WI-443) — pop its result.
             let recv = match results.pop().expect("DotApply: missing receiver result") {
@@ -9823,7 +9963,7 @@ fn build_type(
                         simp_rids,
                     ) {
                         Ok(Some(synth)) => {
-                            push_visit(work, synth, env, expected, fuel - 1);
+                            push_visit_at(work, synth, env, expected, fuel - 1, pos);
                             return;
                         }
                         Ok(None) => {}
@@ -9912,7 +10052,7 @@ fn build_type(
                 // Re-type the synthesized call: it rides normal Apply typing +
                 // type-param inference + req_insertion, and its result becomes
                 // this DotApply node's result.
-                push_visit(work, synth, env, expected, fuel.saturating_sub(1));
+                push_visit_at(work, synth, env, expected, fuel.saturating_sub(1), pos);
                 return;
             }
 
@@ -9975,7 +10115,14 @@ fn build_type(
                         }
                         match synthesize_field_access(kb, &receiver_node, &member_short, &occ) {
                             Ok(synth) => {
-                                push_visit(work, synth, env, expected, fuel.saturating_sub(1));
+                                push_visit_at(
+                                    work,
+                                    synth,
+                                    env,
+                                    expected,
+                                    fuel.saturating_sub(1),
+                                    pos,
+                                );
                                 return;
                             }
                             // Reflect is not loaded, so the desugaring does not exist —
@@ -11416,6 +11563,10 @@ fn check_apply_iter(
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
     expected: Option<Value>,
+    // WI-1104: WHERE this call is written ([`NodePos`]) — the GOAL-vs-VALUE distinction
+    // the functional-relation arity + 1 is scoped by. It rides the work-stack frame, not
+    // `env`: see [`NodePos`] for why a per-rule env flag separates nothing.
+    pos: NodePos,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -11994,6 +12145,11 @@ fn check_apply_iter(
                 // not a type mismatch; [`call_arity_error`] below reports the count, and
                 // did not exist when this `get` was the whole of what a surplus argument
                 // met.
+                // WI-1104: …except the one surplus that IS type-checkable — a relational
+                // goal's RESULT column, whose declared type is the operation's RETURN
+                // rather than any parameter. Checked below beside the arity verdict that
+                // admits it ([`relational_result_column`]), not here, because this loop
+                // pairs arguments to PARAMETERS and that column fills none.
                 if let Some((param_sym, param_type)) = written_params.get(i) {
                     // WI-398: validate against the ELIMINATED type for a projection param
                     // (`s.cell.T` → `String`); the raw type for a non-projection param.
@@ -12100,9 +12256,41 @@ fn check_apply_iter(
             source_args,
             capture_param,
             fn_sym,
-            env.in_rule_body(),
+            pos,
             span,
         ));
+        // WI-1104, the tolerance's other half: the column `call_arity_error` just
+        // ADMITTED is the operation's RESULT, so it is checked like any argument —
+        // against the RETURN. Nothing else in the language does: the goal's shape is
+        // decided at resolution (`functional_relation_arity` /
+        // `dispatched_relation_arity`, kb/resolve.rs), which reads the arity and never the
+        // declared return, so `Desc.describe(leaf(), "not an int")` against `-> Int64`
+        // loaded clean and answered nothing — a dead goal indistinguishable from one with
+        // no solutions, which is exactly the deferral WI-1100 exists to remove.
+        //
+        // DECIDED HERE, COMPARED LATER, and the split is not tidiness. Which argument is
+        // the result column is the arity verdict's own question and is answered once,
+        // beside it. WHAT it must match is the return the call actually produces, which
+        // does not exist yet: a projection return (`get(b: Box) -> b.T`) is discharged
+        // against the receiver's argument type ~150 lines below (`proj_return_type`,
+        // WI-376/WI-606). Comparing against `op.return_type` here instead was
+        // review-found and MEASURED — `rule r() :- box(v: 3).get(3)` on `box(v: T)`,
+        // a correct program, was refused with `expected b.T, got Int64`, a diagnostic
+        // naming a type the author never wrote.
+        //
+        // BOTH READS ARE TOTAL, so neither is written as a case to skip (loud over
+        // silent): `surplus_positional == 1` says `pos_args.len() == params.len() + 1`,
+        // which puts the column at the last positional index; and `collect_arg_errors` at
+        // the top of this function returned early on any `Err` argument, so every result
+        // here is `Ok`. A miss would be a broken invariant, not an input.
+        let result_column_type: Option<Value> = relational_result_column(&op.params, &binding, pos)
+            .map(|col| {
+                pos_results[col]
+                    .as_ref()
+                    .expect("WI-1104: every argument result is `Ok` past `collect_arg_errors`")
+                    .ty
+                    .clone()
+            });
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
         }
@@ -12325,6 +12513,26 @@ fn check_apply_iter(
         } else {
             proj_return_type
         };
+
+        // WI-1104 — the RESULT COLUMN of a functional-relation goal, compared against the
+        // return it receives. The column was chosen at the arity verdict above (one owner
+        // for "which argument is the result"); this is the first point at which the other
+        // side of the comparison exists in the form the call actually produces —
+        // projections discharged against the receiver (`s.T`, WI-376/WI-606), value-in-type
+        // references re-keyed to the caller's arguments (WI-481), and the `Concat` /
+        // `Without` family reduced (WI-714/WI-727). Above this it is still `b.T`, and
+        // comparing against that spelling refused `rule r() :- box(v: 3).get(3)` — a
+        // correct program — with `expected b.T, got Int64` (review-found, measured).
+        //
+        // Raised as its own `Err`: the sibling argument mismatches were aggregated and
+        // returned ~200 lines above, so there is no longer a batch to join.
+        if let Some(column_type) = &result_column_type {
+            if let Some(e) =
+                result_column_error(kb, &mut subst, column_type, &proj_return_type, fn_sym, span)
+            {
+                return Err(e);
+            }
+        }
 
         // WI-383 B (Modify provider-fact GROUND value bind): bind a still-FREE spec
         // value-param from the carrier's GROUND provider-fact binding
@@ -31350,6 +31558,142 @@ fn bind_call_arguments(
     }
 }
 
+/// WI-1104 — is this call the FUNCTIONAL-RELATION form, and if so WHICH positional
+/// argument is its result column?
+///
+/// `Some(i)`: the call is a rule-body GOAL written at the operation's arity + 1
+/// (kernel §5.3, WI-938) — `vec_add(a, b, ?c)` resolves as `unify(vec_add(a, b), ?c)` —
+/// and `i` indexes the extra column, the one receiving the RESULT. `None`: an ordinary
+/// call, whose every argument fills a declared slot.
+///
+/// ONE OWNER, TWO READERS, and that is the point of naming it. [`call_arity_error`] reads
+/// it to ADMIT the extra column; [`check_apply_iter`] reads it to TYPE-CHECK that column
+/// against the callee's declared return. Before WI-1104 only the first reading existed and
+/// the column was never checked at all — the positional validation loop reads
+/// `written_params.get(i)`, so an argument past the declared list was skipped, and nothing
+/// downstream picked it up either: the goal's shape is decided at resolution
+/// (`functional_relation_arity` / `dispatched_relation_arity`, kb/resolve.rs) where the
+/// declared return is not consulted. `Desc.describe(leaf(), "not an int")` against
+/// `-> Int64` loaded clean and answered nothing.
+///
+/// The three conditions, each load-bearing:
+///   * [`NodePos::RuleBodyGoal`] — a VALUE-position call has no relational reading at all
+///     (that was WI-1104's headline defect; see [`call_arity_error`]);
+///   * `unfilled.is_empty()` — every declared slot is filled, so the surplus is genuinely
+///     EXTRA rather than an argument that landed in the wrong place;
+///   * `surplus_positional == 1` — EXACTLY one column over, so "in a rule body anything
+///     goes" is not what was traded for the relational view. No label can be the surplus:
+///     a label fills a slot, so a surplus is positional by construction, which is what
+///     makes `params.len()` the column's index.
+fn relational_result_column(
+    params: &[(Symbol, Value)],
+    binding: &ArgumentBinding,
+    pos: NodePos,
+) -> Option<usize> {
+    (pos == NodePos::RuleBodyGoal && binding.unfilled.is_empty() && binding.surplus_positional == 1)
+        .then_some(params.len())
+}
+
+/// WI-1104 — the verdict on a relational goal's RESULT column
+/// ([`relational_result_column`]): does the value written there fit what the operation
+/// RETURNS?
+///
+/// Judged by the check an ARGUMENT gets ([`validate_arg_against_param`]) — the same
+/// groundness gate (an unbound `?r`, the overwhelmingly common spelling, is non-ground
+/// and left to resolution) and the same reflect-`Term` and provider-carrier tolerances —
+/// but run in BOTH DIRECTIONS, which is where a column stops being an argument. The
+/// context is [`TypeErrorContext::OperationReturn`], so the diagnostic reads `<op>.return`
+/// rather than naming a parameter the column does not fill.
+///
+/// **WHY BOTH.** An argument flows IN, so `actual <: declared` is the whole question. A
+/// result column is a UNIFICATION TARGET: the resolver binds the returned value into it
+/// and coerces nothing, so the pair must be able to hold the same values, and subtyping
+/// in EITHER direction alone admits a column that can never unify. Review-found, and the
+/// two halves are exact mirrors — with a `-> (a: Int64, b: Int64)` return:
+///
+/// ```text
+/// mk(v: 0).pair((a: 1, b: 2, c: 3))     -- column WIDER  than the return
+/// mk(v: 0).triple((a: 1, b: 2))         -- column NARROWER (against `-> (a, b, c)`)
+/// ```
+///
+/// Neither can ever unify. Under the argument direction alone the narrow one is refused
+/// (a value with fewer fields does not fit a wider slot) and the wide one LOADS CLEAN,
+/// because a named tuple with MORE fields is a subtype of one with fewer — the exact
+/// "dead goal indistinguishable from one with no solutions" this check exists to remove,
+/// admitted by the check itself. Requiring both directions refuses both, and leaves every
+/// pair that could unify alone: for a scalar pair the two directions coincide, so the 78
+/// decidable sites the suite drives are untouched (measured — one revert, one run).
+///
+/// The REVERSE direction runs on a CLONE of σ. `validate_arg_against_param` may bind
+/// through `types_compatible`, and the reversed pair is asked as a QUESTION about this
+/// call, not as part of its inference — the forward direction is the one whose bindings
+/// this call is entitled to keep.
+///
+/// WHERE IT FIRES, MEASURED at this site rather than assumed. **Zero** times over an
+/// `anthill load` of all thirteen `.anthill` projects in the repo — no shipped program
+/// writes a relational goal on a callee this check can see, because the spelling needs a
+/// callee with a SIGNATURE at the goal, which today means a spec op or a dot
+/// ([`call_dispatch_shape`] rung 2); a plain operation named as a goal is a
+/// `CallDispatch::Subgoal` and never reaches `check_apply_iter`. **93** times over the
+/// `wi_tests` binary, **85 of them decidable** (both sides ground, so the check fires
+/// rather than deferring), across 47 callees — the stdlib's own `Numeric.add` (22),
+/// `Numeric.mul` and `PartialOrd.gt` among them. The corpus zero is not coverage
+/// (WI-1034/WI-1063); the 85 are, and they are what a wrong check here would refuse.
+///
+/// **THE ONE PLACE IT DIVERGES from an argument: `WrapSome` is REFUSED, not applied.**
+/// The WI-408 some-coercion repairs a bare `T` in an `Option[T]` slot by wrapping the
+/// argument occurrence — a REWRITE. Here the goal is `unify(f(a…), col)` and the resolver
+/// coerces nothing, so wrapping would change what the rule MEANS while making the load
+/// look clean (WI-1058's third reason for not rewriting a rule body). Left un-wrapped and
+/// un-reported it is a goal that can never unify, which is the defect this closes. So it
+/// is reported, with the declared `Option[T]` as the expected type.
+fn result_column_error(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    column_type: &Value,
+    declared_return: &Value,
+    callee: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let context = TypeErrorContext::OperationReturn { op_name: callee };
+    // The natural orientation first: its `Fail` already renders "expected <return>, got
+    // <column>", which is what the author needs to read.
+    match validate_arg_against_param(
+        kb,
+        subst,
+        column_type,
+        declared_return,
+        span,
+        context.clone(),
+    ) {
+        ArgValidation::Fail(err) => return Some(err),
+        ArgValidation::WrapSome { declared } => {
+            return Some(TypeError::TypeMismatch {
+                site: TypeError::here(),
+                span,
+                context,
+                expected: declared,
+                actual: column_type.clone(),
+            })
+        }
+        ArgValidation::Ok => {}
+    }
+    // …then the reverse (see this function's doc). Its own `Fail` message would read
+    // backwards — "expected <column>, got <return>" — so only its VERDICT is taken and
+    // the mismatch is stated in the reader's orientation.
+    let mut probe = subst.clone();
+    match validate_arg_against_param(kb, &mut probe, declared_return, column_type, span, context) {
+        ArgValidation::Ok => None,
+        ArgValidation::Fail(_) | ArgValidation::WrapSome { .. } => Some(TypeError::TypeMismatch {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationReturn { op_name: callee },
+            expected: declared_return.clone(),
+            actual: column_type.clone(),
+        }),
+    }
+}
+
 /// WI-1100 — the ARITY verdict on a call to a named operation: every declared slot is
 /// filled exactly once, and no argument occupies a slot that does not exist. Read off
 /// [`bind_call_arguments`]'s binding rather than re-derived, so "which slot does this
@@ -31384,22 +31728,26 @@ fn bind_call_arguments(
 /// [`dispatch_calls_in_occ`], so refusing arity + 1 there would refuse a delivered
 /// language feature — 17 tests across five files, measured.
 ///
-/// **WHAT THE TOLERANCE LEAVES OPEN, precisely** (WI-1104). `in_rule_body` is a
-/// PER-RULE flag ([`TypingEnv::rule_body_dispatch`]), while GOAL-vs-VALUE is [`BodyPos`],
-/// which lives in the rule-body walk and is not carried into the typing env. So a
-/// VALUE-position rule-body call that is over-applied by exactly one is admitted too:
+/// **WI-1104 SCOPED IT TO THE POSITION IT WAS ALWAYS ABOUT.** Until then the tolerance
+/// was gated on `TypingEnv::rule_body_dispatch`, a PER-RULE flag, while GOAL-vs-VALUE is
+/// [`BodyPos`] — so a VALUE-position rule-body call over-applied by exactly one was
+/// admitted too, and MEASURED:
 ///
 /// ```text
-/// rule r(?y) :- leaf().describe(?d), ?y = concat("a", "b", "c")   -- loads clean
+/// rule r(?y) :- leaf().describe(?d), ?y = concat("a", "b", "c")   -- loaded clean
 /// ```
 ///
-/// That is one position of the very defect this closes, and it is stated rather than
-/// hidden. Every other count is refused, in a rule body and an operation body alike; the
-/// operation body — where the ticket's whole population lives — has no tolerance at all.
-/// Closing it needs the position threaded to here, which is WI-1104's own work.
-/// The extra column is also not TYPE-checked (the positional loop skips an argument past
-/// the declared list), which is the same ticket's second half: nothing today relates a
-/// relational goal's result column to the operation's return type.
+/// One program, two verdicts, decided by where it was written: an operation body carrying
+/// the same expression was refused. The gate is now [`NodePos`], which rides the typer's
+/// work-stack frame and so answers per NODE — see [`relational_result_column`], the one
+/// owner of "is this the functional-relation form", read both here and by the RESULT-
+/// COLUMN check the same tolerance now carries.
+///
+/// WHAT THE NARROWING COSTS, measured at this site over an `anthill load` of the repo's
+/// thirteen projects: on stdlib + host bindings, 84 calls reach here from inside a rule
+/// body — **44 at a goal, 40 at a value**, so the gate decides 40 sites differently and
+/// is in no sense inert. Every project still loads clean, which says the second half:
+/// nothing shipped was RELYING on the tolerance in a value position.
 fn call_arity_error(
     kb: &mut KnowledgeBase,
     params: &[(Symbol, Value)],
@@ -31407,18 +31755,15 @@ fn call_arity_error(
     supplied: usize,
     capture_param: Option<Symbol>,
     callee: Symbol,
-    in_rule_body: bool,
+    pos: NodePos,
     span: Option<Span>,
 ) -> Option<TypeError> {
     if binding.surplus_positional == 0 && binding.unfilled.is_empty() {
         return None;
     }
-    // The functional-relation view (see this function's doc): ONE extra positional
-    // column on a rule-body goal, every declared slot filled. `unfilled.is_empty()`
-    // and `surplus_positional == 1` together say the arguments are exactly the
-    // declared list plus one — with no label in play, since a label fills a slot and
-    // so cannot be the surplus.
-    if in_rule_body && binding.unfilled.is_empty() && binding.surplus_positional == 1 {
+    // The functional-relation view (see this function's doc). ADMITTED here and CHECKED
+    // by the caller: the same predicate answers which column is the result.
+    if relational_result_column(params, binding, pos).is_some() {
         return None;
     }
     let plural = |n: usize| if n == 1 { "" } else { "s" };
@@ -52501,7 +52846,13 @@ fn dispatch_calls_in_occ(
     // Everything below reads `walked`, never the parameter: for the recursing shape the
     // children may have been rewritten, and both the type-check and the node this returns
     // must see that tree. It is the same `Rc` for the two non-recursing shapes.
-    match type_check_node(kb, env, &walked, None) {
+    //
+    // WI-1104 — and it hands the typer THE POSITION. This walk is the only thing in the
+    // language that knows it: it owns goal descent ([`child_body_positions`]), so by the
+    // time a node reaches `type_check_node` the answer exists nowhere else. Everything
+    // BENEATH the handed-over node is data, which is why [`NodePos`] has two values where
+    // [`BodyPos`] has four — the typer never descends into a goal.
+    match type_check_node_at(kb, env, &walked, None, node_pos_of(pos)) {
         // `result.node` is the dispatched tree (method `Apply` / reflect
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
         // the same form an op body's call rewrites to.
@@ -52615,6 +52966,22 @@ enum BodyPos {
     ///     type names rather than values, and it is checked where it is BUILT
     ///     (`check_sort_type_args`, WI-710) rather than here.
     Untyped,
+}
+
+/// WI-1104 — the [`NodePos`] the typer is handed for a node this walk reaches at `pos`.
+///
+/// The projection is total and deliberately COARSE: the typer's only question is
+/// "may this call be written at the operation's arity + 1", which is the FUNCTIONAL-
+/// RELATION view (§5.3, WI-938) and belongs to a goal. [`GoalCommit`] does not enter it
+/// — a *tolerated* dead goal is still a goal, and the relational spelling is legal in a
+/// bare `or` branch exactly as it is at the top level. `Untyped` never reaches the
+/// typer at all ([`dispatch_calls_in_occ`] returns before the type-check), so its row
+/// here is unreachable-but-total rather than a reading.
+fn node_pos_of(pos: BodyPos) -> NodePos {
+    match pos {
+        BodyPos::Goal(_) | BodyPos::GoalTuple(_) => NodePos::RuleBodyGoal,
+        BodyPos::Value | BodyPos::Untyped => NodePos::Value,
+    }
 }
 
 /// WI-1058 — is a DEAD goal at this position a defect this walk refuses, or one it leaves

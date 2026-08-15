@@ -1222,3 +1222,6 @@ mod wi1103_derived_provision_reload_test;
 
 #[path = "include/wi1100_call_arity_test.rs"]
 mod wi1100_call_arity_test;
+
+#[path = "include/wi1104_relational_column_test.rs"]
+mod wi1104_relational_column_test;

@@ -41,10 +41,17 @@
 //! written at the operation's arity + 1 — the FUNCTIONAL-RELATION view (§5.3, WI-938),
 //! where the last positional column receives the result. That is the shape WI-1043's
 //! rule-body spec-op dispatch is written in, and `a_rule_body_relational_goal_still_loads`
-//! below is its control here. It is scoped by a PER-RULE flag rather than by position, so
-//! it also admits a VALUE-position rule-body call over-applied by exactly one — one
-//! position of this very defect, left open, stated at [`call_arity_error`] and owned by
-//! **WI-1104**. Everything else, in a rule body and an operation body alike, is refused.
+//! below is its control here. Everything else, in a rule body and an operation body alike,
+//! is refused.
+//!
+//! WI-1100 scoped that tolerance by a PER-RULE flag rather than by position, so it also
+//! admitted a VALUE-position rule-body call over-applied by exactly one — one position of
+//! this very defect. **WI-1104 CLOSED IT**: the gate is now `NodePos`, which rides the
+//! typer's work-stack frame and so answers per node, and the same ticket type-checks the
+//! admitted column against the callee's declared RETURN. The two controls below are
+//! unchanged by it and are its regression net — this file's relational goal must still
+//! load in BOTH spellings, the dotted one being the path whose position must survive the
+//! `DotApply` → synthesized-`Apply` lowering. See `wi1104_relational_column_test`.
 //!
 //! WHAT FAILS IF THIS IS BACKED OUT — MEASURED, two reverts, two runs:
 //!
