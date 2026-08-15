@@ -812,17 +812,19 @@ end
     );
 }
 
-/// (E) non-regression: a TYPE-ONLY provider fact (no op binding) whose carrier
-/// param is unbound keeps the lenient path — it is not an instance fact, so the
-/// loud carrier check does not fire. (Here a parametric type-only `fact Holder`
-/// with no binding must not newly error. NOTE the lenient path now has no
-/// real-world consumer: after WI-931/WI-932 no namespace-level bracket-less
-/// `fact <Spec>` survives in stdlib/, anthill-stl/, anthill-todo/ or examples/ —
-/// every `Modifiable` fact binds its carrier. WI-933 decides whether that
-/// spelling gets implemented or refused; until then this pin is the only thing
-/// holding the path's shape.)
+/// (E)'s boundary, RE-DECIDED BY WI-933. This test used to assert the opposite —
+/// that a bare type-only `fact Holder` at namespace level "stays lenient" — and said
+/// in its own comment that the lenient path had no real-world consumer and that
+/// WI-933 would decide whether the spelling is implemented or refused. WI-933 refused
+/// it, so this is the CONTROL that flips: it fails if the refusal is backed out.
+///
+/// The boundary (E) drew is still real and still here: the two arrivals get DIFFERENT
+/// sentences, because only an op-bearing instance fact has an unbound carrier
+/// PARAMETER to name in its repair. So this asserts the refusal AND that it is not
+/// (E)'s — a single "some error mentioning carrier" assertion would pass if the two
+/// messages collapsed into one, which is the drift the pair exists to catch.
 #[test]
-fn type_only_fact_unbound_carrier_stays_lenient() {
+fn a_bare_type_only_fact_at_namespace_level_is_refused_in_its_own_words() {
     let snippet = r#"namespace test.wi431.type_only
   import anthill.prelude.Int64
 
@@ -836,8 +838,13 @@ end
 "#;
     let errs = load_errors(&[snippet]);
     assert!(
-        !errs.iter().any(|e| e.contains("carrier")),
-        "a bare type-only provider fact (no op binding) must not trigger the loud carrier \
-         check: {errs:?}"
+        errs.iter().any(|e| e.contains("names no carrier")),
+        "WI-933: a namespace-level bracket-less `fact Holder` names no carrier and is \
+         refused, not dropped: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("binds operations")),
+        "and NOT with (E)'s instance-fact wording — this fact binds no operation, so \
+         there is no carrier parameter for it to tell the author to bind: {errs:?}"
     );
 }

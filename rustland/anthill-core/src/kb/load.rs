@@ -747,6 +747,36 @@ pub enum LoadError {
         spec: String,
         carrier_param: String,
     },
+    /// WI-933 — a **bracket-less** `fact <Spec>` written at a scope that names no
+    /// type (an ordinary namespace, or a file's synthetic `_global` root). The
+    /// spelling reads as a provision and named no carrier, so before this refusal it
+    /// emitted no `SortProvidesInfo` and no diagnostic: it loaded clean and did
+    /// nothing. Two stdlib lines were written that way and neither produced an edge
+    /// (WI-931's measurement, `fact BulkStore` / `fact QueryableStore`); both are
+    /// gone now, so the tree contains no instance and this refuses only new text.
+    ///
+    /// THE FACT TWIN OF [`Self::ProvidesClauseNeedsSort`] (WI-1000), and refused for
+    /// the same reason: a provision is filed BY carrier, so a claim that names none
+    /// at an address no type occupies is not about anything. The two repairs differ
+    /// only in which of them the author meant — brackets naming a carrier declared
+    /// elsewhere, or the bare form inside the carrier's own body, where the
+    /// enclosing type IS the carrier and the spelling already works.
+    ///
+    /// NOT the alternative the doc described. `docs/rust-forward-mapping.md` §2.13
+    /// read this spelling as "the sort declared in this namespace provides Spec",
+    /// i.e. derive the carrier from the enclosing namespace's entity. That is a
+    /// guess by proximity, and it reintroduces exactly what WI-978 removed: a
+    /// namespace with two entities (`anthill.persistence.filesystem` has `FileStore`
+    /// and `IndexedFileStore`) would let declaration ORDER pick the carrier. The doc
+    /// was corrected in the same commit.
+    CarrierlessProvisionFact {
+        /// The spec claimed, qualified.
+        spec: String,
+        /// The scope the fact was written in, qualified — a namespace, or a file's
+        /// synthetic root when the fact is at top level.
+        scope: String,
+        span: Span,
+    },
     /// WI-851: a constructor's named argument names no DECLARED FIELD of the entity.
     /// The named twin of the positional over-arity refusal, and like it a loud case
     /// rather than a silent never-match: an unknown label rides into the hash-consed
@@ -1533,6 +1563,7 @@ impl LoadError {
             | LoadError::BooleanOperatorInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
+            | LoadError::CarrierlessProvisionFact { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -2160,6 +2191,13 @@ impl LoadError {
                     provides_needs_sort_message(namespace)
                 )
             }
+            LoadError::CarrierlessProvisionFact { spec, scope, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    carrierless_provision_message(spec, scope)
+                )
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -2429,6 +2467,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     provides_needs_sort_message(namespace),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::CarrierlessProvisionFact { spec, scope, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    carrierless_provision_message(spec, scope),
                     span.start,
                     span.end
                 )
@@ -4438,6 +4485,26 @@ fn provides_needs_sort_message(namespace: &str) -> String {
          nothing for it to be a claim about. Write it inside the sort's own \
          declaration, or in a `namespace` block at that sort's address; a claim about \
          a carrier named elsewhere is `fact Spec[Carrier]`."
+    )
+}
+
+/// WI-933 — the sentence for [`LoadError::CarrierlessProvisionFact`]. One owner,
+/// for the reason [`provides_needs_sort_message`] states: two rendering paths, one
+/// of them under test.
+///
+/// BOTH repairs are spelled out, as [`wildcard_non_scope_message`] does, because
+/// "this fact named no carrier" does not say which text the author meant to write —
+/// a claim about a carrier declared elsewhere and a claim written inside the
+/// carrier are different sentences, and only the author knows which.
+fn carrierless_provision_message(spec: &str, scope: &str) -> String {
+    format!(
+        "`fact {spec}` claims '{spec}' is satisfied but names no carrier, and \
+         '{scope}' names no type either — a provision is filed BY the type that \
+         satisfies the spec, so this claim is about nothing and would load doing \
+         nothing. Write the carrier in brackets (`fact {spec}[Carrier]`), or write the \
+         bare `fact {spec}` inside the carrier's own `sort`/`enum` body, where the \
+         enclosing type IS the carrier — the spelling that says every such type is-a \
+         '{spec}'."
     )
 }
 
@@ -20062,7 +20129,9 @@ impl<'a> Loader<'a> {
         // SortProvidesInfo so dispatch (and proposal-030 specialization
         // witnesses) can find the impl. Mirrors load_provides_clause.
         // Brings the loader in line with kernel-language §1418.
-        self.maybe_emit_fact_provides_info(term, domain);
+        // The head's own source span, so WI-933's carrier refusal points at the
+        // `fact` line rather than rendering unlocatable.
+        self.maybe_emit_fact_provides_info(term, domain, self.parsed.terms.span(f.term));
 
         self.current_owner = prev_owner;
     }
@@ -20195,14 +20264,28 @@ impl<'a> Loader<'a> {
     ///   Asked as `has_kind`, never `kind_of`: see the comment at the branch.
     /// - **Names no type**: a plain namespace, or a file's synthetic `_global`
     ///   root scope. The carrier is derived from the fact's first binding value
-    ///   (the type that satisfies the spec).
+    ///   (the type that satisfies the spec). A claim WRITTEN BARE (`fact <Spec>`,
+    ///   nothing after the name) over a constructor-less spec is refused rather than
+    ///   dropped ([`LoadError::CarrierlessProvisionFact`], WI-933) — the spelling the
+    ///   docs used to promise. Other carrier-less arrivals keep the lenient exit; the
+    ///   branch comment says which ones, why each discriminator that would have
+    ///   caught them is wrong, and what was measured.
     ///
     /// Positional bindings are translated to named bindings via
     /// `type_params_of_sort` — `fact Ring[Float]` and
     /// `fact Ring[T = Float]` produce equivalent `SortView` records.
-    fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: Symbol) {
+    fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: Symbol, span: Span) {
         // fact_term must be `Fn { functor, … }` where functor is a Sort
         // with at least one type parameter (i.e. a spec).
+        // `written_bare` is the WRITTEN SHAPE — `fact Spec` with nothing after the
+        // name — and it is what WI-933's refusal below keys on. Not a derived
+        // property of the bindings: `fact Spec[combine = f]` writes brackets and
+        // still leaves the carrier underivable, so a bindings-derived test would
+        // report "write the brackets" at text that has them.
+        let written_bare = matches!(
+            self.kb.get_term(fact_term),
+            Term::Ref(_) | Term::Ident(_)
+        );
         let (fact_functor, fact_pos_args, fact_named_args) = match self.kb.get_term(fact_term) {
             Term::Fn {
                 functor,
@@ -20326,20 +20409,57 @@ impl<'a> Loader<'a> {
                 .filter(|s| !matches!(self.kb.kind_of(*s), Some(SymbolKind::Operation)));
             match carrier_sym {
                 Some(sym) => self.kb.make_name_term_from_sym(sym),
-                // WI-431 (E): a parametric INSTANCE FACT (binds ≥1 op) whose
-                // carrier cannot be derived is malformed — be LOUD instead of
-                // silently dropping the whole provision (and with it the
-                // coverage / coherence / signature checks). A type-only or bare
-                // provider fact (no op binding) keeps the lenient path: it may
-                // legitimately have no carrier here (a namespace-level provider
-                // fact written without brackets — the spelling WI-933 is open
-                // against; after WI-931/WI-932 the tree contains no instance).
+                // NO CARRIER, AND THE SCOPE NAMES NO TYPE EITHER. Several shapes
+                // reach here and only one of them is WI-933's, so the refusal keys on
+                // the WRITTEN SHAPE (`written_bare` — `fact Spec` with nothing after
+                // the name) and not on any property of the bindings. Each alternative
+                // discriminator was tried and MEASURED to be wrong:
+                //
+                // (1) WI-431 (E) FIRST, and it keeps its own sentence: an op-bearing
+                // instance fact with a carrier type-param slot to forget. That one
+                // names the unbound parameter, which the general sentence cannot.
+                //
+                // (2) `carrier_val.is_none()` IS NOT THE TEST, though it looks like
+                // it: `fact Spec[combine = f]` on a spec with no carrier parameter
+                // writes brackets, has (1) decline for want of a parameter to name,
+                // and still leaves nothing to read — so keying on it renders "write
+                // the carrier in brackets" at text that has them. That fact is a
+                // gap in (E)'s wording, not this ticket's, and stays as silent as it
+                // was. So is a binding that names no type at all (`fact Spec[T = ?]`),
+                // which lands here beside `fact Box(value: 1)` — see (3) and WI-1106.
+                //
+                // (3) `written_bare` ALONE IS NOT THE TEST EITHER. A NULLARY
+                // CONSTRUCTION is written bare — `entity ZzBox` inside a PARAMETRIC
+                // eponymous `sort ZzBox { sort T = ?; … }` (WI-926: one symbol that is
+                // both) — and reaches here identically, since the data-sort skip above
+                // needs `spec_params.is_empty()`, which a parametric sort is not.
+                // MEASURED: it loaded clean before this refusal and a bare-shape-only
+                // test broke it. So a functor that HAS CONSTRUCTORS is left alone —
+                // it can be constructed, which makes the bare spelling ambiguous, and
+                // WI-1106 owns telling the two apart by surface. A spec with no
+                // constructors can only be claimed, which is every carrier-less fact
+                // WI-931 measured (`BulkStore`, `QueryableStore`) and the wi431 pin.
+                //
+                // The same boundary from the other side: `fact Box(value: 1)` — an
+                // ordinary construction WITH a binding, over that same parametric
+                // eponymous sort — is not bare, so it never reaches the refusal.
+                // `wi927_bracket_surface_test::the_parenthesized_surface_still_
+                // constructs_and_still_checks_fields` requires it to load clean.
+                //
+                // WHY REFUSED AT ALL. The bracket-less spelling reads as a provision,
+                // `docs/rust-forward-mapping.md` §2.13 documented it as one, and it
+                // produced none: MEASURED by dumping every `SortProvidesInfo` of a
+                // full stdlib + host-bindings load (WI-931), where both shipped
+                // instances — `fact BulkStore` after `entity FileStore(…)` and `fact
+                // QueryableStore` after `entity SqlStore(…)` — emitted no edge while
+                // their bracketed neighbours on the next line did. Implementing the
+                // doc's reading instead (derive the carrier from the enclosing
+                // namespace's entity) was rejected rather than unimplemented: that
+                // namespace declares TWO entities, so proximity would put declaration
+                // ORDER back in charge of which type a claim is about — the
+                // discriminator WI-978 removed. §2.13 was corrected in the same
+                // commit; the fact twin of WI-1000's `provides` refusal.
                 None => {
-                    // Loud only for a PARAMETRIC instance fact — `binds_any_op`
-                    // AND a carrier type-param slot (`spec_params.first()`). A
-                    // non-parametric spec has no carrier param to forget, and a
-                    // type-only / bare provider fact (no op binding) keeps the
-                    // lenient path.
                     let binds_any_op = named_terms
                         .iter()
                         .any(|(_, v)| binding_op_symbol(self.kb, *v).is_some());
@@ -20349,7 +20469,15 @@ impl<'a> Loader<'a> {
                                 spec: self.kb.qualified_name_of(fact_functor).to_string(),
                                 carrier_param: carrier_param.clone(),
                             });
+                            return;
                         }
+                    }
+                    if written_bare && !self.kb.sort_has_constructors(fact_functor) {
+                        self.errors.push(LoadError::CarrierlessProvisionFact {
+                            spec: self.kb.qualified_name_of(fact_functor).to_string(),
+                            scope: self.kb.qualified_name_of(domain).to_string(),
+                            span,
+                        });
                     }
                     return;
                 }

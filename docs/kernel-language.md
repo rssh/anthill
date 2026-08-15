@@ -1128,7 +1128,13 @@ data instance and emits no provision at all (§8.7), and a conditional provision
 `provides Spec[…] :- goals` has no `fact` spelling. Outside a sort body the two
 diverge on the provision as well: at an address no type occupies a `fact` still
 derives its carrier from the bindings, while a `provides` clause has no provider
-to be about and is refused.
+to be about and is refused. That is a divergence about the *provider*, not a
+licence to omit the carrier — a `fact` written there **bare**, with nothing after
+the spec's name, has nothing to derive from and is refused too, unless the name
+it gives is one a constructor could be spelling (WI-933, §6.3). Both refusals are
+the same rule seen from two sides: a provision needs a provider and a carrier, a
+namespace supplies neither, and what the text does not say the loader will not
+guess.
 
 **A declaration may not capture a name it does not override** (proposal 059 R4
 clause 3; `check_name_captures`, `kb/load.rs`). A name can already mean something
@@ -2263,6 +2269,36 @@ Consequences worth stating, because they are what the rule buys:
   category was registered first. That made a claim beside a free-standing `entity X(…)`
   record no provision at all, so it loaded clean with nothing backing it, while
   moving the same text one line out refused it.
+
+  **But a claim still needs a carrier to attach the obligation to, and only one
+  position supplies one without brackets** (WI-933). A `fact` is writable in three of
+  the four positions above — the fourth, a `namespace X` block at a sort's address, is
+  a **secondary entry**, where `fact` is refused outright and the spelling is `provides
+  Spec[…]` (§6.3's secondary-entry rule; a fact is a rule, and in that position a
+  spec claim cannot be told from an ordinary fact over a parameterized data sort).
+  Of the three, only *inside `X`'s own body* is the enclosing type the carrier — which
+  is what `sort QueryableStore { fact Store }` says and how the store hierarchy is
+  built. The other two, beside `X` in its namespace and at a file's top level, name it
+  in brackets, because neither address names a type. A **bracket-less `fact Spec` at
+  either of those** is therefore about nothing, and is a **load error** naming the
+  spec, the scope, and both repairs — not a silent no-op, which is what it was: two
+  such lines shipped in the stdlib and neither produced a provision, while their
+  bracketed neighbours on the next line did (measured, WI-931). It is the `fact` twin
+  of the refusal §5.1 states for a `provides` clause at an address no type occupies,
+  and refused for the same reason — a provision needs a provider and a carrier, and a
+  namespace supplies neither. The tempting alternative, reading the carrier off the
+  enclosing namespace's entity declaration, is rejected on the same ground WI-978
+  states above: a namespace may declare more than one, so proximity would put
+  declaration *order* back in charge of what a claim is about.
+
+  One shape is deliberately **not** caught by it, and the boundary is written where the
+  refusal is: a **nullary constructor** of an eponymous parametric sort (`sort Box {
+  sort T = ?; entity Box }`) is also written bare, and `fact Box` there constructs
+  rather than claims. So the refusal reads the functor's *constructors* as well as the
+  shape — a sort that can be constructed keeps the lenient reading, a
+  constructor-less spec cannot be anything but claimed. Telling the two apart properly
+  is a question about the written surface (parens construct, brackets apply types),
+  which this position does not yet ask.
 
 - **Operations move a free-standing entity to the long form.** The sugar has no body
   in which to write one, so `sort Box { entity Box(v: Int64); operation unwrap(…) = … }`

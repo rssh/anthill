@@ -789,7 +789,6 @@ impl<'a> RustCodegen<'a> {
 
     fn emit_items(&mut self, items: &[Item], _enclosing_ns: Option<&Namespace>) {
         let mut first = true;
-        let mut last_entity: Option<String> = None;
         for item in items {
             match item {
                 Item::Namespace(n) => {
@@ -797,21 +796,18 @@ impl<'a> RustCodegen<'a> {
                         self.blank();
                     }
                     self.emit_namespace(n);
-                    last_entity = None;
                 }
                 Item::SortWithBody(s) => {
                     if !first {
                         self.blank();
                     }
                     self.emit_sort(s);
-                    last_entity = None;
                 }
                 Item::Entity(e) => {
                     if !first {
                         self.blank();
                     }
                     self.emit_standalone_entity(e, _enclosing_ns);
-                    last_entity = Some(self.resolve(&e.name));
                 }
                 Item::Operation(o) => {
                     let op_name = self.resolve(&o.name);
@@ -822,7 +818,7 @@ impl<'a> RustCodegen<'a> {
                     });
                 }
                 Item::Fact(f) => {
-                    self.emit_namespace_fact(f, last_entity.as_deref());
+                    self.emit_namespace_fact(f);
                 }
                 Item::Rule(_) => {
                     // Collected later for test module
@@ -845,7 +841,6 @@ impl<'a> RustCodegen<'a> {
                         self.blank();
                     }
                     self.emit_const(c, false);
-                    last_entity = None;
                 }
                 Item::OperationBlock(_)
                 | Item::RequiresDecl(_)
@@ -950,7 +945,6 @@ impl<'a> RustCodegen<'a> {
 
         // Emit items, handling sorts with aggregated operations and supertraits
         let mut first = true;
-        let mut last_entity: Option<String> = None;
         let mut orphan_ops: Vec<&Operation> = Vec::new();
         for (idx, item) in ns.items.iter().enumerate() {
             if consumed_ops.contains(&idx) || consumed_facts.contains(&idx) {
@@ -980,7 +974,6 @@ impl<'a> RustCodegen<'a> {
                     let extra_ops = sort_ops.remove(&sname).unwrap_or_default();
                     let extra_supers = sort_supertraits.remove(&sname).unwrap_or_default();
                     self.emit_sort_with_extras(s, &extra_ops, &extra_supers);
-                    last_entity = None;
                 }
                 Item::AbstractSort(s) => {
                     let sname = self.resolve(&s.name);
@@ -1010,28 +1003,25 @@ impl<'a> RustCodegen<'a> {
                         let vis = self.visibility_prefix(s.visibility);
                         self.line(&format!("{vis}struct {sname};"));
                     }
-                    last_entity = None;
                 }
                 Item::Namespace(n) => {
                     if !first {
                         self.blank();
                     }
                     self.emit_namespace(n);
-                    last_entity = None;
                 }
                 Item::Entity(e) => {
                     if !first {
                         self.blank();
                     }
                     self.emit_standalone_entity(e, Some(ns));
-                    last_entity = Some(self.resolve(&e.name));
                 }
                 Item::Operation(o) => {
                     // Collect orphan ops for module trait emission
                     orphan_ops.push(o);
                 }
                 Item::Fact(f) => {
-                    self.emit_namespace_fact(f, last_entity.as_deref());
+                    self.emit_namespace_fact(f);
                 }
                 Item::Rule(_) | Item::RuleBlock(_) => {
                     // Collected later for test module
@@ -1695,13 +1685,32 @@ impl<'a> RustCodegen<'a> {
 
     // ── Namespace fact → impl marker comment ─────────────────────
 
-    fn emit_namespace_fact(&mut self, fact: &Fact, preceding_entity: Option<&str>) {
-        let entity_name = match preceding_entity {
-            Some(name) => name,
+    /// A namespace-level satisfaction fact → the `impl <Trait> for <Carrier>` marker
+    /// comment.
+    ///
+    /// THE CARRIER COMES FROM THE BRACKETS (WI-933), not from the entity that happens
+    /// to precede the fact. It used to be `preceding_entity`, which was the reading
+    /// the bracket-less spelling forced — and that spelling is now a load error,
+    /// because deriving a carrier by proximity lets declaration ORDER decide which
+    /// type a claim is about (`kb/load.rs`, `maybe_emit_fact_provides_info`;
+    /// `docs/rust-forward-mapping.md` §2.13). Proximity was not merely redundant once
+    /// the brackets are guaranteed, it was WRONG: MEASURED, `entity SqlStore(…) entity
+    /// ColumnDef(…) fact QueryableStore[SqlStore]` emitted `// impl QueryableStore for
+    /// ColumnDef` — the author's own carrier discarded in favour of the neighbour.
+    ///
+    /// A fact with no bindings emits NOTHING. This path parses without loading
+    /// (`anthill codegen` calls `parse` then `generate_rust`), so the loader's refusal
+    /// does not reach it and the spelling still arrives here; but the mapper has no
+    /// more idea than the loader which type was meant, and a marker naming a guessed
+    /// carrier is worse than an absent one. The diagnostic for that text is the
+    /// loader's, and it names the file and line.
+    fn emit_namespace_fact(&mut self, fact: &Fact) {
+        let trait_name = match extract_fact_sort_name(self.symbols, self.terms, fact) {
+            Some(n) => n,
             None => return,
         };
 
-        let trait_name = match extract_fact_sort_name(self.symbols, self.terms, fact) {
+        let entity_name = match extract_fact_carrier_name(self.symbols, self.terms, fact) {
             Some(n) => n,
             None => return,
         };
@@ -2050,6 +2059,40 @@ fn extract_fact_sort_name(
         Term::Fn { functor, .. } => Some(symbols.local_name(*functor).to_owned()),
         _ => None,
     }
+}
+
+/// WI-933 — the CARRIER a namespace-level satisfaction fact names: the type its
+/// brackets bind, which is what `impl <Trait> for <Carrier>` needs.
+///
+/// The bootstrap mapper reads the PARSE IR, before names are resolved, so unlike the
+/// loader's `maybe_emit_fact_provides_info` it cannot ask whether a binding names a
+/// sort, an entity or an operation. It reads the shape instead: the leading positional
+/// (`fact QueryableStore[SqlStore]`), else the first named binding that is a plain
+/// name (`fact Modifiable[T = FileStore]`) — the two spellings the stdlib and this
+/// document's examples use. A binding that is not a bare name (a literal, a nested
+/// application) yields `None` and no marker, rather than a marker naming something
+/// that is not a type.
+fn extract_fact_carrier_name(
+    symbols: &SymbolTable,
+    terms: &SimpleTermStore,
+    fact: &Fact,
+) -> Option<String> {
+    let (pos_args, named_args) = match terms.get(fact.term) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => (pos_args, named_args),
+        _ => return None,
+    };
+    let as_name = |id: &TermId| match terms.get(*id) {
+        Term::Ident(sym) | Term::Ref(sym) => Some(symbols.local_name(*sym).to_owned()),
+        _ => None,
+    };
+    pos_args
+        .iter()
+        .find_map(as_name)
+        .or_else(|| named_args.iter().find_map(|(_, v)| as_name(v)))
 }
 
 /// Get the short name from a TypeExpr.

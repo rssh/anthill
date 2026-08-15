@@ -216,10 +216,13 @@ end
 
 #[test]
 fn namespace_fact_to_impl_marker() {
+    // Transcribes `rustland/anthill-stl/anthill/persistence.anthill`'s spelling: the
+    // carrier is in the brackets. Written bare until WI-933, which refused that at
+    // load — see `fact_takes_its_carrier_from_the_brackets`.
     let out = gen(r#"namespace anthill.persistence.filesystem
   import anthill.persistence.{NonMonotonicStore}
   entity FileStore(root: String, convention: String)
-  fact NonMonotonicStore
+  fact NonMonotonicStore[FileStore]
 end
 "#);
     assert!(
@@ -377,26 +380,80 @@ fn enum_variant_pascal_case() {
 // ── Test 20: Fact-entity association only preceding entity ────────
 
 #[test]
-fn fact_associates_only_preceding_entity() {
+/// WI-933 — THE CARRIER IS THE ONE THE BRACKETS NAME, wherever the fact stands.
+///
+/// This test used to assert the opposite: that a fact associates with the entity
+/// IMMEDIATELY PRECEDING it, over the bracket-less `fact QueryableStore`. That reading
+/// is now a load error (`kb/load.rs`, `maybe_emit_fact_provides_info`) precisely
+/// because proximity lets declaration ORDER decide what a claim is about, and the
+/// mapper was doing it to text that says otherwise — MEASURED before the fix, this
+/// exact source emitted `// impl QueryableStore for ColumnDef`, discarding the
+/// author's `SqlStore`.
+///
+/// BOTH legs matter. The positive one fails without the fix (the marker named the
+/// wrong type); the negative one is what says the old rule is gone rather than merely
+/// outvoted — with proximity still in place, `ColumnDef` sits between the two and
+/// would win.
+#[test]
+fn fact_takes_its_carrier_from_the_brackets() {
     let out = gen(r#"namespace store
   entity SqlStore(url: String)
   entity QueryBinding(pattern: String)
   entity ColumnDef(name: String)
-  fact QueryableStore
+  fact QueryableStore[SqlStore]
 end
 "#);
-    // Should only associate with ColumnDef (immediately preceding entity)
     assert!(
-        out.contains("// impl QueryableStore for ColumnDef"),
-        "output:\n{out}"
+        out.contains("// impl QueryableStore for SqlStore"),
+        "the brackets name SqlStore, so the marker must too: {out}"
     );
     assert!(
-        !out.contains("// impl QueryableStore for SqlStore"),
-        "should not associate with SqlStore: {out}"
+        !out.contains("// impl QueryableStore for ColumnDef"),
+        "the entity that merely PRECEDES the fact must no longer capture it: {out}"
     );
     assert!(
         !out.contains("// impl QueryableStore for QueryBinding"),
-        "should not associate with QueryBinding: {out}"
+        "and no other neighbour either: {out}"
+    );
+}
+
+/// The named-binding spelling reaches the same carrier — `fact Modifiable[T =
+/// FileStore]` is what the shipped stdlib writes, so the mapper must read a named
+/// binding as well as a leading positional. Its control is the test above, which
+/// drives the positional form over the same code path.
+#[test]
+fn fact_carrier_is_read_from_a_named_binding_too() {
+    let out = gen(r#"namespace anthill.persistence.filesystem
+  entity FileStore(root: String)
+  entity IndexedFileStore(root: String)
+  fact Modifiable[T = FileStore]
+end
+"#);
+    assert!(
+        out.contains("// impl Modifiable for FileStore"),
+        "a named carrier binding must be read: {out}"
+    );
+    assert!(
+        !out.contains("// impl Modifiable for IndexedFileStore"),
+        "and the preceding entity must not override it: {out}"
+    );
+}
+
+/// A BARE `fact <Spec>` emits NO marker. The loader refuses that spelling (WI-933),
+/// but this path parses without loading, so the text still arrives here — and the
+/// mapper has no more idea than the loader which type was meant. Emitting nothing is
+/// the point: the previous behaviour was to name whichever entity came last, which is
+/// the guess the refusal exists to prevent.
+#[test]
+fn a_bare_namespace_fact_emits_no_impl_marker() {
+    let out = gen(r#"namespace store
+  entity SqlStore(url: String)
+  fact QueryableStore
+end
+"#);
+    assert!(
+        !out.contains("impl QueryableStore"),
+        "a carrier-less fact names no type, so the mapper must not invent one: {out}"
     );
 }
 
@@ -743,3 +800,4 @@ fn wi766_one_component_tuple_type_keeps_its_arity() {
         "control: a 2-tuple must be unchanged. output:\n{pair}"
     );
 }
+
