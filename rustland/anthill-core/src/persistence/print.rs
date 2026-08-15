@@ -34,11 +34,73 @@ pub fn write_anthill_string(s: &str, buf: &mut String) {
 /// Prints terms as `.anthill` source text.
 pub struct TermPrinter<'a, V: TermSource + ?Sized> {
     view: &'a V,
+    /// WI-1099 — WHICH QUESTION THIS PRINT ANSWERS. Two callers want different
+    /// text from one term, and conflating them is why a reflect-built
+    /// `ListLiteral` could not survive being written to disk:
+    ///
+    ///  - `false` (default) — THE CANONICAL SURFACE: the text a reader, a
+    ///    diagnostic, or a query answer should show, and the file store's
+    ///    content KEY. A key must be INVARIANT under the loader's lowering,
+    ///    because `apply_retracts` compares a print of the on-disk PARSE term
+    ///    against a print of the LOADED head, and §4.6 lowers `[…]` to the
+    ///    `cons`/`nil` spine between them. So a flat `ListLiteral` and a ground
+    ///    `cons` spine deliberately share `[…]` here: were they to differ, a
+    ///    persisted list's retract would stop matching its own file text.
+    ///  - `true` — RELOAD-FAITHFUL: text that loads back to THIS term. `[…]` is
+    ///    position-dependent (§4.6: it stays flat only where a declared type
+    ///    names a rival collection), so a flat `ListLiteral` must be written by
+    ///    NAME, the one spelling that is never lowered (parse/ir.rs's
+    ///    `collection_literals` mark, `kb::load::list_literal_lowering`).
+    ///
+    /// THE TWO CANNOT BE ONE PRINT, and no bit added to the printer would let it
+    /// choose per term: the KB is hash-consed, so a `[1, 2]` the loader declined
+    /// to lower in a `Set[T = Int64]` field and a written `ListLiteral(1, 2)` are
+    /// the SAME `TermId`. The parse-time mark that separates them cannot be
+    /// carried in (it survives only because parse terms are not deduped — the
+    /// same reason `mark_type_application` lives there, WI-927).
+    ///
+    /// The retract key stays mark-BLIND and structural, which is what keeps the
+    /// two modes compatible: a fact this mode writes as `ListLiteral(1, 2)` still
+    /// keys as `[1, 2]` on both sides, so it is found and dropped.
+    ///
+    /// WHAT THIS MODE STILL DOES NOT MAKE FAITHFUL, stated because the name would
+    /// otherwise over-promise. A ground `cons`/`nil` spine prints `[…]` in BOTH
+    /// modes, and that is faithful everywhere except one position: MEASURED, a
+    /// spine written into a slot declared `Set[T = Int64]` persists as `[1, 2]`
+    /// and reloads as the flat `ListLiteral` (§4.6 declines to lower there). The
+    /// remedy would be to print the spine as `cons(head: 1, tail: …)`, which is
+    /// position-independent — and it is refused twice over: every persisted list
+    /// in every store would become a cons chain, and the parse side of such a
+    /// chain does not fold back to `[…]`, so the content key above would stop
+    /// matching its own file text. Pre-existing, unchanged here, and NOT claimed.
+    ///
+    /// Governs the TERM writer only. `write_occurrence` (rule bodies) has its own
+    /// `Expr::ListLit` arm and is not taught this mode, because no reload-faithful
+    /// caller reaches it — a persisted fact is a term. Wire the two together
+    /// before persisting a rule.
+    ///
+    /// THE CONTENT KEY IS NOT INJECTIVE, and this mode does not make it so — a
+    /// review pass asked. Two facts under ONE functor, `held(ListLiteral(1, 2))`
+    /// and `held([1, 2])`, key alike, and `apply_retracts` drops EVERY block
+    /// matching a key (file_store.rs), so retracting either erases both lines
+    /// while both are still live in the KB. MEASURED IDENTICALLY WITH THIS MODE
+    /// AND WITHOUT IT (without it the two also persist as the same text, so the
+    /// pair was indistinguishable on disk to begin with): the loss lives in the
+    /// KEY, not in the print, and this mode only makes the two lines legible.
+    /// Keying both sides reload-faithfully is refused for the reason under
+    /// `write_term`'s short-name test — the parse side cannot produce that text.
+    /// The path without the weakness is `IndexedFileStore`'s SPAN retract, which
+    /// exists for this class of miss (WI-187); the content key is its fallback for
+    /// facts with no source span.
+    reload_faithful: bool,
 }
 
 impl<'a> TermPrinter<'a, KnowledgeBase> {
     pub fn new(kb: &'a KnowledgeBase) -> Self {
-        Self { view: kb }
+        Self {
+            view: kb,
+            reload_faithful: false,
+        }
     }
 
     /// Print a rule-body-atom occurrence as `.anthill` text (WI-246). Mirrors
@@ -661,7 +723,20 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
 impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// Construct a printer over an arbitrary `TermSource`.
     pub fn over(view: &'a V) -> Self {
-        Self { view }
+        Self {
+            view,
+            reload_faithful: false,
+        }
+    }
+
+    /// A printer whose text LOADS BACK to the term it was given, for writing
+    /// facts to disk. See [`TermPrinter::reload_faithful`] for what it changes
+    /// and why the content-key mode must not change with it (WI-1099).
+    pub fn reload_faithful(view: &'a V) -> Self {
+        Self {
+            view,
+            reload_faithful: true,
+        }
     }
 
     /// Print a term as `.anthill` source text.
@@ -792,10 +867,50 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 // KB-side and parse-side canonical forms agree — the
                 // content-keyed retract match in the file store compares
                 // exactly these two prints.
-                if fname == "ListLiteral" && named_args.is_empty() {
+                //
+                // WI-1099: NOT IN RELOAD-FAITHFUL MODE. A ground `cons` spine
+                // prints `[…]` too (`unwrap_list_spine`, just above), so this text
+                // does not say WHICH of the two terms it came from — and `[…]`
+                // reloads as the spine in every position that declares nothing
+                // (§4.6). Written by NAME the flat literal survives, because only
+                // the bracket surface is lowered. The two modes and why they cannot
+                // be one print: [`TermPrinter::reload_faithful`].
+                //
+                // THE SHORT NAME IS DELIBERATE HERE, and it is the one place this
+                // file departs from its own qualified-name convention
+                // (`is_type_functor` below, WI-173). The loader's counterpart
+                // `list_literal_lowering` gates on the QUALIFIED
+                // `anthill.reflect.ListLiteral` — but this printer also runs over a
+                // `ParsedFile`, whose `TermSource::qualified_name` is the trait
+                // DEFAULT, i.e. the short name (parse/ir.rs). Keying on the
+                // qualified name therefore splits the two sides of the retract
+                // comparison. MEASURED, on a review pass's suggestion to align
+                // them: `wi1099_list_literal_twin_test::
+                // a_persisted_literal_is_still_retractable` fails and the fact stays
+                // on disk — while the ENTIRE anthill-todo suite (137) stays green,
+                // because it retracts by SPAN and never reaches this key. The cost
+                // of the short name is real and narrow: a user's own `entity
+                // ListLiteral` prints as `[…]` here though the loader would not
+                // lower it. Closing that needs qualified names on the parse view,
+                // not a test swap.
+                if fname == "ListLiteral" && named_args.is_empty() && !self.reload_faithful {
                     buf.push('[');
                     self.write_comma_sep(pos_args, buf);
                     buf.push(']');
+                    return;
+                }
+                // WI-1099: `ListLiteral()` — the EMPTY flat literal, which a `[]` in
+                // a rival-collection slot and a by-name write both produce — must
+                // keep its parentheses here or it reloads as a bare name rather than
+                // a nullary application. The generic tail below omits them for an
+                // argument-less term, so this mode writes them.
+                if fname == "ListLiteral"
+                    && self.reload_faithful
+                    && pos_args.is_empty()
+                    && named_args.is_empty()
+                {
+                    buf.push_str(fname);
+                    buf.push_str("()");
                     return;
                 }
                 // Round-trip the forall_impl encoding produced by
@@ -1364,11 +1479,21 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     }
 }
 
-/// Print a fact as a `fact` declaration in `.anthill` syntax. Generic
-/// over `TermSource` so persistence's retract path can canonicalize both
-/// live-KB heads and parse-IR heads through the same code.
+/// Print a fact as a `fact` declaration in `.anthill` syntax — the text
+/// `FileStore::persist` writes to disk. Generic over `TermSource` for the same
+/// reason the printer is: a caller may hold either a live-KB head or a parse-IR
+/// one.
+///
+/// WI-1099: this is the RELOAD-FAITHFUL question and NOT the retract path's
+/// (which calls `TermPrinter::print_term` on both sides itself, and needs the
+/// canonical surface). The two are one function's two modes —
+/// [`TermPrinter::reload_faithful`] carries the rule, the measurement, and why
+/// no single text can serve both.
 pub fn print_fact<V: TermSource + ?Sized>(view: &V, term: TermId, meta: Option<TermId>) -> String {
-    let printer = TermPrinter::over(view);
+    // WI-1099: the text this writes is READ BACK by the loader, so it is the
+    // reload-faithful question, not the canonical-surface one. The file store's
+    // retract key keeps the surface print — see [`TermPrinter::reload_faithful`].
+    let printer = TermPrinter::reload_faithful(view);
     let mut out = String::from("fact ");
     out.push_str(&printer.print_term(term));
     if let Some(meta_id) = meta {

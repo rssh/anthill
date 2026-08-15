@@ -1208,6 +1208,8 @@ mod wi1095_uncounted_frame_read_channels_test;
 
 #[path = "include/wi1096_list_literal_lowering_test.rs"]
 mod wi1096_list_literal_lowering_test;
+#[path = "include/wi1099_list_literal_twin_test.rs"]
+mod wi1099_list_literal_twin_test;
 
 #[path = "include/wi1098_derive_eq_total_test.rs"]
 mod wi1098_derive_eq_total_test;

@@ -2772,9 +2772,15 @@ fn spliced_value(occ: &NodeOccurrence) -> Option<&Value> {
 //
 // That is a WI-425 cross-carrier miss — a WRONG ANSWER, not a precision loss — and
 // WI-815 made it load-bearing by keying fact dedup on the same walk. The repair is
-// altitude, not another `if`: these four helpers own the check, and all three impls
-// call them, so a carrier CANNOT forget. `head` needs no twin because `occ_head`
+// altitude, not another `if`: these four helpers own the check, and every impl
+// calls them, so a carrier CANNOT forget. `head` needs no twin because `occ_head`
 // already delegates inside itself, which is exactly why the asymmetry was invisible.
+//
+// WI-1099 — THERE IS NOW A FOURTH READER, `ReflectedExpr`, and it joins by calling
+// these same helpers rather than by growing its own reading. It reads an occurrence
+// through the reflect lens, which for every form but `Expr::Const` IS the plain
+// reading; routing it here is what keeps that true as the helpers change. Its one
+// departure, `as_bind_value`, is stated at its site.
 
 fn occ_view_pos_arg<'a>(
     occ: &'a Rc<NodeOccurrence>,
@@ -2979,9 +2985,50 @@ impl ReflectSyms {
 }
 
 /// Reflect-shape `TermView` over a `NodeOccurrence` (WI-297). See the module
-/// note above. Currently covers literal leaves (`Expr::Const` →
-/// `int_lit`/`float_lit`/`string_lit`/`bool_lit`/`bigint_lit(value: …)`);
-/// other `Expr` forms read `Opaque` until their reflected reading is added.
+/// note above.
+///
+/// THE LENS DIVERGES FROM THE PLAIN VIEW IN EXACTLY ONE FORM AT ITS ROOT —
+/// `Expr::Const`, which reads as the bare literal `42` plainly and as
+/// `int_lit(value: 42)` here. Every other form DELEGATES, and must: the plain
+/// view is already the
+/// occurrence's `occurrence_to_term` TERM TWIN, arm for arm and by explicit
+/// design — `var_ref`/`lambda_expr`/`if_expr`/`let_expr`/`match_expr`/`dot_apply`
+/// through `wrapped_expr_head` (WI-814), `ListLiteral`/`SetLiteral`/`TupleLiteral`
+/// through the collection-literal arms (WI-683/WI-1014), applications and
+/// constructors through `functor_view_head` (WI-520). Presenting `Opaque` for
+/// those instead is the WI-425 cross-carrier miss in its plainest form: a pattern
+/// the reifier WOULD produce for an occurrence could not be matched against that
+/// same occurrence, so `occurrence_term` answered for literals and refused
+/// everything else.
+///
+/// WI-1099 measured that refusal: `occurrence_term(?e, ListLiteral(?a, ?b))` over
+/// a list-literal occurrence failed, as did `cons(head: ?h, tail: ?t)` over a
+/// `cons` one — not because of the list-literal surface mark this ticket added,
+/// but because NO compound form was reflected at all. The delegation is what makes
+/// the twin reachable from a rule body; the mark (parse/ir.rs) is what keeps a
+/// written `ListLiteral(?a, ?b)` PATTERN from lowering to a `cons` spine before it
+/// gets here. Both are needed, and neither substitutes for the other.
+///
+/// The literal wrap stays the lens's own because the twin of a `Const` is the
+/// bare `Term::Const` (`try_occurrence_to_term`) — the reflect READING adds the
+/// `*_lit` head, which is what `typing_pass_spec.anthill`'s synth rules match.
+///
+/// AT THE ROOT ONLY, and deliberately. `pos_arg`/`named_arg` hand a child back as
+/// `ViewItem::Node(child)`, which is read through the PLAIN view — so a literal
+/// child matches as `7`, not as `int_lit(value: 7)`. That is the shipped idiom:
+/// descend with `sub_occurrences` and reflect each child with its own
+/// `occurrence_term` (`typing_test.rs`'s `wi297_..._sub_occurrences` row does
+/// exactly that). Making the wrap recursive would mean a `ViewItem` variant
+/// carrying this lens; nothing asks for one today. DRIVEN by
+/// `wi1099_list_literal_twin_test::the_literal_wrapper_is_still_the_lenss_own`,
+/// so the boundary is a row and not a claim.
+///
+/// `as_bind_value` IS THE ONE READ THAT DOES NOT DELEGATE, also deliberately: the
+/// builtin's contract is that `occurrence_term(?e, ?t)` binds `?t` to the
+/// OCCURRENCE, identity preserved (see `builtin_occurrence_term`). Delegating
+/// would hand a spliced occurrence's carried `BindValue::Term(id)` instead and
+/// trade that identity away — a different question from "what shape does this
+/// match as", which is what the four reads above answer.
 pub struct ReflectedExpr {
     occ: Rc<NodeOccurrence>,
     syms: ReflectSyms,
@@ -3005,7 +3052,7 @@ impl ReflectedExpr {
 }
 
 impl TermView for ReflectedExpr {
-    fn head(&self, _kb: &KnowledgeBase) -> ViewHead {
+    fn head(&self, kb: &KnowledgeBase) -> ViewHead {
         match self.occ.as_expr() {
             // A literal reflects as `*_lit(value: <the literal>)` — one named
             // arg, no positionals.
@@ -3017,30 +3064,44 @@ impl TermView for ReflectedExpr {
                 },
                 None => ViewHead::Opaque,
             },
-            _ => ViewHead::Opaque,
+            _ => occ_head(&self.occ, kb),
         }
     }
 
-    fn pos_arg<'a>(&'a self, _kb: &'a KnowledgeBase, _i: usize) -> Option<ViewItem<'a>> {
-        // Reflect `Expr` entities use named fields only.
-        None
+    fn pos_arg<'a>(&'a self, kb: &'a KnowledgeBase, i: usize) -> Option<ViewItem<'a>> {
+        match self.occ.as_expr() {
+            // A reflect literal entity has named fields only.
+            Some(Expr::Const(_)) => None,
+            _ => occ_view_pos_arg(&self.occ, kb, i),
+        }
     }
 
-    fn named_arg<'a>(&'a self, _kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+    fn named_arg<'a>(&'a self, kb: &'a KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
         match self.occ.as_expr() {
             // `value` is the occurrence itself, read in its plain `Const`
             // shape — no new term, no copy.
-            Some(Expr::Const(_)) if Some(sym) == self.syms.value => {
-                Some(ViewItem::Node(Rc::clone(&self.occ)))
+            Some(Expr::Const(_)) => {
+                (Some(sym) == self.syms.value).then(|| ViewItem::Node(Rc::clone(&self.occ)))
             }
-            _ => None,
+            _ => occ_view_named_arg(&self.occ, kb, sym),
         }
     }
 
-    fn named_keys(&self, _kb: &KnowledgeBase) -> Vec<Symbol> {
+    fn named_keys(&self, kb: &KnowledgeBase) -> Vec<Symbol> {
         match self.occ.as_expr() {
             Some(Expr::Const(_)) => self.syms.value.into_iter().collect(),
-            _ => Vec::new(),
+            _ => occ_view_named_keys(&self.occ, kb),
+        }
+    }
+
+    /// Delegated for the same reason as the child reads: the plain view
+    /// overrides this so an occurrence keys a stored-pattern var of ANY kind as
+    /// a var-edge (WI-373), and a lens that answered the trait default instead
+    /// would key one carrier's var differently from the other's.
+    fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
+        match self.occ.as_expr() {
+            Some(Expr::Const(_)) => None,
+            _ => occ_view_index_var(&self.occ, kb),
         }
     }
 
