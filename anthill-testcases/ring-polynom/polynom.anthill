@@ -37,5 +37,11 @@ sort Polynom
   rule scale(?c, ?p1 + ?p2) = scale(?c, ?p1) + scale(?c, ?p2)
 end
 
--- Polynom[Int64] is a valid instantiation (Int64 satisfies Ring)
+-- Polynom[Int64] is a valid instantiation (Int64 satisfies Ring).
+--
+-- A DATA FACT, not a provision (WI-1106). `Polynom` has a constructor, so it is a
+-- data sort and this records the instantiation; it does not say `Int64` is-a
+-- `Polynom`. It used to file exactly that — `Int64 provides Polynom`, the ring
+-- PARAMETER read as the carrier — because the data-sort rule was written with
+-- `&& spec_params.is_empty()` attached and so skipped only non-parametric sorts.
 fact Polynom[Int64]

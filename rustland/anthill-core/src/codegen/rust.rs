@@ -788,6 +788,8 @@ impl<'a> RustCodegen<'a> {
     // ── Top-level dispatch ───────────────────────────────────────
 
     fn emit_items(&mut self, items: &[Item], _enclosing_ns: Option<&Namespace>) {
+        // WI-1106: which of these sorts are DATA sorts, for the `fact` marker below.
+        let data_sorts = self.collect_data_sort_names(items);
         let mut first = true;
         for item in items {
             match item {
@@ -818,7 +820,7 @@ impl<'a> RustCodegen<'a> {
                     });
                 }
                 Item::Fact(f) => {
-                    self.emit_namespace_fact(f);
+                    self.emit_namespace_fact(f, &data_sorts);
                 }
                 Item::Rule(_) => {
                     // Collected later for test module
@@ -883,6 +885,8 @@ impl<'a> RustCodegen<'a> {
         // Only sorts with a body should receive aggregated operations
         let body_sort_names = self.collect_body_sort_names(&ns.items);
         let sort_names = self.collect_sort_names(&ns.items);
+        // WI-1106: which of them are DATA sorts, for the `fact` marker below.
+        let data_sorts = self.collect_data_sort_names(&ns.items);
         let _entity_names = self.collect_entity_names(&ns.items);
 
         // Map: sort_name → Vec<&Operation> for namespace-level ops
@@ -1021,7 +1025,7 @@ impl<'a> RustCodegen<'a> {
                     orphan_ops.push(o);
                 }
                 Item::Fact(f) => {
-                    self.emit_namespace_fact(f);
+                    self.emit_namespace_fact(f, &data_sorts);
                 }
                 Item::Rule(_) | Item::RuleBlock(_) => {
                     // Collected later for test module
@@ -1084,6 +1088,32 @@ impl<'a> RustCodegen<'a> {
                 } else {
                     None
                 }
+            })
+            .collect()
+    }
+
+    /// WI-1106 — the names of sorts declared in `items` that have CONSTRUCTORS, i.e.
+    /// the DATA sorts. A `fact` naming one asserts a data instance, never an is-a, so
+    /// [`Self::emit_namespace_fact`] must emit no `impl` marker for it.
+    ///
+    /// The rule is the loader's (`maybe_emit_fact_provides_info`, `kb/load.rs`), which
+    /// files no provision for such a fact; the mapper would otherwise assert in Rust
+    /// exactly the relation the loader refuses to record — measured, `fact
+    /// Polynom[Coeff]` emitted `// impl Polynom for Coeff` where `Polynom` is a
+    /// polynomial over a ring and `Coeff` its parameter.
+    ///
+    /// An eponymous `sort Box { entity Box(…) }` (§6.3 / WI-926) counts, since the
+    /// constructor is what makes it data — not whether it shares the sort's name.
+    fn collect_data_sort_names(&self, items: &[Item]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Item::SortWithBody(s)
+                    if s.items.iter().any(|i| matches!(i, Item::Entity(_))) =>
+                {
+                    Some(self.resolve(&s.name))
+                }
+                _ => None,
             })
             .collect()
     }
@@ -1704,11 +1734,23 @@ impl<'a> RustCodegen<'a> {
     /// more idea than the loader which type was meant, and a marker naming a guessed
     /// carrier is worse than an absent one. The diagnostic for that text is the
     /// loader's, and it names the file and line.
-    fn emit_namespace_fact(&mut self, fact: &Fact) {
+    fn emit_namespace_fact(&mut self, fact: &Fact, data_sorts: &[String]) {
         let trait_name = match extract_fact_sort_name(self.symbols, self.terms, fact) {
             Some(n) => n,
             None => return,
         };
+
+        // WI-1106 — A SORT WITH CONSTRUCTORS IS A DATA SORT, so a `fact` naming one
+        // asserts an instance and NOT an is-a. Without this the mapper emitted the
+        // very relation the loader refuses to file: measured at a file's top level,
+        // `fact Polynom[Coeff]` gave `// impl Polynom for Coeff` and `fact Box(value:
+        // Other)` gave `// impl Box for Other`. (A fact inside a `namespace` block
+        // that FOLLOWS a sort never reached here at all — it is captured as a
+        // supertrait edge by `current_sort` — which is why the two positions had to be
+        // probed separately.)
+        if data_sorts.contains(&trait_name) {
+            return;
+        }
 
         let entity_name = match extract_fact_carrier_name(self.symbols, self.terms, fact) {
             Some(n) => n,

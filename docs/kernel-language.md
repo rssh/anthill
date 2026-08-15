@@ -1122,19 +1122,37 @@ bindings, so neither can say something about a carrier the other cannot. They ar
 not the same *statement*, and the difference is what 058 §4's retirement of the
 `fact` spelling actually costs. A fact is a rule with an empty body (§5.3), so it
 also enters the rule index: the goal `Spec(T: ?q)` answers under the `fact`
-spelling and not under `provides` (measured). Two further asymmetries run the
-other way — a `fact` naming a non-parametric sort **with constructors** asserts a
-data instance and emits no provision at all (§8.7), and a conditional provision
-`provides Spec[…] :- goals` has no `fact` spelling. Outside a sort body the two
+spelling and not under `provides` (measured). One asymmetry runs the other way — a
+conditional provision `provides Spec[…] :- goals` has no `fact` spelling. Outside a sort body the two
 diverge on the provision as well: at an address no type occupies a `fact` still
 derives its carrier from the bindings, while a `provides` clause has no provider
 to be about and is refused. That is a divergence about the *provider*, not a
-licence to omit the carrier — a `fact` written there **bare**, with nothing after
-the spec's name, has nothing to derive from and is refused too, unless the name
-it gives is one a constructor could be spelling (WI-933, §6.3). Both refusals are
-the same rule seen from two sides: a provision needs a provider and a carrier, a
-namespace supplies neither, and what the text does not say the loader will not
-guess.
+licence to omit the carrier — a `fact` at such an address that names **no carrier
+the loader can read**, whether because nothing was written after the spec's name
+or because what was written names no type, is refused too (WI-933/WI-1106, §6.3).
+Both refusals are the same rule seen from two sides: a provision needs a provider
+and a carrier, a namespace supplies neither, and what the text does not say the
+loader will not guess.
+
+**A sort with constructors is a DATA sort, and both spellings read that**
+(WI-407/WI-1106). A `fact` or a `provides` naming one records a data instance and
+emits no provision at all — it is not one of the asymmetries above, because it is
+not an asymmetry: the rule holds of a **parametric** sort exactly as it holds of a
+plain one, and of `provides` exactly as of `fact`. The `provides` half asks it of
+the **provided spec**, not of the enclosing provider, which is the one place the
+two predicates differ — a provider with constructors is the ordinary concrete
+carrier. Examples: `fact Polynom[Int64]` says the
+instantiation is well-formed, not that `Int64` is a polynomial, and `fact
+Box(value: Other)` constructs a box, not an is-a. Both filed a provider edge until
+the rule was applied whole — the second one changing an upcast's verdict, since a
+bogus edge admits the widening and the refusal that follows is then about
+something else. The **written surface** does not decide this and cannot: `[…]`
+applies types and `(…)` constructs, but a data `fact` is ordinarily written with
+brackets, so brackets carry no claim of provision. What follows is worth stating,
+because it is what makes a refusal possible rather than a heuristic: since a
+constructor-less sort cannot be constructed, *every* `fact` that survives this
+rule is a provision claim, and one whose carrier cannot be read is malformed
+rather than ambiguous.
 
 **A declaration may not capture a name it does not override** (proposal 059 R4
 clause 3; `check_name_captures`, `kb/load.rs`). A name can already mean something
@@ -2291,14 +2309,14 @@ Consequences worth stating, because they are what the rule buys:
   states above: a namespace may declare more than one, so proximity would put
   declaration *order* back in charge of what a claim is about.
 
-  One shape is deliberately **not** caught by it, and the boundary is written where the
-  refusal is: a **nullary constructor** of an eponymous parametric sort (`sort Box {
-  sort T = ?; entity Box }`) is also written bare, and `fact Box` there constructs
-  rather than claims. So the refusal reads the functor's *constructors* as well as the
-  shape — a sort that can be constructed keeps the lenient reading, a
-  constructor-less spec cannot be anything but claimed. Telling the two apart properly
-  is a question about the written surface (parens construct, brackets apply types),
-  which this position does not yet ask.
+  A **constructor** of the named sort is what puts a `fact` outside this rule
+  altogether (WI-1106, §5.1) — `fact Box` where `sort Box` has an `entity Box`
+  constructs rather than claims, whether or not `Box` takes parameters. Everything that
+  reaches the refusal therefore *is* a provision claim, so it is refused whenever no
+  carrier can be read: with nothing after the spec's name, and equally with brackets
+  whose contents name no type (`fact Spec[T = ?]`, or brackets binding only
+  operations). The two get different sentences, since only the first can be repaired by
+  adding brackets.
 
 - **Operations move a free-standing entity to the long form.** The sugar has no body
   in which to write one, so `sort Box { entity Box(v: Int64); operation unwrap(…) = … }`

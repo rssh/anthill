@@ -439,6 +439,58 @@ end
     );
 }
 
+/// WI-1106 — A SORT WITH CONSTRUCTORS IS A DATA SORT, so a `fact` naming one emits no
+/// `impl` marker: it asserts an instance, not an is-a. The mapper was asserting in Rust
+/// exactly the relation the loader refuses to file — `fact Polynom[Coeff]`, where
+/// `Coeff` is the polynomial's ring PARAMETER, gave `// impl Polynom for Coeff`.
+///
+/// AT A FILE'S TOP LEVEL, deliberately. A `fact` written inside a `namespace` block
+/// after a sort never reaches `emit_namespace_fact` at all — `emit_namespace` captures
+/// it as a supertrait edge of the preceding sort — so the defect is reachable only from
+/// this position, and probing only the namespace form said "not reproducible".
+#[test]
+fn a_fact_naming_a_data_sort_emits_no_impl_marker() {
+    let out = gen(r#"entity Coeff(x: String)
+sort Polynom
+  sort R = ?
+  entity polynom(c: R)
+end
+fact Polynom[Coeff]
+"#);
+    assert!(
+        !out.contains("impl Polynom"),
+        "`Polynom` has a constructor, so it is a data sort and `fact Polynom[Coeff]` \
+         asserts an instance — no trait impl: {out}"
+    );
+
+    // The other producer, from a FIELD value rather than a type argument. Same rule,
+    // different route into `extract_fact_carrier_name`, so one fix must cover both.
+    let out2 = gen(r#"entity Other(x: String)
+sort Box
+  sort T = ?
+  entity Box(value: T)
+end
+fact Box(value: Other)
+"#);
+    assert!(
+        !out2.contains("impl Box"),
+        "a construction over an eponymous parametric sort is not an is-a either: {out2}"
+    );
+
+    // CONTROL — a constructor-LESS sort in the identical position still gets its
+    // marker, so the gate cannot pass by suppressing every fact.
+    let ctl = gen(r#"entity Coeff(x: String)
+sort Summable
+  sort R = ?
+end
+fact Summable[Coeff]
+"#);
+    assert!(
+        ctl.contains("// impl Summable for Coeff"),
+        "a spec with no constructors keeps its impl marker: {ctl}"
+    );
+}
+
 /// A BARE `fact <Spec>` emits NO marker. The loader refuses that spelling (WI-933),
 /// but this path parses without loading, so the text still arrives here — and the
 /// mapper has no more idea than the loader which type was meant. Emitting nothing is
@@ -800,4 +852,5 @@ fn wi766_one_component_tuple_type_keeps_its_arity() {
         "control: a 2-tuple must be unchanged. output:\n{pair}"
     );
 }
+
 

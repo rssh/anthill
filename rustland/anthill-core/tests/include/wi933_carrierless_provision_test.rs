@@ -39,7 +39,7 @@
 //! | `the_sort_body_repair_the_message_names_works` | passes either way (same) |
 //! | `neither_repair_is_the_refused_position` | FAILS — its refusal leg is half of the pair it asserts together |
 //! | `a_data_construction_over_a_parametric_sort_is_not_a_provision_claim` | passes either way (BY DESIGN — both legs are shapes the refusal must NOT reach, and each killed a discriminator that was written and reverted) |
-//! | `an_op_only_bracketed_fact_keeps_its_silence_rather_than_be_told_to_add_brackets` | passes either way (same) |
+//! | `an_op_only_bracketed_fact_is_refused_without_being_told_to_add_brackets` | passes either way for WI-933 (BY DESIGN — it is WI-1106's control, and fails when THAT is backed out) |
 //!
 //! The two "passes either way" repair tests are not filler: the acceptance is that
 //! the diagnostic says WHAT TO WRITE INSTEAD, and a message naming a spelling nobody
@@ -387,15 +387,23 @@ end
     );
 }
 
-/// THE OTHER SHAPE THE REFUSAL MUST NOT REACH, and the reason it is not keyed on
-/// `carrier_val.is_none()`. `fact Spec[combine = f]` on a spec with NO carrier type
-/// parameter writes brackets, binds only an operation, and leaves the derivation
-/// nothing to read — WI-431 (E) declines it for want of a parameter to name in the
-/// repair. Refusing it here would render "write the carrier in brackets" at text that
-/// already has them, and no doc states such a rule. It stays as silent as it was; the
-/// gap is in (E)'s wording, not WI-933's.
+/// THE OTHER CARRIER-LESS SHAPE, WHICH WI-1106 CLOSED. `fact Spec[combine = f]` on a
+/// spec with NO carrier type parameter writes brackets, binds only an operation, and
+/// leaves the derivation nothing to read — WI-431 (E) declines it for want of a
+/// parameter to name in its repair.
+///
+/// WI-933 left it SILENT, and this test asserted that silence. Not because silence was
+/// right, but because the only message available then said "write the carrier in
+/// brackets" at text that has them — and the arm was shared with `fact Box(value: 1)`,
+/// so a second wording could not be aimed either. WI-1106's gate made the arm
+/// construction-free, which let the refusal split its wording; so this is the control
+/// that flips.
+///
+/// It asserts the refusal AND which of the two sentences it is, because a single
+/// "some error about a carrier" check would pass if the two collapsed back into one —
+/// and the collapsed one was the nonsense repair.
 #[test]
-fn an_op_only_bracketed_fact_keeps_its_silence_rather_than_be_told_to_add_brackets() {
+fn an_op_only_bracketed_fact_is_refused_without_being_told_to_add_brackets() {
     let errs = errors(
         r#"
 namespace test.wi933.oponly
@@ -412,8 +420,14 @@ end
 "#,
     );
     assert!(
-        !errs.iter().any(|e| e.contains("names no carrier")),
-        "brackets are written here, so the bracket-less refusal must not fire — its \
-         repair would prescribe the spelling the author already used; got {errs:?}"
+        errs.iter()
+            .any(|e| e.contains("its bindings name no type")),
+        "WI-1106: brackets that bind only an operation name no carrier, and are now \
+         refused in the wording for bindings-that-name-no-type; got {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("Write the carrier in brackets")),
+        "and NOT with the bracket-less repair — the brackets are already written, so \
+         that sentence would prescribe the spelling the author used: {errs:?}"
     );
 }

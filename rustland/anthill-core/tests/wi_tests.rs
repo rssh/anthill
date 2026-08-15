@@ -1228,3 +1228,6 @@ mod wi1100_call_arity_test;
 
 #[path = "include/wi1104_relational_column_test.rs"]
 mod wi1104_relational_column_test;
+
+#[path = "include/wi1106_parametric_data_sort_test.rs"]
+mod wi1106_parametric_data_sort_test;
