@@ -350,6 +350,16 @@ end
 /// the is-a and `fact` did not, so an author could reach the widening `fact` refuses
 /// by changing one keyword.
 ///
+/// AND IT IS LOUD, WHERE THE `fact` HALF IS NOT. That asymmetry is a finding rather
+/// than an inconsistency: `fact <DataSort>[…]` has a SECOND legitimate reading — it
+/// asserts a data instance, pinned clean by wi210's
+/// `fact_for_non_spec_sort_does_not_emit_provides_info` — so there the rule
+/// CLASSIFIES. A `provides` clause has no second reading, so dropping one silently is
+/// exactly the "reads as a declaration and does nothing" defect WI-933 exists for.
+/// This gate shipped as a bare `return` and a review caught it. The test therefore
+/// asserts the DIAGNOSTIC and not the downstream type error, because a silent drop
+/// produces that same downstream error — which is how the bare `return` passed.
+///
 /// Both arities are driven, because the `fact` side's defect WAS arity-dependent and
 /// this side's was not — testing only the parametric one would have read as "fixed
 /// together" when they were broken differently.
@@ -383,8 +393,16 @@ end
         );
         let errs = errors(&src);
         assert!(
+            errs.iter()
+                .any(|e| e.contains("cannot hold") && e.contains("DATA sort")),
+            "{label}: `provides Wi1106PC` names a DATA sort, and a `provides` clause has \
+             no reading other than a provision claim — so it is REFUSED at the clause, \
+             not merely dropped; got {errs:?}"
+        );
+        assert!(
             errs.iter().any(|e| e.contains("Wi1106PSub")),
-            "{label}: `provides Wi1106PC` names a DATA sort, so it files no is-a and              the upcast must be refused — exactly as the `fact` spelling is; got              {errs:?}"
+            "{label}: and the refusal names the provider whose widening it prevents, \
+             since that is what the reader is looking at; got {errs:?}"
         );
     }
 

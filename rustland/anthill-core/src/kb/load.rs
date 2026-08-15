@@ -747,6 +747,28 @@ pub enum LoadError {
         spec: String,
         carrier_param: String,
     },
+    /// WI-1106 — a `provides <Spec>` clause naming a sort that has CONSTRUCTORS, i.e.
+    /// a DATA sort. Nothing is-a a data sort — that is what
+    /// `wi407_provider_edges_test::data_sort_fact_does_not_widen_*` refuses through the
+    /// `fact` spelling — so the claim cannot hold and the provision is not filed.
+    ///
+    /// LOUD HERE, SILENT ON THE `fact` SIDE, and the asymmetry is the point rather than
+    /// an inconsistency. `fact <DataSort>[…]` has a second, legitimate reading: it
+    /// asserts a data instance, which is what wi210's
+    /// `fact_for_non_spec_sort_does_not_emit_provides_info` pins loading clean. A
+    /// `provides` clause has no such reading — it is a provision claim and nothing
+    /// else — so where the `fact` form is merely classified, this one is REFUSED.
+    ///
+    /// It also gives the `fact` form's silence a way out: an author whose sort-body
+    /// `fact <DataSort>` did nothing reaches for `provides` next, and is told what is
+    /// actually wrong instead of meeting a type error at some distant use site.
+    ProvidesNamesDataSort {
+        /// The spec named by the clause, qualified.
+        spec: String,
+        /// The sort whose body the clause stands in, qualified.
+        provider: String,
+        span: Span,
+    },
     /// WI-933 — a **bracket-less** `fact <Spec>` written at a scope that names no
     /// type (an ordinary namespace, or a file's synthetic `_global` root). The
     /// spelling reads as a provision and named no carrier, so before this refusal it
@@ -1608,6 +1630,7 @@ impl LoadError {
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::CarrierlessProvisionFact { span, .. }
+            | LoadError::ProvidesNamesDataSort { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -2247,6 +2270,17 @@ impl LoadError {
                     carrierless_provision_message(spec, scope, *reason)
                 )
             }
+            LoadError::ProvidesNamesDataSort {
+                spec,
+                provider,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    provides_names_data_sort_message(spec, provider)
+                )
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -2530,6 +2564,19 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     carrierless_provision_message(spec, scope, *reason),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::ProvidesNamesDataSort {
+                spec,
+                provider,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    provides_names_data_sort_message(spec, provider),
                     span.start,
                     span.end
                 )
@@ -4588,6 +4635,24 @@ fn provided_spec_symbol(loader: &mut Loader<'_>, pc: &ProvidesClause) -> Option<
         _ => return None,
     };
     Some(loader.remap_symbol(name, pc.span))
+}
+
+/// WI-1106 — the sentence for [`LoadError::ProvidesNamesDataSort`]. One owner, for the
+/// reason [`provides_needs_sort_message`] states: two rendering paths, one under test.
+///
+/// It names BOTH repairs, because "this is a data sort" does not say which of two
+/// different mistakes was made — a spec that accidentally has a constructor, or a
+/// claim that should have been a data assertion.
+fn provides_names_data_sort_message(spec: &str, provider: &str) -> String {
+    format!(
+        "`provides {spec}` cannot hold: '{spec}' declares constructors, which makes it \
+         a DATA sort, and nothing is-a a data sort — a provision would let '{provider}' \
+         widen to it. If '{spec}' is meant as a spec, its constructors are what stop it \
+         being one; if you meant to assert a '{spec}' VALUE, that is a `fact \
+         {spec}(…)`, which is a different statement and needs no clause here. (The \
+         `fact {spec}[…]` spelling is classified as that data assertion rather than \
+         refused, since it has both readings — this clause has only one.)"
+    )
 }
 
 /// WI-993 — the sentence for [`LoadError::WildcardImportOfNonScope`]. One owner,
@@ -22916,8 +22981,23 @@ impl<'a> Loader<'a> {
         //
         // Costs nothing: instrumenting this clause over the whole corpus and all 29
         // test binaries found ZERO provisions naming a constructor-bearing spec.
+        //
+        // AND IT IS LOUD, where the `fact` side is silent. That asymmetry is deliberate
+        // and is the whole reason this arm can be an error at all: `fact <DataSort>[…]`
+        // has a SECOND legitimate reading — it asserts a data instance, which wi210's
+        // `fact_for_non_spec_sort_does_not_emit_provides_info` pins loading clean — so
+        // there it is classified rather than refused. A `provides` clause has no second
+        // reading; it is a provision claim and nothing else, so dropping one silently
+        // would be exactly the "reads as a declaration and does nothing" defect WI-933
+        // was filed for. Reviewing WI-1106 caught this arm written as a bare `return`,
+        // which is how it shipped for about an hour.
         if let Some(spec_sym) = provided_spec_symbol(self, pc) {
             if self.kb.sort_has_constructors(spec_sym) {
+                self.errors.push(LoadError::ProvidesNamesDataSort {
+                    spec: self.kb.qualified_name_of(spec_sym).to_string(),
+                    provider: self.kb.qualified_name_of(domain).to_string(),
+                    span: pc.span,
+                });
                 return;
             }
         }

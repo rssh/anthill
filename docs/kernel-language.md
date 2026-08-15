@@ -1135,13 +1135,21 @@ and a carrier, a namespace supplies neither, and what the text does not say the
 loader will not guess.
 
 **A sort with constructors is a DATA sort, and both spellings read that**
-(WI-407/WI-1106). A `fact` or a `provides` naming one records a data instance and
-emits no provision at all — it is not one of the asymmetries above, because it is
-not an asymmetry: the rule holds of a **parametric** sort exactly as it holds of a
-plain one, and of `provides` exactly as of `fact`. The `provides` half asks it of
-the **provided spec**, not of the enclosing provider, which is the one place the
-two predicates differ — a provider with constructors is the ordinary concrete
-carrier. Examples: `fact Polynom[Int64]` says the
+(WI-407/WI-1106). Neither a `fact` nor a `provides` naming one records a provision:
+nothing is-a a data sort. The rule holds of a **parametric** sort exactly as it
+holds of a plain one, and the `provides` half asks it of the **provided spec**, not
+of the enclosing provider — a provider with constructors is the ordinary concrete
+carrier, so that is the one place the two predicates differ.
+
+*What each does about it differs, and that is not an inconsistency.* A `fact` is
+**classified**: `fact Colour[…]` naming a data sort asserts a data instance, a
+second reading a `provides` clause does not have, so the provision is simply not
+among its meanings. A `provides` clause is a provision claim and nothing else, so
+one naming a data sort is **refused at load**, naming the spec, the provider it
+would have let widen, and both repairs. The consequence is worth knowing: a
+sort-body `fact <DataSort>` that the author meant as an is-a reports nothing at
+its own line and fails at the use site, and reaching for `provides` is what says
+why. Examples: `fact Polynom[Int64]` says the
 instantiation is well-formed, not that `Int64` is a polynomial, and `fact
 Box(value: Other)` constructs a box, not an is-a. Both filed a provider edge until
 the rule was applied whole — the second one changing an upcast's verdict, since a
