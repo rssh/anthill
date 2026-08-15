@@ -1231,3 +1231,6 @@ mod wi1104_relational_column_test;
 
 #[path = "include/wi1106_parametric_data_sort_test.rs"]
 mod wi1106_parametric_data_sort_test;
+
+#[path = "include/wi987_global_scope_sentinel_test.rs"]
+mod wi987_global_scope_sentinel_test;

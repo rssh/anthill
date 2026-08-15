@@ -74,7 +74,7 @@ end
 ///
 /// THE UNMARKED TWIN IS THE OTHER HALF, and it splits where the marked one does not:
 /// with nothing shadowing the head, `myroot.inner.helper()` still answers 41 (the scope
-/// walk reaches `_global`, where the top-level `myroot` is an ordinary local); with any
+/// walk reaches `<global>`, where the top-level `myroot` is an ordinary local); with any
 /// of the three declarations in the way, it is LOUD. That split is what makes the four
 /// marked rows a capability rather than a coincidence — before WI-1075 both spellings
 /// answered 41 in all four, and no test could tell the readings apart.
@@ -164,7 +164,7 @@ end
             assert!(
                 errs.is_none(),
                 "with NOTHING shadowing the head, the unmarked path must still resolve \
-                 by head-qualification — the scope walk reaches `_global`, and this is \
+                 by head-qualification — the scope walk reaches `<global>`, and this is \
                  why WI-1075 cost no migration; got: {errs:?}"
             );
             let mut interp = interp_for(&relative);

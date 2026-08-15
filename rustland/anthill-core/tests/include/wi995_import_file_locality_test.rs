@@ -18,7 +18,7 @@
 //!
 //! WHAT IS EXEMPT, stated because it is a judgement and not a fact of the code:
 //!   - `ImportOrigin::Builtin` — the prelude / kernel-vocab aliases the loader writes
-//!     into `_global` itself. They are written in no file, so they are local to none;
+//!     into `<global>` itself. They are written in no file, so they are local to none;
 //!     under any reading of the rule they stay visible.
 //!   - `requires`, enclosing-body and variant-exposure parent links. They come from a
 //!     DECLARATION at the address, not from one file's import list, so the rule does

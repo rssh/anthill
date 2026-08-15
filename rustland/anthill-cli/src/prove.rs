@@ -1036,8 +1036,8 @@ fn synthesize_step_rule(
 ) {
     use anthill_core::intern::SymbolKind;
     let short_name = step_qn.rsplit('.').next().unwrap_or(step_qn);
-    // WI-1028 — the `_global` SCOPE and its OWNER (the rule's domain) are one
-    // derivation. This used to mint the `_global` name TERM only to project straight
+    // WI-1028 — the `<global>` SCOPE and its OWNER (the rule's domain) are one
+    // derivation. This used to mint the `<global>` name TERM only to project straight
     // back to its own functor: the dead-term shape WI-984 deleted 21 of.
     let global_scope = kb.global_scope();
     let global_domain = global_scope.owner();

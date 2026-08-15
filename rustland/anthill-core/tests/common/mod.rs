@@ -787,7 +787,7 @@ pub fn head_short(
 }
 
 /// The functor SYMBOL a query pattern binds, through the shipped entry point: `fact
-/// <pattern>`, `scan_definitions`, then `load::convert_query_term` at `_global` — the
+/// <pattern>`, `scan_definitions`, then `load::convert_query_term` at `<global>` — the
 /// exact path `anthill query --pattern` takes, rather than a private resolver helper.
 ///
 /// WI-907: lifted here at the second LIVE copy (`wi040_reserved_vocab_test` and this

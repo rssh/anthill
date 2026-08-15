@@ -139,7 +139,7 @@ fn two_suppliers_query_only(ns: &str) -> String {
 }
 
 /// The converted query term for `pattern`, by the CLI's own path
-/// (`load::convert_query_term` at `_global`, via
+/// (`load::convert_query_term` at `<global>`, via
 /// [`crate::common::query_pattern_term`]) rather than a hand-built resolver goal.
 /// A hand-built `Term::Fn` would be a different goal from the one `anthill query`
 /// resolves, and this ticket is about the query path specifically.
@@ -175,7 +175,7 @@ fn query_int(kb: &mut KnowledgeBase, pattern: &str) -> i64 {
 }
 
 /// The qualified spelling of the call under test, as a QUERY PATTERN. Every name is
-/// fully qualified because the pattern is converted at `_global`, which imports
+/// fully qualified because the pattern is converted at `<global>`, which imports
 /// nothing (the CLI's `-i` flags are what widen it).
 fn describe_pattern(ns: &str) -> String {
     format!("{ns}.Desc.describe({ns}.Leaf.leaf(), ?r)")

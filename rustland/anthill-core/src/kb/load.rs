@@ -770,7 +770,7 @@ pub enum LoadError {
         span: Span,
     },
     /// WI-933 — a **bracket-less** `fact <Spec>` written at a scope that names no
-    /// type (an ordinary namespace, or a file's synthetic `_global` root). The
+    /// type (an ordinary namespace, or a file's synthetic `<global>` root). The
     /// spelling reads as a provision and named no carrier, so before this refusal it
     /// emitted no `SortProvidesInfo` and no diagnostic: it loaded clean and did
     /// nothing. Two stdlib lines were written that way and neither produced an edge
@@ -3365,7 +3365,7 @@ pub fn scan_definitions_with_sources(
         // stamped with the file it came from before merging into the flat list.
         let mut file_errors = Vec::new();
         // WI-853: the file's TOP-LEVEL imports (written outside any namespace /
-        // sort body) enter the scope the file's top level IS — `_global`, the
+        // sort body) enter the scope the file's top level IS — `<global>`, the
         // same scope its top-level `sort` / `fact` / `rule` are defined in.
         // Processed exactly like a namespace body's, one nesting level out.
         process_imports(
@@ -3446,7 +3446,7 @@ pub fn scan_definitions_with_sources(
 /// SYNTHESIZE into bodies (for `match` / `if` / `let` / `lambda`, member access,
 /// literals, patterns) but a user never writes. These are RESERVED: a bare
 /// reference resolves directly to the qualified target here (see
-/// `kernel_vocab_qualified`), NOT through a `_global` import — so they never sit
+/// `kernel_vocab_qualified`), NOT through a `<global>` import — so they never sit
 /// in the user name namespace and need no collision blocklist. Resolution is a
 /// fallback (reached only when the name is unresolvable in scope), so a
 /// user-written same-spelling name still wins. Reflect-API names that ARE
@@ -3494,7 +3494,7 @@ const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
 ];
 
 /// WI-040: short name → qualified target for the reserved kernel desugaring vocab,
-/// or `None` if `name` is not reserved. Resolved directly (no `_global` import).
+/// or `None` if `name` is not reserved. Resolved directly (no `<global>` import).
 fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
     KERNEL_VOCAB_QUALIFIED
         .iter()
@@ -3507,10 +3507,10 @@ fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
 /// arithmetic / comparison operator targets (`+` → `add`, `=` → `eq`, …, via
 /// `parse/pratt.rs`), and the logic operators (`not` / `or`). Like the kernel
 /// vocab (WI-040), these resolve via a LOWEST-PRECEDENCE fallback rather than a
-/// `_global` import: a user's local definition or explicit import always wins
+/// `<global>` import: a user's local definition or explicit import always wins
 /// (the fallback fires only when scope resolution fails) and the import can never
 /// go AMBIGUOUS against a user name — the failure mode the old flat
-/// `add_import(_global, …)` had, which forced the WI-476 collision blocklist.
+/// `add_import(<global>, …)` had, which forced the WI-476 collision blocklist.
 ///
 /// `not` → `anthill.reflect.not` keeps the boolean-`!` / negation-as-failure
 /// conflation INTACT (a deliberate, separate decision — its own ticket).
@@ -3578,7 +3578,7 @@ const PRELUDE_QUALIFIED: &[&str] = &[
 ];
 
 /// WI-521: short name → qualified target for the implicit prelude, or `None`.
-/// Resolved as a lowest-precedence fallback (no `_global` import); a user name
+/// Resolved as a lowest-precedence fallback (no `<global>` import); a user name
 /// in scope always shadows it.
 fn prelude_qualified(name: &str) -> Option<&'static str> {
     PRELUDE_QUALIFIED
@@ -3669,7 +3669,7 @@ fn sort_decl_kinds(kind: SortDeclKind) -> (SortKind, &'static str) {
 }
 
 /// Is `scope` a SORT's body — as opposed to a namespace, an operation frame or
-/// `_global`?
+/// `<global>`?
 ///
 /// WI-1029 — ASKED OF THE OWNER, because that is what the question is about. This
 /// used to take the scope's name TERM and match `Term::Fn{f,[],[]}` + `has_kind(f,
@@ -6896,7 +6896,7 @@ pub fn register_implicit_prelude_effects(kb: &mut KnowledgeBase) {
 /// (a separate intern-map symbol), never scope-resolves it — so keeping them out
 /// of every scope's `locals` is transparent to fact emission. Previously they
 /// were bare global *locals* via `define()`, which let a `requires`-induced scope
-/// link (sort -> spec -> prelude -> _global) bypass a user's enclosing-chain
+/// link (sort -> spec -> prelude -> <global>) bypass a user's enclosing-chain
 /// alias and resurface the kernel meta-sort as a phantom rival to a user sort of
 /// the same name (e.g. `sort Member` / `sort Constraint`) referenced bare inside
 /// a `requires`-bearing sort -> `ambiguous symbol` (WI-423, the structural twin
@@ -7233,7 +7233,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             is_enclosing: true,
         },
     );
-    // WI-521: defined (registers in `by_qualified_name`) but NOT `_global`-imported
+    // WI-521: defined (registers in `by_qualified_name`) but NOT `<global>`-imported
     // — the prelude resolves these via the `prelude_qualified` fallback.
     let cons_sym = kb.symbols.define(
         "cons",
@@ -7463,7 +7463,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             is_enclosing: true,
         },
     );
-    // WI-521: defined but NOT `_global`-imported (prelude_qualified fallback).
+    // WI-521: defined but NOT `<global>`-imported (prelude_qualified fallback).
     let some_sym = kb.symbols.define(
         "some",
         "anthill.prelude.Option.some",
@@ -7634,7 +7634,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
 
     // Proposal 038: register primitive sorts at anthill.prelude scope so
     // stdlib's `sort anthill.prelude.Int64 { ... }` reuses the same Symbol,
-    // alias the bare QN for try_resolve_symbol("Int64"), import into _global.
+    // alias the bare QN for try_resolve_symbol("Int64"), import into <global>.
     for &name in PRELUDE_SORTS {
         let qualified = format!("anthill.prelude.{name}");
         let sym = kb
@@ -7684,7 +7684,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         },
     );
     // WI-521: the reflection `*Info` sorts are defined (registered in
-    // `by_qualified_name`) but NOT `_global`-imported — reflection code reaches
+    // `by_qualified_name`) but NOT `<global>`-imported — reflection code reaches
     // them by explicit import (`reflect/typing.anthill`) or self-scope.
     kb.symbols.define(
         "SortInfo",
@@ -7787,7 +7787,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             .define(variant, &qualified, SymbolKind::Entity, member_kind_scope);
     }
     // WI-040: the literal carriers are DEFINED here (registers them in
-    // `by_qualified_name`) but NOT `_global`-imported — they resolve directly via
+    // `by_qualified_name`) but NOT `<global>`-imported — they resolve directly via
     // `kernel_vocab_qualified`. So the returned symbols are intentionally unused.
     kb.symbols.define(
         "SetLiteral",
@@ -8099,16 +8099,16 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     // WI-521: the user-facing PRELUDE (cons / nil / some / none, the arithmetic
     // and comparison operator targets eq / neq / gt / lt / gte / lte / add / sub /
     // mul / to_bigint / to_int, and the logic operators not / or) is NOT
-    // `_global`-imported. It resolves via the lowest-precedence `prelude_qualified`
+    // `<global>`-imported. It resolves via the lowest-precedence `prelude_qualified`
     // fallback in `remap_name_str` / `resolve_name_in_kb`: a user's local
     // definition or explicit import always wins, and the prelude name can never go
-    // AMBIGUOUS against a user name (the failure mode the old flat `_global`
+    // AMBIGUOUS against a user name (the failure mode the old flat `<global>`
     // injection had — see the WI-476 collision blocklist that WI-040 removed).
     //
     // The reflection `*Info` result sorts (SortInfo / FieldInfo / …) also resolve
     // via `prelude_qualified` (a reflection vocabulary, queried bare by the
     // reflect bridge / CLI). Their `define` calls remain (registering them in
-    // `by_qualified_name`, which the fallback looks up); only the `_global` imports
+    // `by_qualified_name`, which the fallback looks up); only the `<global>` imports
     // are gone.
 }
 
@@ -9891,7 +9891,7 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
     // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
     let record_kind = ClauseKind::Fact;
-    let global_domain = kb.intern("_global");
+    let global_domain = kb.global_scope().owner();
     for rec in new_records {
         kb.assert_metadata_fact(rec, record_kind, global_domain, None);
     }
@@ -10051,7 +10051,7 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
     }
     // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
     let record_kind = ClauseKind::Fact;
-    let global_domain = kb.intern("_global");
+    let global_domain = kb.global_scope().owner();
     for rec in new_records {
         kb.assert_metadata_fact(rec, record_kind, global_domain, None);
     }
@@ -10278,7 +10278,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     }
     // WI-922: a metadata fact's KIND is Fact; the sort it is ABOUT is its head functor.
     let record_kind = ClauseKind::Fact;
-    let global_domain = kb.intern("_global");
+    let global_domain = kb.global_scope().owner();
     for rec in new_records {
         kb.assert_metadata_fact(rec, record_kind, global_domain, None);
     }
@@ -12227,7 +12227,7 @@ fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Op
 /// Convert a parse-time term (from `SimpleTermStore`) into the KB's
 /// hash-consed `TermStore`, resolving symbols through the KB's scope chain.
 ///
-/// `scope` is the scope in which to resolve names (typically `_global`).
+/// `scope` is the scope in which to resolve names (typically `<global>`).
 /// `var_map` preserves variable identity: two `?x` in a query share the same
 /// `VarId`. Pass an empty map on the first call; reuse the same map across
 /// multiple terms that should share variables.
@@ -12501,13 +12501,13 @@ fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Sym
 /// "unresolved" — each caller has a different way to say it.
 ///
 /// WI-752: this is the QUERY-PATTERN position — and, since WI-908, the HOST-name one
-/// (`KnowledgeBase::resolve_name_in_global` is this function at `_global`). It spells the
+/// (`KnowledgeBase::resolve_name_in_global` is this function at `<global>`). It spells the
 /// dotted question exactly the way the loader positions do — via `resolve_dotted_in_kb`.
 /// It used to rank the ABSOLUTE reading FIRST (ahead of scope resolution), carry no
 /// head-qualification rung at all, and resolve SHORT names absolutely; the last of
 /// those was a residue of the WI-476 global scan, and the first two meant `anthill
 /// query` could bind the same dotted text to a DIFFERENT symbol than the program it
-/// queries. Queries run at `_global`, where the two readings almost always coincide —
+/// queries. Queries run at `<global>`, where the two readings almost always coincide —
 /// which is exactly why the divergence survived four fixes unnoticed.
 pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
     kb.symbols
@@ -12522,7 +12522,7 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit prelude
         // resolve directly to their qualified home in query patterns too — parity with
         // `remap_name_str`, so a reflection query naming `field_access` / `ListLiteral`
-        // or a prelude name like `eq` / `cons` bare still matches after the `_global`
+        // or a prelude name like `eq` / `cons` bare still matches after the `<global>`
         // imports were removed. Fallback only: scope resolution already failed, so a
         // user-defined same-spelling name has won. (Distinct from WI-476's deliberate
         // no-rescue for arbitrary user short-names — these are RESERVED / PRELUDE names
@@ -12612,7 +12612,7 @@ enum DottedVisibility {
 ///   nothing can shadow it.
 ///
 /// A relative path STILL REACHES THE ROOT, which is why WI-1075 cost no migration: the
-/// scope walk goes out to `_global`, where a top-level namespace is an ordinary local,
+/// scope walk goes out to `<global>`, where a top-level namespace is an ordinary local,
 /// so with nothing shadowing `outer` the head of `outer.inner.g` binds the top-level
 /// `outer` and the whole path resolves by head-qualification. `..` is needed ONLY where
 /// something shadows the head.
@@ -13952,7 +13952,7 @@ impl<'a> Loader<'a> {
                 // `match_expr` / `field_access` / `ListLiteral` / …) and the
                 // implicit PRELUDE (`cons` / `some` / `eq` / `add` / `not` / …)
                 // resolve directly to their qualified home, replacing the old
-                // `_global` imports. This is a FALLBACK (we are already past scope
+                // `<global>` imports. This is a FALLBACK (we are already past scope
                 // resolution), so a user-written same-spelling name has won
                 // already; these names only catch a reference no scope defines.
                 if let Some(sym) = resolve_implicit(self.kb, name) {
@@ -19703,7 +19703,7 @@ impl<'a> Loader<'a> {
         };
         let induction_name = format!("{sort_name}.induction");
         // Scope the `induction` short-name to the SORT (not parent_domain).
-        // Top-level sorts otherwise all share `_global`, where the first
+        // Top-level sorts otherwise all share `<global>`, where the first
         // call registers `induction → Symbol(N)` and subsequent calls
         // reuse that without inserting their qualified name into
         // `by_qualified_name` — making each subsequent <Sort>.induction
@@ -20409,7 +20409,7 @@ impl<'a> Loader<'a> {
     ///   }` / `enum X { … }` body, §6.3's free-standing `entity X(…)`, and — the
     ///   WI-978 fix — a `namespace X` SECONDARY ENTRY to any of them (059).
     ///   Asked as `has_kind`, never `kind_of`: see the comment at the branch.
-    /// - **Names no type**: a plain namespace, or a file's synthetic `_global`
+    /// - **Names no type**: a plain namespace, or a file's synthetic `<global>`
     ///   root scope. The carrier is derived from the fact's first binding value
     ///   (the type that satisfies the spec). A claim WRITTEN BARE (`fact <Spec>`,
     ///   nothing after the name) that names no derivable carrier is REFUSED rather
@@ -20540,7 +20540,7 @@ impl<'a> Loader<'a> {
         // not spelled `has_kind(domain, Namespace)`. Making that third case loud
         // instead found the second population the old `_ => return` swallowed: a
         // `fact Spec[X]` at a FILE'S TOP LEVEL, whose domain is the synthetic root
-        // scope `_global` (`load_items`' `domain.unwrap_or(_global)`) — a symbol
+        // scope `<global>` (`load_items`' `domain.unwrap_or(<global>)`) — a symbol
         // with no declared kind, so `Namespace` is as false for it as `Sort` is.
         // It emitted no provision either, while the identical text one `namespace`
         // in did. A root scope names no type, so it derives from the bindings
@@ -24420,7 +24420,7 @@ end
                 .map(|(q, s)| (q.as_str(), named(*s)))
                 .collect::<Vec<_>>(),
             vec![
-                ("demo", "_global".to_owned()),
+                ("demo", crate::intern::GLOBAL_SCOPE_NAME.to_owned()),
                 ("demo.Colour", "demo".to_owned())
             ],
             "the enclosing scope of each declaration, by its owner",
@@ -24448,7 +24448,7 @@ end
         // OPERATION, so it resolves inside `Colour` and NOT from `demo` (only entity
         // variants are exposed outward, §8.6). The positive half alone does NOT
         // discriminate, measured: with the descent crossed so every item gets
-        // `_global`, `resolve_in_scope("blend", _global)` still answers `Found` — it
+        // `<global>`, `resolve_in_scope("blend", <global>)` still answers `Found` — it
         // is the NEGATIVE half that fires, because the pair asserts the two scopes
         // SEE DIFFERENT THINGS, which one scope handed out twice cannot satisfy.
         let colour_scope = items[0].1;

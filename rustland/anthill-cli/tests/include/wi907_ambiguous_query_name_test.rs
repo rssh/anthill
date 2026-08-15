@@ -19,7 +19,7 @@ fn query(args: &[&str]) -> crate::common::Output {
     anthill(&all)
 }
 
-/// Both namespaces in scope, so `name` is ambiguous at `_global`.
+/// Both namespaces in scope, so `name` is ambiguous at `<global>`.
 fn query_both(args: &[&str]) -> crate::common::Output {
     let mut all = vec!["-i", "wi907.alpha.*", "-i", "wi907.beta.*"];
     all.extend_from_slice(args);

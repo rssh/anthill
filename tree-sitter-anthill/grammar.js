@@ -70,11 +70,11 @@ module.exports = grammar({
     // =========================================================
 
     // WI-853: `import` is admitted HERE as well as inside a namespace / sort
-    // body. A file's top level IS a scope — the `_global` one every top-level
+    // body. A file's top level IS a scope — the `<global>` one every top-level
     // `sort` / `fact` / `rule` is defined in — and an import is how names enter
     // a scope; admitting the declarations but not the import that feeds them was
     // an asymmetry with no rule behind it. It is what makes `anthill query -i`
-    // work: the flag supplies an import to the query's `_global` scope, and
+    // work: the flag supplies an import to the query's `<global>` scope, and
     // there is no namespace to put it in.
     _declaration: $ => choice(
       $.namespace_declaration,
@@ -1727,6 +1727,8 @@ module.exports = grammar({
     // It is a marker, not an identifier, so it burns no name and cannot itself be
     // shadowed — unlike Scala's `_root_` or a reserved `_global`, either of which
     // a legal declaration could take, making every path under it mean the hatch.
+    // The top-level scope's own name took the same lesson in WI-987: it is
+    // `<global>`, which `_identifier_token` cannot produce either.
     // Verified free: `..` appears in this grammar nowhere else, and `...` (the
     // WI-727 variadic capture) stays distinct because this head token requires an
     // identifier character immediately after the two dots.

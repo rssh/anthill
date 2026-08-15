@@ -476,7 +476,7 @@ object Loader:
     * it was already going into.
     *
     * WI-992 — before this, the whole dotted spelling WAS the short name and it was
-    * defined in `_global`; nothing ever linked it to a scope called `anthill.prelude`. So
+    * defined in `<global>`; nothing ever linked it to a scope called `anthill.prelude`. So
     * from inside `sort anthill.prelude.Eq` the name `PartialEq` resolved to nothing, even
     * though `sort anthill.prelude.PartialEq` sits eleven lines above it in the same file
     * — and since a `requires` here LINKS A PARENT SCOPE and is the whole of what a
@@ -596,7 +596,7 @@ object Loader:
         case Item.OperationBlockItem(block) =>
           for op <- block.entries do checkVariadicCapture(fileSym, prefix, op, errors)
 
-        // WI-853: a TOP-LEVEL import feeds `_global` — the scope a file's top-level
+        // WI-853: a TOP-LEVEL import feeds `<global>` — the scope a file's top-level
         // declarations are defined in. Same `processImports` the namespace-attached
         // and sort-attached lists go through; only the scope differs, and it is
         // already the one this walk carries.
@@ -605,7 +605,7 @@ object Loader:
         // `bodyContent` consumes an `import` before `declaration` is tried, so it
         // lands in that body's `imports` list and never reaches this arm as an Item.
         //
-        // WI-1074 — `_global` is ONE address every file writes, which made a top-level
+        // WI-1074 — `<global>` is ONE address every file writes, which made a top-level
         // import the widest reach a file had into text it never saw. It carries the
         // same file origin as any other import now: global in PLACE, local in WHO SEES
         // IT. (Rustland's wi853 test was inverted by WI-995 the same way.)
@@ -1465,7 +1465,7 @@ object Loader:
         kb.intern(name)
 
   /** Auto-import prelude sort contents into global scope.
-    * Adds each sort defined directly under anthill.prelude as a parent of _global,
+    * Adds each sort defined directly under anthill.prelude as a parent of <global>,
     * making their exported operations (add, sub, mul, etc.) globally visible.
     *
     * Skips the primitive type sorts (Bool/Int/Float/BigInt/String) — their
@@ -1505,9 +1505,9 @@ object Loader:
     segments.map(symbols.name).mkString(".")
 
   /** Is this scope a SORT body — i.e. does it have type parameters to add one to? Pass 1
-    * asks it of an `enclosing` that may be `_global`, which is a scope like any other but
+    * asks it of an `enclosing` that may be `<global>`, which is a scope like any other but
     * whose symbol was never declared, so the answer there is `false` (WI-976: `false`
-    * because `_global` is Unresolved, not because the term failed a scope-shape test —
+    * because `<global>` is Unresolved, not because the term failed a scope-shape test —
     * that test, and the `Option` it used to return, are gone). */
   private def isSortScope(kb: KnowledgeBase, scope: kb.ScopeId): Boolean =
     kb.symbols.get(kb.symbols.symbolOf(scope)) match

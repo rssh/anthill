@@ -519,7 +519,7 @@ impl KnowledgeBase {
 
         if fresh {
             let rule_sort = ClauseKind::Rule;
-            let domain = self.intern("_global");
+            let domain = self.global_scope().owner();
             // WI-678: the stored body is the goal carriers themselves — an
             // occurrence goal is used directly (its spans/types preserved, no
             // reify), a term/entity goal materializes to an occurrence exactly as

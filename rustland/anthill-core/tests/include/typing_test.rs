@@ -1241,7 +1241,7 @@ fn entity_of_standalone_entity_has_no_parent() {
     // Standalone entity (not inside a sort body) is not registered with a parent
     // sort (`register_entity_of` is sort-body only), so `entity_of` yields 0 —
     // even though WI-630 now emits an `EntityInfo` fact for it. A top-level
-    // entity's `scope` is `_global`, on which the `scope` builtin already fails.
+    // entity's `scope` is `<global>`, on which the `scope` builtin already fails.
     let source = r#"
 entity Account(id: Int64, balance: Int64)
 "#;
@@ -1348,7 +1348,7 @@ fn wi630_metadata_fact_headed_by_user_functor_is_rejected() {
         named_args: SmallVec::from_slice(&[(from_sym, int_ty)]),
     });
     let entity_sort = kb.intern("Entity");
-    let global = kb.intern("_global");
+    let global = kb.global_scope().owner();
     kb.assert_metadata_fact(bad_head, ClauseKind::Fact, global, None);
 }
 

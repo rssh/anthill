@@ -37,7 +37,7 @@
 //!    half is what fails, and it is the whole point of the pair.
 //!  * [`wi1075_unshadowed_relative_path_still_reaches_the_root`] — passes either way by
 //!    design. It is the ZERO-MIGRATION claim: with nothing shadowing the head, the scope
-//!    walk reaches `_global` where a top-level namespace is an ordinary local, so an
+//!    walk reaches `<global>` where a top-level namespace is an ordinary local, so an
 //!    unmarked FQN still resolves by head-qualification alone.
 //!  * [`wi1075_member_miss_under_a_namespace_root_stays_loud`] — passes either way
 //!    (WI-751's `head_owns_path` already refused it). The control that says the new rule
@@ -246,7 +246,7 @@ end
 
 /// ZERO MIGRATION, driven rather than asserted. With NOTHING shadowing the head, an
 /// unmarked fully-qualified path resolves exactly as before — and it does so through the
-/// RELATIVE reading, because the scope walk goes out to `_global`, where a top-level
+/// RELATIVE reading, because the scope walk goes out to `<global>`, where a top-level
 /// namespace is an ordinary local.
 ///
 /// That is why retiring the implicit absolute reading cost no rewrites: `..` is needed
@@ -282,7 +282,7 @@ end
         load::absolute_fallthrough_hits(),
         0,
         "the unshadowed FQN must resolve by HEAD-QUALIFICATION — the head `outer` binds \
-         the top-level namespace at `_global`. A non-zero count here would mean it \
+         the top-level namespace at `<global>`. A non-zero count here would mean it \
          resolved by the absolute route instead, and the zero-migration claim would rest \
          on a route this ticket removes"
     );

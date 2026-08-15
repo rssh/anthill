@@ -1,0 +1,13 @@
+-- WI-987 — the two things that used to be ONE name.
+--
+-- A clause written outside any namespace: its domain is the SYNTHETIC top-level scope,
+-- which no declaration owns, so `--mode domain` can only reach it by the reserved
+-- spelling `<global>`.
+fact outside987(v: 1)
+
+-- And a namespace a user is entitled to call `_global`. While the loader's tag WAS
+-- `_global`, `--mode domain _global` matched the reserved arm before the ladder ran, so
+-- this declaration was unlistable by the only name it has. It is an ordinary namespace.
+namespace _global
+  fact inside987(v: 2)
+end

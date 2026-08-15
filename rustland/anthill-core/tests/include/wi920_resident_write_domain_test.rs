@@ -32,10 +32,10 @@
 //!
 //! The constant was not even right for the tool it named: anthill-todo declares
 //! `WorkItem` in `anthill.stage0`, and its own persisted work items are loaded at file
-//! top level, i.e. under `_global`. Three spellings, no two agreeing.
+//! top level, i.e. under `<global>`. Three spellings, no two agreeing.
 //!
 //! A head that declares no scope at all — a bare-interned name, which `Store.persist`
-//! accepts and `persistence_builtins_test` persists — takes `_global`, which is not a
+//! accepts and `persistence_builtins_test` persists — takes `<global>`, which is not a
 //! stand-in but the domain the loader itself gives a TOP-LEVEL source `fact` (measured).
 //! The last test pins that, because a first cut of this fix REFUSED that head and broke
 //! two existing tests: an undeclared name has a right answer, so a refusal was the wrong
@@ -225,7 +225,7 @@ fn the_persisted_content_is_unchanged() {
 
 /// A head that DECLARES NOTHING — `intern`ed, never defined — is the shape
 /// `persistence_builtins_test` persists, so the seam must still take it. It is filed
-/// under `_global`, the domain a top-level source `fact` gets (measured on this tree),
+/// under `<global>`, the domain a top-level source `fact` gets (measured on this tree),
 /// rather than refused: an undeclared name has a right answer, and my first cut of this
 /// fix refused it and broke those two tests.
 #[test]
@@ -255,7 +255,8 @@ fn a_head_that_declares_no_scope_is_filed_under_global() {
         .collect();
     assert_eq!(
         domains,
-        vec!["_global".to_owned()],
-        "no declaring scope means `_global`, not a constant naming someone else's tool",
+        vec![anthill_core::intern::GLOBAL_SCOPE_NAME.to_owned()],
+        "no declaring scope means the TOP-LEVEL scope, not a constant naming someone \
+         else's tool",
     );
 }

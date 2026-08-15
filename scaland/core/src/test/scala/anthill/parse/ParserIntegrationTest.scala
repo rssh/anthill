@@ -1065,10 +1065,10 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(m.contains("at most one"), m)
   }
 
-  /** WI-853: a TOP-LEVEL import feeds `_global`, the scope a file's top-level
+  /** WI-853: a TOP-LEVEL import feeds `<global>`, the scope a file's top-level
     * declarations are defined in. Drives the capability rather than the parse: the
     * imported short name must actually RESOLVE afterwards. */
-  test("WI-853: a top-level import puts the imported name in scope at `_global`") {
+  test("WI-853: a top-level import puts the imported name in scope at `<global>`") {
     val provider = Parser.parse(
       """namespace lib
         |  sort Widget853
@@ -1090,7 +1090,7 @@ class ParserIntegrationTest extends munit.FunSuite:
           case SymbolDef.Resolved(_, qn, _, _) => assertEquals(qn, "lib.Widget853")
           case other => fail(s"expected a resolved symbol, got $other")
       case other =>
-        fail(s"`Widget853` should resolve at _global through the top-level import, got $other")
+        fail(s"`Widget853` should resolve at <global> through the top-level import, got $other")
   }
 
   // ── Pass 3 + 4: rule-introduced functors, deferred predicate imports ──
@@ -1226,7 +1226,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     * short name — with no diagnostic. Fails without the dotted-only rung in
     * `resolveName`; unaffected by anything else in the pass-3 port. */
   test("a scope's own rule clauses are not captured by a same-named global functor") {
-    val globalRule = Parser.parse("rule p(?y) :- q(?y)", "<global>")
+    val globalRule = Parser.parse("rule p(?y) :- q(?y)", "_global")
       .toOption.getOrElse(fail("global parse failed"))
     val scoped = Parser.parse(
       """namespace n
@@ -1350,7 +1350,7 @@ class ParserIntegrationTest extends munit.FunSuite:
 
   /** `sort wi992.Spec` written at a file's top level, and a sibling requiring it by its
     * SHORT name. Deliberately NOT under `anthill.prelude`: every non-primitive sort
-    * declared there is linked into `_global` by `autoImportPrelude`, which would give
+    * declared there is linked into `<global>` by `autoImportPrelude`, which would give
     * `spin` a second route and make the drive below pass for the wrong reason. */
   private val dottedSiblingFixture =
     """sort wi992.Spec
@@ -1408,7 +1408,7 @@ class ParserIntegrationTest extends munit.FunSuite:
   }
 
   /** The measured site the ticket was written from: `anthill/prelude/eq.anthill:35`.
-    * Structural, and deliberately so — `PartialEq` is auto-imported into `_global`
+    * Structural, and deliberately so — `PartialEq` is auto-imported into `<global>`
     * alongside every other prelude spec, so resolving `eq` from inside `Eq` succeeds
     * through that route whether or not the requirement linked anything. The drive lives
     * in the `wi992.*` fixture above, which has no second route; this asserts the link

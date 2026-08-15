@@ -1,10 +1,10 @@
 //! WI-040 — the kernel DESUGARING VOCAB (reflect `Expr` / `Pattern`
 //! constructors, `field_access`, the literal carriers `ListLiteral` /
 //! `SetLiteral` / `TupleLiteral`, reflection primitives) is RESERVED: a bare
-//! reference resolves DIRECTLY to its qualified home, with no `_global` import.
+//! reference resolves DIRECTLY to its qualified home, with no `<global>` import.
 //!
 //! This guards the QUERY-pattern path specifically (`convert_query_term` ->
-//! `resolve_name_in_kb`). Removing the `_global` imports regressed it — a
+//! `resolve_name_in_kb`). Removing the `<global>` imports regressed it — a
 //! bare reserved name in a query silently bare-interned and matched nothing —
 //! and the `kernel_vocab_qualified` fallback restores it. The loader / op-body
 //! paths are covered by the rest of the suite (they resolve the vocab directly
@@ -34,7 +34,7 @@ fn load_stdlib_kb() -> KnowledgeBase {
 }
 
 /// A bare reflection primitive (`field_access`) in a query pattern — with no
-/// import and no `_global` rescue — resolves to its reserved reflect home.
+/// import and no `<global>` rescue — resolves to its reserved reflect home.
 #[test]
 fn query_pattern_bare_field_access_resolves_qualified() {
     let mut kb = load_stdlib_kb();

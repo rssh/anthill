@@ -49,11 +49,11 @@ object Prelude:
     * lands in — `Loader.ensureNamespacePath` reuses them rather than synthesizing its
     * own — so they must have the SHAPE the loader gives a namespace it creates, and one
     * half was missing: the ENCLOSING parent. Without it nothing declared inside
-    * `anthill.prelude` could see `_global`, and a miss there is silent (`resolveName`
+    * `anthill.prelude` could see `<global>`, and a miss there is silent (`resolveName`
     * interns and carries on). It never bit before because these scopes were only ever
-    * searched INTO, through the `_global` parent links `registerGlobalParents` adds —
+    * searched INTO, through the `<global>` parent links `registerGlobalParents` adds —
     * a file writing `namespace anthill.reflect` minted a SECOND symbol, keyed by the
-    * dotted spelling in `_global`, and put its declarations there instead. */
+    * dotted spelling in `<global>`, and put its declarations there instead. */
   // `private[load]` for `PreludeScopesTest` alone (with `registerPrimitiveSorts` below):
   // the two together are the shape its `typeCheckErrors` snippets need — a producer and
   // one consumer. The other four steps stay `private`; they take the same argument.
@@ -125,7 +125,7 @@ object Prelude:
       kb.symbols.addExposed(scope, shortName)
 
     // Helper to define a standalone entity directly in the reflect scope.
-    // Visible by default (reflect is a parent of _global with empty `exposed`).
+    // Visible by default (reflect is a parent of <global> with empty `exposed`).
     // RETURNS its symbol (WI-990): the global-import loop below used to look these
     // names back up by string and drop a miss through `Option.foreach` — a definition
     // and a re-lookup of the same name, with the same silent degrade the WI removed
@@ -180,7 +180,7 @@ object Prelude:
     defineEntity("typed", typedExprScope)
 
     // Global imports for reflect entities. WI-1074 — Builtin: registered by the
-    // bootstrap, written in no file, so local to none — this is scaland's `_global`
+    // bootstrap, written in no file, so local to none — this is scaland's `<global>`
     // ruling, mirroring rustland's `register_implicit_prelude_effects`.
     val globalScope = kb.globalScope
     for (name, sym) <- metadataEntities ++ literalEntities do
@@ -217,7 +217,7 @@ object Prelude:
     for (scope, short, tag) <- builtinDefs do
       kb.registerBuiltinTag(defineIn(kb, scope, short, SymbolKind.Operation), tag)
 
-  /** Add anthill.prelude and anthill.reflect as parents of _global,
+  /** Add anthill.prelude and anthill.reflect as parents of <global>,
     * making their exports visible everywhere.
     */
   private def registerGlobalParents(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =

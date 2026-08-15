@@ -7,7 +7,7 @@
 //! symbol that was not even among the candidates.
 //!
 //! MEASURED before the fix, through the shipped `anthill query`: two wildcard-imported
-//! user sorts named `SortInfo` made the bare name ambiguous at `_global`, and
+//! user sorts named `SortInfo` made the bare name ambiguous at `<global>`, and
 //! `SortInfo(name: ?n)` answered FOUR rows out of `anthill.reflect.SortInfo` — the
 //! implicit tier those very declarations had already shadowed. Adding the SECOND import,
 //! which makes the name strictly more contested, is what brought the shadowed reading
@@ -61,7 +61,7 @@ namespace wi907.beta
 end
 "#;
 
-/// A wildcard import is the one way `_global` — the scope a query pattern and a host
+/// A wildcard import is the one way `<global>` — the scope a query pattern and a host
 /// name are read in — gains a name it does not declare itself. Two of them is what makes
 /// a name ambiguous THERE.
 ///
@@ -70,7 +70,7 @@ end
 /// source. Since imports became file-local, a program file's import is local to that
 /// file and does not reach a query pattern or a host name, which have no file; the `-i`
 /// channel is the one that does. The subject is unchanged — two wildcard imports still
-/// make the short name ambiguous at `_global` — only the channel is named honestly.
+/// make the short name ambiguous at `<global>` — only the channel is named honestly.
 fn kb_importing(namespaces: &[&str]) -> KnowledgeBase {
     // Panics on a load error, which is half the fixture's claim: nothing here REFERENCES
     // the contested name, so the program loads clean and the ambiguity is live but
@@ -82,7 +82,7 @@ fn kb_importing(namespaces: &[&str]) -> KnowledgeBase {
     kb
 }
 
-/// THE DEFECT. `SortInfo` names two user sorts at `_global` and the implicit tier's
+/// THE DEFECT. `SortInfo` names two user sorts at `<global>` and the implicit tier's
 /// `anthill.reflect.SortInfo`; the loader is on record as unable to choose between the
 /// first two, so the one thing the query must not do is answer as the third.
 #[test]
@@ -140,7 +140,7 @@ fn an_unshadowed_implicit_tier_name_still_binds_its_target() {
     assert_eq!(
         bound,
         kb.resolve_symbol("anthill.reflect.SortInfo"),
-        "no user declaration is in scope at `_global`, so the tier is the answer",
+        "no user declaration is in scope at `<global>`, so the tier is the answer",
     );
 }
 

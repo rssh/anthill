@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.{SymbolDef, SymbolTable}
+import anthill.intern.{GLOBAL_SCOPE_NAME, SymbolDef, SymbolTable}
 import anthill.resolve.SearchStream
 import anthill.term.{Term, TermId, Var}
 
@@ -132,15 +132,16 @@ class ScopeIdentityTest extends munit.FunSuite:
       Nil)
   }
 
-  test("WI-976: a declared scope displays as its qualified name; `_global` as its spelling") {
+  test("WI-976: a declared scope displays as its qualified name; the top level as its spelling") {
     val kb = loaded(src)
     assertEquals(kb.scopeDisplayName(kb.symbols.scopeOf(kb.resolveSymbol("demo.S"))), "demo.S")
-    // The scope with NO qualified name — `_global` is interned, never declared, so its
+    // The scope with NO qualified name — the sentinel is interned, never declared, so its
     // `SymbolDef` is `Unresolved`. This is the input the old `scopeFunctor` /
     // `IllegalStateException` pair looked like it was guarding against and never was:
     // it is a perfectly good scope, and `qualifiedNameOf` already falls back to the
-    // interned spelling.
-    assertEquals(kb.scopeDisplayName(kb.globalScope), "_global")
+    // interned spelling. WI-987 made that spelling one no DECLARED scope can share —
+    // `GlobalScopeSentinelTest` is where that is asserted.
+    assertEquals(kb.scopeDisplayName(kb.globalScope), GLOBAL_SCOPE_NAME)
   }
 
   test("WI-990: a scope is minted THROUGH the table whose symbol it is") {
@@ -174,7 +175,7 @@ class ScopeIdentityTest extends munit.FunSuite:
 
   test("WI-990: the mint refuses a symbol its table never issued") {
     val kb = KnowledgeBase()
-    // A second table, grown past `kb.symbols` (a bare KB holds only `_global`), so its
+    // A second table, grown past `kb.symbols` (a bare KB holds only the top-level scope), so its
     // last symbol indexes off the end of the KB's `defs` — the direction the ticket
     // MEASURED: `kb.scopeDisplayName(ScopeId.of(foreign))` used to throw
     // `IndexOutOfBoundsException` from inside `qualifiedNameOf`, a display path, with
@@ -209,10 +210,10 @@ class ScopeIdentityTest extends munit.FunSuite:
     // WHAT IS STILL OPEN, asserted so the limit stays a measured fact rather than a hope:
     // the MINT takes a bare `TermSymbol`, so a foreign symbol handed to the KB's OWN mint
     // is in range and silently names another scope — `other`'s "a" is index 0, which in
-    // the KB is `_global`. Why it is not closed is at `SymbolTable.ScopeId`; what this
-    // line does is make the non-guarantee executable, so a later change that closes it
+    // the KB is the top-level scope. Why it is not closed is at `SymbolTable.ScopeId`; what
+    // this line does is make the non-guarantee executable, so a later change that closes it
     // fails here rather than leaving a comment claiming a limit that is gone.
-    assertEquals(kb.scopeDisplayName(kb.symbols.scopeOf(inRange)), "_global")
+    assertEquals(kb.scopeDisplayName(kb.symbols.scopeOf(inRange)), GLOBAL_SCOPE_NAME)
   }
 
   test("WI-1004: a scope belongs to the table that minted it") {

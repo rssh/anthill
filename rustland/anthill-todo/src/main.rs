@@ -192,7 +192,7 @@ fn scan_dir(project_dir: &Path) -> PathBuf {
 
 /// Headerless project files — bare `fact …(…)` lists such as
 /// `workitems.anthill` — parse with their items at the top level, which the
-/// loader places in the `_global` scope where stage0 entity names like
+/// loader places in the `<global>` scope where stage0 entity names like
 /// `WorkItem` are not visible. The file store owns the knowledge that these
 /// facts belong to the `anthill.stage0` domain, so it wraps such files in a
 /// synthetic `namespace anthill.stage0` block. That reuses the scope the

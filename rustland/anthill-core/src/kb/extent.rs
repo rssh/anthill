@@ -72,7 +72,7 @@ impl RowKey {
 ///
 /// The owner is a resolved symbol and NOT the owner's name because a name is a
 /// question, and asking it twice permits two answers: an external ref used to carry the
-/// mount's name string and re-run the `_global` ladder on every retract/update, so a
+/// mount's name string and re-run the top-level ladder on every retract/update, so a
 /// load between the mount and the mutation could make the two readings disagree —
 /// measured, `wi916_external_ref_symbol_test` (WI-916).
 #[derive(Clone, Debug)]
@@ -640,7 +640,7 @@ impl KnowledgeBase {
     /// WI-1075 — A HOST NAME IS READ RELATIVE TO THE TOP-LEVEL SCOPE, like source text
     /// written there, which is `resolve_name_in_global`'s whole point: a mount must not
     /// take a functor its author never named. So `"a.b.Rel"` binds the head `a` at
-    /// `_global` and resolves `b.Rel` under it — which every LOADED KB supports, since
+    /// the top level and resolves `b.Rel` under it — which every LOADED KB supports, since
     /// `scan_definitions` defines each declaration's dot-separated prefixes as implicit
     /// namespaces. A host that means the ROOT whatever is in scope there says so the way
     /// source does, by embedding the marker in its string: `"..a.b.Rel"`. Nothing
@@ -722,14 +722,14 @@ impl KnowledgeBase {
     /// `wi920_resident_write_domain_test`.
     ///
     /// A head that declares NO scope — a bare-interned name, which `Store.persist`
-    /// accepts and existing callers use — takes `_global`. Not a fallback standing in for
-    /// a missing answer: `_global` is where such a name lives, and it is the domain the
-    /// loader gives a TOP-LEVEL source `fact` (measured). So the rule reads the same
-    /// either way — a fact is filed under the scope its head belongs to.
+    /// accepts and existing callers use — takes the top-level scope. Not a fallback
+    /// standing in for a missing answer: the top level is where such a name lives, and it
+    /// is the domain the loader gives a TOP-LEVEL source `fact` (measured). So the rule
+    /// reads the same either way — a fact is filed under the scope its head belongs to.
     fn resident_fact_keys(&mut self, functor: Symbol) -> (ClauseKind, Symbol) {
         let domain = self
             .declaring_scope_symbol(functor)
-            .unwrap_or_else(|| self.intern("_global"));
+            .unwrap_or_else(|| self.global_scope().owner());
         (ClauseKind::Fact, domain)
     }
 
@@ -2140,7 +2140,7 @@ mod tests {
     /// THE ROOT NAMESPACE IS DEFINED TOO, and it is not ceremony. WI-1075 made a bare
     /// dotted path purely RELATIVE: its head binds where the name is asked and the whole
     /// tail is appended to what the head denotes, so `test.Widget` is reachable only if
-    /// its HEAD SEGMENT `test` is a symbol at `_global`. Every LOADED KB has one —
+    /// its HEAD SEGMENT `test` is a symbol at the top level. Every LOADED KB has one —
     /// `scan_definitions` defines each dot-separated prefix of a declaration as an
     /// implicit namespace (spec §"Dotted names desugar to nested namespaces") — so a
     /// fixture without it was building a KB the loader cannot produce, and passing on

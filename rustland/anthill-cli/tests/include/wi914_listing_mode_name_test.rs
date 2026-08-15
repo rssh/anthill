@@ -1,7 +1,7 @@
 //! WI-914 — a LISTING MODE's argument is read by THE SAME LADDER as a query pattern.
 //!
 //! `--mode functor` / `--mode domain` looked their user-supplied argument up by ABSOLUTE
-//! name only, while `--mode pattern` resolved the same text at `_global`. So one CLI
+//! name only, while `--mode pattern` resolved the same text at `<global>`. So one CLI
 //! answered two ways about what a name denotes — the WI-752 headline divergence a layer
 //! up — and the losing side reported it as `0 result(s)`: an EMPTY LISTING where the
 //! truth was an unreadable name. `-i` was refused outright for every listing mode
@@ -11,11 +11,11 @@
 //! (`Fact`/`Rule`/`Sort`/…), raw-interned by the loader site that files each clause, so
 //! the ladder answered `NotFound` for every one. WI-921 DELETED the mode rather than
 //! exempt or rename it, so every MODE `query` still has reads its argument through the
-//! ladder. Not every ARGUMENT: `--mode domain _global` is still a raw intern (WI-923).
+//! ladder. Not every ARGUMENT: `--mode domain <global>` is still a raw intern (WI-923).
 //!
 //! The fixture is `wi907`'s: two namespaces declaring the same short names, so one name
 //! is unambiguous under one `-i` and contested under two — the only shape that can tell
-//! "resolved at `_global`" apart from "looked up absolutely".
+//! "resolved at `<global>`" apart from "looked up absolutely".
 
 use crate::common::{anthill, fixtures_dir};
 
@@ -33,7 +33,7 @@ fn query_alpha(args: &[&str]) -> crate::common::Output {
     query(&all)
 }
 
-/// Both, so the short names are contested at `_global`.
+/// Both, so the short names are contested at `<global>`.
 fn query_both(args: &[&str]) -> crate::common::Output {
     let mut all = vec!["-i", "wi907.alpha.*", "-i", "wi907.beta.*"];
     all.extend_from_slice(args);

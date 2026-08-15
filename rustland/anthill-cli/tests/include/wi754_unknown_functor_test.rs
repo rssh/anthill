@@ -76,7 +76,7 @@ fn an_unknown_qualified_functor_is_refused() {
 }
 
 /// A namespaced name queried by its BARE leaf does not resolve at the query's
-/// `_global` scope, so it is refused — and the message guides to the fix (qualify
+/// `<global>` scope, so it is refused — and the message guides to the fix (qualify
 /// or `-i`) rather than falsely claiming nothing defines it. The control shows the
 /// SAME predicate answers under its qualified name, so the refusal is about scope,
 /// not existence.

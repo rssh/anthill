@@ -74,7 +74,7 @@ fn source_citing_dotted(namespaces: &[&str]) -> String {
     src
 }
 
-/// `DECLS` plus wildcard imports — the one way `_global`, the scope a query pattern and
+/// `DECLS` plus wildcard imports — the one way `<global>`, the scope a query pattern and
 /// a host name are read in, gains a name it does not declare. Nothing here REFERENCES a
 /// contested name, so the program loads clean and the conflict is live but unreported
 /// until a query or a mount names it.

@@ -7,7 +7,7 @@
 //!
 //! ONE STDLIB LOAD, in the last test only: the implicit tier resolves a name only when
 //! its target is LOADED (WI-900), so that claim cannot be made in a bare KB. The other
-//! three turn on `_global`'s own inhabitants — top-level imports and the loader's
+//! three turn on `<global>`'s own inhabitants — top-level imports and the loader's
 //! qualified-only kernel registrations — which `register_prelude` alone supplies.
 
 use anthill_core::kb::extent::ExtentRegError;
@@ -29,7 +29,7 @@ namespace wi908.lib
 end
 ";
 
-/// The import that gives `_global` a name whose qualified path is not its own spelling —
+/// The import that gives `<global>` a name whose qualified path is not its own spelling —
 /// the only way head-qualification and the absolute reading can disagree at this scope.
 ///
 /// WI-995 — supplied through the INVOCATION (`-i wi908.lib`), because the name it feeds
@@ -38,7 +38,7 @@ end
 /// this suite is about would have nothing to disagree over.
 /// WI-1089: the WILDCARD form. `-i wi908.lib` binds the name `lib` and nothing
 /// else — an invocation import reads exactly as the same line in source does — and
-/// this fixture is about names `wi908.lib` CONTAINS being mountable at `_global`.
+/// this fixture is about names `wi908.lib` CONTAINS being mountable at `<global>`.
 const IMPORT_LIB_FLAG: &str = "wi908.lib.*";
 
 const HIDDEN: &str = "\
@@ -55,7 +55,7 @@ fn fixture() -> KnowledgeBase {
     kb
 }
 
-/// `name` must not denote at `_global`, so the mount is refused BY NAME RESOLUTION —
+/// `name` must not denote at `<global>`, so the mount is refused BY NAME RESOLUTION —
 /// loudly, though not yet precisely (see the `internal` test).
 fn assert_unmountable(kb: &mut KnowledgeBase, name: &str, why: &str) {
     let err = mount(kb, name).expect_err(why);
@@ -134,7 +134,7 @@ fn an_internal_member_is_not_mountable_from_global() {
     assert_unmountable(
         &mut kb,
         "wi908.priv.Vault.secret",
-        "an `internal` member is invisible from `_global`",
+        "an `internal` member is invisible from `<global>`",
     );
 }
 
@@ -154,7 +154,7 @@ fn a_short_name_outside_the_implicit_tier_no_longer_resolves_absolutely() {
     assert_unmountable(
         &mut kb,
         "Sort",
-        "a short name must denote at `_global` to mount",
+        "a short name must denote at `<global>` to mount",
     );
 }
 

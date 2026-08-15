@@ -1,5 +1,32 @@
 package anthill.intern
 
+/** The name of the SYNTHETIC TOP-LEVEL SCOPE — the one a file's top-level declarations
+  * land in, minted by [[anthill.kb.KnowledgeBase.globalScope]].
+  *
+  * UNSPELLABLE BY THE IDENTIFIER TOKEN (WI-987). It used to be `_global`, which both
+  * grammars admit (`Tokens.identToken` here, `_identifier_token` in
+  * `tree-sitter-anthill/grammar.js`) — and a scope is minted from a SYMBOL, so
+  * `namespace _global` simply declared a second one: [[SymbolTable.define]] writes
+  * `byQualifiedName("_global")` without consulting the intern map, and
+  * `KnowledgeBase.scopeDisplayName` then rendered both scopes `_global`, so a WI-962
+  * diagnostic could not say which it meant. `<` starts no identifier, so the second
+  * scope is now UNREPRESENTABLE rather than merely unlikely — which is why nothing
+  * checks for it. Angle brackets are also this tree's existing spelling for a name no
+  * source text can write (`Parser.parse`'s `"<input>"`).
+  *
+  * RUSTLAND HOLDS THE SAME SPELLING, at `intern::GLOBAL_SCOPE_NAME`, where it sits
+  * beside `ABSOLUTE_PATH_MARKER` — the same argument, for the same reason. The two
+  * trees must agree: neither reads the other, so a one-sided change diverges their
+  * diagnostics in silence.
+  *
+  * THE GUARANTEE IS EXACTLY AS WIDE AS THE IDENTIFIER TOKEN. `kernel-language.md` §2.3
+  * also lists a QUOTED identifier (`"my weird name"`), which admits arbitrary text and
+  * would readmit the collision. Neither implementation parses one today — which is why
+  * this is a fact and not a hope — but whichever adds one must exclude this name from it
+  * or move the sentinel out of its reach. Stated at §8.6 *The top-level scope* as well,
+  * since a grammar change starts there. */
+val GLOBAL_SCOPE_NAME: String = "<global>"
+
 // ── Symbol handle ───────────────────────────────────────────────
 
 opaque type TermSymbol = Int

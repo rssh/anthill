@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef}
+import anthill.intern.{GLOBAL_SCOPE_NAME, TermSymbol, SymbolTable, SymbolKind, SymbolDef}
 import anthill.term.{Term, TermId, TermStore, Var, VarId, Literal}
 import anthill.subst.Substitution
 import anthill.discrim.SubstTree
@@ -87,21 +87,22 @@ class KnowledgeBase:
     * diagnostic) allocated a symbol and shifted every id after it. Minting once at
     * construction is also the cheaper answer — the loader asks for it per file.
     *
-    * The spelling is `_global` for rustland parity (`kb/mod.rs` and four more sites), and
-    * it is a legal identifier there and here, so `namespace _global` can name a SECOND
-    * scope that renders identically. Closing that needs a sentinel both implementations
-    * agree on — see WI-987.
+    * The spelling is [[anthill.intern.GLOBAL_SCOPE_NAME]], shared with rustland and, since
+    * WI-987, a name NO DECLARATION CAN TAKE. It was `_global` — a legal identifier in both
+    * grammars — so `namespace _global` defined a SECOND scope rendering identically, and a
+    * diagnostic naming a scope named either one of them. Why the sentinel closes that
+    * without a check is at the constant.
     *
-    * A `val` naming a symbol, so `symbols.scopeOf(symbols.intern("_global"))` names this
-    * same scope: the KB's ONE mint (WI-990) is total over the symbol universe and this
+    * A `val` naming a symbol, so `symbols.scopeOf(symbols.intern(GLOBAL_SCOPE_NAME))` names
+    * this same scope: the KB's ONE mint (WI-990) is total over the symbol universe and this
     * scope is in it. Its predecessor `scopeByQualifiedName` — a second mint, over
-    * QUALIFIED names — could not name this one at all (`_global` is interned and never
+    * QUALIFIED names — could not name this one at all (the sentinel is interned and never
     * defined) and THREW on a miss with no error channel, into four `Unit`-returning
     * `Prelude` steps whose ordering was the only thing keeping it unreachable. It is
     * gone: `Prelude` now takes the stdlib scopes as a value from the step that creates
     * them, so there is no name to miss. */
   val globalScope: ScopeId =
-    symbols.scopeOf(symbols.intern("_global"))
+    symbols.scopeOf(symbols.intern(GLOBAL_SCOPE_NAME))
 
   /** A scope's TERM form — for the four callers that must hand a scope where a TERM is
     * what fits: the `entity_of` and `provides_clause` facts embed one as an argument,
@@ -123,8 +124,10 @@ class KnowledgeBase:
     makeNameTermFromSym(symbols.symbolOf(scope))
 
   /** The name to call `scope` in a diagnostic (WI-957) — its QUALIFIED name where the
-    * scope is a declared one, and the interned spelling (`_global`) for the synthetic
-    * global scope, which is not a declaration and has no qualified name.
+    * scope is a declared one, and the interned spelling ([[anthill.intern.GLOBAL_SCOPE_NAME]])
+    * for the synthetic global scope, which is not a declaration and has no qualified name.
+    * Those two never collide (WI-987): the sentinel is no identifier, so no qualified name
+    * is spelled like it.
     *
     * It lives HERE, next to [[qualifiedNameOf]], and not in the loader that first needed
     * it (WI-962): "what do we call this scope in a diagnostic" gets ONE answer for every

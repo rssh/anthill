@@ -292,7 +292,7 @@ enum Item:
   case ProvidesClauseItem(pc: ProvidesClause)
   case ProvidesBlockItem(pb: ProvidesBlock)
   // WI-853: a file's TOP LEVEL admits an `import`, as a namespace / sort body
-  // already did. The top level is a scope — the `_global` one every top-level
+  // already did. The top level is a scope — the `<global>` one every top-level
   // `sort` / `fact` / `rule` is defined in — and an import is how names enter a
   // scope. Rides as its own `Item` (rather than a file-level `imports` list)
   // because scaland's `declaration` yields one `Item` per production.

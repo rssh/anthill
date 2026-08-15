@@ -35,16 +35,23 @@ Comments nest: `{- outer {- inner -} still outer -}`.
 ### 2.3 Identifiers and Names
 
 ```
-Identifier   ::= Letter (Letter | Digit | '-' | '_')*
-               | '"' [^"]+ '"'                        -- quoted identifier
+Identifier   ::= (Letter | '_') (Letter | Digit | '-' | '_')*
+               | '"' [^"]+ '"'                        -- quoted identifier (unimplemented)
 
 Name         ::= Identifier                           -- simple: "transfer"
                | Name '.' Identifier                  -- qualified: banking.accounts.transfer
 
-AbsoluteName ::= '::' Name                            -- absolute: ..banking.accounts.transfer
+AbsoluteName ::= '..' Name                            -- absolute: ..banking.accounts.transfer
 ```
 
-Quoted identifiers allow arbitrary strings as names: `"my weird name"`.
+The first alternative is exactly what both implementations tokenize
+(`[a-zA-Z_][a-zA-Z0-9_-]*` — `tree-sitter-anthill/grammar.js`'s
+`_identifier_token`, scaland's `Tokens.identToken`); a **leading `_` is
+admitted**, which is what makes §8.6's *The top-level scope* argument load-bearing.
+
+Quoted identifiers would allow arbitrary strings as names: `"my weird name"`.
+**Neither implementation parses one**, and adding one would re-open the
+collision §8.6 closes — see that section before doing so.
 
 A `Name` is resolved **relative** to where it is written; `..` asks for the
 **root** instead, and is admitted only in *reference* positions — a term, a type,
@@ -2995,6 +3002,24 @@ the latter to the unique symbol. Each scope holds:
   `import`, variant exposure);
 - **type parameters** — `sort T = ?` names, which do not leak to parents.
 
+**The top-level scope.** A file's top-level declarations land in one synthetic
+scope, shared by every file and by the host-supplied and command-line names that
+read at the top level. It is not a declaration, so it has no qualified name; a
+diagnostic calls it by the name it is interned under, `<global>`. That spelling
+is deliberately **outside the identifier token** (§2.3): were it inside, as
+`_global` was, `namespace <that name>` would *define a second scope* — a
+declaration is registered by qualified name and does not consult the interned
+one — and the two would then be indistinguishable in every message that names a
+scope. The angle brackets make the second scope unrepresentable rather than
+merely refused, which is the same argument `..` rests on (§2.3). Declaring
+`namespace _global` is therefore ordinary and means nothing special.
+
+The guarantee is exactly as wide as the identifier token, which is why it is
+stated here rather than left to the implementations. §2.3's **quoted
+identifier** (`"my weird name"`) admits arbitrary text and would readmit the
+collision; neither implementation parses one today, and whichever adds one must
+either exclude this name from it or move the sentinel out of its reach.
+
 **Visibility model.** A name is **visible by default**, across namespace and
 sort boundaries, to importers and requirers. The modifiers adjust this:
 
@@ -3047,8 +3072,8 @@ removed in WI-476; the marker is what lifts that for `..top`, which is an exact
 lookup of the name written rather than a search.
 
 **A relative path still reaches the root**, which is why `..` is rarely needed:
-the scope walk goes out to `_global`, where a top-level namespace is an ordinary
-local, so with nothing shadowing `outer` the head of `outer.inner.g` binds the
+the scope walk goes out to the top-level scope, where a top-level namespace is
+an ordinary local, so with nothing shadowing `outer` the head of `outer.inner.g` binds the
 top-level `outer` and the whole path resolves relatively. `..` is needed **only**
 where something shadows the head.
 
@@ -3134,8 +3159,10 @@ name reads the same way, at the same scope (WI-914): `anthill query --mode funct
 and `--mode domain` name what the same text names in `--mode pattern`, and `-i`
 therefore bears on all three — every mode `query` has, since WI-921 removed the
 one whose argument was not a name. (One reserved ARGUMENT still is not: `--mode
-domain _global`, the loader's raw-interned tag for the top-level domain, which no
-declaration owns and the ladder can never return. WI-923.) A name that denotes
+domain '<global>'`, the loader's raw-interned tag for the top-level domain, which
+no declaration owns and the ladder can never return. Its spelling is deliberately
+not an identifier, so no declaration can contest it — see *The top-level scope*
+above. WI-923.) A name that denotes
 something in one position denotes the same thing in every other; before this was
 unified, `util.f()` resolved by head-qualification while `util.T` in the same
 scope reported an unresolved type name, and `anthill query` could bind a dotted
