@@ -3,13 +3,19 @@
 -- The anthill side of the rust+anthill realization (proposal 029).
 -- The companion Rust shim at src/main.rs embeds these .anthill files
 -- via include_str!, builds a KB, registers stdlib builtins +
--- persistence handlers + a project-local FileStore, then calls
--- `anthill.todo.Main.main(args)` and forwards its `Int64` return as the
--- process exit code.
+-- persistence handlers, then builds the store the project's
+-- `ExtentBinding` declares (WI-830) and registers it as the KB's
+-- durability mirror. It then calls `anthill.todo.Main.main(args)` and
+-- forwards its `Int64` return as the process exit code.
+--
+-- The store reaches this file ONLY through the `WorkItemStore` spec ops on
+-- the state cell. `main` used to also take the concrete backend as a
+-- `store: FileStore` parameter, threaded through `dispatch` into all twelve
+-- mutating `cmd_*` (14 declarations in all, counting `main` and `dispatch`);
+-- not one body ever read it, and a concrete backend in `main`'s type is
+-- precisely what makes a backend unswappable (WI-1108, design doc §8.2).
 namespace anthill.todo
   import anthill.cli.Main
-  import anthill.persistence.filesystem.{FileStore}
-  import anthill.persistence.{Store}
   import anthill.prelude.{Cell}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
@@ -47,13 +53,17 @@ namespace anthill.todo
   import anthill.stage0.WorkStatus.{Rejected, ProposalRejected, Stale}
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{pattern_query}
+  -- The SORT only: the member import of the spec's fifteen operations is gone,
+  -- because after WI-1108 not one bare call site remained to use it.
+  --
+  -- It does NOT make the bare spelling unrepresentable, and the difference was
+  -- MEASURED rather than assumed: with the import deleted, a bare
+  -- `stamp_format(s, …)` still loads AND still runs correctly, because the
+  -- operation is in scope through this sort's `requires WorkItemStore[State]`.
+  -- So this is a dead-import cleanup, not a guard — the bare form stays
+  -- writable, and stays correct for exactly as long as the receiver is a
+  -- statically known impl (WI-402). WI-1108.
   import anthill.todo.store.{WorkItemStore}
-  import anthill.todo.store.WorkItemStore.{lookup, by_status_of, all,
-                                           next_id, commit, replace, forget,
-                                           commit_feedback, has_tag,
-                                           tag_item, untag_item, stamp_format,
-                                           items_with_tag, tags_of,
-                                           raw_term_of}
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
   -- TodoCommand enum. Specs carry no params yet — per-subcommand flag
@@ -377,19 +387,22 @@ namespace anthill.todo
     requires anthill.cli.Main
     requires WorkItemStore[State]
 
-    -- main takes the host-provided store handle, the WorkItemStore
-    -- state cell (Cell[State], polymorphic over the impl), and the
-    -- global --agent flag in addition to argv. Read-only commands
-    -- (status / show / list / graph / next / skill) ignore store +
-    -- agent; mutating commands (feedback / claim / deliver / verify /
-    -- update / add / delete / add-dependency / remove-dependency)
-    -- thread them through to stamp `at:` fields with the canonical
-    -- YYYY-MM-DDTHH:MM:SSZ format. cmd_X bodies dispatch through the
-    -- requires WorkItemStore[State] clause — the host picks the impl
-    -- at call time via call_with_requirements (WI-236).
-    operation main(args: List[String], store: FileStore,
+    -- main takes the WorkItemStore state cell (Cell[State], polymorphic
+    -- over the impl) and the global --agent flag in addition to argv.
+    -- Read-only commands (status / show / list / graph / next / skill)
+    -- ignore agent; mutating commands (feedback / claim / deliver /
+    -- verify / update / add / delete / add-dependency /
+    -- remove-dependency) thread it through to stamp `at:` fields with
+    -- the canonical YYYY-MM-DDTHH:MM:SSZ format. cmd_X bodies dispatch
+    -- through the requires WorkItemStore[State] clause — the host picks
+    -- the impl at call time via call_with_requirements (WI-236).
+    --
+    -- `Cell[State]` is the ONLY backend-shaped thing in this signature,
+    -- and `State` is the spec's abstract carrier. That is what makes a
+    -- second backend expressible: nothing here names one.
+    operation main(args: List[String],
                    wis_cell: Cell[State], agent: String) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[store], Modify[wis_cell],
+      effects {ConsoleOutput, ConsoleError, Modify[wis_cell],
                Error, Clock}
     =
       match parse_argv(specs(), args)
@@ -428,7 +441,7 @@ namespace anthill.todo
           -- before any command touches the store, is the loud error the repo's
           -- rules ask for in place of that silent skip.
           match duplicate_item_ids(wis_cell)
-            case nil() -> dispatch(name, args, store, agent, wis_cell)
+            case nil() -> dispatch(name, args, agent, wis_cell)
             case cons(d, ds) ->
               -- ALL of them, not the first: the cause this gate names — a
               -- parallel-branch merge — lands several collisions at once, and
@@ -461,9 +474,9 @@ namespace anthill.todo
     -- on it. The host picks the impl (e.g. FileBasedWorkitemStore) by
     -- calling Main.main via call_with_requirements (WI-236).
     operation dispatch(name: String, args: List[Binding],
-                       store: FileStore, agent: String,
+                       agent: String,
                        s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[store], Modify[s],
+      effects {ConsoleOutput, ConsoleError, Modify[s],
                Error, Clock}
     =
       -- `skill` and `init` are intercepted host-side (static doc print /
@@ -473,20 +486,20 @@ namespace anthill.todo
       else if eq(name, "list") then cmd_list(args, s)
       else if eq(name, "graph") then cmd_graph(s)
       else if eq(name, "next") then cmd_next(args, s)
-      else if eq(name, "feedback") then cmd_feedback(args, store, agent, s)
-      else if eq(name, "add") then cmd_add(args, store, s)
-      else if eq(name, "claim") then cmd_claim(args, store, agent, s)
-      else if eq(name, "unclaim") then cmd_unclaim(args, store, agent, s)
-      else if eq(name, "preopen") then cmd_preopen(args, store, agent, s)
-      else if eq(name, "promote") then cmd_promote(args, store, agent, s)
-      else if eq(name, "deliver") then cmd_deliver(args, store, agent, s)
-      else if eq(name, "verify") then cmd_verify(args, store, s)
-      else if eq(name, "delete") then cmd_delete(args, store, s)
-      else if eq(name, "update") then cmd_update(args, store, agent, s)
+      else if eq(name, "feedback") then cmd_feedback(args, agent, s)
+      else if eq(name, "add") then cmd_add(args, s)
+      else if eq(name, "claim") then cmd_claim(args, agent, s)
+      else if eq(name, "unclaim") then cmd_unclaim(args, agent, s)
+      else if eq(name, "preopen") then cmd_preopen(args, agent, s)
+      else if eq(name, "promote") then cmd_promote(args, agent, s)
+      else if eq(name, "deliver") then cmd_deliver(args, agent, s)
+      else if eq(name, "verify") then cmd_verify(args, s)
+      else if eq(name, "delete") then cmd_delete(args, s)
+      else if eq(name, "update") then cmd_update(args, agent, s)
       else if eq(name, "add-dependency") then
-        cmd_add_dependency(args, store, s)
+        cmd_add_dependency(args, s)
       else if eq(name, "remove-dependency") then
-        cmd_remove_dependency(args, store, s)
+        cmd_remove_dependency(args, s)
       else if eq(name, "tag") then cmd_tag(args, s)
       else if eq(name, "untag") then cmd_untag(args, s)
       else if eq(name, "insert") then cmd_insert(args, s)
@@ -2031,7 +2044,6 @@ namespace anthill.todo
           cons(tool_to_acceptance(h), tools_to_acceptance(rest))
 
     operation cmd_add(args: List[Binding],
-                      store: FileStore,
                       s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
@@ -2343,7 +2355,6 @@ namespace anthill.todo
     -- failure on the Error effect leaves nothing written).
 
     operation cmd_claim(args: List[Binding],
-                         store: FileStore,
                          agent: String,
                          s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
@@ -2378,7 +2389,6 @@ namespace anthill.todo
     -- Open() clears the agent/since the Claimed status carried. Honors
     -- --agent only for the audit line (Open carries no claimant).
     operation cmd_unclaim(args: List[Binding],
-                           store: FileStore,
                            agent: String,
                            s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
@@ -2423,7 +2433,6 @@ namespace anthill.todo
     -- identical bar the from/to status and the audit verb.
 
     operation cmd_preopen(args: List[Binding],
-                          store: FileStore,
                           agent: String,
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
@@ -2431,7 +2440,6 @@ namespace anthill.todo
       set_status_cmd(args, s, agent, "preopen", "Open", PreOpened(), "preopened")
 
     operation cmd_promote(args: List[Binding],
-                          store: FileStore,
                           agent: String,
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
@@ -2480,7 +2488,6 @@ namespace anthill.todo
     -- `deliver <id>`: Claimed → Delivered(agent, at).
 
     operation cmd_deliver(args: List[Binding],
-                           store: FileStore,
                            agent: String,
                            s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
@@ -2512,7 +2519,6 @@ namespace anthill.todo
     -- identity isn't recorded in the legacy fact shape.
 
     operation cmd_verify(args: List[Binding],
-                          store: FileStore,
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
@@ -2541,7 +2547,6 @@ namespace anthill.todo
     -- through its opaque reference so the IndexedFileStore drops the on-disk block.
 
     operation cmd_delete(args: List[Binding],
-                          store: FileStore,
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
@@ -2577,7 +2582,6 @@ namespace anthill.todo
     -- Rejected/ProposalRejected/Stale carry (--reason, now()) and so
     -- REQUIRE --reason — a rejection with no reason is a silent gap.
     operation cmd_update(args: List[Binding],
-                          store: FileStore,
                           agent: String,
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
@@ -2794,7 +2798,6 @@ namespace anthill.todo
     -- list. Validates self-loop and target-exists; rejects already-a-dep.
     -- Cycle detection deferred (filed as follow-up).
     operation cmd_add_dependency(args: List[Binding],
-                                  store: FileStore,
                                   s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
@@ -2862,7 +2865,6 @@ namespace anthill.todo
     -- `remove-dependency <id> <dep>` filters dep out of id's
     -- depends_on. Errors if dep isn't currently a dependency.
     operation cmd_remove_dependency(args: List[Binding],
-                                     store: FileStore,
                                      s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
@@ -2919,7 +2921,6 @@ namespace anthill.todo
     -- WorkItemStore.commit_feedback. Output mirrors legacy
     -- run_feedback's `feedback on <id>: <text>` line.
     operation cmd_feedback(args: List[Binding],
-                            store: FileStore,
                             agent: String,
                             s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
@@ -3181,7 +3182,21 @@ namespace anthill.todo
     =
       match first_stamp_version(facts_of(kb(), StoreFormat))
         case none() ->
-          let _ = stamp_format(s, current_store_format())
+          -- QUALIFIED, like the other 43 spec-op call sites. A BARE call to a
+          -- body-less spec operation does not resolve through an existentially
+          -- typed receiver (WI-402), so this was the one site that would have
+          -- broken the moment the store came from `open_store` rather than a
+          -- statically known impl. WI-1108.
+          --
+          -- NO TEST DISTINGUISHES THIS LINE, and that is stated rather than
+          -- implied: `cmd_version_stamp_test::migrate_stamps_pre_versioning_project`
+          -- passes with either spelling, because today's receiver IS statically
+          -- known. MEASURED, not assumed — the bare form was restored, built, and
+          -- run, and `migrate` stamped the file correctly. It is a forward-looking
+          -- fix whose control does not exist yet: the test that would fail on the
+          -- bare form is the one increment 2 adds with the second store, and
+          -- nothing before then keeps the bare spelling from returning.
+          let _ = WorkItemStore.stamp_format(s, current_store_format())
           let _ = println(console(),
             concat("migrated workitems.anthill (store format version ",
               concat(to_string(current_store_format()), ")")))

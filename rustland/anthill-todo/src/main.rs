@@ -1132,8 +1132,14 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     let agent_value = Value::Str(agent);
 
     // Seed Cell[V = WIS] from on-disk WI-NNN max so the next freshly
-    // allocated id doesn't collide. Bundle command bodies still go
-    // through `store: FileStore` until phase 3 wires them to spec ops.
+    // allocated id doesn't collide. This cell is now the ONLY way the backend
+    // reaches the bundle — every command body goes through the `WorkItemStore`
+    // spec ops on it (WI-1108 removed the parallel `store: FileStore` path).
+    //
+    // Under a coordinated backend this seeding is exactly the id-collision bug
+    // (design doc §1.2), and it disappears: `alloc_id` reads the forge registry
+    // instead. Until then the host owns the scan, because the bundle has no
+    // String -> Int64 to recover a counter from an id.
     let wis_cell_value = {
         let kb_ref = interp.kb();
         let items = match collect_workitems(kb_ref) {
@@ -1219,9 +1225,16 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // The main-result → exit-code mapping (Int clamp, non-Int, top-level
     // `Raised` Error effect per WI-195, other evaluator errors) is shared with
     // anthill-cli's `run`.
+    // NO `store_value` ARGUMENT. `main` used to take the concrete backend as a
+    // `store: FileStore` parameter beside the cell, threaded through `dispatch` into
+    // all twelve mutating `cmd_*` — and read by none of them. It is gone (WI-1108):
+    // the backend reaches the bundle only inside the cell's `State`, through the
+    // `WorkItemStore` spec ops, which is what lets a second backend be substituted at
+    // all. `store_value` is still built above, because the cell's `wis(backend:, …)`
+    // carries it and the mirror registry is keyed on it.
     let result = interp.call_with_requirements(
         "anthill.todo.Main.main",
-        &[args_value, store_value, wis_cell_value, agent_value],
+        &[args_value, wis_cell_value, agent_value],
         chain_dicts,
     );
     let code = runner::exit_code_from_main(interp.kb(), result);

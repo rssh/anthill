@@ -955,7 +955,7 @@ let dict = interp.alloc_requirement(filebased, SmallVec::new());
 let mut chain_dicts: SmallVec<[_; 2]> = SmallVec::new();
 chain_dicts.push(dict);
 interp.call_with_requirements("anthill.todo.Main.main",
-                              &[args_val, store_val, wis_cell_val, agent_val],
+                              &[args_val, wis_cell_val, agent_val],
                               chain_dicts)?;
 ```
 

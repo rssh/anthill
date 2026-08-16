@@ -222,6 +222,15 @@ a single-file store binding is refused at load, naming both facts. Uncoordinated
 directories stay reachable — that is the test configuration — but they must be *asked*
 for, not fallen into.
 
+**The check reads the EFFECTIVE binding, after defaulting — not the written one.** An
+absent `ExtentBinding` defaults to the single-file layout (WI-830's `default_binding`),
+so a project declaring `Coordination` and *no* binding at all is the same
+coordination-on-a-single-file configuration as one declaring both, and must be refused
+the same way. Reading only the written fact would let the forbidden combination through
+by omission — precisely the case a project migrating in is most likely to produce, since
+it adds the coordination fact first and forgets the layout. Whatever answers "which
+store am I using" must answer it post-default, and the check must ask that.
+
 ## 4. On-disk layout: a directory per state, a file per item
 
 ```
@@ -850,15 +859,29 @@ Two consequences from WI-402's delivery notes:
   (`lookup(s, id)`) does not resolve through an existentially-typed receiver, while
   `WorkItemStore.lookup(s, id)` does. **This is already true of the code**: 43 of
   `main.anthill`'s 44 spec-op call sites are written `WorkItemStore.op(…)`. The single
-  exception is the bare `stamp_format(s, current_store_format())` at `main.anthill:2837`,
-  which needs one line changed. So this consequence costs a one-line fix, not a sweep.
-* **`main` must stop being typed on `FileStore`.** Today's signature is
+  exception was the bare `stamp_format(s, current_store_format())`. **Done (WI-1108)** —
+  it is now `WorkItemStore.stamp_format(…)`, and it was the only one.
+* **`main` must stop being typed on `FileStore`. Done (WI-1108).** The signature was
   `main(args, store: FileStore, wis_cell: Cell[State], agent)`, with the concrete
-  `FileStore` threaded through `dispatch` into every `cmd_*`. It is now *vestigial* —
-  no body calls `persist`/`retract`/`flush` on it any more; all mutation goes through
-  the spec ops on the cell. But you cannot swap a backend while a concrete `FileStore`
-  is in `main`'s type, so dropping the parameter (and its `Modify[store]` effect) is
-  the true prerequisite. It is a pure deletion, and it is worth landing on its own.
+  `FileStore` threaded through `dispatch` into every mutating `cmd_*` — 14 parameter
+  declarations, 13 call sites, two `Modify[store]` rows, and **not one body that read
+  it**. You cannot swap a backend while a concrete `FileStore` sits in `main`'s type, so
+  the deletion was the true prerequisite. It is now
+  `main(args, wis_cell: Cell[State], agent)`.
+
+**What that leaves, and it is worth stating precisely.** With the parameter gone, the
+bundle is already backend-abstract *without* `open_store`: `sort Main` declares
+`sort State = ?` and `requires WorkItemStore[State]`, every `cmd_*` takes
+`Cell[State]`, and the host discharges the requirement with a dictionary. Selection was
+never the missing piece — the `requires` form already does it.
+
+What remains coupled is narrower: `main.rs` hand-builds the impl's state value,
+interning `anthill.todo.store.FileBasedWorkitemStore.wis` and its `backend` /
+`id_counter` fields. That is the host knowing one impl's internals, beyond the single
+legitimate native step (mapping a declared store to a compiled backend). Removing
+*that* is what `open_store` is for here — and it should take only the backend, letting
+the bundle seed its own counter from `facts_of(kb(), WorkItem)`, since §8.3 has counter
+seeding disappearing entirely under coordination.
 
 ### 8.3 Host side
 
@@ -914,7 +937,8 @@ Two consequences from WI-402's delivery notes:
   (exact-title search: the §6.1 old-claimant leg), `retitle`, `set_body`,
   `close` / `reopen`, `entry_comments` / `close_info` (since-cursor comment
   listing + close state/actor, for §7.3–§7.4),
-  `add_to_board` (§6.1's `retreat` = `retitle` + `close`).
+  `add_to_board`. §6.1's `retreat` is not a primitive of its own: it is
+  `retitle` + `close`, named once for the losing-racer step that uses both.
 * **Substrate prerequisite, and it blocks the carrier.** `HOST_FNS` in
   `rustland/anthill-core/src/eval/builtins.rs` is a **closed `const` slice**, and
   `register_operation_mappings` turns an unknown `host_fn` key into an
