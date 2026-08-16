@@ -76,6 +76,7 @@ fn persist_then_flush_writes_fact_to_disk() {
         .register_mirror(
             key.clone(),
             Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+            &[],
         )
         .expect("a file store declares no intrinsic policy, so nothing is resolved");
 
@@ -171,7 +172,7 @@ fn failed_mirror_persist_does_not_assert_a_resident_fact() {
         .store_canonical_key(&store_val)
         .expect("canonical key");
     interp
-        .register_mirror(key, Box::new(FailingStore))
+        .register_mirror(key, Box::new(FailingStore), &[])
         .expect("FailingStore declares no intrinsic policy");
     let foo = interp
         .kb_mut()
@@ -219,6 +220,7 @@ fn retract_via_builtin_removes_fact_from_disk() {
         .register_mirror(
             key.clone(),
             Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+            &[],
         )
         .expect("a file store declares no intrinsic policy, so nothing is resolved");
 
@@ -303,6 +305,7 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
         .register_mirror(
             key,
             Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+            &[],
         )
         .expect("a file store declares no intrinsic policy, so nothing is resolved");
 

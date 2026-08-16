@@ -99,3 +99,6 @@ mod wi717_omitted_optional_claimable_test;
 
 #[path = "include/wi748_init_honors_dir_test.rs"]
 mod wi748_init_honors_dir_test;
+
+#[path = "include/wi830_declared_store_test.rs"]
+mod wi830_declared_store_test;

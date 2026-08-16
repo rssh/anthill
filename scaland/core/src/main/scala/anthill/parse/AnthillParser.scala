@@ -2687,7 +2687,7 @@ private class AnthillParserImpl(
   private def declaration[$: P]: P[Item] =
     P(
       // WI-853: a file's top level admits an `import`, as a namespace / sort body
-      // already did — the top level IS a scope (`_global`), and an import is how
+      // already did — the top level IS a scope (`<global>`), and an import is how
       // names enter one. First in the choice because `import` is its own keyword,
       // shared with no other declaration.
       importClause.map(Item.ImportItem(_)) |

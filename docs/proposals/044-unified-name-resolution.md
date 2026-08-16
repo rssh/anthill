@@ -56,8 +56,8 @@ The name-resolution algorithm and visibility model are as written in
 | `..a.b.c` | the symbol whose own qualified name is `a.b.c`, whatever is in scope |
 
 A relative path **still reaches the root**, and that is why the migration was
-zero: the scope walk goes out to `_global`, where a top-level namespace is an
-ordinary local, so with nothing shadowing `outer` the head of `outer.inner.g`
+zero: the scope walk goes out to the top-level scope, where a top-level namespace
+is an ordinary local, so with nothing shadowing `outer` the head of `outer.inner.g`
 binds the top-level `outer` and the path resolves relatively. `..` is needed
 **only** where something shadows the head.
 

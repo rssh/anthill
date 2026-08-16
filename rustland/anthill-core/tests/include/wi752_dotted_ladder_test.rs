@@ -256,7 +256,7 @@ end
 /// symbol the loader does.
 ///
 /// It used to rank the ABSOLUTE reading FIRST and carry no head-qualification rung at
-/// all. `anthill query` itself runs at `_global`, where a head resolves to a top-level
+/// all. `anthill query` itself runs at `<global>`, where a head resolves to a top-level
 /// namespace and the two readings coincide — which is exactly why this divergence
 /// survived four fixes unnoticed. But the SAME resolver is called from inside the loader
 /// at a NAMESPACE scope: `contract_proof_target_qn` resolves the `<op>` prefix of a

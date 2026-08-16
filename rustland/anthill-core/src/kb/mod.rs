@@ -2106,12 +2106,19 @@ impl KnowledgeBase {
         self.symbols.declaring_scope(sym).map(|s| s.owner())
     }
 
-    /// WI-984 — the TOP-LEVEL scope, `_global`. One spelling: the incantation was
-    /// otherwise written 19 times across five files in two forms (a
-    /// `make_name_term("_global")` round trip through the term store, and a bare
-    /// `intern` + mint), under four different local names.
+    /// WI-984 — the TOP-LEVEL scope, [`crate::intern::GLOBAL_SCOPE_NAME`]. One
+    /// spelling: the incantation was otherwise written 19 times across five files in
+    /// two forms (a `make_name_term("_global")` round trip through the term store,
+    /// and a bare `intern` + mint), under four different local names.
+    ///
+    /// WI-987 — and THE spelling, now that it is a name no declaration can take.
+    /// While it was `_global` the six remaining `intern("_global")` stragglers (in
+    /// `execute`, `flow_derive`, `extent` and `load` ×3) were merely duplicate; a
+    /// sentinel is only unspellable if there is ONE of it, so they were folded in here
+    /// and this is the sole site that names it. Each asks for `.owner()`, which is what
+    /// a clause's `domain: Symbol` slot is — the shape `body_specialize` already used.
     pub fn global_scope(&mut self) -> ScopeId {
-        let sym = self.symbols.intern("_global");
+        let sym = self.symbols.intern(crate::intern::GLOBAL_SCOPE_NAME);
         self.symbols.scope_id(sym)
     }
 
@@ -6900,10 +6907,10 @@ impl KnowledgeBase {
         self.symbols.by_qualified_name.get(name).copied()
     }
 
-    /// THE NAME LADDER AT `_global` — what a HOST-supplied name (an extent owner's
+    /// THE NAME LADDER AT `<global>` — what a HOST-supplied name (an extent owner's
     /// functor, a [`FactRef`](crate::kb::extent::FactRef)'s owner) denotes. The same
     /// question every other position asks, so the same function
-    /// (`load::resolve_name_in_kb`) with `_global` as the scope; spelling it
+    /// (`load::resolve_name_in_kb`) with `<global>` as the scope; spelling it
     /// separately is how a mount comes to take a functor its author never named (WI-908).
     ///
     /// A SHORT name therefore resolves only if it is IN SCOPE or in the IMPLICIT TIER

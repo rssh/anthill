@@ -106,6 +106,7 @@ fn register_declaring(
             functor: functor.to_owned(),
             policy: Monotonicity::NonMonotone,
         }),
+        &[],
     );
     (store_val, outcome)
 }
@@ -151,7 +152,7 @@ fn persist_then_retract(interp: &mut Interpreter, store: &Value, fact: Value) ->
 const GHOST: &str = "namespace test.syn\n  entity Ghost\nend\n";
 
 /// THE DEFECT. `Ghost` is what the backend calls it; `test.syn.Ghost` is what the KB
-/// does, and nothing brings the short name into scope at `_global`. Pre-fix that
+/// does, and nothing brings the short name into scope at `<global>`. Pre-fix that
 /// disagreement was invisible until a retract reported it as a policy verdict.
 #[test]
 fn a_store_policy_named_by_an_unmatched_spelling_is_refused_at_registration() {
@@ -183,7 +184,7 @@ fn a_store_policy_naming_a_contested_functor_is_refused_as_ambiguous() {
     // WI-995 — the two wildcard imports come from the INVOCATION (`-i <ns>.*`), not from
     // the program text: a file's import no longer reaches a host-supplied name, which has
     // no file of its own. What is under test is unchanged — the short name still denotes
-    // two functors at `_global`, and the registration must refuse it as ambiguous.
+    // two functors at `<global>`, and the registration must refuse it as ambiguous.
     let mut interp = interp_for(
         "namespace wi919.alpha\n  entity Widget919\nend\n\
          namespace wi919.beta\n  entity Widget919\nend\n",

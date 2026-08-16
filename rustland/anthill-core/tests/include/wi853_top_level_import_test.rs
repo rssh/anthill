@@ -3,7 +3,7 @@
 //!
 //! A file's top level IS a scope: `_declaration` (grammar.js) admits `sort`,
 //! `fact`, `rule`, `operation` … outside any namespace, and the loader defines
-//! every one of them in `_global`. `import` is how names enter a scope, so
+//! every one of them in `<global>`. `import` is how names enter a scope, so
 //! admitting the declarations while refusing the import that feeds them was an
 //! asymmetry with no rule behind it — a top-level `sort S` could be written but
 //! nothing it referenced could be brought into view except by writing every name
@@ -11,19 +11,19 @@
 //!
 //! It is what made `anthill query -i <name>` work (its own tests live in
 //! `anthill-cli/tests/wi853_query_import_test.rs`): the flag has no namespace to
-//! sit in, and the scope its import must enter is `_global`, the one the query
+//! sit in, and the scope its import must enter is `<global>`, the one the query
 //! pattern is resolved in.
 //!
 //! SCOPE OF THE IMPORT — REVISED BY WI-995, and stated at length because this file
-//! used to teach the opposite. A top-level import enters `_global`, but it is spent in
+//! used to teach the opposite. A top-level import enters `<global>`, but it is spent in
 //! the FILE that lists it: another file's text does not see it
 //! (`a_top_level_import_does_not_escape_the_file_that_wrote_it` drives exactly that).
 //!
 //! WI-853 originally reasoned that a top-level import must follow the same rule as a
 //! top-level DEFINITION — visible KB-wide — because "the language has no per-file scope
-//! to attach a narrower one to; `_global` is the top". WI-995 supplied the missing
+//! to attach a narrower one to; `<global>` is the top". WI-995 supplied the missing
 //! scope: every import records the file that wrote it, so "local to its file" is now
-//! expressible at any address, `_global` included. The two halves have parted company
+//! expressible at any address, `<global>` included. The two halves have parted company
 //! deliberately: a top-level `sort S` is still KB-wide, an `import` is not, because a
 //! definition ADDS a name to the program while an import only chooses what one file's
 //! text may call it.
@@ -121,7 +121,7 @@ fn every_import_form_is_admitted_at_the_top_level() {
 /// The scope semantics, driven rather than asserted in prose — and INVERTED by WI-995.
 ///
 /// The import is written in one file and the name used inside a namespace in ANOTHER.
-/// It does not resolve: an import is spent in the file that lists it. `_global` is still
+/// It does not resolve: an import is spent in the file that lists it. `<global>` is still
 /// a shared scope for DEFINITIONS — a top-level `sort S` in one file is visible KB-wide,
 /// as the second half here drives — but an import is not a definition, and sharing it
 /// was the whole-program non-locality WI-995 removed: a file could silently change what
@@ -150,7 +150,7 @@ end
          import resolves only in the file that lists it (WI-995)",
     );
     // The half that did NOT change: a top-level DEFINITION is still KB-wide, so the
-    // refusal above is about imports specifically and not about `_global` going private.
+    // refusal above is about imports specifically and not about `<global>` going private.
     assert_loads(
         &[
             "sort SGlobal853\n  entity mk(x: Int64)\nend\n",

@@ -123,7 +123,7 @@ fn the_refusal_names_the_spec_and_its_line() {
 
 /// A FILE'S TOP LEVEL IS THE SAME ADDRESS, and gets the same refusal. §6.3 lists four
 /// spellings that carry a provision's obligation and this is one of them — its scope
-/// is the synthetic `_global` root, a symbol with no declared kind, so "names a type"
+/// is the synthetic `<global>` root, a symbol with no declared kind, so "names a type"
 /// is as false for it as for a namespace. WI-978 found that population by making the
 /// third case loud instead of letting it fall out of a `_ => return`; pinned here so
 /// the refusal cannot quietly become namespace-only.

@@ -169,7 +169,7 @@ end
 /// THE STOP IS FOR AN EDGE AN IMPORT ALONE JUSTIFIES. Here the pair
 /// `(wi1089.top.sub, wi1089.top)` is the ENCLOSING edge and the imported one at once,
 /// and an origin list is per `(scope, parent)` — so a stop keyed on "an import is
-/// among the writers" cut the chain above `wi1089.top`, taking `_global` and the
+/// among the writers" cut the chain above `wi1089.top`, taking `<global>` and the
 /// prelude with it: a bare `Int64` stopped resolving in a namespace that had merely
 /// imported its own parent.
 ///

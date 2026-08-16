@@ -1,6 +1,6 @@
 package anthill.load
 
-import anthill.intern.{ResolveResult, SymbolDef, SymbolKind}
+import anthill.intern.{GLOBAL_SCOPE_NAME, ResolveResult, SymbolDef, SymbolKind}
 import anthill.kb.{BuiltinTag, KnowledgeBase}
 
 import scala.compiletime.testing.typeCheckErrors
@@ -28,8 +28,9 @@ import scala.compiletime.testing.typeCheckErrors
   *     the argument IS the earlier step's result. Fails with `got List()`.
   *   - "`scopeByQualifiedName` is gone" is the same shape for the second half — the KB
   *     exposed TWO scope mints over DISJOINT name universes (symbols, and qualified
-  *     names), and neither could name every scope: `scopeByQualifiedName("_global")` threw,
-  *     because `_global` is interned and never defined. One mint remains and it is total.
+  *     names), and neither could name every scope: `scopeByQualifiedName` on the top-level
+  *     scope threw, because its name is interned and never defined. One mint remains and it
+  *     is total.
   *     Fails with `got List()`.
   *   - "every builtin tag is defined in a scope" passes EITHER WAY, by design: the degrade
   *     arm was unreachable in fact, so removing it moves nothing. It earns its place as
@@ -60,16 +61,16 @@ class PreludeScopesTest extends munit.FunSuite:
       Nil)
   }
 
-  test("WI-990: the KB has ONE scope mint, and it names `_global` too") {
+  test("WI-990: the KB has ONE scope mint, and it names the top-level scope too") {
     val gone = typeCheckErrors(
       """anthill.kb.KnowledgeBase().scopeByQualifiedName("anthill.prelude")""")
     assert(gone.nonEmpty, s"the qualified-name mint must be gone; got $gone")
 
     // The remaining mint is total over its table's symbols, so it reaches the scope the
-    // deleted one could not name at all. (What `_global` DISPLAYS as is `ScopeIdentityTest`'s
-    // to assert; what this case adds is that the mint gets there.)
+    // deleted one could not name at all. (What the top-level scope DISPLAYS as is
+    // `ScopeIdentityTest`'s to assert; what this case adds is that the mint gets there.)
     val kb = KnowledgeBase()
-    assertEquals(kb.symbols.scopeOf(kb.intern("_global")), kb.globalScope)
+    assertEquals(kb.symbols.scopeOf(kb.intern(GLOBAL_SCOPE_NAME)), kb.globalScope)
   }
 
   test("WI-990: every builtin tag is an operation defined in the scope its name says") {

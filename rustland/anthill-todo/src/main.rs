@@ -192,7 +192,7 @@ fn scan_dir(project_dir: &Path) -> PathBuf {
 
 /// Headerless project files — bare `fact …(…)` lists such as
 /// `workitems.anthill` — parse with their items at the top level, which the
-/// loader places in the `_global` scope where stage0 entity names like
+/// loader places in the `<global>` scope where stage0 entity names like
 /// `WorkItem` are not visible. The file store owns the knowledge that these
 /// facts belong to the `anthill.stage0` domain, so it wraps such files in a
 /// synthetic `namespace anthill.stage0` block. That reuses the scope the
@@ -389,6 +389,354 @@ fn collect_workitems(kb: &KnowledgeBase) -> Result<Vec<WorkItemInfo>, String> {
 /// Reachability is computed over the *full* graph, so two tagged items
 /// are ordered correctly even when the dependency path between them runs
 /// through untagged items.
+// ── The declared store (WI-830) ─────────────────────────────────
+
+use anthill_core::eval::{value_functor, Interpreter, Value};
+use anthill_core::persistence::file_store::FileConvention;
+use anthill_core::persistence::indexed_file_store::IndexedFileStore;
+
+/// A project file paired with its parsed IR, so the store can associate each fact's
+/// RuleId with its byte range on disk.
+struct ProjectFile {
+    path: PathBuf,
+    parsed: ParsedFile,
+}
+
+/// Build and register the store the project's `ExtentBinding` declares.
+///
+/// THE HOST'S JOB IS THE FACTORY, AND ONLY THE FACTORY (proposal 057 §"Configuration &
+/// bootstrap"). A backend is native code, so declarative configuration chooses AMONG the
+/// backends compiled into this binary; it cannot introduce new ones. Everything else —
+/// which functors are held, in which role, under which convention — comes from the
+/// `.anthill` file.
+///
+/// A PROJECT THAT DECLARES NOTHING GETS THE DEFAULT, and the default is a BINDING, not a
+/// second implementation. `PROJECT_MARKERS` accepts a directory holding nothing but
+/// `workitems.anthill` — a zero-config tracker is a supported shape, and
+/// `setup_domainless_project` tests it — so refusing an absent binding would delete a
+/// documented capability, not tighten one. What matters is that there is one path from a
+/// binding to a store: `default_binding` builds the same declaration `init` scaffolds, and
+/// everything downstream cannot tell the two apart.
+///
+/// This is a default, not a fallback in the sense CLAUDE.md forbids: nothing failed and
+/// nothing is being hidden. A binding that is PRESENT and wrong is still loud.
+///
+/// Returns the store VALUE the anthill side receives — the declared term with its `root`
+/// resolved to the absolute path. The registration key is computed from THAT value, and
+/// the same value is what the bundle's `wis(backend:, …)` cell carries, so both sides of
+/// the dispatch agree by construction.
+fn register_declared_store(
+    interp: &mut Interpreter,
+    store_root: &Path,
+    project_items: &[ProjectFile],
+    project_results: &[load::LoadResult],
+) -> Result<Value, String> {
+    use anthill_core::kb::extent::ExtentRole;
+
+    let bindings = interp
+        .kb()
+        .extent_bindings()
+        .map_err(|e| format!("reading the project's extent bindings: {e}"))?;
+
+    let binding = match bindings.len() {
+        1 => bindings.into_iter().next().expect("length checked"),
+        0 => default_binding(interp)?,
+        n => {
+            return Err(format!(
+                "this project declares {n} extent bindings; anthill-todo holds its work \
+                 items in one store, so exactly one is expected"
+            ))
+        }
+    };
+
+    if binding.role != ExtentRole::Mirror {
+        return Err(
+            "this project declares its store as an extent OWNER. anthill-todo loads every \
+             work item at startup and answers reads from the KB, so its store is a \
+             durability mirror; an owner would have to serve reads from its own query \
+             engine. Write `role: mirror()`."
+                .to_string(),
+        );
+    }
+
+    // The one native step: the declared store term names a backend this binary must
+    // already have. `IndexedFileStore` is the only one anthill-todo compiles in — a
+    // `SqlStore` or a GitHub-backed store would be a new arm here, which is exactly the
+    // WI-437 shape and exactly why the rest of this is no longer hardcoded.
+    let store_functor = value_functor(interp.kb(), &binding.store)
+        .ok_or_else(|| "the declared store names no backend".to_string())?;
+    // By resolved SYMBOL, never by name text. A `ends_with("IndexedFileStore")` test read
+    // naturally and accepted `GitHubIndexedFileStore` — a functor defined nowhere — as the
+    // local file store, so a project asking for a backend this build does not have got a
+    // silent write into its own directory instead of the refusal. That is precisely the
+    // WI-437 case this guard exists for (found in review, driven by
+    // `a_lookalike_backend_name_is_refused`).
+    let indexed_file_store = interp
+        .kb()
+        .try_resolve_symbol(INDEXED_FILE_STORE)
+        .ok_or_else(|| format!("the persistence substrate is not loaded: `{INDEXED_FILE_STORE}`"))?;
+    if store_functor != indexed_file_store {
+        return Err(format!(
+            "anthill-todo has no backend for the declared store `{}`; this build provides \
+             {INDEXED_FILE_STORE}",
+            interp.kb().qualified_name_of(store_functor),
+        ));
+    }
+
+    let convention = declared_convention(interp, &binding.store)?;
+    let store_root = declared_root(interp, &binding.store, store_root)?;
+    let mut store = IndexedFileStore::new(store_root.clone(), convention);
+
+    // Seed the source map: pair each project file's fact RuleIds (in source order) with
+    // the byte ranges of the corresponding parsed `Item::Fact` spans, so a retract of a
+    // source-loaded RuleId knows which file and which bytes to drop.
+    for (file, result) in project_items.iter().zip(project_results.iter()) {
+        let spans = file.parsed.fact_spans();
+        for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
+            store.record_source(*rule_id, file.path.clone(), *span);
+        }
+    }
+
+    // The runtime store value is the declared one with `root` made absolute: a config
+    // file names a directory relative to itself, and the process needs the real path.
+    let store_value = with_absolute_root(interp, &binding.store, store_functor, &store_root)?;
+    let key = interp
+        .store_canonical_key(&store_value)
+        .map_err(|e| format!("computing the store key: {e}"))?;
+
+    let covers: Vec<String> = binding
+        .covers
+        .iter()
+        .map(|s| interp.kb().qualified_name_of(*s).to_string())
+        .collect();
+    let covers_ref: Vec<&str> = covers.iter().map(String::as_str).collect();
+    interp
+        .register_mirror(key, Box::new(store), &covers_ref)
+        .map_err(|e| format!("registering the declared store: {e}"))?;
+    Ok(store_value)
+}
+
+/// The binding a project that declares none is treated as having: an `IndexedFileStore`
+/// over `workitems.anthill` in the project directory, mirroring the four functors the
+/// bundle persists. Written as a VALUE rather than as a separate construction path, so a
+/// defaulted project and a declaring one differ in exactly one thing — where the binding
+/// came from — and share every line after this.
+///
+/// Its text twin is [`EXAMPLE_BINDING`], which `init` scaffolds; the two must agree, and
+/// `default_matches_the_scaffolded_binding` measures that they do.
+fn default_binding(
+    interp: &mut Interpreter,
+) -> Result<anthill_core::kb::extent::ExtentBindingDecl, String> {
+    use anthill_core::kb::extent::{ExtentBindingDecl, ExtentRole};
+
+    let store_functor = interp
+        .kb()
+        .try_resolve_symbol("anthill.persistence.filesystem.IndexedFileStore")
+        .ok_or_else(|| {
+            "the persistence substrate is not loaded: \
+             `anthill.persistence.filesystem.IndexedFileStore` does not resolve"
+                .to_string()
+        })?;
+    let single_file = interp
+        .kb()
+        .try_resolve_symbol("anthill.persistence.filesystem.FileConvention.single_file")
+        .ok_or_else(|| {
+            "the persistence substrate is not loaded: `FileConvention.single_file` does \
+             not resolve"
+                .to_string()
+        })?;
+    let mut covers = Vec::with_capacity(DEFAULT_COVERAGE.len());
+    for name in DEFAULT_COVERAGE {
+        covers.push(
+            interp
+                .kb()
+                .try_resolve_symbol(name)
+                .ok_or_else(|| format!("the stage0 domain is not loaded: `{name}` does not resolve"))?,
+        );
+    }
+
+    let root_field = interp.kb_mut().intern("root");
+    let convention_field = interp.kb_mut().intern("convention");
+    let file_field = interp.kb_mut().intern("file");
+    // `root` is a placeholder: `with_absolute_root` replaces it with the real path, the
+    // same as it does for a declared binding.
+    let store = Value::Entity {
+        functor: store_functor,
+        pos: vec![].into(),
+        named: vec![
+            (root_field, Value::Str(".".to_string())),
+            (
+                convention_field,
+                Value::Entity {
+                    functor: single_file,
+                    pos: vec![].into(),
+                    named: vec![(file_field, Value::Str(DEFAULT_STORE_FILE.to_string()))].into(),
+                },
+            ),
+        ]
+        .into(),
+    };
+    Ok(ExtentBindingDecl {
+        store,
+        role: ExtentRole::Mirror,
+        covers,
+    })
+}
+
+/// The functors the bundle persists (`store.anthill`: commit / commit_feedback /
+/// tag_item / stamp_format), and so the ones the default binding covers.
+const DEFAULT_COVERAGE: [&str; 4] = [
+    "anthill.stage0.WorkItem",
+    "anthill.stage0.Feedback",
+    "anthill.stage0.Tag",
+    "anthill.stage0.StoreFormat",
+];
+
+/// The file the default store writes to — the same one the loader reads.
+const DEFAULT_STORE_FILE: &str = "workitems.anthill";
+
+/// The `ExtentBinding` `init` scaffolds. Text twin of [`default_binding`].
+const EXAMPLE_BINDING: &str = "\
+fact anthill.persistence.ExtentBinding(
+  store: anthill.persistence.filesystem.IndexedFileStore(
+    root: \".\",
+    convention: anthill.persistence.filesystem.FileConvention.single_file(
+      file: \"workitems.anthill\")),
+  role: anthill.persistence.ExtentRole.mirror(),
+  covers: [WorkItem, Feedback, Tag, StoreFormat])";
+
+/// The qualified name of the one backend this build provides.
+const INDEXED_FILE_STORE: &str = "anthill.persistence.filesystem.IndexedFileStore";
+
+/// The directory the declared store writes to.
+///
+/// THE MIRROR MUST WRITE THE FILES THE LOADER READ. anthill-todo scans one directory, parses
+/// what it finds, and seeds the store's source map with those files' byte ranges; a store
+/// rooted anywhere else would retract by span against files nobody loaded and append rows
+/// the next run never sees. So `root` has exactly one correct value here — the scanned
+/// directory — and this refuses any other rather than accepting it and writing elsewhere.
+///
+/// It is checked rather than ignored because ignoring it is what the first cut did: the
+/// field was decorative, `root: "elsewhere"` wrote to the project directory anyway, and
+/// nothing said so (found in review). Honouring it properly is not open to this host —
+/// the root would have to be known BEFORE the load that reads the file declaring it — so
+/// the honest options were "refuse" and "silently ignore", and the repo picks refuse.
+fn declared_root(
+    interp: &Interpreter,
+    store: &Value,
+    scanned: &Path,
+) -> Result<std::path::PathBuf, String> {
+    let declared = interp
+        .kb()
+        .row_field(store, "root")
+        .ok_or_else(|| "the declared store has no `root` field".to_string())?;
+    let text = match &declared {
+        Value::Str(s) => s.clone(),
+        Value::Term { id, .. } => {
+            use anthill_core::kb::term::{Literal, Term, TermSource};
+            match interp.kb().term(*id) {
+                Term::Const(Literal::String(s)) => s.clone(),
+                other => return Err(format!("`root` must be a string, got {other:?}")),
+            }
+        }
+        other => return Err(format!("`root` must be a string, got {other:?}")),
+    };
+    if text == "." {
+        return Ok(scanned.to_path_buf());
+    }
+    Err(format!(
+        "the declared store roots at `{text}`, but anthill-todo loads its work items from \
+         {} and its store must write the same files it read. Write `root: \".\"`.",
+        scanned.display()
+    ))
+}
+
+/// Decode the declared `convention` field into the Rust `FileConvention` it names.
+/// Matched by LOCAL name off a resolved functor rather than by qualified string, so the
+/// two enums stay tied by their variant names (WI-830 reconciled them).
+fn declared_convention(interp: &Interpreter, store: &Value) -> Result<FileConvention, String> {
+    let conv = interp
+        .kb()
+        .row_field(store, "convention")
+        .ok_or_else(|| "the declared store has no `convention` field".to_string())?;
+    let functor = value_functor(interp.kb(), &conv)
+        .ok_or_else(|| "the declared `convention` names no variant".to_string())?;
+    match interp.kb().local_name_of(functor) {
+        "flat" => Ok(FileConvention::Flat),
+        "by_domain" => Ok(FileConvention::ByDomain),
+        "single_file" => {
+            let file = interp.kb().row_field(&conv, "file").ok_or_else(|| {
+                "`single_file` needs its `file` field: single_file(file: \"…\")".to_string()
+            })?;
+            match file {
+                Value::Str(s) => Ok(FileConvention::SingleFile(s)),
+                // A source-written `single_file(file: "…")` carries its string as a
+                // hash-consed literal, not a `Value::Str`.
+                Value::Term { id, .. } => {
+                    use anthill_core::kb::term::{Literal, Term, TermSource};
+                    match interp.kb().term(id) {
+                        Term::Const(Literal::String(s)) => {
+                            Ok(FileConvention::SingleFile(s.clone()))
+                        }
+                        other => Err(format!(
+                            "`single_file(file:)` must be a string, got {other:?}"
+                        )),
+                    }
+                }
+                other => Err(format!(
+                    "`single_file(file:)` must be a string, got {other:?}"
+                )),
+            }
+        }
+        other => Err(format!(
+            "unknown file convention `{other}`; this build implements flat, by_domain \
+             and single_file"
+        )),
+    }
+}
+
+/// The runtime store value: the declared backend and convention, with `root` resolved to
+/// the absolute path the process must actually use.
+///
+/// Rebuilt as a `Value::Entity` rather than edited in place, because the declared store is
+/// a hash-consed `Value::Term` (a source-loaded fact) and a `Term` is immutable. That is
+/// sound for the dispatch this value serves: the persist/flush registry keys on the
+/// CANONICAL FORM of the value the host registers, and this same value is what the
+/// bundle's `wis(backend:, …)` cell carries, so both sides render one string.
+///
+/// The rebuild carries `root` and `convention` and NOTHING ELSE, which is total rather
+/// than lossy: `IndexedFileStore` declares exactly those two fields, and a store term
+/// carrying a third would have failed the loader's entity-field check before reaching
+/// here. If the declaration ever grows a field, this is a site that must grow with it.
+fn with_absolute_root(
+    interp: &mut Interpreter,
+    store: &Value,
+    store_functor: anthill_core::intern::Symbol,
+    absolute: &Path,
+) -> Result<Value, String> {
+    let convention = interp
+        .kb()
+        .row_field(store, "convention")
+        .ok_or_else(|| "the declared store has no `convention` field".to_string())?;
+    // Field symbols are minted rather than taken from the term: canonicalization renders
+    // named args by LOCAL name, so a freshly interned `root` and the declared one are the
+    // same key. The FUNCTOR is the declared one, since that is what the value is OF.
+    let root_field = interp.kb_mut().intern("root");
+    let convention_field = interp.kb_mut().intern("convention");
+    Ok(Value::Entity {
+        functor: store_functor,
+        pos: vec![].into(),
+        named: vec![
+            (
+                root_field,
+                Value::Str(absolute.to_string_lossy().to_string()),
+            ),
+            (convention_field, convention),
+        ]
+        .into(),
+    })
+}
+
 // ── Init command ────────────────────────────────────────────────
 
 /// Scaffold a fresh project's `anthill-todo/` directory.
@@ -466,8 +814,16 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     // workflow rules ship bundled in the binary (WI-505), so a fresh project
     // has no per-project copy that could drift out of sync with the grammar.
 
+    // The scaffold carries the store binding (WI-830) so a fresh project SHOWS its
+    // configuration rather than inheriting an invisible one. It is not required — a
+    // project without it gets `default_binding`, which this text must match — but a
+    // scaffolded default that nobody can see is a default nobody edits.
     let project = format!(
-        "-- Project configuration\n\nfact Project(\n  name: \"{name}\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n"
+        "-- Project configuration\n\nfact Project(\n  name: \"{name}\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n\n\
+         -- Which store holds these work items, and in which role (proposal 057).\n\
+         -- `mirror`: every file here is loaded at startup and the KB answers reads, with\n\
+         -- the store as the write-through durability leg. `root: \".\"` is this directory.\n\
+         {EXAMPLE_BINDING}\n"
     );
     fs::write(dir.join("project.anthill"), project).expect("write project.anthill");
 
@@ -644,10 +1000,6 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // Each project file pairs its on-disk path with the parsed IR so
     // the IndexedFileStore can later associate fact RuleIds with their
     // byte-range spans on disk.
-    struct ProjectFile {
-        path: PathBuf,
-        parsed: ParsedFile,
-    }
     let mut project_items: Vec<ProjectFile> = Vec::new();
     for file in &project_files {
         // WI-744: a project file we can SEE but cannot READ is an error. Skipping
@@ -746,78 +1098,28 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         return code;
     }
 
-    // Build the FileStore handle the anthill side will receive. Mutating
-    // commands (add / feedback / claim / ...) call `Store.persist` /
-    // `Store.flush` on this entity; the registry routes the dispatch to
-    // the matching FileStore instance backing the project's anthill-todo/
-    // directory. `SingleFile("workitems.anthill")` matches the legacy
-    // on-disk layout: every runtime-persisted fact lands in the same
-    // workitems.anthill the native CLI appends to (`Flat` would write a
-    // separate facts.anthill — proposal 007's custom-persistence
-    // conventions exist precisely so the store can target the project's
-    // real file).
+    // The store the anthill side will receive, built from the project's own DECLARED
+    // extent binding (WI-830). Mutating commands (add / feedback / claim / ...) call
+    // `Store.persist` / `Store.flush` on this entity, and the registry routes that
+    // dispatch back to the instance built here.
+    //
+    // This used to be a fixed `IndexedFileStore` at a fixed path with a literal array of
+    // functor names. None of it was a project's to change, which is what WI-437 (a
+    // GitHub-backed tracker) was blocked on. It is now `fact ExtentBinding(...)` in
+    // project.anthill, and the host's remaining job is the one part that must stay
+    // native: mapping a declared store to one of its compiled-in backends.
     let store_root = scan_dir(&project_dir);
-    let store_root_str = store_root.to_string_lossy().to_string();
-    let store_value = {
-        use anthill_core::persistence::file_store::FileConvention;
-        use anthill_core::persistence::indexed_file_store::IndexedFileStore;
-        let fs_sym = interp.kb_mut().intern("FileStore");
-        let single_file_sym = interp.kb_mut().intern("SingleFile");
-        let root_field = interp.kb_mut().intern("root");
-        let conv_field = interp.kb_mut().intern("convention");
-        let file_field = interp.kb_mut().intern("file");
-        let v = Value::Entity {
-            functor: fs_sym,
-            pos: vec![].into(),
-            named: vec![
-                (root_field, Value::Str(store_root_str.clone())),
-                (
-                    conv_field,
-                    Value::Entity {
-                        functor: single_file_sym,
-                        pos: vec![].into(),
-                        named: vec![(file_field, Value::Str("workitems.anthill".to_string()))]
-                            .into(),
-                    },
-                ),
-            ]
-            .into(),
-        };
-        let key = match interp.store_canonical_key(&v) {
-            Ok(k) => k,
-            Err(e) => {
-                eprintln!("error: computing store key: {e}");
-                return runner::EXIT_RUNTIME;
-            }
-        };
-
-        // Seed the IndexedFileStore's source map: pair each project
-        // file's fact RuleIds (in source order) with the byte ranges
-        // of the corresponding parsed Item::Fact spans. Retract on
-        // any source-loaded RuleId then knows exactly which file and
-        // byte range to drop.
-        let mut store = IndexedFileStore::new(
-            store_root,
-            FileConvention::SingleFile("workitems.anthill".to_string()),
-        );
-        for (file, result) in project_items
-            .iter()
-            .zip(per_file_results.iter().skip(project_offset))
-        {
-            let spans = file.parsed.fact_spans();
-            for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
-                store.record_source(*rule_id, file.path.clone(), *span);
-            }
-        }
-
-        // The store declares no intrinsic per-functor policy (its policy IS the
-        // project's own `fact_monotonicity` rules), so this refusal is reachable only
-        // if that changes — and then it names the spelling nobody resolved (WI-919).
-        if let Err(e) = interp.register_mirror(key, Box::new(store)) {
-            eprintln!("error: registering the work-item store: {e}");
+    let store_value = match register_declared_store(
+        &mut interp,
+        &store_root,
+        &project_items,
+        &per_file_results[project_offset..],
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
             return runner::EXIT_RUNTIME;
         }
-        v
     };
 
     let args_value = match runner::build_args_value(&mut interp, &bundle_argv) {

@@ -6393,7 +6393,7 @@ impl KnowledgeBase {
     }
 
     /// `scope(?sym, ?result)` — if `?sym` is bound to a Ref or Fn, bind `?result`
-    /// to the enclosing scope term (Fn). Fails if scope is _global (top-level).
+    /// to the enclosing scope term (Fn). Fails if scope is <global> (top-level).
     fn builtin_scope<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         let sym_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             Some(v) => v,
@@ -6417,9 +6417,9 @@ impl KnowledgeBase {
         let Some(scope) = self.symbols.declaring_scope(sym) else {
             return BuiltinResult::Failure;
         };
-        // `_global` is the top level: no meaningful parent to answer with. Compared
-        // as a SCOPE, not by short name (`local_name(owner) == "_global"`), now that
-        // scopes have an identity to compare.
+        // The global scope IS the top level: no meaningful parent to answer with.
+        // Compared as a SCOPE, not by short name (`local_name(owner) == "_global"`, back
+        // when that was the spelling), now that scopes have an identity to compare.
         if scope == self.global_scope() {
             return BuiltinResult::Failure;
         }

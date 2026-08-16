@@ -111,3 +111,6 @@ mod wi917_ambiguous_nested_query_name_test;
 
 #[path = "include/wi1044_query_supplier_tie_test.rs"]
 mod wi1044_query_supplier_tie_test;
+
+#[path = "include/wi987_domain_sentinel_test.rs"]
+mod wi987_domain_sentinel_test;

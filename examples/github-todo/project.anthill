@@ -6,4 +6,27 @@ namespace anthill.stage0
     language: "rust",
     build: "cargo",
     tools: ["cargo-build", "cargo-test", "cargo-clippy", "lint-all"])
+
+  -- Which store holds this project's work items, and in which role (proposal 057
+  -- §"Configuration & bootstrap"). A host reads this at startup and builds one of its
+  -- compiled-in backends from it. Declaring none is not an error — a host may have a
+  -- default — but then the configuration is invisible, which is why this example
+  -- states it.
+  --
+  -- `mirror` because the extent is RESIDENT — workitems.anthill is loaded whole and
+  -- the KB answers reads, with the store as the write-through durability leg. A
+  -- backend too large or too remote to load (a SQL table, a GitHub issue list) would
+  -- be `owner` instead, and this is the one line a project changes to say so.
+  --
+  -- `covers` names the functors THIS project defines and persists. It is not a fixed
+  -- list: anthill-todo's own tracker also covers `StoreFormat`, which this example's
+  -- domain does not declare — and naming an undeclared functor here is a hard
+  -- `extent_bindings` refusal, not a warning, so the list must match the domain.
+  fact anthill.persistence.ExtentBinding(
+    store: anthill.persistence.filesystem.IndexedFileStore(
+      root: ".",
+      convention: anthill.persistence.filesystem.FileConvention.single_file(
+        file: "workitems.anthill")),
+    role: anthill.persistence.ExtentRole.mirror(),
+    covers: [WorkItem, Feedback, Tag])
 end

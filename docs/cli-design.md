@@ -191,8 +191,8 @@ Queries work across all stores transparently. For facts in bulk stores, the quer
 
 ```
 anthill> query by_functor parent
-parent("alice", "bob")    [#42, sort: Fact, domain: _global]
-parent("bob", "charlie")  [#43, sort: Fact, domain: _global]
+parent("alice", "bob")    [#42, sort: Fact, domain: <global>]
+parent("bob", "charlie")  [#43, sort: Fact, domain: <global>]
 
 anthill> query by_domain Account
   Sort: Account (Defined)

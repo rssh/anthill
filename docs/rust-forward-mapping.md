@@ -149,8 +149,8 @@ operation balance(a: Account) -> Money
 →  fn balance(&self) -> Money;
 
 -- Free function (no clear self):
-operation route(fact: Term) -> Store
-→  pub fn route(fact: Term) -> Store { todo!() }
+operation locate(fact: Term) -> Store
+→  pub fn locate(fact: Term) -> Store { todo!() }
 ```
 
 ### 2.6 Type Parameters → Generics
@@ -547,8 +547,8 @@ namespace config {
 
 -- Rule 3: No matching sort/entity → module trait
 namespace persistence {
-  operation route(fact: Term) -> Store     →  pub trait PersistenceOps {
-}                                                fn route(&self, fact: Term) -> impl Store;
+  operation locate(fact: Term) -> Store     →  pub trait PersistenceOps {
+}                                                fn locate(&self, fact: Term) -> impl Store;
                                              }
 ```
 
@@ -754,7 +754,7 @@ namespace anthill.persistence
 
   sort Store                                  -- base: all backends
 
-  operation route(fact: Term) -> Store
+  operation locate(fact: Term) -> Store
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
     effects (Modify{store}, Error)
   operation flush(store: Store, delta: List[T = Term]) -> Bool
@@ -800,7 +800,7 @@ pub mod persistence {
         fn retrieve(&self, pattern: Term) -> Result<Vec<Term>, Error>;
     }
 
-    pub fn route(fact: Term) -> impl Store { todo!() }
+    pub fn locate(fact: Term) -> impl Store { todo!() }
 }
 
 pub mod sql {
@@ -1103,9 +1103,15 @@ Exception: simple equational rules like `neq(?a, ?b) = not(eq(?a, ?b))` MAY gene
 
 `Meta(trust: ..., agent: ..., ...)` annotations are provenance information for the KB, not structural information for code generation. They are not reflected in the generated Rust code.
 
-### 7.5 Routing Rules and Store Configuration
+### 7.5 Extent Bindings and Store Configuration
 
-Persistence routing rules (`rule route(X) = Store(...)`) are runtime configuration, not type structure. They do not generate Rust code.
+A project's extent bindings (`fact ExtentBinding(store:, role:, covers:)`, proposal 057
+§"Configuration & bootstrap") are runtime configuration, not type structure. They do not
+generate Rust code — the host reads them and instantiates one of its compiled-in backends.
+
+The `rule route(X) = Store(...)` precedence rules this section used to name were replaced
+by that single-owner binding, and `operation route` was deleted from the persistence
+stdlib with it (WI-830).
 
 ## 8. Relationship to Implementation Facts
 

@@ -872,7 +872,7 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
     // backing the SAME QN answered `Full`, `Tank`, `wi984s` and `Tank`. One
     // operation, two backings, no shared answer. Now both read the declaring scope.
     //
-    // `_global` is the top level, so it is the `None` the declaration promises —
+    // The global scope IS the top level, so it is the `None` the declaration promises —
     // the same rule `resolve::builtin_scope` applies.
     let global = interp.kb_mut().global_scope();
     let scope_sym = interp

@@ -2,7 +2,7 @@
 //!
 //! `register_extent_owner` resolves an owner's `owned()` name to a `Symbol` and keys the
 //! mount on it. An external `FactRef` used to carry the NAME instead, so every
-//! `retract_persistent` / `update_persistent` re-ran the `_global` ladder on a string the
+//! `retract_persistent` / `update_persistent` re-ran the `<global>` ladder on a string the
 //! mount had already resolved — two independent readings of one name, with a whole load
 //! able to happen in between.
 //!
@@ -101,7 +101,7 @@ fn row(functor: Symbol, id_field: Symbol, id: i64) -> Value {
     }
 }
 
-/// Bring a SECOND wildcard import into the live KB, contesting `Widget916` at `_global`
+/// Bring a SECOND wildcard import into the live KB, contesting `Widget916` at `<global>`
 /// — the event that used to happen "between" the mount and the mutation. Nothing
 /// references the contested name, so this is accepted and the ambiguity is live but
 /// unreported.

@@ -562,9 +562,9 @@ operation balance(a: Account) -> Money =
 →  def balance(a: Account): Money = a.balance
 
 -- Top-level abstract member when no body source exists:
-operation route(fact: Term) -> Store
+operation locate(fact: Term) -> Store
 →  // emitted as abstract member of trait <Package>Ops
-   trait <Package>Ops { def route(fact: Term): Store }
+   trait <Package>Ops { def locate(fact: Term): Store }
 ```
 
 ### 2.6 Type Parameters → Generics

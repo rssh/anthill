@@ -52,7 +52,7 @@
 //!
 //! A SECOND POPULATION, found by making the old `_ => return` loud rather than
 //! by reasoning about it: a `fact Spec[X]` at a FILE'S TOP LEVEL, outside any
-//! `namespace`. Its domain is the synthetic `_global` root scope, which carries
+//! `namespace`. Its domain is the synthetic `<global>` root scope, which carries
 //! no category at all — so `Namespace` was as false for it as `Sort` was, and it
 //! emitted no provision either, while the identical text one `namespace` in did.
 //! Hence the fix's else is "everything else", not `has_kind(…, Namespace)`. It is

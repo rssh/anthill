@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use anthill_core::codegen::generate_rust;
 use anthill_core::fs_util;
-use anthill_core::intern::{ResolveResult, ScopeId};
+use anthill_core::intern::{ResolveResult, ScopeId, GLOBAL_SCOPE_NAME};
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
@@ -321,8 +321,8 @@ struct QueryArgs {
 /// Default SLD depth budget for `query` (the pre-WI-767 `--max-depth` default).
 const DEFAULT_QUERY_DEPTH: usize = 100;
 
-/// A listing mode selects by a NAME, read through the `_global` ladder — with
-/// ONE argument that is not, `--mode domain _global` (see that arm; WI-923).
+/// A listing mode selects by a NAME, read through the top-level ladder — with
+/// ONE argument that is not, `--mode domain '<global>'` (see that arm; WI-923).
 ///
 /// There is deliberately no mode selecting by a clause's `sort` key (WI-921).
 /// Two reasons, and each alone is sufficient. The key is not a classification
@@ -336,9 +336,10 @@ const DEFAULT_QUERY_DEPTH: usize = 100;
 enum QueryMode {
     /// Resolve a goal pattern via SLD (or head-match it under --match)
     Pattern,
-    /// List clauses by functor name, resolved at `_global` (`-i` applies)
+    /// List clauses by functor name, resolved at the top level (`-i` applies)
     Functor,
-    /// List clauses in a domain, resolved at `_global` (`-i` applies)
+    /// List clauses in a domain, resolved at the top level (`-i` applies).
+    /// For clauses outside any namespace, name the top-level scope: `'<global>'`
     Domain,
 }
 
@@ -1452,7 +1453,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
 
     let mut kb = load_kb(&args.paths, false, !args.no_stdlib)?;
     // WI-914: the `-i` flags before the mode dispatch, not inside `collect_queries` —
-    // the listing modes resolve their argument at `_global` too, so they must see the
+    // the listing modes resolve their argument at `<global>` too, so they must see the
     // same imports the pattern modes do. WI-853's ordering is otherwise unchanged: the
     // KB is loaded first, then each flag is scanned as a source of its own.
     supply_import_flags(&mut kb, &args.imports)?;
@@ -1464,7 +1465,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 eprintln!("error: --mode functor requires a pattern argument (functor name)");
                 1
             })?;
-            let sym = resolve_listing_name(&mut kb, name, "functor")?;
+            let sym = resolve_listing_name(&mut kb, name, "functor", None)?;
             let results = kb.program_clauses_by_functor(sym);
             print_program_clause_results(&kb, &results, args.max_results);
         }
@@ -1475,20 +1476,42 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
             })?;
             // A domain is a declared Symbol — the namespace or sort a clause was
             // loaded under — so the ladder reads it (WI-914). With ONE reserved
-            // spelling: `_global`, the loader's tag for the TOP-LEVEL domain, which
-            // like a clause-kind tag is a raw intern (`make_name_term("_global")`)
-            // that no declaration owns and the ladder can therefore never return.
-            // Matched here explicitly rather than left to a lookup fallback: a
-            // fallback would silently re-admit every unresolvable name, and every
-            // clause loaded outside a namespace (242 of them on the stdlib alone)
-            // would otherwise become unlistable. A SECOND SPELLING of a scope
-            // identity the loader already owns is still a second spelling — whether
-            // `_global` can instead simply BE declared, so the ladder answers it and
-            // this arm deletes, is WI-923.
-            let domain = if name == "_global" {
+            // spelling: `<global>`, the loader's tag for the TOP-LEVEL domain, which
+            // like a clause-kind tag is a raw intern that no declaration owns and the
+            // ladder can therefore never return. Matched here explicitly rather than
+            // left to a lookup fallback: a fallback would silently re-admit every
+            // unresolvable name, and every clause loaded outside a namespace (242 of
+            // them on the stdlib alone) would otherwise become unlistable. A SECOND
+            // SPELLING of a scope identity the loader already owns is still a second
+            // spelling — whether the top-level scope can instead simply BE declared,
+            // so the ladder answers it and this arm deletes, is WI-923.
+            //
+            // WI-987 — the reserved argument now needs SHELL QUOTING (`--mode domain
+            // '<global>'`), which is the visible price of a sentinel no identifier can
+            // collide with. It buys the arm its premise back: while the tag was
+            // `_global` a user COULD declare that namespace, and this arm then shadowed
+            // their declaration with the loader's tag — the ladder was never consulted,
+            // so the name they wrote was unlistable by the only spelling it has.
+            let domain = if name == GLOBAL_SCOPE_NAME {
                 kb.intern(name)
             } else {
-                resolve_listing_name(&mut kb, name, "domain")?
+                resolve_listing_name(
+                    &mut kb,
+                    name,
+                    "domain",
+                    // WI-987 — the clauses loaded outside any namespace (242 on the
+                    // stdlib alone) are under the TOP-LEVEL scope, whose name is no
+                    // identifier, so the ladder above can never reach it and the
+                    // qualify/import advice cannot apply to it. Said here because a
+                    // user who wants that listing has no other way to learn the
+                    // spelling — and it needs shell quoting, which is the half a bare
+                    // mention would leave them to discover by redirect.
+                    Some(&format!(
+                        "For the clauses loaded outside any namespace, name the \
+                         top-level scope: --mode domain '{GLOBAL_SCOPE_NAME}' \
+                         (quoted — the shell reads it as a redirect otherwise)."
+                    )),
+                )?
             };
             let results = kb.program_clauses_by_domain(domain);
             print_program_clause_results(&kb, &results, args.max_results);
@@ -1694,7 +1717,7 @@ fn scan_query_source(
 
 /// Supply the `-i` flags to the scope the query pattern is resolved in.
 ///
-/// The import enters `_global` — the scope `convert_query_term` resolves the
+/// The import enters `<global>` — the scope `convert_query_term` resolves the
 /// pattern in, and the one a top-level `sort` / `fact` / `rule` is defined in —
 /// because the flag is parsed as a TOP-LEVEL `import`, which the grammar admits
 /// as of WI-853. That is the whole fix: the flag has never had a namespace to
@@ -1731,7 +1754,7 @@ fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(),
 }
 
 /// Collect query terms from either an inline pattern or a query file.
-/// Returns the SCOPE the patterns were converted in — `_global` — and (label,
+/// Returns the SCOPE the patterns were converted in — `<global>` — and (label,
 /// vec-of-term-ids) pairs. The scope is returned rather than re-derived by the caller so
 /// a later reading of a pattern's name (the unknown-name reporter) cannot read it in a
 /// different one.
@@ -1740,9 +1763,9 @@ fn collect_queries(
     kb: &mut KnowledgeBase,
 ) -> Result<(ScopeId, Vec<(String, Vec<anthill_core::kb::term::TermId>)>), i32> {
     // WI-853: the `-i` flags are supplied on their OWN sources — the pattern / file
-    // below is parsed with nothing prepended to it — and they entered `_global` in
+    // below is parsed with nothing prepended to it — and they entered `<global>` in
     // `run_query` before this, so the query text scanned here resolves against them.
-    // (WI-914 hoisted the supply out of here: the listing modes name into `_global`
+    // (WI-914 hoisted the supply out of here: the listing modes name into `<global>`
     // too, so the imports cannot belong to the pattern path alone.)
     let global_scope = kb.global_scope();
 
@@ -1948,10 +1971,10 @@ fn report_unknown_functor_name(
     );
     let name = kb.local_name_of(sym);
     let read = load::resolve_name_in_kb(kb, name, global_scope);
-    report_unresolved_name(kb, name, &read, "query pattern", "functor");
+    report_unresolved_name(kb, name, &read, "query pattern", "functor", None);
 }
 
-/// THE refusal vocabulary for a name the `_global` ladder could not bind to ONE symbol,
+/// THE refusal vocabulary for a name the `<global>` ladder could not bind to ONE symbol,
 /// in whichever position the CLI read it. Two messages, one spelling each: an AMBIGUITY
 /// names its candidates, an ABSENCE says nothing declares the name. `position` is where
 /// the text was written (`query pattern`, `--mode functor`) and `noun` is what that
@@ -1963,12 +1986,21 @@ fn report_unknown_functor_name(
 /// pattern and the listing modes now run the SAME ladder (WI-914), so a name they both
 /// refuse must be refused in the same words — a second spelling is how the two drift back
 /// apart, this time in the diagnostic rather than in the lookup.
+///
+/// `hint` is the ONE thing the shared vocabulary cannot know: a position may have an
+/// argument the ladder is not the route to. `--mode domain` has exactly one (WI-987),
+/// and without it the absence message's advice — qualify, import — is advice that
+/// cannot work for the reserved spelling, in the only mode that has one. Threaded as a
+/// parameter rather than branched on `position`: the caller knows what its reserved
+/// arguments are, and matching on the diagnostic's own display string to recover that
+/// is how the two would drift.
 fn report_unresolved_name(
     kb: &KnowledgeBase,
     name: &str,
     read: &ResolveResult,
     position: &str,
     noun: &str,
+    hint: Option<&str>,
 ) {
     if let ResolveResult::Ambiguous(cands) = read {
         eprintln!(
@@ -1982,7 +2014,8 @@ fn report_unresolved_name(
         "error: '{name}' in {position} does not resolve to a known {noun} — no \
          rule, fact, or declaration is in scope for it. Qualify the name, \
          import it with `-i <ns>.{name}`, or bring the whole namespace into scope \
-         with `-i <ns>.*`."
+         with `-i <ns>.*`.{}",
+        hint.map(|h| format!(" {h}")).unwrap_or_default(),
     );
 }
 
@@ -1992,7 +2025,7 @@ fn report_unresolved_name(
 /// is position-independent").
 ///
 /// A CLI argument is the most KB-external text there is, and it names into the same
-/// `_global` scope `-i` imports into and `--mode pattern` resolves in — so
+/// `<global>` scope `-i` imports into and `--mode pattern` resolves in — so
 /// `--mode functor <short>` denotes exactly what `--mode pattern '<short>(…)'` denotes.
 /// Before this it was looked up by ABSOLUTE name only, and a name the ladder would have
 /// bound instead fell to a bare intern that indexes nothing — reported as `0 result(s)`,
@@ -2004,17 +2037,18 @@ fn report_unresolved_name(
 /// Since WI-921 deleted `--mode sort` — the one MODE whose argument was a raw
 /// clause-kind tag rather than a name — this is the only reading of a listing
 /// argument. Not of every listing ARGUMENT, though: `--mode domain`'s reserved
-/// `_global` spelling still bypasses it by hand, and WI-923 owns that.
+/// `<global>` spelling still bypasses it by hand, and WI-923 owns that.
 fn resolve_listing_name(
     kb: &mut KnowledgeBase,
     name: &str,
     kind: &str,
+    hint: Option<&str>,
 ) -> Result<anthill_core::intern::Symbol, i32> {
     let read = kb.resolve_name_in_global(name);
     if let ResolveResult::Found(sym) = read {
         return Ok(sym);
     }
-    report_unresolved_name(kb, name, &read, &format!("--mode {kind}"), kind);
+    report_unresolved_name(kb, name, &read, &format!("--mode {kind}"), kind, hint);
     Err(1)
 }
 

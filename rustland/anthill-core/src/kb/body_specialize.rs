@@ -1395,8 +1395,8 @@ impl KnowledgeBase {
         });
 
         let rule_sort = ClauseKind::Rule;
-        // WI-1028 — the rule's DOMAIN is the `_global` scope's owner. This used to
-        // mint the `_global` name term only to project back to its own functor.
+        // WI-1028 — the rule's DOMAIN is the top-level scope's owner. This used to
+        // mint that scope's name term only to project back to its own functor.
         let global_domain = self.global_scope().owner();
         let rid = self.assert_rule_debruijn_with_nodes(
             head,

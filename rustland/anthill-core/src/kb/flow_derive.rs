@@ -80,7 +80,7 @@ pub fn run(kb: &mut KnowledgeBase) {
     let from_f = kb.intern("from");
     let to_f = kb.intern("to");
     let sort = ClauseKind::Flow;
-    let domain = kb.intern("_global");
+    let domain = kb.global_scope().owner();
 
     for e in edges {
         let kind_ctor = if e.kind == Fk::Direct {

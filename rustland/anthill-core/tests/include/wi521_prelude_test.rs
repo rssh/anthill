@@ -1,11 +1,11 @@
 //! WI-521 — the implicit PRELUDE (cons / nil / some / none, the arithmetic and
 //! comparison operator targets, the logic operators not / or / push_choice)
 //! resolves via a LOWEST-PRECEDENCE fallback (`prelude_qualified`), not a
-//! `_global` import.
+//! `<global>` import.
 //!
-//! The distinguishing property vs the old flat `add_import(_global, …)`: a user
+//! The distinguishing property vs the old flat `add_import(<global>, …)`: a user
 //! name that clashes with a prelude name is NEVER ambiguous — the user's wins.
-//! With the flat injection, an imported `eq` plus the `_global` `eq` resolved to
+//! With the flat injection, an imported `eq` plus the `<global>` `eq` resolved to
 //! `Ambiguous` (a load error); that footgun is exactly what the WI-476 collision
 //! blocklist worked around. The fallback fires only when scope resolution fails,
 //! so the clash cannot happen.
@@ -37,8 +37,8 @@ fn load_stdlib_errors(extra: &str) -> Vec<String> {
 
 /// A user-defined operation named `eq` (clashing with the prelude `Eq.eq`),
 /// imported and used in another namespace, loads CLEAN — the prelude is
-/// shadowable and never ambiguous. Under the old flat `_global` injection the use
-/// site saw both the imported `eq` and the `_global` `eq` → `Ambiguous` error.
+/// shadowable and never ambiguous. Under the old flat `<global>` injection the use
+/// site saw both the imported `eq` and the `<global>` `eq` → `Ambiguous` error.
 #[test]
 fn user_eq_shadows_prelude_without_ambiguity() {
     let src = r#"

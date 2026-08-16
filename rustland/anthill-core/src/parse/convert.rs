@@ -477,7 +477,7 @@ impl<'a> Converter<'a> {
         }
         // WI-853: a top-level `import` is collected the way a namespace / sort
         // body's is — into the imports of the thing that OWNS the scope it
-        // enters, here the file, whose scope is `_global`. It is NOT an `Item`:
+        // enters, here the file, whose scope is `<global>`. It is NOT an `Item`:
         // `convert_item` would have to invent a variant no loader pass reads,
         // and pass 2 already takes a scope's imports as a separate list.
         self.imports = self.collect_imports(root);
@@ -494,7 +494,7 @@ impl<'a> Converter<'a> {
 
     /// The `import` clauses written directly in `node`'s body — the imports of
     /// the scope `node` owns. Shared by the three things that own one: the file
-    /// (`_global`), a namespace, a sort. Each then walks its body separately,
+    /// (`<global>`), a namespace, a sort. Each then walks its body separately,
     /// skipping `import_clause`, because what else it must skip differs.
     fn collect_imports(&mut self, node: Node) -> Vec<Import> {
         self.children_by_kind(node, "import_clause")

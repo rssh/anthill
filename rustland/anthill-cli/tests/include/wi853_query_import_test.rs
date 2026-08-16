@@ -7,11 +7,11 @@
 //! flag nor the file and read as a fault in the user's pattern.
 //!
 //! Fixed in the GRAMMAR, not the CLI: a file's top level IS a scope — the
-//! `_global` one every top-level `sort` / `fact` / `rule` is defined in — and
+//! `<global>` one every top-level `sort` / `fact` / `rule` is defined in — and
 //! `import` is how names enter a scope, so admitting the declarations but not the
 //! import that feeds them was an asymmetry with no rule behind it. The flag then
 //! needs no wrapper: it is one ordinary top-level import, parsed as its own
-//! source and scanned into `_global`, which is exactly the scope
+//! source and scanned into `<global>`, which is exactly the scope
 //! `convert_query_term` resolves the pattern in.
 //!
 //! Every test here pins a BEHAVIOUR the flag was supposed to have, against a
@@ -37,7 +37,7 @@ fn query(args: &[&str]) -> Output {
 /// control, and it does not resolve.
 #[test]
 fn an_import_flag_puts_the_name_in_query_scope() {
-    // Without the import, `mk` resolves to no known functor at `_global`. Since
+    // Without the import, `mk` resolves to no known functor at `<global>`. Since
     // WI-754 that is REFUSED loudly rather than answered as a silent empty set —
     // a stronger control than the old "no solutions" (exit 0): the import is what
     // makes the name exist at all in the query's scope, so its absence is a fault,
@@ -183,9 +183,11 @@ fn every_malformed_flag_is_reported() {
 // positions (`--match` / `--resolve` / `--max-depth` under a listing mode, wi767).
 //
 // NOT vacuous in general, and the diff that removed this test first claimed it was:
-// `--mode domain _global` still reads its argument as a raw intern rather than through
-// the ladder, so `-i` is inert for that one spelling — and, unlike `--mode sort`, it is
-// silently ACCEPTED there rather than refused. WI-923 owns it.
+// `--mode domain '<global>'` still reads its argument as a raw intern rather than
+// through the ladder, so `-i` is inert for that one spelling — and, unlike `--mode
+// sort`, it is silently ACCEPTED there rather than refused. WI-923 owns it. (WI-987
+// changed the spelling from `_global`, which an identifier could collide with, to one
+// no declaration can take; the arm and its inertness are unchanged.)
 
 /// WI-853's first fallout. The query file's `ParsedFile` is now stamped with the
 /// path it was read from, which the old join made impossible: with the `-i` lines

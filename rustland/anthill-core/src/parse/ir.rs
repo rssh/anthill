@@ -195,7 +195,7 @@ pub struct ParsedFile {
     pub items: Vec<Item>,
     /// WI-853: the file's TOP-LEVEL imports — the ones written outside any
     /// `namespace` / `sort` body. They arrive here rather than on an `Item`
-    /// because their scope is the file's top level, which is the `_global`
+    /// because their scope is the file's top level, which is the `<global>`
     /// scope every top-level `sort` / `fact` / `rule` is defined in; a
     /// `Namespace` / `SortWithBody` carries its own body's imports the same way,
     /// on the thing that OWNS the scope they enter.

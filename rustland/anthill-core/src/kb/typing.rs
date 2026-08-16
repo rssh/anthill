@@ -14942,12 +14942,12 @@ pub(crate) fn short_name_of(qn: &str) -> &str {
 /// entity FIELDS and 53 callback param/result slots, where the scope link is absent
 /// or points a level up, and the 13 DOT-LESS names (the kernel vocabulary `Fact` /
 /// `Sort` / `Rule` / `meta` / …, and the `anthill` namespace root), where the split
-/// correctly finds NO parent and the scope link answers the `_global` pseudo-scope.
+/// correctly finds NO parent and the scope link answers the `<global>` pseudo-scope.
 ///
 /// That last group decides it — and say the strength of it plainly: a LATENT trap,
 /// not a live bug. A caller like [`own_eq_op_carrier`] does
 /// `impl_parent_of_op(functor)?` to reach a CARRIER SORT, so the scope link would
-/// hand it `_global` where the split stops: a `?` meaning "no owner, give up" turned
+/// hand it `<global>` where the split stops: a `?` meaning "no owner, give up" turned
 /// into a wrong answer that reads as a real one. But nothing in the tested surface
 /// can tell the two apart — MEASURED, with this body replaced by
 /// `declaring_scope_symbol` the whole workspace ran 4084 tests with exactly ONE
@@ -57525,7 +57525,7 @@ mod wi802_function_spec_owner_tests {
     }
 
     /// The case the doc actually warns about: a REAL user sort. A namespace-less
-    /// top-level `sort Function` lands in `_global` with the bare qualified name
+    /// top-level `sort Function` lands in `<global>` with the bare qualified name
     /// `Function`, so it is resolved — and must still not be the stdlib spec.
     #[test]
     fn a_user_declared_top_level_function_sort_is_not_the_stdlib_sort() {
@@ -58208,11 +58208,11 @@ end
     /// The evidence [`impl_parent_of_op`]'s doc rests on, re-measured rather than
     /// re-argued: the qualified-name split and the symbol table's scope link agree for
     /// every OPERATION — and disagree for the dot-less kernel-vocab names, where the
-    /// split correctly finds no parent and the scope link offers `_global`.
+    /// split correctly finds no parent and the scope link offers the top-level scope.
     ///
     /// CONTROL, MEASURED — point `impl_parent_of_op` at `declaring_scope_symbol` and
     /// the second half fails (`` `Rule` has no parent to strip; declaring_scope_symbol
-    /// answers Some("_global") ``). It is the ONLY thing that fails: the whole
+    /// answers Some("<global>") ``). It is the ONLY thing that fails: the whole
     /// workspace ran 4084 tests under that edit, 4083 of them green. That is the point
     /// of writing it — the reason `impl_parent_of_op` keeps the split is a domain
     /// argument no other test can hear, so without this the next reader would make the
@@ -58238,8 +58238,8 @@ end
 
         let mut ops = 0usize;
         let mut disagreeing_ops: Vec<String> = Vec::new();
-        // Dot-less names live directly in the `_global` pseudo-scope: the split sees no
-        // parent at all, the scope link sees `_global`.
+        // Dot-less names live directly in the `<global>` pseudo-scope: the split sees no
+        // parent at all, the scope link sees that scope.
         let mut dotless_global: Vec<String> = Vec::new();
         for (qn, sym) in &names {
             let split = qn

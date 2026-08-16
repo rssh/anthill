@@ -1002,7 +1002,7 @@ end
 
 /// WI-422 (loader/resolution): a selectively-imported operation referenced by
 /// BARE short name inside a sort scope that declares `requires Spec[T]`. The
-/// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → _global) that
+/// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → <global>) that
 /// bypasses the namespace's `contains → List.contains` import alias and used to
 /// resurface the loader-internal global `member` *fact functor* as a phantom
 /// second candidate — emitting `ambiguous symbol 'member'` and then cascading
@@ -1047,7 +1047,7 @@ end
 /// META-SORTS. A user sort whose name collides with one of the 10 kernel
 /// meta-sort names (`Sort`/`Entity`/`Fact`/`Member`/`Constraint`/… — here
 /// `Member`) is referenced BARE as a type inside a `requires`-bearing sort. The
-/// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → _global);
+/// `requires Eq[T]` link opens a scope path (Box → Eq → prelude → <global>);
 /// pre-fix the kernel meta-sort `Member` was a bare global *local*, so that path
 /// bypassed the enclosing-chain view of the user's `Member` and resurfaced the
 /// kernel one as a phantom rival → `ambiguous symbol 'Member'` (a non-blocking

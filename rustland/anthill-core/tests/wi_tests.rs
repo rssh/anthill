@@ -1242,3 +1242,12 @@ mod wi1106_parametric_data_sort_test;
 
 #[path = "include/wi1111_provision_chain_search_test.rs"]
 mod wi1111_provision_chain_search_test;
+
+#[path = "include/wi987_global_scope_sentinel_test.rs"]
+mod wi987_global_scope_sentinel_test;
+
+#[path = "include/wi830_mirror_coverage_test.rs"]
+mod wi830_mirror_coverage_test;
+
+#[path = "include/wi830_extent_binding_test.rs"]
+mod wi830_extent_binding_test;
