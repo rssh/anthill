@@ -527,6 +527,10 @@ pub enum ExtentBindingError {
     /// `ExtentBinding` facts exist but `anthill.persistence.ExtentRole` does not
     /// resolve — a partial persistence substrate, not a configuration choice.
     MissingRoleSort,
+    /// `anthill.prelude.List` does not resolve, so `covers` cannot be walked at all.
+    /// The prelude twin of [`Self::MissingRoleSort`], and NOT a `covers` fault: the
+    /// project may have written a perfectly good list.
+    MissingListSort,
     /// The underlying fact read failed (a bodied `ExtentBinding` rule, most likely).
     Read(String),
     /// A binding row is missing a declared field.
@@ -553,6 +557,11 @@ impl std::fmt::Display for ExtentBindingError {
                 f,
                 "extent_bindings: `anthill.persistence.ExtentRole` does not resolve; the \
                  persistence substrate is loaded only in part"
+            ),
+            ExtentBindingError::MissingListSort => write!(
+                f,
+                "extent_bindings: `anthill.prelude.List` does not resolve, so `covers` \
+                 cannot be read; the prelude is loaded only in part"
             ),
             ExtentBindingError::Read(e) => write!(f, "extent_bindings: {e}"),
             ExtentBindingError::MissingField { field } => write!(
@@ -917,16 +926,25 @@ impl KnowledgeBase {
     /// which is right for a best-effort reader and wrong for configuration: a truncated
     /// `covers` is indistinguishable from a shorter one that was meant.
     fn strict_list_elements(&self, list: &Value) -> Result<Vec<Value>, ExtentBindingError> {
-        let cons = self.try_resolve_symbol("anthill.prelude.List.cons");
-        let nil = self.try_resolve_symbol("anthill.prelude.List.nil");
+        // Resolved with a refusal of their own, not as `Option`s folded into the walk: an
+        // unresolvable `cons`/`nil` made EVERY well-formed list compare unequal to both,
+        // so a KB missing the prelude blamed the project's `covers` for the absence of
+        // the list sort itself. Same "substrate loaded only in part" condition
+        // `MissingRoleSort` reports, so it reports it (found in review).
+        let cons = self
+            .try_resolve_symbol("anthill.prelude.List.cons")
+            .ok_or(ExtentBindingError::MissingListSort)?;
+        let nil = self
+            .try_resolve_symbol("anthill.prelude.List.nil")
+            .ok_or(ExtentBindingError::MissingListSort)?;
         let mut out = Vec::new();
         let mut cursor = list.clone();
         loop {
             let head = crate::eval::eval::value_functor(self, &cursor);
-            if head.is_some() && head == nil {
+            if head == Some(nil) {
                 return Ok(out);
             }
-            if head.is_none() || head != cons {
+            if head != Some(cons) {
                 return Err(ExtentBindingError::MalformedCovers);
             }
             let element = self
@@ -938,6 +956,16 @@ impl KnowledgeBase {
             out.push(element);
             cursor = tail;
         }
+    }
+
+    /// A named field of a fact row, by local name, across both carriers a row arrives in:
+    /// a source-loaded fact is a hash-consed `Value::Term`, a runtime-built one a
+    /// `Value::Entity`. Public because a host reading its own [`Self::extent_bindings`]
+    /// needs exactly this and must not re-derive it per carrier — the declared store term
+    /// is a `Term` and every host would otherwise write the `Entity`-only half first
+    /// (measured: this one did).
+    pub fn row_field(&self, row: &Value, name: &str) -> Option<Value> {
+        self.named_field(row, name)
     }
 
     /// A named field of a decoded fact row, by local name.

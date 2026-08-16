@@ -22,3 +22,27 @@ fact Project(
 
 fact Module(name: "rustland", root: "rustland", language: "rust", build: "cargo")
 fact Module(name: "scaland", root: "scaland", language: "scala", build: "sbt")
+
+-- WHICH STORE HOLDS THESE WORK ITEMS, AND IN WHICH ROLE (proposal 057
+-- §"Configuration & bootstrap"; WI-830). The host reads this at startup, maps the
+-- declared store to one of its compiled-in backends, and registers it.
+--
+-- `mirror`, not `owner`, because the extent is RESIDENT: every file here is parsed
+-- at startup and `kb.rules` answers every read, with the store as the write-through
+-- durability leg. An `owner` would mean delegating reads to a query engine over
+-- parsed text, for data already wholly in memory.
+--
+-- `root: "."` is this directory — the one the config lives in. The host resolves it;
+-- a config file has no business naming an absolute path.
+--
+-- `covers` is the set of functors this file durably holds, and it is the set the
+-- bundle persists (WorkItem / Feedback / Tag / StoreFormat). A functor missing here
+-- keeps no durable home: its retract would drop the in-memory row and leave the
+-- line on disk.
+fact anthill.persistence.ExtentBinding(
+  store: anthill.persistence.filesystem.IndexedFileStore(
+    root: ".",
+    convention: anthill.persistence.filesystem.FileConvention.single_file(
+      file: "workitems.anthill")),
+  role: anthill.persistence.ExtentRole.mirror(),
+  covers: [WorkItem, Feedback, Tag, StoreFormat])

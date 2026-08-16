@@ -41,20 +41,23 @@ namespace anthill.persistence.filesystem
   -- File conventions: how facts map to files
   -- ================================================================
 
+  -- WI-830 — THESE ARE THE CONVENTIONS THE HOST ACTUALLY IMPLEMENTS. They had
+  -- drifted two ways from the Rust `FileConvention` they name: this enum declared
+  -- `stage0` and `by_namespace`, which no backend implements, while `ByDomain` and
+  -- `SingleFile` were implemented and undeclarable. Only `flat` overlapped. The
+  -- drift went unnoticed because nothing in any `.anthill` file ever USED a
+  -- variant — the host constructed them by bare-interning the Rust spelling — and
+  -- it became load-bearing the moment a project had to WRITE its store binding
+  -- (`ExtentBinding`, store.anthill): anthill-todo's own layout was not spellable.
   enum FileConvention {
-    entity stage0                             -- Stage 0 layout:
-                                              --   workitems/ dir, project.anthill, etc.
-    entity by_namespace                       -- one directory per namespace
-    entity flat                               -- all files in root directory
+    entity flat                               -- every fact in one facts.anthill
+    entity by_domain                          -- one file per domain: <domain>.anthill
+    entity single_file(file: String)          -- every fact in one NAMED file under
+                                              -- the root; anthill-todo's layout,
+                                              -- where runtime writes land in the
+                                              -- same workitems.anthill the loader
+                                              -- reads
   }
-
-  -- Stage 0 convention routing:
-  -- WorkItem(id: "WI-001", status: Draft, ...)
-  --   -> .anthill/workitems/WI-001.anthill.draft
-  -- Project(...)
-  --   -> .anthill/project.anthill
-  -- Feedback(workitem: "WI-001", ...)
-  --   -> .anthill/workitems/WI-001.feedback.anthill
 
   namespace Factory
     operation create(conventions: FileConvention, root: String) -> FileStore
