@@ -421,6 +421,14 @@ pub enum ExtentRegError {
     /// A non-enumerable source — the deferred oracle archetype, a loud
     /// registration error until its slice lands.
     NonEnumerable { functor: String },
+    /// Two mirrors declared coverage of one functor. The mirror-role counterpart of
+    /// `AlreadyOwned`: a functor has one durable home, so a second claim is a
+    /// configuration error rather than a pick-one (WI-830).
+    MirrorConflict { functor: String, existing: String },
+    /// One functor claimed in BOTH roles — owned by a mounted source and covered by a
+    /// mirror. The owner branch answers reads first, so the mirror would simply never be
+    /// consulted; refused in both registration orders rather than silently shadowed.
+    RoleConflict { functor: String },
 }
 
 impl std::fmt::Display for ExtentRegError {
@@ -464,11 +472,121 @@ impl std::fmt::Display for ExtentRegError {
                 "register_extent_owner: non-enumerable source for '{functor}' is not supported in \
                  v1 (deferred oracle archetype)"
             ),
+            ExtentRegError::MirrorConflict { functor, existing } => write!(
+                f,
+                "register_mirror: functor '{functor}' is already mirrored by `{existing}`; \
+                 a functor has one durable home"
+            ),
+            ExtentRegError::RoleConflict { functor } => write!(
+                f,
+                "functor '{functor}' is claimed as both an extent owner's and a mirror's; \
+                 an owner answers its own reads, so the mirror would never be consulted"
+            ),
         }
     }
 }
 
 impl std::error::Error for ExtentRegError {}
+
+// ── The declared binding (057 §"Configuration & bootstrap") ────
+
+/// Which registration role a declared binding asks for. The anthill-side
+/// `anthill.persistence.ExtentRole`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtentRole {
+    /// The store answers reads; the resident subtree is empty.
+    Owner,
+    /// The KB answers reads; the store is a write-through durability mirror.
+    Mirror,
+}
+
+impl ExtentRole {
+    /// The qualified name of the anthill variant, in the `ns.Enum.variant` spelling
+    /// `Monotonicity::reflect_variant_qname` uses.
+    pub fn qname(self) -> &'static str {
+        match self {
+            ExtentRole::Owner => "anthill.persistence.ExtentRole.owner",
+            ExtentRole::Mirror => "anthill.persistence.ExtentRole.mirror",
+        }
+    }
+}
+
+/// One decoded `ExtentBinding` fact. `store` is the value the project WROTE — the host
+/// matches it against its own backend factory, since only the host has the native code.
+#[derive(Clone, Debug)]
+pub struct ExtentBindingDecl {
+    pub store: Value,
+    pub role: ExtentRole,
+    pub covers: Vec<Symbol>,
+}
+
+/// Why a declared binding could not be read. Every variant is a binding the project
+/// wrote that this failed to honor, so each is loud rather than skipped.
+#[derive(Clone, Debug)]
+pub enum ExtentBindingError {
+    /// `ExtentBinding` facts exist but `anthill.persistence.ExtentRole` does not
+    /// resolve — a partial persistence substrate, not a configuration choice.
+    MissingRoleSort,
+    /// The underlying fact read failed (a bodied `ExtentBinding` rule, most likely).
+    Read(String),
+    /// A binding row is missing a declared field.
+    MissingField { field: String },
+    /// The `role` field carries no functor — a variable or a non-entity carrier.
+    UnreadableRole,
+    /// The `role` field names something that is not an `ExtentRole` variant.
+    UnknownRole { role: String },
+    /// A `covers` entry carries no functor.
+    UnreadableCover,
+    /// `covers` is not a well-formed `cons`/`nil` list — an open tail, a variable, or
+    /// some other carrier. Distinct from [`Self::EmptyCovers`]: "I could not read the
+    /// list" and "the list is empty" are different faults with different repairs.
+    MalformedCovers,
+    /// A binding that covers nothing declares nothing. Refused rather than
+    /// registered as a no-op, which would read as "configured" while binding no rows.
+    EmptyCovers,
+}
+
+impl std::fmt::Display for ExtentBindingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtentBindingError::MissingRoleSort => write!(
+                f,
+                "extent_bindings: `anthill.persistence.ExtentRole` does not resolve; the \
+                 persistence substrate is loaded only in part"
+            ),
+            ExtentBindingError::Read(e) => write!(f, "extent_bindings: {e}"),
+            ExtentBindingError::MissingField { field } => write!(
+                f,
+                "extent_bindings: a binding is missing its `{field}` field"
+            ),
+            ExtentBindingError::UnreadableRole => write!(
+                f,
+                "extent_bindings: a binding's `role` names no functor; write `mirror()` or \
+                 `owner()`"
+            ),
+            ExtentBindingError::UnknownRole { role } => write!(
+                f,
+                "extent_bindings: `{role}` is not an ExtentRole; write `mirror()` or `owner()`"
+            ),
+            ExtentBindingError::UnreadableCover => write!(
+                f,
+                "extent_bindings: a `covers` entry names no functor"
+            ),
+            ExtentBindingError::MalformedCovers => write!(
+                f,
+                "extent_bindings: `covers` is not a ground list; coverage decides which \
+                 rows keep a durable home, so a partly-readable list is not an answer"
+            ),
+            ExtentBindingError::EmptyCovers => write!(
+                f,
+                "extent_bindings: a binding covers no functor; a binding that binds nothing \
+                 is a configuration mistake, not an empty configuration"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExtentBindingError {}
 
 /// KB-owned aggregate of extent sources — successor to the retired `RouteHandler`
 /// registry (WI-797).
@@ -489,13 +607,32 @@ pub(crate) struct ExtentRegistry {
     /// extent owner. Keeping them here makes that role KB-owned rather than an
     /// evaluator side table.
     mirrors: HashMap<String, Box<dyn Store>>,
+    /// Functor → the mirror that durably backs it. The mirror-role counterpart of
+    /// `mounts`, and resolved at registration for the same reason: a mirror is
+    /// declared to cover named functors, and the name question gets exactly one
+    /// answer, asked once (WI-916/919).
+    ///
+    /// A mirror covers functors a BACKEND cannot enumerate — a file store is
+    /// per-FILE and holds whatever the file holds — so coverage arrives as a
+    /// REGISTRATION argument (the host reads it from the extent binding, 057
+    /// §"Configuration & bootstrap"), not from a `Store` trait method.
+    ///
+    /// An absent functor is resident-only, which is a configuration fact, not an
+    /// error: a KB with no mirrors at all is the ordinary in-memory case.
+    mirror_of: HashMap<Symbol, String>,
     /// Intrinsic policies declared by mirrors, RESOLVED and materialized at
     /// registration — the same rule as `mounts` above, and for the same reason: a
     /// backend can only speak names, so the boundary is String at `owned_monotonicity`
     /// and `Symbol` from registration on. Keying this on the name instead meant the
     /// reader had to render a resolved `Symbol` BACK to text to ask, and any spelling
     /// the two sides did not share read as "no policy declared" (WI-919).
-    mirror_monotonicity: HashMap<Symbol, Monotonicity>,
+    ///
+    /// Carries the DECLARING mirror's key alongside the policy so that re-registering
+    /// under that key replaces its policies, exactly as it replaces its coverage. The two
+    /// tables are written by one call and must forget together: a store re-registered
+    /// declaring nothing used to leave its old `non_monotone` standing, and the
+    /// proposal-053 retract guard kept honouring a policy no live backend claimed.
+    mirror_monotonicity: HashMap<Symbol, (String, Monotonicity)>,
 }
 
 impl ExtentRegistry {
@@ -515,16 +652,28 @@ impl ExtentRegistry {
         Some(self.sources[id.0 as usize].as_mut())
     }
 
-    /// `policies` is already resolved — see [`KnowledgeBase::register_mirror`], which
-    /// owns the name question because only it can ask one.
+    /// `policies` and `covers` are already resolved — see
+    /// [`KnowledgeBase::register_mirror`], which owns the name question because only it
+    /// can ask one.
     fn register_mirror(
         &mut self,
         key: String,
         mirror: Box<dyn Store>,
         policies: Vec<(Symbol, Monotonicity)>,
+        covers: Vec<Symbol>,
     ) {
+        // Registering under an existing key REPLACES that mirror, so everything that key
+        // declared is replaced rather than unioned: re-registering the same store with a
+        // narrower `covers` (or with fewer policies) must not leave the dropped entries
+        // still standing in its name.
+        self.mirror_of.retain(|_, k| *k != key);
+        self.mirror_monotonicity.retain(|_, (k, _)| *k != key);
         for (functor, policy) in policies {
-            self.mirror_monotonicity.insert(functor, policy);
+            self.mirror_monotonicity
+                .insert(functor, (key.clone(), policy));
+        }
+        for functor in covers {
+            self.mirror_of.insert(functor, key.clone());
         }
         self.mirrors.insert(key, mirror);
     }
@@ -543,18 +692,27 @@ impl ExtentRegistry {
     }
 
     pub(crate) fn mirror_monotonicity(&self, functor: Symbol) -> Option<Monotonicity> {
-        self.mirror_monotonicity.get(&functor).copied()
+        self.mirror_monotonicity
+            .get(&functor)
+            .map(|(_, policy)| *policy)
     }
 
-    /// Until declarative owner bindings name a mirror per functor, a resident
-    /// stored-row read can attach a mirror only when there is exactly one. More
-    /// than one is deliberately ambiguous rather than silently picking one.
-    fn sole_mirror_key(&self) -> Result<Option<String>, usize> {
-        match self.mirrors.len() {
-            0 => Ok(None),
-            1 => Ok(self.mirrors.keys().next().cloned()),
-            count => Err(count),
-        }
+    /// The mirror durably backing `functor`, or `None` when the functor is
+    /// resident-only.
+    ///
+    /// This used to be `sole_mirror_key`, which answered "the one mirror, if there is
+    /// exactly one" and refused otherwise — a stand-in that made a SECOND mirror
+    /// unregisterable in practice (WI-830). Coverage is declared now, so two mirrors
+    /// coexist and each functor names its own.
+    fn mirror_for(&self, functor: Symbol) -> Option<&str> {
+        self.mirror_of.get(&functor).map(String::as_str)
+    }
+
+    /// Record that `key`'s mirror durably holds `functor`, established by a write rather
+    /// than by a declaration. The caller has already refused a conflicting claim, so this
+    /// either confirms what is there or adds a functor no mirror had spoken for.
+    fn record_mirror_coverage(&mut self, functor: Symbol, key: String) {
+        self.mirror_of.insert(functor, key);
     }
 
     /// The materialized read profile of `functor`, or `None` when unowned.
@@ -601,6 +759,14 @@ impl KnowledgeBase {
     /// Register a durability mirror for resident facts. A mirror receives
     /// write-through persistence traffic but never becomes a read owner.
     ///
+    /// `covers` names the functors this mirror durably backs — the extent binding's
+    /// mirror half (057 §"Mounts, single owner, registration roles"). It is an ARGUMENT
+    /// rather than a `Store` trait method because the backend cannot answer it: a file
+    /// store is per-FILE and holds whichever functors the file holds, so the coverage
+    /// is the project's declaration, read by the host and passed here. A row read
+    /// through [`Self::read_stored_facts`] carries its mirror iff its functor is
+    /// covered, which is what routes the eventual retract/update to durability.
+    ///
     /// Its [`Store::owned_monotonicity`] names are resolved to `Symbol`s HERE, once, and
     /// the registry is keyed on them — the same rule, in the same vocabulary
     /// ([`ExtentRegError`]), as [`Self::register_extent_owner`]. All or nothing: if any
@@ -619,14 +785,180 @@ impl KnowledgeBase {
         &mut self,
         key: String,
         mirror: Box<dyn Store>,
+        covers: &[&str],
     ) -> Result<(), ExtentRegError> {
         let declared = mirror.owned_monotonicity();
         let mut resolved = Vec::with_capacity(declared.len());
         for (name, policy) in declared {
             resolved.push((self.registration_symbol(&name)?, policy));
         }
-        self.extents.register_mirror(key, mirror, resolved);
+        // Resolve + validate ALL covered functors before committing any, the same
+        // all-or-nothing rule `register_extent_owner` follows.
+        let mut covered = Vec::with_capacity(covers.len());
+        for name in covers {
+            let sym = self.registration_symbol(name)?;
+            // Two mirrors claiming one functor is the ambiguity `sole_mirror_key` used
+            // to hit at READ time, one call too late to say who declared what. Refuse it
+            // at registration, where both spellings are still in hand.
+            if let Some(existing) = self.extents.mirror_for(sym) {
+                if existing != key {
+                    return Err(ExtentRegError::MirrorConflict {
+                        functor: (*name).to_owned(),
+                        existing: existing.to_owned(),
+                    });
+                }
+            }
+            // The roles are exclusive, not layered: an OWNER answers reads from its own
+            // query and `read_stored_facts` takes that branch first, so a mirror declared
+            // over an owned functor would never see a row — silently. That is exactly the
+            // WI-437 shape (a GitHub owner registered beside the file mirror), so it is
+            // refused in both orders: here, and in `register_extent_owner`.
+            if self.extents.mounts.contains_key(&sym) {
+                return Err(ExtentRegError::RoleConflict {
+                    functor: (*name).to_owned(),
+                });
+            }
+            covered.push(sym);
+        }
+        self.extents.register_mirror(key, mirror, resolved, covered);
         Ok(())
+    }
+
+    /// The project's declared extent bindings (057 §"Configuration & bootstrap"),
+    /// decoded from `anthill.persistence.ExtentBinding` facts.
+    ///
+    /// This is the READ half only: it says which store supplies which functors in which
+    /// role, and stops there. Instantiating the named backend is the HOST's job, because
+    /// a backend is native code — declarative configuration chooses among the host's
+    /// compiled-in backends, it cannot introduce new ones — so the store field comes back
+    /// as the `Value` the project wrote and the host matches it against its own factory.
+    ///
+    /// An unresolvable `ExtentBinding` symbol yields an EMPTY list rather than an error,
+    /// and that is not a silent skip: the symbol is declared by `anthill.persistence`, so
+    /// its absence means that namespace was never loaded, and a KB without the
+    /// persistence substrate cannot have bindings to find. Every other fault — a
+    /// malformed row, an unreadable role, a `covers` entry that names nothing — is loud,
+    /// because each of those is a binding the project DID write and this failed to honor.
+    pub fn extent_bindings(&self) -> Result<Vec<ExtentBindingDecl>, ExtentBindingError> {
+        let Some(binding_sym) = self.try_resolve_symbol("anthill.persistence.ExtentBinding") else {
+            return Ok(Vec::new());
+        };
+        let owner_sym = self.role_symbol(ExtentRole::Owner)?;
+        let mirror_sym = self.role_symbol(ExtentRole::Mirror)?;
+
+        let rows = self
+            .read_facts(binding_sym, &[], BodiedRulePolicy::Refuse)
+            .map_err(|e| ExtentBindingError::Read(e.to_string()))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let field = |name: &str| -> Result<Value, ExtentBindingError> {
+                self.named_field(&row, name)
+                    .ok_or_else(|| ExtentBindingError::MissingField {
+                        field: name.to_owned(),
+                    })
+            };
+            let store = field("store")?;
+            let role_value = field("role")?;
+            let covers_value = field("covers")?;
+
+            let role_sym = crate::eval::eval::value_functor(self, &role_value)
+                .ok_or_else(|| ExtentBindingError::UnreadableRole)?;
+            let role = if role_sym == owner_sym {
+                ExtentRole::Owner
+            } else if role_sym == mirror_sym {
+                ExtentRole::Mirror
+            } else {
+                return Err(ExtentBindingError::UnknownRole {
+                    role: self.qualified_name_of(role_sym).to_string(),
+                });
+            };
+
+            // STRICTLY, not via `value_list_to_vec`. That walker ends on `_ => break`, so
+            // a partial or non-list `covers` decodes to a SHORTER list and is accepted as
+            // complete coverage — the dropped functors then silently lose their durability
+            // leg, and a non-list degrades to `[]` and gets reported as `EmptyCovers`,
+            // naming the wrong fault. Coverage decides which rows survive a retract, so
+            // "the part of it I could read" is not an answer.
+            let elements = self.strict_list_elements(&covers_value)?;
+            let mut covers = Vec::with_capacity(elements.len());
+            for element in elements {
+                // A `covers` entry is a functor NAME as written (`WorkItem`), which
+                // `value_functor` reads through the WI-511 Ref/Fn canon so both
+                // spellings land on one symbol.
+                let sym = crate::eval::eval::value_functor(self, &element)
+                    .ok_or(ExtentBindingError::UnreadableCover)?;
+                covers.push(sym);
+            }
+            if covers.is_empty() {
+                return Err(ExtentBindingError::EmptyCovers);
+            }
+
+            out.push(ExtentBindingDecl {
+                store,
+                role,
+                covers,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The symbol of an [`ExtentRole`] variant. Compared by interned identity rather
+    /// than name, for the reason the repo's representation note gives and
+    /// `reflect_fact_monotonicity` follows: a user entity sharing the short name
+    /// `mirror` must not read as this one.
+    fn role_symbol(&self, role: ExtentRole) -> Result<Symbol, ExtentBindingError> {
+        self.try_resolve_symbol(role.qname())
+            .ok_or(ExtentBindingError::MissingRoleSort)
+    }
+
+    /// Walk a `cons`/`nil` list, refusing anything that is not one. The tolerant
+    /// `value_list_to_vec` stops at the first cell it cannot read and returns what it had,
+    /// which is right for a best-effort reader and wrong for configuration: a truncated
+    /// `covers` is indistinguishable from a shorter one that was meant.
+    fn strict_list_elements(&self, list: &Value) -> Result<Vec<Value>, ExtentBindingError> {
+        let cons = self.try_resolve_symbol("anthill.prelude.List.cons");
+        let nil = self.try_resolve_symbol("anthill.prelude.List.nil");
+        let mut out = Vec::new();
+        let mut cursor = list.clone();
+        loop {
+            let head = crate::eval::eval::value_functor(self, &cursor);
+            if head.is_some() && head == nil {
+                return Ok(out);
+            }
+            if head.is_none() || head != cons {
+                return Err(ExtentBindingError::MalformedCovers);
+            }
+            let element = self
+                .named_field(&cursor, "head")
+                .ok_or(ExtentBindingError::MalformedCovers)?;
+            let tail = self
+                .named_field(&cursor, "tail")
+                .ok_or(ExtentBindingError::MalformedCovers)?;
+            out.push(element);
+            cursor = tail;
+        }
+    }
+
+    /// A named field of a decoded fact row, by local name.
+    fn named_field(&self, row: &Value, name: &str) -> Option<Value> {
+        match row {
+            Value::Entity { named, .. } => named
+                .iter()
+                .find(|(s, _)| self.local_name_of(*s) == name)
+                .map(|(_, v)| v.clone()),
+            Value::Term { id, .. } => {
+                use crate::kb::term::TermSource;
+                let crate::kb::term::Term::Fn { named_args, .. } = self.term(*id) else {
+                    return None;
+                };
+                named_args
+                    .iter()
+                    .find(|(label, _)| self.local_name_of(*label) == name)
+                    .map(|(_, value)| Value::term(*value))
+            }
+            _ => None,
+        }
     }
 
     /// The functor a HOST-supplied REGISTRATION name denotes, or the typed refusal
@@ -736,6 +1068,22 @@ impl KnowledgeBase {
     /// Persist through a registered resident-extent mirror, then assert the
     /// resident shadow. The durable write precedes the KB mutation and both the
     /// mirror association and private RuleId stay inside the returned FactRef.
+    ///
+    /// A PERSIST RECORDS COVERAGE (WI-830). This used to stamp its mirror onto whatever
+    /// it was handed, while [`Self::read_stored_facts`] stamps one only on a COVERED
+    /// functor — so a row reached the two ways carried two different durability legs, and
+    /// the read-side one silently dropped the resident row while leaving the durable row
+    /// on disk.
+    ///
+    /// The two agree now because a write into a mirror *makes* that mirror the functor's
+    /// durable home: configured coverage (the declared binding) and demonstrated coverage
+    /// (this) are the same relation established from two ends. Refusing an undeclared
+    /// functor instead was the other candidate and is wrong — `Store.persist` accepts a
+    /// bare-interned head that no declaration mentions (WI-920, measured), so a refusal
+    /// would break a supported path to fix a bookkeeping fault.
+    ///
+    /// A functor already claimed by a DIFFERENT mirror is still loud: that is two durable
+    /// homes for one functor, which is the one thing coverage exists to prevent.
     pub(crate) fn persist_mirrored(
         &mut self,
         mirror_key: &str,
@@ -745,6 +1093,26 @@ impl KnowledgeBase {
         let functor = row.head(self).functor_sym().ok_or_else(|| {
             ExtentError::Backend("persistent persist requires a functor-headed row".into())
         })?;
+        if let Some(covering) = self.extents.mirror_for(functor) {
+            if covering != mirror_key {
+                return Err(ExtentError::Backend(format!(
+                    "persistent persist: functor `{}` is already mirrored by `{covering}`, \
+                     not by `{mirror_key}`; a functor has one durable home",
+                    self.local_name_of(functor),
+                )));
+            }
+        }
+        // Roles are exclusive, and this path can reach an owned functor: the persist
+        // builtin routes by the STORE's key, so nothing upstream consulted `mounts`.
+        // Recording coverage here would establish the owner/mirror overlap that
+        // `register_mirror` and `register_extent_owner` both refuse.
+        if self.extents.owner(functor).is_some() {
+            return Err(ExtentError::Backend(format!(
+                "persistent persist: functor `{}` is owned by a mounted extent source; \
+                 write it through its owner, not through mirror `{mirror_key}`",
+                self.local_name_of(functor),
+            )));
+        }
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
         let term = self
@@ -761,6 +1129,12 @@ impl KnowledgeBase {
         let outcome = mirror.persist(self, term, clause_kind, domain, None);
         self.put_mirror(mirror_key.to_owned(), mirror);
         outcome.map_err(|e| ExtentError::Backend(e.to_string()))?;
+        // The durable write SUCCEEDED, so this mirror now holds rows of this functor —
+        // record it, so a later `read_stored_facts` hands back the same durability leg
+        // this call is about to stamp. Recorded after the write, never before: a failed
+        // persist must not leave coverage claiming a home that took nothing.
+        self.extents
+            .record_mirror_coverage(functor, mirror_key.to_owned());
         let rule = self.assert_fact(term, clause_kind, domain, None);
         Ok(StoredRow {
             row,
@@ -908,6 +1282,11 @@ impl KnowledgeBase {
             if !self.rules_by_functor(sym).is_empty() {
                 return Err(ExtentRegError::ResidentCollision { functor: name });
             }
+            // The other order of the role-exclusivity refusal in `register_mirror`: a
+            // functor already declared as some mirror's coverage cannot also be owned.
+            if self.extents.mirror_for(sym).is_some() {
+                return Err(ExtentRegError::RoleConflict { functor: name });
+            }
             if profile.stability == Stability::Volatile && profile.query_modes.len() > 1 {
                 return Err(ExtentRegError::VolatileMultiMode {
                     functor: name,
@@ -1035,9 +1414,6 @@ pub enum ExtentReadError {
     /// `selection` naming a field the functor lacks — the Resolve read needs the
     /// full field set to build a matching full-arity goal, so it cannot proceed.
     NoFieldSchema { functor: String },
-    /// More than one resident durability mirror is registered, but the current
-    /// pre-config binding cannot determine which one owns this functor's rows.
-    AmbiguousResidentMirror { functor: String, mirrors: usize },
 }
 
 impl std::fmt::Display for ExtentReadError {
@@ -1064,11 +1440,6 @@ impl std::fmt::Display for ExtentReadError {
                 f,
                 "read_facts_resolved(`{functor}`): no declared field schema (or a selection \
                  names an undeclared field); cannot build a full-arity resolution goal"
-            ),
-            ExtentReadError::AmbiguousResidentMirror { functor, mirrors } => write!(
-                f,
-                "read_stored_facts(`{functor}`): {mirrors} resident mirrors are registered; \
-                 the mirror owner is ambiguous until an extent binding names it"
             ),
         }
     }
@@ -1129,12 +1500,9 @@ impl KnowledgeBase {
             BodiedRulePolicy::Refuse => {}
         }
 
-        let mirror = self.extents.sole_mirror_key().map_err(|mirrors| {
-            ExtentReadError::AmbiguousResidentMirror {
-                functor: self.local_name_of(functor).to_string(),
-                mirrors,
-            }
-        })?;
+        // The mirror this functor is DECLARED to live in (WI-830). `None` = resident
+        // only, so the row's reference carries no durability leg.
+        let mirror = self.extents.mirror_for(functor).map(str::to_owned);
 
         Ok(self
             .rules_by_functor_iter(functor)

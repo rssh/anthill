@@ -137,6 +137,19 @@ namespace anthill.persistence
 end
 ```
 
+> **DELETED (WI-830).** `operation route` is gone from `stdlib/anthill/persistence/store.anthill`
+> — it never acquired a rule or a caller, and 057's `ExtentBinding` answers the same
+> question declaratively and per functor. What replaced it:
+>
+> ```
+> enum ExtentRole { entity owner  entity mirror }
+> entity ExtentBinding(store: Term, role: ExtentRole, covers: List[T = Type])
+> ```
+>
+> Read by the host at startup (`KnowledgeBase::extent_bindings`), which maps the declared
+> store term to one of its compiled-in backends and registers it in the named role. The
+> rest of this section is retained as the design record.
+
 Routing rules are expressed as ordinary rules with precedence — specific patterns match before the catch-all default:
 
 ```

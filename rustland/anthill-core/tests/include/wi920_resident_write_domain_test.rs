@@ -85,6 +85,7 @@ fn by_domain_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         .register_mirror(
             key,
             Box::new(FileStore::new(root.to_path_buf(), FileConvention::ByDomain)),
+            &[],
         )
         .expect("a file store declares no intrinsic policy (WI-919)");
     store_val

@@ -42,6 +42,7 @@ fn setup_store(interp: &mut Interpreter, root: &std::path::Path) -> Value {
         .register_mirror(
             key,
             Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)),
+            &[],
         )
         .expect("a file store declares no intrinsic policy, so nothing is resolved");
     store_val

@@ -27,7 +27,7 @@
 -- direction and not a commitment (057, the implementable slice, has no `pull`).
 namespace anthill.persistence
   import anthill.reflect.{Term, FactRef, StoredRef, Symbol, Monotonicity}
-  import anthill.prelude.{List, Stream, Option}
+  import anthill.prelude.{List, Stream, Option, Type}
   import anthill.prelude.Meta.{Meta}
 
   -- ================================================================
@@ -52,8 +52,44 @@ namespace anthill.persistence
     operation monotonicity(store: Store, functor: Symbol) -> Monotonicity
   }
 
-  -- Given a fact, which store owns it?
-  operation route(fact: Term) -> Store
+  -- ================================================================
+  -- Extent binding: which store supplies a functor, in which role
+  -- ================================================================
+
+  -- The two registration roles of proposal 057 §"Mounts, single owner,
+  -- registration roles". They are not a ranking — they answer different questions,
+  -- and a backend belongs to whichever one describes where its rows LIVE.
+  enum ExtentRole {
+    -- The store owns the extent: reads delegate to its query, and the resident
+    -- subtree for the functor must be empty. For an extent too large or too remote
+    -- to hold in memory (SQL, a service).
+    entity owner
+    -- The KB owns the extent: `kb.rules` answers every read, and the store is a
+    -- write-through durability mirror. For an extent that is loaded whole at
+    -- startup — a project's own `.anthill` files.
+    entity mirror
+  }
+
+  -- Declares that `store` supplies the rows of every functor in `covers`, in `role`.
+  --
+  -- Read by the HOST at startup (057 §"Configuration & bootstrap"): it maps the
+  -- declared store sort to one of its compiled-in backends, instantiates it, and
+  -- registers it under this role. Declarative configuration chooses AMONG the host's
+  -- backends; it cannot introduce new native code.
+  --
+  -- `store` is a `Term`, NOT a `Store`. A binding names a store to BUILD, and it is
+  -- written in a project's configuration file, where no store exists yet — the value
+  -- is a description (`FileStore(root: …, convention: …)`) that the host resolves to
+  -- one of its compiled-in backends. `Store` is the algebra a built backend
+  -- satisfies, which is a different thing and one a config file cannot hold.
+  --
+  -- `covers` is a LIST because coverage is a property of the store, not of one
+  -- functor: a file store is per-FILE and holds whichever functors its file holds,
+  -- which is the project's layout and a question no backend can answer about itself.
+  -- A functor has exactly one durable home, so two bindings claiming one functor is
+  -- a registration refusal, not a precedence question — which is why this replaced
+  -- 007 §8's `route` rules rather than reusing them.
+  entity ExtentBinding(store: Term, role: ExtentRole, covers: List[T = Type])
 
   -- ================================================================
   -- NonMonotonicStore: mutation capability (proposal 053 / 007 §2)

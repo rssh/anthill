@@ -813,7 +813,26 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // The store declares no intrinsic per-functor policy (its policy IS the
         // project's own `fact_monotonicity` rules), so this refusal is reachable only
         // if that changes — and then it names the spelling nobody resolved (WI-919).
-        if let Err(e) = interp.register_mirror(key, Box::new(store)) {
+        //
+        // COVERAGE (WI-830) — the functors this file store durably backs. A file store
+        // cannot answer this itself: `workitems.anthill` is one file holding four
+        // functors, and which four is the project's layout, not the backend's. These
+        // are still spelled here; WI-830's next increment reads them from the project's
+        // declared extent binding instead. `WorkItem` and `Tag` are the ones a stored
+        // row is read for (`stored_facts_of` in store.anthill, whose references reach
+        // retract/update); `Feedback` and `StoreFormat` are append-only but live in the
+        // same file, so declaring them keeps coverage describing the file rather than
+        // just today's mutation set.
+        if let Err(e) = interp.register_mirror(
+            key,
+            Box::new(store),
+            &[
+                "anthill.stage0.WorkItem",
+                "anthill.stage0.Tag",
+                "anthill.stage0.Feedback",
+                "anthill.stage0.StoreFormat",
+            ],
+        ) {
             eprintln!("error: registering the work-item store: {e}");
             return runner::EXIT_RUNTIME;
         }

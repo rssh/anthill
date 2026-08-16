@@ -462,12 +462,17 @@ impl Interpreter {
     /// the mirror itself; the evaluator owns neither persistence registry. Registration
     /// resolves that policy's declared functor names and REFUSES one that denotes
     /// nothing — see [`KnowledgeBase::register_mirror`] for why a drop cannot be silent.
+    ///
+    /// `covers` names the functors this mirror durably backs; see
+    /// [`KnowledgeBase::register_mirror`] for why coverage is declared rather than
+    /// asked of the backend.
     pub fn register_mirror(
         &mut self,
         key: String,
         mirror: Box<dyn crate::persistence::Store>,
+        covers: &[&str],
     ) -> Result<(), crate::kb::extent::ExtentRegError> {
-        self.kb.register_mirror(key, mirror)
+        self.kb.register_mirror(key, mirror, covers)
     }
 
     /// Compute the canonical-key string for a store value (`Value::Entity`).

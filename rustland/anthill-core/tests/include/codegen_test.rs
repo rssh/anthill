@@ -326,8 +326,36 @@ fn full_persistence_store_hierarchy() {
 
     assert!(!out.contains("fn pull("), "pull went with BulkStore: {out}");
 
-    // route should be a free function
-    assert!(out.contains("fn route("), "should have route: {out}");
+    // WI-830 deleted `operation route(fact) -> Store` — 007 §8's precedence-routing
+    // idea, which the single-owner model replaced and which had zero rules and zero
+    // callers by the time it went. The "namespace-level operation lowers to a free fn"
+    // rule it used to witness here is pinned by `abstract_sort_in_namespace_to_unit_struct`
+    // (`reify`), so nothing is measured only by its absence.
+    assert!(
+        !out.contains("fn route("),
+        "route was deleted (WI-830); it must not reappear: {out}"
+    );
+
+    // The extent binding that replaced it (057 §"Configuration & bootstrap"). Reading the
+    // REAL store.anthill, these are what fail if the declaration stops lowering — and the
+    // `store: Term` field is load-bearing: `store: Store` named the store ALGEBRA, which
+    // lowers to a Rust trait and does not compile as a field type.
+    assert!(
+        out.contains("enum ExtentRole"),
+        "should have enum ExtentRole: {out}"
+    );
+    assert!(
+        out.contains("struct ExtentBinding"),
+        "should have struct ExtentBinding: {out}"
+    );
+    assert!(
+        out.contains("pub store: Term,"),
+        "the binding carries a store DESCRIPTION, not a Store: {out}"
+    );
+    assert!(
+        out.contains("pub covers: Vec<Type>,"),
+        "coverage is a list of functors: {out}"
+    );
 }
 
 // ── Test 18: Abstract sort at namespace level → unit struct ──────

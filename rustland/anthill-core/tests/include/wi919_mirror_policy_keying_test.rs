@@ -106,6 +106,7 @@ fn register_declaring(
             functor: functor.to_owned(),
             policy: Monotonicity::NonMonotone,
         }),
+        &[],
     );
     (store_val, outcome)
 }
