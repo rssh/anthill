@@ -7,7 +7,7 @@
 //! here so the two binaries stay byte-identical in their error formatting and
 //! exit codes. (The KB-build and `main`-invocation steps themselves differ: the
 //! CLI discovers an entry sort and calls `main(args)`, while the todo bundle
-//! threads a store/cell/requirements chain into `main(args, store, …)`; those
+//! threads a cell/requirements chain into `main(args, wis_cell, agent)`; those
 //! stay in each binary.)
 
 use anthill_core::eval::{builtins, render_raised_payload, EvalError, Interpreter, Value};
