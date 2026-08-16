@@ -1263,3 +1263,6 @@ mod wi913_host_name_ladder_test;
 
 #[path = "include/wi728_membership_operand_test.rs"]
 mod wi728_membership_operand_test;
+
+#[path = "include/wi1119_dot_on_constrained_param_test.rs"]
+mod wi1119_dot_on_constrained_param_test;

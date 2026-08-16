@@ -25,6 +25,76 @@ use crate::span::Span;
 
 // ── TypeError ──────────────────────────────────────────────────
 
+/// WI-1119 — a dot receiver that is a `requires`-constrainable TYPE PARAMETER: what the
+/// [`TypeError::DotDispatchNoMatch`] refusal names when the member reached no spec. Both
+/// halves are computed where the ladder ran, not re-derived at rendering: `specs` is the
+/// set [`constraining_spec_definers`] actually searched, so an EMPTY one says "the
+/// parameter is unconstrained" and a populated one says "these constrain it and none
+/// declares the member" — two different repairs.
+#[derive(Clone, Debug)]
+pub struct ConstrainedParamReceiver {
+    /// The parameter as written, rendered — `?PT`.
+    pub param: String,
+    /// The specs constraining it, from both chain sources, transitively.
+    pub specs: Vec<Symbol>,
+}
+
+/// WI-1119 — the half of a [`TypeError::DotDispatchNoMatch`] on a type-parameter receiver
+/// that says what to DO, shared by the `format` and `LoadError` faces so the two cannot
+/// drift. Two repairs, told apart by whether anything constrains the parameter at all:
+/// write a `requires` clause, or reach for a member one of the clauses actually declares.
+fn constrained_param_repair(kb: &KnowledgeBase, specs: &[Symbol], member: &str) -> String {
+    if specs.is_empty() {
+        return format!(
+            "no `requires` clause constrains it, so no spec declares '{member}' for it — \
+             add one on the operation or its sort",
+        );
+    }
+    format!(
+        "the specs constraining it declare no '{}' ({})",
+        member,
+        specs
+            .iter()
+            .map(|s| kb.qualified_name_of(*s).to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+/// WI-1119 — [`TypeError::AmbiguousConstrainedParamMember`]'s body, shared by both faces.
+/// Names each tied spec and the qualified spelling that settles it: unlike a supplier tie
+/// (`AmbiguousSpecOpDispatch`), this one always HAS a repair the author can write, because
+/// the ambiguity is in the member NAME and qualifying the call removes it.
+fn ambiguous_constrained_param_message(
+    kb: &KnowledgeBase,
+    member: &str,
+    receiver: &str,
+    specs: &[Symbol],
+) -> String {
+    format!(
+        "ambiguous member '{}' on `{}`: {} constrain it and each declares '{}' — \
+         neither refines the other, so write the call qualified ({}) to say which",
+        member,
+        receiver,
+        specs
+            .iter()
+            .map(|s| kb.qualified_name_of(*s).to_string())
+            .collect::<Vec<_>>()
+            .join(" and "),
+        member,
+        // QUALIFIED, not short-named: two tied specs may share a short name in different
+        // namespaces (`a.Desc` and `b.Desc`), and the short form would then print the same
+        // suggestion twice — neither of which disambiguates at the call site either. The
+        // qualified name is a writable spelling, so the repair stays one the author can
+        // paste.
+        specs
+            .iter()
+            .map(|s| format!("{}.{}(…)", kb.qualified_name_of(*s), member))
+            .collect::<Vec<_>>()
+            .join(" or "),
+    )
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeError {
     /// Canonical type mismatch from `assert_compatible`. `context` is where
@@ -185,6 +255,27 @@ pub enum TypeError {
     /// `&[String]` signature — but that alone would not rule out symbols HERE.)
     /// What pre-rendering does discard is the routes, so the repair that depends on
     /// them is computed at the same moment and carried beside the strings.
+    /// WI-1119 — a dot on a `requires`-constrained TYPE-PARAMETER receiver whose member
+    /// name is declared by TWO of the specs constraining it, with neither refining the
+    /// other (§8.7's requires-REFINEMENT rule, [`most_refined_spec`], already settled the
+    /// orderable case). Refused rather than resolved by the order the clauses are written
+    /// — see [`find_spec_op_for_constrained_param`], which owns the reasoning.
+    ///
+    /// NOT [`Self::AmbiguousSpecOpDispatch`], which is a different question at a different
+    /// moment: there ONE operation is named and two TEXTS supply an implementation of it
+    /// for one carrier, so its candidates render by supply route. Here two distinct
+    /// operations answer to one member NAME and no implementation has been looked for yet;
+    /// naming the specs is the whole repair, since qualifying the call (`Desc.describe(x)`)
+    /// is what resolves it.
+    AmbiguousConstrainedParamMember {
+        span: Option<Span>,
+        /// The member name written after the dot.
+        member: Symbol,
+        /// The receiver's rendered type — the parameter, e.g. `?PT`.
+        receiver: String,
+        /// The tied constraining specs, in the order their clauses are written.
+        specs: Vec<Symbol>,
+    },
     AmbiguousSpecOpDispatch {
         span: Option<Span>,
         /// The spec op being dispatched, e.g. `ns.Desc.describe`.
@@ -475,6 +566,17 @@ pub enum TypeError {
         span: Option<Span>,
         member: Symbol,
         receiver_sort: Option<Symbol>,
+        /// WI-1119 — the receiver's rendered TYPE, when it has no sort head but IS a type
+        /// PARAMETER declared in scope, together with the specs a `requires` clause
+        /// constrains that parameter by. `None` for every other unresolved receiver.
+        ///
+        /// The split is not cosmetic and is not read off the rendering: an anonymous
+        /// unification variable renders `??logical_var` and genuinely has nothing to name,
+        /// while `?PT` is a parameter the author wrote and whose constraints are the whole
+        /// content of the repair — either "no clause constrains it" or "these do, and none
+        /// of them declares this member". Membership in [`TypingEnv::param_rigids`] is what
+        /// tells the two apart, not the string.
+        receiver_param: Option<ConstrainedParamReceiver>,
     },
     /// WI-369: a cross-scope projection (`s.field`) of a field whose owning
     /// entity is declared `internal`. The field name resolves, but the entity
@@ -988,20 +1090,41 @@ impl TypeError {
             TypeError::DotDispatchNoMatch {
                 member,
                 receiver_sort,
+                receiver_param,
                 ..
             } => {
                 let m = kb.local_name_of(*member);
-                match receiver_sort {
-                    Some(s) => format!(
+                match (receiver_sort, receiver_param) {
+                    (Some(s), _) => format!(
                         "no member '{}' on {}: dot dispatch found no operation '{}' declared on the receiver's sort",
                         m, kb.qualified_name_of(*s), m,
                     ),
-                    None => format!(
+                    // WI-1119 — a type PARAMETER receiver: name it, and say what does or
+                    // does not constrain it. `<unresolved receiver>` was true and useless
+                    // here — the parameter is written right there in the signature.
+                    (None, Some(p)) => format!(
+                        "no member '{}' on `{}`: {}",
+                        m,
+                        p.param,
+                        constrained_param_repair(kb, &p.specs, m),
+                    ),
+                    (None, None) => format!(
                         "cannot dispatch `.{}`: the receiver's type is unresolved",
                         m,
                     ),
                 }
             }
+            TypeError::AmbiguousConstrainedParamMember {
+                member,
+                receiver,
+                specs,
+                ..
+            } => ambiguous_constrained_param_message(
+                kb,
+                kb.local_name_of(*member),
+                receiver,
+                specs,
+            ),
             TypeError::ForbiddenInternalField {
                 entity,
                 field,
@@ -1058,6 +1181,7 @@ impl TypeError {
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::AmbiguousSpecOpDispatch { span, .. }
+            | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
             | TypeError::DuplicateCallTypeArg { span, .. }
@@ -1467,15 +1591,57 @@ impl TypeError {
             TypeError::DotDispatchNoMatch {
                 member,
                 receiver_sort,
+                receiver_param,
                 ..
             } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: receiver_sort
-                    .map(|s| kb.qualified_name_of(s).to_string())
-                    .unwrap_or_else(|| "<unresolved receiver>".to_string()),
+                entity_name: match (receiver_sort, receiver_param) {
+                    (Some(s), _) => kb.qualified_name_of(*s).to_string(),
+                    // WI-1119 — the parameter as written, not `<unresolved receiver>`.
+                    (None, Some(p)) => p.param.clone(),
+                    (None, None) => "<unresolved receiver>".to_string(),
+                },
                 field_name: kb.local_name_of(*member).to_string(),
-                expected_type: "operation declared on the receiver's sort".to_string(),
-                actual_type: "no such member (dot dispatch)".to_string(),
+                expected_type: match receiver_param {
+                    // WI-1119 — what the author must supply differs by receiver: a sort
+                    // needs the member declared ON it, a constrained parameter needs a
+                    // constraining SPEC to declare it.
+                    Some(_) => "operation declared by a spec constraining the receiver's \
+                                type parameter"
+                        .to_string(),
+                    None => "operation declared on the receiver's sort".to_string(),
+                },
+                actual_type: match receiver_param {
+                    Some(p) => format!(
+                        "no such member (dot dispatch) — {}",
+                        constrained_param_repair(kb, &p.specs, kb.local_name_of(*member)),
+                    ),
+                    None => "no such member (dot dispatch)".to_string(),
+                },
+                span: self.span(kb),
+            },
+            // WI-1119 — its OWN variant for the reason `AmbiguousSpecOpDispatch` is one:
+            // the candidate list IS the diagnostic, and the "expected X, got Y" frame has
+            // no room for it. Rendered through the shared body so the `format` face and
+            // this one cannot drift.
+            TypeError::AmbiguousConstrainedParamMember {
+                member,
+                receiver,
+                specs,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: receiver.clone(),
+                field_name: kb.local_name_of(*member).to_string(),
+                expected_type: "one spec constraining the receiver's type parameter to \
+                                declare this member"
+                    .to_string(),
+                actual_type: ambiguous_constrained_param_message(
+                    kb,
+                    kb.local_name_of(*member),
+                    receiver,
+                    specs,
+                ),
                 span: self.span(kb),
             },
             TypeError::ForbiddenInternalField {
@@ -8490,6 +8656,265 @@ fn find_spec_op_for_required_sort(
     definers.first().map(|(_, op)| *op)
 }
 
+/// WI-1119 — is this dot receiver a TYPE PARAMETER declared in the body's scope, and if so
+/// what is its type term? The gate on the third member-resolution rung, and on the refusal
+/// that names the parameter.
+///
+/// MEMBERSHIP IN [`TypingEnv::param_rigids`], NOT merely [`is_type_param_value`]: every
+/// receiver that reaches this point has no sort head, and a fair share of them are
+/// anonymous unification variables — a rule-head variable the goals never constrained
+/// (WI-282), a `Value::Node` the typer has not grounded. Those ARE `Term::Var`s, so the
+/// coarse predicate admits them, and there is nothing about them to name or constrain: no
+/// clause can mention a variable the author never wrote. The rigid list holds exactly the
+/// parameters in scope — the enclosing sort's and the operation's own (WI-942) — so it is
+/// the precise question, and it is the same list the σ-alignment below bridges through.
+fn constrained_param_receiver_type(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: &Value,
+) -> Option<TermId> {
+    // A `Value::Node` receiver type carries no `TermId` and so names no parameter: the
+    // rigid list is keyed by term, and a denoted type is WI-348 Phase C work.
+    let Value::Term { id: tid, .. } = recv_ty else {
+        return None;
+    };
+    let tid = *tid;
+    let (vid, _) = elem_var_step(kb, tid)?;
+    let canon = canonical_global_var(kb, vid, env.param_rigids());
+    env.param_rigids()
+        .iter()
+        .any(|(g, rigid)| {
+            *g == canon
+                || matches!(kb.get_term(*rigid), Term::Var(Var::Rigid(rv)) if *rv == canon)
+        })
+        .then_some(tid)
+}
+
+/// WI-1119 — dot dispatch on a `requires`-CONSTRAINED TYPE-PARAMETER receiver: the third
+/// member-resolution rung, beside [`find_spec_op_for_provided_sort`] (the receiver sort's
+/// PROVIDES graph) and [`find_spec_op_for_required_sort`] (an abstract-spec receiver's
+/// REQUIRES graph). Those two are gated on a resolved `recv_sort`; a type parameter has
+/// none, so `x.describe()` inside `operation probe[PT](x: PT) requires Desc[PT]` used to
+/// skip the whole ladder and land on `DotDispatchNoMatch{None}` while its own named twin
+/// `Desc.describe(x)` loaded and ran. The dot **reaches the same rule** as the named
+/// spelling (§8.7 "Operation override"), so what it resolves to here is the spec
+/// operation, handed on for the value to decide — and the licence that admits the call is
+/// then the named spelling's own ([`op_requires_covers_call`] for the op-scoped clause, the
+/// sort-level defer-to-requirement for the sort's). This rung performs RESOLUTION only.
+///
+/// TWO CHAIN SOURCES, COMPOSED AT ONE READ, because a clause may be written in either
+/// scope and the receiver cannot tell which: the enclosing OPERATION's own
+/// ([`TypingEnv::op_requires`], §5.4 / proposal 042) and the enclosing SORT's dictionary
+/// chain ([`TypingEnv::enclosing_requires`]). MEASURED at the miss: the op-scoped spellings
+/// reach the constraining spec through the first and the sort-level one through the second
+/// alone, so a rung wired to either half serves two of the three shapes and refuses the
+/// third — the defect WI-945 and WI-1098 each record from a different side.
+///
+/// THE TWO SOURCES NEED DIFFERENT SEED DECODERS, and that is not drift but the established
+/// split: an op-scoped clause is stored as the written application (`Desc[PT]`, a plain
+/// `Fn`), which [`op_requires_entry_carrier_map`] pairs positionally against the spec's
+/// declared params, while a sort-level entry is a `SortView`, whose bindings are named and
+/// which [`compose_reached_carrier_map`] decodes — seeded here with an EMPTY parent map,
+/// which is the identity, exactly as [`op_requires_covers`]' BFS composes every entry it
+/// reaches. Feeding a `SortView` to the positional decoder pairs the spec's first type
+/// param with the view's own base (measured: `{Desc.T ↦ Desc}` beside the real
+/// `{Desc.T ↦ HT}`), which is why the seeds are picked by the entry's shape.
+///
+/// THE ALIGNMENT IS [`reached_carrier_matches_call`]'s QUESTION ASKED FROM THE OTHER SIDE:
+/// there a chain entry's carrier is σ-matched against a deferred call's carriers; here
+/// against the RECEIVER's type. A clause lends its spec's members only where it constrains
+/// *this* parameter — `probe[PT, QT](x: PT, y: QT) requires Desc[QT]` must not resolve
+/// `x.describe()` off the `QT` clause, which is WI-823's "the clause is keyed on the param
+/// it names" read at the dot. WHICH param of the spec the receiver must fill is
+/// [`spec_carrier_param_or_sole`]'s answer, the same owner [`requires_edge_is_carrier_preserving`]
+/// asks on the sibling rung (WI-1076: two independent "first type param" readers silently
+/// disagreed).
+///
+/// TRANSITIVE, like both siblings and like the licence: `requires Ord[PT]` lends
+/// `PartialEq.eq` because `Ord requires Eq requires PartialEq` (WI-644 / proposal 004), and
+/// [`op_requires_covers`] already licenses the named spelling of exactly that call. The
+/// expansion composes carriers at every hop, so a spec reached over a SIBLING element
+/// (`requires Foo[PT]`, `Foo requires Bar[T = Foo.E]`) lands unaligned and lends nothing.
+///
+/// A TIE IS REFUSED, NOT ORDERED. Two constraining specs declaring one member name are
+/// settled first by the §8.7 requires-REFINEMENT rule the sibling rungs use
+/// ([`most_refined_spec`] — `FiniteCollection.map` beats `Iterable.map`); a genuine
+/// ambiguity is an error naming both, rather than the siblings' first-match. It has to be:
+/// those two order their candidates by provision distance / requires pre-order, while a
+/// clause on the operation and a clause on its sort have no distance between them at all,
+/// so first-match here would let the ORDER THE TWO CLAUSES ARE WRITTEN decide the program's
+/// meaning — the very thing §"Where the ambiguity error is raised" refuses.
+fn find_spec_op_for_constrained_param(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: TermId,
+    short: &str,
+    call_shape: (usize, usize),
+    span: Option<Span>,
+) -> Result<Option<Symbol>, TypeError> {
+    let definers = constraining_spec_definers(kb, env, recv_ty, short, call_shape);
+    if definers.len() <= 1 {
+        return Ok(definers.first().map(|(_, op)| *op));
+    }
+    let tied: Vec<Symbol> = definers.iter().map(|(s, _)| *s).collect();
+    if let Some(winner) = most_refined_spec(kb, &tied) {
+        if let Some((_, op)) = definers
+            .iter()
+            .find(|(s, _)| same_sort_canonical(kb, *s, winner))
+        {
+            return Ok(Some(*op));
+        }
+    }
+    Err(TypeError::AmbiguousConstrainedParamMember {
+        span,
+        member: kb.intern(short),
+        receiver: type_display_name(kb, recv_ty),
+        specs: tied,
+    })
+}
+
+/// WI-1119 — of the specs that constrain the receiver's type parameter, those declaring
+/// `short`, paired with the operation each declares. [`find_spec_op_for_constrained_param`]
+/// owns the rule; this is the member filter over [`constraining_specs_for_param`]'s walk.
+///
+/// `call_shape` is the SYNTHESIZED call's `(positional count including the receiver, named
+/// count)`. It is used to narrow a MULTI-candidate result and never to empty one: see
+/// [`definer_accepts_call_shape`].
+fn constraining_spec_definers(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: TermId,
+    short: &str,
+    call_shape: (usize, usize),
+) -> Vec<(Symbol, Symbol)> {
+    let declaring: Vec<(Symbol, Symbol)> = constraining_specs_for_param(kb, env, recv_ty)
+        .into_iter()
+        .filter_map(|spec| {
+            let spec_term = kb.alloc(Term::Ref(spec));
+            super::load::find_operation_in_scope(kb, spec_term, short).map(|op| (spec, op))
+        })
+        .collect();
+    if declaring.len() <= 1 {
+        return declaring;
+    }
+    // A TIE IS COUNTED ONLY AMONG CANDIDATES THE CALL COULD REACH. Two specs declaring one
+    // name are not rivals when only one of them can take this call: `Desc.describe(x: T)`
+    // and `Show.describe(x: S, prefix: Int64)` are distinguished by the dot's own argument
+    // list, and refusing the pair would both reject a call that is unambiguous and offer a
+    // repair (`Show.describe(…)`) that is itself an arity error — which §"Where the
+    // ambiguity error is raised" forbids ("the message says to keep exactly one text rather
+    // than suggest a spelling that would be refused"). It is also stricter than the
+    // shadowing rule this mirrors (WI-1048), whose distinguishability test starts at arity.
+    //
+    // NARROWS, NEVER EMPTIES: if no candidate fits, the ORIGINAL set stands. A lone definer
+    // is never dropped either — an arity mismatch there is the synthesized call's own error
+    // to report, and it says what is wrong far better than "no such member" would.
+    let applicable: Vec<(Symbol, Symbol)> = declaring
+        .iter()
+        .copied()
+        .filter(|(_, op)| definer_accepts_call_shape(kb, *op, call_shape))
+        .collect();
+    if applicable.is_empty() {
+        declaring
+    } else {
+        applicable
+    }
+}
+
+/// WI-1119 — could `op` be the callee of a dot synthesized with `pos` positional arguments
+/// (the receiver among them) and `named` named ones? Exact, because the language has no
+/// default parameter values — a declaration is refused the `= Type` form on its type params
+/// (WI-850) and has no value-level counterpart — so a call supplies every declared parameter
+/// exactly once.
+///
+/// Answers TRUE when it cannot tell (no operation record). This predicate only narrows a
+/// tie, and a wrong `false` would drop a real candidate and change which implementation
+/// runs; a wrong `true` merely leaves the tie to be refused as before.
+fn definer_accepts_call_shape(kb: &KnowledgeBase, op: Symbol, (pos, named): (usize, usize)) -> bool {
+    lookup_operation_info_full(kb, op).is_none_or(|info| info.params.len() == pos + named)
+}
+
+/// WI-1119 — every spec constraining the receiver's type parameter, in source order (the
+/// enclosing operation's own clauses, then its sort's, each expanded transitively over the
+/// requires graph with carriers composed at every hop). Deduplicated by spec.
+///
+/// SPLIT FROM THE MEMBER FILTER because the two readers ask it differently: the resolution
+/// wants the specs declaring one member, while `DotDispatchNoMatch` must name the specs
+/// that were SEARCHED — including every one that declares nothing, which is exactly the set
+/// that makes "these constrain it and none declares that member" a usable sentence.
+fn constraining_specs_for_param(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: TermId,
+) -> Vec<Symbol> {
+    // σ has no per-call substitution to chase here: the receiver's type is already the
+    // body's own, so the whole bridge is `param_rigids` (written `Var::Global` ↔ body
+    // `Var::Rigid`). An empty `Substitution` is that context, not a stand-in for a missing
+    // one — `sigma_class` reads it only to chase bindings a call would have made.
+    let subst = Substitution::new();
+    let ctx = SigmaCtx {
+        subst: &subst,
+        param_rigids: env.param_rigids(),
+    };
+    // BFS state, exactly [`op_requires_covers`]': (spec, {spec's type-param ↦ carrier in
+    // the BODY's scope}). Grown by index rather than popped so the walk stays in source
+    // order — which spec a tie NAMES is then stable across runs.
+    type State = (Symbol, SmallVec<[(Symbol, TermId); 2]>);
+    let mut states: Vec<State> = Vec::new();
+    for e in env.op_requires().to_vec() {
+        states.push((
+            kb.canonical_sort_sym(e.required_sort),
+            op_requires_entry_carrier_map(kb, &e),
+        ));
+    }
+    for e in env.enclosing_requires().to_vec() {
+        states.push((
+            kb.canonical_sort_sym(e.required_sort),
+            compose_reached_carrier_map(kb, &[], &e),
+        ));
+    }
+    let mut constraining: Vec<Symbol> = Vec::new();
+    let mut i = 0;
+    while i < states.len() {
+        let (cs, map) = states[i].clone();
+        i += 1;
+        // Does this constraint range over the RECEIVER — is the receiver's type what fills
+        // the spec's carrier param? A spec whose carrier goes somewhere else constrains a
+        // SIBLING element and not this receiver (`Set requires Eq[T]` constrains the
+        // element), so it lends nothing; its own requires are still expanded below, since a
+        // spec it requires may bind its carrier here.
+        //
+        // [`spec_carrier_param_or_sole`], the WI-1102 owner of "WHICH type parameter of
+        // this spec the carrier goes in" — the question actually being asked. An earlier
+        // draft used rung 1 alone ([`spec_carrier_param`], "a param some declared operation
+        // RECEIVES on") on the argument that only a receiving spec can lend a member. That
+        // is true of RESOLUTION and false of this walk, which the refusal ALSO reads to name
+        // what constrains the parameter: a spec no operation receives on still constrains
+        // it, and dropping it here made `requires Zeroed[PT]` report "no `requires` clause
+        // constrains it" at a program that wrote one — telling the author to add the clause
+        // they had written. The two questions are separated where they belong, at the member
+        // filter in [`constraining_spec_definers`].
+        if let Some(carrier_param) = spec_carrier_param_or_sole(kb, cs) {
+            let bound = binding_for_param(kb, &map, carrier_param, BindingKeyMatch::Label).copied();
+            if bound.is_some_and(|v| sigma_pair_precise(kb, &ctx, v, recv_ty))
+                && !constraining.iter().any(|s| same_sort_canonical(kb, *s, cs))
+            {
+                constraining.push(cs);
+            }
+        }
+        for reached in direct_requires_chain(kb, cs) {
+            let composed = compose_reached_carrier_map(kb, &map, &reached);
+            let next = (kb.canonical_sort_sym(reached.required_sort), composed);
+            // Dedup on the FULL state, [`op_requires_covers`]' rule: a spec re-reached
+            // under a DIFFERENT carrier is a different constraint and must be re-explored.
+            if !states.contains(&next) {
+                states.push(next);
+            }
+        }
+    }
+    constraining
+}
+
 /// WI-614 — is `recv_sort requires <entry>` CARRIER-PRESERVING: does it bind the required
 /// spec's carrier to `recv_sort`'s OWN carrier, so a `recv_sort` value can serve as the
 /// required spec's self-receiver? Carrier-preserving requires (refinements) lend their members
@@ -10408,6 +10833,29 @@ fn build_type(
                             .then(|| find_spec_op_for_required_sort(kb, s, &short))
                             .flatten()
                     })
+            } else if let Some(param_ty) = constrained_param_receiver_type(kb, &env, &recv.ty) {
+                // WI-1119: the receiver is a TYPE PARAMETER, so it has no sort whose
+                // members the three rungs above could search — but a `requires` clause on
+                // the enclosing operation or its sort may constrain it, and the NAMED
+                // spelling of this very call is already licensed by that clause. Resolve
+                // the member against the constraining specs so the dot reaches the same
+                // spec operation the named spelling does (§8.7).
+                // The call shape is the SYNTHESIZED call's, receiver included — the same
+                // `(receiver, …pos_nodes)` list built below when a member is found.
+                let call_shape = (1 + pos_nodes.len(), named_nodes.len());
+                match find_spec_op_for_constrained_param(
+                    kb, &env, param_ty, &short, call_shape, dot_span,
+                ) {
+                    Ok(found) => found,
+                    // A tie between two constraining specs is refused HERE rather than
+                    // fallen through: the arms below (field access, relation projection)
+                    // would answer nothing and the frame would end in `DotDispatchNoMatch`,
+                    // reporting "no such member" for a member found TWICE.
+                    Err(e) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                }
             } else {
                 None
             };
@@ -10548,10 +10996,23 @@ fn build_type(
             }
 
             // No method and no field matched → clear diagnostic at the dot span.
+            // WI-1119: when the receiver is a type PARAMETER, name it and the specs that
+            // do constrain it. Recomputing the constraint set here rather than threading it
+            // down from the rung is deliberate — the rung returns `None` on the ordinary
+            // "not a member of any of them" path, and every arm between it and here can
+            // also decline, so the refusal must be able to say what was searched no matter
+            // which arm fell through last.
+            let receiver_param = constrained_param_receiver_type(kb, &env, &recv.ty).map(|tid| {
+                ConstrainedParamReceiver {
+                    param: type_display_name(kb, tid),
+                    specs: constraining_specs_for_param(kb, &env, tid),
+                }
+            });
             results.push(Err(TypeError::DotDispatchNoMatch {
                 span: dot_span,
                 member,
                 receiver_sort: recv_sort,
+                receiver_param,
             }));
         }
         TypeBuildFrame::LetAfterValue {
