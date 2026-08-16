@@ -1,8 +1,34 @@
 # Pluggable backends: the GitHub-coordinated store
 
-**Work item:** WI-437 (depends WI-009 delivered, WI-402 delivered)
-**Status:** design
+**Work item:** WI-437 — split 2026-08-16 into an umbrella plus six increments,
+WI-1108…WI-1113 (tag `wi437`), one per §14 row
+**Status:** design, amended 2026-08-16 (WI-1108)
 **Supersedes:** `examples/github-todo/docs/pluggable-backend.md` (the original three-line sketch)
+
+> **Amendment, 2026-08-16 (WI-1108).** Three things in the original draft were
+> overtaken or misplaced, and are corrected throughout:
+>
+> 1. **Configuration.** The draft introduced `fact StoreBackend(kind: BackendKind)`.
+>    WI-830 has since landed `fact ExtentBinding(store:, role:, covers:)` in the same
+>    `project.anthill`, doing that job plus role and coverage. Two channels for one
+>    datum is the failure §7's governing principle exists to prevent, so `StoreBackend`
+>    is gone: **layout is named by the store term in the extent binding**, and only
+>    coordination needs a fact of its own (§3).
+> 2. **Forge-neutrality.** The draft spelled the choice as a variant literally named
+>    `GithubCoordinated`, and the mirror link as `fact GithubIssue`. §8.3 already argued
+>    the opposite — GitHub is *one implementation* of a contract — so the config
+>    vocabulary now matches: the forge is a **parameter**, not a variant, and hosting a
+>    non-GitHub forge costs one entity plus one carrier implementation.
+> 3. **Where the new layout lives.** The draft added `FileConvention::StateDirs` and had
+>    `IndexedFileStore` grow the §5.1 relocation rule. That grafts one store's semantics
+>    onto another: `IndexedFileStore` exists for *many facts share a file, addressed by
+>    byte offset*, and file-per-item is the opposite model. The layout is a **sibling
+>    `Store` implementation** (`ItemPerFileStore`, §5.2), selected by the same extent
+>    binding. `FileConvention` is untouched by this design.
+>
+> A fourth constraint is now stated explicitly, because it governs the increment order:
+> `anthill-todo` is the tool tracking this work, so it must stay usable at every commit
+> (§14).
 
 ## 1. The problem
 
@@ -47,7 +73,8 @@ reconstructed from issue bodies would satisfy it. That backend has real advantag
 no local layout at all, no migration, and every GitHub client becomes an editor — at
 the cost of putting the tracker behind a network call and a service, and of encoding
 work items in a format (issue bodies) that the KB has to parse back out. It remains
-available as a future `BackendKind`; it is simply not what is designed here.
+available as a future store implementation, declarable through the same extent binding
+(§3); it is simply not what is designed here.
 
 **A GitHub-coordinated store** — this design — keeps the facts in git and uses GitHub
 only for the two jobs git cannot do:
@@ -80,52 +107,85 @@ The layout change (§4) is what removes textual conflicts. The issue-creation
 protocol (§6) is what removes id collisions. They are independent, and land in that
 order.
 
-## 3. Configuration: the backend fact
+## 3. Configuration: two facts, two questions
 
-The project declares its backend as a fact in `anthill-todo/project.anthill`,
-alongside the existing `fact Project(...)`:
+Configuration lives in `anthill-todo/project.anthill`, alongside the existing
+`fact Project(...)`. It answers two independent questions, and each gets exactly one
+writable home:
+
+* **Where do the rows live, and in what layout?** → `fact ExtentBinding`, already the
+  channel (WI-830). Its `store` field names the backend to build.
+* **Who allocates ids, and where is the mirror?** → `fact Coordination`, below.
+
+### 3.1 Layout: the extent binding
+
+Today's tracker declares its layout like this, and this is real, committed
+configuration — not a proposal:
 
 ```anthill
-fact StoreBackend(
-  kind: GithubCoordinated(
-    repo:    "rssh/anthill",
-    root:    "anthill-todo",
-    project: some(value: "Anthill Roadmap"),
-    access:  Enabled))
+fact anthill.persistence.ExtentBinding(
+  store: anthill.persistence.filesystem.IndexedFileStore(
+    root: ".",
+    convention: anthill.persistence.filesystem.FileConvention.single_file(
+      file: "workitems.anthill")),
+  role: anthill.persistence.ExtentRole.mirror(),
+  covers: [WorkItem, Feedback, Tag, StoreFormat])
+```
+
+Moving to the §4 layout replaces the *store term*, not the mechanism:
+
+```anthill
+fact anthill.persistence.ExtentBinding(
+  store: anthill.persistence.filesystem.ItemPerFileStore(
+    root: ".", status_field: "status", id_field: "id", ref_field: "workitem"),
+  role: anthill.persistence.ExtentRole.mirror(),
+  covers: [WorkItem, Feedback, Tag, StoreFormat, MirrorEntry])
+```
+
+`store` is a **`Term`, not a `Store`** — the binding names a backend to *build*, and
+the host maps it to one of its compiled-in backends (§8.2). Declarative configuration
+chooses *among* the host's backends; it cannot introduce native code. A declared store
+this build does not provide is a **hard refusal**, not a fallback.
+
+### 3.2 Coordination: the forge is a parameter
+
+```anthill
+fact anthill.stage0.Coordination(
+  forge:  GithubForge(repo: "rssh/anthill", project: some(value: "Anthill Roadmap")),
+  access: ForgeAccess.enabled())
 ```
 
 The entities live in the **bundled** `anthill.stage0` domain, in a new
-`rustland/anthill-todo/anthill/backend.anthill`:
+`rustland/anthill-todo/anthill/coordination.anthill`:
 
 ```anthill
 namespace anthill.stage0
 
-  entity StoreBackend(kind: BackendKind)
+  -- WHO allocates permanent ids and holds the mirror. `forge` is a Term, on the
+  -- exact `ExtentBinding.store` precedent above: it names a forge to BUILD, written
+  -- where no forge exists yet, and the host resolves it to one of its compiled-in
+  -- carrier implementations. `Forge` (§8.3) is the algebra a built one satisfies,
+  -- which is a different thing and one a config file cannot hold.
+  entity Coordination(forge: Term, access: ForgeAccess)
 
-  enum BackendKind
-    -- Today's layout: every fact in one file under the project root.
-    entity LocalSingleFile(file: String)
+  -- One entity per forge, carrying that forge's own parameters. Adding GitLab,
+  -- Gitea, or a plain coordination service is ONE entity here plus ONE carrier
+  -- implementation (§8.3) — never a new config variant for the model, because the
+  -- model is the same and only the forge differs. This is what §8.3's substitution
+  -- contract is FOR, and the draft's `GithubCoordinated` variant contradicted it.
+  entity GithubForge(repo: String, project: Option[T = String])
 
-    -- State directories + file-per-item, with GitHub issue mirroring
-    -- and GitHub-allocated permanent ids.
-    entity GithubCoordinated(
-      repo    : String,                  -- "owner/name" hosting the mirror issues
-      root    : String,                  -- project dir holding the state directories
-      project : Option[T = String],      -- optional GitHub Project (board) to file issues into
-      access  : GithubAccess)
-  end
-
-  -- Whether to TALK to GitHub at all: attempt allocation on `add`, push the
+  -- Whether to TALK to the forge at all: attempt allocation on `add`, push the
   -- mirror on `sync`. The fact is the project-wide DEFAULT; a single checkout
   -- overrides it with ANTHILL_TODO_GITHUB=on|off (or --offline) — CI test
   -- jobs, air-gapped machines, and fork checkouts without write access run
-  -- off. Disabled does not disable the tracker: every command still works,
+  -- off. `disabled` does not disable the tracker: every command still works,
   -- `add` allocates a provisional id (§6.4), and a later `sync` from an
-  -- enabled checkout reconciles. What Disabled removes is the synchronous
+  -- enabled checkout reconciles. What `disabled` removes is the synchronous
   -- attempt, never the work.
-  enum GithubAccess
-    entity Enabled
-    entity Disabled
+  enum ForgeAccess
+    entity enabled
+    entity disabled
   end
 
 end
@@ -136,24 +196,37 @@ the `StoreFormat` precedent in `version.anthill`: a project's own domain may pre
 the entity, and an unresolved import fails the *whole* bundle load — on exactly the
 projects that most need the new code path. See WI-505/WI-684.
 
-**Default.** An absent `StoreBackend` fact means
-`LocalSingleFile(file: "workitems.anthill")`. Every existing project keeps working
-untouched, with no migration. `init` writes the fact explicitly from now on, so new
-projects state their layout rather than inheriting it.
+**Defaults.** An absent `Coordination` fact means an uncoordinated tracker: `next_id`
+counts locally, exactly as today. An absent `ExtentBinding` already defaults to
+today's single-file layout (WI-830's `default_binding`). So every existing project
+keeps working untouched, with no migration and no new fact.
 
-**Why two variants and not three.** A state-directory layout *without* GitHub is a
-perfectly coherent configuration, and it is what the test suite will run against.
-It is deliberately not a config variant: the mirror is an injectable component
-(§8.3), and tests instantiate the directory layout with a null mirror. Keeping the
-user-facing config two-valued means every project that uses state directories is
-also coordinated — which is the point, since directories alone fix conflicts but not
-id collisions.
+### 3.3 What the split costs, and why it is still right
+
+The draft deliberately made the layout↔coordination pairing *unrepresentable*: one
+enum, "two variants and not three", so that nobody could configure state directories
+without coordination — directories alone fix conflicts but not id collisions. Two
+facts give that up, and CLAUDE.md prefers unrepresentable states to checks, so this is
+a real concession.
+
+It is the right one, for two reasons. First, the draft's own coupling was already
+leaky: §8.3 makes the mirror an injectable component precisely so tests can run the
+directory layout against a *null* forge, which is the forbidden combination. Second,
+fusing them is only achievable by putting the forge into the store term — and the
+binding asserts that `store` *supplies the rows of every functor in `covers`*, which a
+mirror explicitly does not do (§13: mirrored state is never read back). That would make
+the declaration state something false, which is worse than checking something true.
+
+So the coupling becomes a **loud load check**: a `Coordination` fact present alongside
+a single-file store binding is refused at load, naming both facts. Uncoordinated
+directories stay reachable — that is the test configuration — but they must be *asked*
+for, not fallen into.
 
 ## 4. On-disk layout: a directory per state, a file per item
 
 ```
 anthill-todo/
-  project.anthill              fact Project(...) + fact StoreBackend(...)
+  project.anthill              fact Project(...) + fact ExtentBinding(...) + fact Coordination(...)
   draft/
   pre_opened/
   open/
@@ -180,7 +253,7 @@ fact WorkItem(
   depends_on: some(value: ["WI-686", "WI-687"]),
   status: Claimed(agent: "claude", since: "2026-07-10T09:12:44Z"))
 
-fact GithubIssue(workitem: "WI-688", number: 1234)
+fact MirrorEntry(workitem: "WI-688", entry: 1234)
 
 fact Tag(workitem: "WI-688", name: "prover")
 
@@ -189,10 +262,17 @@ fact Feedback(workitem: "WI-688", author: "user",
   at: "2026-07-10T11:02:10Z")
 ```
 
-`GithubIssue` is a new fact (in `backend.anthill`, next to `StoreBackend`), keyed on
-the work-item id — the same additive shape as `Tag`. It records the mirror link
+`MirrorEntry` is a new fact (in `coordination.anthill`, next to `Coordination`), keyed
+on the work-item id — the same additive shape as `Tag`. It records the mirror link
 *without* touching the `WorkItem` entity, so the stage0 domain stays backend-neutral
-and a `LocalSingleFile` project never sees the field.
+and an uncoordinated project never sees the field.
+
+Its name and shape are **forge-neutral**: `entry` is the forge's own identifier for
+the mirrored item — a GitHub issue number, a GitLab issue iid, whatever the substitute
+uses. It is `Int64` because §6.1's soundness rests on identifiers *totally ordered by
+creation*, and a counter is the only thing every candidate forge offers. A forge whose
+identifiers are not numeric cannot back this protocol, which §8.3 states as a
+requirement rather than discovering at runtime.
 
 **Directory names are derived, not listed.** The directory for an item is the
 snake_case of its status functor's short name — `Open` → `open/`,
@@ -234,15 +314,14 @@ operation replace(s: Cell[V = WIS], target: String, new_wi: WorkItem) -> Unit
   ()
 ```
 
-Under the single-file convention both operations resolve to the same path and the
-flush rewrites one block in place. Under state directories the retract and the
-persist resolve to *different* paths — and the host store recognizes exactly this
-pattern:
+Under `IndexedFileStore` both operations resolve to the same path and the flush
+rewrites one block in place. Under `ItemPerFileStore` the retract and the persist
+resolve to *different* paths — and that store recognizes exactly this pattern:
 
 > **Relocation rule.** When one flush contains a retract and a persist of the same
 > primary key whose file paths differ, it is executed as a **file move**: the source
 > file is renamed to the destination path and the item's fact block is rewritten in
-> place. Every other block in that file (feedback, tags, the `GithubIssue` link)
+> place. Every other block in that file (feedback, tags, the `MirrorEntry` link)
 > rides along untouched.
 
 The unit of relocation is the *file*, not the fact. This is what makes "moving the
@@ -256,9 +335,45 @@ with its status fact or the item present in two files. Both are exactly the stat
 the §10 load checks name loudly, and `fsck --fix` repairs. Atomic in the error
 model, loud in the crash model.
 
+### 5.2 `ItemPerFileStore` is a second store, not a convention
+
+**Amended 2026-08-16 (WI-1108).** The draft put this layout in
+`FileConvention::StateDirs` and had `IndexedFileStore` grow the relocation rule above.
+That is the wrong home, and the reason is visible in `IndexedFileStore`'s own fields
+(`rustland/anthill-core/src/persistence/indexed_file_store.rs`):
+
+```rust
+inner: FileStore,                                 // append into shared files
+source_map: HashMap<RuleId, (PathBuf, Span)>,     // byte range of each fact
+pending_span_retracts: Vec<(PathBuf, Span)>,      // "flush drops the range from the file"
+by_id: HashMap<String, RuleId>,
+```
+
+Every one of those exists for a single model: *many facts share a file, and a fact is
+addressed by its byte offset within it*. File-per-item is the opposite model — one
+file **is** one item, it is addressed by *path*, a state change **renames** it, and a
+retract can mean deleting the file outright. None of the span machinery carries over,
+and `fact_path` is content-blind while this routing is content-driven (the status field
+picks the directory). A "convention" that shares no mechanism with its siblings is a
+second store wearing the first one's name.
+
+So `ItemPerFileStore` is a **sibling implementation of `Store`**, and the seam for that
+already exists and is small: `pub trait Store`
+(`rustland/anthill-core/src/persistence/mod.rs`) is six methods — `persist`, `retract`,
+`update`, `flush`, `owned_monotonicity`, `retrieve` — with byte-range addressing
+isolated in a separate `trait IndexedStore: Store` that `ItemPerFileStore` simply does
+not implement. `FileConvention` keeps its own meaning untouched: the filename policy of
+stores that append into shared files.
+
+This is also what makes the §14 self-hosting constraint satisfiable. The two stores
+**coexist**, selected per project by §3.1's binding, so this repo's own tracker stays
+on `IndexedFileStore` while the new one is built and tested against fixtures. Had the
+layout been a convention *inside* `IndexedFileStore`, every increment would have been
+surgery on the store the tracker was running on at that moment.
+
 ## 6. Id allocation: the issue *is* the allocation
 
-Under `GithubCoordinated`, **permanent ids come only from GitHub**, and issue
+Under a declared `Coordination`, **permanent ids come only from GitHub**, and issue
 creation is the allocation event. GitHub's issue counter is a monotone,
 atomically-incremented, globally-visible sequence — exactly the shared resource
 git lacks. `add` itself never *waits* on GitHub, though: when the network or a
@@ -307,22 +422,22 @@ slower — stakes the same id and *keeps* it, because "lowest number wins" tells
 that #10 loses. Both keep. No tiebreak repairs a check-once race whose stakes are
 unordered; staking by creation makes the stakes themselves the ordered events.)
 
-Every step below is tagged with the `Mirror` operation (§8.3) it invokes;
+Every step below is tagged with the `Forge` operation (§8.3) it invokes;
 `[github]` steps are network calls, `[local]` steps touch only the working tree.
 
 ```
 add(description):
 
   ── allocate ──────────────────────────────────────────────────────────────────
-  1. [github]  Mirror.recent_issues(limit: 30)   -- list endpoint, newest-first,
+  1. [github]  Forge.recent_entries(limit: 30)   -- list endpoint, newest-first,
      [local]   candidate := max( ids claimed in that page         open AND closed
                                  ∪ ids of local item files ) + 1
-  2. [github]  Mirror.create_issue("WI-<candidate>: <summary>", body: "(allocating)")
+  2. [github]  Forge.create_entry("WI-<candidate>: <summary>", body: "(allocating)")
                                                        → issue #N    [atomic stake]
-  3. [github]  claims := Mirror.recent_issues(limit: 30)
-                       ∪ Mirror.issues_titled("WI-<candidate>:")
+  3. [github]  claims := Forge.recent_entries(limit: 30)
+                       ∪ Forge.entries_titled("WI-<candidate>:")
      [local]   if any issue #M < N claims candidate:          -- we lost the race
-                   [github] Mirror.retreat(N)     -- retitle off the id + close
+                   [github] Forge.retreat(N)     -- retitle off the id + close
                    candidate := max( ids in claims
                                      ∪ ids of local item files ) + 1;  goto 2
                                                                 [claim committed]
@@ -330,17 +445,17 @@ add(description):
   ── write (git is the truth; after this the item exists) ───────────────────────
   4. [local]   write anthill-todo/open/WI-<candidate>.anthill, containing
                    fact WorkItem(id: "WI-<candidate>", …, status: Open)
-                   fact GithubIssue(workitem: "WI-<candidate>", number: N)
+                   fact MirrorEntry(workitem: "WI-<candidate>", entry: N)
                    fact Tag(…) for each --tag
 
   ── reconcile (best-effort; `sync` redoes it) ─────────────────────────────────
-  5. [github]  Mirror.set_body(N, <pointer to the file, §7.1>)
-     [github]  Mirror.add_to_project(N, <cfg.project>)          -- if configured
+  5. [github]  Forge.set_body(N, <pointer to the file, §7.1>)
+     [github]  Forge.add_to_board(N, <the forge's configured board>) -- if configured
 ```
 
 **Cost: three small calls on the happy path, none of them O(repo).** Step 1 is one
 page from the list endpoint; step 3 re-reads that page and adds one exact-title
-search; step 2 is `gh issue create`. The GitHub-backed `Mirror` carrier (§8.3)
+search; step 2 is `gh issue create`. The GitHub-backed `Forge` carrier (§8.3)
 shells out to `gh`, so it inherits the user's existing auth and we hold no token
 of our own.
 
@@ -417,7 +532,7 @@ So the spec grows an explicit allocation API, replacing `next_id`:
     -- impl REFINES the row rather than widening it (WI-347) — the same
     -- reason the read ops already declare `Error`. External (proposal 054,
     -- WI-698) is the generic outside-world effect; WHICH outside world is
-    -- the Mirror carrier's business (§8.3), not the row's.
+    -- the Forge carrier's business (§8.3), not the row's.
     operation alloc_id(s: Cell[V = State], summary: String) -> String
       effects {Modify[s], External, Error}
 ```
@@ -425,8 +540,8 @@ So the spec grows an explicit allocation API, replacing `next_id`:
 | protocol | spec operation | file-backed impl | github-coordinated impl |
 | --- | --- | --- | --- |
 | steps 1–3 | `alloc_id(s, summary)` | ignores `summary`; reads and bumps the local counter | reads the registry, stakes the claim by creating the issue, retreats and retries on a lost race; mints a provisional id when GitHub is out of reach (§6.4) |
-| step 4 | `commit(s, w)` | persist + flush | persist + flush into `<state>/<id>.anthill`, plus the `GithubIssue` fact when the allocation produced one |
-| step 5 | `commit(s, w)`, tail | — | `set_body` + `add_to_project`, best-effort |
+| step 4 | `commit(s, w)` | persist + flush | persist + flush into `<state>/<id>.anthill`, plus the `MirrorEntry` fact when the allocation produced one |
+| step 5 | `commit(s, w)`, tail | — | `set_body` + `add_to_board`, best-effort |
 
 There are two allocation sites — `do_add`, and the `--before` insertion path
 (`main.anthill:1904`), which allocates and then rewrites the insertion target's
@@ -444,11 +559,11 @@ operation do_add(s: Cell[State], description: String, …) -> Int64 =
 (§6.4) — the one place the namespace split surfaces above the store.)
 
 **The issue number does not appear in the spec.** `commit` must write
-`fact GithubIssue(workitem: id, number: N)` for a freshly allocated permanent id, but
+`fact MirrorEntry(workitem: id, entry: N)` for a freshly allocated permanent id, but
 `N` is a GitHub concept and the spec is backend-neutral. It rides in the store's own
 `State` instead: the coordinated impl's `alloc_id` stashes the pending
 `(id, issue number)` in the cell, and its `commit` reads it back out — persisting the
-`GithubIssue` fact in the *same flush* as the item, so the two land in the item's
+`MirrorEntry` fact in the *same flush* as the item, so the two land in the item's
 file together or not at all. When no pair is pending — a provisional allocation —
 `commit` writes just the item, which is precisely the unreconciled state `sync`
 later converts (§6.4). The file backend's `State` (`WIS`) has no such field, and the
@@ -513,7 +628,7 @@ it lacks are a mirror issue and a permanent name.
 
 1. Run the §6.1 allocation with the item's summary → permanent id, issue `#N`.
 2. Rewrite the item's file: the `id:` field, the `workitem:` fields of its own
-   `Feedback`/`Tag` facts (they live in the same file), a new `GithubIssue`
+   `Feedback`/`Tag` facts (they live in the same file), a new `MirrorEntry`
    fact — and rename the file to the new id, in the same state directory
    (reconciliation never changes status).
 3. Rewrite every in-tree reference: other items' `depends_on` entries.
@@ -683,13 +798,13 @@ material.
 
 `anthill.todo.store.WorkItemStore` (`store.anthill`) declares the fifteen operations
 the CLI needs over an abstract `State`, with `FileBasedWorkitemStore` supplying
-`State = WIS` and the bodies. A second impl — `GithubCoordinatedWorkitemStore` with its
+`State = WIS` and the bodies. A second impl — `CoordinatedWorkitemStore` with its
 own `State` — slots in beside it, and every read and mutation the CLI performs is
 already an operation of the spec.
 
 The spec changes in exactly two places, both described in §6.2: `next_id(s)` becomes
 `alloc_id(s, summary)` with `effects {Modify[s], External, Error}`, and `External`
-joins `commit`'s row (its coordinated body writes the `GithubIssue` fact and runs the
+joins `commit`'s row (its coordinated body writes the `MirrorEntry` fact and runs the
 best-effort tail). Allocation is the one thing the two backends do *differently in
 kind* rather than differently in mechanism — a counter bump versus an optimistic,
 retried stake — so it is the thing the interface has to be honest about. Everything
@@ -702,18 +817,32 @@ Backend selection is the factory shape from `docs/design/path-dependent-types.md
 and it is the **first real consumer** of WI-402's existential half (delivered):
 
 ```anthill
-operation open_store(cfg: BackendKind) -> C ensures WorkItemStore[State = C]
+operation open_store(binding: ExtentBinding, coord: Option[T = Coordination])
+  -> C ensures WorkItemStore[State = C]
   effects {Error}
 =
-  match cfg
-    case LocalSingleFile(f)     -> open_file_store(f)
-    case GithubCoordinated(...) -> open_github_coordinated_store(...)
+  match coord
+    case none()  -> open_file_store(binding)
+    case some(c) -> open_coordinated_store(binding, c)
 ```
 
 The `ensures` manifest roots the abstract carrier `C` back at the interface, so the
 result is usable at the call site without escaping. WI-200 (multi-instance `Modify`
 state) is **not** needed: one backend instance per CLI invocation, and distinct
 backend sorts occupy distinct slots.
+
+**What this is, and is not, worth.** Mechanically it is a `match` with two arms, and
+the host *already* selects — `rustland/anthill-todo/src/main.rs` pins
+`FileBasedWorkitemStore` into the `chain_dicts` requirement dictionary that
+`call_with_requirements` consumes, and builds the `wis(backend:, id_counter:)` state
+value itself. Reading the declaration there instead would be a few lines and would
+match proposal 057's rule that the host factory is "the one piece that stays native."
+
+The reason to build it in the bundle anyway is that WI-402's existential half has **no
+in-tree consumer**, and acquiring one is why WI-402 was parked on this ticket. What is
+load-bearing is neither the `match` nor where it lives: it is that `WorkItemStore` and
+`Store` are genuine abstractions, so that a second implementation is *writable* at all.
+The selection is trivia; the interface is the work.
 
 Two consequences from WI-402's delivery notes:
 
@@ -733,23 +862,41 @@ Two consequences from WI-402's delivery notes:
 
 ### 8.3 Host side
 
-* **`FileConvention::StateDirs`** in `anthill-core`'s `file_store.rs`, alongside
-  `Flat` / `ByDomain` / `SingleFile`. This is more than a new enum variant: today's
-  `fact_path(kb, sort, domain)` is *content-blind*, and StateDirs routing is
-  content-driven — a `WorkItem` goes to `<status_dir>/<id>.anthill` (the status
-  field picks the directory) and `Feedback` / `Tag` / `GithubIssue` go to the file
-  of the item they name (an index lookup by the referencing field). So `fact_path`
-  grows access to the fact term and to the store's index. The variant is
-  parameterized — `StateDirs { root, status_field: "status", id_field: "id",
+* **`ItemPerFileStore`** — a **new `Store` implementation** in `anthill-core`'s
+  persistence module, *not* a `FileConvention` variant (§5.2 gives the argument, and
+  the §14 self-hosting constraint is why it matters). It implements the six `Store`
+  methods and does not implement `IndexedStore`; `IndexedFileStore` is untouched and
+  keeps serving every project that has not moved. Its routing is **content-driven**
+  where `FileStore::fact_path` is content-blind: a `WorkItem` goes to
+  `<status_dir>/<id>.anthill` (the status field picks the directory), and
+  `Feedback` / `Tag` / `MirrorEntry` go to the file of the item they name (an index
+  lookup by the referencing field). It is parameterized —
+  `ItemPerFileStore { root, status_field: "status", id_field: "id",
   ref_field: "workitem" }` — so `anthill-core` persistence stays domain-neutral and
-  stage0's field names live in the todo CLI's configuration of it, not in the
-  library. `IndexedFileStore` gains the relocation rule of §5.1. The loader needs
-  no change: `collect_anthill_files` already recurses.
-* **A `Mirror` carrier** — an opaque host sort held in the coordinated impl's
-  `State`, on the `IndexedFileStore` precedent. It is a *value*, not a new
-  effect: authority is possession (the bundle cannot touch the registry without
-  holding the carrier), and the §8.2 factory decides which implementation a run
-  holds. Its mutators carry `{Modify[m], External, Error}` and its reads
+  stage0's field names live in the todo CLI's configuration of it, not in the library.
+  It owns the relocation rule of §5.1. The loader needs no change:
+  `collect_anthill_files` already recurses. Host wiring does: the source-map seeding in
+  `rustland/anthill-todo/src/main.rs` (`store.record_source(rule_id, path, span)`) is
+  `IndexedFileStore`-specific — spans into shared files — so `build_store` grows a
+  per-backend arm that associates *paths* instead, without disturbing the existing one.
+* **A `Forge` carrier** — a **declared anthill `sort`** whose operations are Rust
+  functions, bound through the existing realization channel rather than injected as an
+  opaque host value:
+
+  ```anthill
+  provides GithubForge language rust
+    artifact "rustland/anthill-todo/src/forge/gh.rs"
+    operation_map { create_entry: "gh_create_entry", recent_entries: "gh_recent_entries", … }
+  end
+  ```
+
+  This is exactly the shape `rustland/anthill-stl/anthill/persistence.anthill` already
+  uses to bind `Store`'s six operations, and it gets the **fake** for free: a second
+  `provides` block over an in-memory list, no special-casing anywhere. It remains a
+  *value*, not a new effect: authority is possession (the bundle cannot touch the
+  registry without holding the carrier), and the §8.2 factory decides which
+  implementation a run holds. Its mutators carry `{Modify[m], External, Error}` and its
+  reads
   `{External, Error}` — each row the *union over implementations* (proposal
   054 §Faking): the real carrier refines away `Modify[m]`, the fake refines
   away `External`, which is what lets tests drive `Branch` searches over the
@@ -762,18 +909,29 @@ Two consequences from WI-402's delivery notes:
   them (which is what `Error`-only cannot say about a registry read). One
   generic effect rather than one per capability, so the row vocabulary stays
   stable as backends multiply; the *which*-capability distinction is authority,
-  and lives in the carrier. Operations: `create_issue`,
-  `recent_issues` (the newest page — list endpoint, open+closed), `issues_titled`
+  and lives in the carrier. Operations, named forge-neutrally: `create_entry`,
+  `recent_entries` (the newest page — list endpoint, open+closed), `entries_titled`
   (exact-title search: the §6.1 old-claimant leg), `retitle`, `set_body`,
-  `close` / `reopen`, `issue_comments` / `close_info` (since-cursor comment
+  `close` / `reopen`, `entry_comments` / `close_info` (since-cursor comment
   listing + close state/actor, for §7.3–§7.4),
-  `add_to_project` (§6.1's `retreat` = `retitle` + `close`).
+  `add_to_board` (§6.1's `retreat` = `retitle` + `close`).
+* **Substrate prerequisite, and it blocks the carrier.** `HOST_FNS` in
+  `rustland/anthill-core/src/eval/builtins.rs` is a **closed `const` slice**, and
+  `register_operation_mappings` turns an unknown `host_fn` key into an
+  `EvalError::Internal` that kills every interpreter built for the program. So
+  `anthill-todo` **cannot name its own host functions in an `operation_map` today** —
+  the binding block above is not constructible as things stand. Putting the `gh`
+  shell-out into `anthill-core` would fix it in the wrong direction: the kernel would
+  learn about forges. The fix is for `host_fn_by_key` to consult an
+  embedder-supplied table alongside its own, which any host binding a carrier of its
+  own will need. It lands as its own prerequisite work item, ahead of the carrier.
 * **GitHub is one implementation of the carrier, not its definition.**
   Everything above it — the §6.1 allocator, §6.4 reconciliation, all of §7 —
   consumes only the carrier's contract, so substituting GitLab, Gitea, or a
-  plain coordination service is a new carrier implementation plus a
-  `BackendKind` variant, with zero change to the bundle. The contract a
-  substitute must honor — §6.1's soundness consumes exactly these five things:
+  plain coordination service is one `Forge` config entity (§3.2) plus one carrier
+  implementation, with zero change to the bundle — and, since the amendment, with no
+  new *config variant* either, which is what "the forge is a parameter" buys. The
+  contract a substitute must honor — §6.1's soundness consumes exactly these five things:
   **(1)** an atomic creation primitive whose identifiers are totally ordered by
   creation (the stake); **(2)** a live newest-first listing of entries with
   their current titles and open/closed state; **(3)** a title search that
@@ -818,7 +976,7 @@ Per the repo's development principles, each of these is an error or a diagnostic
 a silent skip or a fallback:
 
 * **`add` never silently allocates a permanent id without GitHub.** Offline,
-  unauthenticated, or with `access: Disabled`, it mints a *provisional* id (§6.4) —
+  unauthenticated, or with `access: disabled()`, it mints a *provisional* id (§6.4) —
   a self-announcing namespace with the remedy printed alongside — never a dense
   `WI-<n>` from local state; that fallback *is* the bug this design removes. Only
   unreachability and missing auth downgrade to provisional: a malformed or
@@ -832,7 +990,7 @@ a silent skip or a fallback:
 * **Dangling reference** — a `depends_on` naming an id with no file (e.g. a
   half-reconciled provisional rename, §6.4) → named by `fsck`; for the
   reconciliation case a `sync` re-run repairs it.
-* **Permanent-id item with no `GithubIssue` fact**, under `GithubCoordinated` → loud
+* **Permanent-id item with no `MirrorEntry` fact**, under a declared `Coordination` → loud
   in `sync` (migration incomplete, or an `add` died between steps 4 and 5).
   Provisional items lack the fact by definition and are reported as *unreconciled*,
   with a count — expected state, not an error.
@@ -855,15 +1013,15 @@ anthill-todo migrate --to github-coordinated
    mirrored, terminal ones included.** The GitHub view is trustworthy only if
    open/closed reflects the whole tracker: under a partial backfill a missing
    issue is ambiguous — unmigrated, deleted, or never existed — and the §10
-   "permanent-id item with no `GithubIssue` fact" check would need a permanent
+   "permanent-id item with no `MirrorEntry` fact" check would need a permanent
    exemption for terminal items, gutting it. Full mirroring keeps one uniform
    invariant — every permanent id has exactly one issue, and the issue's
    open/closed state is the item's coarse state. The cost is one-time: ~690
    creations here (~600 of them create-then-close), paced under GitHub's
    secondary rate limits. **Resumable and idempotent**: keyed on the id in the
-   title, and each item's file gets its `GithubIssue` fact written as the issue
+   title, and each item's file gets its `MirrorEntry` fact written as the issue
    is created, so an interrupted run resumes where it stopped.
-3. Write `fact StoreBackend(kind: GithubCoordinated(...))` into `project.anthill`.
+3. Rewrite the `ExtentBinding` store term to `ItemPerFileStore(...)` and add `fact Coordination(...)` in `project.anthill` (§3).
 4. Stamp `StoreFormat(version: 2)` through the store, the way `migrate` already
    stamps version 1 (WI-434).
 
@@ -872,12 +1030,12 @@ An interruption is local — step 2 resumes — and other checkouts never observ
 half-migrated state: they see the old layout or the new one, atomically, the way
 git always publishes.
 
-The two axes stay orthogonal: `StoreBackend` says *which layout*, `StoreFormat` versions
+The two axes stay orthogonal: `ExtentBinding` says *which layout*, `StoreFormat` versions
 the *schema within* it. The version check in `main.anthill`
 (`check_store_versions`) keeps working unchanged.
 
 Migration is one-way in practice. A `--to local-single-file` inverse is trivial to write
-(concatenate the files, drop the `GithubIssue` facts) and worth having as an escape hatch,
+(concatenate the files, drop the `MirrorEntry` facts) and worth having as an escape hatch,
 but it abandons the id registry.
 
 ## 12. Open questions
@@ -900,12 +1058,12 @@ but it abandons the id registry.
 
 ## 13. Non-goals
 
-These are the boundaries of *this* backend, not of the design space. `BackendKind` is
+These are the boundaries of *this* backend, not of the design space. The store binding is
 open, and each of them is a coherent thing to build later, as another variant over the
 same store spec.
 
 * **Work items are not GitHub issues here.** In this backend the issue is a mirror and
-  an allocator ticket. A genuinely GitHub-backed store (§2) is a separate `BackendKind`.
+  an allocator ticket. A genuinely GitHub-backed store (§2) is a separate `Store` implementation.
 * **No bidirectional sync of mirrored state.** Edits to an issue's title, body,
   state, or labels are not read back — two writable homes for one datum is the
   failure this backend is shaped to avoid. Comment ingestion (§7.3) is not that:
@@ -916,7 +1074,7 @@ same store spec.
 * **No GitHub Projects automation** beyond filing the mirror issue into the configured
   board.
 * **No `api` backend** yet. The third variant sketched in the original note (a
-  standardized remote server) is a future `BackendKind`; this design keeps the store
+  standardized remote server) is a future `Store` implementation; this design keeps the store
   spec neutral enough to host it, but builds nothing for it.
 
 ## 14. Increments
@@ -924,11 +1082,37 @@ same store spec.
 Each is independently green and independently useful. Per the "risky work first"
 preference, the substrate refactor is first, not last.
 
-| # | Increment | Ships |
-| --- | --- | --- |
-| 1 | **Store-factory substrate.** Drop the vestigial `store: FileStore` from `main`/`dispatch`; move spec-op call sites to the dotted form; add `fact StoreBackend` (bundled) + `open_store` via the WI-402 existential. Absent fact → today's behavior. | no user-visible change; the seam |
-| 2 | **State-directory layout.** `FileConvention::StateDirs`, the relocation rule, `fsck`, loader coverage, tests against a null mirror. | conflict-free multi-dev on *state changes* |
-| 3 | **Mirror carrier.** The `External` effect (proposal 054 / WI-698, prerequisite), the `Mirror` carrier sort + contract, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
-| 4 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `GithubIssue` facts. | conflict-free **and** collision-free `add`, online or off |
-| 5 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
-| 6 | **`migrate --to github-coordinated`.** Resumable, idempotent. | this repo's own tracker moves |
+| # | WI | Increment | Ships |
+| --- | --- | --- | --- |
+| 1 | WI-1108 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form; `open_store` via the WI-402 existential. Absent declarations → today's behavior. | no user-visible change; the seam |
+| 2 | WI-1109 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. | conflict-free multi-dev on *state changes* |
+| 3 | WI-1110 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
+| 4 | WI-1111 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
+| 5 | WI-1112 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
+| 6 | WI-1113 | **`migrate --to github-coordinated`.** Resumable, idempotent. | this repo's own tracker moves |
+
+### 14.1 The self-hosting constraint
+
+`anthill-todo` is the tool tracking these increments, reading this repo's own
+`anthill-todo/workitems.anthill` through the exact store layer being replaced. It must
+stay usable at **every commit** — a broken build means no `claim`, no `deliver`, no
+`feedback`, and no way to record that it broke. That is not a caution; it is a
+constraint that shapes the design:
+
+* **The two stores coexist.** `IndexedFileStore` is not replaced, and this repo's own
+  tracker stays on it through increments 1–5. This is the concrete reason §5.2's
+  sibling-store shape is *required* rather than merely tidier: a convention *inside*
+  `IndexedFileStore` would have made every increment surgery on the store the tracker
+  was running on at that moment.
+* **The new store is built against fixtures, never the live tracker.** `anthill-todo`
+  takes `-d <DIR>`; all `ItemPerFileStore` work runs against a temp project.
+* **Backend before declaration, always.** The host hard-refuses a declared store this
+  build does not provide (WI-830). A commit whose `project.anthill` names
+  `ItemPerFileStore` while its binary lacks it leaves the tracker unusable — correctly,
+  but fatally for us. The backend lands first, in its own commit; this repo's own
+  declaration changes last.
+* **Keep a known-good binary** aside before each increment. If a build breaks
+  mid-increment it is the only way to keep recording work.
+* **Increment 6 is the one commit that moves the live tracker.** Rehearse on a copy,
+  verify with `sync --check`, and keep that commit atomic and alone, so a single
+  `git revert` restores `workitems.anthill` if it goes wrong.
