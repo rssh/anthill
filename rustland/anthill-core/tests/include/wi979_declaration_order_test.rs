@@ -190,8 +190,9 @@ end
             "type 'Rec' is declared more than once in scope 'wi979.es': \
              `entity` at 4:3, `sort` at 5:3",
             // …and the shape is STILL unwired, which R1 does not repair and must not.
-            "unresolved name 'Int64' in scope 'twice'",
-            "unresolved name 'Rec' in scope 'twice'",
+            // WI-977: qualified, matching the R1 row above.
+            "unresolved name 'Int64' in scope 'wi979.es.Rec.twice'",
+            "unresolved name 'Rec' in scope 'wi979.es.Rec.twice'",
             // …and the knock-on: with the param type unresolved, `r.n` has no
             // receiver sort to dispatch the field on.
             "type mismatch in Rec.n: expected operation declared on the receiver's sort",

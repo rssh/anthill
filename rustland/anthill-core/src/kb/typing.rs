@@ -20,7 +20,7 @@ use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
-use crate::intern::{is_positional_label_at, positional_label, Symbol};
+use crate::intern::{is_positional_label_at, positional_label, ScopeId, Symbol};
 use crate::span::Span;
 
 // ── TypeError ──────────────────────────────────────────────────
@@ -485,6 +485,15 @@ pub enum TypeError {
         span: Option<Span>,
         entity: Symbol,
         field: Symbol,
+        /// WI-977 — the scope the projection was WRITTEN IN, so the `LoadError`
+        /// conversion can name it. Carried rather than re-derived: it is the very
+        /// scope [`hidden_field_owner`] asked the visibility question against, and
+        /// the conversion runs far from the frame that knew it — which is why that
+        /// conversion used to fill the slot with the literal `"another scope"`.
+        /// A `ScopeId` and not the enclosing sort's `Symbol`, because top-level code
+        /// has no enclosing sort and is written in the global scope, which no symbol
+        /// from the frame names.
+        from_scope: ScopeId,
     },
     /// WI-757 (the WI-722 macro contract's diagnostic channel): a `[simp]` lowering
     /// whose macro-headed RHS was expanded here, and the MACRO rejected the
@@ -993,11 +1002,21 @@ impl TypeError {
                     ),
                 }
             }
-            TypeError::ForbiddenInternalField { entity, field, .. } => {
+            TypeError::ForbiddenInternalField {
+                entity,
+                field,
+                from_scope,
+                ..
+            } => {
+                // WI-977 — names the scope, as the `LoadError` rendering of this same
+                // diagnostic does. "another scope" was honest prose here (this is a
+                // sentence, not a name slot) but it told the author nothing they did
+                // not already know, and the variant now carries the scope.
                 format!(
-                    "'{}' is an internal field of {} and cannot be projected from another scope",
+                    "'{}' is an internal field of {} and cannot be projected from scope '{}'",
                     kb.local_name_of(*field),
                     kb.qualified_name_of(*entity),
+                    kb.scope_display_name(*from_scope),
                 )
             }
             // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
@@ -1459,7 +1478,12 @@ impl TypeError {
                 actual_type: "no such member (dot dispatch)".to_string(),
                 span: self.span(kb),
             },
-            TypeError::ForbiddenInternalField { entity, field, .. } => {
+            TypeError::ForbiddenInternalField {
+                entity,
+                field,
+                from_scope,
+                ..
+            } => {
                 let declared_in = {
                     let q = kb.qualified_name_of(*entity);
                     q.rsplit_once('.')
@@ -1469,7 +1493,12 @@ impl TypeError {
                 LoadError::ForbiddenInternalAccess {
                     name: kb.local_name_of(*field).to_string(),
                     declared_in,
-                    scope_name: "another scope".to_string(),
+                    // WI-977 — the scope the projection was written in. Was the
+                    // literal `"another scope"`, which the renderer wrapped as
+                    // `from scope 'another scope'`: a `scope_name` slot filled with
+                    // prose, reading as a scope so named. The variant carries the
+                    // real one now, so this is the same answer as every other site.
+                    scope_name: kb.scope_display_name(*from_scope).to_string(),
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
@@ -1593,6 +1622,14 @@ pub struct TypingEnv {
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection.
     enclosing_sort: Option<Symbol>,
+
+    /// WI-977 — the scope a RULE BODY is written in (the rule's `domain`), for
+    /// diagnostics only. Its own field rather than a reuse of `enclosing_sort`
+    /// because the rule-body sweep leaves that empty ON PURPOSE — a rule body carries
+    /// no lexical params and must not acquire a sort's requirement frame — and this
+    /// must not change what defers to what. Read only by
+    /// [`Self::referencing_scope`]. `None` outside the rule-body sweep.
+    rule_scope: Option<Symbol>,
     /// The enclosing SORT's dictionary chain, snapshotted once per body. It is
     /// consulted at every spec-op call site under this body; caching it here avoids
     /// re-walking `SortRequiresInfo` per apply.
@@ -1684,6 +1721,7 @@ impl TypingEnv {
             sort_rigid_len: 0,
             local_resources: Vec::new(),
             enclosing_sort: None,
+            rule_scope: None,
             enclosing_chain: DictChain::empty(),
             enclosing_op_chain: None,
             op_requires: Rc::new(Vec::new()),
@@ -1812,6 +1850,63 @@ impl TypingEnv {
 
     pub fn enclosing_sort(&self) -> Option<Symbol> {
         self.enclosing_sort
+    }
+
+    /// WI-977 — THE SCOPE THE CODE BEING CHECKED IS WRITTEN IN, for a diagnostic that
+    /// must name it (§8.6) and for the `internal` visibility question that diagnostic
+    /// reports. TWO contexts reach it today, each carrying its own answer:
+    ///
+    ///  * an OPERATION body — `enclosing_op`, the operation's own scope;
+    ///  * a RULE body — `rule_scope`, the rule's `domain`;
+    ///  * `None` everywhere else, which [`hidden_field_owner`] reads as the GLOBAL
+    ///    scope — the scope a file's top-level declarations are written in.
+    ///
+    /// The `enclosing_sort` arm is a THIRD answer that nothing currently selects, and
+    /// it is kept deliberately rather than as an oversight: `set_enclosing_sort` has
+    /// one caller, the operation-body loop, which unconditionally calls
+    /// `set_enclosing_op` twelve lines later, so `enclosing_op` is `Some` whenever
+    /// `enclosing_sort` is. A future sweep that installs only the sort would then get
+    /// the right granularity's nearest available answer instead of falling through to
+    /// the global scope — but it would still be one scope OUT from where its code is
+    /// written, which is the split this ticket closed. A sweep in that position should
+    /// set its own scope, as `type_rule_bodies` does.
+    ///
+    /// Not `enclosing_sort` alone, which is one scope OUT of an operation body and
+    /// made the typer disagree with the loader about the same code. MEASURED, one
+    /// file, two rows: `unresolved name 'Nope' in scope 'wi977r.peek.Peeker.other'`
+    /// from the loader (which reads `current_scope`, the operation's) beside
+    /// `cannot be referenced from scope 'wi977r.peek.Peeker'` from here — one
+    /// question, two answers, which is the split this ticket exists to close.
+    ///
+    /// THE RULE-BODY ARM IS NOT COSMETIC, and assuming it was cost a regression:
+    /// `set_enclosing_sort` has ONE caller, the operation-body loop, so before
+    /// `rule_scope` existed EVERY rule body answered `None` here — not just top-level
+    /// code, as this doc then claimed. With [`hidden_field_owner`] reading `None` as
+    /// the global scope, a rule written INSIDE the declaring sort and projecting its
+    /// own `internal` field became a hard load error
+    /// (`'x' is internal to '…Point' and cannot be referenced from scope '<global>'`).
+    /// The whole workspace stayed green: no fixture projected an internal field from a
+    /// rule body until `a_rule_inside_the_declaring_sort_sees_its_internal_field`.
+    ///
+    /// THE TWO ARMS CHANGE THE VISIBILITY VERDICT DIFFERENTLY, and only one of them is
+    /// a narrowing. For an OPERATION body this is purely a rename: `scan_operation_params`
+    /// installs an `is_enclosing` link from each op scope to its declaring scope, so an
+    /// op scope's chain is a strict SUPERSET of its sort's and
+    /// [`crate::intern::SymbolTable::internal_visible_from`] cannot hide a name that was
+    /// visible before. For a RULE body it is a WIDENING — from no check at all — so
+    /// programs that loaded before can now be refused; that is the §8.6 rule finally
+    /// being enforced there, pinned by
+    /// `a_rule_outside_the_declaring_sort_is_refused_naming_the_rules_scope`, and its
+    /// in-scope counterpart by `a_rule_inside_the_declaring_sort_sees_its_internal_field`.
+    /// Migration risk measured: one `internal entity` exists across `stdlib/`,
+    /// `examples/` and `anthill-todo/`, projected only inside its own sort.
+    fn referencing_scope(&self) -> Option<Symbol> {
+        self.enclosing_op.or(self.rule_scope).or(self.enclosing_sort)
+    }
+
+    /// WI-977 — see [`Self::rule_scope`]. Set once per rule by the rule-body sweep.
+    fn set_rule_scope(&mut self, domain: Symbol) {
+        self.rule_scope = Some(domain);
     }
 
     /// The enclosing SORT's slots alone.
@@ -2752,9 +2847,16 @@ struct CtorReduceSite {
     sp: crate::span::SourceSpan,
     /// The reducing occurrence's diagnostic span, for a nested resolution that raises.
     span: Option<Span>,
-    /// The enclosing SORT of the code the reduction runs in (`TypingEnv::enclosing_sort`),
-    /// or `None` at top level / in a free operation — the lexical scope an `internal`
-    /// visibility check tests against. A structural reduction ignores it.
+    /// The scope of the code the reduction runs in ([`TypingEnv::referencing_scope`]),
+    /// or `None` at a file's top level, where [`hidden_field_owner`] reads it as the
+    /// global scope (WI-977). The lexical scope an `internal` visibility check tests
+    /// against, and the one its diagnostic NAMES. A structural reduction ignores it.
+    ///
+    /// TWO producers, and the second is easy to miss: an OPERATION body supplies the
+    /// operation's own scope, and a RULE body supplies the rule's `domain` — a
+    /// `FieldOf` reduction is reached from the rule-body dot-dispatch sweep as well as
+    /// from an op body, which is why `type_rule_bodies` sets a scope at all. Naming
+    /// only the enclosing sort here is what let a rule body's projection go unchecked.
     scope: Option<Symbol>,
 }
 
@@ -3116,15 +3218,39 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
 /// constructor gets NAMED when several are, is a diagnostic detail.) Conservative by
 /// construction: a field reachable through an `internal` variant stays encapsulated even
 /// when a public sibling variant declares the same name.
+/// WI-977 — answers the REFERENCING SCOPE alongside the owner, because the caller's
+/// diagnostic has to name it and this is the only place it is known to exist. It used
+/// to answer only the owner, and the caller filled the scope slot with the literal
+/// string `"another scope"` — a fabricated name in a user-visible diagnostic, which
+/// rendered as `cannot be referenced from scope 'another scope'`.
+///
+/// THE `None` IS RESOLVED HERE, ONCE, AND IT IS THE GLOBAL SCOPE — not "no scope, so
+/// skip the check". `scope` in is [`TypingEnv::referencing_scope`], absent for a
+/// projection written at a file's top level;
+/// [`internal_field_hidden_from`] used to answer `false` for
+/// that and say so ("there is no lexical scope to test against, so enforcement is
+/// skipped (permissive)"). MEASURED against that arm: a top-level
+/// `operation topPeek(b: Box) -> Int64 = b.v` reading an `internal` constructor's
+/// field of another sort loaded CLEAN, while the identical body inside any `sort` or
+/// `namespace` was refused — so WI-369 encapsulation was unenforced for exactly the
+/// code with no scope to be inside. §8.6 makes `internal` "hidden from outside the
+/// declaring scope", and top-level code is outside it; the global scope is the scope
+/// such code is written in, so asking the question against it is both the honest
+/// reading and the one that closes the hole. A top-level `internal` declaration is
+/// unaffected — its declaring scope IS the global one, so it stays visible there.
 fn hidden_field_owner(
     kb: &mut KnowledgeBase,
     m: &ProjectedMember,
     scope: Option<Symbol>,
-) -> Option<(Symbol, Symbol)> {
+) -> Option<(Symbol, Symbol, ScopeId)> {
+    let from = match scope {
+        Some(s) => kb.symbols.scope_id(s),
+        None => kb.global_scope(),
+    };
     m.owners
         .iter()
-        .find(|(ctor, _)| internal_field_hidden_from(kb, scope, *ctor))
-        .copied()
+        .find(|(ctor, _)| internal_field_hidden_from(kb, from, *ctor))
+        .map(|(ctor, fsym)| (*ctor, *fsym, from))
 }
 
 /// WI-759 — resolve `recv_ty`'s member named `field_name`: the projection lookup, stated
@@ -3255,12 +3381,17 @@ fn field_of_type(
     // constructor owns the field. A source-level `x.f` is rejected earlier, at the dot's own
     // span with the precise diagnostic; this closes the hand-written desugared form, which
     // never passes through dot dispatch.
-    if let Some((ctor, field)) = hidden_field_owner(kb, &member, site.scope) {
+    if let Some((ctor, field, from_scope)) = hidden_field_owner(kb, &member, site.scope) {
+        // WI-977 — names the referencing scope, as the two dot-dispatch renderings of
+        // this same refusal do. "outside its declaring scope" restated the rule the
+        // author had just hit; the scope they wrote it in is what locates the line.
+        let from = kb.scope_display_name(from_scope).to_string();
         return Err(format!(
             "field `{}` is declared by the `internal` constructor `{}` and cannot be \
-             projected from outside its declaring scope",
+             projected from scope '{}'",
             short_name_of(kb.qualified_name_of(field)),
             short_name_of(kb.qualified_name_of(ctor)),
+            from,
         ));
     }
     Ok(member.ty)
@@ -10104,12 +10235,14 @@ fn build_type(
                         // reduction report it against the rewritten node. (The reduction
                         // checks too, off this same resolution, which is what closes the
                         // hand-written desugared form that never passes through dot dispatch.)
-                        if let Some((ctor, fsym)) = hidden_field_owner(kb, &m, env.enclosing_sort())
+                        if let Some((ctor, fsym, from_scope)) =
+                            hidden_field_owner(kb, &m, env.referencing_scope())
                         {
                             results.push(Err(TypeError::ForbiddenInternalField {
                                 span: dot_span,
                                 entity: ctor,
                                 field: fsym,
+                                from_scope,
                             }));
                             return;
                         }
@@ -11319,31 +11452,43 @@ fn synthesize_field_access(
     ))
 }
 
-/// WI-369: whether projecting a field of `ctor` is forbidden from `scope` — true when
-/// `ctor` is declared `internal` and `scope`'s body scope cannot see it
-/// (kernel-language.md §8.6). The enclosing sort's body scope is the hash-consed `Fn{sort}`
-/// term raw — the same scope id the loader recorded — so a projection inside the declaring
-/// sort's own ops (`s.rep` in `MutableStack.push`) is visible, while one from another sort is
-/// not. With no enclosing sort (a free op / top-level), there is no lexical
-/// scope to test against, so enforcement is skipped (permissive).
+/// WI-369: whether projecting a field of `ctor` is forbidden from `from` — true when
+/// `ctor` is declared `internal` and `from` cannot see it (kernel-language.md §8.6).
+/// A projection inside the declaring sort's own ops (`s.rep` in `MutableStack.push`)
+/// is visible, because an operation's scope reaches its sort through the
+/// `is_enclosing` link `scan_operation_params` installs; one from another sort is not.
 ///
-/// WI-759: takes the enclosing SORT rather than the whole `TypingEnv` — that is all it ever
+/// WI-984 retired the derivation this doc used to describe (the scope as a
+/// hash-consed `Fn{sort}` term raw): a [`ScopeId`] carries its owner, and for a sort
+/// with an eponymous constructor the term form canonicalizes to `Term::Ref`, so the
+/// term-keyed lookup found a scope holding nothing and every `internal` field of such
+/// a sort read as VISIBLE.
+///
+/// WI-977 — TAKES THE SCOPE ALREADY RESOLVED, and there is no permissive arm left.
+/// This doc used to end "with no enclosing sort (a free op / top-level), there is no
+/// lexical scope to test against, so enforcement is skipped (permissive)", and that
+/// was a measured hole rather than a design: a projection written at a file's top
+/// level, or in ANY rule body, was never checked. [`hidden_field_owner`] now resolves
+/// every context to a real scope — the operation's, the rule's `domain`, or the
+/// global scope — so the question is always asked. See [`TypingEnv::referencing_scope`].
+///
+/// WI-759: takes a scope rather than the whole `TypingEnv` — that is all it ever
 /// read, and it is what a `FieldOf` reduction can carry to its site
 /// ([`CtorReduceSite::scope`]) without reaching for an ambient env.
-fn internal_field_hidden_from(kb: &mut KnowledgeBase, scope: Option<Symbol>, ctor: Symbol) -> bool {
+fn internal_field_hidden_from(kb: &mut KnowledgeBase, from: ScopeId, ctor: Symbol) -> bool {
     if !kb.symbols.is_internal(ctor) {
         return false;
     }
-    match scope {
-        // WI-984: the enclosing sort's scope, straight off its symbol. Was an
-        // `alloc(Fn{s}).raw()`, which for a sort with an eponymous constructor
-        // canonicalizes to `Term::Ref` (WI-511) and so keyed a scope that holds
-        // nothing — every `internal` field of such a sort read as visible.
-        Some(s) => !kb
-            .symbols
-            .internal_visible_from(ctor, kb.symbols.scope_id(s)),
-        None => false,
-    }
+    // WI-984: the enclosing sort's scope, straight off its symbol. Was an
+    // `alloc(Fn{s}).raw()`, which for a sort with an eponymous constructor
+    // canonicalizes to `Term::Ref` (WI-511) and so keyed a scope that holds
+    // nothing — every `internal` field of such a sort read as visible.
+    //
+    // WI-977: takes the scope ALREADY RESOLVED, so the "no enclosing sort" case
+    // cannot be answered here by skipping the check. It used to arrive as an
+    // `Option` whose `None` arm returned `false` — permissive, and a measured hole
+    // for top-level code. [`hidden_field_owner`] resolves it to the global scope.
+    !kb.symbols.internal_visible_from(ctor, from)
 }
 
 /// WI-727 (proposal 056) — the rewritten call a variadic capture produces: the SAME
@@ -12501,7 +12646,9 @@ fn check_apply_iter(
             let site = CtorReduceSite {
                 sp: occ.span,
                 span,
-                scope: env.enclosing_sort(),
+                // WI-977: the OPERATION's scope where there is one — see
+                // `TypingEnv::referencing_scope`. Was `enclosing_sort()`, one scope out.
+                scope: env.referencing_scope(),
             };
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
             for (cfg, wrote) in BINARY_TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
@@ -52206,6 +52353,12 @@ fn type_rule_bodies(
             // the typer's normal env handling.
             let mut env = TypingEnv::empty();
             env.set_debruijn_types(var_types.clone());
+            // WI-977: the scope this rule was WRITTEN in, for the `internal`
+            // visibility check a dot projection runs and for the scope its refusal
+            // names. Deliberately NOT `set_enclosing_sort` — that installs a
+            // requirement frame this body must not acquire (see above); this field
+            // is read by `referencing_scope` alone.
+            env.set_rule_scope(kb.rule_domain(rid));
             // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
             // treats the WI-539 value-precondition `requires`-check as refutation-
             // aware — a rule body is SLD/relational with no call-site Γ, so a

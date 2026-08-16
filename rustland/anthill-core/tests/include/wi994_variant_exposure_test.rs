@@ -112,7 +112,10 @@ end
             // THE FINDING. Before the fix these two lines were absent and the
             // three below were the whole diagnosis — all three about the wrong
             // sort, and none of them saying a word about the choice.
-            "ambiguous symbol 'guarded' in scope 'p': candidates \
+            // WI-977: the scope is named QUALIFIED — as the candidate list beside it
+            // always was. A bare `p` next to two fully-qualified candidates was the
+            // one un-qualified name in the message.
+            "ambiguous symbol 'guarded' in scope 'wi994.amb.p': candidates \
              [\"anthill.prelude.EffectExpression.guarded\", \
              \"anthill.reflect.LogicalQuery.guarded\"]",
             // REPORTED TWICE, once per resolution of the one occurrence at 6:7 —
@@ -123,10 +126,15 @@ end
             // the same thing. Pinned rather than fixed — it is a defect in the
             // ambiguity-reporting path, not in the exposure link, and no fixture
             // reached it before this one. WI-1005, whose acceptance is this list
-            // dropping to four. It is easy to miss: name the namespace and the
-            // operation alike and the two renderings coincide and dedup, which is
-            // what hid it from the probe this test was written from.
-            "ambiguous symbol 'guarded' in scope 'amb': candidates \
+            // dropping to four. It used to be easy to miss: name the namespace and
+            // the operation alike and the two renderings coincided and dedup'd,
+            // which is what hid it from the probe this test was written from.
+            //
+            // WI-977 closed that hiding place as a side effect: a QUALIFIED scope
+            // name for the operation strictly extends its namespace's, so the two
+            // rows can no longer collide however the fixture is named, and this
+            // duplicate cannot go quiet again while WI-1005 is open.
+            "ambiguous symbol 'guarded' in scope 'wi994.amb': candidates \
              [\"anthill.prelude.EffectExpression.guarded\", \
              \"anthill.reflect.LogicalQuery.guarded\"]",
             // …and the cascade behind it, pinned so a later change to the

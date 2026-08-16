@@ -899,6 +899,9 @@ Implicit namespaces merge with explicit namespaces of the same qualified name. T
 
 **Qualified names.** Every defined symbol has a `short_name` (last segment) and a `qualified_name` (full path from the global scope). Items nested inside a sort or namespace body have their qualified name constructed by prepending the enclosing scope's qualified path. For example, `operation eq` inside `sort anthill.prelude.Eq` gets `qualified_name = "anthill.prelude.Eq.eq"`. The `by_qualified_name` index serves as a global registry of fully-qualified paths, while scope-aware resolution (`resolve_in_scope`) uses short names and parent scope chains.
 
+A diagnostic that reports which scope a name was resolved in names it by this
+**qualified** name — see *How a diagnostic names a scope* in §8.6.
+
 ```
 Namespace ::= DescriptionBlock*
               'namespace' Name
@@ -3128,12 +3131,49 @@ identifier** (`"my weird name"`) admits arbitrary text and would readmit the
 collision; neither implementation parses one today, and whichever adds one must
 either exclude this name from it or move the sentinel out of its reach.
 
+**How a diagnostic names a scope (WI-977).** Wherever a message reports the scope a
+name was resolved in — `unresolved name`, `unresolved type name`, `ambiguous
+symbol`, the duplicate-declaration refusal of §5.1, the forbidden-internal
+refusals below — it spells that scope by its **qualified** name:
+`in scope 'demo.User'`, never `in scope 'User'`. A short name does not say *which*
+scope among siblings, and the reader chasing the diagnostic has only the name to go
+on: the two `sort User` bodies of a two-namespace program otherwise produce
+byte-identical refusals. Qualification also keeps a nested scope's rendering
+distinct from its parent's, a child's qualified name strictly extending the
+enclosing one. The top-level scope, having no qualified name, renders `<global>`
+as described above.
+
+The scope named is the one the offending code is **written in** — for code in an
+operation body, that operation's own scope, not its enclosing sort. Diagnostics
+raised by different subsystems (name resolution, type checking) must agree here;
+naming the sort in one and the operation in the other reports two scopes for one
+line of code.
+
+This is a single rule with a single implementation per port rather than a
+convention re-applied at each raise site: rustland answers it at
+`KnowledgeBase::scope_display_name`, scaland at `KnowledgeBase.scopeDisplayName`.
+It is **total** — a scope is identified by a scope id, whose owner projection
+cannot fail — so no message needs a placeholder for a value that names no scope,
+and none may invent one.
+
 **Visibility model.** A name is **visible by default**, across namespace and
 sort boundaries, to importers and requirers. The modifiers adjust this:
 
 - **`internal`** — hides the name from cross-scope resolution (it remains
-  resolvable within its own scope). This is the only hide gate.
+  resolvable within its own scope, and within scopes that reach it by *enclosing*
+  links — a nested sort or namespace body, and an operation's own scope inside
+  it). This is the only hide gate.
 - **`public`** — visible everywhere, including without an `import`.
+
+**Top-level code is outside every declaring scope but the global one (WI-977).**
+The top-level scope encloses nothing, so an `internal` name declared in any
+`namespace` or `sort` is hidden from a top-level declaration exactly as it is from
+a sibling namespace — there is no "no scope, so no gate" case. This applies to
+field projection as much as to construction: a top-level operation reading `b.v`,
+where `v` belongs to an `internal` constructor of another sort, is the same
+forbidden-internal access as naming that constructor directly. An `internal`
+name declared *at* the top level is unaffected, the global scope being its own
+declaring scope.
 
 The former `export` statement and `export` visibility prefix (no-ops under this
 model) were removed in WI-291.

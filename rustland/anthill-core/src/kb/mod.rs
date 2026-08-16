@@ -2066,6 +2066,41 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-977 — WHAT WE CALL A SCOPE IN A DIAGNOSTIC. Its QUALIFIED name, spec §8.6.
+    ///
+    /// It lives HERE, next to [`Self::qualified_name_of`], and not in the loader that
+    /// first needed it: the question gets ONE answer for every raise site rather than a
+    /// helper per site. There were THREE, and they did not agree — `scope_qualified_name`
+    /// answered qualified while `Loader::scope_display_name` and an open-coded copy in
+    /// `forbid_internal_import` answered LOCAL, so ONE `expect_load_errors` list pinned
+    /// both spellings eleven lines apart
+    /// (`wi997_declaration_ledger_test::entity_and_sort_siblings_are_refused`:
+    /// `in scope 'wi997.sib'` on the duplicate-declaration row, a bare `in scope 'peek'`
+    /// on the unresolved-name rows below it).
+    /// Qualified is the argument-carrying one — a short `C` does not say WHICH `C` among
+    /// sibling scopes, and the reader chasing the diagnostic has only the name to go on.
+    ///
+    /// TOTAL, and that is [`ScopeId`]'s doing, not a fallback: the owner projection is
+    /// total off the symbol, so there is no not-a-scope arm to degrade. It used to
+    /// project off the scope's TERM and answered the string `"_unknown"` for every
+    /// carrier that was not `Term::Fn` (WI-984 retired that arm at all three sites).
+    ///
+    /// TOTAL IS NOT THE SAME AS ALWAYS-QUALIFIED, and the difference is load-bearing
+    /// rather than a gap: [`Self::qualified_name_of`] answers the SHORT name for a
+    /// `SymbolDef::Unresolved` owner, and that arm is exactly how the synthetic global
+    /// scope answers [`crate::intern::GLOBAL_SCOPE_NAME`] — `global_scope()` mints it
+    /// through `symbols.intern`, which resolves nothing. That is the intended reading
+    /// (§8.6: the top-level scope is not a declaration and HAS no qualified name), and
+    /// `<global>` collides with no qualified name because it is no identifier (WI-987).
+    /// Every other scope owner is `define`d and therefore resolved, so the short arm
+    /// is not a silent degrade for them — but a caller minting a scope off a bare
+    /// `intern` would get a local name where §8.6 promises a qualified one.
+    ///
+    /// Scaland holds the same rule at `KnowledgeBase.scopeDisplayName` (WI-962/976).
+    pub fn scope_display_name(&self, scope: ScopeId) -> &str {
+        self.qualified_name_of(scope.owner())
+    }
+
     /// WI-995 — the file whose text the following resolutions belong to, so an import
     /// written in another file is not read on its behalf. The load entry points set it
     /// per file; the CLI sets it for the source its query text came from. Returns the

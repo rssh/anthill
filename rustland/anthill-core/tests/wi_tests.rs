@@ -1083,6 +1083,9 @@ mod wi722_compile_time_macro_test;
 #[path = "include/wi722_read_builtins_test.rs"]
 mod wi722_read_builtins_test;
 
+#[path = "include/wi977_scope_display_name_test.rs"]
+mod wi977_scope_display_name_test;
+
 #[path = "include/wi978_secondary_entry_provision_test.rs"]
 mod wi978_secondary_entry_provision_test;
 

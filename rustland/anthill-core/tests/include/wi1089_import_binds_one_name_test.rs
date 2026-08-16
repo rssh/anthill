@@ -113,7 +113,11 @@ namespace wi1089.sibling
 end
 "
         )),
-        &["unresolved name 'Neighbour' in scope 'User'"],
+        // WI-977: the scope is named QUALIFIED. This file is the argument for it —
+        // `importing_a_namespace_does_not_bring_its_contents` below refuses in a
+        // DIFFERENT `User`, and while both rendered the short name the two rows
+        // were indistinguishable.
+        &["unresolved name 'Neighbour' in scope 'wi1089.sibling.User'"],
     );
 }
 
@@ -151,7 +155,8 @@ namespace wi1089.ns
 end
 "
         )),
-        &["unresolved name 'Neighbour' in scope 'User'"],
+        // WI-977 — `wi1089.ns.User`, not the `wi1089.sibling.User` of the test above.
+        &["unresolved name 'Neighbour' in scope 'wi1089.ns.User'"],
     );
 
     load_kb_with(&format!(

@@ -4883,18 +4883,6 @@ fn declaration_of_kind(kind: Option<SymbolKind>) -> String {
     })
 }
 
-/// WI-997 — the QUALIFIED name of a scope the ledger keys on. Qualified rather
-/// than local because R1's key is `(scope, local name)` and a bare `Rec` in the
-/// message would not say WHICH `Rec` — the whole point of the pair.
-///
-/// WI-984 — one projection, no arms. This used to fetch the scope's TERM and match
-/// three carriers, with an `_unknown` fallback for a shape it argued was
-/// unreachable; a [`ScopeId`] carries its owner, so there is nothing left to
-/// misread and no label that could name the wrong scope.
-fn scope_qualified_name(kb: &KnowledgeBase, scope: ScopeId) -> String {
-    kb.qualified_name_of(scope.owner()).to_string()
-}
-
 /// WI-997 / proposal 059 — ONE TYPE DECLARATION, AS PASS 1 MADE IT.
 ///
 /// `keyword` is the one actually written, not a category derived afterwards:
@@ -5097,7 +5085,11 @@ impl DeclLedger {
                     .collect();
                 LoadError::DuplicateTypeDeclaration {
                     name: local.clone(),
-                    scope_name: scope_qualified_name(kb, *scope),
+                    // WI-997 argued the qualified name HERE (R1's key is
+                    // `(scope, local name)`, so a bare `Rec` would not say WHICH
+                    // `Rec`); WI-977 made that argument the rule for every scope
+                    // name in a diagnostic and moved it to the KB.
+                    scope_name: kb.scope_display_name(*scope).to_owned(),
                     sites,
                 }
             })
@@ -6961,11 +6953,13 @@ fn forbid_internal_import(
     // match plus an `_unknown` fallback, alongside `scope_qualified_name` and
     // `Loader::scope_display_name`; with the scope's owner in hand there is nothing
     // left to misread, and `_unknown` now has no producer anywhere.
-    let scope_name = kb.local_name_of(scope.owner()).to_owned();
+    //
+    // WI-977 — one projection was not one ANSWER: this copy read the LOCAL name and
+    // `scope_qualified_name` read the qualified one. Both now ask the KB.
     errors.push(LoadError::ForbiddenInternalAccess {
         name: short.to_owned(),
         declared_in,
-        scope_name,
+        scope_name: kb.scope_display_name(scope).to_owned(),
         span,
     });
     true
@@ -14160,10 +14154,12 @@ impl<'a> Loader<'a> {
     ///
     /// WI-984 — the scope's OWNER, total. Was a `Term::Fn` match with an `_unknown`
     /// arm for every other carrier.
+    ///
+    /// WI-977 — and the NAME comes from [`KnowledgeBase::scope_display_name`], which
+    /// owns the choice (qualified, spec §8.6). This is only the `current_scope` supply;
+    /// it answered the LOCAL name while two sibling sites answered qualified.
     fn scope_display_name(&self) -> String {
-        self.kb
-            .local_name_of(self.current_scope.owner())
-            .to_string()
+        self.kb.scope_display_name(self.current_scope).to_string()
     }
 
     /// WI-369: if `name` (resolved while IGNORING the `internal` filter) names an

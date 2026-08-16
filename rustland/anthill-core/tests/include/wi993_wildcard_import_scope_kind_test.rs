@@ -122,7 +122,9 @@ end
         try_load_kb_with(src),
         &[
             &refusal("wi993b.lib.Host.op1", "Operation"),
-            "unresolved name 'Neighbour' in scope 'User'",
+            // WI-977: qualified — the refusal row above already names its operation
+            // in full, and this row now agrees.
+            "unresolved name 'Neighbour' in scope 'wi993b.cli.User'",
         ],
     );
 }
