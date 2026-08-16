@@ -19,10 +19,18 @@
 //!     still passes, and it passes VACUOUSLY (it expects load errors and gets different
 //!     ones), which is why its assertion below pins the refusal's own words rather than
 //!     merely asking that something failed.
-//!   * back out `Ord requires WeakOrd[T]` (ordered.anthill) and
+//!   * back out `Ord provides WeakOrd[T = T]` (ordered.anthill) and
 //!     `an_ord_constrained_body_reaches_compare` fails — that clause is what puts a
 //!     `WeakOrd` dictionary inside an `Ord` one, and without it every `Ord`-constrained
 //!     generic that calls `compare` stops resolving.
+//!
+//!     WI-1110 CHANGED WHICH CLAUSE THAT IS, and the note is corrected rather than
+//!     dropped because the correction is the finding. WI-1109 shipped `requires
+//!     WeakOrd[T]` BESIDE the `provides`, and this line named the `requires` half as
+//!     what the test measured. They were one edge written twice: a spec's `provides` is
+//!     a CONVERSION and is a chain entry in its own right, so the `requires` was
+//!     redundant — and, filed as a provider row, it also made `Ord` a candidate answer
+//!     to every `WeakOrd` goal. One clause now does both jobs.
 //!   * restore `compare` to `Ord` and the whole file fails to load.
 //!
 //! The quotient assertions (`the_class_collapses…`, `union_is_left_biased…`) pin
@@ -190,8 +198,9 @@ fn one_provides_ord_answers_a_weakord_slot() {
 }
 
 /// An `Ord`-CONSTRAINED body reaches `compare`, which lives on `WeakOrd`. This is what
-/// `Ord requires WeakOrd[T]` buys, and it is the shape of every ordering-generic a
-/// downstream program writes.
+/// `Ord provides WeakOrd[T = T]` buys (WI-1110; it was `requires WeakOrd[T]` when this
+/// test was written, and the two collapsed into one clause), and it is the shape of
+/// every ordering-generic a downstream program writes.
 #[test]
 fn an_ord_constrained_body_reaches_compare() {
     let src = format!(
@@ -208,7 +217,9 @@ fn an_ord_constrained_body_reaches_compare() {
     assert!(
         eval_int(&src, "wi1109.constrained.D.go") > 0,
         "`requires Ord[T]` must supply the `WeakOrd` dictionary its body dispatches \
-         through — 7 vs 3 is positive under the carrier's own order"
+         through — 7 vs 3 is positive under the carrier's own order. WI-1110: the \
+         dictionary now arrives through `Ord`'s SELF-SUPPLIED chain entry rather than \
+         through a `requires` clause, and the value is the same"
     );
 }
 

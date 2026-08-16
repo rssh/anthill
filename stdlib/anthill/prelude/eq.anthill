@@ -39,36 +39,33 @@ end
 sort anthill.prelude.Eq
   sort T = ?
 
-  -- `requires`, NOT `provides`, and the reason is NAMING — measured, after a first
-  -- explanation that was wrong.
+  -- `provides`, NOT `requires` (WI-1110), and the two earlier readings of this line
+  -- were both wrong in a way worth keeping, because each was refuted by a measurement.
   --
-  -- The ordering tower forwards (`Ord provides WeakOrd[T = T]`), so the symmetric move
-  -- was to forward here and let every `Eq` carrier stop writing its `PartialEq` row.
-  -- Two variants, both driven:
+  -- WI-1109 measured two variants and concluded they were mutually exclusive:
   --
   --   requires + provides  -> 1867 of 2849 tests fail, `construction is cyclic:
-  --                           PartialEq[X] -> PartialEq[X]`. A forwarding row makes the
-  --                           FORWARDER a candidate provider of the floor, so `Eq` joins
-  --                           the providers of `PartialEq`, and `Eq requires PartialEq`
-  --                           closes the loop.
+  --                           PartialEq[X] -> PartialEq[X]` — because the `provides`
+  --                           row was filed as a PROVIDER of `PartialEq`, so `Eq`
+  --                           joined the providers of the floor and `requires
+  --                           PartialEq` closed the loop over it.
   --   provides alone       -> 32 fail, every one `unresolved import
-  --                           'anthill.prelude.Eq.eq'`.
+  --                           'anthill.prelude.Eq.eq'` — because a `provides` clause
+  --                           put nothing in this spec's SCOPE.
   --
-  -- THE SECOND NUMBER IS THE ACTUAL REASON. `requires` is what makes `Eq.eq` A NAME:
-  -- proposal 004 kept `Eq.eq` resolving to the inherited `PartialEq.eq` through the
-  -- requires-chain (WI-614) precisely so call sites stay source-compatible, and
-  -- `provides` is a statement about CARRIERS that puts nothing in this spec's scope.
-  -- Drop the `requires` and `import anthill.prelude.Eq.{eq}` stops resolving across the
-  -- corpus. The two clauses are mutually exclusive here, and the one that keeps a
-  -- written name working wins.
+  -- BOTH FAILURES WERE THE SAME DEFECT, and it was not in this file. A spec's
+  -- `provides` is a CONVERSION — "hold an `Eq[T]` and you can obtain a `PartialEq[T]`"
+  -- — so it belongs in the chain, exactly where `requires` puts its entry, and NOT in
+  -- the table of what has which type. Filed correctly it brings the scope with it
+  -- (`Eq.eq` still resolves to the inherited `PartialEq.eq`, which proposal 004 wanted
+  -- for source compatibility) and it is never offered as a provider, so there is no
+  -- loop left to close. The clauses were never exclusive; one of them was misfiled.
   --
-  -- NOT because the cycle is peculiar to this tower — it is NOT. `Ord` carries both
-  -- clauses and cycles the same way; it is merely MASKED, because `WeakOrd requires
-  -- PartialOrd` fails first for most carriers. Driven: a carrier providing `Eq` and
-  -- `PartialOrd` but no `compare` gets `construction is cyclic: WeakOrd[T = Half] ->
-  -- WeakOrd[T = Half]`. That is a live wart on the ordering side, tracked separately —
-  -- do not read this clause as saying equality is the special case.
-  requires PartialEq[T]
+  -- WHAT IT BUYS over `requires`: a carrier writing `provides Eq[X]` thereby provides
+  -- `PartialEq[X]` — one `eq`, one equality — instead of writing both rows and being
+  -- trusted to keep them consistent (058 §3.8, and the same argument as
+  -- `Ord provides WeakOrd`).
+  provides PartialEq[T = T]
 
   -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. Dormant /
   -- documentation-only (see the file header): NOT discharged per instance. A

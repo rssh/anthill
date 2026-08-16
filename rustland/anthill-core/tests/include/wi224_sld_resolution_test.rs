@@ -212,13 +212,13 @@ fn one_level_conditional_resolves_via_subgoal() {
           end
         end
     "#;
-    let mut kb = load_expecting(
-        src,
-        &[
-            "'test.wi224.one_level.EqList' provides 'anthill.prelude.Eq', \
-         which requires 'anthill.prelude.PartialEq'",
-        ],
-    );
+    // WI-1110: this fixture now loads CLEAN, and the change is the ticket's point.
+    // `EqList` still declares only the `Eq` marker — but `Eq provides PartialEq[T = T]`
+    // is a CONVERSION, so `derive_forwarded_provisions` materializes
+    // `EqList provides PartialEq[T = List[T = A]]` from the row `EqList` wrote, and the
+    // obligation the pinned diagnostic reported is discharged by the derivation instead
+    // of by the author writing the lower floor a second time.
+    let mut kb = load_with(src);
 
     // Build goal Eq[T = List[T = Int64]].
     let list_int = parametric_carrier(
@@ -252,15 +252,36 @@ fn one_level_conditional_resolves_via_subgoal() {
                 2,
                 "WI-857: `Eq`'s own chain (1) then `EqList`'s (1); got {sub_resolutions:?}"
             );
+            // WI-1110 — SLOT 0 IS NOW FILLED, and that is the ticket's benefit rather
+            // than a loosening. It used to be `Unavailable`: `Eq requires PartialEq[T]`
+            // put the slot there and nothing in this fixture provided `PartialEq` for a
+            // `List`, so the leg was recorded and left empty. `Eq provides
+            // PartialEq[T = T]` is a CONVERSION, so `EqList`'s own `PartialEq` row is
+            // derived from the `Eq` row it wrote, and the slot resolves — through
+            // `EqList` itself, conditional on `Eq[A]` exactly as the provider half is.
+            // The `Unavailable` machinery is unaffected and still pinned by
+            // `wi869_per_provision_conditions_test`'s sibling-provision slots.
             match &sub_resolutions[0] {
-                ResolvedRequiresNode::Unavailable { spec_sort } => assert_eq!(
-                    kb.qualified_name_of(*spec_sort),
-                    "anthill.prelude.PartialEq",
-                    "the spec half's unresolved leg is `PartialEq`",
-                ),
+                ResolvedRequiresNode::Conditional {
+                    impl_sort: inner,
+                    spec_sort,
+                    ..
+                } => {
+                    assert_eq!(
+                        kb.qualified_name_of(*spec_sort),
+                        "anthill.prelude.PartialEq",
+                        "the spec half's leg is `PartialEq`",
+                    );
+                    assert_eq!(
+                        kb.qualified_name_of(*inner),
+                        "test.wi224.one_level.EqList",
+                        "and it is answered by the DERIVED `EqList provides PartialEq` \
+                         row, not by some other carrier",
+                    );
+                }
                 other => panic!(
-                    "nothing provides `PartialEq[List[…]]` here, so the spec-half slot \
-                     must be recorded as Unavailable, not filled or dropped; got {other:?}"
+                    "the spec-half slot must resolve through the derived \
+                     `EqList provides PartialEq` row; got {other:?}"
                 ),
             }
             match &sub_resolutions[1] {
@@ -297,13 +318,13 @@ fn two_level_conditional_chains_recursively() {
           end
         end
     "#;
-    let mut kb = load_expecting(
-        src,
-        &[
-            "'test.wi224.two_level.EqList' provides 'anthill.prelude.Eq', \
-         which requires 'anthill.prelude.PartialEq'",
-        ],
-    );
+    // WI-1110: this fixture now loads CLEAN, and the change is the ticket's point.
+    // `EqList` still declares only the `Eq` marker — but `Eq provides PartialEq[T = T]`
+    // is a CONVERSION, so `derive_forwarded_provisions` materializes
+    // `EqList provides PartialEq[T = List[T = A]]` from the row `EqList` wrote, and the
+    // obligation the pinned diagnostic reported is discharged by the derivation instead
+    // of by the author writing the lower floor a second time.
+    let mut kb = load_with(src);
 
     // Build the outer goal: Eq[T = List[T = List[T = Int64]]].
     let list_int = parametric_carrier(

@@ -1578,6 +1578,13 @@ impl KnowledgeBase {
     /// `SortRequiresInfo` fact is asserted after the cache filled, so
     /// stale chains can't be served. WI-226 / WI-230. Clears both the
     /// flat chain cache and the tree cache.
+    ///
+    /// WI-1110 — AND WHEN A `SortProvidesInfo` FACT IS ASSERTED. A chain is no longer
+    /// built from `requires` alone: a SPEC's `provides` is a CONVERSION and contributes a
+    /// self-supplied entry (`typing::self_supplied_entries`), so the provision relation is
+    /// a second input to every cached chain. `load.rs` calls this around
+    /// `derive_forwarded_provisions` and after `eq_derive::run`, the two load passes that
+    /// assert provisions; a third producer owes it the same call.
     #[allow(dead_code)]
     pub fn invalidate_requires_chain_cache(&self) {
         self.requires_chain_cache.borrow_mut().clear();

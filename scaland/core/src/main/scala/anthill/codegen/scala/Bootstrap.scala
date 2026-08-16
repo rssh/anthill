@@ -812,6 +812,29 @@ object Bootstrap:
         SortRequirement(r,
           TypeGen.render(sym, r.typeExpr, scope.at(s"$sortName's `requires`", r.span)))
     }
+    // WI-1110 — A SPEC's `provides` IS THE IS-A CLAIM, and it emits the `extends`.
+    //
+    // [[requiresMapping]]'s own note has said so since WI-1064 — "a sort-level
+    // `requires` is not an is-a claim … the is-a claim is `provides`" — and recorded
+    // that `emitSort` reads `RequiresDeclItem` and NOTHING reads `ProvidesClauseItem`,
+    // so the claim fell through a `case _`. That gap became load-bearing when the
+    // ordering and equality towers collapsed to one clause each: `Ord` no longer writes
+    // `requires WeakOrd[T]` and `Eq` no longer writes `requires PartialEq[T]`, so
+    // reading only `requires` emitted a bare `trait Eq[T]` where `trait Eq[T] extends
+    // PartialEq[T]` is what the source says.
+    //
+    // ONLY A CONVERSION, on the same gate rustland uses (`provides_speaks_only_of_own_
+    // params`, kb/load.rs): a clause binding every argument to one of the SORT's own
+    // type parameters is a claim about an abstract thing and is `B <: A`; one naming a
+    // concrete carrier (`Set provides Eq[T = Set]`, `List provides Stream[T, {}]`) is a
+    // claim about a value, and emitting it as `extends` is the WI-1064 defect in the
+    // other direction.
+    val conversions = sort.items.collect {
+      case Item.ProvidesClauseItem(pc) if pc.conditions.isEmpty && isConversionClause(sym, pc, written) =>
+        SortRequirement(
+          RequiresDecl(None, pc.spec, pc.span),
+          TypeGen.render(sym, pc.spec, scope.at(s"$sortName's `provides`", pc.span)))
+    }
     // WI-1022: a named slot's requirement is its parameter's UPPER BOUND, so the
     // binder list can only be built once the requirements are rendered — which needs
     // `scope`, which needs the parameter NAMES. The two-step is that dependency and
@@ -833,7 +856,7 @@ object Bootstrap:
     // question, and a parameter kind that erases for some new reason would make the
     // two disagree — the carrier would name a binder the emitted type does not have.
     val req = requiresMapping(
-      sym, sym.name(sort.name.last), shape, typeParams, ops, requires, scope,
+      sym, sym.name(sort.name.last), shape, typeParams, ops, requires, conversions, scope,
       env.specMembers)
 
     // Rules + constraints are NOT emitted from bootstrap. Their bodies
@@ -919,6 +942,30 @@ object Bootstrap:
     * its arguments the anthill declaration bound where. */
   private case class SortRequirement(decl: RequiresDecl, rendered: String):
     def span: Span = decl.span
+
+  /** WI-1110 — is this `provides` clause a CONVERSION (a spec's, `B <: A`) rather than a
+    * membership claim (a carrier's)? True when every binding names one of the declaring
+    * sort's own type parameters, and there is at least one: `Ord provides WeakOrd[T = T]`
+    * and `Eq provides PartialEq[T = T]` pass; `Set provides Eq[T = Set]`,
+    * `List provides Stream[T, {}]` and `Pair provides Ord[Pair]` do not.
+    *
+    * The SYNTACTIC gate, which is rustland's too (`provides_speaks_only_of_own_params`,
+    * kb/load.rs) — the semantic one there additionally asks whether the subject supplies
+    * the target's operations, to tell a spec from a parametric WITNESS. Here the wider
+    * gate is safe in the same direction it is safe there: a witness that reached this
+    * would gain a supertrait it genuinely satisfies (it carries the operations), where a
+    * carrier's membership claim — the shape WI-1064 measured as `class Fmapped needs to
+    * be abstract` — is excluded by the bindings alone. */
+  private def isConversionClause(
+    sym: SymbolTable, pc: anthill.parse.ProvidesClause, params: IndexedSeq[TypeParamDecl]
+  ): Boolean =
+    pc.spec match
+      case TypeExpr.Parameterized(_, bindings) if bindings.nonEmpty =>
+        bindings.forall(_.bound match
+          case TypeExpr.Simple(n) if n.segments.sizeIs == 1 =>
+            params.exists(_.anthillName == sym.name(n.segments.head))
+          case _ => false)
+      case _ => false
 
   /** What a sort's `requires` declarations become in the emitted declaration: the
     * `extends` clause, the note recording why a requirement is not in it, and the
@@ -1020,10 +1067,10 @@ object Bootstrap:
   private def requiresMapping(
     sym: SymbolTable, sortLeaf: String, shape: SortShape,
     typeParams: IndexedSeq[TypeParamDecl], ops: IndexedSeq[Operation],
-    requires: IndexedSeq[SortRequirement], scope: TypeScope,
-    specMembers: Map[String, Set[String]]
+    requires: IndexedSeq[SortRequirement], conversions: IndexedSeq[SortRequirement],
+    scope: TypeScope, specMembers: Map[String, Set[String]]
   ): RequiresMapping =
-    if requires.isEmpty then RequiresMapping("", "", IndexedSeq.empty)
+    if requires.isEmpty && conversions.isEmpty then RequiresMapping("", "", IndexedSeq.empty)
     else
       val anonymous = requires.filter(_.decl.binder.isEmpty)
       // Per shape: the supertraits, the note explaining every demotion, and which
@@ -1054,17 +1101,44 @@ object Bootstrap:
           // than by re-deriving the two demotion reasons: a third reason to demote
           // would otherwise emit no clause AND no dictionary, which is the silent
           // loss the notes exist to prevent.
-          (kept,
-            shadowed.map((r, members) => shadowNote(r.rendered, members)).mkString +
+          // WI-1110: conversions lead the `extends` list — a spec's `provides` is
+          // the is-a claim, so it is the primary supertrait and a `requires` over the
+          // carrier joins it.
+          //
+          // THE PARTITION DOES NOT REACH THEM, and that is the model rather than a hole
+          // in it. `ext` and `evidence` partition the REQUIREMENTS because a requirement
+          // is a dictionary the caller passes: it is either inherited or handed over. A
+          // conversion is SELF-SUPPLIED — the declaration says the sort can build the
+          // dictionary from itself — so there is nothing to hand over and `using` would
+          // ask an implementor for what the type already provides. A SHADOWED conversion
+          // therefore becomes neither, and the note is the whole answer: Scala's
+          // `extends` cannot assert a relation kernel §8.7 denies (the two same-named
+          // operations are DISTINCT), and there is no dictionary to fall back to. That is
+          // a genuine conflict in the source, recorded where the reader will see it.
+          val (shadowedConv, keptConv) = conversions.partitionMap { r =>
+            val members = shadowedMemberNames(sym, r, ops, specMembers)
+            if members.nonEmpty then Left((r, members)) else Right(r)
+          }
+          (keptConv ++ kept,
+            shadowedConv.map((r, members) => shadowNote(r.rendered, members)).mkString +
+              shadowed.map((r, members) => shadowNote(r.rendered, members)).mkString +
               notOverCarrier.map(r =>
                 evidenceNote(r.rendered, carrier, hasOps = ops.nonEmpty)).mkString,
             anonymous.toSet -- kept)
+        // WI-1064: on a sort WITH CONSTRUCTORS a `requires` is never an is-a claim, so
+        // the data shapes take no supertrait from one. WI-1110: a CONVERSION is an is-a
+        // claim whatever the shape, but it is not emitted here either — and it is
+        // RECORDED rather than dropped, which is this function's own "not a silent drop,
+        // in any direction". No corpus sort writes the shape (a data sort forwarding a
+        // spec over its own parameter), so emitting an `extends` for it would be an
+        // unmeasured guess about enum/case inheritance; saying so in the source is what
+        // the reader can act on.
         case SortShape.Record(ctor) =>
           checkDischarged(sym, sortLeaf, IndexedSeq(ctor), anonymous, scope)
-          (IndexedSeq.empty, "", Set.empty)
+          (IndexedSeq.empty, dataConversionNote(conversions), Set.empty)
         case SortShape.Sum(ctors) =>
           checkDischarged(sym, sortLeaf, ctors, anonymous, scope)
-          (IndexedSeq.empty, "", Set.empty)
+          (IndexedSeq.empty, dataConversionNote(conversions), Set.empty)
       // Walking `requires` keeps SOURCE order, so the `using` clause lists the
       // dictionaries in the order the sort declares them.
       RequiresMapping(
@@ -1076,6 +1150,15 @@ object Bootstrap:
             case Some(binder) => Some(Names.scalaTypeName(sym.name(binder.last)))
             case None => Option.when(evidence.contains(r))(r.rendered)
         })
+
+  /** WI-1110 — the note a DATA sort's conversion becomes. Empty when there is none,
+    * which is every sort in the corpus. */
+  private def dataConversionNote(conversions: IndexedSeq[SortRequirement]): String =
+    conversions.map(r =>
+      s"//   NOTE: `provides ${r.rendered}` is an is-a claim this emission does NOT carry:\n" +
+      "//   a sort with constructors takes no supertrait here (§2.7a, WI-1064), and no\n" +
+      "//   corpus sort writes a data-shape conversion, so the mapping is unmeasured.\n"
+    ).mkString
 
   /** What an algebra sort's operations are an algebra OVER. */
   private enum Carrier:

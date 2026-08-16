@@ -415,6 +415,9 @@ pub enum LoadError {
         carrier: String,
         spec: String,
         required: String,
+        /// WI-1110 — the provision the author DID write, when `spec` names a row this
+        /// load derived from it. `None` for a written row.
+        derived_from: Option<String>,
     },
     /// WI-1046 (spec §6.6): a boolean operator written in a GOAL position that has no
     /// goal reading. Today that is exactly `and` (`a & b`, or the word form): `not` and
@@ -1918,9 +1921,11 @@ impl LoadError {
                 carrier,
                 spec,
                 required,
+                derived_from,
             } => {
-                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier)",
-                    carrier, spec, required, carrier, required, required)
+                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier){}",
+                    carrier, spec, required, carrier, required, required,
+                    derived_row_clause(spec, derived_from.as_deref()))
             }
             LoadError::ProvisionConditionsTooWeak {
                 carrier,
@@ -2763,11 +2768,17 @@ impl std::fmt::Display for LoadError {
                 carrier,
                 spec,
                 required,
+                derived_from,
             } => {
                 write!(
                     f,
-                    "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'",
-                    carrier, spec, required, carrier, required
+                    "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'{}",
+                    carrier,
+                    spec,
+                    required,
+                    carrier,
+                    required,
+                    derived_row_clause(spec, derived_from.as_deref())
                 )
             }
             LoadError::ProvisionConditionsTooWeak {
@@ -6612,7 +6623,118 @@ impl ScopePass for ImportPass<'_> {
                     }
                 }
             }
+            // WI-1110 — `provides` BRINGS CONTENTS, exactly as `requires` does, and for
+            // the same reason: both put a dictionary in this sort's hands. `requires
+            // A[T]` says the caller passes one in; a spec's `provides A[T]` says we can
+            // build one from ourselves. Either way an `A` is available inside this
+            // scope, so `A`'s names resolve here.
+            //
+            // IT IS THE NAMING HALF OF THIS TICKET AND IT IS LOAD-BEARING. `Ord` used to
+            // reach `gt`/`gte`/`lt`/`lte` through `requires PartialOrd[T]`; with the
+            // ordering tower collapsed to `Ord provides WeakOrd[T = T]` those clauses are
+            // gone, and without this link `import anthill.prelude.Ord.{gte}` stops
+            // resolving (DRIVEN — that is the exact failure the collapse produced). The
+            // link is transitive through the parent walk, so the one edge to `WeakOrd`
+            // reaches `PartialOrd` beneath it.
+            //
+            // GATED ON THE CLAUSE SPEAKING ONLY ABOUT THE SORT'S OWN PARAMETERS, which
+            // is the syntactic shadow of `provision_is_conversion` (kb/typing.rs) — the
+            // semantic predicate is not askable here, since sub-pass 2 runs before any
+            // `OperationInfo` exists and so before the target's carrier parameter is
+            // knowable. UNGATED WAS MEASURED AND WRONG: `provides` is written far more
+            // often than `requires` and by CARRIERS, and splicing each target's scope in
+            // re-enters that target's enclosing namespace (the WI-1089 / WI-993 hazard,
+            // already documented one arm over). A fixture declaring its own `Cell` beside
+            // `provides Eq[Cell]` went `ambiguous symbol 'Cell' … candidates
+            // ["anthill.prelude.Cell", "wi1033.cell.Cell"]` at nine sites.
+            //
+            // The gate is deliberately WIDER than the semantic predicate — `LogicalStream
+            // provides Stream[T = T, E = E]` passes it and is not a conversion — and that
+            // is the safe direction: it only ever ADDS visibility, and every conversion is
+            // inside it, which is what the naming half has to guarantee.
+            //
+            // `Item::ProvidesBlock` is deliberately NOT here, and it is not an omission:
+            // `provides Int64 language rust` (anthill-stl) is a HOST-BINDING block whose
+            // `spec` field names the CARRIER, not a spec. Wiring it spliced `Int64`'s,
+            // `String`'s, `BigInt`'s and `Float`'s scopes into `anthill.prelude` itself
+            // — MEASURED as 72 load errors, every `gte`/`lt`/`max` in the ordering tower
+            // going `ambiguous symbol ... candidates [PartialOrd.gte, Int64.gte,
+            // BigInt.gte, String.gte, Float.gte]`. Two clauses, one keyword.
+            Item::ProvidesClause(p) => {
+                wire_provides_scope_parent(kb, parse_sym, &p.spec, scope);
+            }
             _ => {}
+        }
+    }
+}
+
+/// WI-1110 — does this `provides` clause bind EVERY argument to a type parameter of the
+/// sort that writes it, and at least one? That is the shape of a claim about an abstract
+/// thing (`Ord provides WeakOrd[T = T]`) rather than about a value
+/// (`Set provides Eq[T = Set]`, `List provides Stream[T, {}]`, `Pair provides Ord[Pair]`).
+///
+/// Sub-pass 1 has already registered the sort's parameters (`add_type_param`), so this
+/// reads them rather than guessing; a positional binding is read the same way as a named
+/// one, since `provides Stream[T, E]` and `provides Stream[T = T, E = E]` are the same
+/// clause.
+fn provides_speaks_only_of_own_params(
+    kb: &KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    spec: &TypeExpr,
+    scope: ScopeId,
+) -> bool {
+    let TypeExpr::Parameterized { bindings, .. } = spec else {
+        return false;
+    };
+    !bindings.is_empty()
+        && bindings.iter().all(|b| match &b.bound {
+            TypeExpr::Simple(n) => {
+                let name = join_segments(parse_sym, &n.segments);
+                kb.symbols.is_type_param(scope, &name)
+            }
+            _ => false,
+        })
+}
+
+/// WI-1110 — the `provides` half of sub-pass 2's scope wiring, sharing the `requires`
+/// arm's ladder verbatim: scope-aware resolution first (imports and aliases included),
+/// then the absolute rung, through `ResolveResult::or_else` so AN AMBIGUITY ENDS IT
+/// (§8.6) rather than standing the next rung up (WI-1030).
+///
+/// SILENT ON A MISS, and deliberately unlike the `requires` arm: an unresolvable
+/// `provides` spec is already reported by the LOAD phase (`load_provides_clause`), and
+/// a second diagnostic here would double every one of them. The kind refusal is the
+/// load phase's too, so this adds no `RequiresNamesNonSort` twin — it only declines to
+/// link a target with no contents.
+fn wire_provides_scope_parent(
+    kb: &mut KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    spec: &TypeExpr,
+    scope: ScopeId,
+) {
+    let spec_name = type_expr_base_name(parse_sym, spec);
+    if spec_name == "anthill.prelude.EffectsRuntime" {
+        return;
+    }
+    if !provides_speaks_only_of_own_params(kb, parse_sym, spec, scope) {
+        return;
+    }
+    let resolved = kb
+        .symbols
+        .resolve_in_scope(&spec_name, scope)
+        .or_else(|| match kb.try_resolve_symbol(&spec_name) {
+            Some(sym) => ResolveResult::Found(sym),
+            None => ResolveResult::NotFound,
+        });
+    if let ResolveResult::Found(sym) = resolved {
+        if let Some(parent_scope) = parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
+            kb.symbols.add_parent(
+                scope,
+                ScopeInclusion {
+                    parent_scope,
+                    is_enclosing: false,
+                },
+            );
         }
     }
 }
@@ -8975,7 +9097,15 @@ fn load_phase_inner(
     // below then inherits the forwarded spec's operations onto every carrier that gained
     // a row, which is the read that makes `WeakOrd.compare` dispatch on them.
     kb.provides_index = None;
+    // WI-1110 — the requires chain now READS provisions (`self_supplied_entries`), so
+    // a pass that asserts provisions invalidates it. The rows this pass adds are
+    // concrete-carrier ones and so are never conversions, i.e. no chain entry can
+    // actually change here — invalidated anyway, because "this particular producer
+    // happens not to matter" is the reasoning that leaves a stale cache behind the
+    // next producer (WI-954).
+    kb.invalidate_requires_chain_cache();
     super::typing::derive_forwarded_provisions(kb);
+    kb.invalidate_requires_chain_cache();
     super::typing::build_provides_index(kb);
     mark!("derive_forwarded_provisions");
     // A provision is read by the sort-ops table too, and that is not a second place
@@ -9104,6 +9234,17 @@ fn load_phase_inner(
     // mutation; this LOAD-time derivation is legitimate, hence the explicit
     // null-then-rebuild here rather than the eval guard.
     super::typing::build_provides_index(kb);
+    // WI-1110 — AND THE CHAIN CACHE, for the same reason the derivation pass above
+    // invalidates it: `direct_requires` now READS provisions (`self_supplied_entries`),
+    // so every pass that asserts a `SortProvidesInfo` fact owes this call, and this is
+    // the last one that does. The chain is already populated by the time we get here —
+    // `check_provider_requires` builds it for every provider — so a stale entry would be
+    // served to `check_use_site_requires_eq`, `check_override_refinement`, codegen and
+    // eval. The rows eq_derive adds are concrete-carrier ones and so are never
+    // conversions, i.e. no entry can actually change; invalidated anyway, because "this
+    // particular producer happens not to matter" is the reasoning that leaves a stale
+    // cache behind the next one (WI-954).
+    kb.invalidate_requires_chain_cache();
     mark!("eq_derive::run");
     // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
     // Eq and the witnessed non-reflexive NonEq is contradictory. Opt-in: does

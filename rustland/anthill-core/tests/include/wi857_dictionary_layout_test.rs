@@ -416,9 +416,16 @@ fn the_layout_counts_what_resolve_bundles() {
     for (spec_qn, expect_spec_half) in [
         ("anthill.prelude.PartialEq", 0),
         ("anthill.prelude.Eq", 1),
-        // WI-1109: 3, not 2 — `Ord` now declares `Eq`, `PartialOrd` AND `WeakOrd`,
-        // the last being the floor split out of it. The count IS the assertion here.
-        ("anthill.prelude.Ord", 3),
+        // WI-1110: back to 1 — and the number moving twice in two tickets is the
+        // point of counting it here. WI-1109 took it 2 -> 3 by splitting `WeakOrd`
+        // out of `Ord` and writing `requires Eq`, `requires PartialOrd`,
+        // `requires WeakOrd` side by side. `Ord`'s whole content is now the single
+        // conversion `provides WeakOrd[T = T]`, which is ONE chain slot; `Eq` and
+        // `PartialOrd` are not gone, they moved to where they are actually
+        // constrained — one level down, inside `WeakOrd`'s own chain — and reach a
+        // carrier through this slot. The DIRECT chain is what a dictionary is laid
+        // out by, so it counts 1.
+        ("anthill.prelude.Ord", 1),
     ] {
         let goal = goal_at(&mut kb, spec_qn, "anthill.prelude.Int64");
         let scope = ResolutionScope {

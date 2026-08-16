@@ -1,6 +1,6 @@
 # Library proposal 007: Weak vs. strong ordering — `PartialOrd` / `WeakOrd` / `Ord`
 
-**Status:** Implemented (WI-1109). The three-floor tower ships in `stdlib/anthill/prelude/ordered.anthill`; `SortedSet`'s comparator slot is `WeakOrd`; the forwarding derivation is `derive_forwarded_provisions` (`kb/typing.rs`). Three things are recorded in §Open questions rather than done: the laws are dormant (nothing discharges them per instance); the `Eq`/`PartialEq` tower is **not** given the same forwarding, because `requires` is what makes `Eq.eq` a *name*; and a forwarding row is still offered as a provider candidate, which makes a reachable diagnostic wart on **both** towers.
+**Status:** Implemented (WI-1109), and two of its three open questions CLOSED by WI-1110 — see §"WI-1110: `provides` on a spec is a conversion". The three-floor tower ships in `stdlib/anthill/prelude/ordered.anthill`; `SortedSet`'s comparator slot is `WeakOrd`; the forwarding derivation is `derive_forwarded_provisions` (`kb/typing.rs`). One thing is still recorded in §Open questions rather than done: the laws are dormant (nothing discharges them per instance). Open questions 2 and 3 — that `Eq` could not get the same forwarding, and that a forwarding row is offered as a provider candidate — turned out to be **one** defect and are answered below; the text of both is kept, because each was refuted by a measurement and the refutation is the finding.
 
 Continues [`004`](004-partial-vs-total-equality-and-ordering.md) exactly as 004 continues [`051`](../051-structural-vs-semantic-equality.md): 051 separated *structural* from *semantic* equality; 004 separated *partial* from *total (lawful)* equality and ordering; this separates *weak* from *strong* ordering — because `Ord` conflates two independent questions, and a witness that satisfies one but not the other already ships in this repo.
 
@@ -132,7 +132,7 @@ What moves is **coarse comparators**, which is the point: a witness ordering by 
 
 1. **The laws are dormant.** Nothing discharges `eq_refl`, `compare_congruent` or `compare_eq` per instance, so `Ord`-vs-`WeakOrd` is enforced by which spec a carrier *declares*, not by a proof. A law-discharge capability is what would catch a `ByLength` declared under the wrong spec; it is a separate arc.
 
-2. **`Eq` does not get the same forwarding, and the reason is NAMING, not circularity.** Both variants were driven:
+2. **`Eq` does not get the same forwarding, and the reason is NAMING, not circularity.** *(CLOSED by WI-1110 — the conclusion was wrong, though the measurements were not; see §"WI-1110: `provides` on a spec is a conversion". Text kept.)* Both variants were driven:
 
    | | |
    |---|---|
@@ -143,6 +143,85 @@ What moves is **coarse comparators**, which is the point: a witness ordering by 
 
    **A FIRST DRAFT OF THIS SECTION CLAIMED THE CYCLE WAS PECULIAR TO THE EQUALITY TOWER. It is not, and the correction matters more than the claim did.** `Ord` carries both clauses and cycles identically — it is merely *masked*, because `WeakOrd requires PartialOrd` fails first for most carriers. Driven: a carrier providing `Eq` and `PartialOrd` but no `compare` gets `construction is cyclic: WeakOrd[T = Half] -> WeakOrd[T = Half]`. The first probe used a carrier with *no* provisions at all, failed at `PartialOrd`, and was read as absence of the cycle rather than as an earlier failure hiding it.
 
-3. **The forwarding row is offered as a provider candidate, and it should not be.** That is what both cycles are: `Ord` is not a carrier — nothing has type `Ord` — yet `impl_sorts_providing_spec(WeakOrd)` returns it, so the resolver tries it and loops. A forwarding row is a *rule about the relation*, not a provider of anything. Excluding such rows from candidate collection is the clean statement, and it would remove the cycle from both towers; it is not done here because `Stream provides Iterable` is the same shape and dispatch on streams may depend on it, so the change needs its own measurement. Today the cycle only degrades a diagnostic — a refusal either way, never a wrong answer — which is why it is recorded rather than rushed.
+3. **The forwarding row is offered as a provider candidate, and it should not be.** *(CLOSED by WI-1110, and the stated risk — `Stream provides Iterable` — turned out not to be the same shape; see below. Text kept.)* That is what both cycles are: `Ord` is not a carrier — nothing has type `Ord` — yet `impl_sorts_providing_spec(WeakOrd)` returns it, so the resolver tries it and loops. A forwarding row is a *rule about the relation*, not a provider of anything. Excluding such rows from candidate collection is the clean statement, and it would remove the cycle from both towers; it is not done here because `Stream provides Iterable` is the same shape and dispatch on streams may depend on it, so the change needs its own measurement. Today the cycle only degrades a diagnostic — a refusal either way, never a wrong answer — which is why it is recorded rather than rushed.
 
 4. **`max`/`min` return an observable representative.** At a tie the first operand wins both, which is invisible when the kernel is `Eq` and observable when it is coarser. Stated as contract at the declaration; whether a `WeakOrd` consumer should be able to *ask* for a canonical representative is unexplored.
+
+
+---
+
+## WI-1110: `provides` on a spec is a conversion
+
+**Open questions 2 and 3 above are ONE defect, and it is not in this library.** They were
+written as two — "`Eq` cannot forward, because `requires` is what makes `Eq.eq` a name"
+and "a forwarding row is offered as a provider candidate, which it should not be" — and
+both are symptoms of a single misfiling in the kernel.
+
+**The model** (supplied by the user, 2026-08-15): a dictionary-chain entry carries a
+**supply source**.
+
+| clause | the dictionary is… |
+|---|---|
+| `requires A[T]` | **passed in** — an inbound slot the caller fills |
+| a spec's `provides A[T]` | **built from self** — "hold an `A`-forwarder and you can obtain an `A`" |
+
+Both are chain entries. `B provides A` reads as "we know how to obtain an `A` from a `B`",
+which is what `B <: A` means operationally — a **conversion**.
+
+**The category error.** A *carrier's* `provides` is a fact about the world (`Int64 provides
+Ord[T = Int64]`) and belongs in the searchable provider relation. A *spec's* `provides` is
+a conversion and belongs in the chain. WI-1109 put a conversion in the provider table, and
+all of it followed:
+
+* `Ord` was returned as a candidate for **every** `WeakOrd` goal. Instrumented on the
+  shipped tree: `WeakOrd[T = Int64]` → `[Ord, Int64]`; at a rigid variable → `[Ord]`
+  **alone**.
+* `Ord` therefore also needed `requires WeakOrd[T]` — the conversion could supply no
+  dictionary, so an inbound slot was added to get one.
+* The cycle on both towers: one edge as both a provider and a requirement.
+* `Eq provides PartialEq` going *vacuous* with `provides` alone — a universal provider row
+  with no cycle left to reject it.
+* `Eq.eq` ceasing to resolve under `provides` alone — naming follows the **chain**
+  (WI-614), and a provider row put nothing there.
+
+**What the tower looks like now.** `Ord`'s whole content is one line:
+
+```anthill
+sort anthill.prelude.Ord
+  sort T = ?
+  provides WeakOrd[T = T]
+  rule compare_eq: eq(?a, ?b) <=> eq(WeakOrd.compare(?a, ?b), 0)
+end
+```
+
+`requires Eq[T]`, `requires PartialOrd[T]` and `requires WeakOrd[T]` are all gone: they are
+`WeakOrd`'s, and they reach a carrier through the conversion. `Eq` likewise becomes
+`provides PartialEq[T = T]`, so a carrier writing `provides Eq[X]` gets `provides
+PartialEq[X]` derived instead of writing it — the same argument 058 §3.8 makes for
+`Ord`/`WeakOrd`, now available one tower over.
+
+**Telling the two clauses apart.** A provision is a conversion when it binds the target's
+**carrier parameter** to one of the subject's own type parameters **and** the subject
+supplies none of the target's operations. The second half is not decoration: a *parametric
+witness* — `sort AnyM { sort E = ?; provides Monoid[T = E]; operation combine(a: E, b: E) }`
+— has the identical shape and *is* a dictionary, and reading it as a conversion made its
+own slot resolve back to itself (`construction is cyclic: Monoid[T = Int64] -> …`). A
+**self-representing** spec (`Stream`, `FiniteStream`, `LogicalStream`) has no carrier
+parameter at all, so `LogicalStream provides Stream[T = T, E = E]` stays the membership
+claim it is — which is what answers open question 3's stated risk: value-directed dispatch
+of `Stream` ops on a `Relation` reaches that row exactly as before.
+
+**What open question 2 got wrong, precisely.** Not the numbers — 1867 and 32 both
+reproduce — but the conclusion drawn from them. The two clauses were never mutually
+exclusive; one of them was misfiled. Filed as a chain entry, a `provides` brings the
+target's scope with it just as `requires` does, so `import anthill.prelude.Eq.{eq}` keeps
+resolving, and it is never offered as a provider, so there is no loop to close.
+
+**And open question 3's "only degrades a diagnostic" was too kind to it.** Every ordering
+goal at a real carrier carried a spurious second candidate eliminated only by cycle
+detection running and failing — correctness resting on a rejection rather than on the
+candidate never being offered. The truthful message arrives with the fix: comparing a
+`Pair[Float, …]` now reports `unresolved: WeakOrd[T = Float]` (the condition the provision
+actually wrote) where it used to report `Eq[T = Float]`, one level deeper, reached only by
+descending into `Ord`'s own requirements.
+

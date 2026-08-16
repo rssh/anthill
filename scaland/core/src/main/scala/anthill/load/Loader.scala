@@ -582,8 +582,9 @@ object Loader:
         // vocabulary. Measured: moving `pair.anthill`'s two `requires PartialEq`
         // clauses into conditions removed two parent links from scaland's `Pair` scope
         // until this arm existed.
-        case Item.ProvidesClauseItem(pc) if pc.conditions.nonEmpty =>
+        case Item.ProvidesClauseItem(pc) =>
           processProvidesConditions(kb, pc, fileSym, scope, errors)
+          processProvidesHead(kb, pc, fileSym, scope, errors)
 
         // WI-727 (proposal 056): "at most one variadic capture parameter, and
         // trailing" is checked HERE and not in the parser — the diagnostic quotes the
@@ -983,6 +984,65 @@ object Loader:
   ): Unit =
     pc.conditions.foreach(c =>
       linkSpecScope(kb, c, pc.span, "provides … :-", fileSym, scope, errors))
+
+  /** WI-1110 — a SPEC's `provides` is a CONVERSION, and a conversion lends its names
+    * exactly as a `requires` does: both put a dictionary in the declaring sort's hands,
+    * so both make the target's members resolvable inside it. `Ord`'s whole content is
+    * `provides WeakOrd[T = T]`, so without this link `import anthill.prelude.Ord.{gte}`
+    * stops resolving — `gte` lives two floors down and is reached through the chain.
+    *
+    * GATED ON THE CLAUSE SPEAKING ONLY OF THE SORT'S OWN PARAMETERS, mirroring
+    * rustland's `provides_speaks_only_of_own_params` (kb/load.rs), and for the reason
+    * measured there: `provides` is written far more often than `requires` and by
+    * CARRIERS, and splicing each target's scope in re-enters that target's enclosing
+    * namespace, so a carrier declaring its own `Cell` beside `provides Eq[Cell]` starts
+    * reporting `ambiguous symbol 'Cell'`. A clause binding only the sort's parameters is
+    * a claim about an abstract thing; one naming a concrete carrier is a claim about a
+    * value and brings nothing new into scope.
+    *
+    * A MISS IS SILENT here, unlike the `requires` arm: an unresolvable provision spec is
+    * already reported where the provision is loaded, and a second diagnostic would
+    * double every one of them. */
+  private def processProvidesHead(
+    kb: KnowledgeBase,
+    pc: anthill.parse.ProvidesClause,
+    fileSym: SymbolTable,
+    scope: kb.ScopeId,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    // The `effects E = ?` desugar's synthetic anchor, skipped for the reason the
+    // `requires` arm gives at length: wiring it splices the whole prelude namespace in as
+    // a resolution parent of every effects-bearing sort (WI-703). Rustland's twin
+    // (`wire_provides_scope_parent`, kb/load.rs) carries the same exemption, and the two
+    // loaders differing about which clauses they wire is the drift this prevents.
+    if type_expr_base_name_is_effects_runtime(fileSym, pc.spec) then return
+    val speaksOnlyOfOwnParams = pc.spec match
+      case TypeExpr.Parameterized(_, bindings) if bindings.nonEmpty =>
+        bindings.forall(_.bound match
+          case TypeExpr.Simple(n) =>
+            kb.symbols.isTypeParam(scope, joinSegments(fileSym, n.segments))
+          case _ => false)
+      case _ => false
+    if speaksOnlyOfOwnParams then
+      // SILENCED SELECTIVELY, not wholesale. The load phase already reports an
+      // unresolvable provision spec, so a `UnresolvedName` here would double every one of
+      // them — but an AMBIGUITY is reported by nobody else, and swallowing it loses the
+      // target's names with no diagnostic at all (§8.6: an ambiguity ends the ladder, it
+      // is not a miss). So the miss is dropped and the ambiguity is kept.
+      val silenced = ArrayBuffer.empty[LoadError]
+      linkSpecScope(kb, pc.spec, pc.span, "provides", fileSym, scope, silenced)
+      errors ++= silenced.collect { case e: LoadError.AmbiguousSymbol => e }
+
+  /** The `effects E = ?` desugar's `anthill.prelude.EffectsRuntime` anchor — a synthetic
+    * kind-marker and not a spec whose scope anything should resolve names against. */
+  private def type_expr_base_name_is_effects_runtime(
+    fileSym: SymbolTable, typeExpr: TypeExpr
+  ): Boolean =
+    (typeExpr match
+      case TypeExpr.Simple(name) => Some(name)
+      case TypeExpr.Parameterized(name, _) => Some(name)
+      case _ => None
+    ).exists(n => joinSegments(fileSym, n.segments) == "anthill.prelude.EffectsRuntime")
 
   /** Resolve a spec instantiation by its BASE NAME and link the spec's scope as a
     * parent of `scope`. Shared by `requires` and by a provision's `:- goals`;

@@ -637,9 +637,12 @@ end
     assert_eq!(slot, 0, "Ord is Wi239Nested's direct require slot 0",);
     assert_eq!(
         proj_path.as_slice(),
-        &[0usize, 0usize],
-        "WI-644: `eq`'s spec is now `PartialEq`, nested one level deeper — \
-         Ord → Eq (slot 0) → PartialEq (slot 0), so the projection path is \
-         [0, 0]. The extra hop is the added PartialEq base level.",
+        &[0usize, 0usize, 0usize],
+        "WI-1110: one hop deeper again, and each hop is a floor the tower gained. \
+         WI-644 made it [0, 0] — Ord → Eq → PartialEq — when `PartialEq` was split \
+         out below `Eq`. `Ord` no longer requires `Eq` at all: its whole content is \
+         `provides WeakOrd[T = T]`, and `Eq` is `WeakOrd`'s requirement, so the path \
+         is Ord → WeakOrd (slot 0) → Eq (slot 0) → PartialEq (slot 0). The value \
+         `eq` reads is the same one; it is one projection further inside the bundle.",
     );
 }

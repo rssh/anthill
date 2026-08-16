@@ -180,34 +180,27 @@ end
 sort anthill.prelude.Ord
   sort T = ?
 
-  -- The obligations an `Ord` carrier owes. They are `WeakOrd`'s, restated here because
-  -- this spec FORWARDS to `WeakOrd` (below) rather than requiring it: a forwarding
-  -- carries the forwarded spec's requirements to the eventual carrier, and this is
-  -- where they are written down so they get there.
-  requires Eq[T]
-  requires PartialOrd[T]
-
-  -- AND THE FLOOR BELOW, AS A DICTIONARY. `provides` alone was NOT enough, and the
-  -- difference is the point: `provides WeakOrd` says every Ord CARRIER is a WeakOrd
-  -- carrier, while `requires WeakOrd` says every Ord DICTIONARY contains a WeakOrd one.
-  -- Only the second lets a body written against `requires Ord[T]` reach `WeakOrd.compare`
-  -- — MEASURED, without this a holder `sort H { sort T = ?  requires Ord[T]
-  -- operation cmp(a, b) = WeakOrd.compare(a, b) }` fails to resolve its own call, which
-  -- is what every `Ord`-constrained generic in every downstream program looks like.
-  -- The two clauses are not redundant and not circular: this one is read at a USE site
-  -- (the scope chain), the `provides` below at a CARRIER (the provision relation), and
-  -- the derivation makes the second satisfy the first without a carrier writing a line.
-  requires WeakOrd[T]
-
-  -- THE WHOLE CONTENT OF THIS FLOOR, ONE LINE. A carrier providing `Ord` thereby
-  -- provides `WeakOrd` — ONE `compare`, one order, with this floor asserting the extra
-  -- law about it. Deriving beats writing both floors (058 §3.8): two hand-written
-  -- provisions permit a bundle whose halves disagree, whereas one `compare` cannot.
+  -- THE WHOLE CONTENT OF THIS FLOOR, ONE LINE, AND ONE LINE IS ENOUGH (WI-1110).
+  -- A carrier providing `Ord` thereby provides `WeakOrd` — ONE `compare`, one order,
+  -- with this floor asserting the extra law about it. Deriving beats writing both
+  -- floors (058 §3.8): two hand-written provisions permit a bundle whose halves
+  -- disagree, whereas one `compare` cannot.
   --
-  -- This is a SPEC forwarding to a SPEC, the `Stream provides Iterable` shape
-  -- (stream.anthill) — and the first one whose forwarded spec declares `requires` at
-  -- all, which is why WI-1109 had to lift the provider-requirements check to recognise
-  -- a forwarding (kb/typing.rs, `forwarded_to_requires`).
+  -- `provides` ON A SPEC IS A CONVERSION, and a conversion is a chain entry: "hold an
+  -- `Ord[T]` and you can obtain a `WeakOrd[T]`", which is what `Ord <: WeakOrd` means
+  -- operationally. So this one clause does everything the four it replaces did —
+  -- a body written against `requires Ord[T]` reaches `WeakOrd.compare` through the
+  -- slot this puts in the chain, and `WeakOrd`'s own `requires Eq[T]` and
+  -- `requires PartialOrd[T]` travel to the carrier through it, which is why they are no
+  -- longer restated here.
+  --
+  -- WI-1109 SHIPPED THIS AS `requires WeakOrd[T]` + `provides WeakOrd[T = T]` with a
+  -- note insisting the two were "not redundant and not circular". They were one edge
+  -- written twice: the `provides` half was filed in the PROVIDER table, where it made
+  -- `Ord` an answer to every `WeakOrd` goal (measured `WeakOrd[T = Int64]` ->
+  -- `[Ord, Int64]`), and the `requires` half then closed the loop over it — a cycle
+  -- caught only because the cycle detector ran. A conversion belongs in the chain, not
+  -- in a table of what has which type; nothing has type `Ord`.
   provides WeakOrd[T = T]
 
   -- THE LAW, and with `WeakOrd`'s congruence it says the kernel of `compare` is exactly

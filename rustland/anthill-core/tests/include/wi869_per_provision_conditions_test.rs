@@ -145,12 +145,16 @@ fn a_total_comparison_of_a_float_pair_names_the_unmet_condition() {
     assert!(
         errs.iter().any(|e| {
             e.contains("anthill.prelude.WeakOrd.compare")
-                && e.contains("unresolved: anthill.prelude.Eq[T = anthill.prelude.Float]")
+                && e.contains("unresolved: anthill.prelude.WeakOrd[T = anthill.prelude.Float]")
         }),
-        "the refusal must name the unmet component condition; WI-1109 moved which one \
-         it is — `WeakOrd requires Eq`, and `Float` fails `Eq` before it could fail any \
-         ordering condition, so `Eq[Float]` is now the first unmet one and the deeper \
-         reason the pair cannot be compared; got {errs:?}",
+        "the refusal must name the unmet component condition, and WI-1110 makes it name \
+         THE ONE THE PROVISION WROTE: `provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B]` \
+         at `A = Float`, i.e. `WeakOrd[Float]`. WI-1109 reported `Eq[Float]` one level \
+         deeper, and only because `Ord` was offered as a candidate provider of \
+         `WeakOrd[Float]` — a conversion in the provider search space — so the search \
+         descended into `Ord`'s own `requires Eq` before failing. With the conversion out \
+         of that space the answer is the truthful one this ticket was filed for: nothing \
+         provides `WeakOrd` at `Float`; got {errs:?}",
     );
 }
 
@@ -669,15 +673,23 @@ fn cell_tower(eq_cond: &str) -> String {
 /// from the outer provision") held by construction when a carrier had one chain; it is
 /// now a claim about two independent lists.
 ///
-/// The unsound spelling conditions `Eq[Cell]` on a spec `Ord` does not require, so
-/// `Ord[Cell]` would be claimed where the `Eq` it needs does not hold.
+/// The unsound spelling conditions `Eq[Cell]` on a spec the ordering tower does not
+/// require, so an ordering on `Cell` would be claimed where the `Eq` it needs does not
+/// hold.
+///
+/// WI-1110 MOVED WHICH SPEC THE MESSAGE NAMES, and the defect it catches is unchanged.
+/// `Ord` no longer requires `Eq` — its whole content is `provides WeakOrd[T = T]` — so
+/// the requirement is stated where it is actually constrained, and the refusal now reads
+/// `provides 'WeakOrd', which requires 'Eq'`. The unentailed condition named is still
+/// `Lawful[T = Cell.E]`, and the control below (`Eq[Cell] :- Eq[E]`) still loads, which
+/// is what says the check discriminates rather than refusing every conditional tower.
 #[test]
 fn a_provision_certified_by_a_weaker_conditioned_one_is_refused() {
     let errs = load_errs(&cell_tower("Lawful[E]"));
     assert!(
         errs.iter().any(|e| {
             e.contains(
-                "provides 'anthill.prelude.Ord', which requires \
+                "provides 'anthill.prelude.WeakOrd', which requires \
                         'anthill.prelude.Eq'",
             ) && e.contains("DOES provide")
                 && e.contains("`wi1033.cell.Lawful[T = wi1033.cell.Cell.E]`")

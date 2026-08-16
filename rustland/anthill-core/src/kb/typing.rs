@@ -16960,6 +16960,7 @@ fn explain_dep_refusal(
             let composed = RequiresEntry {
                 required_sort: sub.required_sort,
                 spec: substitute_in_spec(kb, &sub.spec, map),
+                supply: sub.supply,
             };
             if entries_cover(kb, &composed, dep, None)
                 && !entries_cover(kb, &composed, dep, Some(ctx))
@@ -17280,6 +17281,7 @@ fn build_concrete_dispatch_dict(
         .map(|entry| RequiresEntry {
             required_sort: entry.required_sort,
             spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+            supply: entry.supply,
         })
         .collect();
     let Some(syms) = ProjectionSyms::resolve(kb) else {
@@ -17402,6 +17404,7 @@ fn build_op_scoped_dicts(
         let dep = RequiresEntry {
             required_sort: entry.required_sort,
             spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+            supply: entry.supply,
         };
         // WI-1091: ask the search for its terminal outcome, so the tie below is the one
         // THIS search saw rather than a re-run that could disagree with it — the same
@@ -17922,6 +17925,7 @@ pub fn build_dep_projection(
                     let composed = RequiresEntry {
                         required_sort: sub_chain[k].required_sort,
                         spec: substitute_in_spec(kb, &sub_chain[k].spec, map),
+                        supply: sub_chain[k].supply,
                     };
                     entries_cover(kb, &composed, dep, Some(ctx))
                 })
@@ -18731,6 +18735,7 @@ pub(crate) fn resolve_bridge_requirements(
         let concrete = RequiresEntry {
             required_sort: entry.required_sort,
             spec: concrete_spec,
+            supply: entry.supply,
         };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
             if op_half {
@@ -20979,6 +20984,7 @@ fn substituted_entry(
     RequiresEntry {
         required_sort: entry.required_sort,
         spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+        supply: entry.supply,
     }
 }
 
@@ -23773,6 +23779,23 @@ fn nullary_carrier_impl_op(
     Some(impl_op)
 }
 
+/// WI-1110 — the impl sorts [`collect_provides_candidates`] offers for `goal`, in the
+/// order it offers them.
+///
+/// A DIAGNOSTIC READER, and the ticket that added it could not be measured without one:
+/// its defect was a candidate that should never have been offered, and cycle detection
+/// rejected that candidate afterwards, so every observable outcome — the load verdict,
+/// the resolved tree, the error text — was IDENTICAL with and without it. The only place
+/// the difference exists is this list. Carries no policy of its own: it is
+/// `collect_provides_candidates` with the head-only match (`sigma = None`), projected to
+/// the impl symbol.
+pub fn dispatch_candidate_impl_sorts(kb: &mut KnowledgeBase, goal: &SortGoal) -> Vec<Symbol> {
+    collect_provides_candidates(kb, goal, None)
+        .into_iter()
+        .map(|c| c.impl_sort)
+        .collect()
+}
+
 fn collect_provides_candidates(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -23833,6 +23856,47 @@ fn collect_provides_candidates(
             continue;
         };
         if view_base_sym != goal.spec_sort {
+            continue;
+        }
+        // WI-1110 — A CONVERSION IS NOT A PROVIDER. `Ord provides WeakOrd[T = T]` says
+        // "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`"; it does not say anything
+        // has type `Ord`, and nothing ever will. Offering it here made `Ord` an answer to
+        // every `WeakOrd` goal — MEASURED on the shipped tree, `WeakOrd[T = Int64]`
+        // returned `[Ord, Int64]` and `WeakOrd[T = <rigid>]` returned `[Ord]` ALONE — so
+        // every ordering goal at a real carrier carried a spurious second candidate
+        // eliminated only by cycle detection running and failing, and at an abstract
+        // element the only candidate offered was one that cannot answer.
+        //
+        // NOT A LOST ANSWER, A RELOCATED ONE: the row's carriers get their own direct
+        // provision materialized by [`derive_forwarded_provisions`], whose predicate is
+        // strictly wider than [`provision_is_conversion`] — so `Int64 provides WeakOrd`
+        // exists as a fact and answers the goal `Ord` used to be offered for.
+        //
+        // The `goal.carrier = Some(..)` route (a VALUE dispatching a spec op, which
+        // reaches `LogicalStream provides Stream` deliberately — WI-714 / WI-495 /
+        // WI-496) is out of reach here rather than exempted: a conversion's target has a
+        // carrier PARAMETER by construction, and a spec with one is not the
+        // self-representing kind a value's static type dispatches through.
+        //
+        // A SKIP AT TWO READERS, NOT A CHANGE TO THE RELATION, and that is a recorded
+        // limitation rather than the finished shape. The conversion stays a live
+        // `SortProvidesInfo` fact — it has to, because `derive_forwarded_provisions`
+        // reads it to materialize each carrier's row — so every OTHER reader still sees
+        // it: `sort_provides(Ord, WeakOrd)` is true, `build_sort_ops_table` pass 2 gives
+        // `Eq` the inherited `eq`, the default-provider seeding classifies `Eq` as a
+        // self-provider of `PartialEq`, and the coherence grouping and codegen backends
+        // see the row too. MEASURED that none of them answers wrongly today — full
+        // workspace and scaland green, and the two instrumented candidate tests are the
+        // only readers whose answer this skip changes — and it is sound for one reason
+        // that holds for all of them: nothing has type `Ord` or `Eq`, so a reader that
+        // treats the conversion as a provision reaches a carrier that never arrives.
+        // The finished shape marks the ROW (as `mark_derived_provision` marks a derived
+        // one) so the relation itself distinguishes a conversion, and every reader gets
+        // the answer without being taught. Two `continue`s is the shape WI-1109's own
+        // derivation note warns about ("patching two readers surfaced a third"); it is
+        // taken here because marking the row is a change to the provision relation's
+        // schema and this ticket already moves the dictionary layout twice.
+        if is_conversion_edge(kb, impl_sort, view_base_sym) {
             continue;
         }
 
@@ -25237,6 +25301,9 @@ fn conditions_entail(
         spec_base_functor(kb, spec).map(|required_sort| RequiresEntry {
             required_sort,
             spec: spec.clone(),
+            // A `provides … :- goals` tail is an INBOUND obligation on whoever wants
+            // the provision, not a conversion the spec supplies from itself.
+            supply: SupplySource::Required,
         })
     };
     let mut unentailed: Option<String> = None;
@@ -25296,6 +25363,7 @@ fn condition_entails(kb: &mut KnowledgeBase, pc: &RequiresEntry, q: &RequiresEnt
         let composed = RequiresEntry {
             required_sort: sub.required_sort,
             spec: substitute_in_spec(kb, &sub.spec, &map),
+            supply: sub.supply,
         };
         if requires_entries_agree(kb, &composed, q) {
             return true;
@@ -25351,6 +25419,14 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         /// enclosing param only by the shared short name, so a symbol-keyed
         /// σ would never reach it.
         sigma: SmallVec<[(String, TermId); 2]>,
+        /// WI-1110 — the row this provision was decoded from, kept so a refusal can ask
+        /// [`KnowledgeBase::derived_provision_origin_of`] whether the author wrote it.
+        /// The relocation this ticket performs routes obligations through DERIVED rows —
+        /// `Half` writes `provides Ord[T = Half]` and is refused about `WeakOrd` — so
+        /// without it every such message names a clause that is not in the source. WI-1109
+        /// added the provenance channel for exactly this wording one check over
+        /// (`check_provider_operations`); this is its second reader.
+        rid: crate::kb::RuleId,
     }
     let mut provisions: Vec<Provision> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
@@ -25413,11 +25489,37 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             carrier,
             spec: spec_base,
             sigma,
+            rid,
         });
     }
 
     let mut errors = Vec::new();
     for p in &provisions {
+        // WI-1110 — A CONVERSION OWES NOTHING HERE, and the obligation is not waived but
+        // RELOCATED. `Ord provides WeakOrd[T = T]` is a spec's `provides`: it says an
+        // `Ord[T]` dictionary yields a `WeakOrd[T]` one, and asking whether `Ord`
+        // provides `WeakOrd`'s own `requires Eq[T]` is the wrong question — `Ord` is a
+        // spec, it provides nothing and never will. The obligation belongs to whatever
+        // CARRIER eventually provides `Ord`, and it gets there through the chain: the
+        // conversion is a chain entry of `Ord` ([`self_supplied_entries`]), so
+        // `Int64 provides Ord` is checked for `WeakOrd[Int64]`, which the DERIVED row
+        // `Int64 provides WeakOrd` answers — and that row is itself a provision this
+        // same loop then checks for `Eq[Int64]` and `PartialOrd[Int64]`.
+        //
+        // THIS REPLACES WI-1109's `forwarded_to_requires`, which relocated the same
+        // obligation to the forwarder's own `requires` — and so needed `Ord` to restate
+        // `requires Eq[T]` / `requires PartialOrd[T]` for a floor it does not itself
+        // constrain. DRIVEN: deleting those two clauses with the old escape in place
+        // fails the stdlib load with two `UnsatisfiedProviderRequires`; with this skip
+        // they are no longer needed and the carrier is still asked. BOTH relocated
+        // obligations are driven, and they need two fixtures rather than one:
+        // `an_ord_carrier_still_owes_eq` measures `PartialOrd` (its carrier is a TOTAL
+        // composite, so `eq_derive` has already paid its `Eq` — the test's own doc says
+        // so and forbids repairing it to `Eq`), and `a_parametric_ord_carrier_owes_eq`
+        // measures `Eq` on a PARAMETRIC composite, which `eq_derive` does not classify.
+        if is_conversion_edge(kb, p.carrier, p.spec) {
+            continue;
+        }
         for goal in provider_requires_subgoals(kb, p.spec, &p.sigma) {
             let required = goal.spec_sort;
             if Some(required) == effects_runtime {
@@ -25497,49 +25599,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
                         }
                     }
                 });
-            // WI-1109 — A SPEC-TO-SPEC FORWARDING IS DISCHARGED BY THE PROVIDER'S OWN
-            // `requires`, NOT BY A PROVISION. `Ord provides WeakOrd[T = T]` says "every
-            // `Ord[T]` is a `WeakOrd[T]`", and `WeakOrd requires Eq[T]`. Asking whether
-            // `Ord` PROVIDES `Eq` is the wrong question: `Ord` is a spec, it provides
-            // nothing and never will. The obligation belongs to whatever CARRIER
-            // eventually provides `Ord` — and `Ord requires Eq[T]` is exactly how that
-            // obligation is written and how it reaches the carrier, where THIS check
-            // enforces it on the carrier's own `provides Ord` row. So the requirement is
-            // not waived, it is relocated to the site that can discharge it. This is the
-            // lifting 058 §3.8 defers ("a provider's chain does not discharge the spec's
-            // own requirements ... a separate, deferred increment").
-            //
-            // NARROW BY CONSTRUCTION, and the narrowness is the soundness argument: it
-            // fires only when EVERY binding of the provision is the provider's own
-            // ABSTRACT type parameter. A provision naming a real carrier at any binding
-            // is not a forwarding and is untouched — `ByLength provides Ord[T = String]`
-            // (a concrete binding), `Pair provides Ord[Pair] :- …` (a parameterised sort
-            // head, not a bare param), and `Set provides Eq[T = Set]` (the WI-644
-            // self-carrier route below) all keep the provision-based discharge they had.
-            // Before WI-1109 no stdlib provision could satisfy the guard at all, since
-            // `Stream provides Iterable` — the one shipped spec-to-spec row — forwards a
-            // spec that declares no `requires`, so this branch was never reached.
-            let is_forwarding = !p.sigma.is_empty()
-                && p.sigma.iter().all(|(_, v)| is_type_param_value(kb, *v));
-            // BINDING-PRECISE, and the first draft was not (review of WI-1109). Matching
-            // the required spec's SORT alone would let ANY `requires` of that spec, at
-            // ANY bindings, discharge the forwarding — the exact hole
-            // `self_provides_required` above is written to avoid, one relation over. It
-            // is reachable with two parameters: `sort S { sort A = ?  sort B = ?
-            // requires Eq[A]  provides Sp[X = A, Y = B] }` where `Sp requires Eq[Y]`
-            // asks for `Eq[B]`, and an `Eq` entry bound to `A` would answer it. So the
-            // entry must agree with THIS goal's bindings, which `RequiresEntry.spec`
-            // carries and the first draft never read.
-            let forwarded_to_requires = is_forwarding
-                && !goal.bindings.is_empty()
-                && direct_requires_chain(kb, p.carrier).iter().any(|e| {
-                    kb.canonical_sort_sym(e.required_sort) == required_canon
-                        && unwrap_spec_view_value(kb, &e.spec).is_some_and(|(_, entry)| {
-                            bindings_cover(kb, &entry, &goal.bindings)
-                        })
-                });
-            let satisfied = forwarded_to_requires
-                || if concrete {
+            let satisfied = if concrete {
                     spec_resolves_at_bindings(kb, required, goal.bindings.clone())
                         || self_provides_required
                 } else {
@@ -25577,6 +25637,12 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
                     carrier: kb.qualified_name_of(p.carrier).to_string(),
                     spec: kb.qualified_name_of(p.spec).to_string(),
                     required: kb.qualified_name_of(required).to_string(),
+                    // WI-1110: `Some(origin)` when the row is one this load DERIVED, so
+                    // the message can stop attributing a `provides` clause to an author
+                    // who wrote a different one.
+                    derived_from: kb
+                        .derived_provision_origin_of(p.rid)
+                        .map(|o| kb.qualified_name_of(o).to_string()),
                 });
             }
         }
@@ -36343,6 +36409,9 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
             out.push(RequiresEntry {
                 required_sort: f,
                 spec: clause.clone(),
+                // An OP-scoped `requires` is always inbound: only a SORT can carry
+                // the `provides` clause that self-supplies one.
+                supply: SupplySource::Required,
             });
         }
         _ => {}
@@ -36364,6 +36433,7 @@ fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<R
             out.push(RequiresEntry {
                 required_sort: *functor,
                 spec: Value::term(tid),
+                supply: SupplySource::Required,
             });
         }
         _ => {}
@@ -44186,6 +44256,41 @@ pub struct RequiresEntry {
     pub required_sort: Symbol,
     /// The full SortView spec value (carries bindings like T=Int, combine=add).
     pub spec: Value,
+    /// WI-1110 — where this slot's dictionary COMES FROM. See [`SupplySource`].
+    pub supply: SupplySource,
+}
+
+/// WI-1110 — a chain entry's SUPPLY SOURCE: who fills the slot.
+///
+/// The two clauses that put a spec in a sort's chain answer different questions, and
+/// before this they were spelled as one thing (`requires`) plus a separate, searchable
+/// provider row (`provides`) that meant something a spec cannot mean.
+///
+///   `requires A[T]`  the `A` dictionary is PASSED IN — an inbound slot the caller fills.
+///   `provides A[T]`  on a SPEC: the `A` dictionary is BUILT FROM SELF. "We know how to
+///                    obtain an `A` from a `B`" — a CONVERSION, which is what `B <: A`
+///                    means operationally.
+///
+/// A CARRIER's `provides` is a different clause with the same keyword and is NOT
+/// represented here: `Int64 provides Ord[T = Int64]` is a fact about the world and
+/// belongs in the searchable provider table. A SPEC's `provides` is a conversion and
+/// belongs in the chain. Putting a conversion in the provider table is what made `Ord`
+/// answer every `WeakOrd` goal (WI-1110's measurement) and is what forced `Ord` to
+/// carry `requires WeakOrd` as well, closing a cycle over one edge written twice.
+///
+/// At DICTIONARY-CONSTRUCTION time the two are deliberately identical — both are slots,
+/// both are filled by resolving the spec at the goal's bindings, and a self-supplied
+/// slot is answered by the provider's own DERIVED row
+/// ([`derive_forwarded_provisions`]). The distinction is read in exactly one place, and
+/// it is a SEARCH question: [`collect_provides_candidates`] must not offer a conversion
+/// as a provider. Recorded on the entry rather than recomputed there so the two readers
+/// cannot drift, and so a diagnostic can say which clause put the slot there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SupplySource {
+    /// Written `requires` — the caller supplies the dictionary.
+    Required,
+    /// Written `provides` on a SPEC — the provider supplies it from itself.
+    SelfSupplied,
 }
 
 /// A kb-free identity for a `RequiresEntry.spec`, so `RequiresEntry` can key the
@@ -44548,6 +44653,8 @@ fn provider_dict_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<ProviderD
                 let entry = RequiresEntry {
                     required_sort,
                     spec: spec.clone(),
+                    // A per-provision condition is inbound, like every `:- goals` tail.
+                    supply: SupplySource::Required,
                 };
                 // Dedup against everything already placed — a sort-level `requires` AND
                 // a sibling provision's identical condition are both the same slot.
@@ -44940,6 +45047,7 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     RequiresEntry {
         required_sort: entry.required_sort,
         spec: Value::term(spec),
+        supply: entry.supply,
     }
 }
 
@@ -45411,6 +45519,7 @@ fn build_requires_tree(
         let entry = RequiresEntry {
             required_sort: raw.required_sort,
             spec: substituted_spec,
+            supply: raw.supply,
         };
         let child_subst = build_child_subst_map(kb, &entry);
         let sub_requires = build_requires_tree(kb, raw.required_sort, &child_subst, visited);
@@ -45452,10 +45561,58 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
 
 fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
-    let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
-        return out;
-    };
+    // NOT A `return`, and the difference is WI-1110's: the conversion half below reads
+    // `SortProvidesInfo` and has nothing to do with this functor, so bailing here on a KB
+    // that registered one reflect relation and not the other would silently drop every
+    // self-supplied slot — conversions would be offered as providers again and the cycle
+    // this ticket removes would come back with no diagnostic.
+    if let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
+        collect_sort_requires(kb, sort_sym, requires_sym, &mut out);
+    }
 
+    // WI-1110 — AND THE SPEC'S OWN CONVERSIONS, which are chain entries too.
+    //
+    // ONE EDGE, ONE SLOT. A sort that writes BOTH `requires A[T]` and `provides A[T = T]`
+    // names one relation twice, and two equal entries are a slot `synth_req_names` cannot
+    // name apart (its disambiguator keys on the spec's hash-cons id, so it cannot tell
+    // them apart either). The `requires` spelling placed first keeps the slot; the
+    // conversion adds nothing to the LAYOUT and is already recorded in the provider
+    // relation, which is where its other reader looks.
+    //
+    // MATCHED BY SPEC BASE AND CARRIER BINDING, not by `views_structurally_equal`: the
+    // two clauses are loaded through different paths and their bindings carry DIFFERENT
+    // SYMBOLS for the same parameter (`resolve_requires_bindings` re-keys a `requires`
+    // spec by the required spec's own param symbols), so a structural comparison —
+    // which compares keys by symbol — never fires. That is why the sibling
+    // `is_identity_forwarding` compares LOCAL NAMES, and why this does too. Driven by
+    // `a_sort_writing_both_clauses_gets_one_slot`.
+    for entry in self_supplied_entries(kb, sort_sym) {
+        let Some((_, conv_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+            continue;
+        };
+        if out.iter().any(|e| {
+            same_sort_canonical(kb, e.required_sort, entry.required_sort)
+                && unwrap_spec_view_value(kb, &e.spec).is_some_and(|(_, req)| {
+                    conv_bindings.iter().all(|(ck, _)| {
+                        req.iter().any(|(rk, _)| kb.local_name_of(*rk) == kb.local_name_of(*ck))
+                    })
+                })
+        }) {
+            continue;
+        }
+        out.push(entry);
+    }
+    out
+}
+
+/// The `SortRequiresInfo` half of [`direct_requires`] — every `requires` clause written
+/// on `sort_sym`, in fact order.
+fn collect_sort_requires(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+    requires_sym: Symbol,
+    out: &mut Vec<RequiresEntry>,
+) {
     for rid in kb.rules_by_functor(requires_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -45499,6 +45656,214 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
         out.push(RequiresEntry {
             required_sort: base_functor,
             spec: spec_value,
+            supply: SupplySource::Required,
+        });
+    }
+}
+
+/// WI-1110 — is this `provides` row a CONVERSION (a spec's, [`SupplySource::SelfSupplied`])
+/// rather than a claim of membership (a carrier's, which belongs in the provider table)?
+///
+/// THE QUESTION IS WHERE THE TARGET'S CARRIER CAME FROM. A spec that constrains an
+/// external thing has a CARRIER PARAMETER — `WeakOrd`'s `T`, `PartialEq`'s `T`,
+/// `Iterable`'s `C` — and [`spec_carrier_param_or_sole`] is this file's one owner of
+/// which parameter that is. A row binding that parameter to one of the SUBJECT'S OWN
+/// type parameters says "whatever satisfies me at this parameter satisfies the target at
+/// it": a conversion between two constraints on one thing, and exactly what `B <: A`
+/// means operationally. A row binding it to a concrete sort — `Int64 provides
+/// Ord[T = Int64]`, `Set provides Eq[T = Set]`, `Pair provides Ord[Pair] :- …`,
+/// `Stream provides Iterable[C = Stream, …]` — says "THIS thing is a target", which is a
+/// fact about the world.
+///
+/// A SELF-REPRESENTING spec has no carrier parameter and so is never a conversion
+/// target. That is not an exemption bolted on, it is the same sentence: `Stream`,
+/// `FiniteStream` and `LogicalStream` ARE their own carriers (WI-614's
+/// [`spec_is_self_representing`], read here through the ladder), so `LogicalStream
+/// provides Stream[T = T, E = E]` binds Stream's ELEMENT and EFFECT rows and says
+/// nothing about a carrier — it is the membership claim "a LogicalStream is a Stream",
+/// and value-directed dispatch reaches `Stream.splitFirst` on a `Relation` THROUGH it.
+/// MEASURED: reading those rows as conversions (the first cut, which keyed on
+/// [`is_identity_forwarding`] — bindings alone) put a slot in `Relation`'s,
+/// `FiniteStream`'s and `LogicalStream`'s dictionaries and broke six tests across
+/// wi210/wi224/wi411/wi474, element threading included.
+///
+/// AND THE ROW'S SHAPE IS NOT ENOUGH — a PARAMETRIC WITNESS has it too. `sort AnyM {
+/// sort E = ?  provides Monoid[T = E]  operation combine(a: E, b: E) = 99 }` (wi841)
+/// binds Monoid's carrier to its own type parameter exactly as `Ord` binds WeakOrd's,
+/// and it is not a conversion: `AnyM` IS a Monoid dictionary, it carries `combine`.
+/// MEASURED — with the shape test alone, `AnyM`'s own `Monoid[T = E]` slot resolved by
+/// search straight back to `AnyM` and all three wi841 selection tests failed with
+/// `construction is cyclic: Monoid[T = Int64] -> Monoid[T = Int64]`.
+///
+/// So there are two questions and the predicate asks both. What is the row ABOUT — an
+/// abstract parameter (conversion) or the subject itself (membership)? And can the
+/// subject ANSWER it — does it supply the target's operations? A subject that supplies
+/// none of them is not a dictionary for the target and the row cannot be a witness;
+/// there is nothing left for it to mean but "hold one of me and you can obtain one of
+/// those". `Ord` declares no operation at all, which is why its whole content is a
+/// relation between two constraints.
+///
+/// RELATION TO THE DERIVATION'S PREDICATE, which is NOT the same one and must not be
+/// made so. [`forwarded_rows_to_derive`] keys on [`is_identity_forwarding`], a strictly
+/// WIDER set (every conversion is an identity forwarding; the Stream family and `AnyM`
+/// are identity forwardings and not conversions). The direction that has to hold is
+/// `conversion ⟹ derived-through`: a row this excludes from the provider search
+/// ([`collect_provides_candidates`]) must have its carriers' direct rows materialized,
+/// or the exclusion would delete an answer instead of relocating it. The converse is
+/// deliberately false — a Stream-family row keeps BOTH its derived rows and its search
+/// role.
+fn provision_is_conversion(
+    kb: &KnowledgeBase,
+    subject: Symbol,
+    target: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> bool {
+    if same_sort_canonical(kb, subject, target) {
+        return false;
+    }
+    // AN IDENTITY FORWARDING FIRST, WHICH IS THE DERIVATION'S OWN PREDICATE, and this
+    // conjunct is what makes the ticket's invariant true BY CONSTRUCTION rather than by
+    // assertion: `conversion ⟹ derived-through`. A row this predicate accepts is excluded
+    // from the provider search, so its carriers' own rows must be materialized by
+    // [`forwarded_rows_to_derive`] — and that reads [`is_identity_forwarding`]. A first
+    // cut asked only about the CARRIER binding and was therefore NOT a subset of it: a
+    // renamed forward (`sort Ord2 { sort E = ?  provides WeakOrd[T = E] }`) and a mixed
+    // row (`provides Sp[T = A, U = Concrete]`) both passed here and derived nothing, so
+    // the answer would have been DELETED rather than relocated.
+    //
+    // It also closes the OP-BINDING channel, which the operation test below cannot see.
+    // A provision may supply the target's operations by BINDING them
+    // (`provides Monoid[T = E, combine = myCombine]`, WI-431) instead of by declaring a
+    // same-named member; `supplies_any_operation_of` reads only the declaration channel
+    // and would call such a witness a conversion. An identity forwarding has no binding
+    // whose value is not a type parameter, so no op binding can hide inside one.
+    //
+    // And it is the CHEAP test, which matters: this runs for every provision row of every
+    // sort whose chain is built, and both questions below are walks —
+    // `spec_carrier_param_or_sole` falls through to `spec_is_self_representing`, which is
+    // not memoized, and `supplies_any_operation_of` walks two operation surfaces.
+    if !is_identity_forwarding(kb, subject, target, bindings) {
+        return false;
+    }
+    // AND THE TARGET MUST HAVE A CARRIER PARAMETER THIS ROW BINDS. A SELF-REPRESENTING
+    // spec has none: `Stream`, `FiniteStream` and `LogicalStream` ARE their own carriers,
+    // so `LogicalStream provides Stream[T = T, E = E]` binds Stream's ELEMENT and EFFECT
+    // rows and is the membership claim "a LogicalStream is a Stream" — which
+    // value-directed dispatch reaches on a `Relation` (WI-714 / WI-495 / WI-496).
+    // MEASURED: reading those three rows as conversions put a slot in their dictionaries
+    // and broke six tests across wi210/wi224/wi411/wi474, element threading included.
+    let Some(carrier_param) = spec_carrier_param_or_sole(kb, target) else {
+        return false;
+    };
+    let carrier_name = kb.local_name_of(carrier_param);
+    let about_a_parameter = bindings.iter().any(|(name, _)| kb.local_name_of(*name) == carrier_name);
+    about_a_parameter && !supplies_any_operation_of(kb, subject, target)
+}
+
+/// WI-1110 — is `subject provides target[…]` a CONVERSION? Asked of the CHAIN, where
+/// [`self_supplied_entries`] has already decided it and written the answer on the entry.
+///
+/// ONE OWNER OF THE PREDICATE, and the two readers below are why that matters: they must
+/// agree with the chain or the ticket's own invariant breaks — a row excluded from the
+/// provider search ([`collect_provides_candidates`]) and a provision excused from the
+/// load check ([`check_provider_requires`]) must be exactly a row that put a slot in the
+/// subject's chain, or an obligation is dropped with nothing carrying it. Re-deriving the
+/// predicate at each site would let them disagree; reading [`SupplySource`] cannot.
+///
+/// The chain is memoized, so this is a hash lookup and a walk of a two-or-three element
+/// vector — cheaper than the operation-surface comparison the predicate itself does, and
+/// the candidate loop runs it per provision row.
+fn is_conversion_edge(kb: &mut KnowledgeBase, subject: Symbol, target: Symbol) -> bool {
+    let target_canon = kb.canonical_sort_sym(target);
+    let chain = direct_requires_chain_rc(kb, subject);
+    chain.iter().any(|e| {
+        e.supply == SupplySource::SelfSupplied
+            && kb.canonical_sort_sym(e.required_sort) == target_canon
+    })
+}
+
+/// WI-1110 — does `subject` DECLARE an operation of `target`'s surface, i.e. is it (at
+/// least partly) a dictionary for it? By operation SHORT NAME, which is the same
+/// identity `find_operation_in_scope` and `build_sort_ops_table` use to decide that a
+/// carrier's member backs a spec op.
+fn supplies_any_operation_of(kb: &KnowledgeBase, subject: Symbol, target: Symbol) -> bool {
+    let target_ops: Vec<String> =
+        super::op_requirements::operations_of_sort(kb, kb.canonical_sort_sym(target))
+            .iter()
+            .map(|&op| kb.local_name_of(op).rsplit('.').next().unwrap_or("").to_string())
+            .collect();
+    if target_ops.is_empty() {
+        return false;
+    }
+    super::op_requirements::operations_of_sort(kb, kb.canonical_sort_sym(subject))
+        .iter()
+        .any(|&op| {
+            let short = kb.local_name_of(op).rsplit('.').next().unwrap_or("");
+            target_ops.iter().any(|t| t == short)
+        })
+}
+
+/// WI-1110 — `sort_sym`'s SELF-SUPPLIED chain entries: the slots its own `provides`
+/// clauses put there, read from the same `SortProvidesInfo` facts the provider table
+/// reads.
+///
+/// THE PREDICATE IS [`provision_is_conversion`], and a CONDITIONAL row contributes
+/// nothing, for the reason [`forwarded_rows_to_derive`] gives about the derivation: a
+/// `:- goals` tail rides in separate `ProvidesConditionInfo` facts, so reading the row
+/// alone would make a conditional edge an unconditional slot.
+fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    let mut out = Vec::new();
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return out;
+    };
+    let mut conditioned: Option<Vec<Symbol>> = None;
+    // THE CARRIER INDEX, not `rules_by_functor` — this runs once per SORT and the
+    // provision relation is the largest in the KB, so the raw scan is O(sorts x
+    // provisions). MEASURED: the scanning form took a stdlib load from 0.10 s to 0.18 s,
+    // an 80 % regression on the whole load. `rids_or_scan` still falls back to the scan
+    // when `provides_index` is `None`, which is the state during the derivation pass.
+    for rid in provides_rids_by_carrier(kb, sort_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(spec_value) = super::op_info::head_field_value(kb, head, "spec") else {
+            continue;
+        };
+        let Some((base, bindings)) = unwrap_spec_view_value(kb, &spec_value) else {
+            continue;
+        };
+        if !provision_is_conversion(kb, sort_sym, base, &bindings) {
+            continue;
+        }
+        // Decoded lazily: the overwhelming majority of sorts have no conversion at all,
+        // and this walks every `ProvidesConditionInfo` fact.
+        let conds =
+            conditioned.get_or_insert_with(|| {
+                provision_conditions(kb, sort_sym)
+                    .into_iter()
+                    .map(|c| c.provided)
+                    .collect()
+            });
+        if conds.iter().any(|c| same_sort_canonical(kb, *c, base)) {
+            continue;
+        }
+        // A DERIVED ROW IS NOT A WRITTEN CLAUSE, and only a written one puts a slot in a
+        // chain. `derive_forwarded_provisions` walks a tower transitively, so a
+        // two-conversion tower (`A provides B[T = T]`, `B provides C[T = T]`) makes it
+        // assert `A provides C[T = T]` — a row whose carrier is itself a spec and whose
+        // shape is a conversion's. Reading it back here would give `A` a SECOND slot for
+        // a dictionary already reachable inside its first, changing `DictLayout::slots_for`,
+        // `synth_req_names` and every projection path through `A`. `mark_derived_provision`
+        // records exactly which rows the pass minted (WI-1109's provenance channel), so
+        // this asks it rather than guessing from the shape.
+        if kb.derived_provision_origin_of(rid).is_some() {
+            continue;
+        }
+        out.push(RequiresEntry {
+            required_sort: base,
+            spec: spec_value,
+            supply: SupplySource::SelfSupplied,
         });
     }
     out
