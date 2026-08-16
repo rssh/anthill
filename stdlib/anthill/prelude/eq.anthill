@@ -30,9 +30,42 @@ end
 
 -- Eq: lawful (reflexive) equality. The `eq`/`neq` operations are inherited from
 -- PartialEq via the requires-chain (WI-614); Eq adds only the law.
+--
+-- NOT DERIVED FROM `Ord`, though `Ord requires Eq` and `compare_eq` relates them
+-- (WI-456): the derivation would make a SECOND `eq` supplier for the carrier, and
+-- equality is dispatched by the UNIFIER, which has no bracket to select at — so
+-- `AmbiguousEqDispatch` refuses it. The predicate, and the `PartialOrd` case that does
+-- pass it, are stated at `ordered.anthill`'s `requires Eq[T]`; 058 §3.7/§3.8.
 sort anthill.prelude.Eq
   sort T = ?
-  requires PartialEq[T]
+
+  -- `provides`, NOT `requires` (WI-1110), and the two earlier readings of this line
+  -- were both wrong in a way worth keeping, because each was refuted by a measurement.
+  --
+  -- WI-1109 measured two variants and concluded they were mutually exclusive:
+  --
+  --   requires + provides  -> 1867 of 2849 tests fail, `construction is cyclic:
+  --                           PartialEq[X] -> PartialEq[X]` — because the `provides`
+  --                           row was filed as a PROVIDER of `PartialEq`, so `Eq`
+  --                           joined the providers of the floor and `requires
+  --                           PartialEq` closed the loop over it.
+  --   provides alone       -> 32 fail, every one `unresolved import
+  --                           'anthill.prelude.Eq.eq'` — because a `provides` clause
+  --                           put nothing in this spec's SCOPE.
+  --
+  -- BOTH FAILURES WERE THE SAME DEFECT, and it was not in this file. A spec's
+  -- `provides` is a CONVERSION — "hold an `Eq[T]` and you can obtain a `PartialEq[T]`"
+  -- — so it belongs in the chain, exactly where `requires` puts its entry, and NOT in
+  -- the table of what has which type. Filed correctly it brings the scope with it
+  -- (`Eq.eq` still resolves to the inherited `PartialEq.eq`, which proposal 004 wanted
+  -- for source compatibility) and it is never offered as a provider, so there is no
+  -- loop left to close. The clauses were never exclusive; one of them was misfiled.
+  --
+  -- WHAT IT BUYS over `requires`: a carrier writing `provides Eq[X]` thereby provides
+  -- `PartialEq[X]` — one `eq`, one equality — instead of writing both rows and being
+  -- trusted to keep them consistent (058 §3.8, and the same argument as
+  -- `Ord provides WeakOrd`).
+  provides PartialEq[T = T]
 
   -- Reflexivity — the law a partial carrier (IEEE Float) cannot satisfy. Dormant /
   -- documentation-only (see the file header): NOT discharged per instance. A

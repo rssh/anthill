@@ -1,7 +1,7 @@
 //! WI-876 — a spec-op builtin must not serve carriers it cannot handle.
 //!
 //! THE PRE-FIX MEASUREMENT, reproduced before the change and both halves confirmed.
-//! `Ord.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` were registered on the SPEC
+//! `WeakOrd.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` were registered on the SPEC
 //! op and compared host SCALARS only, so a STRUCTURAL carrier providing `Ord` was
 //! intercepted by an implementation that could not run on its values:
 //!
@@ -37,10 +37,10 @@ use anthill_core::eval::Value;
 /// Everything else (`gt`/`gte`/`lt`/`lte`, `max`/`min`) must come from the spec.
 const CARRIER: &str = r#"
 namespace wi876.lex
-  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
 
   sort Point
-    import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
+    import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
     entity pt(x: Int64, y: Int64)
 
     provides PartialEq[Point]
@@ -61,25 +61,25 @@ namespace wi876.lex
         case pt(ax, ay) ->
           match b
             case pt(bx, by) ->
-              let c = Ord.compare(ax, bx)
-              if PartialEq.eq(c, 0) then Ord.compare(ay, by) else c
+              let c = WeakOrd.compare(ax, bx)
+              if PartialEq.eq(c, 0) then WeakOrd.compare(ay, by) else c
   end
 
   sort Driver
-    import anthill.prelude.{Int64, Bool, Ord, PartialOrd}
+    import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd}
     import wi876.lex.Point.{pt}
-    operation cmpGt(n: Int64) -> Int64 = Ord.compare(pt(2, 1), pt(1, 9))
-    operation cmpLt(n: Int64) -> Int64 = Ord.compare(pt(1, 9), pt(2, 1))
-    operation cmpEq(n: Int64) -> Int64 = Ord.compare(pt(2, 1), pt(2, 1))
+    operation cmpGt(n: Int64) -> Int64 = WeakOrd.compare(pt(2, 1), pt(1, 9))
+    operation cmpLt(n: Int64) -> Int64 = WeakOrd.compare(pt(1, 9), pt(2, 1))
+    operation cmpEq(n: Int64) -> Int64 = WeakOrd.compare(pt(2, 1), pt(2, 1))
     operation isGt(n: Int64) -> Bool = PartialOrd.gt(pt(2, 1), pt(1, 9))
     operation isGte(n: Int64) -> Bool = PartialOrd.gte(pt(2, 1), pt(2, 1))
     operation isLt(n: Int64) -> Bool = PartialOrd.lt(pt(2, 1), pt(1, 9))
     operation isLte(n: Int64) -> Bool = PartialOrd.lte(pt(1, 9), pt(2, 1))
     operation maxX(n: Int64) -> Int64 =
-      match Ord.max(pt(2, 1), pt(1, 9))
+      match WeakOrd.max(pt(2, 1), pt(1, 9))
         case pt(x, y) -> x
     operation minX(n: Int64) -> Int64 =
-      match Ord.min(pt(2, 1), pt(1, 9))
+      match WeakOrd.min(pt(2, 1), pt(1, 9))
         case pt(x, y) -> x
   end
 end
@@ -280,7 +280,7 @@ fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
         "Float.gt"
     );
     assert!(
-        !kb.is_host_mapped_op(sym("anthill.prelude.Ord.compare")),
+        !kb.is_host_mapped_op(sym("anthill.prelude.WeakOrd.compare")),
         "the SPEC op carries no host implementation any more — that keying IS the defect",
     );
     assert!(
@@ -299,18 +299,18 @@ fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
 fn the_scalar_orderings_are_unchanged() {
     let src = "
 namespace wi876.scalars
-  import anthill.prelude.{Int64, String, BigInt, Bool, Ord, PartialOrd}
+  import anthill.prelude.{Int64, String, BigInt, Bool, Ord, WeakOrd, PartialOrd}
   import anthill.prelude.BigInt.{to_bigint}
   sort Driver
-    operation ints(n: Int64) -> Int64 = Ord.compare(7, 3)
-    operation strings(n: Int64) -> Int64 = Ord.compare(\"b\", \"a\")
-    operation bigs(n: Int64) -> Int64 = Ord.compare(to_bigint(7), to_bigint(3))
+    operation ints(n: Int64) -> Int64 = WeakOrd.compare(7, 3)
+    operation strings(n: Int64) -> Int64 = WeakOrd.compare(\"b\", \"a\")
+    operation bigs(n: Int64) -> Int64 = WeakOrd.compare(to_bigint(7), to_bigint(3))
     operation intGt(n: Int64) -> Bool = PartialOrd.gt(7, 3)
     operation intLt(n: Int64) -> Bool = PartialOrd.lt(7, 3)
     operation strLte(n: Int64) -> Bool = PartialOrd.lte(\"a\", \"b\")
-    operation intMax(n: Int64) -> Int64 = Ord.max(7, 3)
-    operation intMin(n: Int64) -> Int64 = Ord.min(7, 3)
-    operation strMax(n: Int64) -> String = Ord.max(\"a\", \"b\")
+    operation intMax(n: Int64) -> Int64 = WeakOrd.max(7, 3)
+    operation intMin(n: Int64) -> Int64 = WeakOrd.min(7, 3)
+    operation strMax(n: Int64) -> String = WeakOrd.max(\"a\", \"b\")
   end
 end
 ";
@@ -574,7 +574,7 @@ fn an_unknown_host_function_is_loud_at_registration() {
 /// the gate WI-876 widened (`carrier_override_op` filtered on a runnable BODY, so a
 /// member whose body is the HOST's read as absent) and it is not ceremony: MEASURED
 /// with the narrow gate, `gt(nan, 1.5)` fell through to `PartialOrd`'s `compare`-based
-/// default and died `OperationBodyMissing {Ord.compare}` — `Float` has no
+/// default and died `OperationBodyMissing {WeakOrd.compare}` — `Float` has no
 /// `compare` — while a `String` comparison inside a program's witness ordering fell
 /// through into an `AmbiguousSpecOpDispatch` between `String.compare` and the
 /// program's own witnesses (six `wi844_sorted_set_driver_test` arms).
@@ -586,12 +586,12 @@ fn an_unknown_host_function_is_loud_at_registration() {
 fn a_carriers_own_host_member_beats_the_spec_default() {
     let src = "
 namespace wi876.rival
-  import anthill.prelude.{Int64, String, Bool, Ord, PartialOrd}
+  import anthill.prelude.{Int64, String, Bool, Ord, WeakOrd, PartialOrd}
   sort ByLength
     import anthill.prelude.{Int64, String}
     import anthill.prelude.String.{length}
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = String]
+    provides Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end
   sort Driver

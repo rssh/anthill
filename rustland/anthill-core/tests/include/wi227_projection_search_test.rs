@@ -232,6 +232,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     let caller_requires = vec![RequiresEntry {
         required_sort: ordered_sym,
         spec: ordered_ref.into(),
+        supply: anthill_core::kb::typing::SupplySource::Required,
     }];
 
     // The dep we're searching for: Eq. Strategy 1 fails (Eq not in
@@ -241,6 +242,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     let dep = RequiresEntry {
         required_sort: eq_sym,
         spec: eq_ref.into(),
+        supply: anthill_core::kb::typing::SupplySource::Required,
     };
 
     // `caller_sort` is None: this is a synthetic non-flat caller chain
@@ -317,6 +319,7 @@ fn ground_dep_emits_the_dictionary_node() {
     let dep = RequiresEntry {
         required_sort: eq_sym,
         spec: dep_spec.into(),
+        supply: anthill_core::kb::typing::SupplySource::Required,
     };
 
     let caller_requires: Vec<RequiresEntry> = Vec::new();

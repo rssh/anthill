@@ -979,7 +979,24 @@ module.exports = grammar({
     // effect (`(A) -> B @ E :- guard`), which surfaces as an unresolvable GLR fork of
     // `_effect_type` against `_simple_effect`. Narrowing makes the illegal state
     // unrepresentable AND keeps the parser conflict-free.
+    // WI-862 (proposal 058 §3.6, §4): `default provides X[…]` — ONE LEADING
+    // MODIFIER, the `visibility` (`internal`/`public`) pattern, desugaring in the
+    // loader to the `DefaultProvider` row 058 §3.6 already arbitrates.
+    //
+    // LEADING, and a keyword rather than an annotation, for two measured reasons.
+    // A trailing `[default]` puts a bracket list immediately after a BRACKETED
+    // type, which is a GLR tie against the spec's own type arguments; and `[simp]`
+    // — the annotation precedent — follows a rule BODY, never a type.
+    //
+    // THE MODIFIER SET IS `default` ALONE, and `coherent` is deliberately NOT in
+    // it: a modifier attaches where its relation's KEY lives (058 §4), and
+    // `Coherent` is keyed per SPEC, so its sugar rides the spec's own declaration
+    // (`coherent sort X … end`, the `enum sort` precedent) and arrives with the
+    // deferred `Coherent` re-homing. On a provision it would let a provider
+    // foreclose coexistence for a spec and carrier it does not own — the mirror of
+    // the no-displacement rule — so there is nothing here for it to mean.
     provides_clause: $ => seq(
+      optional(field('default', 'default')),
       'provides',
       field('spec', $._spec_instantiation),
       optional(seq(':-', field('conditions', $.provides_conditions))),
@@ -997,10 +1014,25 @@ module.exports = grammar({
       optional($.name),
     ),
 
+    // WI-862 (058 §4): `provides_clause` is admitted HERE too, and it had to be.
+    //
+    // A `provides <Carrier> language rust … end` block (proposal 038) opens the
+    // CARRIER's scope, so a spec claim written in it is a provision of that carrier —
+    // the loader files it exactly as it files one written in `sort <Carrier> … end`,
+    // which is why the deprecation warning fires on it. Without this production the
+    // retirement would have had one spelling to move to in a sort body and NONE in a
+    // binding block, i.e. it would have deprecated the only text that worked there.
+    // MEASURED: migrating the 21 `fact` rows in `anthill-stl/anthill/*.anthill` without
+    // it is a syntax error at every one.
+    //
+    // No new ambiguity: `provides_block` is NOT in this set, so the `provides` prefix
+    // has one continuation here — and the block-vs-clause fork the prefix does create in
+    // `_namespace_content` is one the parser already resolves.
     _provides_content: $ => choice(
       $.rule_declaration,
       $.proof_declaration,
       $.fact_declaration,
+      $.provides_clause,
       $.rule_block,
       $.artifact_clause,
       $.carrier_clause,

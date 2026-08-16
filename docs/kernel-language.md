@@ -263,11 +263,27 @@ sort anthill.prelude.Eq
   rule neq(?a, ?b) <=> not(eq(?a, ?b))              -- equational rule head: `<=>` (unify), not `=` (test)
 end
 
--- Ord: total ordering. Per proposal library/004 (WI-644) the gt/lt/gte/lte
--- comparison surface lives on the base `PartialOrd` (IEEE-partial for Float);
--- `Ord` is the TOTAL tier — `compare` + laws — and `requires Eq, PartialOrd`.
--- (This illustrative snippet keeps the comparators inline for brevity.)
-sort anthill.prelude.Ord
+-- The ordering tower is THREE floors (library proposal 007, WI-1109), because
+-- "total" and "antisymmetric" are two questions and `Ord` used to answer both:
+--   PartialOrd  gt/lt/gte/lte; NO totality (a NaN operand answers false). Float.
+--   WeakOrd     `compare`; TOTAL, and CONGRUENT w.r.t. Eq (eq(a,b) => compare=0).
+--               Its kernel may be strictly COARSER than Eq, so it partitions the
+--               carrier into classes — a comparator chosen by a key lives here.
+--   Ord         adds ONLY the converse law (compare=0 => eq), so the kernel IS Eq.
+--               No new operation, the way Eq adds only reflexivity over PartialEq.
+-- One-to-one with C++20 <compare>: partial_ordering / weak_ordering / strong_ordering.
+-- `Ord provides WeakOrd[T = T]` and that ONE clause is its whole content (WI-1110):
+-- a carrier writes one provision, the lower floor is DERIVED, and the same clause
+-- puts a WeakOrd dictionary inside an Ord one so an `Ord`-constrained body can reach
+-- `compare`. `WeakOrd`'s own `requires Eq[T]` / `requires PartialOrd[T]` reach the
+-- carrier through it, which is why `Ord` restates neither. See §5.1's
+-- "`requires` and `provides` are both chain entries".
+-- (ILLUSTRATIVE — the snippet keeps `gt`/`lt`/`gte`/`lte` inline for brevity. The
+-- shipped `WeakOrd` declares `compare` and INHERITS those four from `PartialOrd`,
+-- which is load-bearing rather than tidy: declaring them on both specs would give a
+-- carrier providing both two `sort_ops` entries for one short name, and which wins
+-- is HashMap-iteration order. See `stdlib/anthill/prelude/ordered.anthill`.)
+sort anthill.prelude.WeakOrd
   sort T = ?
   requires Eq[T]
   requires PartialOrd[T]
@@ -1060,6 +1076,49 @@ owner decides this for every reader (`provision_carrier_binding` /
 `witness_dispatch_carrier_value`), so the load checks, the coherence grouping and
 dispatch cannot disagree about what a witness is.
 
+**`requires` and `provides` are BOTH chain entries, and they differ only in where the
+dictionary comes from** (WI-1110). `requires A[T]` says the `A` dictionary is **passed
+in** — an inbound slot the caller fills. A **spec's** `provides A[T]` says it is **built
+from self**: "hold one of me and you can obtain an `A`", which is what `B <: A` means
+operationally. Both put a slot in the sort's dictionary chain, both lend the target's
+names to the sort's scope (§8.6), and both are discharged by resolving the spec at the
+goal's bindings; the difference is that a `provides` slot is answered by the provider's
+own **derived** row rather than by the caller. So a spec that forwards writes ONE clause,
+not a `requires` beside a `provides` — `Ord provides WeakOrd[T = T]` is the whole of
+`Ord`, and `WeakOrd`'s requirements reach the carrier through it.
+
+**A CARRIER's `provides` and a SPEC's are two clauses with one keyword.** A carrier's is
+a fact about the world (`Int64 provides Ord[T = Int64]`, `Set provides Eq[T = Set]`,
+`Stream provides Iterable[C = Stream, …]`) and belongs in the searchable provider
+relation. A spec's is a **conversion** and belongs only in the chain: nothing has type
+`Ord`, so offering `Ord` as a candidate answer to a `WeakOrd` goal can never resolve —
+it merely adds a candidate that the cycle detector must reject, on every ordering goal in
+every program, and closes a cycle if the same edge is also written `requires`. The two
+are told apart by the row: a provision is a conversion when it is a **parameter
+forwarding** — every binding sends a target parameter to one of the subject's own type
+parameters — **and** the target is a constraint on something rather than a thing in its
+own right **and** the subject supplies none of the target's operations. All three are
+needed. A **parametric witness** (`sort AnyM { sort E = ?; provides Monoid[T = E];
+operation combine(a: E, b: E) … }`) is a forwarding by shape and *is* a dictionary,
+because it carries the operations. A **self-representing** target is a thing rather than
+a constraint, so `LogicalStream provides Stream[T = T, E = E]` is the membership claim "a
+LogicalStream is a Stream" and value-directed dispatch reaches `Stream.splitFirst` on a
+`Relation` through it. And a target that *does* name a carrier parameter (the next
+paragraph settles which) must have it among the forwarded ones — a row forwarding only
+the element parameters says nothing about the carrier and converts nothing.
+
+**The forwarding need not be name-for-name** (WI-1111). `provides Sp[X = A]` renames and
+`provides Sp[X = B, Y = A]` permutes; both say exactly what `provides Sp[X = X]` says,
+written with different letters, and the derived row **translates** the carrier's bindings
+through the map rather than copying them. A binding to a **concrete** sort is not a
+forwarding and translating nothing is what makes it a claim about the world.
+
+**A derived row is a conversion when the edge it was derived through is one.** A tower
+two conversions deep (`Top provides Mid[T = T]`, `Mid provides Low[T = T]`) materializes
+`Top provides Low[T = T]`, whose carrier is itself a spec; it is not an answer to a `Low`
+goal, because `Top` already holds a `Low` dictionary inside its `Mid` slot, and the
+tower's real carriers get their own derived rows in the same pass.
+
 **Which parameter is the carrier is read off the operations** (WI-1076), because
 nothing in the surface language says: no keyword declares a sort to be a spec, or
 a parameter to be its carrier. The rule as implemented is *the first declared type
@@ -1140,6 +1199,55 @@ or because what was written names no type, is refused too (WI-933/WI-1106, §6.3
 Both refusals are the same rule seen from two sides: a provision needs a provider
 and a carrier, a namespace supplies neither, and what the text does not say the
 loader will not guess.
+
+**`provides` is the one spelling; the in-sort `fact` one is DEPRECATED and warns**
+(WI-862, 058 §4). The loader raises a non-fatal `ProvisionFactSpelling` at each
+remaining site, located, and the shipped tree carries none. The warning is scoped
+to the arm above where the two spellings agree — a scope that NAMES A TYPE. At a
+plain namespace or a file's root scope nothing is deprecated and nothing warns,
+because `provides` is refused there: the namespace-level instance facts (058 §3.1)
+keep the `fact` spelling permanently, and a deprecation there would advertise a
+repair the next compile rejects. A `provides` clause is admitted inside a
+proposal-038 `provides <Carrier> language <L> … end` binding block too, since that
+block opens the carrier's scope and a spec claim in it is a provision of the
+carrier; that is what gives the retirement a spelling to move the host bindings to.
+
+*Migrating one is not always a pure rename, and the reason is the rule-index
+asymmetry above.* Four readers keyed on the `fact` spelling alone — two of them the
+pair of functions in the first bullet — each found by migrating the tree and measuring,
+not by reading:
+
+- `region_sorts` / `is_modifiable_sort` scanned raw `Modifiable[T = …]` facts, so
+  `is_modifiable(Cell)` answered **false** — a wrong answer, not an error. Both now
+  read either channel.
+- Rust codegen rendered an in-sort claim as a supertrait bound from the `fact` arm
+  only, silently dropping `trait NonMonotonicStore: Store`.
+- A `requires` clause mixing a value precondition with a spec requirement
+  (`requires neq(a, 0), lo: Ord[T = Int64]`) was classified by its `conjunction`
+  head as wholly a value precondition and PROVED from Γ. It only ever passed because
+  `fact Ord[T = Int64]` made the spec conjunct resolvable as an ordinary goal; the
+  clause is split into conjuncts before classification now, which is what the
+  paragraph above ("never proved from Γ") always said.
+
+The standing rule for the remaining case: **if some rule resolves `Spec[…]` as a
+GOAL, keep the fact and write the `provides` clause beside it** — the two are not
+the same statement, and the deprecation is of the *spelling of a provision*, not of
+the fact.
+
+**A provision may mark itself the default: `default provides Spec[…]`** (WI-862,
+058 §3.6/§4). One leading modifier, the `internal`/`public` pattern, desugaring in
+the loader to the `DefaultProvider` row the defaults substrate already arbitrates —
+so the inline mark and the by-reference `fact DefaultProvider(spec: …, provider: …)`
+are ONE statement, deduplicated, and colliding marks are refused by the same
+`one_default` check whichever spelling wrote them. The carrier is not written and
+must not be: it is derived from this very provision, so a conditional provision's
+mark lands at the carrier the provision wrote. `default` is a modifier in that one
+position and stays an ordinary identifier everywhere else. The modifier set is
+`default` alone — a modifier attaches where its relation's key lives, and `Coherent`
+is keyed per SPEC, so its sugar belongs on the spec's own declaration and is not
+admitted on a provision. What a default *means* at dispatch is 058 §3.6; the
+`kernel-language.md` statement of it arrives with the §Instance-coherence amendment
+(WI-845), which should absorb this paragraph's first sentence when it lands.
 
 **A sort with constructors is a DATA sort, and both spellings read that**
 (WI-407/WI-1106). Neither a `fact` nor a `provides` naming one records a provision:
@@ -2933,7 +3041,7 @@ The kernel's reasoning engine supports:
 | **structural** | `===` (`struct_eq`) | `<=>` (`unify`) |
 | **semantic**   | `=` / `eq`         | E-unification *(future engine)* |
 
-- **`=` — the semantic equality *test*** (`PartialEq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them **through the carrier's `PartialEq` instance** (WI-616): structurally identical operands are equal by reflexivity, and structurally distinct operands dispatch to the carrier sort's own `eq` override when it declares one — `Set` and `Map` are the first non-structural instances (`eq({1,2}, {2,1})` holds: membership equality, resolved against the carrier's rules by ordinary SLD). A carrier with no override keeps the structural compare — structural equality *is* its instance (`Int` stays a machine compare). **Partial vs. total (proposal library/004, WI-644):** `eq`/`neq` live on the base **`PartialEq`** spec — a plain `Bool` test with *no* reflexivity law. **`Eq`** `requires PartialEq` and adds the checked law `eq_refl: eq(?a,?a) <=> true`; requiring `Eq[T]` (what `Set`/`Map` keys, dedup and sort demand) means "a *lawful*, reflexive equality." IEEE **`Float` provides only `PartialEq`** (plus the witnessed `NonEq`) — `eq(nan, nan)` is *false* (IEEE), and `Float` cannot discharge `eq_refl`; the wrapper `TotalFloat` provides the lawful `Eq` (it is **not** `Ord` — a functional total float order needs host support). So the interpreter, resolver, and C++ codegen all agree on `Float` (IEEE), while `nan === nan` (`struct_eq`) stays structurally true. **That requirement is enforced where a container type is written** (WI-644/WI-835): instantiating a sort that `requires Eq` at a parameter with a carrier that provides `NonEq` is a **load error** — `Map[K = Float]` / `Set[T = Float]` are refused *wherever the type is written* (an entity field, an operation parameter or return type, a `const`'s type, a sort alias, a body `let` annotation, a typed lambda binder, a binding value inside a `requires`/`provides` clause, and nested inside any of those), naming the sort, the parameter, the carrier and the required spec; `Map[K = TotalFloat]` / `Map[K = Int64]` load. The refusal is negative — it fires on a *witnessed* `NonEq` carrier, not on the absence of an `Eq` provision, so an abstract type-parameter binding stays accepted. It reads the key's *own* provisions, so a key whose unlawfulness is in its **argument** (`Map[K = List[T = Float]]`, `Map[K = (a: Float)]`) is a known remaining gap, not a guarantee. **A composite DERIVES its classification, both ways** (WI-664 / WI-1098): an entity or named tuple whose fields are all lawful is a `Total` composite and the loader asserts `provides PartialEq` + `provides Eq` for it, so `List.contains(colours, red)` discharges its `requires Eq[T]` with no provision line written — before this, such a program loaded clean and died inside the evaluator at the first requirement it reached. One whose field reaches an IEEE `Float` is `Partial` and gets `provides PartialEq` + `provides NonEq` instead, which is what makes a user `provides Eq[Point]` over a `Float` composite a load error (`Eq` ⊥ `NonEq`). The two are one fixpoint over the field-reference graph, so a *recursive* composite (`node(l: Tree, r: Tree)`) is classified too, and a lawful-`Eq` **boundary** — a carrier whose `eq` is dispatched, `TotalFloat` being the shipped one — is neither classified nor overwritten: its `eq` is the author's. Nothing is derived for a **parametric** sort or for a composite with a parametric field (`hold(p: Pair[A, B])`): their lawful equality is *conditional* on their arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`), and an unconditional claim would make `List[Float]` lawful. Writing the provision by hand stays legal and is not duplicated — the derivation skips a carrier that already provides. `=` **never binds** a logical variable: `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind. `neq` (`!=`) pairs with it: `neq(a,b) <=> not(eq(a,b))`, the negation of the *dispatched* equality. (Ordering mirrors this: `gt`/`lt`/`gte`/`lte` are the base **`PartialOrd`** surface — IEEE-partial for `Float`, a `NaN` operand answers `false` — and the total `compare`/laws live on **`Ord`**, which `requires Eq, PartialOrd`.)
+- **`=` — the semantic equality *test*** (`PartialEq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them **through the carrier's `PartialEq` instance** (WI-616): structurally identical operands are equal by reflexivity, and structurally distinct operands dispatch to the carrier sort's own `eq` override when it declares one — `Set` and `Map` are the first non-structural instances (`eq({1,2}, {2,1})` holds: membership equality, resolved against the carrier's rules by ordinary SLD). A carrier with no override keeps the structural compare — structural equality *is* its instance (`Int` stays a machine compare). **Partial vs. total (proposal library/004, WI-644):** `eq`/`neq` live on the base **`PartialEq`** spec — a plain `Bool` test with *no* reflexivity law. **`Eq`** `provides PartialEq[T = T]` — a conversion, so it is a chain entry AND a derivation (WI-1110: it was `requires PartialEq` until the two clauses were told apart, and a carrier writing `provides Eq[X]` now gets `provides PartialEq[X]` derived rather than writing it) — and adds the checked law `eq_refl: eq(?a,?a) <=> true`; requiring `Eq[T]` (what `Set`/`Map` keys, dedup and sort demand) means "a *lawful*, reflexive equality." IEEE **`Float` provides only `PartialEq`** (plus the witnessed `NonEq`) — `eq(nan, nan)` is *false* (IEEE), and `Float` cannot discharge `eq_refl`; the wrapper `TotalFloat` provides the lawful `Eq` (it is **not** `Ord` — a functional total float order needs host support). So the interpreter, resolver, and C++ codegen all agree on `Float` (IEEE), while `nan === nan` (`struct_eq`) stays structurally true. **That requirement is enforced where a container type is written** (WI-644/WI-835): instantiating a sort that `requires Eq` at a parameter with a carrier that provides `NonEq` is a **load error** — `Map[K = Float]` / `Set[T = Float]` are refused *wherever the type is written* (an entity field, an operation parameter or return type, a `const`'s type, a sort alias, a body `let` annotation, a typed lambda binder, a binding value inside a `requires`/`provides` clause, and nested inside any of those), naming the sort, the parameter, the carrier and the required spec; `Map[K = TotalFloat]` / `Map[K = Int64]` load. The refusal is negative — it fires on a *witnessed* `NonEq` carrier, not on the absence of an `Eq` provision, so an abstract type-parameter binding stays accepted. It reads the key's *own* provisions, so a key whose unlawfulness is in its **argument** (`Map[K = List[T = Float]]`, `Map[K = (a: Float)]`) is a known remaining gap, not a guarantee. **A composite DERIVES its classification, both ways** (WI-664 / WI-1098): an entity or named tuple whose fields are all lawful is a `Total` composite and the loader asserts `provides PartialEq` + `provides Eq` for it, so `List.contains(colours, red)` discharges its `requires Eq[T]` with no provision line written — before this, such a program loaded clean and died inside the evaluator at the first requirement it reached. One whose field reaches an IEEE `Float` is `Partial` and gets `provides PartialEq` + `provides NonEq` instead, which is what makes a user `provides Eq[Point]` over a `Float` composite a load error (`Eq` ⊥ `NonEq`). The two are one fixpoint over the field-reference graph, so a *recursive* composite (`node(l: Tree, r: Tree)`) is classified too, and a lawful-`Eq` **boundary** — a carrier whose `eq` is dispatched, `TotalFloat` being the shipped one — is neither classified nor overwritten: its `eq` is the author's. Nothing is derived for a **parametric** sort or for a composite with a parametric field (`hold(p: Pair[A, B])`): their lawful equality is *conditional* on their arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`), and an unconditional claim would make `List[Float]` lawful. Writing the provision by hand stays legal and is not duplicated — the derivation skips a carrier that already provides. `=` **never binds** a logical variable: `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind. `neq` (`!=`) pairs with it: `neq(a,b) <=> not(eq(a,b))`, the negation of the *dispatched* equality. (Ordering mirrors this, and since **WI-1109** it has THREE floors rather than two — `gt`/`lt`/`gte`/`lte` are the base **`PartialOrd`** surface, IEEE-partial for `Float`; `compare` and the order laws live on **`WeakOrd`**, which `requires Eq, PartialOrd` and is TOTAL but whose kernel may be strictly *coarser* than `Eq`, so it partitions a carrier into equivalence classes; and **`Ord`** adds only the converse law — `compare(a,b) = 0` implies `eq(a,b)` — making the kernel exactly `Eq`. `Ord provides WeakOrd`, so a carrier writes one provision and the loader derives the floor below; since **WI-1110** that clause is `Ord`'s *whole* content — a spec's `provides` is a chain entry as well as a derivation, so `WeakOrd`'s `requires Eq, PartialOrd` reach the carrier through it and `Ord` restates neither (§5.1). The practical consequence is stated at `sortedset.anthill`: a `SortedSet` keyed by a `WeakOrd` that is not an `Ord` stores CLASSES — it collapses members that compare equal, and its `union` keeps the left operand's representative, so it is not commutative. Requiring `Ord` is what buys a set of elements.)
 - **`===` — the structural identity *test*** (`anthill.kernel.struct_eq`, a resolver builtin; WI-615). Total, carrier-agnostic, **never dispatches**, and needs **no `Eq` instance**: it answers "are these two values literally the same structure" for every value (opaque handles compare by identity). Two membership-equal sets in different spellings are `=` but not `===`. Use it for term/symbol/reflected-structure identity — comparisons that must not suddenly depend on a carrier's custom equality. Being a *test*, it is **not a defining connective**, and a **`lhs === rhs` rule with no body goals is refused at load** (WI-1090) naming `<=>` as the substitute — a `fact lhs === rhs` too, a fact being a bodyless rule (§6.1), and a rule whose only goal was a folded `Spec[T]` bound, that guard being a bound rather than a goal: the builtin answers every `===` goal itself, so no clause of it is ever consulted, `[simp]` never fires it (the normalizer reads the `=` and `<=>` equations only), and its subject would be left naming no callable. A rule with a real **body goal** is untouched — that is not an equation (§8.3) but an ordinary law about the operator, and `totalfloat.anthill` writes one (`rule eq(?a, ?b) :- ?a === ?b`).
 - **`<=>` — structural *unification*** (`anthill.kernel.unify`, a resolver primitive). It binds via a substitution effect on the resolver frame: `?v <=> ?p.x` binds `?v` to the projected value; `some(?x) <=> some(3)` binds `?x ↦ 3`. It is **occurs-checked** (`?v <=> f(?v)` is a loud failure, never a cyclic term), **symmetric** (either side may be the variable side), and **structural-only — it never dispatches**. It is the connective of equational rule heads (§5.3) and the substrate of `let`.
 

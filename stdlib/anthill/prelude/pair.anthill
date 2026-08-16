@@ -67,7 +67,7 @@
 -- but it is this file that makes it reachable from the standard library. WI-871, and
 -- pinned in `wi858_pair_orderings_test` so it is not discovered twice.
 enum anthill.prelude.Pair
-  import anthill.prelude.{Bool, Int64, PartialEq, Eq, PartialOrd, Ord}
+  import anthill.prelude.{Bool, Int64, PartialEq, Eq, PartialOrd, WeakOrd, Ord}
 
   sort A = ?
   sort B = ?
@@ -76,10 +76,15 @@ enum anthill.prelude.Pair
   provides PartialEq[Pair]  :- PartialEq[A], PartialEq[B]
   provides Eq[Pair]         :- Eq[A], Eq[B]
   provides PartialOrd[Pair] :- PartialOrd[A], PartialOrd[B]
+  -- WI-1109: TWO conditional provisions, not one. A lexicographic `Pair` is a WEAK
+  -- order iff both components are, and a STRONG one iff both are strong — strictly
+  -- different conditions, which is exactly why 058 §3.8 puts a `:- goals` tail on the
+  -- PROVISION and not on the sort. Same shape as the `PartialEq`/`Eq` pair above.
+  provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B]
   provides Ord[Pair]    :- Ord[A], Ord[B]
 
   -- Lexicographic `fst`-then-`snd`. The component compares go through the SEMANTIC
-  -- spec op `Ord.compare`, resolving through the `Ord` provision's condition
+  -- spec op `WeakOrd.compare`, resolving through the provision's condition
   -- slots — so a pair of pairs orders recursively. The tie test is `PartialEq.eq` on
   -- the `Int64` result and not an unqualified `eq`, which inside this sort would be
   -- `Pair.eq` calling itself.
@@ -88,8 +93,8 @@ enum anthill.prelude.Pair
       case pair(al, ar) ->
         match b
           case pair(bl, br) ->
-            let c = Ord.compare(al, bl)
-            if PartialEq.eq(c, 0) then Ord.compare(ar, br) else c
+            let c = WeakOrd.compare(al, bl)
+            if PartialEq.eq(c, 0) then WeakOrd.compare(ar, br) else c
 
   operation fst(p: Pair) -> A
   operation snd(p: Pair) -> B

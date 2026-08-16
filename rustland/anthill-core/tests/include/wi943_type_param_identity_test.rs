@@ -70,7 +70,7 @@ use anthill_core::kb::KnowledgeBase;
 /// measure the IDENTITY, so the program must load with the fix backed out too.
 const IDENT_SRC: &str = r#"
 namespace test.wi943.identity
-  import anthill.prelude.{Int64, Ord}
+  import anthill.prelude.{Int64, Ord, WeakOrd}
 
   sort OpHolder
     operation cmp[T](a: T, b: T) -> Int64 = 0
@@ -81,7 +81,7 @@ namespace test.wi943.identity
   sort SortHolder
     sort T = ?
     requires Ord[T]
-    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
   end
 end
 "#;
@@ -169,10 +169,10 @@ fn distinct_operations_do_not_share_one_type_param_variable() {
 fn an_op_scoped_requires_covers_its_own_call() {
     let src = r#"
 namespace test.wi943.covered
-  import anthill.prelude.{Int64, Ord}
+  import anthill.prelude.{Int64, Ord, WeakOrd}
   sort OpHolder
-    operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(a, b)
-    operation cmp2[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(b, a)
+    operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = WeakOrd.compare(a, b)
+    operation cmp2[T](a: T, b: T) -> Int64 requires Ord[T] = WeakOrd.compare(b, a)
   end
   sort Driver
     operation via(n: Int64) -> Int64 = OpHolder.cmp(7, 3)
@@ -215,11 +215,11 @@ fn sort_type_param_resolves_through_its_sort_alias() {
     let kb = load_kb_with(
         r#"
 namespace test.wi943.sortparam
-  import anthill.prelude.{Int64, Ord}
+  import anthill.prelude.{Int64, Ord, WeakOrd}
   sort SortHolder
     sort T = ?
     requires Ord[T]
-    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
   end
 end
 "#,

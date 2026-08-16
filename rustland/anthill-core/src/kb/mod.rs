@@ -1028,6 +1028,46 @@ pub struct KnowledgeBase {
     /// retracted slot happily, so the failure is a stale answer rather than an error.
     pub(crate) sort_info_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
 
+    /// WI-1112 — the SortRequiresInfo (requirement) index: each `requires` clause's
+    /// fact keyed by the CANONICAL symbol of its `sort_ref` functor, in the shared
+    /// `SymbolKeyedFactIndex` (WI-661), built by `typing::build_requires_index`. The
+    /// last reflect relation whose one keyed consumer — `typing::collect_sort_requires`,
+    /// via `requires_rids_by_sort` — still scanned every fact of the functor per call.
+    /// MEASURED with both arms alternating in one process (min of 5 pairs, warmup
+    /// dropped, stdlib + host bindings): 3148 `direct_requires` calls per load, of which
+    /// `collect_sort_requires` was 69.4 ms of the debug load's 657.8 ms — 85 % of
+    /// `direct_requires` and the largest single cost in the load — against 1.55 ms once
+    /// indexed. The provides side's own note records the same measurement from the other
+    /// end: putting `self_supplied_entries` on a raw scan took a stdlib load from 0.10 s
+    /// to 0.18 s.
+    ///
+    /// Keyed by `canonical_sort_sym` of the `sort_ref` field's functor, which is what
+    /// the consumer compares (`same_sort_canonical`), so the bucket is exact — identity
+    /// by symbol, never by last segment (spec §8.6).
+    ///
+    /// NOT BUILD-ONCE — DROPPED WITH THE CHAIN CACHES. Unlike `sort_info_index`, this
+    /// relation has a writer that runs after the build in practice: any post-load
+    /// `SortRequiresInfo` assert. Its lifetime is therefore pinned to the derived state
+    /// that has the SAME input — [`Self::invalidate_requires_chain_cache`] drops this
+    /// index alongside `requires_tree_cache` and friends, so a producer that already
+    /// owes that call owes nothing new, and one that forgets it was already serving a
+    /// stale chain. Reset to `None` at the start of EVERY load entry point that can write
+    /// the relation — `load_phase_inner` (like its siblings) and the single-file `load`,
+    /// which never reaches a type-check and so keeps scanning — and (re)built by
+    /// `build_requires_index` at `type_check_sorts` start and once more at the end of the
+    /// load pipeline, so the RUNTIME readers (eval, codegen) get a live index. `None`
+    /// until built; while `None`, the consumer falls back to the live scan
+    /// (`rids_or_scan`), which returns every fact and is re-filtered per fact at the call
+    /// site — so a `None` index is slow, never wrong.
+    ///
+    /// A stale index here is not a slow answer, it is a MISSING REQUIREMENT — a
+    /// dictionary slot that silently stops existing, so a program that should be refused
+    /// loads clean and dies at eval (WI-954's failure mode). `SortRequiresInfo` is also
+    /// marked `constant` (`fact_monotonicity`, reflect.anthill) beside `SortProvidesInfo`,
+    /// which makes a RUNTIME `Store.persist`/`retract` of it a loud error rather than a
+    /// silent desync.
+    pub(crate) requires_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
+
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
     /// the typer to type a bare const reference (fold-free: only the declared
@@ -1169,6 +1209,19 @@ pub struct KnowledgeBase {
     /// checks and stay held to them — they introduce no unbacked operation and are
     /// indistinguishable from the hand-written `provides PartialEq[T = X]`.
     unbacked_derived_provisions: HashSet<RuleId>,
+
+    /// WI-1109 — PROVENANCE, not exemption, and the distinction is the whole reason this
+    /// is a second map rather than a reuse of the one above. A row
+    /// [`typing::derive_forwarded_provisions`] materializes from a forwarding
+    /// (`C provides Ord` + `Ord provides WeakOrd` ⇒ `C provides WeakOrd`) is held to
+    /// every check a written row is — a concrete `Ord` carrier really does owe a
+    /// `compare`, so exempting it would suppress a CORRECT refusal. What it must not do
+    /// is report that refusal against text the author never wrote: measured, a concrete
+    /// carrier writing `provides Ord[T = MyBox]` and no `compare` was refused for
+    /// "provides `WeakOrd` but backs no operation `WeakOrd.compare`", word for word what
+    /// a carrier that HAD written `provides WeakOrd` gets. This records which spec the
+    /// row came from so the diagnostic can say so.
+    derived_provision_origin: std::collections::HashMap<RuleId, Symbol>,
 
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
@@ -1365,6 +1418,18 @@ pub struct KnowledgeBase {
     // "measured, and no carrier has a default". Nothing consumes it yet — 058 rung 2a
     // is WI-861.
     default_providers: Option<defaults::DefaultProviderIndex>,
+    // WI-1033 / WI-862 — the per-scope `provides`-CLAUSE counter. A provision's
+    // conditions are a conjunction WITHIN one clause and a disjunction ACROSS clauses,
+    // so a reader has to know which clause a condition came from, and two clauses of one
+    // scope must never share an index or their condition sets merge.
+    //
+    // ON THE KB, not on the loader, because a scope's clauses can come from MORE THAN
+    // ONE FILE and a `Loader` is built per file. Two openers exist today — a sort body
+    // (or a 059 R3 secondary entry to it) and a proposal-038 `provides <Carrier>
+    // language <L> … end` binding block — and the shipped tree already splits `Float`
+    // across `stdlib/` and `anthill-stl/`. A per-file counter restarts at 0 for the
+    // second file and hands its first clause the index the first file's already used.
+    provides_clause_seen: HashMap<ScopeId, usize>,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -1509,6 +1574,7 @@ impl KnowledgeBase {
             sort_alias_index: None,
             provides_index: None,
             sort_info_index: None,
+            requires_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
@@ -1523,6 +1589,7 @@ impl KnowledgeBase {
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
+            derived_provision_origin: std::collections::HashMap::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             unsuppliable_requirements: Vec::new(),
@@ -1544,6 +1611,7 @@ impl KnowledgeBase {
             host_op_mappings: Vec::new(),
             host_const_mappings: Vec::new(),
             default_providers: None,
+            provides_clause_seen: HashMap::new(),
         }
     }
 
@@ -1551,8 +1619,25 @@ impl KnowledgeBase {
     /// `SortRequiresInfo` fact is asserted after the cache filled, so
     /// stale chains can't be served. WI-226 / WI-230. Clears both the
     /// flat chain cache and the tree cache.
-    #[allow(dead_code)]
-    pub fn invalidate_requires_chain_cache(&self) {
+    ///
+    /// WI-1110 — AND WHEN A `SortProvidesInfo` FACT IS ASSERTED. A chain is no longer
+    /// built from `requires` alone: a SPEC's `provides` is a CONVERSION and contributes a
+    /// self-supplied entry (`typing::self_supplied_entries`), so the provision relation is
+    /// a second input to every cached chain. `load.rs` calls this around
+    /// `derive_forwarded_provisions` and after `eq_derive::run`, the two load passes that
+    /// assert provisions; a third producer owes it the same call.
+    ///
+    /// WI-1112 — AND IT DROPS [`Self::requires_index`], which is why this takes `&mut
+    /// self` where it used to take `&self`. That index answers the same question from the
+    /// same relation as the caches beside it, so giving it a SECOND invalidation point to
+    /// remember would be a second chance to forget: every producer that already owes this
+    /// call now owes nothing new, and any that forgot it was already serving a stale
+    /// chain. The index is dropped rather than rebuilt because this is called mid-mutation
+    /// (between two provision-asserting passes) — a `None` index makes the consumer scan
+    /// the live relation, which is slow and correct; `typing::build_requires_index` puts
+    /// it back once the relation is frozen again.
+    pub fn invalidate_requires_chain_cache(&mut self) {
+        self.requires_index = None;
         self.requires_chain_cache.borrow_mut().clear();
         self.requires_tree_cache.borrow_mut().clear();
         self.synth_req_names_cache.borrow_mut().clear();
@@ -1656,6 +1741,16 @@ impl KnowledgeBase {
 
     /// WI-1103 — record a row [`eq_derive::run`] derived. Called at the assertion,
     /// so the mark and the fact cannot come apart.
+    /// WI-1109 — record that `rid` was derived from the carrier's provision of `origin`.
+    pub(crate) fn mark_derived_provision(&mut self, rid: RuleId, origin: Symbol) {
+        self.derived_provision_origin.insert(rid, origin);
+    }
+
+    /// The spec whose forwarding produced `rid`, when it was derived.
+    pub(crate) fn derived_provision_origin_of(&self, rid: RuleId) -> Option<Symbol> {
+        self.derived_provision_origin.get(&rid).copied()
+    }
+
     pub(crate) fn mark_unbacked_derived_provision(&mut self, rid: RuleId) {
         self.unbacked_derived_provisions.insert(rid);
     }
@@ -5084,6 +5179,16 @@ impl KnowledgeBase {
     }
 
     /// WI-860 — install the materialized `default_provider` relation (058 §3.6).
+    /// WI-1033 / WI-862 — THE ONE OWNER of the `provides`-clause numbering, across every
+    /// file. Both openers of a provision ask here; see the field's comment for why the
+    /// counter cannot live on the per-file `Loader`.
+    pub(crate) fn next_provides_clause_index(&mut self, scope: ScopeId) -> usize {
+        let seen = self.provides_clause_seen.entry(scope).or_insert(0);
+        let clause = *seen;
+        *seen += 1;
+        clause
+    }
+
     /// Called only by `defaults::build_default_provider_index`.
     pub(crate) fn set_default_provider_index(&mut self, index: defaults::DefaultProviderIndex) {
         self.default_providers = Some(index);

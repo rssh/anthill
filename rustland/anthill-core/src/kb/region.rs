@@ -51,16 +51,62 @@ use crate::intern::{Symbol, SymbolKind};
 /// handled without touching this module.
 pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
     let mut out = HashSet::new();
-    let modifiable = match kb.try_resolve_symbol("anthill.prelude.Modifiable") {
-        Some(s) => s,
-        None => return out, // no Modifiable facts loaded — nothing admits a region
+    let Some(modifiable) = kb.try_resolve_symbol("anthill.prelude.Modifiable") else {
+        return out; // no Modifiable claims loaded — nothing admits a region
     };
-    for rid in kb.rules_by_functor(modifiable) {
-        let Some(head) = kb.fact_head_term(rid) else {
-            continue;
-        };
+    for head in modifiable_claim_heads(kb, modifiable) {
         collect_sort_refs(kb, head, modifiable, &mut out);
     }
+    out
+}
+
+/// WI-862 — EVERY claim that some sort is `Modifiable`, as the claim's own head term,
+/// read from BOTH channels a provision arrives on.
+///
+/// This module used to scan `rules_by_functor` alone, which is the RAW FACT index. That
+/// was complete only while `fact Modifiable[T = Cell]` inside `sort Cell` was the way to
+/// write the claim: proposal 058 §4 retires that spelling for `provides Modifiable[T =
+/// Cell]`, which files a `SortProvidesInfo` and NO fact — so the scan went blind on the
+/// migrated stdlib and `is_modifiable(Cell)` answered **false**. MEASURED: five tests
+/// across `wi206`, `wi707`, `wi314` and `kb::region::wi353_tests`, every one of them a
+/// wrong ANSWER rather than an error.
+///
+/// BOTH channels, not the new one only: the `fact` spelling is deprecated, not removed,
+/// and a namespace-level `fact Modifiable[T = X]` (058 §3.1, explicitly out of the
+/// retirement's scope) can never become a `provides` at all. A reader that swapped
+/// channels would trade one blind spot for another.
+///
+/// Deduplication is the caller's: `region_sorts` collects into a `HashSet`, and
+/// `is_modifiable_sort` is an `any`. A sort that writes BOTH spellings — which the
+/// deprecation warning explicitly sanctions where a rule resolves the spec as a goal —
+/// therefore contributes one answer, not two.
+///
+/// AND EACH CALLER KEEPS ITS OWN READING OF A HEAD, which is WI-206's recorded landmine:
+/// `region_sorts` collects every sort reachable ANYWHERE in the head (an
+/// over-approximation, deliberately — effect masking must keep a `Modify` whose result
+/// type merely mentions a region-bearing sort), while `is_modifiable_sort` reads the `T`
+/// BINDING and takes its head sort, because as an exact predicate the over-approximation
+/// inverts the answer. This function supplies the heads and decides nothing else.
+///
+/// COST: one `all_provisions` walk per call, on top of the index lookup this used to be
+/// alone. Acceptable at both callers — `region_sorts` is computed ONCE per typing pass
+/// (`type_check_sorts` calls it before the per-op loop, saying so), and
+/// `is_modifiable_sort` backs a reflect introspection op, not a dispatch. If a third
+/// caller ever puts this on a hot path, the answer is the `EqDispatchIndex`/
+/// `DefaultProviderIndex` pattern, not a narrower channel list.
+fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<TermId> {
+    let mut out: Vec<TermId> = kb
+        .rules_by_functor(modifiable)
+        .into_iter()
+        .filter_map(|rid| kb.fact_head_term(rid))
+        .collect();
+    let canonical = kb.canonical_sort_sym(modifiable);
+    out.extend(
+        super::typing::all_provisions(kb)
+            .into_iter()
+            .filter(|p| kb.canonical_sort_sym(p.spec) == canonical)
+            .map(|p| p.spec_view),
+    );
     out
 }
 
@@ -80,14 +126,16 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
 /// `Modifiable[T = Cell]` makes `Cell[V = Int64]` modifiable too.
 pub(crate) fn is_modifiable_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
     let Some(modifiable) = kb.try_resolve_symbol("anthill.prelude.Modifiable") else {
-        return false; // no Modifiable facts loaded — nothing is modifiable
+        return false; // no Modifiable claims loaded — nothing is modifiable
     };
-    kb.rules_by_functor(modifiable).into_iter().any(|rid| {
-        kb.fact_head_term(rid)
-            .and_then(|head| extract_type_param(kb, &super::term_view::TermIdView(head), "T"))
-            .and_then(|bound| type_head_sort(kb, &bound))
-            == Some(sort)
-    })
+    // WI-862 — BOTH spellings of the claim; see [`modifiable_claim_heads`].
+    modifiable_claim_heads(kb, modifiable)
+        .into_iter()
+        .any(|head| {
+            extract_type_param(kb, &super::term_view::TermIdView(head), "T")
+                .and_then(|bound| type_head_sort(kb, &bound))
+                == Some(sort)
+        })
 }
 
 /// The head sort a type NAMES: `Cell` for both the bare `Cell` and the

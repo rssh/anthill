@@ -12706,11 +12706,32 @@ fn check_apply_iter(
         // (the WI-067/WI-292 polarity: act on a DECIDED obligation, never on an
         // UNDETERMINED one). Op-body checking (`in_rule_body()` false) raises on ANY
         // unproved precondition, unchanged.
+        // WI-862 — SPLIT FIRST, CLASSIFY SECOND. `is_value_precondition_clause` reads a
+        // clause's HEAD, and the loader lowers several comma-separated goals on ONE
+        // clause as a single `conjunction(g1, …, gn)` (`convert_clause_list`). So a
+        // MIXED clause — `requires neq(a, 0), lo: Ord[T = Int64]`, the shape WI-840's
+        // overloaded list makes ordinary — presents the head `conjunction`, which is not
+        // a `Sort`, and the whole thing was classified a value precondition and PROVED
+        // as one goal. That proves the spec half from Γ, which the comment above says
+        // never happens ("spec/typeclass requires … are dispatched / coverage-checked
+        // elsewhere, never proved from Γ").
+        //
+        // IT PASSED ONLY BY ACCIDENT, and 058 §4 removed the accident: `fact Ord[T =
+        // Int64]` put a raw `Ord[T = Int64]` in the RULE INDEX, so the spec conjunct
+        // resolved as an ordinary SLD goal and the conjunction proved. Migrating that row
+        // to `provides` — which files a provision and no fact — left the same conjunction
+        // unprovable, and a TRUE precondition (`neq(7, 0)`) started reporting
+        // `UnsatisfiedPrecondition`. MEASURED: `anthill query 'Ord[T = Int64]'` answers 1
+        // solution under the `fact` spelling and NO SOLUTIONS under `provides`, while
+        // `neq(7, 0)` answers 1 under both.
+        //
+        // `clause_conjuncts` is the existing owner of the split and its doc already
+        // names this hazard from the other side; it was simply not reached here.
         let value_reqs: Vec<Value> = op
             .requires
             .iter()
+            .flat_map(|c| clause_conjuncts(kb, c))
             .filter(|c| is_value_precondition_clause(kb, c))
-            .cloned()
             .collect();
         if !value_reqs.is_empty() {
             let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
@@ -16939,6 +16960,7 @@ fn explain_dep_refusal(
             let composed = RequiresEntry {
                 required_sort: sub.required_sort,
                 spec: substitute_in_spec(kb, &sub.spec, map),
+                supply: sub.supply,
             };
             if entries_cover(kb, &composed, dep, None)
                 && !entries_cover(kb, &composed, dep, Some(ctx))
@@ -17259,6 +17281,7 @@ fn build_concrete_dispatch_dict(
         .map(|entry| RequiresEntry {
             required_sort: entry.required_sort,
             spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+            supply: entry.supply,
         })
         .collect();
     let Some(syms) = ProjectionSyms::resolve(kb) else {
@@ -17381,6 +17404,7 @@ fn build_op_scoped_dicts(
         let dep = RequiresEntry {
             required_sort: entry.required_sort,
             spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+            supply: entry.supply,
         };
         // WI-1091: ask the search for its terminal outcome, so the tie below is the one
         // THIS search saw rather than a re-run that could disagree with it — the same
@@ -17901,6 +17925,7 @@ pub fn build_dep_projection(
                     let composed = RequiresEntry {
                         required_sort: sub_chain[k].required_sort,
                         spec: substitute_in_spec(kb, &sub_chain[k].spec, map),
+                        supply: sub_chain[k].supply,
                     };
                     entries_cover(kb, &composed, dep, Some(ctx))
                 })
@@ -18710,6 +18735,7 @@ pub(crate) fn resolve_bridge_requirements(
         let concrete = RequiresEntry {
             required_sort: entry.required_sort,
             spec: concrete_spec,
+            supply: entry.supply,
         };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
             if op_half {
@@ -20958,6 +20984,7 @@ fn substituted_entry(
     RequiresEntry {
         required_sort: entry.required_sort,
         spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+        supply: entry.supply,
     }
 }
 
@@ -22983,7 +23010,25 @@ impl SymbolKeyedFactIndex {
     /// the load-time consumers hit before their index exists — it returns EVERY fact, so
     /// the caller keeps its own per-fact re-filter). `key_canon` must already be
     /// canonical. Collapses the identical fast-path/fallback selection every keyed
-    /// consumer shared (`provides_rids_by_spec` / `_by_carrier`, `sort_info_rids_by_sort`).
+    /// consumer shared (`provides_rids_by_spec` / `_by_carrier`, `sort_info_rids_by_sort`,
+    /// `requires_rids_by_sort`).
+    ///
+    /// WI-1112 — BOTH ARMS DROP RETRACTED RIDS, and the index arm has to say so
+    /// explicitly. `rules_by_functor` is documented as "all ACTIVE (non-retracted)" and
+    /// filters at query time; a bucket is frozen at build time, and no consumer's own
+    /// re-filter covers the difference — `is_fact` reads `body_nodes.is_empty()` and
+    /// answers `true` for a retracted slot just as happily as for a live one (the
+    /// property `sort_info_index`' doc already warns about from the other side). Without
+    /// this filter the two arms answer differently for exactly one input, so the
+    /// invariant every one of these indexes rests on — "the index answers what the scan
+    /// answers" — would be false, and the failure it produces is a PHANTOM row: for
+    /// `requires_index`, a dictionary slot that outlives the declaration it came from.
+    /// The cost is one bool per bucket entry, against a bucket of a handful and against the
+    /// `to_vec` this replaced; MEASURED, alternating both arms in one process (11 pairs,
+    /// release, whole stdlib load), the two distributions overlap completely — 102.8–122.1
+    /// ms with the filter against 92.5–111.9 without — i.e. the difference is under this
+    /// box's noise floor for one unchanged binary, and an order below what the index itself
+    /// saves. `provides_index` and `sort_info_index` inherit the fix here for free.
     fn rids_or_scan(
         kb: &KnowledgeBase,
         index: Option<&SymbolKeyedFactIndex>,
@@ -22991,7 +23036,12 @@ impl SymbolKeyedFactIndex {
         functor_qn: &str,
     ) -> Vec<crate::kb::RuleId> {
         match index {
-            Some(ix) => ix.get(key_canon).to_vec(),
+            Some(ix) => ix
+                .get(key_canon)
+                .iter()
+                .copied()
+                .filter(|rid| kb.is_rule_alive(*rid))
+                .collect(),
             None => kb
                 .try_resolve_symbol(functor_qn)
                 .map(|s| kb.rules_by_functor(s))
@@ -23116,6 +23166,84 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         by_spec_base,
         by_carrier,
     });
+}
+
+/// WI-1112 — the SortRequiresInfo-fact rids for a SORT-keyed lookup: the
+/// canonical-`sort_ref` bucket when the index (a [`SymbolKeyedFactIndex`] stored directly
+/// as `KnowledgeBase::requires_index`) is built, else a live scan of every
+/// SortRequiresInfo fact (the pre-build / no-index fallback — and the state the index is
+/// deliberately left in across every load-time mutation window). The bucket keys on
+/// `canonical_sort_sym(sort_ref-functor)`, so the caller passes any sort symbol and the
+/// lookup canonicalizes it; the one consumer keeps its own per-fact `same_sort_canonical`
+/// re-filter, which is load-bearing on the scan fallback (it returns EVERY requires fact).
+fn requires_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
+    SymbolKeyedFactIndex::rids_or_scan(
+        kb,
+        kb.requires_index.as_ref(),
+        kb.canonical_sort_sym(sort_sym),
+        "anthill.reflect.SortRequiresInfo",
+    )
+}
+
+/// WI-1112 — build the SortRequiresInfo index (a [`SymbolKeyedFactIndex`]) in ONE pass
+/// over the requires facts, bucketing each by the CANONICAL symbol of its `sort_ref`
+/// field's functor — the exact key [`collect_sort_requires`] compares with
+/// `same_sort_canonical`.
+///
+/// READ CARRIER-AGNOSTICALLY (`rule_head_value` + `op_info::head_field_term`), matching
+/// the consumer arm for arm. This is not stylistic: a value-fact SortRequiresInfo — a
+/// denoted-bearing spec, WI-662 — has NO `fact_head_named_args`, so building this the way
+/// `build_sort_info_index` builds its own (term-only named args) would leave exactly those
+/// facts in no bucket, and a bucket miss is a MISSING REQUIREMENT, not a slow answer.
+/// Driven by `wi1112_requires_index_tests::a_denoted_requires_fact_is_bucketed_not_dropped`
+/// — and NOT by `wi662_carrier_agnostic_requires_test`, which is where one would look
+/// first: MEASURED, all three of its tests pass with the term-only builder in place,
+/// because they read the chain immediately after `invalidate_requires_chain_cache` and so
+/// measure the SCAN. The distinguishing assertion is that the index is `Some` at the read.
+///
+/// A `sort_ref` that is not a `Term::Fn` is left unbucketed, because the consumer matches
+/// no other shape — the same faithfulness rule `build_sort_info_index` states for its
+/// `name` field. Non-facts are skipped for the same reason (`anthill-cli`'s `run`
+/// fixtures do write a bodied `rule SortRequiresInfo(…) :- …`, which the consumer's own
+/// `is_fact` guard already excludes).
+///
+/// WHERE IT IS BUILT, AND WHY NOWHERE ELSE. `type_check_sorts` start, beside
+/// `build_provides_index` / `build_sort_info_index`, and once more at the end of
+/// `load_phase_inner` (after the last `invalidate_requires_chain_cache`) so the RUNTIME
+/// readers inherit a live index. Both producers are done before the first of those:
+/// `Loader::load_requires_decl` during the per-file load, and
+/// `load::resolve_requires_bindings` — which RETRACTS and re-asserts, so a stale bucket
+/// would serve a retracted rid — inside `resolve_instantiations`. The single-file [`load`]
+/// entry point runs both of those and NO type-check, so it deliberately gets no build at
+/// all: it resets the index at its start and leaves it `None`, i.e. scanning.
+/// (`crate::kb::load::load`.)
+///
+/// A future producer that runs after a build must call
+/// `KnowledgeBase::invalidate_requires_chain_cache`, which drops this index — the one
+/// invalidation point, shared with the chain caches computed from the same relation.
+pub(crate) fn build_requires_index(kb: &mut KnowledgeBase) {
+    let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
+        return;
+    };
+    let mut index = SymbolKeyedFactIndex::default();
+    for rid in kb.rules_by_functor(requires_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(sort_ref_tid) = super::op_info::head_field_term(kb, head, "sort_ref") else {
+            continue;
+        };
+        let Term::Fn {
+            functor: sr_functor,
+            ..
+        } = kb.get_term(sort_ref_tid)
+        else {
+            continue;
+        };
+        index.insert(kb.canonical_sort_sym(*sr_functor), rid);
+    }
+    kb.requires_index = Some(index);
 }
 
 /// WI-671/WI-672 — the SortInfo-fact rids for a sort-keyed lookup: the canonical-sort
@@ -23255,6 +23383,538 @@ fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) -> bool {
 /// deduped, the spec sort itself excluded). Used to resolve a nullary
 /// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
 /// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
+/// WI-1109 — a kb-free comparable key for ONE provision/requires binding, so the sites
+/// that must ask "the same bindings?" cannot drift into asking it three ways. The key is
+/// the parameter's LOCAL name (spec parameters are named per spec, and the identity
+/// forwarding relates them by name) paired with the value's canonical sort symbol when
+/// the value heads a sort, else its hash-consed `TermId`. Deliberately not the raw
+/// `TermId` alone: two structurally-equal bindings written in two places need not share
+/// one id, and a hand-written row must be recognised as covering a derived one.
+fn binding_key(kb: &KnowledgeBase, name: Symbol, value: TermId) -> (String, String) {
+    binding_key_named(kb, kb.local_name_of(name), value)
+}
+
+/// [`binding_key`] for a binding already held by its parameter's LOCAL NAME — the shape
+/// WI-1111's translated derivation rows carry, since a mapped target parameter has no
+/// symbol on the source row to borrow.
+fn binding_key_named(kb: &KnowledgeBase, name: &str, value: TermId) -> (String, String) {
+    (name.to_string(), binding_value_key(kb, value))
+}
+
+/// The VALUE half of [`binding_key_named`], and it must descend (WI-1111 review).
+///
+/// A first form matched `Term::Fn { functor, .. }` and kept only the base, so
+/// `Box[E = Int64]` and `Box[E = Bool]` keyed ALIKE. [`bindings_cover_named`] then read a
+/// hand-written row at one argument as COVERING the derived row needed at another,
+/// [`forwarded_rows_to_derive`] skipped it, and — because
+/// [`collect_provides_candidates`] has already excluded the conversion — the answer was
+/// DELETED rather than relocated. That is the one invariant this whole exclusion rests
+/// on. MEASURED: with a written `C provides Low[T = Box[E = Bool]]` beside
+/// `C provides Top[T = Box[E = Int64]]`, the load FAILED with "'C' provides 'Top', which
+/// requires 'Low', but 'C' does not provide 'Low'". Driven by
+/// `a_sibling_row_at_other_arguments_does_not_suppress_the_derived_one`.
+///
+/// A NULLARY `Fn` KEYS AS ITS `Ref` DOES, deliberately: the loader writes a bare name
+/// both ways (WI-224/WI-359's `substitute_impl_params_alloc` note), so collapsing them is
+/// what keeps the two encodings of one sort comparing equal.
+fn binding_value_key(kb: &KnowledgeBase, value: TermId) -> String {
+    match kb.get_term(value) {
+        Term::Ref(functor) | Term::Ident(functor) => {
+            kb.qualified_name_of(kb.canonical_sort_sym(*functor)).to_string()
+        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            let base = kb.qualified_name_of(kb.canonical_sort_sym(*functor)).to_string();
+            if pos_args.is_empty() && named_args.is_empty() {
+                return base;
+            }
+            let mut out = base;
+            out.push('[');
+            for (i, arg) in pos_args.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&binding_value_key(kb, *arg));
+            }
+            for (n, v) in named_args.iter() {
+                if !out.ends_with('[') {
+                    out.push(',');
+                }
+                out.push_str(kb.local_name_of(*n));
+                out.push('=');
+                out.push_str(&binding_value_key(kb, *v));
+            }
+            out.push(']');
+            out
+        }
+        _ => format!("#{value:?}"),
+    }
+}
+
+/// True iff `covering` binds everything `asked` binds, to the same values.
+///
+/// COVERAGE AND NOT EQUALITY, which a first draft got wrong and the suite caught: a
+/// `requires` entry's spec view carries the spec's OPERATION bindings beside its type
+/// parameters — MEASURED, `Ord requires PartialOrd[T]` decodes as
+/// `[T, gt, gte, lt, lte]` — while a goal carries only what it asks about (`[T]`). An
+/// equal-length test therefore refused every real entry while claiming to be precise.
+/// Coverage keeps the property that matters: a binding the asker names must be present
+/// AND agree, so an entry bound to a DIFFERENT parameter cannot answer.
+/// The ASKED side is keyed by LOCAL NAME because a derived row's bindings are
+/// TRANSLATED through the forwarding's parameter map (WI-1111) and a mapped target
+/// parameter has no symbol on the source row to borrow; the COVERING side is a decoded
+/// row and keys by `Symbol`. Both go through [`binding_key_named`], so the comparison is
+/// the one it always was.
+fn bindings_cover_named(
+    kb: &KnowledgeBase,
+    covering: &[(Symbol, TermId)],
+    asked: &[(String, TermId)],
+) -> bool {
+    asked.iter().all(|(an, av)| {
+        let ak = binding_key_named(kb, an.as_str(), *av);
+        covering
+            .iter()
+            .any(|(cn, cv)| binding_key(kb, *cn, *cv) == ak)
+    })
+}
+
+/// [`bindings_cover_named`] with BOTH sides keyed by local name — comparing two pending
+/// derivation rows.
+fn bindings_cover_named_pairs(
+    kb: &KnowledgeBase,
+    covering: &[(String, TermId)],
+    asked: &[(String, TermId)],
+) -> bool {
+    asked.iter().all(|(an, av)| {
+        let ak = binding_key_named(kb, an.as_str(), *av);
+        covering
+            .iter()
+            .any(|(cn, cv)| binding_key_named(kb, cn.as_str(), *cv) == ak)
+    })
+}
+
+/// WI-1109 — the local name of a value that IS an abstract type parameter, or `None`
+/// when it is anything else. The name half of [`is_type_param_value`], which answers
+/// only the shape; both forms this reads (`Ref`/`Ident`, and the WI-359 nullary `Fn`)
+/// are the ones that predicate accepts.
+fn type_param_local_name(kb: &KnowledgeBase, value: TermId) -> Option<&str> {
+    // The `is_sort_param_symbol` guard is NOT optional and its omission was a real hole
+    // (review of WI-1109): reading the local name alone accepts a binding to a CONCRETE
+    // sort whenever that sort's name happens to equal the spec parameter's, so
+    // `provides Sp[T = T]` with a real nullary sort `T` in scope would read as an
+    // identity forwarding and derive rows at the wrong bindings. Same arms, same
+    // predicate as [`is_type_param_value`] — this only adds the NAME to the answer.
+    let sym = match kb.get_term(value) {
+        Term::Ref(sym) | Term::Ident(sym) => *sym,
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
+        _ => return None,
+    };
+    is_sort_param_symbol(kb, sym).then(|| kb.local_name_of(sym))
+}
+
+/// WI-1109/WI-1111 — is this provision a PARAMETER FORWARDING, and if so WHICH of the
+/// subject's type parameters does each of the target's stand for? A row
+/// `F provides S[p = q, …]` whose every binding sends one of `S`'s parameters to an
+/// abstract type parameter of `F`. `Ord provides WeakOrd[T = T]` is the shipped one;
+/// `F provides Sp[X = A]` (a renaming) and `F provides Sp[X = B, Y = A]` (a permutation)
+/// are the same relation written with different letters.
+///
+/// THE MAP IS THE SOUNDNESS ARGUMENT, not a convenience. Because every target parameter
+/// stands for exactly one subject parameter, a goal at `S` holds at the bindings the same
+/// goal at `F` does READ THROUGH THE MAP, so [`derive_forwarded_provisions`] may translate
+/// a carrier's bindings. A row binding a target parameter to a CONCRETE sort is
+/// deliberately not a forwarding: `Int64 provides Ord[T = Int64]` is a claim about the
+/// world, and translating nothing is exactly what makes it one.
+///
+/// WI-1109 SHIPPED THIS AS AN IDENTITY TEST — name-for-name — because copying bindings
+/// needs no map. WI-1111 measured what the identity cost: with `F provides Sp[X = A]`
+/// nothing was derived for a carrier of `F`, nothing classified the row a conversion, so
+/// `F` itself was offered as the impl sort for EVERY `Sp` goal (its own parameters being
+/// wildcards, the permuting form answered the mirrored goal too), the program loaded
+/// clean and died at eval with `OperationBodyMissing`. Translating is the whole
+/// difference, and it is the same three lines the identity form used to skip.
+///
+/// The keys are LOCAL NAMES on both sides for the reason `direct_requires`' dedup gives:
+/// the same parameter reaches this function under different symbols depending on which
+/// loader path wrote the row.
+fn forwarding_param_map(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    base: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> Option<Vec<(String, String)>> {
+    if !is_param_forwarding(kb, carrier, base, bindings) {
+        return None;
+    }
+    Some(
+        bindings
+            .iter()
+            .map(|(name, value)| {
+                (
+                    kb.local_name_of(*name).to_string(),
+                    type_param_local_name(kb, *value)
+                        .expect("is_param_forwarding checked every binding")
+                        .to_string(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// [`forwarding_param_map`] asked as a yes/no — the shape half, for readers that need
+/// only to know the row forwards rather than where each parameter goes.
+///
+/// SEPARATE FROM THE MAP RATHER THAN `map(..).is_some()`, and deliberately: this is the
+/// first conjunct of [`provision_is_conversion`], which runs for every provision row of
+/// every sort whose chain is built, and building the map allocates a `String` pair per
+/// binding. The measurements already recorded in this pass — a scanning
+/// `self_supplied_entries` costing 80 % of a stdlib load, an un-hoisted decode costing 61×
+/// — are what makes an allocation on that path worth avoiding.
+fn is_param_forwarding(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    base: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> bool {
+    !bindings.is_empty()
+        && !same_sort_canonical(kb, carrier, base)
+        && bindings
+            .iter()
+            .all(|(_, value)| type_param_local_name(kb, *value).is_some())
+}
+
+/// One decoded `SortProvidesInfo` row, for WI-1109's derivation pass. Named apart from
+/// the module's existing `ProvisionRow` (which carries a provider and a spec VIEW) —
+/// this one is the raw (carrier, spec base, bindings) triple the pass indexes on.
+struct DecodedProvision {
+    carrier: Symbol,
+    base: Symbol,
+    bindings: SmallVec<[(Symbol, TermId); 2]>,
+}
+
+/// WI-1109 — every provision row, decoded ONCE.
+///
+/// The pass runs with `kb.provides_index` dropped (it asserts into the relation it
+/// reads), so each per-row helper it used to call degraded to a full scan of every
+/// provision fact — and it called three of them per row per round: O(rounds × rows ×
+/// relation). Decoding once and indexing makes it O(rounds × relation).
+///
+/// MEASURED, not reasoned (`ANTHILL_LOAD_TIMING=1` over the stdlib): the per-row shape
+/// cost **266.8 ms** and this one costs **4.4 ms** — 61×, against a whole-load budget of
+/// roughly 135 ms, so the un-hoisted pass very nearly tripled the time to load the
+/// standard library. The control was the same loop with the indexes rebuilt inside it;
+/// if anything it UNDERSTATES the original, which also re-scanned for the
+/// already-provided check.
+fn decoded_provision_rows(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<DecodedProvision> {
+    let mut out = Vec::new();
+    for rid in kb.rules_by_functor(provides_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let (Some(sr_tid), Some(spec_tid)) = (
+            get_named_arg(kb, &named, "sort_ref"),
+            get_named_arg(kb, &named, "spec"),
+        ) else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr_tid) else {
+            continue;
+        };
+        let Some((base, bindings)) = unwrap_spec_view(kb, spec_tid) else {
+            continue;
+        };
+        out.push(DecodedProvision {
+            carrier: kb.canonical_sort_sym(carrier),
+            base: kb.canonical_sort_sym(base),
+            bindings,
+        });
+    }
+    out
+}
+
+/// The (carrier, provided-spec) pairs whose provision carries a `:- goals` tail, from ONE
+/// sweep of the condition facts. A conditional provision neither forwards nor is forwarded
+/// through — see [`derive_forwarded_provisions`] — and asking per carrier re-swept the
+/// whole `ProvidesConditionInfo` relation each time.
+fn conditioned_provision_pairs(
+    kb: &KnowledgeBase,
+    carriers: &[Symbol],
+) -> std::collections::HashSet<(Symbol, Symbol)> {
+    let mut out = std::collections::HashSet::new();
+    for carrier in carriers {
+        for pc in provision_conditions(kb, *carrier) {
+            if !pc.conditions.is_empty() {
+                out.insert((*carrier, kb.canonical_sort_sym(pc.provided)));
+            }
+        }
+    }
+    out
+}
+
+/// WI-1109 (058 §3.8) — MATERIALIZE THE FORWARDED PROVISION ROWS.
+///
+/// A spec may forward to a lower floor of its own tower (`Ord provides WeakOrd[T = T]`).
+/// 058 §3.8 states the consequence as one clause over the relation —
+/// `provides(?W, PartialOrd[T = ?X]) :- provides(?W, Ord[T = ?X])` — and names "the
+/// provision ROW a `requires PartialOrd[X]` goal finds" as the only missing piece. This
+/// pass supplies exactly that row: for every carrier providing a forwarder, the
+/// forwarded floor is asserted at the SAME bindings.
+///
+/// DERIVING THE ROW RATHER THAN TEACHING EACH READER IS THE POINT, and it was learned
+/// the expensive way. The provides relation has many readers — the provider-requirements
+/// load check, witness selection, the resolver's pin filter, dispatch, codegen — and a
+/// forwarding invisible to any ONE of them is a silent wrong answer there. Measured
+/// while building this: patching two readers surfaced a third. A materialized row is
+/// read by all of them unchanged, which is why `eq_derive` asserts rows for composite
+/// `Eq`/`NonEq` instead of teaching `sort_provides` about composites.
+///
+/// FILL SILENCE, NEVER OVERWRITE SPEECH ([`provides_spec_directly`]): a carrier already
+/// providing the lower floor keeps its own row and gets no derived twin. That is what
+/// keeps `Float` — which writes `provides PartialOrd` and no `compare` — untouched, and
+/// what stops a derived row becoming a rival at a coherent spec.
+///
+/// A CONDITIONAL PROVISION DERIVES NOTHING, and the `!kb.is_fact` guard below is what
+/// enforces it — deliberately, not incidentally. `Pair provides Ord[Pair] :- Ord[A],
+/// Ord[B]` is a RULE, and this pass asserts FACTS: copying only the head would drop the
+/// `:- goals` tail and claim the lower floor UNCONDITIONALLY, at element bindings where
+/// the source provision does not hold. That is precisely the over-claim WI-1033's
+/// `ProvisionConditionsTooWeak` exists to refuse, manufactured by the deriver instead of
+/// written by an author. So the pass UNDER-derives here: a conditional provider writes
+/// both floors by hand, each with its own tail (`pair.anthill` does, and its two tails
+/// differ — weak iff both components weak, strong iff both strong, which is why one
+/// copied tail could not serve both anyway). Deriving a conditional row means asserting
+/// a rule with the source's body, and is the next increment, not this one.
+pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return;
+    };
+    // Bounded fixpoint, so a tower deeper than one hop still derives; the bound is a
+    // runaway guard, not a depth claim — the shipped tower needs one round and settles
+    // on the second, which is what ends the loop.
+    const ROUNDS: usize = 8;
+    for _round in 0..ROUNDS {
+        let pending = forwarded_rows_to_derive(kb, provides_sym);
+        if pending.is_empty() {
+            return;
+        }
+        for (carrier, target, source_spec, bindings) in pending {
+            let rid = assert_forwarded_provides(kb, carrier, target, &bindings);
+            // Provenance, so a later refusal against this row can say where it came
+            // from instead of naming a `provides` clause the author never wrote.
+            kb.mark_derived_provision(rid, source_spec);
+        }
+    }
+    // ONE MORE READ BEFORE ACCUSING THE FIXPOINT (WI-1111 review). The loop returns early
+    // only when it OBSERVES an empty `pending`, so a tower whose last productive round is
+    // the `ROUNDS`th falls out of the `for` having derived everything — and the assertion
+    // below would then be raised on a COMPLETE fixpoint, with a message saying rows are
+    // missing when none are. Ask once more; only a still-non-empty set is the failure the
+    // assertion is about.
+    if forwarded_rows_to_derive(kb, provides_sym).is_empty() {
+        return;
+    }
+    // FALLING OUT OF THE LOOP MEANS THE LAST ROUND STILL HAD WORK, so rows a further
+    // round would derive are missing — and a missing row is invisible to every reader
+    // (they simply do not find the provision), which is the silent wrong answer this
+    // pass exists to prevent. Say so rather than dropping it. `debug_assert` and not a
+    // returned error because this function has no error channel and the condition is
+    // measured unreachable: the shipped tower settles on round two, and ROUNDS is far
+    // above any forwarding depth a library could plausibly declare.
+    debug_assert!(
+        false,
+        "WI-1109: forwarded-provision derivation did not settle in {ROUNDS} rounds — \
+         rows from a further round are missing, and every reader will answer as though \
+         those provisions do not exist"
+    );
+}
+
+/// One round: every (carrier, forwarded floor) row not already present, with the source
+/// spec that produced it. Reads only — the caller asserts. The emitted bindings are keyed
+/// by the TARGET's parameter LOCAL NAMES, already translated through
+/// [`forwarding_param_map`].
+fn forwarded_rows_to_derive(
+    kb: &KnowledgeBase,
+    provides_sym: Symbol,
+) -> Vec<(Symbol, Symbol, Symbol, Vec<(String, TermId)>)> {
+    let rows = decoded_provision_rows(kb, provides_sym);
+
+    // `Symbol` is not `Ord`, so dedup through a set rather than a sort.
+    let carriers: Vec<Symbol> = {
+        let mut seen = std::collections::HashSet::new();
+        rows.iter()
+            .map(|r| r.carrier)
+            .filter(|c| seen.insert(*c))
+            .collect()
+    };
+    let conditioned = conditioned_provision_pairs(kb, &carriers);
+
+    // forwarder -> the floors it forwards to, each with the parameter MAP that translates
+    // the forwarder's bindings into the floor's ([`forwarding_param_map`]). A CONDITIONAL
+    // forwarding forwards nothing, for the reason `derive_forwarded_provisions` gives
+    // about the carrier edge: the `:- goals` tail rides in separate facts, so reading the
+    // row as unconditional would give every carrier an unconditional lower floor.
+    let mut forwards: std::collections::HashMap<Symbol, Vec<(Symbol, Vec<(String, String)>)>> =
+        std::collections::HashMap::new();
+    for r in &rows {
+        if conditioned.contains(&(r.carrier, r.base)) {
+            continue;
+        }
+        let Some(map) = forwarding_param_map(kb, r.carrier, r.base, &r.bindings) else {
+            continue;
+        };
+        let e = forwards.entry(r.carrier).or_default();
+        // KEYED ON THE (floor, MAP) PAIR, not the floor alone: one forwarder may convert
+        // to the same floor at two DIFFERENT parameters (`F provides Sp[X = A]` beside
+        // `F provides Sp[X = B]`), which are two relocations and not one. Under the
+        // identity test neither was a forwarding at all, so keeping only the first map
+        // would under-derive newly-reachable territory rather than regress old.
+        if !e.iter().any(|(base, m)| *base == r.base && *m == map) {
+            e.push((r.base, map));
+        }
+    }
+    if forwards.is_empty() {
+        return Vec::new();
+    }
+
+    // (carrier, spec) -> the bindings it is ALREADY provided at. Fill silence, never
+    // overwrite speech — and binding-precisely, so a row at OTHER bindings cannot
+    // suppress the one actually needed.
+    let mut existing: std::collections::HashMap<(Symbol, Symbol), Vec<&[(Symbol, TermId)]>> =
+        std::collections::HashMap::new();
+    for r in &rows {
+        existing
+            .entry((r.carrier, r.base))
+            .or_default()
+            .push(&r.bindings);
+    }
+
+    let mut pending: Vec<(Symbol, Symbol, Symbol, Vec<(String, TermId)>)> = Vec::new();
+    for r in &rows {
+        // The forwarding row itself is what is being read THROUGH, never a carrier of it.
+        if same_sort_canonical(kb, r.carrier, r.base) {
+            continue;
+        }
+        if conditioned.contains(&(r.carrier, r.base)) {
+            continue;
+        }
+        let Some(targets) = forwards.get(&r.base) else {
+            continue;
+        };
+        for (target, map) in targets {
+            // TRANSLATE, don't copy (WI-1111). Each target parameter takes the value this
+            // row binds the SUBJECT parameter the forwarding sends it to. A target
+            // parameter whose subject parameter this row leaves unbound is simply absent,
+            // which is what "not bound" already means everywhere else.
+            let mapped: Vec<(String, TermId)> = map
+                .iter()
+                .filter_map(|(target_param, subject_param)| {
+                    r.bindings
+                        .iter()
+                        .find(|(n, _)| kb.local_name_of(*n) == subject_param.as_str())
+                        .map(|(_, v)| (target_param.clone(), *v))
+                })
+                .collect();
+            // NO GUARD ON AN EMPTY `mapped`, deliberately (WI-1111 review). A source row
+            // binding none of the parameters the forwarding names translates to a row
+            // with NO bindings — which is exactly what `assert_forwarded_provides` already
+            // says a target parameter the source left unbound means ("simply absent, which
+            // is what 'not bound' already means everywhere else"). Skipping instead was a
+            // silent drop on the very path that backs the candidate exclusion: the
+            // conversion is excluded whether or not this fires, so a skip here DELETES the
+            // answer rather than relocating it.
+            let already = existing
+                .get(&(r.carrier, *target))
+                .is_some_and(|rows| rows.iter().any(|b| bindings_cover_named(kb, b, &mapped)));
+            // AND THE PENDING TEST IS BINDING-AWARE, which WI-1111 measured the cost of:
+            // keyed on the (carrier, target) PAIR alone it derived at most ONE binding per
+            // round, so a carrier providing the forwarder at N distinct bindings needed N
+            // rounds and nine of them exhausted `ROUNDS` — tripping the settle assertion in
+            // a debug build and silently dropping rows in a release one. Driven by
+            // `nine_bindings_of_one_forwarder_all_derive`.
+            if already
+                || pending.iter().any(|(c, t, _, b)| {
+                    *c == r.carrier && *t == *target && bindings_cover_named_pairs(kb, b, &mapped)
+                })
+            {
+                continue;
+            }
+            pending.push((r.carrier, *target, r.base, mapped));
+        }
+    }
+    pending
+}
+
+/// Assert `SortProvidesInfo(sort_ref = carrier, spec = SortView(target, <bindings>))`.
+/// The `eq_derive::assert_provides` shape, with the source row's bindings TRANSLATED
+/// through the forwarding's parameter map rather than a single carrier binding
+/// synthesized — [`forwarding_param_map`] is what makes the translation right, and
+/// `bindings` arrives here already keyed by the target's own parameter local names.
+fn assert_forwarded_provides(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    target: Symbol,
+    bindings: &[(String, TermId)],
+) -> RuleId {
+    let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
+    let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
+    let sort_ref_key = kb.intern("sort_ref");
+    let spec_key = kb.intern("spec");
+    let spec_name = kb.make_name_term_from_sym(target);
+    // TAKE THE KEYS FROM THE TARGET, NOT FROM THE SOURCE — the `eq_derive::assert_provides`
+    // discipline, which reads `type_params_of_sort(spec)`. Two things go wrong otherwise,
+    // and the first draft of this function did both (review of WI-1109).
+    //
+    // (1) The source row's keys are the FORWARDER's parameter symbols (`Ord`'s `T`), and
+    // a reader comparing binding names by symbol identity would not see them as the
+    // target's — the row would exist and answer no goal.
+    //
+    // (2) A forwarder parameter the forwarding provision does NOT map would be copied
+    // anyway: `Fwd { sort T = ?  sort U = ?  provides Low[T = T] }` given a row
+    // `C provides Fwd[T = Int64, U = Bool]` would emit `Low[T = Int64, U = Bool]` — a
+    // binding for a parameter `Low` does not declare. Selecting BY THE TARGET'S OWN
+    // PARAMETER LIST drops it, which is right: the forwarding said nothing about `U`.
+    // A target parameter the source left unbound is simply absent, which is what "not
+    // bound" already means everywhere else.
+    let target_params: Vec<String> = kb.type_params_of_sort(target);
+    let named_args: SmallVec<[(Symbol, TermId); 2]> = target_params
+        .iter()
+        .filter_map(|param| {
+            bindings
+                .iter()
+                .find(|(name, _)| name.as_str() == param.as_str())
+                .map(|(_, value)| (kb.intern(param), *value))
+        })
+        .collect();
+    let spec_view = kb.alloc(Term::Fn {
+        functor: sort_view_sym,
+        pos_args: SmallVec::from_elem(spec_name, 1),
+        named_args,
+    });
+    let sort_ref_term = kb.make_name_term_from_sym(carrier);
+    kb.register_entity_fields(provides_sym, vec![sort_ref_key, spec_key]);
+    kb.assert_fact_carrier(
+        provides_sym,
+        Vec::new(),
+        vec![
+            (sort_ref_key, crate::eval::value::Value::term(sort_ref_term)),
+            (spec_key, crate::eval::value::Value::term(spec_view)),
+        ],
+        crate::kb::ClauseKind::Requirement,
+        carrier,
+        None,
+    )
+}
+
 pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
@@ -23389,6 +24049,63 @@ fn nullary_carrier_impl_op(
     Some(impl_op)
 }
 
+/// WI-1110 — the impl sorts [`collect_provides_candidates`] offers for `goal`, in the
+/// order it offers them.
+///
+/// A DIAGNOSTIC READER, and the ticket that added it could not be measured without one:
+/// its defect was a candidate that should never have been offered, and cycle detection
+/// rejected that candidate afterwards, so every observable outcome — the load verdict,
+/// the resolved tree, the error text — was IDENTICAL with and without it. The only place
+/// the difference exists is this list. Carries no policy of its own: it is
+/// `collect_provides_candidates` with the head-only match (`sigma = None`), projected to
+/// the impl symbol.
+pub fn dispatch_candidate_impl_sorts(kb: &mut KnowledgeBase, goal: &SortGoal) -> Vec<Symbol> {
+    collect_provides_candidates(kb, goal, None)
+        .into_iter()
+        .map(|c| c.impl_sort)
+        .collect()
+}
+
+/// WI-1111 — HOW FAR THIS SEARCH REACHES, reviewed and recorded so the next reader does
+/// not re-derive it. The question was whether a goal answerable only through a CHAIN of
+/// parametrized `requires` and `provides` edges is found, and found at the right bindings.
+///
+/// ONE HOP, DELIBERATELY, because the OTHER hops are materialized rather than searched.
+/// This function matches the goal against `SortProvidesInfo` rows whose spec base equals
+/// the goal's; multi-hop reach comes from [`derive_forwarded_provisions`], which walks the
+/// forwarding tower at load time and asserts a DIRECT row per carrier per floor. Depth is
+/// therefore free — the bounded fixpoint doubles its reach per round, and three floors
+/// settle in two. What WI-1111 measured and fixed was that the materialization was
+/// narrower than the exclusion it justifies:
+///
+///   * A RENAMING or PERMUTING forwarding (`provides Sp[X = A]`, `provides Sp[X = B,
+///     Y = A]`) derived NOTHING, because the pass copied bindings instead of translating
+///     them — and, not being an identity forwarding, was not a conversion either, so the
+///     FORWARDER was offered as the `impl_sort` for every `Sp` goal (its own parameters
+///     being wildcards, the permuting form answered the MIRRORED goal too). The program
+///     loaded clean and died at eval. [`forwarding_param_map`] now translates.
+///   * A DERIVED SPEC-TO-SPEC ROW from a two-floor tower escaped the skip below, because
+///     the chain deliberately holds no entry for a derived row. The second skip asks it
+///     through its ORIGIN edge.
+///   * AN OPLESS MULTI-PARAMETER FLOOR was never classified a conversion, because
+///     [`provision_is_conversion`]'s conjunct 2 read `spec_carrier_param_or_sole(..) ==
+///     None` as "self-representing" when it also means "no operation names a carrier and
+///     there is not exactly one parameter to be it". Split there.
+///
+/// THE CALLER'S OWN CHAIN IS A SEPARATE ROUTE and needed nothing: `ResolutionScope::
+/// available_requires` plus the Strategy 1/2/3 projection search composes across more than
+/// one hop of parametrized `requires` and meets this route at the end, including when the
+/// last link is a conversion. Driven by `a_two_hop_requires_chain_reaches_the_provider`
+/// and `a_requires_chain_ending_in_a_conversion_reaches_the_provider`, whose answers
+/// discriminate between two carriers rather than merely arriving.
+///
+/// WHAT A GOAL WITH NO ANSWER GETS is an EMPTY candidate list, and the refusal built on it
+/// names the spec and the binding (`no impl provides …; `Other` provides no …`) — not a
+/// cycle, and not an unrelated missing requirement. One caveat, and it is not this
+/// function's: a spec-op call at a CONCRETE receiver written in a sort that declares no
+/// `requires` is unchecked at load whatever this list says, so it loads clean and traps at
+/// eval (WI-1110's shape A; WI-879 owns it). `the_direct_call_mask_is_not_this_tickets`
+/// pins it.
 fn collect_provides_candidates(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -23450,6 +24167,86 @@ fn collect_provides_candidates(
         };
         if view_base_sym != goal.spec_sort {
             continue;
+        }
+        // WI-1110 — A CONVERSION IS NOT A PROVIDER. `Ord provides WeakOrd[T = T]` says
+        // "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`"; it does not say anything
+        // has type `Ord`, and nothing ever will. Offering it here made `Ord` an answer to
+        // every `WeakOrd` goal — MEASURED on the shipped tree, `WeakOrd[T = Int64]`
+        // returned `[Ord, Int64]` and `WeakOrd[T = <rigid>]` returned `[Ord]` ALONE — so
+        // every ordering goal at a real carrier carried a spurious second candidate
+        // eliminated only by cycle detection running and failing, and at an abstract
+        // element the only candidate offered was one that cannot answer.
+        //
+        // NOT A LOST ANSWER, A RELOCATED ONE: the row's carriers get their own direct
+        // provision materialized by [`derive_forwarded_provisions`], whose predicate is
+        // strictly wider than [`provision_is_conversion`] — so `Int64 provides WeakOrd`
+        // exists as a fact and answers the goal `Ord` used to be offered for.
+        //
+        // The `goal.carrier = Some(..)` route (a VALUE dispatching a spec op, which
+        // reaches `LogicalStream provides Stream` deliberately — WI-714 / WI-495 /
+        // WI-496) is out of reach here rather than exempted: a conversion's target has a
+        // carrier PARAMETER by construction, and a spec with one is not the
+        // self-representing kind a value's static type dispatches through.
+        //
+        // A SKIP AT TWO READERS, NOT A CHANGE TO THE RELATION. The conversion stays a
+        // live `SortProvidesInfo` fact — it has to, because `derive_forwarded_provisions`
+        // reads it to materialize each carrier's row — so every OTHER reader still sees
+        // it. MEASURED on the shipped tree rather than reasoned about, because a review
+        // raised it as a hole and the measurement says something more precise:
+        //
+        //   sort_provides(Ord, WeakOrd)          = true
+        //   sort_provides(Eq, PartialEq)         = true
+        //   sort_ops_lookup(Ord, "compare")      = anthill.prelude.WeakOrd.compare
+        //   sort_ops_lookup(Eq,  "eq")           = anthill.prelude.PartialEq.eq
+        //
+        // Every one of those is the RIGHT answer, and it is right for the conversion's
+        // own reason: "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`" is exactly
+        // what "Ord provides WeakOrd, and `compare` is reachable through it" says. These
+        // readers are not being fooled; they are reading the edge correctly. What they
+        // cannot do is TELL a conversion from a membership claim — which only the two
+        // readers below need to, one because a conversion can answer no goal (nothing
+        // has type `Ord`) and one because its obligations belong to the eventual carrier.
+        //
+        // So the limitation is narrower than "patched readers": a FUTURE reader that
+        // needs the distinction must be taught it here as these two were, because the
+        // relation does not carry it. The finished shape marks the ROW (as
+        // `mark_derived_provision` marks a derived one) so the relation itself
+        // distinguishes a conversion. That is a change to the provision relation's
+        // schema, and this ticket already moves the dictionary layout twice. WI-1111 owns
+        // it, together with the prior question of whether this skip is needed at all once
+        // a self-supplied slot is a projection rather than a search — see
+        // [`SupplySource`].
+        if is_conversion_edge_at(kb, impl_sort, view_base_sym, &view_bindings) {
+            continue;
+        }
+        // WI-1111 — AND A DERIVED ROW IS A CONVERSION WHEN THE EDGE IT WAS DERIVED
+        // THROUGH IS ONE. A two-floor tower (`Top provides Mid[T = T]`,
+        // `Mid provides Low[T = T]`) makes [`derive_forwarded_provisions`] assert
+        // `Top provides Low[T = T]` — a row whose carrier is a SPEC and whose shape is a
+        // conversion's, which the skip above cannot see: [`self_supplied_entries`]
+        // deliberately reads no derived row back into the chain (it would give `Top` a
+        // second slot for a dictionary already reachable inside its first), so
+        // [`chain_has_conversion`] answers `false` for exactly these.
+        //
+        // MEASURED, and it is WI-1110's headline defect one floor up: `Low[T = Car,
+        // E = Bool]` offered `["Top", "Car"]`, and the goals no carrier answers —
+        // `Low[T = Car, E = Int64]`, the mirrored `Low[T = Bool, E = Car]` — offered
+        // `["Top"]` ALONE, so a dispatch that should be refused resolved to a spec that
+        // declares no operation and died at eval.
+        //
+        // THE ORIGIN IS THE QUESTION, NOT THE SHAPE, so that this stays the chain's
+        // answer rather than a second copy of the predicate: `derived_provision_origin_of`
+        // gives the forwarder the row came through (`Mid`), and `Top provides Mid` being
+        // a conversion is what says `Top` already HOLDS a `Low` dictionary inside its
+        // `Mid` slot. Nothing is deleted — the tower's real carriers get their own derived
+        // `Low` rows in the same pass, which is the `conversion ⟹ derived-through`
+        // invariant applied one level up. A derived row at a real carrier
+        // (`Car provides Low[T = Car]`) has a concrete carrier binding, its origin edge is
+        // no conversion, and it stays.
+        if let Some(origin) = kb.derived_provision_origin_of(rid) {
+            if chain_has_conversion(kb, impl_sort, origin) {
+                continue;
+            }
         }
 
         // WI-350: when the call supplies a concrete receiver carrier (a
@@ -24853,6 +25650,9 @@ fn conditions_entail(
         spec_base_functor(kb, spec).map(|required_sort| RequiresEntry {
             required_sort,
             spec: spec.clone(),
+            // A `provides … :- goals` tail is an INBOUND obligation on whoever wants
+            // the provision, not a conversion the spec supplies from itself.
+            supply: SupplySource::Required,
         })
     };
     let mut unentailed: Option<String> = None;
@@ -24912,6 +25712,7 @@ fn condition_entails(kb: &mut KnowledgeBase, pc: &RequiresEntry, q: &RequiresEnt
         let composed = RequiresEntry {
             required_sort: sub.required_sort,
             spec: substitute_in_spec(kb, &sub.spec, &map),
+            supply: sub.supply,
         };
         if requires_entries_agree(kb, &composed, q) {
             return true;
@@ -24967,6 +25768,14 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         /// enclosing param only by the shared short name, so a symbol-keyed
         /// σ would never reach it.
         sigma: SmallVec<[(String, TermId); 2]>,
+        /// WI-1110 — the row this provision was decoded from, kept so a refusal can ask
+        /// [`KnowledgeBase::derived_provision_origin_of`] whether the author wrote it.
+        /// The relocation this ticket performs routes obligations through DERIVED rows —
+        /// `Half` writes `provides Ord[T = Half]` and is refused about `WeakOrd` — so
+        /// without it every such message names a clause that is not in the source. WI-1109
+        /// added the provenance channel for exactly this wording one check over
+        /// (`check_provider_operations`); this is its second reader.
+        rid: crate::kb::RuleId,
     }
     let mut provisions: Vec<Provision> = Vec::new();
     for rid in kb.rules_by_functor(provides_sym) {
@@ -25029,11 +25838,37 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
             carrier,
             spec: spec_base,
             sigma,
+            rid,
         });
     }
 
     let mut errors = Vec::new();
     for p in &provisions {
+        // WI-1110 — A CONVERSION OWES NOTHING HERE, and the obligation is not waived but
+        // RELOCATED. `Ord provides WeakOrd[T = T]` is a spec's `provides`: it says an
+        // `Ord[T]` dictionary yields a `WeakOrd[T]` one, and asking whether `Ord`
+        // provides `WeakOrd`'s own `requires Eq[T]` is the wrong question — `Ord` is a
+        // spec, it provides nothing and never will. The obligation belongs to whatever
+        // CARRIER eventually provides `Ord`, and it gets there through the chain: the
+        // conversion is a chain entry of `Ord` ([`self_supplied_entries`]), so
+        // `Int64 provides Ord` is checked for `WeakOrd[Int64]`, which the DERIVED row
+        // `Int64 provides WeakOrd` answers — and that row is itself a provision this
+        // same loop then checks for `Eq[Int64]` and `PartialOrd[Int64]`.
+        //
+        // THIS REPLACES WI-1109's `forwarded_to_requires`, which relocated the same
+        // obligation to the forwarder's own `requires` — and so needed `Ord` to restate
+        // `requires Eq[T]` / `requires PartialOrd[T]` for a floor it does not itself
+        // constrain. DRIVEN: deleting those two clauses with the old escape in place
+        // fails the stdlib load with two `UnsatisfiedProviderRequires`; with this skip
+        // they are no longer needed and the carrier is still asked. BOTH relocated
+        // obligations are driven, and they need two fixtures rather than one:
+        // `an_ord_carrier_still_owes_eq` measures `PartialOrd` (its carrier is a TOTAL
+        // composite, so `eq_derive` has already paid its `Eq` — the test's own doc says
+        // so and forbids repairing it to `Eq`), and `a_parametric_ord_carrier_owes_eq`
+        // measures `Eq` on a PARAMETRIC composite, which `eq_derive` does not classify.
+        if is_conversion_edge_named(kb, p.carrier, p.spec, &p.sigma) {
+            continue;
+        }
         for goal in provider_requires_subgoals(kb, p.spec, &p.sigma) {
             let required = goal.spec_sort;
             if Some(required) == effects_runtime {
@@ -25114,9 +25949,9 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
                     }
                 });
             let satisfied = if concrete {
-                spec_resolves_at_bindings(kb, required, goal.bindings.clone())
-                    || self_provides_required
-            } else {
+                    spec_resolves_at_bindings(kb, required, goal.bindings.clone())
+                        || self_provides_required
+                } else {
                 let mut cands: SmallVec<[Symbol; 4]> = SmallVec::from_elem(p.carrier, 1);
                 for (_, v) in &p.sigma {
                     // Unwrap a parameterized carrier binding to its BASE sort. A
@@ -25151,6 +25986,12 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
                     carrier: kb.qualified_name_of(p.carrier).to_string(),
                     spec: kb.qualified_name_of(p.spec).to_string(),
                     required: kb.qualified_name_of(required).to_string(),
+                    // WI-1110: `Some(origin)` when the row is one this load DERIVED, so
+                    // the message can stop attributing a `provides` clause to an author
+                    // who wrote a different one.
+                    derived_from: kb
+                        .derived_provision_origin_of(p.rid)
+                        .map(|o| kb.qualified_name_of(o).to_string()),
                 });
             }
         }
@@ -25579,6 +26420,13 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 carrier: carrier_qn.clone(),
                 spec: kb.qualified_name_of(p.spec).to_string(),
                 op: op_short,
+                // WI-1109: a row this loader DERIVED must not be reported as if the
+                // author wrote it. The refusal itself stands — a concrete carrier owes
+                // the operation however the row arrived — so this names the source
+                // rather than exempting the row.
+                derived_from: kb
+                    .derived_provision_origin_of(p.rid)
+                    .map(|origin| kb.qualified_name_of(origin).to_string()),
             });
         }
     }
@@ -35910,6 +36758,9 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
             out.push(RequiresEntry {
                 required_sort: f,
                 spec: clause.clone(),
+                // An OP-scoped `requires` is always inbound: only a SORT can carry
+                // the `provides` clause that self-supplies one.
+                supply: SupplySource::Required,
             });
         }
         _ => {}
@@ -35931,6 +36782,7 @@ fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<R
             out.push(RequiresEntry {
                 required_sort: *functor,
                 spec: Value::term(tid),
+                supply: SupplySource::Required,
             });
         }
         _ => {}
@@ -43753,6 +44605,81 @@ pub struct RequiresEntry {
     pub required_sort: Symbol,
     /// The full SortView spec value (carries bindings like T=Int, combine=add).
     pub spec: Value,
+    /// WI-1110 — where this slot's dictionary COMES FROM. See [`SupplySource`].
+    pub supply: SupplySource,
+}
+
+/// WI-1110 — a chain entry's SUPPLY SOURCE: who fills the slot.
+///
+/// The two clauses that put a spec in a sort's chain answer different questions, and
+/// before this they were spelled as one thing (`requires`) plus a separate, searchable
+/// provider row (`provides`) that meant something a spec cannot mean.
+///
+///   `requires A[T]`  the `A` dictionary is PASSED IN — an inbound slot the caller fills.
+///   `provides A[T]`  on a SPEC: the `A` dictionary is BUILT FROM SELF. "We know how to
+///                    obtain an `A` from a `B`" — a CONVERSION, which is what `B <: A`
+///                    means operationally.
+///
+/// A CARRIER's `provides` is a different clause with the same keyword and is NOT
+/// represented here: `Int64 provides Ord[T = Int64]` is a fact about the world and
+/// belongs in the searchable provider table. A SPEC's `provides` is a conversion and
+/// belongs in the chain. Putting a conversion in the provider table is what made `Ord`
+/// answer every `WeakOrd` goal (WI-1110's measurement) and is what forced `Ord` to
+/// carry `requires WeakOrd` as well, closing a cycle over one edge written twice.
+///
+/// At DICTIONARY-CONSTRUCTION time the two are deliberately identical — both are slots,
+/// both are filled by resolving the spec at the goal's bindings, and a self-supplied
+/// slot is answered by the provider's own DERIVED row
+/// ([`derive_forwarded_provisions`]). The distinction is read in exactly one place, and
+/// it is a SEARCH question: [`collect_provides_candidates`] must not offer a conversion
+/// as a provider. Recorded on the entry rather than recomputed there so the two readers
+/// cannot drift, and so a diagnostic can say which clause put the slot there.
+///
+/// THAT IDENTITY WAS A CHOICE AND WI-1111 DECIDED IT: SEARCH STAYS. The alternative was
+/// real and is written down here rather than lost — "built from self" literally says the
+/// slot is a PROJECTION of the dictionary already held, not a goal (an `Ord[Int64]`
+/// dictionary IS a `WeakOrd[Int64]` one plus a law), and filling it by SEARCH is why the
+/// same edge is traversed both ways: the conversion says `PartialEq` comes from `Eq`, the
+/// chain says `Eq` CONTAINS `PartialEq`. That round trip IS the `construction is cyclic`
+/// the candidate exclusion breaks, and a projected slot would start no search, so the
+/// cycle would not exist. What does NOT follow — and this is the measurement that decided
+/// it — is that the exclusion would not be needed either.
+///
+///   * THE EXCLUSION ANSWERS A QUESTION NO SLOT-FILLING CHANGE CAN. A conversion is a row
+///     in the provider relation whatever fills the slot, so at an ABSTRACT element it is
+///     still offered and still the ONLY candidate: WI-1110 measured `WeakOrd[T = <rigid>]`
+///     returning `[Ord]` alone with the skip removed, and `wi1110`'s
+///     `a_weakord_dispatch_with_no_requires_is_refused` is the driver that fails without
+///     it. Projection removes one traversal of the edge; it does not remove the row.
+///     WI-1111 then measured that the exclusion had FOUR reachable holes — a renaming
+///     forwarding, a permuting one, a derived spec-to-spec row, and an opless
+///     multi-parameter floor — each of which loaded clean and trapped at eval. It needed
+///     COMPLETING, which is the opposite of needing removing.
+///   * THE EAGER ROWS HAVE A SECOND READER A LAZY EDGE CANNOT SERVE.
+///     `build_sort_ops_table` inherits a forwarded spec's operations onto every carrier
+///     that gained a row (kb/load.rs, at the `build_sort_ops_table (derived-provision
+///     delta)` mark) — it is what makes `WeakOrd.compare` dispatch on a carrier that wrote
+///     only `provides Ord`. Driven by
+///     `q5_the_derived_row_is_what_makes_the_operation_dispatch`.
+///   * AND THE SLOT IS FILLED BY THOSE SAME ROWS, so a projection would add a third path
+///     without retiring either of the first two. Driven, with a REVERSED order so the
+///     answer names which dictionary arrived, by
+///     `q5_the_self_supplied_slot_carries_the_carriers_own_dictionary`.
+///   * THE LAYOUT COUNT IS 1 AND THE VALUE FLOWS THROUGH IT
+///     (`q5_the_conversion_slot_is_one_slot_and_the_value_flows_through_it`, cross-checked
+///     against what `resolve` bundles). Making it 0 means teaching `DictLayout::slots_for`,
+///     `synth_req_names` and eval's frame push to project — three sites, to remove a slot
+///     that measurably works.
+///
+/// So `SupplySource` stays a LABEL read at the two places that must tell a conversion from
+/// a membership claim, not a decision about how a slot is filled. Reopen it only with a
+/// measurement that beats these four.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SupplySource {
+    /// Written `requires` — the caller supplies the dictionary.
+    Required,
+    /// Written `provides` on a SPEC — the provider supplies it from itself.
+    SelfSupplied,
 }
 
 /// A kb-free identity for a `RequiresEntry.spec`, so `RequiresEntry` can key the
@@ -44115,6 +45042,8 @@ fn provider_dict_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<ProviderD
                 let entry = RequiresEntry {
                     required_sort,
                     spec: spec.clone(),
+                    // A per-provision condition is inbound, like every `:- goals` tail.
+                    supply: SupplySource::Required,
                 };
                 // Dedup against everything already placed — a sort-level `requires` AND
                 // a sibling provision's identical condition are both the same slot.
@@ -44507,6 +45436,7 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     RequiresEntry {
         required_sort: entry.required_sort,
         spec: Value::term(spec),
+        supply: entry.supply,
     }
 }
 
@@ -44978,6 +45908,7 @@ fn build_requires_tree(
         let entry = RequiresEntry {
             required_sort: raw.required_sort,
             spec: substituted_spec,
+            supply: raw.supply,
         };
         let child_subst = build_child_subst_map(kb, &entry);
         let sub_requires = build_requires_tree(kb, raw.required_sort, &child_subst, visited);
@@ -45017,13 +45948,71 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
     }
 }
 
+
 fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
-    let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
-        return out;
-    };
+    // NOT A `return` ON AN UNREGISTERED `SortRequiresInfo`, and the difference is
+    // WI-1110's: the conversion half below reads `SortProvidesInfo` and has nothing to do
+    // with this functor, so bailing on a KB that registered one reflect relation and not
+    // the other would silently drop every self-supplied slot — conversions would be
+    // offered as providers again and the cycle WI-1110 removes would come back with no
+    // diagnostic. WI-1112: the `if let` that used to say this is now inside
+    // `requires_rids_by_sort` (its `rids_or_scan` fallback resolves the functor and
+    // answers empty when it is absent), so the property is unchanged and stated once.
+    collect_sort_requires(kb, sort_sym, &mut out);
 
-    for rid in kb.rules_by_functor(requires_sym) {
+    // WI-1110 — AND THE SPEC'S OWN CONVERSIONS, which are chain entries too.
+    //
+    // ONE EDGE, ONE SLOT. A sort that writes BOTH `requires A[T]` and `provides A[T = T]`
+    // names one relation twice, and two equal entries are a slot `synth_req_names` cannot
+    // name apart (its disambiguator keys on the spec's hash-cons id, so it cannot tell
+    // them apart either). The `requires` spelling placed first keeps the slot; the
+    // conversion adds nothing to the LAYOUT and is already recorded in the provider
+    // relation, which is where its other reader looks.
+    //
+    // MATCHED BY SPEC BASE AND CARRIER BINDING, not by `views_structurally_equal`: the
+    // two clauses are loaded through different paths and their bindings carry DIFFERENT
+    // SYMBOLS for the same parameter (`resolve_requires_bindings` re-keys a `requires`
+    // spec by the required spec's own param symbols), so a structural comparison —
+    // which compares keys by symbol — never fires. That is why the sibling
+    // `is_identity_forwarding` compares LOCAL NAMES, and why this does too. Driven by
+    // `a_sort_writing_both_clauses_gets_one_slot`.
+    for entry in self_supplied_entries(kb, sort_sym) {
+        let Some((_, conv_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+            continue;
+        };
+        if out.iter().any(|e| {
+            same_sort_canonical(kb, e.required_sort, entry.required_sort)
+                && unwrap_spec_view_value(kb, &e.spec).is_some_and(|(_, req)| {
+                    conv_bindings.iter().all(|(ck, _)| {
+                        req.iter().any(|(rk, _)| kb.local_name_of(*rk) == kb.local_name_of(*ck))
+                    })
+                })
+        }) {
+            continue;
+        }
+        out.push(entry);
+    }
+    out
+}
+
+/// The `SortRequiresInfo` half of [`direct_requires`] — every `requires` clause written
+/// on `sort_sym`, in fact order.
+///
+/// WI-1112 — THE SORT INDEX, not `rules_by_functor`, for the reason its sibling
+/// `self_supplied_entries` already gives about the provider index: this runs once per
+/// node of the requires TREE (the per-sort `requires_chain_cache` memo sits ABOVE the
+/// recursion, so it does not cover this), which made the raw scan O(chain-nodes ×
+/// |SortRequiresInfo|). MEASURED with the two arms ALTERNATING in one process (min of 5
+/// pairs, warmup dropped, stdlib + host bindings, 3148 calls per load): debug 69.4 ms →
+/// 1.55 ms, taking the whole load 657.8 ms → 586.2 ms; release 7.4 ms → 0.17 ms, load
+/// 85.9 ms → 67.1 ms. `self_supplied_entries` beside it, untouched by the change, moved
+/// 10.8 → 10.2 ms and 0.8 → 0.8 ms — the control that says the rest is not machine drift.
+/// `rids_or_scan` still falls back to the scan when
+/// `requires_index` is `None`, which is the state across every load-time window in which
+/// the relation (or the provision relation the other half reads) can still change.
+fn collect_sort_requires(kb: &KnowledgeBase, sort_sym: Symbol, out: &mut Vec<RequiresEntry>) {
+    for rid in requires_rids_by_sort(kb, sort_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
@@ -45066,6 +46055,367 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
         out.push(RequiresEntry {
             required_sort: base_functor,
             spec: spec_value,
+            supply: SupplySource::Required,
+        });
+    }
+}
+
+/// WI-1110 — is this `provides` row a CONVERSION (a spec's, [`SupplySource::SelfSupplied`])
+/// rather than a claim of membership (a carrier's, which belongs in the provider table)?
+///
+/// THE QUESTION IS WHERE THE TARGET'S CARRIER CAME FROM. A spec that constrains an
+/// external thing has a CARRIER PARAMETER — `WeakOrd`'s `T`, `PartialEq`'s `T`,
+/// `Iterable`'s `C` — and [`spec_carrier_param_or_sole`] is this file's one owner of
+/// which parameter that is. A row binding that parameter to one of the SUBJECT'S OWN
+/// type parameters says "whatever satisfies me at this parameter satisfies the target at
+/// it": a conversion between two constraints on one thing, and exactly what `B <: A`
+/// means operationally. A row binding it to a concrete sort — `Int64 provides
+/// Ord[T = Int64]`, `Set provides Eq[T = Set]`, `Pair provides Ord[Pair] :- …`,
+/// `Stream provides Iterable[C = Stream, …]` — says "THIS thing is a target", which is a
+/// fact about the world.
+///
+/// A SELF-REPRESENTING spec has no carrier parameter and so is never a conversion
+/// target. That is not an exemption bolted on, it is the same sentence: `Stream`,
+/// `FiniteStream` and `LogicalStream` ARE their own carriers (WI-614's
+/// [`spec_is_self_representing`], read here through the ladder), so `LogicalStream
+/// provides Stream[T = T, E = E]` binds Stream's ELEMENT and EFFECT rows and says
+/// nothing about a carrier — it is the membership claim "a LogicalStream is a Stream",
+/// and value-directed dispatch reaches `Stream.splitFirst` on a `Relation` THROUGH it.
+/// MEASURED: reading those rows as conversions (the first cut, which keyed on
+/// [`is_identity_forwarding`] — bindings alone) put a slot in `Relation`'s,
+/// `FiniteStream`'s and `LogicalStream`'s dictionaries and broke six tests across
+/// wi210/wi224/wi411/wi474, element threading included.
+///
+/// AND THE ROW'S SHAPE IS NOT ENOUGH — a PARAMETRIC WITNESS has it too. `sort AnyM {
+/// sort E = ?  provides Monoid[T = E]  operation combine(a: E, b: E) = 99 }` (wi841)
+/// binds Monoid's carrier to its own type parameter exactly as `Ord` binds WeakOrd's,
+/// and it is not a conversion: `AnyM` IS a Monoid dictionary, it carries `combine`.
+/// MEASURED — with the shape test alone, `AnyM`'s own `Monoid[T = E]` slot resolved by
+/// search straight back to `AnyM` and all three wi841 selection tests failed with
+/// `construction is cyclic: Monoid[T = Int64] -> Monoid[T = Int64]`.
+///
+/// So there are two questions and the predicate asks both. What is the row ABOUT — an
+/// abstract parameter (conversion) or the subject itself (membership)? And can the
+/// subject ANSWER it — does it supply the target's operations? A subject that supplies
+/// none of them is not a dictionary for the target and the row cannot be a witness;
+/// there is nothing left for it to mean but "hold one of me and you can obtain one of
+/// those". `Ord` declares no operation at all, which is why its whole content is a
+/// relation between two constraints.
+///
+/// RELATION TO THE DERIVATION'S PREDICATE, which is NOT the same one and must not be
+/// made so. [`forwarded_rows_to_derive`] keys on [`forwarding_param_map`], a strictly
+/// WIDER set (every conversion is a parameter forwarding; the Stream family and `AnyM`
+/// are parameter forwardings and not conversions). The direction that has to hold is
+/// `conversion ⟹ derived-through`: a row this excludes from the provider search
+/// ([`collect_provides_candidates`]) must have its carriers' direct rows materialized,
+/// or the exclusion would delete an answer instead of relocating it. The converse is
+/// deliberately false — a Stream-family row keeps BOTH its derived rows and its search
+/// role.
+fn provision_is_conversion(
+    kb: &KnowledgeBase,
+    subject: Symbol,
+    target: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> bool {
+    if same_sort_canonical(kb, subject, target) {
+        return false;
+    }
+    // A PARAMETER FORWARDING FIRST, WHICH IS THE DERIVATION'S OWN PREDICATE, and this
+    // conjunct is what makes the ticket's invariant true BY CONSTRUCTION rather than by
+    // assertion: `conversion ⟹ derived-through`. A row this predicate accepts is excluded
+    // from the provider search, so its carriers' own rows must be materialized by
+    // [`forwarded_rows_to_derive`] — and that reads [`forwarding_param_map`]. A first
+    // cut asked only about the CARRIER binding and was therefore NOT a subset of it: a
+    // MIXED row (`provides Sp[T = A, U = Concrete]`) passed here and derived nothing, so
+    // the answer would have been DELETED rather than relocated. WI-1109 also excluded a
+    // RENAMED forward (`sort Ord2 { sort E = ?  provides WeakOrd[T = E] }`) for the same
+    // reason; WI-1111 taught the derivation to translate instead, so a rename is now
+    // derived-through and belongs on this side of the line — measured, the exclusion was
+    // costing the rename an eval-time `OperationBodyMissing` rather than an answer.
+    //
+    // It also closes the OP-BINDING channel, which the operation test below cannot see.
+    // A provision may supply the target's operations by BINDING them
+    // (`provides Monoid[T = E, combine = myCombine]`, WI-431) instead of by declaring a
+    // same-named member; `supplies_any_operation_of` reads only the declaration channel
+    // and would call such a witness a conversion. A parameter forwarding has no binding
+    // whose value is not a type parameter, so no op binding can hide inside one.
+    //
+    // And it is the CHEAP test, which matters: this runs for every provision row of every
+    // sort whose chain is built, and both questions below are walks —
+    // `spec_carrier_param_or_sole` falls through to `spec_is_self_representing`, which is
+    // not memoized, and `supplies_any_operation_of` walks two operation surfaces.
+    if !is_param_forwarding(kb, subject, target, bindings) {
+        return false;
+    }
+    // AND THE TARGET MUST BE A CONSTRAINT ON SOMETHING, NOT A THING IN ITS OWN RIGHT. A
+    // SELF-REPRESENTING spec is the latter: `Stream`, `FiniteStream` and `LogicalStream`
+    // ARE their own carriers, so `LogicalStream provides Stream[T = T, E = E]` binds
+    // Stream's ELEMENT and EFFECT rows and is the membership claim "a LogicalStream is a
+    // Stream" — which value-directed dispatch reaches on a `Relation` (WI-714 / WI-495 /
+    // WI-496). MEASURED: reading those three rows as conversions put a slot in their
+    // dictionaries and broke six tests across wi210/wi224/wi411/wi474, element threading
+    // included.
+    //
+    // WI-1111 SPLITS THE `None`, and does it INSIDE the `else` rather than ahead of the
+    // question, which matters for two separate reasons.
+    //
+    // THE MEANING. `spec_carrier_param_or_sole` answers `None` for TWO different reasons
+    // and only one of them belongs here — the "one name, two questions" shape. One is
+    // SELF-REPRESENTING (above). The other is "no operation names a carrier AND there is
+    // not exactly one parameter to be it", which is an OPLESS MULTI-PARAMETER spec:
+    // `sort Mid { sort T = ?  sort E = ?  provides Low[T = T, E = E] }`. Conflated,
+    // `Top provides Mid[T = T, E = E]` was no conversion, so `Top` stayed in the search
+    // and — MEASURED — answered `Low[T = Car, E = Int64]` and the mirrored
+    // `Low[T = Bool, E = Car]` with `["Top"]` ALONE, a spec declaring no operation offered
+    // as the sole answer to a goal nothing provides. Split, `Mid` is what it looks like: a
+    // constraint with two parameters and no members of its own. MEASURED over stdlib +
+    // host bindings: ZERO rows change class, so the corpus cannot witness it and
+    // `an_opless_multi_parameter_floor_is_still_a_conversion` is the only driver.
+    //
+    // AND THE ORDER IS THE POINT, not a formatting choice. Asking
+    // `spec_is_self_representing` FIRST — as a first cut did — reaches a NON-MEMOIZED
+    // walk of the target's whole operation surface on every provision row of every chain
+    // build, where `spec_carrier_param_or_sole`'s rung 1 is MEMOIZED and answers `Some`
+    // for the overwhelming majority. MEASURED on 525 identical tests: the eager form cost
+    // ~1 %, and this shape gives it back. It also keeps the change a strict WIDENING —
+    // every row that was a conversion before still is, and only the `None` arm gains
+    // members — where the eager form silently NARROWED the class for a target that is
+    // both self-representing and names a rung-1 parameter (`Set.insert(s: Set, x: T)`),
+    // a population the CONJUNCT2-NEW inventory did not count because it only counted the
+    // widening direction.
+    let Some(carrier_param) = spec_carrier_param_or_sole(kb, target) else {
+        return !spec_is_self_representing(kb, kb.canonical_sort_sym(target))
+            && !supplies_any_operation_of(kb, subject, target);
+    };
+    // WHEN THE TARGET DOES NAME A CARRIER PARAMETER, THE ROW MUST BIND IT: a row
+    // forwarding only the ELEMENT parameters says nothing about the carrier and converts
+    // nothing.
+    let carrier_name = kb.local_name_of(carrier_param);
+    let about_a_parameter = bindings
+        .iter()
+        .any(|(name, _)| kb.local_name_of(*name) == carrier_name);
+    about_a_parameter && !supplies_any_operation_of(kb, subject, target)
+}
+
+/// WI-1110 — is THIS ROW of `subject provides target[…]` a CONVERSION? Asked of the
+/// CHAIN, where [`self_supplied_entries`] has already decided it and written the answer
+/// on the entry, AND of the row's own bindings.
+///
+/// ONE OWNER OF THE PREDICATE, and the two readers below are why that matters: they must
+/// agree with the chain or the ticket's own invariant breaks — a row excluded from the
+/// provider search ([`collect_provides_candidates`]) and a provision excused from the
+/// load check ([`check_provider_requires`]) must be exactly a row that put a slot in the
+/// subject's chain, or an obligation is dropped with nothing carrying it. Re-deriving the
+/// predicate at each site would let them disagree; reading [`SupplySource`] cannot.
+///
+/// The chain is memoized, so this is a hash lookup and a walk of a two-or-three element
+/// vector — cheaper than the operation-surface comparison the predicate itself does, and
+/// the candidate loop runs it per provision row.
+///
+/// PER ROW, NOT PER (subject, target) PAIR, and the difference is a soundness one: one
+/// sort may write a conversion AND a concrete membership claim for the SAME spec —
+/// `sort S { sort T = ?  provides A[T = T]  provides A[T = Concrete] }`. The pair reading
+/// dropped BOTH from dispatch and excused BOTH from the load check, deleting a real
+/// answer. So [`chain_has_conversion`] says "this sort has a conversion to `target`" and
+/// [`row_forwards_a_param`] says "and this row is it": a conversion entry is a PARAMETER
+/// forwarding by construction ([`provision_is_conversion`]), so a row binding anything
+/// else is a different row. Driven by
+/// `a_conversion_does_not_hide_a_sibling_concrete_row`, which fails `got []` with the
+/// pair reading restored.
+///
+/// TWO ENTRY POINTS BECAUSE THE TWO READERS HOLD THE BINDINGS DIFFERENTLY — a decoded row
+/// keys by `Symbol`, a `Provision`'s σ by short-name `String` — and the row test must run
+/// on `&KnowledgeBase` BEFORE the chain lookup takes it mutably. Sharing the two halves
+/// rather than the signature is what keeps the answer one answer. Since WI-1111 widened
+/// the shape half from an identity to a MAP, neither entry point reads the key any more;
+/// the two signatures survive because the CALLERS still differ.
+///
+/// WI-1111 — AND A DERIVED ROW IS ASKED THROUGH ITS ORIGIN, at the one caller that has
+/// the `RuleId` to ask with. See [`collect_provides_candidates`]'s second skip: the chain
+/// deliberately holds no entry for a derived row ([`self_supplied_entries`]), so this
+/// function answers `false` for one, and a two-floor conversion tower materializes
+/// exactly such a row with a spec as its carrier.
+///
+/// WI-1111 REVIEWED WHETHER THIS SKIP SHOULD EXIST AT ALL, and the answer is YES — the
+/// question being whether a self-supplied slot filled by PROJECTION rather than by search
+/// would dissolve it along with the cycle it was introduced to break. It would not: a
+/// conversion is a row in the provider relation however the slot is filled, so at an
+/// abstract element it is still the only candidate offered and the vacuous dispatch still
+/// resolves. The full argument, with its four measurements, is at [`SupplySource`]. What
+/// WI-1111 did instead was COMPLETE the skip over the shapes the search can actually
+/// reach — a renaming forwarding, a permuting one, a derived spec-to-spec row and an
+/// opless multi-parameter floor — each of which loaded clean and trapped at eval with
+/// `OperationBodyMissing`. `wi1111_provision_chain_search_test` drives all four.
+fn is_conversion_edge_at(
+    kb: &mut KnowledgeBase,
+    subject: Symbol,
+    target: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> bool {
+    if !bindings.is_empty() && bindings.iter().all(|(_, v)| row_forwards_a_param(kb, *v)) {
+        chain_has_conversion(kb, subject, target)
+    } else {
+        false
+    }
+}
+
+/// [`is_conversion_edge_at`] over a `Provision`'s σ, which keys by the spec's type-param
+/// SHORT NAME (see `Provision::sigma`).
+fn is_conversion_edge_named(
+    kb: &mut KnowledgeBase,
+    subject: Symbol,
+    target: Symbol,
+    bindings: &[(String, TermId)],
+) -> bool {
+    if !bindings.is_empty() && bindings.iter().all(|(_, v)| row_forwards_a_param(kb, *v)) {
+        chain_has_conversion(kb, subject, target)
+    } else {
+        false
+    }
+}
+
+/// One binding of a row, tested for the shape a conversion has: the value is a type
+/// parameter. The per-binding half of [`forwarding_param_map`], which the whole-row form
+/// there applies the same way.
+fn row_forwards_a_param(kb: &KnowledgeBase, value: TermId) -> bool {
+    type_param_local_name(kb, value).is_some()
+}
+
+/// Does `subject` declare a CONVERSION to `target` — i.e. did [`self_supplied_entries`]
+/// classify one of its `provides` clauses one?
+///
+/// ASKED OF [`self_supplied_entries`] DIRECTLY, NOT OF THE CHAIN (WI-1111 review), and
+/// the difference is a hole the chain reading had. `direct_requires`' "one edge, one
+/// slot" dedup drops the conversion entry when the sort ALSO writes `requires A[T]` —
+/// the shape its own comment sanctions and `a_sort_writing_both_clauses_gets_one_slot`
+/// pins — keeping the `requires` one, whose supply is `Required`. Reading the chain then
+/// found no `SelfSupplied` entry, so [`is_conversion_edge_at`] answered `false` and the
+/// spec went back into the provider search: WI-1110's headline defect, reachable through
+/// the one shape it explicitly allows. MEASURED — `Low[T = Car]` offered
+/// `["High", "Car"]` with the `requires` written and `["Car"]` without it. Driven by
+/// `a_sort_writing_both_clauses_is_still_not_a_candidate`.
+///
+/// STILL ONE OWNER, which is what WI-1110's `SupplySource` doc asks for: the deciding
+/// predicate is [`provision_is_conversion`] either way, and this now reads the function
+/// that applies it rather than a LAYOUT derived from it. The layout may legitimately
+/// collapse two spellings of one edge; the question "is this row a conversion" may not.
+fn chain_has_conversion(kb: &KnowledgeBase, subject: Symbol, target: Symbol) -> bool {
+    let target_canon = kb.canonical_sort_sym(target);
+    self_supplied_entries(kb, subject)
+        .iter()
+        .any(|e| kb.canonical_sort_sym(e.required_sort) == target_canon)
+}
+
+/// WI-1110 — does `subject` DECLARE an operation of `target`'s surface, i.e. is it (at
+/// least partly) a dictionary for it? By operation SHORT NAME, which is the same
+/// identity `find_operation_in_scope` and `build_sort_ops_table` use to decide that a
+/// carrier's member backs a spec op.
+fn supplies_any_operation_of(kb: &KnowledgeBase, subject: Symbol, target: Symbol) -> bool {
+    // BORROWED, NOT OWNED (WI-1111), AND TIGHTENED HERE BECAUSE HERE IS WHERE THE PER-ROW
+    // USE BEGAN. `local_name_of` hands back a `&str` into the symbol table and `kb` is
+    // borrowed immutably for the whole call, so the short names need no `String`. WI-1110
+    // put this function on a per-provision-row path — `direct_requires` reads the
+    // provision relation for every chain build, and every row reaching
+    // [`provision_is_conversion`]'s last conjunct lands here — where before it was asked
+    // once per question.
+    //
+    // NOT TODAY'S BOTTLENECK, and the number is here so nobody re-derives it: MEASURED
+    // over a stdlib load, 62 calls totalling 0.4 ms, against `direct_requires`' own
+    // 97 ms. A first cut of this comment claimed this was where WI-1109/WI-1110's 11 %
+    // and 18 % phase costs landed; instrumenting the load REFUTED that. The cost was in
+    // the sibling half — `collect_sort_requires` scanned the whole `SortRequiresInfo`
+    // relation per call, ~3000 times per load, because `SortRequiresInfo` was the one
+    // reflect relation with no `SymbolKeyedFactIndex` while `SortProvidesInfo`,
+    // `SortInfo` and `SortAlias` all had one.
+    //
+    // WI-1112 GAVE IT ONE (`requires_index`), which is why the paragraph above is in the
+    // past tense: that half is now 1.55 ms of a 586 ms debug load, and THIS function's
+    // 0.4 ms is no longer being compared against a 70 ms neighbour. The reading that
+    // still holds is the one it was written for — a per-row path whose cost is real but
+    // small — so do not read the old ratio as licence to put work here.
+    //
+    // The allocation goes anyway: it buys nothing on a path that is now per row.
+    let target_ops: Vec<&str> =
+        super::op_requirements::operations_of_sort(kb, kb.canonical_sort_sym(target))
+            .iter()
+            .map(|&op| short_op_name(kb, op))
+            .collect();
+    if target_ops.is_empty() {
+        return false;
+    }
+    super::op_requirements::operations_of_sort(kb, kb.canonical_sort_sym(subject))
+        .iter()
+        .any(|&op| target_ops.contains(&short_op_name(kb, op)))
+}
+
+/// The last dotted segment of an operation's local name — the identity
+/// `find_operation_in_scope` and `build_sort_ops_table` use to decide that a carrier's
+/// member backs a spec op.
+fn short_op_name(kb: &KnowledgeBase, op: Symbol) -> &str {
+    kb.local_name_of(op).rsplit('.').next().unwrap_or("")
+}
+
+/// WI-1110 — `sort_sym`'s SELF-SUPPLIED chain entries: the slots its own `provides`
+/// clauses put there, read from the same `SortProvidesInfo` facts the provider table
+/// reads.
+///
+/// THE PREDICATE IS [`provision_is_conversion`], and a CONDITIONAL row contributes
+/// nothing, for the reason [`forwarded_rows_to_derive`] gives about the derivation: a
+/// `:- goals` tail rides in separate `ProvidesConditionInfo` facts, so reading the row
+/// alone would make a conditional edge an unconditional slot.
+fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    let mut out = Vec::new();
+    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+        return out;
+    };
+    let mut conditioned: Option<Vec<Symbol>> = None;
+    // THE CARRIER INDEX, not `rules_by_functor` — this runs once per SORT and the
+    // provision relation is the largest in the KB, so the raw scan is O(sorts x
+    // provisions). MEASURED: the scanning form took a stdlib load from 0.10 s to 0.18 s,
+    // an 80 % regression on the whole load. `rids_or_scan` still falls back to the scan
+    // when `provides_index` is `None`, which is the state during the derivation pass.
+    for rid in provides_rids_by_carrier(kb, sort_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(spec_value) = super::op_info::head_field_value(kb, head, "spec") else {
+            continue;
+        };
+        let Some((base, bindings)) = unwrap_spec_view_value(kb, &spec_value) else {
+            continue;
+        };
+        if !provision_is_conversion(kb, sort_sym, base, &bindings) {
+            continue;
+        }
+        // Decoded lazily: the overwhelming majority of sorts have no conversion at all,
+        // and this walks every `ProvidesConditionInfo` fact.
+        let conds =
+            conditioned.get_or_insert_with(|| {
+                provision_conditions(kb, sort_sym)
+                    .into_iter()
+                    .map(|c| c.provided)
+                    .collect()
+            });
+        if conds.iter().any(|c| same_sort_canonical(kb, *c, base)) {
+            continue;
+        }
+        // A DERIVED ROW IS NOT A WRITTEN CLAUSE, and only a written one puts a slot in a
+        // chain. `derive_forwarded_provisions` walks a tower transitively, so a
+        // two-conversion tower (`A provides B[T = T]`, `B provides C[T = T]`) makes it
+        // assert `A provides C[T = T]` — a row whose carrier is itself a spec and whose
+        // shape is a conversion's. Reading it back here would give `A` a SECOND slot for
+        // a dictionary already reachable inside its first, changing `DictLayout::slots_for`,
+        // `synth_req_names` and every projection path through `A`. `mark_derived_provision`
+        // records exactly which rows the pass minted (WI-1109's provenance channel), so
+        // this asks it rather than guessing from the shape.
+        if kb.derived_provision_origin_of(rid).is_some() {
+            continue;
+        }
+        out.push(RequiresEntry {
+            required_sort: base,
+            spec: spec_value,
+            supply: SupplySource::SelfSupplied,
         });
     }
     out
@@ -47163,6 +48513,12 @@ fn type_check_sorts_collect(
     // `emit_sort_info` asserts it; nothing re-asserts it), so no runtime guard is
     // needed and no eq_derive rebuild (eq_derive never touches SortInfo).
     build_sort_info_index(kb);
+    // WI-1112 — and the SortRequiresInfo facts, keyed by canonical `sort_ref`, so
+    // `collect_sort_requires` stops scanning the whole relation once per requires-TREE
+    // node. Sound here: both its producers (`load_requires_decl`,
+    // `resolve_requires_bindings`) are done by this line, and any later one drops the
+    // index via `invalidate_requires_chain_cache` — see `KnowledgeBase::requires_index`.
+    build_requires_index(kb);
     // WI-1082 — elaborate every member's declared RETURN so §3's tie is WRITTEN rather than
     // left as an absence a width-ignoring comparison cannot refute. AFTER the three index
     // builds above: it reads `canonical_sort_sym` (the SortAlias index) per parameter and the
@@ -57782,3 +59138,470 @@ mod wi1084_arrow_function_unify_tests {
     }
 }
 
+
+
+/// WI-1112 — [`build_requires_index`] and the consumer it serves,
+/// [`collect_sort_requires`], must answer the SAME chain the `rules_by_functor` scan
+/// answered, and must keep answering it when the relation changes after the build.
+///
+/// A wrong answer here is not a slow one. `SortRequiresInfo` is where a sort's dictionary
+/// slots come from, so a fact that falls out of a bucket is a REQUIREMENT THAT STOPS
+/// EXISTING: the program loads clean, the slot is never synthesized, and the failure
+/// surfaces at eval as an unbound `__req_*`. That is WI-954's measured failure mode, and
+/// these tests are its entrances: the index disagreeing with the scan; the index missing a
+/// carrier it cannot READ; the index outliving an assert; the index outliving a RETRACT
+/// (the one that fails upward — a slot that will not stop existing); and the index and the
+/// chain memos outliving a whole ENTRY POINT that writes. The last three were found by
+/// review, not by the corpus.
+#[cfg(test)]
+mod wi1112_requires_index_tests {
+    use super::{build_requires_index, direct_requires};
+    use crate::eval::value::Value;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::kb::term::{Literal, Term};
+    use crate::kb::term_view::views_structurally_equal;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::{ClauseKind, KnowledgeBase, Symbol};
+    use crate::span::{SourceId, SourceSpan};
+
+    /// `Carrier` requires `Foo`, written in surface syntax so the ordinary loader path
+    /// (`load_requires_decl` → `resolve_requires_bindings`) is the producer.
+    const SRC: &str = r#"
+namespace test.wi1112
+  import anthill.prelude.{Int64}
+  sort Foo
+    sort T = ?
+  end
+  sort Bar
+    sort T = ?
+  end
+  sort Carrier
+    requires Foo[T = Int64]
+    entity c(x: Int64)
+  end
+end
+"#;
+
+    /// Every sort the KB names, so the scan/index comparison is over the whole relation
+    /// rather than the one sort the fixture wrote.
+    fn all_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+        let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+            panic!("the stdlib declares SortInfo");
+        };
+        let mut out = Vec::new();
+        for rid in kb.rules_by_functor(sort_info) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let head = kb.rule_head_value(rid);
+            let Some(name_tid) = crate::kb::op_info::head_field_term(kb, head, "name") else {
+                continue;
+            };
+            match kb.get_term(name_tid) {
+                Term::Ref(s) => out.push(*s),
+                Term::Fn { functor, .. } => out.push(*functor),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// `sort`'s direct requires as (required sort, spec), for comparing two data sources.
+    fn entries(kb: &KnowledgeBase, sort: Symbol) -> Vec<(Symbol, Value)> {
+        direct_requires(kb, sort)
+            .into_iter()
+            .map(|e| (e.required_sort, e.spec))
+            .collect()
+    }
+
+    /// Clear the chain memos AND leave the index built — the state the load pipeline is
+    /// in from `type_check_sorts` onward. `invalidate_requires_chain_cache` drops the
+    /// index by design (that is test 3's subject), so the rebuild is explicit here.
+    fn fresh_with_index(kb: &mut KnowledgeBase) {
+        kb.invalidate_requires_chain_cache();
+        build_requires_index(kb);
+        assert!(kb.requires_index.is_some(), "the index is built");
+    }
+
+    /// Clear the chain memos and leave the index DROPPED — the load-time window, and the
+    /// pre-WI-1112 behaviour of every call.
+    fn fresh_with_scan(kb: &mut KnowledgeBase) {
+        kb.invalidate_requires_chain_cache();
+        assert!(
+            kb.requires_index.is_none(),
+            "invalidating the chain caches drops the index with them"
+        );
+    }
+
+    /// THE EQUIVALENCE. For every sort in a fully-loaded KB, the indexed lookup and the
+    /// live scan return the same requires entries, in the same order.
+    ///
+    /// NOT VACUOUS: the run asserts that the sorts compared number in the hundreds and
+    /// that the entries found number in the dozens, so an index (or a scan) that answered
+    /// EMPTY everywhere could not agree its way to a pass — the shape WI-1042 measured,
+    /// where a domain restriction made agreement meaningless.
+    ///
+    /// CONTROL: fails on any keying change that is not the consumer's own — key the
+    /// bucket on the raw `sort_ref` symbol instead of `canonical_sort_sym`, or on a last
+    /// segment, and the sorts whose two spellings differ drop out.
+    #[test]
+    fn the_index_answers_exactly_what_the_scan_answers() {
+        let mut kb = load_stdlib(Some(SRC));
+        let sorts = all_sorts(&kb);
+        assert!(
+            sorts.len() > 100,
+            "the stdlib names hundreds of sorts; got {}",
+            sorts.len()
+        );
+
+        fresh_with_scan(&mut kb);
+        let scanned: Vec<Vec<(Symbol, Value)>> = sorts.iter().map(|s| entries(&kb, *s)).collect();
+        fresh_with_index(&mut kb);
+        let indexed: Vec<Vec<(Symbol, Value)>> = sorts.iter().map(|s| entries(&kb, *s)).collect();
+
+        let total: usize = scanned.iter().map(|e| e.len()).sum();
+        assert!(
+            total > 20,
+            "the comparison must have entries to compare; got {total}"
+        );
+        for ((sort, s), i) in sorts.iter().zip(&scanned).zip(&indexed) {
+            assert_eq!(
+                s.len(),
+                i.len(),
+                "{}: scan and index must find the same number of requires entries \
+                 (scan {:?}, index {:?})",
+                kb.qualified_name_of(*sort),
+                s.iter().map(|(r, _)| kb.qualified_name_of(*r)).collect::<Vec<_>>(),
+                i.iter().map(|(r, _)| kb.qualified_name_of(*r)).collect::<Vec<_>>(),
+            );
+            for ((sr, ss), (ir, is)) in s.iter().zip(i) {
+                assert_eq!(
+                    sr,
+                    ir,
+                    "{}: same required sort in the same position",
+                    kb.qualified_name_of(*sort)
+                );
+                assert!(
+                    views_structurally_equal(&kb, ss, is),
+                    "{}: same spec for {}",
+                    kb.qualified_name_of(*sort),
+                    kb.qualified_name_of(*sr),
+                );
+            }
+        }
+    }
+
+    /// A VALUE-FACT `SortRequiresInfo` — a denoted-bearing spec (WI-662) — must land in a
+    /// bucket. It has no `fact_head_named_args`, so a builder written the way
+    /// `build_sort_info_index` writes its own (term-only named args) leaves it in NO
+    /// bucket, and the requirement silently stops existing once the index is live.
+    ///
+    /// CONTROL: this is the ONE test that fails if `build_requires_index` reads the head
+    /// term-only instead of through `rule_head_value` + `head_field_term`.
+    /// `wi662_carrier_agnostic_requires_test` does NOT cover it — it reads the chain right
+    /// after `invalidate_requires_chain_cache`, i.e. with the index dropped, so it
+    /// measures the scan. The `requires_index.is_some()` assertion below is what makes
+    /// this test measure the index instead.
+    #[test]
+    fn a_denoted_requires_fact_is_bucketed_not_dropped() {
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let bar = kb.try_resolve_symbol("test.wi1112.Bar").expect("Bar");
+
+        // The head shape `assert_fact_carrier` emits for a spec carrying a `Value::Node`
+        // binding — not producible from surface syntax (WI-390 lowers every
+        // term-representable spec), so it is built directly, exactly as wi662 does.
+        let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
+        let sort_ref_field = kb.intern("sort_ref");
+        let spec_field = kb.intern("spec");
+        kb.register_entity_fields(requires_sym, vec![sort_ref_field, spec_field]);
+        let sortview = kb.resolve_symbol("anthill.reflect.SortView");
+        let k = kb.intern("k");
+        let sort_ref = Value::term(kb.make_name_term_from_sym(carrier));
+        let bar_base = Value::term(kb.make_name_term_from_sym(bar));
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let node = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span, None);
+        let spec = Value::Entity {
+            functor: sortview,
+            pos: vec![bar_base].into(),
+            named: vec![(k, Value::Node(node))].into(),
+        };
+        let domain = kb.intern("test.wi1112");
+        kb.assert_fact_carrier(
+            requires_sym,
+            Vec::new(),
+            vec![(sort_ref_field, sort_ref), (spec_field, spec)],
+            ClauseKind::Requirement,
+            domain,
+            None,
+        );
+
+        fresh_with_index(&mut kb);
+        let found = entries(&kb, carrier);
+        assert!(
+            found.iter().any(|(r, _)| *r == bar),
+            "the denoted `Carrier requires Bar[...]` must be reachable THROUGH the index; \
+             got {:?}",
+            found
+                .iter()
+                .map(|(r, _)| kb.qualified_name_of(*r))
+                .collect::<Vec<_>>(),
+        );
+        // …and the surface-syntax requirement beside it, so the value fact did not
+        // displace the term one in its bucket.
+        let foo = kb.try_resolve_symbol("test.wi1112.Foo").expect("Foo");
+        assert!(
+            found.iter().any(|(r, _)| *r == foo),
+            "the ordinary `requires Foo[T = Int64]` is still there"
+        );
+    }
+
+    /// THE STALE-INDEX GUARD (WI-954's shape). A `SortRequiresInfo` fact asserted AFTER
+    /// the index was built is still found, because the one call every producer already
+    /// owes — `invalidate_requires_chain_cache` — drops the index with the chain memos.
+    ///
+    /// CONTROL: back out that one line in `KnowledgeBase::invalidate_requires_chain_cache`
+    /// and this fails — the post-load index is live and `Carrier`'s bucket is the one
+    /// built before the write, so the new requirement is invisible. The
+    /// `requires_index.is_none()` assertion inside `fresh_with_scan` fails FIRST, which is
+    /// the point: it names the mechanism rather than the symptom. Both
+    /// `wi662_carrier_agnostic_requires_test` tests fail on the same back-out, for the
+    /// same reason.
+    #[test]
+    fn a_requires_asserted_after_the_build_is_still_found() {
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let bar = kb.try_resolve_symbol("test.wi1112.Bar").expect("Bar");
+        assert!(
+            kb.requires_index.is_some(),
+            "the load leaves the index BUILT — otherwise this test's premise is empty \
+             and it would pass on a scan that never had an index to go stale",
+        );
+        assert!(
+            !entries(&kb, carrier).iter().any(|(r, _)| *r == bar),
+            "premise: Carrier does not require Bar yet",
+        );
+
+        let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
+        let sort_ref_field = kb.intern("sort_ref");
+        let spec_field = kb.intern("spec");
+        let sort_ref = Value::term(kb.make_name_term_from_sym(carrier));
+        let bar_base = Value::term(kb.make_name_term_from_sym(bar));
+        let domain = kb.intern("test.wi1112");
+        kb.assert_fact_carrier(
+            requires_sym,
+            Vec::new(),
+            vec![(sort_ref_field, sort_ref), (spec_field, bar_base)],
+            ClauseKind::Requirement,
+            domain,
+            None,
+        );
+
+        // What every producer of this relation owes, and all it owes.
+        fresh_with_scan(&mut kb);
+        assert!(
+            entries(&kb, carrier).iter().any(|(r, _)| *r == bar),
+            "the newly asserted requirement must be found",
+        );
+
+        // And the rebuild picks it up, so the index is not merely bypassed forever.
+        fresh_with_index(&mut kb);
+        assert!(
+            entries(&kb, carrier).iter().any(|(r, _)| *r == bar),
+            "the rebuilt index contains the fact asserted after the first build",
+        );
+    }
+
+    /// A RETRACTED FACT IS NOT IN THE RELATION, AND THE BUCKET MUST AGREE. The two arms of
+    /// `SymbolKeyedFactIndex::rids_or_scan` are only interchangeable if they answer alike,
+    /// and retraction is the one input where they did not: `rules_by_functor` filters
+    /// `retracted` at query time (its doc says "all ACTIVE"), while a bucket is frozen at
+    /// build time and `is_fact` — the consumer's only per-fact guard — reads
+    /// `body_nodes.is_empty()` and says `true` for a retracted slot.
+    ///
+    /// THIS SIDE FAILS UPWARD, which is what makes it worth a test of its own: everything
+    /// else in this module guards against a requirement that stops existing, and this
+    /// guards against one that will not stop — a dictionary slot outliving the declaration
+    /// it came from. `KnowledgeBase::retract` is a RETRACTOR, and nothing made it owe
+    /// `invalidate_requires_chain_cache`; the fix is therefore in `rids_or_scan` itself
+    /// rather than in a rule someone must remember.
+    ///
+    /// CONTROL: drop the `is_rule_alive` filter from `rids_or_scan`'s index arm and the
+    /// indexed half of this fails while the scanned half still passes — which is the
+    /// disagreement stated as a test. Found by review, not by the corpus: eval's retract
+    /// path refuses a `constant` functor and no `FactRef` exists for a load-time fact, so
+    /// only a direct `kb.retract` reaches it.
+    #[test]
+    fn a_retracted_requires_fact_is_dropped_by_the_index_as_it_is_by_the_scan() {
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let foo = kb.try_resolve_symbol("test.wi1112.Foo").expect("Foo");
+        assert!(
+            entries(&kb, carrier).iter().any(|(r, _)| *r == foo),
+            "premise: Carrier requires Foo before the retraction",
+        );
+
+        let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
+        let rid = kb
+            .rules_by_functor(requires_sym)
+            .into_iter()
+            .find(|rid| {
+                if !kb.is_fact(*rid) {
+                    return false;
+                }
+                let head = kb.rule_head_value(*rid);
+                let Some(sr) = crate::kb::op_info::head_field_term(&kb, head, "sort_ref") else {
+                    return false;
+                };
+                let Term::Fn { functor, .. } = kb.get_term(sr) else {
+                    return false;
+                };
+                kb.canonical_sort_sym(*functor) == kb.canonical_sort_sym(carrier)
+            })
+            .expect("the `requires Foo[T = Int64]` fact");
+
+        // A retractor that does NOT invalidate — the case the fix has to survive. NO
+        // REBUILD AFTER IT, and that is the whole experiment: `build_requires_index` reads
+        // `rules_by_functor`, which filters retracted, so rebuilding here would refresh the
+        // bucket and measure nothing. MEASURED — the first cut of this test did call
+        // `fresh_with_index` and passed with the fix backed out. What has to be read is the
+        // bucket built during the load, with the rid still in it.
+        kb.retract(rid);
+        assert!(
+            kb.requires_index.is_some(),
+            "the load's index is still the live one — nothing has rebuilt or dropped it",
+        );
+        assert!(
+            !entries(&kb, carrier).iter().any(|(r, _)| *r == foo),
+            "through the INDEX built BEFORE the retraction: a retracted requires fact must \
+             not be served",
+        );
+
+        // The arm the index has to agree with, at the same KB state.
+        kb.requires_index = None;
+        assert!(
+            !entries(&kb, carrier).iter().any(|(r, _)| *r == foo),
+            "through the SCAN: `rules_by_functor` already filtered it",
+        );
+    }
+
+    /// THE OTHER DOOR. [`crate::kb::load::load`] — the single-file entry point — asserts
+    /// `SortRequiresInfo` twice over (`load_requires_decl`, then
+    /// `resolve_requires_bindings`' retract-and-re-assert) and NEVER reaches
+    /// `type_check_sorts`, so nothing downstream of it would correct an index it
+    /// inherited. Called on a KB that has already been through `load_all`, that index is
+    /// live, and every requirement in the file being loaded is filed under a bucket that
+    /// was built before the file existed.
+    ///
+    /// CONTROL: back out `load`'s `invalidate_requires_chain_cache()` calls — BOTH, since
+    /// either alone leaves the index `None` at the end — and this fails at the `is_none`
+    /// assertion, and then, with that assertion removed too, at the requirement itself,
+    /// which is the shape the user meets (measured). This is the DRIVEN half of the rule;
+    /// the equivalent reset in `load_phase_inner` is measured unobservable (see its
+    /// comment) and kept because one rule with no exceptions is cheaper to hold than two
+    /// doors with different answers.
+    #[test]
+    fn a_single_file_load_does_not_read_a_stale_index() {
+        use crate::kb::load::{self, NullResolver};
+
+        let mut kb = load_stdlib(Some(SRC));
+        assert!(
+            kb.requires_index.is_some(),
+            "premise: the full load leaves the index BUILT",
+        );
+
+        let src = r#"
+namespace test.wi1112b
+  import anthill.prelude.{Int64}
+  sort Spec
+    sort T = ?
+  end
+  sort Client
+    requires Spec[T = Int64]
+    entity c(x: Int64)
+  end
+end
+"#;
+        let parsed = crate::parse::parse(src).expect("parse fixture");
+        load::load(&mut kb, &parsed, &NullResolver).expect("single-file load");
+
+        assert!(
+            kb.requires_index.is_none(),
+            "`load` asserts into the relation and has no rebuild point, so it must leave \
+             the index dropped",
+        );
+        let client = kb.try_resolve_symbol("test.wi1112b.Client").expect("Client");
+        let spec = kb.try_resolve_symbol("test.wi1112b.Spec").expect("Spec");
+        assert!(
+            entries(&kb, client).iter().any(|(r, _)| *r == spec),
+            "`Client requires Spec[T = Int64]`, declared through the single-file entry \
+             point, must be in the chain",
+        );
+    }
+
+    /// AND THE CLOSING HALF OF THAT PAIR. `load` also has to invalidate AFTER it writes,
+    /// because the derived state it can invalidate is not only the index: `direct_requires`
+    /// reads TWO relations (WI-1110), the memoized `requires_tree` is keyed per sort, and a
+    /// `load` onto a KB whose chains are already warm — which is every `load` after a
+    /// `load_all`, since `check_provider_requires` builds a chain for every provider —
+    /// would otherwise serve the pre-load memo for a sort whose requirements the loaded
+    /// file just changed.
+    ///
+    /// The file writes the reflect fact DIRECTLY, which is the shape that lets a second
+    /// file change a first file's chain at all (a `requires` clause can only be written
+    /// inside its own sort's block). That is a legal source-level producer of this
+    /// relation, and one of the four enumerated in the ticket.
+    ///
+    /// `Carrier()` / `Bar()` WITH THE PARENTHESES, and that is not decoration. MEASURED:
+    /// spelled bare, the fields convert to `Term::Ref` and `collect_sort_requires` skips
+    /// the fact outright (`let Term::Fn { .. } = … else { continue }`) — the fixture then
+    /// fails for a reason that has nothing to do with the memo. A hand-written
+    /// `fact SortRequiresInfo` with a bare `sort_ref` is invisible to the requires chain;
+    /// the loader's own producer never hits it because `make_name_term_from_sym` builds
+    /// the application form.
+    ///
+    /// CONTROL: back out BOTH `invalidate_requires_chain_cache()` calls in `load` and this
+    /// fails — `requires_tree` answers from the memo warmed before the load. MEASURED, and
+    /// not what a first reading predicts: EITHER call alone keeps it green, because the
+    /// opening one clears the memo and nothing in this fixture re-warms it during the
+    /// walk. So this test drives the PAIR, not a half; the two are kept for the two
+    /// windows `load` would otherwise leave open, stated at their site.
+    #[test]
+    fn a_single_file_load_drops_the_chain_memo_it_invalidates() {
+        use crate::kb::load::{self, NullResolver};
+        use crate::kb::typing::requires_tree;
+
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let bar = kb.try_resolve_symbol("test.wi1112.Bar").expect("Bar");
+
+        // Warm the memo, as a full load does for every provider.
+        let warm = requires_tree(&mut kb, carrier);
+        assert!(
+            !warm.iter().any(|n| n.entry.required_sort == bar),
+            "premise: Carrier does not require Bar before the second file",
+        );
+        assert!(
+            kb.requires_chain_cache_contains(carrier),
+            "premise: the chain is MEMOIZED — otherwise a stale read is unreachable and \
+             this test measures nothing",
+        );
+
+        let src = r#"
+namespace test.wi1112c
+  import anthill.reflect.{SortRequiresInfo}
+  import test.wi1112.{Carrier, Bar}
+  fact SortRequiresInfo(sort_ref: Carrier(), spec: Bar())
+end
+"#;
+        let parsed = crate::parse::parse(src).expect("parse fixture");
+        load::load(&mut kb, &parsed, &NullResolver).expect("single-file load");
+
+        let after = requires_tree(&mut kb, carrier);
+        assert!(
+            after.iter().any(|n| n.entry.required_sort == bar),
+            "the requirement the second file declares must reach the chain — the memo from \
+             before the load must not be served",
+        );
+    }
+}

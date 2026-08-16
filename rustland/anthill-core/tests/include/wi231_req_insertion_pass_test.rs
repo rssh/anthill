@@ -261,7 +261,7 @@ end
     //
     // SCOPED TO THIS SORT's ops, which the whole-KB walk used to get for free: until
     // WI-844 no STDLIB op body deferred to a requirement, so "every Defer row in this
-    // KB" happened to mean Wi232Two's. `SortedSet.insertSorted`'s `Ord.compare`
+    // KB" happened to mean Wi232Two's. `SortedSet.insertSorted`'s `WeakOrd.compare`
     // (a sort-level `requires O: Ord[T]` read from an operation BODY, where
     // `Set`/`Map` read theirs from rule bodies, which are never typer-classified) is
     // the first, and it made this fail with `Ord` where `Eq` was expected. The

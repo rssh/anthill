@@ -1,17 +1,41 @@
--- PartialOrd / Ord — partial vs. total ordering (library proposal 004, WI-644).
+-- PartialOrd / WeakOrd / Ord — the ordering tower (library proposal 004, WI-644;
+-- split three ways by WI-1109).
 --
--- PartialOrd holds the `gt`/`lt`/`gte`/`lte` comparison surface, with NO totality
--- law: a `NaN` operand answers `false` (IEEE unordered). `Float` provides this.
--- (Proposal 004 gives PartialOrd a `partialCompare -> Option[Int64]` primitive with
--- gt/lt derived; the core keeps gt/lt/gte/lte as builtin-backed primitives — the
--- Option-compare refinement is a follow-up.)
+-- THREE FLOORS, ONE QUESTION EACH. The tower used to have two, and `Ord` answered two
+-- questions at once — "is every pair comparable?" and "is the order's kernel `Eq`?" —
+-- which are independent, and a witness that separates them ships in this repo.
 --
--- Ord (named `Ordered` until library proposal 004's rename landed) is the TOTAL order: `compare -> Int64` plus the
--- reflexivity/antisymmetry laws. It `requires Eq` (lawful equality) and PartialOrd.
--- `Float`'s order is partial (NaN unordered), so `Float` does NOT provide Ord;
--- `TotalFloat` does. Sort / dedup / sorted-key consumers require Ord.
+--   PartialOrd  gt/lt/gte/lte. NO totality: a `NaN` operand answers `false` (IEEE
+--               unordered). `Float` provides this and nothing above it.
+--   WeakOrd     `compare -> Int64`. TOTAL — every pair is comparable — and CONGRUENT
+--               with respect to `Eq`: `eq(a, b)` implies `compare(a, b) = 0`. Its
+--               kernel may be strictly COARSER than `Eq`, so it partitions the carrier
+--               into equivalence CLASSES. A comparator chosen by a key ("by length",
+--               "by first component") lives exactly here.
+--   Ord         adds ONLY the converse law — `compare(a, b) = 0` implies `eq(a, b)`,
+--               i.e. the kernel IS `Eq`. No new operation, the way `Eq` adds only
+--               reflexivity over `PartialEq`. `Int64`, `String`, `BigInt` are here.
+--
+-- WHY "WEAK" AND NOT "PRE": a preorder need not be total and this one is; "weak order"
+-- is the standard name for a TOTAL preorder. The three floors are one-to-one with
+-- C++20 `<compare>` — `partial_ordering` (NaN), `weak_ordering` (equivalence WITHOUT
+-- substitutability), `strong_ordering` (equivalent implies substitutable) — which is
+-- not merely cosmetic: a carrier's floor is what decides the comparison category its
+-- generated `operator<=>` returns.
+--
+-- WHAT SEPARATES THE TOP TWO, concretely. `ByLength` (wi844) compares `String` by
+-- length: `compare("zz", "aa") = 0` while `eq("zz", "aa")` is false. It is a lawful
+-- `WeakOrd[String]` and NOT an `Ord[String]`. A `SortedSet` under it stores classes —
+-- {"zz","aa","b"} has two elements, and `union` keeps the LEFT operand's
+-- representative, so it is not commutative. That behaviour is correct for a weak
+-- order and is why `SortedSet` requires `WeakOrd`; a consumer wanting no silent
+-- collapse requires `Ord` and gets it checked.
+--
+-- `Float`'s order is partial (NaN unordered), so `Float` provides neither `WeakOrd`
+-- nor `Ord`; `TotalFloat` provides `Eq` but still not an order (a functional total
+-- float order needs host support — see totalfloat.anthill).
 sort anthill.prelude.PartialOrd
-  import anthill.prelude.{Int64, Ord}
+  import anthill.prelude.{Int64, WeakOrd}
 
   sort T = ?
   requires PartialEq[T]
@@ -19,33 +43,31 @@ sort anthill.prelude.PartialOrd
   -- WI-876: these four carry the DERIVATION from `compare` as real default BODIES,
   -- not only as the laws below. Until WI-876 they could not: an eval builtin
   -- registered on these very spec ops shadowed every carrier, so the derivation was
-  -- unreachable and each `Ord` carrier had to restate four one-liners. With the
+  -- unreachable and each ordered carrier had to restate four one-liners. With the
   -- host implementations keyed per carrier (`operation_map`, proposal 038 binding
   -- blocks), a carrier that supplies `compare` alone inherits the whole surface.
   --
-  -- WHY THEY LIVE HERE AND NOT ON `Ord`, where the laws are: `gt`/`gte`/`lt`/`lte`
+  -- WHY THEY LIVE HERE AND NOT ON `WeakOrd`, where the laws are: `gt`/`gte`/`lt`/`lte`
   -- are DECLARED here, and a spec op's default body must sit with its declaration.
-  -- Declaring them a second time on `Ord` would give a carrier that provides BOTH
-  -- specs two `sort_ops` entries for one short name, and which one wins is
-  -- HashMap-iteration order (`build_sort_ops_table` pass 2) — a coin flip, not a rule.
+  -- Declaring them a second time above would give a carrier that provides BOTH specs
+  -- two `sort_ops` entries for one short name, and which one wins is HashMap-iteration
+  -- order (`build_sort_ops_table` pass 2) — a coin flip, not a rule.
   --
-  -- TWO COSTS, recorded rather than hidden.
+  -- ONE COST, recorded rather than hidden. The op-scoped `requires WeakOrd[T]` is
+  -- load-bearing for the BODY, and its CALL-SITE half is currently MASKED:
+  -- `check_one_spec_op_requirement` returns early for a builtin functor, and
+  -- `PartialOrd.gt` is still a resolver builtin. MEASURED (WI-876) — a generic
+  -- operation with `requires PartialOrd[T]`, and even one with no `requires` at all,
+  -- calls `PartialOrd.gt(a, b)` and loads clean. WHEN WI-879 DELETES THE SPEC-OP
+  -- RESOLVER REGISTRATION THAT MASK GOES, and every `PartialOrd`-only generic caller
+  -- starts being asked for a `WeakOrd[T]` it has no reason to have. That comes due
+  -- there, not here.
   --
-  -- (1) The derivation reads `Ord.compare`, which `PartialOrd` does not `requires`
-  -- (the dependency runs the other way). A carrier providing `PartialOrd` ALONE, with
-  -- no own `gt` and no host mapping, thus inherits a body that cannot run for it — the
-  -- load check sees a runnable default and says "backed". `Float` is the only such
-  -- carrier in the library and it maps all four in its own binding, so nothing
-  -- exercises it; a per-provision condition (058 §3.8) is what would state it properly.
-  --
-  -- (2) The op-scoped `requires Ord[T]` is load-bearing for the BODY, and its
-  -- CALL-SITE half is currently MASKED: `check_one_spec_op_requirement` returns early
-  -- for a builtin functor, and `PartialOrd.gt` is still a resolver builtin. MEASURED —
-  -- a generic operation with `requires PartialOrd[T]`, and even one with no `requires`
-  -- at all, calls `PartialOrd.gt(a, b)` and loads clean. WHEN WI-879 DELETES THE
-  -- SPEC-OP RESOLVER REGISTRATION THAT MASK GOES, and every `PartialOrd`-only generic
-  -- caller starts being asked for an `Ord[T]` it has no reason to have. That is
-  -- the larger half of this clause's cost and it comes due there, not here.
+  -- (The SECOND cost this note used to carry is GONE with WI-1109. It read: the
+  -- derivation reads a `compare` that `PartialOrd` does not require, so a carrier
+  -- providing `PartialOrd` ALONE inherits a body that cannot run for it, and the load
+  -- check calls it "backed". The op-scoped `requires WeakOrd[T]` above is now exactly
+  -- the per-provision condition 058 §3.8 named as the proper statement of it.)
   --
   -- The inner comparison is `Int64.gt` EXPLICITLY, not the unqualified `gt` the laws
   -- write: unqualified inside this very operation is `PartialOrd.gt` itself, i.e. this
@@ -53,18 +75,20 @@ sort anthill.prelude.PartialOrd
   -- recursion out at that carrier's own host implementation in one hop, and hard-wires
   -- nothing that `compare`'s declared `-> Int64` return does not already fix.
   operation {
-    gt(a: T, b: T) -> Bool requires Ord[T]          -- >
-      = Int64.gt(Ord.compare(a, b), 0)
-    gte(a: T, b: T) -> Bool requires Ord[T]         -- >=
-      = Int64.gte(Ord.compare(a, b), 0)
-    lt(a: T, b: T) -> Bool requires Ord[T]          -- <
-      = Int64.lt(Ord.compare(a, b), 0)
-    lte(a: T, b: T) -> Bool requires Ord[T]         -- <=
-      = Int64.lte(Ord.compare(a, b), 0)
+    gt(a: T, b: T) -> Bool requires WeakOrd[T]          -- >
+      = Int64.gt(WeakOrd.compare(a, b), 0)
+    gte(a: T, b: T) -> Bool requires WeakOrd[T]         -- >=
+      = Int64.gte(WeakOrd.compare(a, b), 0)
+    lt(a: T, b: T) -> Bool requires WeakOrd[T]          -- <
+      = Int64.lt(WeakOrd.compare(a, b), 0)
+    lte(a: T, b: T) -> Bool requires WeakOrd[T]         -- <=
+      = Int64.lte(WeakOrd.compare(a, b), 0)
   }
 end
 
-sort anthill.prelude.Ord
+-- WeakOrd: the TOTAL order whose kernel may be coarser than `Eq`. This is the floor
+-- that sorting actually needs, and the one a chosen comparator provides.
+sort anthill.prelude.WeakOrd
   import anthill.prelude.Int64.{neg}
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, and a rule does not
   -- travel to the global namespace from its place — so the `max`/`min` laws
@@ -74,6 +98,16 @@ sort anthill.prelude.Ord
   import anthill.prelude.Bool.{ite}
 
   sort T = ?
+
+  -- `Eq` is the RELATUM, not something this spec supplies. The congruence law below
+  -- is stated against it, so it has to exist — but a derived `Eq` would be a SECOND
+  -- supplier for the carrier, and equality dispatches from UNIFICATION (`sem_eq_core`,
+  -- kb/resolve.rs) where no call site exists to select at, so `AmbiguousEqDispatch`
+  -- (WI-837) refuses one. Hence: required, never provided. (WI-456 asked whether a
+  -- local `Eq` should be derived from the order; this is the answer, and the reason
+  -- it does not contradict the `provides` links elsewhere in this tower is that a
+  -- PROOF IS NOT A SUPPLIER — a law adds no `sort_ops` entry and no dispatch
+  -- candidate, so relating an order to `Eq` never mints a rival.)
   requires Eq[T]
   requires PartialOrd[T]
 
@@ -83,12 +117,18 @@ sort anthill.prelude.Ord
   -- Derived operations. WI-876: real default BODIES, so a carrier supplying
   -- `compare` inherits them. They were the load check's sharpest inconsistency —
   -- `max`/`min` are not resolver builtins, so the check DEMANDED a member for them
-  -- from every concrete `Ord` carrier, while `gt`/`lt`/`gte`/`lte` ARE, so it
+  -- from every concrete ordered carrier, while `gt`/`lt`/`gte`/`lte` ARE, so it
   -- demanded nothing and they broke at eval instead. Two halves of one surface
   -- treated oppositely; both are now backed by the same derivation.
   --
   -- Written as `if`/`then`/`else` rather than the `ite` of the law below: `ite` is not
   -- an operation (WI-887), and `if` is the operation-body conditional.
+  --
+  -- NOTE for a coarse kernel: `max`/`min` return ONE of two operands that may compare
+  -- equal without being equal, and THE FIRST OPERAND WINS BOTH — `gte`/`lte` each hold
+  -- at a tie, so the `then` branch is taken and that branch is `a`. Which representative
+  -- comes back is therefore observable under `WeakOrd` and not under `Ord`, the same way
+  -- `SortedSet.union` is left-biased. Stated so it is contract rather than discovery.
   operation {
     max(a: T, b: T) -> T = if gte(a, b) then a else b
     min(a: T, b: T) -> T = if lte(a, b) then a else b
@@ -113,13 +153,74 @@ sort anthill.prelude.Ord
     min(?a, ?b) <=> ite(lte(?a, ?b), ?a, ?b)
   }
 
-  -- Laws
+  -- Laws that hold for ANY total order, coarse kernel or not.
   rule {
     -- antisymmetry
     compare_antisym: compare(?a, ?b) <=> neg(compare(?b, ?a))
     -- reflexivity
     compare_refl: compare(?a, ?a) <=> 0
-    -- consistency with eq
-    compare_eq: eq(?a, ?b) <=> eq(compare(?a, ?b), 0)
   }
+
+  -- CONGRUENCE — the law that makes this floor usable, and the only half of the old
+  -- `compare_eq` biconditional that is true here. It says `compare` is WELL-DEFINED ON
+  -- `Eq`-CLASSES: the kernel of `compare` is a union of `Eq`-classes, never a splitting
+  -- of one. That is what keeps a sorted structure well formed — no `Eq`-class can land
+  -- in two positions — and it is the weakest law that does.
+  --
+  -- Written as a `constraint` (the `Int64.div_nonzero` idiom: head must hold wherever
+  -- the body does) and NOT as an equation, deliberately. An `<=>` is available to the
+  -- equational / `[simp]` / proof layers as a REWRITE, and rewriting `eq(a, b)` to
+  -- `eq(compare(a, b), 0)` is exactly the unsound step at a coarse kernel. An
+  -- implication states the obligation without minting the rewrite.
+  constraint compare_congruent: eq(compare(?a, ?b), 0) :- eq(?a, ?b)
+end
+
+-- Ord: the TOTAL order whose kernel IS `Eq` — C++'s `strong_ordering`, Haskell's and
+-- Rust's `Ord`. It adds no operation, only the converse of `WeakOrd`'s congruence.
+sort anthill.prelude.Ord
+  sort T = ?
+
+  -- THE WHOLE CONTENT OF THIS FLOOR, ONE LINE, AND ONE LINE IS ENOUGH (WI-1110).
+  -- A carrier providing `Ord` thereby provides `WeakOrd` — ONE `compare`, one order,
+  -- with this floor asserting the extra law about it. Deriving beats writing both
+  -- floors (058 §3.8): two hand-written provisions permit a bundle whose halves
+  -- disagree, whereas one `compare` cannot.
+  --
+  -- `provides` ON A SPEC IS A CONVERSION, and a conversion is a chain entry: "hold an
+  -- `Ord[T]` and you can obtain a `WeakOrd[T]`", which is what `Ord <: WeakOrd` means
+  -- operationally. So this one clause does everything the four it replaces did —
+  -- a body written against `requires Ord[T]` reaches `WeakOrd.compare` through the
+  -- slot this puts in the chain, and `WeakOrd`'s own `requires Eq[T]` and
+  -- `requires PartialOrd[T]` travel to the carrier through it, which is why they are no
+  -- longer restated here.
+  --
+  -- WI-1109 SHIPPED THIS AS `requires WeakOrd[T]` + `provides WeakOrd[T = T]` with a
+  -- note insisting the two were "not redundant and not circular". They were one edge
+  -- written twice: the `provides` half was filed in the PROVIDER table, where it made
+  -- `Ord` an answer to every `WeakOrd` goal (measured `WeakOrd[T = Int64]` ->
+  -- `[Ord, Int64]`), and the `requires` half then closed the loop over it — a cycle
+  -- caught only because the cycle detector ran. A conversion belongs in the chain, not
+  -- in a table of what has which type; nothing has type `Ord`.
+  provides WeakOrd[T = T]
+
+  -- THE LAW, and with `WeakOrd`'s congruence it says the kernel of `compare` is exactly
+  -- `Eq` — which is what makes `compare(a, b) = 0` substitutable and a `SortedSet` under
+  -- this floor a set of ELEMENTS rather than of classes.
+  --
+  -- AN EQUATION HERE, A `constraint` ON `WeakOrd`, and the difference is soundness rather
+  -- than style. An `<=>` is what the equational / `[simp]` / proof layers REWRITE with,
+  -- and rewriting `eq(a, b)` to `eq(compare(a, b), 0)` is valid exactly where the kernel
+  -- IS `Eq` — here, and not one floor down, where a coarse comparator makes it false.
+  -- So `WeakOrd` states only the implication it can defend and mints no rewrite, while
+  -- `Ord` — whose entire content is that the two coincide — carries the biconditional.
+  --
+  -- WI-1109 first wrote this side as a `constraint` too, which was over-correction: it
+  -- moved the unsound rewrite off `WeakOrd` and then DELETED the sound one, so
+  -- `Int64`/`String`/`BigInt` silently lost a law they had had all along and nothing
+  -- recorded the loss. Restored, in the spelling the file's other laws use.
+  --
+  -- Untagged, so it is INERT as a rewrite until a `[simp]` tag enables it (WI-881/884) —
+  -- the status `compare_antisym`, `compare_refl` and `eq_refl` all have. What it is FOR
+  -- is being the specification those layers prove against.
+  rule compare_eq: eq(?a, ?b) <=> eq(WeakOrd.compare(?a, ?b), 0)
 end

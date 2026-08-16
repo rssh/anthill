@@ -193,11 +193,13 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
     let caller_requires = vec![RequiresEntry {
         required_sort: eq_sym,
         spec: caller_spec_int.into(),
+        supply: anthill_core::kb::typing::SupplySource::Required,
     }];
     let dep_spec_string = make_sort_view(&mut kb, eq_sym, string_sym);
     let dep = RequiresEntry {
         required_sort: eq_sym,
         spec: dep_spec_string.into(),
+        supply: anthill_core::kb::typing::SupplySource::Required,
     };
 
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires

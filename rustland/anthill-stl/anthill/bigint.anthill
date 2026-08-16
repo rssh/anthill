@@ -14,10 +14,10 @@ namespace anthill.prelude
       min: "ordered_min"
     }
     -- WI-644 / proposal 004: BigInt is lawful — partial bases + total markers.
-    fact PartialEq[T = BigInt]
-    fact Eq[T = BigInt]
-    fact PartialOrd[T = BigInt]
-    fact Ord[T = BigInt]
-    fact Numeric[T = BigInt]
+    provides PartialEq[T = BigInt]
+    provides Eq[T = BigInt]
+    provides PartialOrd[T = BigInt]
+    provides Ord[T = BigInt]
+    provides Numeric[T = BigInt]
   end
 end

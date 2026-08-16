@@ -4751,10 +4751,17 @@ impl<'a> Converter<'a> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        // WI-862 (058 §4): the `default` leading modifier. Read from the FIELD, not by
+        // scanning the node's text for the word — `default` is not a reserved word (the
+        // corpus has an operation parameter called `default`, and a grammar test pins
+        // that it stays an identifier), so only the field says the token was parsed in
+        // modifier position.
+        let is_default = self.field(node, "default").is_some();
         let span = self.span(node);
         Some(ProvidesClause {
             spec,
             conditions,
+            is_default,
             span,
         })
     }
@@ -4781,6 +4788,12 @@ impl<'a> Converter<'a> {
                 "fact_declaration" => {
                     if let Some(f) = self.convert_fact(child) {
                         items.push(ProvidesItem::Fact(f));
+                    }
+                }
+                // WI-862 (058 §4) — the non-deprecated spelling of a nested spec claim.
+                "provides_clause" => {
+                    if let Some(pc) = self.convert_provides_clause(child) {
+                        items.push(ProvidesItem::ProvidesClause(pc));
                     }
                 }
                 "proof_declaration" => {

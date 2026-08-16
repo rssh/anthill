@@ -7,7 +7,7 @@
 //! the one ambiguous call) and gave the call a bracket to answer with. None of that is
 //! worth having unless a real program can hold two witnesses of one `(spec, carrier)`
 //! and keep them apart. `stdlib/anthill/prelude/sortedset.anthill` is that program:
-//! `requires O: Ord[T]` is a NAMED slot, so the ordering is a type PARAMETER and
+//! `requires O: WeakOrd[T]` is a NAMED slot, so the ordering is a type PARAMETER and
 //! `SortedSet[T = String, O = ByLength]` and `SortedSet[T = String, O = Alphabetical]`
 //! are two types.
 //!
@@ -40,7 +40,7 @@
 //! are NOT, and the reason is measured (`two_string_orderings_make_a_bare_compare_
 //! ambiguous`): the Rust binding already declares `fact Ord[T = String]`, so a
 //! third and fourth provider in the PRELUDE would make every bracket-less
-//! `Ord.compare(a: String, b: String)` in every downstream program a load error.
+//! `WeakOrd.compare(a: String, b: String)` in every downstream program a load error.
 //! Tier 3's coexistence is a per-program choice, not something a standard library may
 //! impose on its consumers. So the driver declares them.
 //!
@@ -64,14 +64,19 @@ const BY_LENGTH: &str = r#"
   sort ByLength
     import anthill.prelude.String.{length}
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = String]
+    -- WI-1109: the WEAK floor, and this witness is the reason the floor exists.
+    -- `compare("zz","aa") = 0` while `eq("zz","aa")` is false, so its kernel is
+    -- STRICTLY COARSER than `Eq` and it cannot satisfy `Ord`'s `compare_discriminates`.
+    -- Declaring `Ord` here would be a false claim that only happened to work because
+    -- `derive_forwarded_provisions` would synthesize the `WeakOrd` row from it.
+    provides WeakOrd[T = String]
     operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
   end
 "#;
 
 const ALPHABETICAL: &str = r#"
   sort Alphabetical
-    fact Ord[T = String]
+    provides Ord[T = String]
     operation compare(a: String, b: String) -> Int64 =
       if lt(a, b) then -1 else if gt(a, b) then 1 else 0
   end
@@ -95,7 +100,7 @@ fn program(ns: &str, body: &str) -> String {
 fn program_with(ns: &str, orderings: &str, body: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         import anthill.prelude.{{Ord, String, Int64, List, Bool, SortedSet}}\n  \
+         import anthill.prelude.{{Ord, WeakOrd, String, Int64, List, Bool, SortedSet}}\n  \
          import anthill.prelude.PartialOrd.{{lt, gt}}\n{orderings}{body}\nend\n"
     )
 }
@@ -191,7 +196,7 @@ fn two_orderings_for_one_carrier_coexist() {
     );
 }
 
-/// …AND WHAT A BRACKET-LESS `Ord.compare` ON A `String` DOES BESIDE THEM — **FLIPPED AT
+/// …AND WHAT A BRACKET-LESS `WeakOrd.compare` ON A `String` DOES BESIDE THEM — **FLIPPED AT
 /// WI-861** (058 §3.2 rung 2a, phase 8c), which is this test's whole point rather than an
 /// incidental update, so the old assertion is quoted here rather than deleted.
 ///
@@ -216,7 +221,7 @@ fn a_bare_compare_takes_the_hosts_own_ordering() {
     let src = program(
         "wi844.bare",
         "  sort Use\n    \
-         operation cmp(a: String, b: String) -> Int64 = Ord.compare(a, b)\n  end\n  \
+         operation cmp(a: String, b: String) -> Int64 = WeakOrd.compare(a, b)\n  end\n  \
          sort Driver\n    \
          operation drive(n: Int64) -> Int64 = Use.cmp(\"zz\", \"aaa\")\n  end",
     );
@@ -237,7 +242,7 @@ fn a_bare_compare_takes_the_hosts_own_ordering() {
     let bracketed = program(
         "wi844.bare.pinned",
         "  sort Use\n    \
-         operation cmp(a: String, b: String) -> Int64 = Ord.compare[Ord = ByLength](a, b)\n  end\n  \
+         operation cmp(a: String, b: String) -> Int64 = WeakOrd.compare[WeakOrd = ByLength](a, b)\n  end\n  \
          sort Driver\n    \
          operation drive(n: Int64) -> Int64 = Use.cmp(\"zz\", \"aaa\")\n  end",
     );
@@ -311,7 +316,7 @@ fn union_merges_ascending_and_deduplicates() {
         "wi844.merge",
         "  sort Ascending\n    \
          import anthill.prelude.Numeric.{sub}\n    \
-         fact Ord[T = Int64]\n    \
+         provides Ord[T = Int64]\n    \
          operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
          sort Driver\n    \
          import anthill.prelude.String.{concat}\n    \
@@ -511,7 +516,7 @@ fn an_abstract_ordering_parameter_forwards_the_callers_choice() {
         &format!(
             "  sort Report\n    \
              sort T = ?\n    \
-             requires O: Ord[T]\n    \
+             requires O: WeakOrd[T]\n    \
              operation first(s: SortedSet[T = T, O = O], dflt: T) -> T =\n      \
              match SortedSet.toList(s)\n        \
              case nil() -> dflt\n        \
@@ -569,11 +574,11 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
             &format!(
                 "  sort Both\n    \
                  sort T = ?\n    \
-                 requires A: Ord[T]\n    \
-                 requires B: Ord[T]\n    \
+                 requires A: WeakOrd[T]\n    \
+                 requires B: WeakOrd[T]\n    \
                  entity both(x: T)\n    \
                  operation cmp(s: Both[T = T, A = A, B = B], y: T) -> Int64 = \
-                 Ord.compare(y, y)\n  end\n  \
+                 WeakOrd.compare(y, y)\n  end\n  \
                  sort Take\n    \
                  operation take(s: Both[T = String, A = ByLength, B = Alphabetical]) \
                  -> Int64 =\n      {call}\n  end"
@@ -661,7 +666,7 @@ fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
     assert!(
         errs.iter().any(|e| {
             e.contains("universally quantified")
-                && e.contains("`O: anthill.prelude.Ord`")
+                && e.contains("`O: anthill.prelude.WeakOrd`")
                 && e.contains("anthill.prelude.SortedSet.toList")
         }),
         "a body that reads the order through an OMITTED slot is under-determined and \
@@ -776,11 +781,11 @@ fn a_string_set_and_an_int_set_keep_their_own_orderings() {
         &format!(
             "  sort Ascending\n    \
              import anthill.prelude.Numeric.{{sub}}\n    \
-             fact Ord[T = Int64]\n    \
+             provides Ord[T = Int64]\n    \
              operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
              sort Descending\n    \
              import anthill.prelude.Numeric.{{sub}}\n    \
-             fact Ord[T = Int64]\n    \
+             provides Ord[T = Int64]\n    \
              operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n  end\n  \
              sort Driver\n{FIRST}{}{}{}  end",
             string_pipeline("strings", "ByLength"),

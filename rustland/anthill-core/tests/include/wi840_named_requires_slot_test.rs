@@ -135,7 +135,7 @@ namespace test.wi840.op_bracket
   import anthill.prelude.{{Int64}}
 {SPECS}
   sort ByValue
-    fact Ord[T = Int64]
+    provides Ord[T = Int64]
     operation cmp(a: Int64, b: Int64) -> Int64 = 0
   end
   sort Use

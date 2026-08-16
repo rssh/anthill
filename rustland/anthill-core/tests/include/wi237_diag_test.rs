@@ -82,12 +82,12 @@ fn dump_eq_lt_rewrites() {
     let names = [
         "anthill.prelude.Ord",
         "anthill.prelude.PartialOrd.lt",
-        "anthill.prelude.Ord.compare",
+        "anthill.prelude.WeakOrd.compare",
         "anthill.prelude.Int64",
         "anthill.prelude.Int64.lt",
         "anthill.prelude.Int64.compare",
         "anthill.prelude.Int64.Ord.lt",
-        "anthill.prelude.Int64.Ord.compare",
+        "anthill.prelude.Int64.WeakOrd.compare",
     ];
     for name in names {
         let resolved = kb.try_resolve_symbol(name);

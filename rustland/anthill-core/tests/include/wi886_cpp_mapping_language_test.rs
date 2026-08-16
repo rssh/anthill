@@ -44,10 +44,10 @@ use anthill_core::eval::Value;
 /// first thing in the tree shaped to notice.
 const CPP_ONLY_MEMBER: &str = r#"
 namespace wi886.cpponly
-  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
 
   sort Box
-    import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
+    import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
     entity box(v: Int64)
 
     provides PartialEq[Box]
@@ -65,7 +65,7 @@ namespace wi886.cpponly
       match a
         case box(av) ->
           match b
-            case box(bv) -> Ord.compare(av, bv)
+            case box(bv) -> WeakOrd.compare(av, bv)
 
     -- Declared and body-less: its implementation is the C++ one named below.
     operation max(a: Box, b: Box) -> Box
@@ -76,10 +76,10 @@ namespace wi886.cpponly
   end
 
   sort Driver
-    import anthill.prelude.{Int64, Ord}
+    import anthill.prelude.{Int64, Ord, WeakOrd}
     import wi886.cpponly.Box.{box}
     operation maxV(n: Int64) -> Int64 =
-      match Ord.max(box(2), box(9))
+      match WeakOrd.max(box(2), box(9))
         case box(v) -> v
   end
 end
@@ -183,7 +183,7 @@ fn eval_runs_the_spec_default_when_the_only_implementation_is_cpp() {
     match interp.call("wi886.cpponly.Driver.maxV", &[Value::Int(0)]) {
         Ok(Value::Int(9)) => {}
         other => panic!(
-            "Ord.max must fall back to the spec default body and pick the \
+            "WeakOrd.max must fall back to the spec default body and pick the \
              greater box; got {other:?}"
         ),
     }

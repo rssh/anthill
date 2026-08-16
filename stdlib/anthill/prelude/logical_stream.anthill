@@ -33,7 +33,7 @@ sort anthill.prelude.LogicalStream
   -- LogicalStream.splitFirst's `effects s.E` REFINES Stream.splitFirst's `effects
   -- s.E` (same row) instead of widening a decoupled fresh row — and so the row
   -- threads Relation → LogicalStream → Stream to the inherited consumption ops.
-  fact Stream[T = T, E = E]
+  provides Stream[T = T, E = E]
 
   -- ================================================================
   -- Stream primitive (required by fact Stream[T])

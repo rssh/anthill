@@ -154,14 +154,14 @@ fn the_stdlib_family_is_builtin_on_both_sides_of_the_pin() {
 /// A carrier that provides `PartialOrd` and SUPPLIES ITS OWN `gt`. The override answers
 /// `false` for every pair, so the three candidate implementations are told apart by their
 /// answer: the carrier's own member `false`, the spec's DEFAULT body (derived from
-/// `Ord.compare`) `true`, the resolver's `builtin_cmp` on two entities neither.
+/// `WeakOrd.compare`) `true`, the resolver's `builtin_cmp` on two entities neither.
 fn own_gt_program(tail: &str) -> String {
     format!(
         r#"namespace wi1036.own
-  import anthill.prelude.{{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}}
+  import anthill.prelude.{{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}}
 
   sort Point
-    import anthill.prelude.{{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}}
+    import anthill.prelude.{{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}}
     entity pt(x: Int64, y: Int64)
 
     provides PartialEq[Point]
@@ -181,8 +181,8 @@ fn own_gt_program(tail: &str) -> String {
         case pt(ax, ay) ->
           match b
             case pt(bx, by) ->
-              let c = Ord.compare(ax, bx)
-              if PartialEq.eq(c, 0) then Ord.compare(ay, by) else c
+              let c = WeakOrd.compare(ax, bx)
+              if PartialEq.eq(c, 0) then WeakOrd.compare(ay, by) else c
 
     -- THE SUPPLIED OVERRIDE, deliberately disagreeing with the derived default so the
     -- answer says which implementation ran.

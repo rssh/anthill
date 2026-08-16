@@ -78,10 +78,26 @@
 --
 -- ── EQUALITY ─────────────────────────────────────────────────────────────────────
 --
--- Equality is STRUCTURAL and that is exact: for one `O`, the sorted item list is
--- canonical, so two sets with the same members are the same term. (`Set` needs its own
--- extensional `eq` precisely because its `insert` algebra is not canonical.) No
--- `provides Eq` is declared, so nothing is claimed about comparing across two `O`s —
+-- Equality is STRUCTURAL, and how exact that is depends on `O` (WI-1109).
+--
+-- WHERE `O`'s KERNEL IS `Eq` — an `Ord` comparator — the sorted item list is canonical
+-- and two sets with the same members ARE the same term. (`Set` needs its own extensional
+-- `eq` precisely because its `insert` algebra is not canonical.)
+--
+-- WHERE IT IS COARSER — any `WeakOrd` that is not an `Ord`, which is what the slot
+-- permits and what a key-based comparator is — THIS SET STORES EQUIVALENCE CLASSES, and
+-- one member of each class SURVIVES. Which one is observable, so canonicity does not
+-- hold: MEASURED under a by-length comparator, `{"zz","aa","b"}` has TWO elements, and
+--
+--     union({"zz"}, {"aa"}) = ["zz"]     union({"aa"}, {"zz"}) = ["aa"]
+--
+-- — same members, different terms. THE RULE, and it is contract rather than discovery:
+-- `insert` keeps the INCUMBENT and `union` keeps the LEFT operand's representative, so
+-- `union` is NOT commutative under a coarse kernel. A consumer that needs a set of
+-- ELEMENTS rather than of classes writes `requires O: Ord[T]` and gets it checked; one
+-- that compares two sorted sets structurally must not do so across a coarse `O`.
+--
+-- No `provides Eq` is declared, so nothing is claimed about comparing across two `O`s —
 -- they are different types.
 --
 -- ── AND NO `provides Set` EITHER, deliberately ───────────────────────────────────
@@ -95,12 +111,12 @@
 -- added here is surface to keep in agreement with a comparator that is part of the
 -- type. Use `toList` at the boundary.
 enum anthill.prelude.SortedSet
-  import anthill.prelude.{Ord, List}
+  import anthill.prelude.{WeakOrd, List}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.PartialOrd.{lt, gt}
 
   sort T = ?                                   -- element type
-  requires O: Ord[T]                           -- NAMED ⇒ a parameter of the type
+  requires O: WeakOrd[T]                       -- NAMED ⇒ a parameter of the type
 
   -- The items, ascending under `O` and duplicate-free. The invariant is maintained by
   -- `insert`, which is the only producer; the constructor is not meant to be applied
@@ -136,17 +152,18 @@ enum anthill.prelude.SortedSet
   -- neither of which respects the set's ordering. Called from WITHIN the sort, both
   -- inherit the enclosing frame's `O` dictionary.
   --
-  -- Both READ the order through `Ord.compare`, which resolves via slot `O` — the
+  -- Both READ the order through `WeakOrd.compare`, which resolves via slot `O` — the
   -- one the construction site filled. Two sets built with different comparators run
   -- different code here, out of one body (058 §4.6).
   internal operation insertSorted(l: List[T = T], x: T) -> List[T = T] =
     match l
       case nil() -> cons(head: x, tail: nil())
       case cons(h, t) ->
-        let c = Ord.compare(x, h)
+        let c = WeakOrd.compare(x, h)
         if lt(c, 0) then cons(head: x, tail: cons(head: h, tail: t))
         else if gt(c, 0) then cons(head: h, tail: insertSorted(t, x))
-        else cons(head: h, tail: t)          -- already present: a SET, so no duplicate
+        else cons(head: h, tail: t)          -- same CLASS under `O`: the incumbent
+                                             -- stays (see EQUALITY above)
 
   -- Merge two ascending, duplicate-free lists into one. Equal heads collapse to a
   -- single element — the set property, applied across the two operands.
@@ -157,7 +174,7 @@ enum anthill.prelude.SortedSet
         match ys
           case nil() -> cons(head: x, tail: xt)
           case cons(y, yt) ->
-            let c = Ord.compare(x, y)
+            let c = WeakOrd.compare(x, y)
             if lt(c, 0) then cons(head: x, tail: merge(xt, cons(head: y, tail: yt)))
             else if gt(c, 0) then cons(head: y, tail: merge(cons(head: x, tail: xt), yt))
             else cons(head: x, tail: merge(xt, yt))    -- equal: one element, not two

@@ -702,14 +702,21 @@ fn inherited_requires_eq_blocks_non_eq_float() {
     );
 }
 
-// `requires(Ord[T])` witnessed by `gt` — `gt` is `PartialOrd.gt`, and `Ord
-// requires PartialOrd`, so the inherited witness grounds the total-order requirement
-// exactly as the eq case grounds Eq.
+// `requires(WeakOrd[T])` witnessed by `gt` — `gt` is `PartialOrd.gt`, whose op-scoped
+// `requires WeakOrd[T]` (it derives from `compare`) is what the inherited witness
+// grounds, exactly as the eq case grounds Eq.
+//
+// WI-1109 — the spec is `WeakOrd`, not `Ord`, and that is the POINT rather than a
+// rename. `gt` needs a total order, not an antisymmetric one: it reads `compare` and
+// asks nothing about the kernel, so it witnesses the floor it actually requires.
+// MEASURED — `requires(Ord[T])` here now fails with "expected a body call to one of
+// `Ord`'s operations ... got no such call", which is the CORRECT refusal: `Ord`
+// declares no operation of its own, so no body call can witness it directly.
 const INHERITED_ORD_SRC: &str = r#"
     namespace dirA.ordtest
-      import anthill.prelude.{Int64, Bool, Ord}
+      import anthill.prelude.{Int64, Bool, WeakOrd}
       import anthill.prelude.PartialOrd.{gt}
-      rule bigger(?a, ?b) :- requires(Ord[T]), gt(?a, ?b)
+      rule bigger(?a, ?b) :- requires(WeakOrd[T]), gt(?a, ?b)
     end
 "#;
 
@@ -717,8 +724,9 @@ const INHERITED_ORD_SRC: &str = r#"
 fn inherited_requires_ordered_types_and_decides_via_gt() {
     assert!(
         common::try_load_kb_with(INHERITED_ORD_SRC).is_ok(),
-        "a rule whose requires(Ord[T]) is witnessed by a gt() call \
-         (PartialOrd's op, inherited by Ord) must load",
+        "a rule whose requires(WeakOrd[T]) is witnessed by a gt() call \
+         (PartialOrd's op, whose op-scoped requires IS WeakOrd) must load; got {:?}",
+        common::try_load_kb_with(INHERITED_ORD_SRC).err(),
     );
     let mut kb = common::load_kb_with(INHERITED_ORD_SRC);
     // bigger(3, 1): guard fires (Int64 provides Ord), gt(3, 1) = true ⇒ one solution.

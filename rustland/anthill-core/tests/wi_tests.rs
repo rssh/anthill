@@ -879,6 +879,11 @@ mod wi843_coexisting_instances_test;
 #[path = "include/wi844_sorted_set_driver_test.rs"]
 mod wi844_sorted_set_driver_test;
 
+#[path = "include/wi1109_ordering_tower_test.rs"]
+mod wi1109_ordering_tower_test;
+#[path = "include/wi1110_supply_source_test.rs"]
+mod wi1110_supply_source_test;
+
 #[path = "include/wi857_dictionary_layout_test.rs"]
 mod wi857_dictionary_layout_test;
 
@@ -893,6 +898,9 @@ mod wi860_default_provider_relations_test;
 
 #[path = "include/wi861_rung2a_default_dispatch_test.rs"]
 mod wi861_rung2a_default_dispatch_test;
+
+#[path = "include/wi862_default_provides_sugar_test.rs"]
+mod wi862_default_provides_sugar_test;
 
 #[path = "include/wi869_per_provision_conditions_test.rs"]
 mod wi869_per_provision_conditions_test;
@@ -1231,6 +1239,9 @@ mod wi1104_relational_column_test;
 
 #[path = "include/wi1106_parametric_data_sort_test.rs"]
 mod wi1106_parametric_data_sort_test;
+
+#[path = "include/wi1111_provision_chain_search_test.rs"]
+mod wi1111_provision_chain_search_test;
 
 #[path = "include/wi987_global_scope_sentinel_test.rs"]
 mod wi987_global_scope_sentinel_test;

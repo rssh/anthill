@@ -536,7 +536,7 @@ end
 
 /// THE AGREEMENT WI-942 IS ABOUT: the same construct over a ONE-parameter spec.
 ///
-/// `operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(a, b)`
+/// `operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = WeakOrd.compare(a, b)`
 /// was REFUSED AT LOAD — "expected `requires Ord[…]` covering abstract type
 /// parameter, got missing `requires Ord[T = …]` on enclosing sort" — while
 /// the VectorSpace shape above was certified. One spec caught, the other
@@ -553,17 +553,17 @@ end
 fn one_parameter_spec_op_scoped_requires_now_agrees_and_dispatches() {
     let src = r#"
 namespace test.wi942.oneparam
-  import anthill.prelude.{Int64, Ord}
+  import anthill.prelude.{Int64, Ord, WeakOrd}
 
   sort OpHolder
-    operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = Ord.compare(a, b)
+    operation cmp[T](a: T, b: T) -> Int64 requires Ord[T] = WeakOrd.compare(a, b)
   end
 
   -- The sort-level twin, which ran BEFORE WI-942 and must keep running.
   sort SortHolder
     sort T = ?
     requires Ord[T]
-    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
   end
 
   sort Driver
@@ -574,7 +574,7 @@ namespace test.wi942.oneparam
 end
 "#;
     crate::common::try_load_kb_with(src).map(|_| ()).expect(
-        "an op-scoped `requires Ord[T]` covering its own `Ord.compare` must \
+        "an op-scoped `requires Ord[T]` covering its own `WeakOrd.compare` must \
          LOAD — it was refused `MissingRequiresForSpecOp` before WI-942",
     );
     for (entry, want, why) in [

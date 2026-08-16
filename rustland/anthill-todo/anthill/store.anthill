@@ -115,7 +115,7 @@ namespace anthill.todo.store
       entity wis(backend: IndexedFileStore, id_counter: Int64)
     end
 
-    fact WorkItemStore[State = WIS]
+    provides WorkItemStore[State = WIS]
 
     -- Format an Int64 as a 3-zero-padded decimal string. Larger numbers
     -- expand naturally (`WI-1000` is fine).

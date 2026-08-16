@@ -37,7 +37,7 @@
 //!   was implemented first and broke 30 tests across wi842/wi843/wi855/wi876/
 //!   wi886/wi869 and the eta route: the shapes that fail are exactly the ones
 //!   with NO call site to supply from (host entry, an eta'd `OpRef`, a
-//!   dictionary-directed dispatch) plus `Ord.max → PartialOrd.gte`, which needs
+//!   dictionary-directed dispatch) plus `WeakOrd.max → PartialOrd.gte`, which needs
 //!   the frame's own `__req_self` as evidence for `Ord[T]` and has no slot to
 //!   forward from. The tie route has none of those: it is reached from an
 //!   ordinary call site, and it is the one route where NOTHING else can answer —

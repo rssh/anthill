@@ -101,7 +101,7 @@ namespace anthill.persistence
   -- `non_monotone` implies this trait (the consistency is structural, not a
   -- separate capability bound).
   sort NonMonotonicStore {
-    fact Store                                -- NonMonotonicStore is-a Store
+    provides Store                                -- NonMonotonicStore is-a Store
 
     -- Remove a fact from its backing store. Permitted iff the functor is
     -- `non_monotone` (proposal 053). A backend that cannot honor a declared
@@ -123,7 +123,7 @@ namespace anthill.persistence
   -- ================================================================
 
   sort QueryableStore {
-    fact Store                                -- QueryableStore is-a Store
+    provides Store                                -- QueryableStore is-a Store
 
     -- Retrieve facts matching a pattern (delegates to backend query).
     -- Streamed rather than materialized so a queryable backend can yield

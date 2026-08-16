@@ -1280,7 +1280,7 @@ class BootstrapTest extends munit.FunSuite:
     val files = gen(parseStdlib("anthill/prelude/sortedset.anthill"))
     val src = files.find(_.relPath.endsWith("/SortedSet.scala"))
       .getOrElse(fail(s"expected SortedSet.scala in: ${files.map(_.relPath)}")).contents
-    assert(src.contains("enum SortedSet[T, O <: _root_.anthill.prelude.Ord[T]]:"),
+    assert(src.contains("enum SortedSet[T, O <: _root_.anthill.prelude.WeakOrd[T]]:"),
       s"the named slot must bind as a parameter bounded by its spec:\n$src")
     assert(src.contains("def insert(s: SortedSet[T, O], x: T)(using O): SortedSet[T, O]"),
       s"the witness must reach the body as a `using` parameter:\n$src")
@@ -1302,7 +1302,7 @@ class BootstrapTest extends munit.FunSuite:
     // Sum — and §5 sends both to the Scala name `SortedSet`, where the case shadows
     // the enum. MEASURED under dotc with the bare parent: `Cyclic inheritance: class
     // SortedSet extends itself`, then `enum case does not extend its enum class`.
-    assert(src.contains("case SortedSet[T, O <: _root_.anthill.prelude.Ord[T]]" +
+    assert(src.contains("case SortedSet[T, O <: _root_.anthill.prelude.WeakOrd[T]]" +
       "(items: _root_.anthill.prelude.List[T]) extends _root_.anthill.prelude.SortedSet[T, O]"),
       s"a case that shadows its enum must name the parent qualified:\n$src")
 
@@ -1551,10 +1551,16 @@ class BootstrapTest extends munit.FunSuite:
 
   test("WI-1022 CONTROL: a SUPERTRAIT requirement takes no `using` clause") {
     // The partition's other side, and the assertion that pins it: a requirement is a
-    // supertrait or it is evidence, never both. `Ord` keeps `extends Eq[T],
-    // PartialOrd[T]` (WI-1066's control) and its operations must stay bare — an
-    // inherited member needs no dictionary passed to it, and a `using Eq[T]` beside
-    // the `extends` would demand at every call site what the type already provides.
+    // supertrait or it is evidence, never both. `Ord` keeps its supertrait
+    // (WI-1066's control) and its operations must stay bare — an inherited member needs
+    // no dictionary passed to it, and a `using WeakOrd[T]` beside the `extends` would
+    // demand at every call site what the type already provides.
+    //
+    // WI-1110 MOVED WHICH SUPERTRAIT, and it moved which CLAUSE writes it. `Ord` used
+    // to read `requires Eq[T], PartialOrd[T]` and emit both; its whole content is now
+    // the single conversion `provides WeakOrd[T = T]`, so the emission is
+    // `extends WeakOrd[T]` — one is-a claim written by the clause that means is-a. The
+    // partition this test pins is unchanged: still a supertrait, still no `using`.
     //
     // PASSES WITH AND WITHOUT the evidence emission BY DESIGN in one direction: no
     // `using` is also what an unimplemented WI-1022 emitted. What it CANNOT survive
@@ -1565,7 +1571,7 @@ class BootstrapTest extends munit.FunSuite:
       .getOrElse(fail("expected Ord.scala")).contents
     // `PartialOrd` bare and `Eq` qualified is this file's own name table doing its
     // job (WI-1055 B1 CONTROL): ordered.anthill declares `PartialOrd` itself.
-    assert(ord.contains("trait Ord[T] extends _root_.anthill.prelude.Eq[T], PartialOrd[T]:"),
+    assert(ord.contains("trait Ord[T] extends WeakOrd[T]"),
       s"the supertrait control must be unchanged:\n$ord")
     assert(!ord.contains("using"),
       s"a supertrait requirement must not ALSO be passed as a dictionary:\n$ord")
@@ -2120,7 +2126,10 @@ class BootstrapTest extends munit.FunSuite:
     // does NOT redeclare (measured — the corpus intersections are all empty), so a
     // demotion keyed on anything looser than a member-name collision lands here.
     Seq(
-      ("ordered", "Ord", "trait Ord[T] extends _root_.anthill.prelude.Eq[T], PartialOrd[T]:"),
+      // WI-1110: `Ord`'s whole content is `provides WeakOrd[T = T]`, a CONVERSION, so
+      // its supertrait is written by a `provides` and not by a `requires` — the one row
+      // here whose clause is the is-a one. `Eq` below is the same move one tower over.
+      ("ordered", "Ord", "trait Ord[T] extends WeakOrd[T]"),
       ("ordered", "PartialOrd", "trait PartialOrd[T] extends _root_.anthill.prelude.PartialEq[T]:"),
       ("collection", "PersistentCollection",
         "trait PersistentCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element]:"),
@@ -2130,7 +2139,7 @@ class BootstrapTest extends munit.FunSuite:
       ("mutable_collection", "MutableCollection",
         "trait MutableCollection[C, Element] extends _root_.anthill.prelude.Iterable[C, Element], " +
         "_root_.anthill.prelude.Modifiable[C]:"),
-      ("eq", "Eq", "trait Eq[T] extends PartialEq[T]"),
+      ("eq", "Eq", "trait Eq[T] extends PartialEq[T]"),   // WI-1110: from `provides`
       ("eq", "NonEq", "trait NonEq[T] extends PartialEq[T]:"),
       ("lattice", "Lattice", "trait Lattice[T] extends _root_.anthill.prelude.Eq[T]:"),
       ("lattice", "BoundedLattice", "trait BoundedLattice[T] extends Lattice[T]:"),

@@ -279,8 +279,8 @@ enum anthill.prelude.EffectExpression
   -- label is a row-unification failure, not a propagating value (045 §7.2).
   entity merge(left: EffectExpression, right: EffectExpression)
 
-  fact PartialEq[T = EffectExpression]   -- WI-644: Eq requires the PartialEq base
-  fact Eq[T = EffectExpression]
+  provides PartialEq[T = EffectExpression]   -- WI-644: Eq requires the PartialEq base
+  provides Eq[T = EffectExpression]
 end
 
 -- Standalone records used by `TypeExtractor` — kept OUTSIDE the enum (so the

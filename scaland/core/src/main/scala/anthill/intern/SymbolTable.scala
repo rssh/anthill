@@ -285,6 +285,13 @@ class SymbolTable:
   def addTypeParam(scopeId: ScopeId, name: String): Unit =
     scopeEntry(scopeId).typeParams += name
 
+  /** WI-1110 — is `name` a type parameter of `scopeId`? Read by the loader to tell a
+    * `provides` clause that speaks only of the sort's own parameters (a CONVERSION,
+    * which lends its names) from one naming a concrete carrier (a membership claim,
+    * which does not). */
+  def isTypeParam(scopeId: ScopeId, name: String): Boolean =
+    scopes.get(scopeId).exists(_.typeParams.contains(name))
+
   /** Record an imported name alias in a scope. WI-1074 — `origin` names the WRITER: the
     * file whose text lists the import, or [[ImportOrigin.Builtin]] for the prelude's own
     * aliases, which are written in no file. A repeated `(origin, sym)` write MOVES to the

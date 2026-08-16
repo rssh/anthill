@@ -247,6 +247,12 @@ fn the_stdlib_stream_provisions_read_their_provider() {
             "List | Stream | List".to_string(),
             "LogicalStream | Stream | LogicalStream".to_string(),
             "MappedStream | Stream | MappedStream".to_string(),
+            // WI-1109: `Relation provides LogicalStream[T = T, E = E]` and
+            // `LogicalStream provides Stream[T = T, E = E]` are both IDENTITY
+            // forwardings, so `derive_forwarded_provisions` materializes the row that
+            // was already true transitively — `sort_provides(Relation, Stream)`
+            // answered true before it. A truthful row, not a new claim.
+            "Relation | Stream | Relation".to_string(),
         ],
         "`Stream` is self-representing (`splitFirst(s: Stream)`), so each carrier that \
          declares it IS a stream must record ITSELF — before the fix every row here \

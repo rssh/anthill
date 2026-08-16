@@ -19,7 +19,7 @@
 //! What this file pins, in the order the ticket states it:
 //!
 //!  1. the two 058-free reproducers — `requires Eq[T]` reaching `PartialEq.eq`
-//!     transitively, and `requires Ord[T]` reaching `Ord.compare` — RUN;
+//!     transitively, and `requires Ord[T]` reaching `WeakOrd.compare` — RUN;
 //!  2. the two controls that identified the trigger still run: the spec whose own
 //!     chain is EMPTY (`PartialEq`), and a chain-free WITNESS provider;
 //!  3. the parametric, chain-bearing witness (the ticket's feedback, probe `q4e`) —
@@ -77,12 +77,12 @@ fn eval_err(src: &str, entry: &str, needle: &str, why: &str) {
 ///
 /// `HolderEq` exercises the `requirement_at_sort` consumer (the body's `PartialEq.eq`
 /// is reached TRANSITIVELY, through `Eq`, so it reads `__req_eq` and projects slot 0)
-/// and `HolderOrd` the `expand_dispatching_dict` one (`Ord.compare` dispatches
+/// and `HolderOrd` the `expand_dispatching_dict` one (`WeakOrd.compare` dispatches
 /// onto the SPEC's op, since `Int64` supplies no member, so the frame is named from
 /// `Ord`'s two-entry chain). Those were the two distinct death sites.
 const HOLDERS: &str = r#"
 namespace wi857.holder
-  import anthill.prelude.{Int64, Bool, PartialEq, Eq, Ord}
+  import anthill.prelude.{Int64, Bool, PartialEq, Eq, Ord, WeakOrd}
 
   sort HolderPE
     sort T = ?
@@ -99,7 +99,7 @@ namespace wi857.holder
   sort HolderOrd
     sort T = ?
     requires Ord[T]
-    operation cmp(a: T, b: T) -> Int64 = Ord.compare(a, b)
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
   end
 
   sort Driver
@@ -155,7 +155,7 @@ fn a_requires_eq_holder_reaches_partialeq_transitively() {
 
 #[test]
 fn a_requires_ordered_holder_dispatches_the_specs_own_op() {
-    // Before: Internal("… dispatching dict for anthill.prelude.Ord.compare has
+    // Before: Internal("… dispatching dict for anthill.prelude.WeakOrd.compare has
     // arity 0 but its requires chain has 2 entries"). `Int64` supplies no `compare`
     // member, so dispatch lands on the spec's own builtin and the frame is named from
     // `Ord`'s chain (`Eq`, `PartialOrd`) — which the dictionary now carries.
@@ -181,16 +181,16 @@ fn a_requires_ordered_holder_dispatches_the_specs_own_op() {
 fn a_chain_free_witness_provider_still_runs() {
     let src = r#"
 namespace wi857.witness
-  import anthill.prelude.{Int64, Ord}
+  import anthill.prelude.{Int64, Ord, WeakOrd}
   import anthill.prelude.Numeric.{sub}
 
   sort Descending
-    fact Ord[T = Int64]
+    provides Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 
   sort Driver
-    operation viaWitness(n: Int64) -> Int64 = Ord.compare[Ord = Descending](7, 3)
+    operation viaWitness(n: Int64) -> Int64 = WeakOrd.compare[WeakOrd = Descending](7, 3)
   end
 end
 "#;
@@ -222,7 +222,7 @@ end
 /// and died `arity 0 but its requires chain has 2 entries` on both routes before.
 const PARAMETRIC_WITNESS: &str = r#"
 namespace wi857.parametric
-  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
 
   enum Duo
     import anthill.prelude.{PartialEq, Eq}
@@ -247,24 +247,24 @@ namespace wi857.parametric
     sort B = ?
     requires Ord[T = A]
     requires Ord[T = B]
-    fact PartialOrd[T = Duo[A = A, B = B]]
-    fact Ord[T = Duo[A = A, B = B]]
+    provides PartialOrd[T = Duo[A = A, B = B]]
+    provides Ord[T = Duo[A = A, B = B]]
     operation compare(a: Duo[A = A, B = B], b: Duo[A = A, B = B]) -> Int64 =
       match a
         case duo(al, ar) ->
           match b
             case duo(bl, br) ->
-              let c = Ord.compare(al, bl)
+              let c = WeakOrd.compare(al, bl)
               if lt(c, 0) then c
               else if gt(c, 0) then c
-              else Ord.compare(ar, br)
+              else WeakOrd.compare(ar, br)
   end
 
   sort Driver
     operation searched(n: Int64) -> Int64 =
-      Ord.compare(duo(l: 1, r: 9), duo(l: 2, r: 1))
+      WeakOrd.compare(duo(l: 1, r: 9), duo(l: 2, r: 1))
     operation tiebreaks(n: Int64) -> Int64 =
-      Ord.compare(duo(l: 5, r: 9), duo(l: 5, r: 1))
+      WeakOrd.compare(duo(l: 5, r: 9), duo(l: 5, r: 1))
   end
 end
 "#;
@@ -281,7 +281,7 @@ fn a_parametric_chain_bearing_witness_threads_both_halves() {
         "first components 1 < 2, so the lexicographic answer is negative",
     );
     // The SECOND component decides only when the first ties — which is the branch
-    // that dispatches `Ord.compare` through the witness's SECOND chain slot. A
+    // that dispatches `WeakOrd.compare` through the witness's SECOND chain slot. A
     // slice off by one would take slot 0's dictionary here and still be a valid
     // `Ord[Int64]`, so `searched` alone would not catch it.
     assert_eq!(
@@ -317,7 +317,7 @@ fn a_parametric_chain_bearing_witness_threads_both_halves() {
 fn a_sub_goal_the_provider_supplies_resolves_witness_local() {
     let src = r#"
 namespace wi857.locality
-  import anthill.prelude.{Int64, Bool, Ord, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
   import anthill.prelude.Numeric.{sub}
   
   enum Duet
@@ -342,13 +342,13 @@ namespace wi857.locality
     sort B = ?
     requires Ord[T = A]
     requires Ord[T = B]
-    fact PartialOrd[T = Duet[A = A, B = B]]
-    fact Ord[T = Duet[A = A, B = B]]
+    provides PartialOrd[T = Duet[A = A, B = B]]
+    provides Ord[T = Duet[A = A, B = B]]
     operation compare(a: Duet[A = A, B = B], b: Duet[A = A, B = B]) -> Int64 =
       match a
         case pr(al, ar) ->
           match b
-            case pr(bl, br) -> Ord.compare(al, bl)
+            case pr(bl, br) -> WeakOrd.compare(al, bl)
   end
 
   sort BySnd
@@ -356,20 +356,20 @@ namespace wi857.locality
     sort B = ?
     requires Ord[T = A]
     requires Ord[T = B]
-    fact PartialOrd[T = Duet[A = A, B = B]]
-    fact Ord[T = Duet[A = A, B = B]]
+    provides PartialOrd[T = Duet[A = A, B = B]]
+    provides Ord[T = Duet[A = A, B = B]]
     operation compare(a: Duet[A = A, B = B], b: Duet[A = A, B = B]) -> Int64 =
       match a
         case pr(al, ar) ->
           match b
-            case pr(bl, br) -> Ord.compare(ar, br)
+            case pr(bl, br) -> WeakOrd.compare(ar, br)
   end
 
   sort Driver
     operation byFst(n: Int64) -> Int64 =
-      Ord.compare[Ord = ByFst](pr(l: 1, r: 9), pr(l: 2, r: 1))
+      WeakOrd.compare[WeakOrd = ByFst](pr(l: 1, r: 9), pr(l: 2, r: 1))
     operation bySnd(n: Int64) -> Int64 =
-      Ord.compare[Ord = BySnd](pr(l: 1, r: 9), pr(l: 2, r: 1))
+      WeakOrd.compare[WeakOrd = BySnd](pr(l: 1, r: 9), pr(l: 2, r: 1))
   end
 end
 "#;
@@ -416,7 +416,16 @@ fn the_layout_counts_what_resolve_bundles() {
     for (spec_qn, expect_spec_half) in [
         ("anthill.prelude.PartialEq", 0),
         ("anthill.prelude.Eq", 1),
-        ("anthill.prelude.Ord", 2),
+        // WI-1110: back to 1 — and the number moving twice in two tickets is the
+        // point of counting it here. WI-1109 took it 2 -> 3 by splitting `WeakOrd`
+        // out of `Ord` and writing `requires Eq`, `requires PartialOrd`,
+        // `requires WeakOrd` side by side. `Ord`'s whole content is now the single
+        // conversion `provides WeakOrd[T = T]`, which is ONE chain slot; `Eq` and
+        // `PartialOrd` are not gone, they moved to where they are actually
+        // constrained — one level down, inside `WeakOrd`'s own chain — and reach a
+        // carrier through this slot. The DIRECT chain is what a dictionary is laid
+        // out by, so it counts 1.
+        ("anthill.prelude.Ord", 1),
     ] {
         let goal = goal_at(&mut kb, spec_qn, "anthill.prelude.Int64");
         let scope = ResolutionScope {
@@ -489,7 +498,7 @@ namespace wi857.gap
     sort E = ?
     entity wrap(v: E)
     -- Wrap provides Base — for Int64. NOT for a Wrap.
-    fact Base[T = Int64]
+    provides Base[T = Int64]
     operation b(x: Int64) -> Int64 = x
   end
 
@@ -501,7 +510,7 @@ namespace wi857.gap
 
   sort WTop
     sort E = ?
-    fact Top[T = Wrap[E = E]]
+    provides Top[T = Wrap[E = E]]
     operation t(x: Wrap[E = E]) -> Int64 = 7
   end
 

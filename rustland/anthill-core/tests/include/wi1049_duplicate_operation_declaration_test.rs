@@ -169,7 +169,7 @@ fn arity_is_order_dependent_without_the_refusal() {
 
 /// CONTROL — passes either way BY DESIGN, and it is the one that says the
 /// bootstrap was not caught. The stdlib is where the pre-registration lives:
-/// `PartialEq.eq` / `Ord.compare` / `Numeric.add` are each `symbols.define`d by
+/// `PartialEq.eq` / `WeakOrd.compare` / `Numeric.add` are each `symbols.define`d by
 /// the prelude bootstrap AND declared by source in the same scope. A name-state
 /// check in `scan_definitions` pass 1 refuses all of them; a fact-count check
 /// sees exactly one `OperationInfo` apiece. Driven, not asserted from the load
@@ -192,7 +192,7 @@ fn prelude_and_full_stdlib_still_load_clean() {
     );
     for qn in [
         "anthill.prelude.PartialEq.eq",
-        "anthill.prelude.Ord.compare",
+        "anthill.prelude.WeakOrd.compare",
     ] {
         let sym = kb
             .try_resolve_symbol(qn)

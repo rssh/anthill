@@ -241,6 +241,39 @@ impl<'a> SortInfo<'a> {
                         info.supertraits.push(name);
                     }
                 }
+                // WI-862 (058 §4) — the SAME is-a edge, written the non-deprecated way.
+                // A sort's provision is what a Rust supertrait bound renders, and this
+                // reader knew only the `fact` spelling: migrating `sort NonMonotonicStore
+                // { fact Store }` to `provides Store` dropped `trait NonMonotonicStore:
+                // Store` to a bare `trait NonMonotonicStore`, silently
+                // (`codegen_test::full_persistence_store_hierarchy`).
+                //
+                // BARE SPECS ONLY, AND THE PARAMETERIZED CASE IS A KNOWN GAP — **WI-1108**.
+                // `extract_fact_sort_name` above answers a `Fn` head with its FUNCTOR's
+                // local name, so the `fact` twin renders `fact Iterable[C = Stream,
+                // Element = T, E = E]` as the bare bound `: Iterable`, dropping every
+                // binding. That is wrong Rust and it does not compile: MEASURED by
+                // widening this arm to every provision, which made `stdlib`'s
+                // pre-existing `sort Stream { provides Iterable[C = Stream, …] }` emit
+                // `pub trait Stream<T, E>: Iterable` into a `suppress_imports: true`
+                // file — whose whole premise (`anthill-stl/build.rs`, WI-553) is that
+                // "the signature-only output never references" `Iterable` — and broke
+                // the workspace build. The defect is the generator's, not the
+                // retirement's; the `fact` spelling has it too and is merely unreached.
+                // Rendering a parameterized supertrait needs its type arguments AND its
+                // import, which is WI-587's territory, so it gets a ticket rather than a
+                // guess here.
+                // A CONDITIONAL provision is excluded for the same reason and under the
+                // same ticket: `provides Store :- Backed[T = …]` (WI-869's tail) is not
+                // an unconditional is-a, and `trait X: Store` asserts one. The `fact`
+                // twin could not carry conditions at all, so this shape reaches the
+                // supertrait list for the first time — rendering it would need a `where`
+                // clause the generator has no notion of.
+                Item::ProvidesClause(pc)
+                    if matches!(pc.spec, TypeExpr::Simple(_)) && pc.conditions.is_empty() =>
+                {
+                    info.supertraits.push(type_expr_name(symbols, &pc.spec));
+                }
                 Item::Entity(e) => {
                     info.entities.push(e);
                 }
