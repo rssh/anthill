@@ -23878,25 +23878,32 @@ fn collect_provides_candidates(
         // carrier PARAMETER by construction, and a spec with one is not the
         // self-representing kind a value's static type dispatches through.
         //
-        // A SKIP AT TWO READERS, NOT A CHANGE TO THE RELATION, and that is a recorded
-        // limitation rather than the finished shape. The conversion stays a live
-        // `SortProvidesInfo` fact — it has to, because `derive_forwarded_provisions`
+        // A SKIP AT TWO READERS, NOT A CHANGE TO THE RELATION. The conversion stays a
+        // live `SortProvidesInfo` fact — it has to, because `derive_forwarded_provisions`
         // reads it to materialize each carrier's row — so every OTHER reader still sees
-        // it: `sort_provides(Ord, WeakOrd)` is true, `build_sort_ops_table` pass 2 gives
-        // `Eq` the inherited `eq`, the default-provider seeding classifies `Eq` as a
-        // self-provider of `PartialEq`, and the coherence grouping and codegen backends
-        // see the row too. MEASURED that none of them answers wrongly today — full
-        // workspace and scaland green, and the two instrumented candidate tests are the
-        // only readers whose answer this skip changes — and it is sound for one reason
-        // that holds for all of them: nothing has type `Ord` or `Eq`, so a reader that
-        // treats the conversion as a provision reaches a carrier that never arrives.
-        // The finished shape marks the ROW (as `mark_derived_provision` marks a derived
-        // one) so the relation itself distinguishes a conversion, and every reader gets
-        // the answer without being taught. Two `continue`s is the shape WI-1109's own
-        // derivation note warns about ("patching two readers surfaced a third"); it is
-        // taken here because marking the row is a change to the provision relation's
-        // schema and this ticket already moves the dictionary layout twice.
-        if is_conversion_edge(kb, impl_sort, view_base_sym) {
+        // it. MEASURED on the shipped tree rather than reasoned about, because a review
+        // raised it as a hole and the measurement says something more precise:
+        //
+        //   sort_provides(Ord, WeakOrd)          = true
+        //   sort_provides(Eq, PartialEq)         = true
+        //   sort_ops_lookup(Ord, "compare")      = anthill.prelude.WeakOrd.compare
+        //   sort_ops_lookup(Eq,  "eq")           = anthill.prelude.PartialEq.eq
+        //
+        // Every one of those is the RIGHT answer, and it is right for the conversion's
+        // own reason: "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`" is exactly
+        // what "Ord provides WeakOrd, and `compare` is reachable through it" says. These
+        // readers are not being fooled; they are reading the edge correctly. What they
+        // cannot do is TELL a conversion from a membership claim — which only the two
+        // readers below need to, one because a conversion can answer no goal (nothing
+        // has type `Ord`) and one because its obligations belong to the eventual carrier.
+        //
+        // So the limitation is narrower than "patched readers": a FUTURE reader that
+        // needs the distinction must be taught it here as these two were, because the
+        // relation does not carry it. The finished shape marks the ROW (as
+        // `mark_derived_provision` marks a derived one) so the relation itself
+        // distinguishes a conversion. That is a change to the provision relation's
+        // schema, and this ticket already moves the dictionary layout twice.
+        if is_conversion_edge_at(kb, impl_sort, view_base_sym, &view_bindings) {
             continue;
         }
 
@@ -25517,7 +25524,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
         // composite, so `eq_derive` has already paid its `Eq` — the test's own doc says
         // so and forbids repairing it to `Eq`), and `a_parametric_ord_carrier_owes_eq`
         // measures `Eq` on a PARAMETRIC composite, which `eq_derive` does not classify.
-        if is_conversion_edge(kb, p.carrier, p.spec) {
+        if is_conversion_edge_named(kb, p.carrier, p.spec, &p.sigma) {
             continue;
         }
         for goal in provider_requires_subgoals(kb, p.spec, &p.sigma) {
@@ -45760,8 +45767,9 @@ fn provision_is_conversion(
     about_a_parameter && !supplies_any_operation_of(kb, subject, target)
 }
 
-/// WI-1110 — is `subject provides target[…]` a CONVERSION? Asked of the CHAIN, where
-/// [`self_supplied_entries`] has already decided it and written the answer on the entry.
+/// WI-1110 — is THIS ROW of `subject provides target[…]` a CONVERSION? Asked of the
+/// CHAIN, where [`self_supplied_entries`] has already decided it and written the answer
+/// on the entry, AND of the row's own bindings.
 ///
 /// ONE OWNER OF THE PREDICATE, and the two readers below are why that matters: they must
 /// agree with the chain or the ticket's own invariant breaks — a row excluded from the
@@ -45773,7 +45781,68 @@ fn provision_is_conversion(
 /// The chain is memoized, so this is a hash lookup and a walk of a two-or-three element
 /// vector — cheaper than the operation-surface comparison the predicate itself does, and
 /// the candidate loop runs it per provision row.
-fn is_conversion_edge(kb: &mut KnowledgeBase, subject: Symbol, target: Symbol) -> bool {
+///
+/// PER ROW, NOT PER (subject, target) PAIR, and the difference is a soundness one: one
+/// sort may write a conversion AND a concrete membership claim for the SAME spec —
+/// `sort S { sort T = ?  provides A[T = T]  provides A[T = Concrete] }`. The pair reading
+/// dropped BOTH from dispatch and excused BOTH from the load check, deleting a real
+/// answer. So [`chain_has_conversion`] says "this sort has a conversion to `target`" and
+/// [`row_is_identity_forwarding`] says "and this row is it": a conversion entry is an
+/// IDENTITY forwarding by construction ([`provision_is_conversion`]), so a row binding
+/// anything else is a different row. Driven by
+/// `a_conversion_does_not_hide_a_sibling_concrete_row`, which fails `got []` with the
+/// pair reading restored.
+///
+/// TWO ENTRY POINTS BECAUSE THE TWO READERS HOLD THE BINDINGS DIFFERENTLY — a decoded row
+/// keys by `Symbol`, a `Provision`'s σ by short-name `String` — and the row test must run
+/// on `&KnowledgeBase` BEFORE the chain lookup takes it mutably. Sharing the two halves
+/// rather than the signature is what keeps the answer one answer.
+fn is_conversion_edge_at(
+    kb: &mut KnowledgeBase,
+    subject: Symbol,
+    target: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> bool {
+    if !bindings.is_empty()
+        && bindings
+            .iter()
+            .all(|(n, v)| row_is_identity_forwarding(kb, kb.local_name_of(*n), *v))
+    {
+        chain_has_conversion(kb, subject, target)
+    } else {
+        false
+    }
+}
+
+/// [`is_conversion_edge_at`] over a `Provision`'s σ, which keys by the spec's type-param
+/// SHORT NAME (see `Provision::sigma`).
+fn is_conversion_edge_named(
+    kb: &mut KnowledgeBase,
+    subject: Symbol,
+    target: Symbol,
+    bindings: &[(String, TermId)],
+) -> bool {
+    if !bindings.is_empty()
+        && bindings
+            .iter()
+            .all(|(n, v)| row_is_identity_forwarding(kb, n.as_str(), *v))
+    {
+        chain_has_conversion(kb, subject, target)
+    } else {
+        false
+    }
+}
+
+/// One binding of a row, tested for the identity shape a conversion has: the value is a
+/// type parameter whose local name IS the key's. The per-binding half of
+/// [`is_identity_forwarding`], which the whole-row form there applies the same way.
+fn row_is_identity_forwarding(kb: &KnowledgeBase, key: &str, value: TermId) -> bool {
+    type_param_local_name(kb, value).is_some_and(|ln| ln == key)
+}
+
+/// Does `subject`'s chain carry a SELF-SUPPLIED entry for `target` — i.e. did
+/// [`self_supplied_entries`] classify one of its `provides` clauses a conversion?
+fn chain_has_conversion(kb: &mut KnowledgeBase, subject: Symbol, target: Symbol) -> bool {
     let target_canon = kb.canonical_sort_sym(target);
     let chain = direct_requires_chain_rc(kb, subject);
     chain.iter().any(|e| {
@@ -58579,4 +58648,5 @@ mod wi1084_arrow_function_unify_tests {
         );
     }
 }
+
 

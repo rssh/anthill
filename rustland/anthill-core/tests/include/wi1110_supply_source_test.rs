@@ -175,6 +175,48 @@ end
     );
 }
 
+/// CONTROL, and the one this file was MISSING — which is how the per-row reading came to
+/// be reported as applied while the tree still had the per-pair one. A sort may write a
+/// CONVERSION and a concrete MEMBERSHIP claim for the same spec. Only the first is a
+/// conversion; the second is a real answer to a real goal, and asking the question per
+/// `(subject, target)` PAIR instead of per ROW drops both.
+///
+/// THE TARGET IS A MARKER SPEC — no operations — AND THAT IS WHAT MAKES THE SHAPE
+/// REACHABLE. A first fixture gave `High` a member of the target's surface so its
+/// concrete row would have something to back, and that member made `High` a parametric
+/// WITNESS rather than a conversion (`supplies_any_operation_of`), so the fixture passed
+/// with the per-pair reading too and measured nothing. For a spec WITH operations the two
+/// readings cannot differ: a subject supplying none of them is no provider at any
+/// binding. For a marker — which `anthill.prelude.Ord` is, exactly — a subject can
+/// legitimately both forward it and claim it at a concrete carrier.
+#[test]
+fn a_conversion_does_not_hide_a_sibling_concrete_row() {
+    let src = r#"
+namespace wi1110.sibling
+  import anthill.prelude.{Int64}
+  sort Mark
+    sort T = ?
+  end
+  enum Tok
+    entity tok(v: Int64)
+  end
+  sort High
+    sort T = ?
+    provides Mark[T = T]
+    provides Mark[T = Tok]
+  end
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let cands = candidates_at(&mut kb, "wi1110.sibling.Mark", "wi1110.sibling.Tok");
+    assert!(
+        cands.iter().any(|c| c == "wi1110.sibling.High"),
+        "`High provides Mark[T = Tok]` is a MEMBERSHIP claim at a concrete carrier and \
+         must still answer `Mark[Tok]`, even though `High` also writes the conversion \
+         `provides Mark[T = T]`; got {cands:?}"
+    );
+}
+
 // ── the naming half ──────────────────────────────────────────────────────────
 
 /// A CONVERSION LENDS ITS NAMES, exactly as `requires` does — because both put a
