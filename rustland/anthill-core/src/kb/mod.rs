@@ -1028,6 +1028,46 @@ pub struct KnowledgeBase {
     /// retracted slot happily, so the failure is a stale answer rather than an error.
     pub(crate) sort_info_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
 
+    /// WI-1112 — the SortRequiresInfo (requirement) index: each `requires` clause's
+    /// fact keyed by the CANONICAL symbol of its `sort_ref` functor, in the shared
+    /// `SymbolKeyedFactIndex` (WI-661), built by `typing::build_requires_index`. The
+    /// last reflect relation whose one keyed consumer — `typing::collect_sort_requires`,
+    /// via `requires_rids_by_sort` — still scanned every fact of the functor per call.
+    /// MEASURED with both arms alternating in one process (min of 5 pairs, warmup
+    /// dropped, stdlib + host bindings): 3148 `direct_requires` calls per load, of which
+    /// `collect_sort_requires` was 69.4 ms of the debug load's 657.8 ms — 85 % of
+    /// `direct_requires` and the largest single cost in the load — against 1.55 ms once
+    /// indexed. The provides side's own note records the same measurement from the other
+    /// end: putting `self_supplied_entries` on a raw scan took a stdlib load from 0.10 s
+    /// to 0.18 s.
+    ///
+    /// Keyed by `canonical_sort_sym` of the `sort_ref` field's functor, which is what
+    /// the consumer compares (`same_sort_canonical`), so the bucket is exact — identity
+    /// by symbol, never by last segment (spec §8.6).
+    ///
+    /// NOT BUILD-ONCE — DROPPED WITH THE CHAIN CACHES. Unlike `sort_info_index`, this
+    /// relation has a writer that runs after the build in practice: any post-load
+    /// `SortRequiresInfo` assert. Its lifetime is therefore pinned to the derived state
+    /// that has the SAME input — [`Self::invalidate_requires_chain_cache`] drops this
+    /// index alongside `requires_tree_cache` and friends, so a producer that already
+    /// owes that call owes nothing new, and one that forgets it was already serving a
+    /// stale chain. Reset to `None` at the start of EVERY load entry point that can write
+    /// the relation — `load_phase_inner` (like its siblings) and the single-file `load`,
+    /// which never reaches a type-check and so keeps scanning — and (re)built by
+    /// `build_requires_index` at `type_check_sorts` start and once more at the end of the
+    /// load pipeline, so the RUNTIME readers (eval, codegen) get a live index. `None`
+    /// until built; while `None`, the consumer falls back to the live scan
+    /// (`rids_or_scan`), which returns every fact and is re-filtered per fact at the call
+    /// site — so a `None` index is slow, never wrong.
+    ///
+    /// A stale index here is not a slow answer, it is a MISSING REQUIREMENT — a
+    /// dictionary slot that silently stops existing, so a program that should be refused
+    /// loads clean and dies at eval (WI-954's failure mode). `SortRequiresInfo` is also
+    /// marked `constant` (`fact_monotonicity`, reflect.anthill) beside `SortProvidesInfo`,
+    /// which makes a RUNTIME `Store.persist`/`retract` of it a loud error rather than a
+    /// silent desync.
+    pub(crate) requires_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
+
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
     /// the typer to type a bare const reference (fold-free: only the declared
@@ -1534,6 +1574,7 @@ impl KnowledgeBase {
             sort_alias_index: None,
             provides_index: None,
             sort_info_index: None,
+            requires_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
@@ -1585,8 +1626,18 @@ impl KnowledgeBase {
     /// a second input to every cached chain. `load.rs` calls this around
     /// `derive_forwarded_provisions` and after `eq_derive::run`, the two load passes that
     /// assert provisions; a third producer owes it the same call.
-    #[allow(dead_code)]
-    pub fn invalidate_requires_chain_cache(&self) {
+    ///
+    /// WI-1112 — AND IT DROPS [`Self::requires_index`], which is why this takes `&mut
+    /// self` where it used to take `&self`. That index answers the same question from the
+    /// same relation as the caches beside it, so giving it a SECOND invalidation point to
+    /// remember would be a second chance to forget: every producer that already owes this
+    /// call now owes nothing new, and any that forgot it was already serving a stale
+    /// chain. The index is dropped rather than rebuilt because this is called mid-mutation
+    /// (between two provision-asserting passes) — a `None` index makes the consumer scan
+    /// the live relation, which is slow and correct; `typing::build_requires_index` puts
+    /// it back once the relation is frozen again.
+    pub fn invalidate_requires_chain_cache(&mut self) {
+        self.requires_index = None;
         self.requires_chain_cache.borrow_mut().clear();
         self.requires_tree_cache.borrow_mut().clear();
         self.synth_req_names_cache.borrow_mut().clear();

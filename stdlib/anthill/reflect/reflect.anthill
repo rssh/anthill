@@ -86,8 +86,17 @@ namespace anthill.reflect
   -- motivating case; `op_records` (over OperationInfo, WI-656) already tolerates a
   -- runtime add via its scan fallback, so here `constant` is belt-and-suspenders.
   -- Specific functors (not a catch-all), so they mask no project override.
+  --
+  -- WI-1112 adds SortRequiresInfo, the last of the sort-relation trio to get an index
+  -- (`requires_index`). It differs from its two neighbours in being dropped and rebuilt
+  -- across the load — the loader retracts and re-asserts each `requires` fact once its
+  -- bindings are completed, so build-once would be false there. What `constant` closes
+  -- is the window AFTER load, where the index is live and nothing would invalidate it:
+  -- a missed requirement is not a slow answer but a dictionary slot that silently stops
+  -- existing, so the program loads clean and dies at eval.
   rule fact_monotonicity(OperationInfo) = constant() [simp]
   rule fact_monotonicity(SortProvidesInfo) = constant() [simp]
+  rule fact_monotonicity(SortRequiresInfo) = constant() [simp]
 
   -- ================================================================
   -- Source positions and occurrences (Proposal 022)

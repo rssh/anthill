@@ -23010,7 +23010,25 @@ impl SymbolKeyedFactIndex {
     /// the load-time consumers hit before their index exists — it returns EVERY fact, so
     /// the caller keeps its own per-fact re-filter). `key_canon` must already be
     /// canonical. Collapses the identical fast-path/fallback selection every keyed
-    /// consumer shared (`provides_rids_by_spec` / `_by_carrier`, `sort_info_rids_by_sort`).
+    /// consumer shared (`provides_rids_by_spec` / `_by_carrier`, `sort_info_rids_by_sort`,
+    /// `requires_rids_by_sort`).
+    ///
+    /// WI-1112 — BOTH ARMS DROP RETRACTED RIDS, and the index arm has to say so
+    /// explicitly. `rules_by_functor` is documented as "all ACTIVE (non-retracted)" and
+    /// filters at query time; a bucket is frozen at build time, and no consumer's own
+    /// re-filter covers the difference — `is_fact` reads `body_nodes.is_empty()` and
+    /// answers `true` for a retracted slot just as happily as for a live one (the
+    /// property `sort_info_index`' doc already warns about from the other side). Without
+    /// this filter the two arms answer differently for exactly one input, so the
+    /// invariant every one of these indexes rests on — "the index answers what the scan
+    /// answers" — would be false, and the failure it produces is a PHANTOM row: for
+    /// `requires_index`, a dictionary slot that outlives the declaration it came from.
+    /// The cost is one bool per bucket entry, against a bucket of a handful and against the
+    /// `to_vec` this replaced; MEASURED, alternating both arms in one process (11 pairs,
+    /// release, whole stdlib load), the two distributions overlap completely — 102.8–122.1
+    /// ms with the filter against 92.5–111.9 without — i.e. the difference is under this
+    /// box's noise floor for one unchanged binary, and an order below what the index itself
+    /// saves. `provides_index` and `sort_info_index` inherit the fix here for free.
     fn rids_or_scan(
         kb: &KnowledgeBase,
         index: Option<&SymbolKeyedFactIndex>,
@@ -23018,7 +23036,12 @@ impl SymbolKeyedFactIndex {
         functor_qn: &str,
     ) -> Vec<crate::kb::RuleId> {
         match index {
-            Some(ix) => ix.get(key_canon).to_vec(),
+            Some(ix) => ix
+                .get(key_canon)
+                .iter()
+                .copied()
+                .filter(|rid| kb.is_rule_alive(*rid))
+                .collect(),
             None => kb
                 .try_resolve_symbol(functor_qn)
                 .map(|s| kb.rules_by_functor(s))
@@ -23143,6 +23166,84 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         by_spec_base,
         by_carrier,
     });
+}
+
+/// WI-1112 — the SortRequiresInfo-fact rids for a SORT-keyed lookup: the
+/// canonical-`sort_ref` bucket when the index (a [`SymbolKeyedFactIndex`] stored directly
+/// as `KnowledgeBase::requires_index`) is built, else a live scan of every
+/// SortRequiresInfo fact (the pre-build / no-index fallback — and the state the index is
+/// deliberately left in across every load-time mutation window). The bucket keys on
+/// `canonical_sort_sym(sort_ref-functor)`, so the caller passes any sort symbol and the
+/// lookup canonicalizes it; the one consumer keeps its own per-fact `same_sort_canonical`
+/// re-filter, which is load-bearing on the scan fallback (it returns EVERY requires fact).
+fn requires_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
+    SymbolKeyedFactIndex::rids_or_scan(
+        kb,
+        kb.requires_index.as_ref(),
+        kb.canonical_sort_sym(sort_sym),
+        "anthill.reflect.SortRequiresInfo",
+    )
+}
+
+/// WI-1112 — build the SortRequiresInfo index (a [`SymbolKeyedFactIndex`]) in ONE pass
+/// over the requires facts, bucketing each by the CANONICAL symbol of its `sort_ref`
+/// field's functor — the exact key [`collect_sort_requires`] compares with
+/// `same_sort_canonical`.
+///
+/// READ CARRIER-AGNOSTICALLY (`rule_head_value` + `op_info::head_field_term`), matching
+/// the consumer arm for arm. This is not stylistic: a value-fact SortRequiresInfo — a
+/// denoted-bearing spec, WI-662 — has NO `fact_head_named_args`, so building this the way
+/// `build_sort_info_index` builds its own (term-only named args) would leave exactly those
+/// facts in no bucket, and a bucket miss is a MISSING REQUIREMENT, not a slow answer.
+/// Driven by `wi1112_requires_index_tests::a_denoted_requires_fact_is_bucketed_not_dropped`
+/// — and NOT by `wi662_carrier_agnostic_requires_test`, which is where one would look
+/// first: MEASURED, all three of its tests pass with the term-only builder in place,
+/// because they read the chain immediately after `invalidate_requires_chain_cache` and so
+/// measure the SCAN. The distinguishing assertion is that the index is `Some` at the read.
+///
+/// A `sort_ref` that is not a `Term::Fn` is left unbucketed, because the consumer matches
+/// no other shape — the same faithfulness rule `build_sort_info_index` states for its
+/// `name` field. Non-facts are skipped for the same reason (`anthill-cli`'s `run`
+/// fixtures do write a bodied `rule SortRequiresInfo(…) :- …`, which the consumer's own
+/// `is_fact` guard already excludes).
+///
+/// WHERE IT IS BUILT, AND WHY NOWHERE ELSE. `type_check_sorts` start, beside
+/// `build_provides_index` / `build_sort_info_index`, and once more at the end of
+/// `load_phase_inner` (after the last `invalidate_requires_chain_cache`) so the RUNTIME
+/// readers inherit a live index. Both producers are done before the first of those:
+/// `Loader::load_requires_decl` during the per-file load, and
+/// `load::resolve_requires_bindings` — which RETRACTS and re-asserts, so a stale bucket
+/// would serve a retracted rid — inside `resolve_instantiations`. The single-file [`load`]
+/// entry point runs both of those and NO type-check, so it deliberately gets no build at
+/// all: it resets the index at its start and leaves it `None`, i.e. scanning.
+/// (`crate::kb::load::load`.)
+///
+/// A future producer that runs after a build must call
+/// `KnowledgeBase::invalidate_requires_chain_cache`, which drops this index — the one
+/// invalidation point, shared with the chain caches computed from the same relation.
+pub(crate) fn build_requires_index(kb: &mut KnowledgeBase) {
+    let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
+        return;
+    };
+    let mut index = SymbolKeyedFactIndex::default();
+    for rid in kb.rules_by_functor(requires_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(sort_ref_tid) = super::op_info::head_field_term(kb, head, "sort_ref") else {
+            continue;
+        };
+        let Term::Fn {
+            functor: sr_functor,
+            ..
+        } = kb.get_term(sort_ref_tid)
+        else {
+            continue;
+        };
+        index.insert(kb.canonical_sort_sym(*sr_functor), rid);
+    }
+    kb.requires_index = Some(index);
 }
 
 /// WI-671/WI-672 — the SortInfo-fact rids for a sort-keyed lookup: the canonical-sort
@@ -45850,14 +45951,15 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
 
 fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
-    // NOT A `return`, and the difference is WI-1110's: the conversion half below reads
-    // `SortProvidesInfo` and has nothing to do with this functor, so bailing here on a KB
-    // that registered one reflect relation and not the other would silently drop every
-    // self-supplied slot — conversions would be offered as providers again and the cycle
-    // this ticket removes would come back with no diagnostic.
-    if let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
-        collect_sort_requires(kb, sort_sym, requires_sym, &mut out);
-    }
+    // NOT A `return` ON AN UNREGISTERED `SortRequiresInfo`, and the difference is
+    // WI-1110's: the conversion half below reads `SortProvidesInfo` and has nothing to do
+    // with this functor, so bailing on a KB that registered one reflect relation and not
+    // the other would silently drop every self-supplied slot — conversions would be
+    // offered as providers again and the cycle WI-1110 removes would come back with no
+    // diagnostic. WI-1112: the `if let` that used to say this is now inside
+    // `requires_rids_by_sort` (its `rids_or_scan` fallback resolves the functor and
+    // answers empty when it is absent), so the property is unchanged and stated once.
+    collect_sort_requires(kb, sort_sym, &mut out);
 
     // WI-1110 — AND THE SPEC'S OWN CONVERSIONS, which are chain entries too.
     //
@@ -45896,13 +45998,21 @@ fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
 
 /// The `SortRequiresInfo` half of [`direct_requires`] — every `requires` clause written
 /// on `sort_sym`, in fact order.
-fn collect_sort_requires(
-    kb: &KnowledgeBase,
-    sort_sym: Symbol,
-    requires_sym: Symbol,
-    out: &mut Vec<RequiresEntry>,
-) {
-    for rid in kb.rules_by_functor(requires_sym) {
+///
+/// WI-1112 — THE SORT INDEX, not `rules_by_functor`, for the reason its sibling
+/// `self_supplied_entries` already gives about the provider index: this runs once per
+/// node of the requires TREE (the per-sort `requires_chain_cache` memo sits ABOVE the
+/// recursion, so it does not cover this), which made the raw scan O(chain-nodes ×
+/// |SortRequiresInfo|). MEASURED with the two arms ALTERNATING in one process (min of 5
+/// pairs, warmup dropped, stdlib + host bindings, 3148 calls per load): debug 69.4 ms →
+/// 1.55 ms, taking the whole load 657.8 ms → 586.2 ms; release 7.4 ms → 0.17 ms, load
+/// 85.9 ms → 67.1 ms. `self_supplied_entries` beside it, untouched by the change, moved
+/// 10.8 → 10.2 ms and 0.8 → 0.8 ms — the control that says the rest is not machine drift.
+/// `rids_or_scan` still falls back to the scan when
+/// `requires_index` is `None`, which is the state across every load-time window in which
+/// the relation (or the provision relation the other half reads) can still change.
+fn collect_sort_requires(kb: &KnowledgeBase, sort_sym: Symbol, out: &mut Vec<RequiresEntry>) {
+    for rid in requires_rids_by_sort(kb, sort_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
@@ -46212,11 +46322,17 @@ fn supplies_any_operation_of(kb: &KnowledgeBase, subject: Symbol, target: Symbol
     // NOT TODAY'S BOTTLENECK, and the number is here so nobody re-derives it: MEASURED
     // over a stdlib load, 62 calls totalling 0.4 ms, against `direct_requires`' own
     // 97 ms. A first cut of this comment claimed this was where WI-1109/WI-1110's 11 %
-    // and 18 % phase costs landed; instrumenting the load REFUTED that. The cost is in
-    // the sibling half — `collect_sort_requires` scans the whole `SortRequiresInfo`
-    // relation per call and is called 2917 times per load (83 ms), because
-    // `SortRequiresInfo` is the one reflect relation with no `SymbolKeyedFactIndex`
-    // while `SortProvidesInfo`, `SortInfo` and `SortAlias` all have one.
+    // and 18 % phase costs landed; instrumenting the load REFUTED that. The cost was in
+    // the sibling half — `collect_sort_requires` scanned the whole `SortRequiresInfo`
+    // relation per call, ~3000 times per load, because `SortRequiresInfo` was the one
+    // reflect relation with no `SymbolKeyedFactIndex` while `SortProvidesInfo`,
+    // `SortInfo` and `SortAlias` all had one.
+    //
+    // WI-1112 GAVE IT ONE (`requires_index`), which is why the paragraph above is in the
+    // past tense: that half is now 1.55 ms of a 586 ms debug load, and THIS function's
+    // 0.4 ms is no longer being compared against a 70 ms neighbour. The reading that
+    // still holds is the one it was written for — a per-row path whose cost is real but
+    // small — so do not read the old ratio as licence to put work here.
     //
     // The allocation goes anyway: it buys nothing on a path that is now per row.
     let target_ops: Vec<&str> =
@@ -48397,6 +48513,12 @@ fn type_check_sorts_collect(
     // `emit_sort_info` asserts it; nothing re-asserts it), so no runtime guard is
     // needed and no eq_derive rebuild (eq_derive never touches SortInfo).
     build_sort_info_index(kb);
+    // WI-1112 — and the SortRequiresInfo facts, keyed by canonical `sort_ref`, so
+    // `collect_sort_requires` stops scanning the whole relation once per requires-TREE
+    // node. Sound here: both its producers (`load_requires_decl`,
+    // `resolve_requires_bindings`) are done by this line, and any later one drops the
+    // index via `invalidate_requires_chain_cache` — see `KnowledgeBase::requires_index`.
+    build_requires_index(kb);
     // WI-1082 — elaborate every member's declared RETURN so §3's tie is WRITTEN rather than
     // left as an absence a width-ignoring comparison cannot refute. AFTER the three index
     // builds above: it reads `canonical_sort_sym` (the SortAlias index) per parameter and the
@@ -59017,3 +59139,469 @@ mod wi1084_arrow_function_unify_tests {
 }
 
 
+
+/// WI-1112 — [`build_requires_index`] and the consumer it serves,
+/// [`collect_sort_requires`], must answer the SAME chain the `rules_by_functor` scan
+/// answered, and must keep answering it when the relation changes after the build.
+///
+/// A wrong answer here is not a slow one. `SortRequiresInfo` is where a sort's dictionary
+/// slots come from, so a fact that falls out of a bucket is a REQUIREMENT THAT STOPS
+/// EXISTING: the program loads clean, the slot is never synthesized, and the failure
+/// surfaces at eval as an unbound `__req_*`. That is WI-954's measured failure mode, and
+/// these tests are its entrances: the index disagreeing with the scan; the index missing a
+/// carrier it cannot READ; the index outliving an assert; the index outliving a RETRACT
+/// (the one that fails upward — a slot that will not stop existing); and the index and the
+/// chain memos outliving a whole ENTRY POINT that writes. The last three were found by
+/// review, not by the corpus.
+#[cfg(test)]
+mod wi1112_requires_index_tests {
+    use super::{build_requires_index, direct_requires};
+    use crate::eval::value::Value;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::kb::term::{Literal, Term};
+    use crate::kb::term_view::views_structurally_equal;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::{ClauseKind, KnowledgeBase, Symbol};
+    use crate::span::{SourceId, SourceSpan};
+
+    /// `Carrier` requires `Foo`, written in surface syntax so the ordinary loader path
+    /// (`load_requires_decl` → `resolve_requires_bindings`) is the producer.
+    const SRC: &str = r#"
+namespace test.wi1112
+  import anthill.prelude.{Int64}
+  sort Foo
+    sort T = ?
+  end
+  sort Bar
+    sort T = ?
+  end
+  sort Carrier
+    requires Foo[T = Int64]
+    entity c(x: Int64)
+  end
+end
+"#;
+
+    /// Every sort the KB names, so the scan/index comparison is over the whole relation
+    /// rather than the one sort the fixture wrote.
+    fn all_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+        let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+            panic!("the stdlib declares SortInfo");
+        };
+        let mut out = Vec::new();
+        for rid in kb.rules_by_functor(sort_info) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let head = kb.rule_head_value(rid);
+            let Some(name_tid) = crate::kb::op_info::head_field_term(kb, head, "name") else {
+                continue;
+            };
+            match kb.get_term(name_tid) {
+                Term::Ref(s) => out.push(*s),
+                Term::Fn { functor, .. } => out.push(*functor),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// `sort`'s direct requires as (required sort, spec), for comparing two data sources.
+    fn entries(kb: &KnowledgeBase, sort: Symbol) -> Vec<(Symbol, Value)> {
+        direct_requires(kb, sort)
+            .into_iter()
+            .map(|e| (e.required_sort, e.spec))
+            .collect()
+    }
+
+    /// Clear the chain memos AND leave the index built — the state the load pipeline is
+    /// in from `type_check_sorts` onward. `invalidate_requires_chain_cache` drops the
+    /// index by design (that is test 3's subject), so the rebuild is explicit here.
+    fn fresh_with_index(kb: &mut KnowledgeBase) {
+        kb.invalidate_requires_chain_cache();
+        build_requires_index(kb);
+        assert!(kb.requires_index.is_some(), "the index is built");
+    }
+
+    /// Clear the chain memos and leave the index DROPPED — the load-time window, and the
+    /// pre-WI-1112 behaviour of every call.
+    fn fresh_with_scan(kb: &mut KnowledgeBase) {
+        kb.invalidate_requires_chain_cache();
+        assert!(
+            kb.requires_index.is_none(),
+            "invalidating the chain caches drops the index with them"
+        );
+    }
+
+    /// THE EQUIVALENCE. For every sort in a fully-loaded KB, the indexed lookup and the
+    /// live scan return the same requires entries, in the same order.
+    ///
+    /// NOT VACUOUS: the run asserts that the sorts compared number in the hundreds and
+    /// that the entries found number in the dozens, so an index (or a scan) that answered
+    /// EMPTY everywhere could not agree its way to a pass — the shape WI-1042 measured,
+    /// where a domain restriction made agreement meaningless.
+    ///
+    /// CONTROL: fails on any keying change that is not the consumer's own — key the
+    /// bucket on the raw `sort_ref` symbol instead of `canonical_sort_sym`, or on a last
+    /// segment, and the sorts whose two spellings differ drop out.
+    #[test]
+    fn the_index_answers_exactly_what_the_scan_answers() {
+        let mut kb = load_stdlib(Some(SRC));
+        let sorts = all_sorts(&kb);
+        assert!(
+            sorts.len() > 100,
+            "the stdlib names hundreds of sorts; got {}",
+            sorts.len()
+        );
+
+        fresh_with_scan(&mut kb);
+        let scanned: Vec<Vec<(Symbol, Value)>> = sorts.iter().map(|s| entries(&kb, *s)).collect();
+        fresh_with_index(&mut kb);
+        let indexed: Vec<Vec<(Symbol, Value)>> = sorts.iter().map(|s| entries(&kb, *s)).collect();
+
+        let total: usize = scanned.iter().map(|e| e.len()).sum();
+        assert!(
+            total > 20,
+            "the comparison must have entries to compare; got {total}"
+        );
+        for ((sort, s), i) in sorts.iter().zip(&scanned).zip(&indexed) {
+            assert_eq!(
+                s.len(),
+                i.len(),
+                "{}: scan and index must find the same number of requires entries \
+                 (scan {:?}, index {:?})",
+                kb.qualified_name_of(*sort),
+                s.iter().map(|(r, _)| kb.qualified_name_of(*r)).collect::<Vec<_>>(),
+                i.iter().map(|(r, _)| kb.qualified_name_of(*r)).collect::<Vec<_>>(),
+            );
+            for ((sr, ss), (ir, is)) in s.iter().zip(i) {
+                assert_eq!(
+                    sr,
+                    ir,
+                    "{}: same required sort in the same position",
+                    kb.qualified_name_of(*sort)
+                );
+                assert!(
+                    views_structurally_equal(&kb, ss, is),
+                    "{}: same spec for {}",
+                    kb.qualified_name_of(*sort),
+                    kb.qualified_name_of(*sr),
+                );
+            }
+        }
+    }
+
+    /// A VALUE-FACT `SortRequiresInfo` — a denoted-bearing spec (WI-662) — must land in a
+    /// bucket. It has no `fact_head_named_args`, so a builder written the way
+    /// `build_sort_info_index` writes its own (term-only named args) leaves it in NO
+    /// bucket, and the requirement silently stops existing once the index is live.
+    ///
+    /// CONTROL: this is the ONE test that fails if `build_requires_index` reads the head
+    /// term-only instead of through `rule_head_value` + `head_field_term`.
+    /// `wi662_carrier_agnostic_requires_test` does NOT cover it — it reads the chain right
+    /// after `invalidate_requires_chain_cache`, i.e. with the index dropped, so it
+    /// measures the scan. The `requires_index.is_some()` assertion below is what makes
+    /// this test measure the index instead.
+    #[test]
+    fn a_denoted_requires_fact_is_bucketed_not_dropped() {
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let bar = kb.try_resolve_symbol("test.wi1112.Bar").expect("Bar");
+
+        // The head shape `assert_fact_carrier` emits for a spec carrying a `Value::Node`
+        // binding — not producible from surface syntax (WI-390 lowers every
+        // term-representable spec), so it is built directly, exactly as wi662 does.
+        let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
+        let sort_ref_field = kb.intern("sort_ref");
+        let spec_field = kb.intern("spec");
+        kb.register_entity_fields(requires_sym, vec![sort_ref_field, spec_field]);
+        let sortview = kb.resolve_symbol("anthill.reflect.SortView");
+        let k = kb.intern("k");
+        let sort_ref = Value::term(kb.make_name_term_from_sym(carrier));
+        let bar_base = Value::term(kb.make_name_term_from_sym(bar));
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let node = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span, None);
+        let spec = Value::Entity {
+            functor: sortview,
+            pos: vec![bar_base].into(),
+            named: vec![(k, Value::Node(node))].into(),
+        };
+        let domain = kb.intern("test.wi1112");
+        kb.assert_fact_carrier(
+            requires_sym,
+            Vec::new(),
+            vec![(sort_ref_field, sort_ref), (spec_field, spec)],
+            ClauseKind::Requirement,
+            domain,
+            None,
+        );
+
+        fresh_with_index(&mut kb);
+        let found = entries(&kb, carrier);
+        assert!(
+            found.iter().any(|(r, _)| *r == bar),
+            "the denoted `Carrier requires Bar[...]` must be reachable THROUGH the index; \
+             got {:?}",
+            found
+                .iter()
+                .map(|(r, _)| kb.qualified_name_of(*r))
+                .collect::<Vec<_>>(),
+        );
+        // …and the surface-syntax requirement beside it, so the value fact did not
+        // displace the term one in its bucket.
+        let foo = kb.try_resolve_symbol("test.wi1112.Foo").expect("Foo");
+        assert!(
+            found.iter().any(|(r, _)| *r == foo),
+            "the ordinary `requires Foo[T = Int64]` is still there"
+        );
+    }
+
+    /// THE STALE-INDEX GUARD (WI-954's shape). A `SortRequiresInfo` fact asserted AFTER
+    /// the index was built is still found, because the one call every producer already
+    /// owes — `invalidate_requires_chain_cache` — drops the index with the chain memos.
+    ///
+    /// CONTROL: back out that one line in `KnowledgeBase::invalidate_requires_chain_cache`
+    /// and this fails — the post-load index is live and `Carrier`'s bucket is the one
+    /// built before the write, so the new requirement is invisible. The
+    /// `requires_index.is_none()` assertion inside `fresh_with_scan` fails FIRST, which is
+    /// the point: it names the mechanism rather than the symptom. Both
+    /// `wi662_carrier_agnostic_requires_test` tests fail on the same back-out, for the
+    /// same reason.
+    #[test]
+    fn a_requires_asserted_after_the_build_is_still_found() {
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let bar = kb.try_resolve_symbol("test.wi1112.Bar").expect("Bar");
+        assert!(
+            kb.requires_index.is_some(),
+            "the load leaves the index BUILT — otherwise this test's premise is empty \
+             and it would pass on a scan that never had an index to go stale",
+        );
+        assert!(
+            !entries(&kb, carrier).iter().any(|(r, _)| *r == bar),
+            "premise: Carrier does not require Bar yet",
+        );
+
+        let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
+        let sort_ref_field = kb.intern("sort_ref");
+        let spec_field = kb.intern("spec");
+        let sort_ref = Value::term(kb.make_name_term_from_sym(carrier));
+        let bar_base = Value::term(kb.make_name_term_from_sym(bar));
+        let domain = kb.intern("test.wi1112");
+        kb.assert_fact_carrier(
+            requires_sym,
+            Vec::new(),
+            vec![(sort_ref_field, sort_ref), (spec_field, bar_base)],
+            ClauseKind::Requirement,
+            domain,
+            None,
+        );
+
+        // What every producer of this relation owes, and all it owes.
+        fresh_with_scan(&mut kb);
+        assert!(
+            entries(&kb, carrier).iter().any(|(r, _)| *r == bar),
+            "the newly asserted requirement must be found",
+        );
+
+        // And the rebuild picks it up, so the index is not merely bypassed forever.
+        fresh_with_index(&mut kb);
+        assert!(
+            entries(&kb, carrier).iter().any(|(r, _)| *r == bar),
+            "the rebuilt index contains the fact asserted after the first build",
+        );
+    }
+
+    /// A RETRACTED FACT IS NOT IN THE RELATION, AND THE BUCKET MUST AGREE. The two arms of
+    /// `SymbolKeyedFactIndex::rids_or_scan` are only interchangeable if they answer alike,
+    /// and retraction is the one input where they did not: `rules_by_functor` filters
+    /// `retracted` at query time (its doc says "all ACTIVE"), while a bucket is frozen at
+    /// build time and `is_fact` — the consumer's only per-fact guard — reads
+    /// `body_nodes.is_empty()` and says `true` for a retracted slot.
+    ///
+    /// THIS SIDE FAILS UPWARD, which is what makes it worth a test of its own: everything
+    /// else in this module guards against a requirement that stops existing, and this
+    /// guards against one that will not stop — a dictionary slot outliving the declaration
+    /// it came from. `KnowledgeBase::retract` is a RETRACTOR, and nothing made it owe
+    /// `invalidate_requires_chain_cache`; the fix is therefore in `rids_or_scan` itself
+    /// rather than in a rule someone must remember.
+    ///
+    /// CONTROL: drop the `is_rule_alive` filter from `rids_or_scan`'s index arm and the
+    /// indexed half of this fails while the scanned half still passes — which is the
+    /// disagreement stated as a test. Found by review, not by the corpus: eval's retract
+    /// path refuses a `constant` functor and no `FactRef` exists for a load-time fact, so
+    /// only a direct `kb.retract` reaches it.
+    #[test]
+    fn a_retracted_requires_fact_is_dropped_by_the_index_as_it_is_by_the_scan() {
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let foo = kb.try_resolve_symbol("test.wi1112.Foo").expect("Foo");
+        assert!(
+            entries(&kb, carrier).iter().any(|(r, _)| *r == foo),
+            "premise: Carrier requires Foo before the retraction",
+        );
+
+        let requires_sym = kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
+        let rid = kb
+            .rules_by_functor(requires_sym)
+            .into_iter()
+            .find(|rid| {
+                if !kb.is_fact(*rid) {
+                    return false;
+                }
+                let head = kb.rule_head_value(*rid);
+                let Some(sr) = crate::kb::op_info::head_field_term(&kb, head, "sort_ref") else {
+                    return false;
+                };
+                let Term::Fn { functor, .. } = kb.get_term(sr) else {
+                    return false;
+                };
+                kb.canonical_sort_sym(*functor) == kb.canonical_sort_sym(carrier)
+            })
+            .expect("the `requires Foo[T = Int64]` fact");
+
+        // A retractor that does NOT invalidate — the case the fix has to survive. NO
+        // REBUILD AFTER IT, and that is the whole experiment: `build_requires_index` reads
+        // `rules_by_functor`, which filters retracted, so rebuilding here would refresh the
+        // bucket and measure nothing. MEASURED — the first cut of this test did call
+        // `fresh_with_index` and passed with the fix backed out. What has to be read is the
+        // bucket built during the load, with the rid still in it.
+        kb.retract(rid);
+        assert!(
+            kb.requires_index.is_some(),
+            "the load's index is still the live one — nothing has rebuilt or dropped it",
+        );
+        assert!(
+            !entries(&kb, carrier).iter().any(|(r, _)| *r == foo),
+            "through the INDEX built BEFORE the retraction: a retracted requires fact must \
+             not be served",
+        );
+
+        // The arm the index has to agree with, at the same KB state.
+        kb.requires_index = None;
+        assert!(
+            !entries(&kb, carrier).iter().any(|(r, _)| *r == foo),
+            "through the SCAN: `rules_by_functor` already filtered it",
+        );
+    }
+
+    /// THE OTHER DOOR. [`crate::kb::load::load`] — the single-file entry point — asserts
+    /// `SortRequiresInfo` twice over (`load_requires_decl`, then
+    /// `resolve_requires_bindings`' retract-and-re-assert) and NEVER reaches
+    /// `type_check_sorts`, so nothing downstream of it would correct an index it
+    /// inherited. Called on a KB that has already been through `load_all`, that index is
+    /// live, and every requirement in the file being loaded is filed under a bucket that
+    /// was built before the file existed.
+    ///
+    /// CONTROL: back out `load`'s `invalidate_requires_chain_cache()` calls — BOTH, since
+    /// either alone leaves the index `None` at the end — and this fails at the `is_none`
+    /// assertion, and then, with that assertion removed too, at the requirement itself,
+    /// which is the shape the user meets (measured). This is the DRIVEN half of the rule;
+    /// the equivalent reset in `load_phase_inner` is measured unobservable (see its
+    /// comment) and kept because one rule with no exceptions is cheaper to hold than two
+    /// doors with different answers.
+    #[test]
+    fn a_single_file_load_does_not_read_a_stale_index() {
+        use crate::kb::load::{self, NullResolver};
+
+        let mut kb = load_stdlib(Some(SRC));
+        assert!(
+            kb.requires_index.is_some(),
+            "premise: the full load leaves the index BUILT",
+        );
+
+        let src = r#"
+namespace test.wi1112b
+  import anthill.prelude.{Int64}
+  sort Spec
+    sort T = ?
+  end
+  sort Client
+    requires Spec[T = Int64]
+    entity c(x: Int64)
+  end
+end
+"#;
+        let parsed = crate::parse::parse(src).expect("parse fixture");
+        load::load(&mut kb, &parsed, &NullResolver).expect("single-file load");
+
+        assert!(
+            kb.requires_index.is_none(),
+            "`load` asserts into the relation and has no rebuild point, so it must leave \
+             the index dropped",
+        );
+        let client = kb.try_resolve_symbol("test.wi1112b.Client").expect("Client");
+        let spec = kb.try_resolve_symbol("test.wi1112b.Spec").expect("Spec");
+        assert!(
+            entries(&kb, client).iter().any(|(r, _)| *r == spec),
+            "`Client requires Spec[T = Int64]`, declared through the single-file entry \
+             point, must be in the chain",
+        );
+    }
+
+    /// AND THE CLOSING HALF OF THAT PAIR. `load` also has to invalidate AFTER it writes,
+    /// because the derived state it can invalidate is not only the index: `direct_requires`
+    /// reads TWO relations (WI-1110), the memoized `requires_tree` is keyed per sort, and a
+    /// `load` onto a KB whose chains are already warm — which is every `load` after a
+    /// `load_all`, since `check_provider_requires` builds a chain for every provider —
+    /// would otherwise serve the pre-load memo for a sort whose requirements the loaded
+    /// file just changed.
+    ///
+    /// The file writes the reflect fact DIRECTLY, which is the shape that lets a second
+    /// file change a first file's chain at all (a `requires` clause can only be written
+    /// inside its own sort's block). That is a legal source-level producer of this
+    /// relation, and one of the four enumerated in the ticket.
+    ///
+    /// `Carrier()` / `Bar()` WITH THE PARENTHESES, and that is not decoration. MEASURED:
+    /// spelled bare, the fields convert to `Term::Ref` and `collect_sort_requires` skips
+    /// the fact outright (`let Term::Fn { .. } = … else { continue }`) — the fixture then
+    /// fails for a reason that has nothing to do with the memo. A hand-written
+    /// `fact SortRequiresInfo` with a bare `sort_ref` is invisible to the requires chain;
+    /// the loader's own producer never hits it because `make_name_term_from_sym` builds
+    /// the application form.
+    ///
+    /// CONTROL: back out BOTH `invalidate_requires_chain_cache()` calls in `load` and this
+    /// fails — `requires_tree` answers from the memo warmed before the load. MEASURED, and
+    /// not what a first reading predicts: EITHER call alone keeps it green, because the
+    /// opening one clears the memo and nothing in this fixture re-warms it during the
+    /// walk. So this test drives the PAIR, not a half; the two are kept for the two
+    /// windows `load` would otherwise leave open, stated at their site.
+    #[test]
+    fn a_single_file_load_drops_the_chain_memo_it_invalidates() {
+        use crate::kb::load::{self, NullResolver};
+        use crate::kb::typing::requires_tree;
+
+        let mut kb = load_stdlib(Some(SRC));
+        let carrier = kb.try_resolve_symbol("test.wi1112.Carrier").expect("Carrier");
+        let bar = kb.try_resolve_symbol("test.wi1112.Bar").expect("Bar");
+
+        // Warm the memo, as a full load does for every provider.
+        let warm = requires_tree(&mut kb, carrier);
+        assert!(
+            !warm.iter().any(|n| n.entry.required_sort == bar),
+            "premise: Carrier does not require Bar before the second file",
+        );
+        assert!(
+            kb.requires_chain_cache_contains(carrier),
+            "premise: the chain is MEMOIZED — otherwise a stale read is unreachable and \
+             this test measures nothing",
+        );
+
+        let src = r#"
+namespace test.wi1112c
+  import anthill.reflect.{SortRequiresInfo}
+  import test.wi1112.{Carrier, Bar}
+  fact SortRequiresInfo(sort_ref: Carrier(), spec: Bar())
+end
+"#;
+        let parsed = crate::parse::parse(src).expect("parse fixture");
+        load::load(&mut kb, &parsed, &NullResolver).expect("single-file load");
+
+        let after = requires_tree(&mut kb, carrier);
+        assert!(
+            after.iter().any(|n| n.entry.required_sort == bar),
+            "the requirement the second file declares must reach the chain — the memo from \
+             before the load must not be served",
+        );
+    }
+}

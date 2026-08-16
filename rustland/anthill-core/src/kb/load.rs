@@ -8421,6 +8421,31 @@ pub fn load(
     resolver: &dyn SourceResolver,
 ) -> Result<LoadResult, Vec<LoadError>> {
     register_prelude(kb);
+    // WI-1112 — the requires-chain derived state that [`load_phase_inner`] drops at ITS
+    // start, and this entry point needs it MORE: it asserts into BOTH relations the chain
+    // is built from — `SortRequiresInfo` (every `Loader::load_requires_decl` below, then
+    // `resolve_instantiations`' retract-and-re-assert) and `SortProvidesInfo` (every
+    // `load_provides_clause`, read back by `self_supplied_entries`) — and never reaches a
+    // `type_check_sorts` to rebuild, nor any of the mid-pipeline invalidations
+    // `load_phase_inner` makes. So on a KB that already went through `load_all`, an
+    // inherited index would be live, stale, and never corrected, and the chain memos
+    // `check_provider_requires` warmed would be served across this file's writes.
+    //
+    // THE WHOLE CALL, not `kb.requires_index = None`: the index and those memos have one
+    // lifetime by construction (see `KnowledgeBase::invalidate_requires_chain_cache`), and
+    // poking the field alone would half-invalidate — establishing a one-invalidation-point
+    // rule and then being the first site to route around it.
+    //
+    // A PAIR, because the two calls cover different windows. This one makes the item
+    // walk's own reads scan the live relation instead of an index inherited from a prior
+    // `load_all`; the one after `resolve_instantiations` drops what the walk memoized off
+    // a relation that pass then RETRACTS AND RE-ASSERTS. MEASURED: the two WI-1112 `load`
+    // fixtures are satisfied by EITHER call alone — backing out one leaves them green,
+    // backing out both fails them — so what is driven is the pair, and each half is kept
+    // for the window the corpus happens not to read in. `load_phase_inner` covers the
+    // same two windows with its start-of-phase reset and its three mid-pipeline
+    // invalidations; this entry point has neither, which is why both go here.
+    kb.invalidate_requires_chain_cache();
     let source_ids = register_sources(kb, &[parsed]);
     let mut all_errors =
         scan_definitions_with_sources(kb, &[parsed], &source_ids, ImportAttribution::PerFile);
@@ -8448,6 +8473,14 @@ pub fn load(
         Err(errs) => all_errors.extend(errs),
     }
     resolve_instantiations(kb);
+    // WI-1112 — the closing half of the pair at the top of this function: everything this
+    // entry point writes to `SortRequiresInfo` / `SortProvidesInfo` is written by now
+    // (`resolve_instantiations` is the last, and it RETRACTS as well as asserts), so drop
+    // whatever the item walk memoized off the pre-completion relation. `load_phase_inner`'s
+    // counterpart is the `invalidate_requires_chain_cache` after `eq_derive::run`; here
+    // there is no later pass and no rebuild, so this is the last word — the index stays
+    // `None` from here, which is this entry point's correct steady state.
+    kb.invalidate_requires_chain_cache();
     if all_errors.is_empty() {
         Ok(LoadResult {
             defined_sorts: all_sorts,
@@ -8932,6 +8965,25 @@ fn load_phase_inner(
     // and drops the index itself, which is what covers the `load` entry point, where
     // this line does not run.
     kb.sort_info_index = None;
+    // WI-1112 — same reset for the SortRequiresInfo index, same reason: this phase's
+    // `requires` facts are asserted below and the index is rebuilt at this phase's
+    // type-check (`build_requires_index`), so a stale index left by a prior phase would
+    // hide every requirement declared in THIS phase's files — a dictionary slot that
+    // silently stops existing. Clearing it makes the load-time lookups scan the live
+    // relation until the rebuild.
+    //
+    // THE RULE IS PER ENTRY POINT, NOT PER PHASE — [`load`] carries the identical line,
+    // for the reason WI-1008 records for `sort_info_index` ("which is what covers the
+    // `load` entry point, where this line does not run"): both entry points assert into
+    // this relation, and `load` never reaches a `build_requires_index` to correct itself.
+    // MEASURED: with THIS line backed out the full workspace stays green, and so does a
+    // scan-vs-index disagreement detector wired into every `collect_sort_requires` call
+    // across all 29 test binaries — no fixture reads the chain in this phase's pre-typer
+    // window. Its twin in `load` is the one that is DRIVEN
+    // (`wi1112_requires_index_tests::a_single_file_load_does_not_read_a_stale_index`);
+    // this one is the same rule at the sibling door, kept so the invariant has no
+    // exceptions to remember.
+    kb.requires_index = None;
 
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
     // Surfaces which step of the load pipeline dominates wall time
@@ -9252,6 +9304,13 @@ fn load_phase_inner(
     // particular producer happens not to matter" is the reasoning that leaves a stale
     // cache behind the next one (WI-954).
     kb.invalidate_requires_chain_cache();
+    // WI-1112 — and put the requires index back, which that call just dropped. This is
+    // the LAST pass in the pipeline that can change either relation the requires chain is
+    // built from, so from here the index is live for the rest of the load's checks
+    // (`check_use_site_requires_eq`, `check_override_refinement`, …) and for the RUNTIME
+    // readers — eval's dictionary chain and codegen — which have no build point of their
+    // own. Mirrors the `build_provides_index` call three lines up, for the same reason.
+    super::typing::build_requires_index(kb);
     mark!("eq_derive::run");
     // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
     // Eq and the witnessed non-reflexive NonEq is contradictory. Opt-in: does

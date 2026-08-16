@@ -171,12 +171,21 @@ fn reflection_index_functors_are_constant() {
     // `provides_index` over SortProvidesInfo, WI-660). Proves the stdlib rules
     // fire for these specific functors, not just a project-declared one
     // (`assert_of_constant_functor_is_loud_error`).
+    //
+    // WI-1112 adds SortRequiresInfo, and it is the row that most needs driving: the
+    // `requires_index` over it is dropped and rebuilt across the load, so `constant`
+    // covers exactly the AFTER-load window where nothing would invalidate it. Adding a
+    // rule to reflect.anthill is not the same as the rule FIRING — an untagged or
+    // paren-less equational rule loads inert (WI-881/884) — and this row is what says it
+    // does. CONTROL: delete `rule fact_monotonicity(SortRequiresInfo) = constant() [simp]`
+    // from reflect.anthill and this test fails on that qname alone.
     let dir = tempfile::tempdir().unwrap();
     let mut interp = interp_for("namespace test.reflectmono\n  entity Widget\nend\n");
     let store = setup_store(&mut interp, dir.path());
     for qname in [
         "anthill.reflect.OperationInfo",
         "anthill.reflect.SortProvidesInfo",
+        "anthill.reflect.SortRequiresInfo",
     ] {
         let fact = declared_fact(&mut interp, qname);
         let err = persist(&mut interp, &store, fact).expect_err(&format!(
