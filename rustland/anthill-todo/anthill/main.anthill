@@ -13,7 +13,7 @@
 -- `store: FileStore` parameter, threaded through `dispatch` into all twelve
 -- mutating `cmd_*` (14 declarations in all, counting `main` and `dispatch`);
 -- not one body ever read it, and a concrete backend in `main`'s type is
--- precisely what makes a backend unswappable (WI-1108, design doc §8.2).
+-- precisely what makes a backend unswappable (WI-1113, design doc §8.2).
 namespace anthill.todo
   import anthill.cli.Main
   import anthill.prelude.{Cell}
@@ -54,7 +54,7 @@ namespace anthill.todo
   import anthill.reflect.KB.{kb, execute, facts_of}
   import anthill.reflect.LogicalQuery.{pattern_query}
   -- The SORT only: the member import of the spec's fifteen operations is gone,
-  -- because after WI-1108 not one bare call site remained to use it.
+  -- because after WI-1113 not one bare call site remained to use it.
   --
   -- It does NOT make the bare spelling unrepresentable, and the difference was
   -- MEASURED rather than assumed: with the import deleted, a bare
@@ -62,7 +62,7 @@ namespace anthill.todo
   -- operation is in scope through this sort's `requires WorkItemStore[State]`.
   -- So this is a dead-import cleanup, not a guard — the bare form stays
   -- writable, and stays correct for exactly as long as the receiver is a
-  -- statically known impl (WI-402). WI-1108.
+  -- statically known impl (WI-402). WI-1113.
   import anthill.todo.store.{WorkItemStore}
 
   -- The 16-subcommand registry, mirroring the legacy Rust binary's
@@ -3186,7 +3186,7 @@ namespace anthill.todo
           -- body-less spec operation does not resolve through an existentially
           -- typed receiver (WI-402), so this was the one site that would have
           -- broken the moment the store came from `open_store` rather than a
-          -- statically known impl. WI-1108.
+          -- statically known impl. WI-1113.
           --
           -- NO TEST DISTINGUISHES THIS LINE, and that is stated rather than
           -- implied: `cmd_version_stamp_test::migrate_stamps_pre_versioning_project`

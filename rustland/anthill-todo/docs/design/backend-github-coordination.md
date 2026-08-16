@@ -1,11 +1,11 @@
 # Pluggable backends: the GitHub-coordinated store
 
 **Work item:** WI-437 — split 2026-08-16 into an umbrella plus six increments,
-WI-1108…WI-1113 (tag `wi437`), one per §14 row
-**Status:** design, amended 2026-08-16 (WI-1108)
+WI-1113…WI-1118 (tag `wi437`), one per §14 row
+**Status:** design, amended 2026-08-16 (WI-1113)
 **Supersedes:** `examples/github-todo/docs/pluggable-backend.md` (the original three-line sketch)
 
-> **Amendment, 2026-08-16 (WI-1108).** Three things in the original draft were
+> **Amendment, 2026-08-16 (WI-1113).** Three things in the original draft were
 > overtaken or misplaced, and are corrected throughout:
 >
 > 1. **Configuration.** The draft introduced `fact StoreBackend(kind: BackendKind)`.
@@ -346,7 +346,7 @@ model, loud in the crash model.
 
 ### 5.2 `ItemPerFileStore` is a second store, not a convention
 
-**Amended 2026-08-16 (WI-1108).** The draft put this layout in
+**Amended 2026-08-16 (WI-1113).** The draft put this layout in
 `FileConvention::StateDirs` and had `IndexedFileStore` grow the relocation rule above.
 That is the wrong home, and the reason is visible in `IndexedFileStore`'s own fields
 (`rustland/anthill-core/src/persistence/indexed_file_store.rs`):
@@ -859,9 +859,9 @@ Two consequences from WI-402's delivery notes:
   (`lookup(s, id)`) does not resolve through an existentially-typed receiver, while
   `WorkItemStore.lookup(s, id)` does. **This is already true of the code**: 43 of
   `main.anthill`'s 44 spec-op call sites are written `WorkItemStore.op(…)`. The single
-  exception was the bare `stamp_format(s, current_store_format())`. **Done (WI-1108)** —
+  exception was the bare `stamp_format(s, current_store_format())`. **Done (WI-1113)** —
   it is now `WorkItemStore.stamp_format(…)`, and it was the only one.
-* **`main` must stop being typed on `FileStore`. Done (WI-1108).** The signature was
+* **`main` must stop being typed on `FileStore`. Done (WI-1113).** The signature was
   `main(args, store: FileStore, wis_cell: Cell[State], agent)`, with the concrete
   `FileStore` threaded through `dispatch` into every mutating `cmd_*` — 14 parameter
   declarations, 13 call sites, two `Modify[store]` rows, and **not one body that read
@@ -881,7 +881,7 @@ interning `anthill.todo.store.FileBasedWorkitemStore.wis` and its `backend` /
 legitimate native step (mapping a declared store to a compiled backend). Removing
 *that* is what `open_store` is for here.
 
-### 8.2.1 `open_store` is not expressible against today's spec (WI-1108, measured)
+### 8.2.1 `open_store` is not expressible against today's spec (WI-1113, measured)
 
 It was attempted and it does not load. The obstruction is structural, not a syntax
 detail, and it is recorded here because it is **increment 2's problem to clear**.
@@ -1145,12 +1145,12 @@ preference, the substrate refactor is first, not last.
 
 | # | WI | Increment | Ships |
 | --- | --- | --- | --- |
-| 1 | WI-1108 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
-| 2 | WI-1109 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. Plus the spec restructuring §8.2.1 names, and `open_store` on top of it — a second impl is what makes both pay. | conflict-free multi-dev on *state changes* |
-| 3 | WI-1110 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
-| 4 | WI-1111 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
-| 5 | WI-1112 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
-| 6 | WI-1113 | **`migrate --to github-coordinated`.** Resumable, idempotent. | this repo's own tracker moves |
+| 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
+| 2 | WI-1114 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. Plus the spec restructuring §8.2.1 names, and `open_store` on top of it — a second impl is what makes both pay. | conflict-free multi-dev on *state changes* |
+| 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
+| 4 | WI-1116 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
+| 5 | WI-1117 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
+| 6 | WI-1118 | **`migrate --to github-coordinated`.** Resumable, idempotent. | this repo's own tracker moves |
 
 ### 14.1 The self-hosting constraint
 

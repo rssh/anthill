@@ -1134,7 +1134,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // Seed Cell[V = WIS] from on-disk WI-NNN max so the next freshly
     // allocated id doesn't collide. This cell is now the ONLY way the backend
     // reaches the bundle — every command body goes through the `WorkItemStore`
-    // spec ops on it (WI-1108 removed the parallel `store: FileStore` path).
+    // spec ops on it (WI-1113 removed the parallel `store: FileStore` path).
     //
     // Under a coordinated backend this seeding is exactly the id-collision bug
     // (design doc §1.2), and it disappears: `alloc_id` reads the forge registry
@@ -1227,7 +1227,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // anthill-cli's `run`.
     // NO `store_value` ARGUMENT. `main` used to take the concrete backend as a
     // `store: FileStore` parameter beside the cell, threaded through `dispatch` into
-    // all twelve mutating `cmd_*` — and read by none of them. It is gone (WI-1108):
+    // all twelve mutating `cmd_*` — and read by none of them. It is gone (WI-1113):
     // the backend reaches the bundle only inside the cell's `State`, through the
     // `WorkItemStore` spec ops, which is what lets a second backend be substituted at
     // all. `store_value` is still built above, because the cell's `wis(backend:, …)`
