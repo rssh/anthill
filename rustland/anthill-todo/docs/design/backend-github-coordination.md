@@ -430,11 +430,21 @@ that fills exactly one field of one fact. A chapter is *introduced by* a heading
 reserved level and runs to the next heading at that level, or to end of file.
 
 So every chapter begins with a heading, but **not every heading begins a chapter**. A
-`###` inside a description is just a heading — ordinary markdown, part of that chapter's
-text, carried verbatim. Only headings at the reserved level (§5.4 sets it) are chapter
-boundaries, which is precisely why that level has to be reserved: if any heading could
-start a chapter, a user's subsection would silently cut a field in half. ("Chapter"
-rather than "section" only to keep it distinct from this document's own §-sections.)
+heading below the structural level is just a heading — ordinary markdown, part of that
+chapter's text, carried verbatim. Only headings at a *structural* level are chapter
+boundaries, which is precisely why those levels are reserved: if any heading could start
+a chapter, a user's subsection would silently cut a field in half. ("Chapter" rather than
+"section" only to keep it distinct from this document's own §-sections.)
+
+**Structural levels nest, and there are two.** A repeated fact is not a field of the
+item, and the document should not pretend otherwise: feedback entries are grouped under
+one `## Feedback` **container**, one `###` per entry, rather than strewn across the top
+level as siblings of `## description`. So `##` carries fields and containers, `###`
+carries the entries inside a container, and prose begins at `####`. The alternative —
+every entry a top-level chapter named by its timestamp — needs only a single reserved
+level and is marginally simpler to check, but it files an entry in a log at the same
+structural rank as a field of the work item, and it gives GitHub's outline a flat run of
+timestamps where it could show `description` and `Feedback`.
 
 **Eligible fields are `String` and `Option[T = String]`.** Both, not just the first —
 `Feedback.content` is a bare `String` but `WorkItem.description` is
@@ -492,8 +502,9 @@ they can get it wrong:
 | --- | --- |
 | chapter the mapping names is missing | `Option` field → `none`; otherwise **load error** naming file and expected chapter |
 | two chapters with one name, field not declared repeated | **load error** — `update` could not know which to rewrite |
-| heading at the reserved level the mapping does not account for | **load error** naming file and heading — this is the truncation case, and it must not look like a note |
-| heading below the reserved level | prose belonging to the enclosing chapter, carried verbatim, never interpreted |
+| heading at a structural level the mapping does not account for *in that scope* | **load error** naming file and heading — this is the truncation case, and it must not look like a note |
+| `###` outside any container | **load error** — an entry heading with no container is the same truncation case one level down |
+| heading below the structural level in scope (`###` in a field chapter, `####` in an entry) | prose belonging to the enclosing chapter, carried verbatim, never interpreted |
 | unknown key in the head | **load error**; the head is the machine's region |
 | a heading marker inside a fenced code block | not a heading — the scanner must track fences |
 | heading decoration disagrees with the head | loud diagnostic + `fsck --fix`, as for §4's directory name |
@@ -554,36 +565,38 @@ nothing to keep in sync. The mapping is what says where it comes from:
 ```anthill
 namespace anthill.stage0.document
 
-  -- Headings at this level belong to the mapping (§5.3); prose uses deeper ones.
+  -- The two structural levels (§5.3). Fields and containers sit at `level`,
+  -- a container's entries at level + 1, and prose begins below that.
   fact DocumentFormat(level: 2)
 
-  enum ChapterName
-    entity fixed(name: String)        -- one chapter, this literal name
-    entity from_field(field: String)  -- one per fact, named by that field's value
-  end
-
-  -- One fact per prose field that leaves the head.
+  -- A prose field of the item's own fact: one chapter, fixed name.
   entity Chapter(
-    functor  : Term,               -- the fact the field belongs to
-    field    : String,             -- the field whose text moves out
-    named    : ChapterName,
-    decorate : List[T = String],   -- head fields regenerated into the heading
-    repeated : Bool)
+    functor : Term,     -- the fact the field belongs to
+    field   : String,   -- the field whose text moves out
+    named   : String)   -- the chapter's heading text
+
+  -- A satellite fact keyed to the item, repeated 0..n: one container chapter,
+  -- one entry chapter per fact inside it.
+  entity ChapterGroup(
+    functor   : Term,              -- the satellite fact
+    container : String,            -- the `##` heading grouping the entries
+    field     : String,            -- the entry's prose field
+    named_by  : String,            -- the field whose value names each entry
+    decorate  : List[T = String])  -- head fields regenerated into the entry heading
 
   fact Chapter(
-    functor: WorkItem, field: "description",
-    named: fixed(name: "description"),
-    decorate: [], repeated: false)
+    functor: WorkItem, field: "description", named: "description")
 
-  fact Chapter(
-    functor: Feedback, field: "content",
-    named: from_field(field: "at"),
-    decorate: ["author"], repeated: true)
+  fact ChapterGroup(
+    functor: Feedback, container: "Feedback",
+    field: "content", named_by: "at", decorate: ["author"])
 end
 ```
 
-`Tag` and `MirrorEntry` need no `Chapter` fact: they carry no prose and stay in the
-head as ordinary facts.
+`Tag` and `MirrorEntry` need neither: they carry no prose and stay in the head as
+ordinary facts. Note what the split buys — `Chapter` has no `repeated` flag to get
+wrong, because repetition is not a property of a field but the whole point of a
+`ChapterGroup`. Making the two illegal to confuse is cheaper than checking a boolean.
 
 **Worked example — `anthill-todo/claimed/WI-688.anthill.md`:**
 
@@ -599,6 +612,7 @@ fact Tag(workitem: "WI-688", name: "prover")
 fact MirrorEntry(workitem: "WI-688", entry: 1234)
 
 fact Feedback(workitem: "WI-688", author: "user", at: "2026-07-10T11:02:10Z")
+fact Feedback(workitem: "WI-688", author: "claude", at: "2026-07-11T08:41:02Z")
 ```
 
 ## description
@@ -608,26 +622,39 @@ without the intermediate `unfold` pass.
 
 ### why the intermediate pass exists
 
-Hand-added prose lives at a deeper level and rides along inside its chapter,
-untouched by `claim`, `deliver` or a state change (§5.3).
+Hand-added prose lives below the structural level and rides along inside its
+chapter, untouched by `claim`, `deliver` or a state change (§5.3).
 
-## 2026-07-10T11:02:10Z — user
+## Feedback
+
+### 2026-07-10T11:02:10Z — user
 
 both deferrals landed; substrate should suffice.
+
+### 2026-07-11T08:41:02Z — claude
+
+delivered; the `unfold` pass is gone and 3 tests pin the normal form.
 ````
 
 Read against §4's fact block: `description` and `content` are gone from the facts and
 are now chapters; everything else is unchanged. `WorkItem.description` is filled from
-the chapter `fixed("description")`; the `Feedback` fact is filled from the chapter
-named by its own `at`, and `— user` after the name is `decorate: ["author"]` —
-regenerated, and checked at load (§5.3).
+the `## description` chapter; each `Feedback` fact is filled from the `###` entry named
+by its own `at`, and `— user` after the name is `decorate: ["author"]` — regenerated,
+and checked at load (§5.3). `## Feedback` itself carries no field: it is a container,
+and its own heading is the only structural thing in the file that maps to no datum.
 
-**Name collisions get an ordinal.** `from_field` is not injective — `WI-599` holds two
-`Feedback` facts with identical `at` *and* `author` (§5.3) — so the second and later
-chapters with one derived name take a `.2`, `.3` suffix in document order, and the
-reader checks that the number of facts keyed *K* equals the number of chapters named
-*K*, *K*.2, …. Deterministic on write, verifiable on read, and no domain field has to
-be added to carry an identity the data does not have.
+**Name collisions are positional, not a naming problem.** `named_by` is not injective —
+`WI-599` holds two `Feedback` facts with identical `at` *and* `author` (§5.3). Under a
+container this needs no disambiguating suffix: entries are *ordered siblings*, so the
+Nth `fact Feedback` in the head binds to the Nth `###` under `## Feedback`, and the
+reader checks that the two counts agree. Positional binding is only safe because the
+entry heading is *checked* against its fact rather than ignored — a reordered or
+hand-edited entry mismatches its `at`/`author` and is a loud diagnostic, not a silent
+rebinding onto the wrong entry. Drop that check and this scheme becomes the worst one
+on the page. That is a second thing the container buys
+over flat top-level entries, where two identically-named chapters had nothing but a
+`.2` suffix to tell them apart. No domain field has to be added to carry an identity
+the data does not have.
 
 ## 6. Id allocation: the issue *is* the allocation
 
