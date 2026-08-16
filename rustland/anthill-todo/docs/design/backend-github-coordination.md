@@ -384,6 +384,42 @@ on `IndexedFileStore` while the new one is built and tested against fixtures. Ha
 layout been a convention *inside* `IndexedFileStore`, every increment would have been
 surgery on the store the tracker was running on at that moment.
 
+#### 5.2.1 What it holds instead of offsets (WI-1114, delivered)
+
+The paragraph above says the span machinery does not carry over. What replaced it is
+worth stating, because the obvious substitute is wrong in a way that does not fail
+loudly.
+
+An item file holds **several** rows — the item, its feedback, its tags, its mirror
+link — so a retract still has to name one block *inside* a file. The obvious answer is
+to keep the same `(path, byte range)` map and only change the routing. That answer
+breaks on the very feature this store exists for: a relocation **rewrites the whole
+file at a new path**, and every offset recorded into it is then stale. Stale offsets do
+not error; they drop the wrong bytes. (`IndexedFileStore` lives with the same hazard
+only because a shared-file store never moves a file, and because the CLI performs one
+mutation per process.)
+
+So the store keeps a **block model** of each file: the ordered list of text stretches
+the file is made of, each one either a resident row or the inter-row text around it.
+The host's spans are consumed at seeding to *cut* the file and are not kept, so nothing
+survives a rewrite to go stale. Rendering a file is a concatenation; the §5.1 move is a
+re-key of the model plus one block replaced in place; and the comments and blank lines
+between rows survive both, which a rows-only model would silently eat.
+
+Three consequences worth knowing:
+
+* **A row appended at runtime is not addressable until the next load.** `Store::persist`
+  is handed the fact, never the `RuleId` the KB is about to mint for it, so an appended
+  block has no name. A retract of such a row in the same process is a loud refusal, not
+  a silent no-op — the shared-file store's content-keyed fallback would compare a
+  loader-normalized canonical against source text and match nothing (WI-187).
+* **Deleting an item leaves its feedback.** `Feedback` is `monotone`, so it cannot be
+  retracted; the file therefore stays, holding rows that name an item no file holds.
+  That is reported (§10) rather than repaired — dropping them would lose live facts.
+* **Emptied directories are left behind.** `open/` survives its last item's move. Git
+  does not track empty directories, so nothing is published; removing them would be a
+  guess about which directories the project meant to keep.
+
 ### 5.3 The item file is a document: head + chapters (WI-1119)
 
 **Added 2026-08-16; revised the same day after review falsified three of its rules.**
@@ -1196,6 +1232,61 @@ disappears entirely anyway (§8.3), `alloc_id` reading the forge registry instea
 counting. And WI-402's existential half still has **no in-tree consumer**; this design
 remains its intended first one, just one increment later than §14 row 1 assumed.
 
+#### 8.2.2 It is not the *carrier* that is missing (WI-1114, measured)
+
+Increment 2 took the restructuring above and found the diagnosis one step short. The
+paragraph says `WorkItemStore` needs "a carrier sort that provides it rather than a bare
+instance fact" — but **it already has one**. `sort FileBasedWorkitemStore` declares
+`provides WorkItemStore[State = WIS]`; the `fact WorkItemStore[State = WIS]` spelling the
+table cites is not what `store.anthill` contains. What the carrier lacks is a *value*: it
+declares no `entity` of its own, only the nested `enum WIS`, so the body of
+`-> C ensures WorkItemStore[C]` had nothing of that sort to return and handed back a `WIS`
+— which is the measured mismatch, read correctly.
+
+Giving it one does not help, and this is the finding. `detect_existential_carrier` rewrites
+the return type to *the spec with the carrier slot dropped*, so the body must return a value
+whose **sort provides the spec** — a `FileBasedWorkitemStore` token. That token carries no
+state. The caller would hold a dictionary and still have nothing to put in the `Cell`, and
+the host's remaining job — building the initial `wis(backend:, id_counter:)` — would be
+exactly where it was. The doc's own `-> C ensures WorkItemStore[State = C]` asks for the
+existential over the **member**, which is what would actually be useful here and is a
+different feature from WI-402's carrier existential; it is not detected, and that is why.
+
+Expressing it in the supported form means making `State` *be* the carrier: ops written over
+`Cell[V = WorkItemStore]`, satisfaction spelled `sort WIS { provides WorkItemStore }`. That
+inverts the state-parameterization proposal 036 / WI-203 chose — fifteen signatures,
+`sort Main`'s `sort State = ? / requires WorkItemStore[State]`, and every `cmd_*`'s
+`Cell[State]`. It is a redesign of the store spec, not an increment of one, and it would
+dismantle the `requires` mechanism §8.2 correctly identifies as *already doing the
+selection*.
+
+**What shipped instead, and it removes the coupling §8.2 named.**
+`FileBasedWorkitemStore.open(backend: NonMonotonicStore, next: Int64) -> WIS`. The host
+calls it in place of interning `anthill.todo.store.FileBasedWorkitemStore.wis` and its
+`backend` / `id_counter` field names, so the shape of the state is the impl's business
+alone — which is the prerequisite for a second `WorkItemStore` impl (§8.1's
+`CoordinatedWorkitemStore`) to be substitutable at all. It lives on the **impl**, not the
+spec: a state factory's parameters are the impl's own, and under coordination the counter
+parameter disappears entirely (§8.3), so a spec-level `open(backend, next)` would freeze
+one impl's parameter list across every future one.
+
+The host still names the impl. It always did — the same symbol it pins into `chain_dicts`
+— and that is the legitimate native step, not the coupling.
+
+**Where this leaves WI-402.** Its existential half still has no in-tree consumer, and this
+design is no longer the candidate: its selection is done by `requires`, and the factory it
+wanted returns a *state*, not a carrier. That is a finding about WI-402's shape — a carrier
+existential fits a spec whose value IS its carrier (the `KVStore` fixture), and does not
+fit a spec parameterized by the value — and it belongs on WI-402, not here.
+
+The second change §8.1 asks for landed with it: `WIS.backend` is typed
+`NonMonotonicStore`, the algebra the impl actually consumes, rather than
+`IndexedFileStore`. Typed by one backend it was, that field alone made the whole impl
+unusable with the second store — declarable in a binding, buildable by the host, and a
+load error here. It is deliberately not `QueryableStore`: nothing in this impl calls
+`retrieve` (every read goes through `facts_of(kb(), …)`), and requiring it would refuse a
+good backend for an operation never performed.
+
 ### 8.3 Host side
 
 * **`ItemPerFileStore`** — a **new `Store` implementation** in `anthill-core`'s
@@ -1320,10 +1411,26 @@ a silent skip or a fallback:
   unexpected GitHub response is an error.
 * **Directory / status disagreement** — a file in `open/` whose fact says
   `Claimed(...)` → loud load error naming both, plus `anthill-todo fsck --fix` to move
-  the file to match the fact (the fact wins; §4).
+  the file to match the fact (the fact wins; §4). **Delivered (WI-1114)**, and the check
+  is on the whole path, not the directory alone: `open/WI-9.anthill` holding
+  `id: "WI-10"` is the same class of disagreement and the same repair.
 * **Duplicate id** — the same id in two files → loud load error. Under §6 this
   should be unreachable; if it happens, the allocator is broken and we want to know
-  immediately.
+  immediately. **Delivered (WI-1114)**; `fsck --fix` reports it and does *not* pick a
+  winner, because which file is the item is a real disagreement and only whoever
+  interrupted the move knows.
+* **A file holding several items** — the shared-file layout read by a store that gives
+  each item a file. Added (WI-1114) after review found the destructive alternative: read
+  as *N misplaced items*, it produced N path disagreements naming one file, and `--fix`
+  renamed that whole file to the first item's path and lost the rest. It is now one
+  fault about the file's SHAPE, it blocks, and `fsck` refuses it by name — splitting a
+  shared file is §11's `migrate`, not a repair. This is precisely the state of a project
+  that declares the binding before migrating into it, so the command it is told to run
+  must not make things worse.
+* **A row the store cannot place** — a hand-edited `status` that is a string rather than
+  a variant, say. **Delivered (WI-1114)**, and REPORTED rather than raised: `fsck` needs
+  the store built before it can say anything, so raising it while seeding would kill the
+  one command written to diagnose it.
 * **Dangling reference** — a `depends_on` naming an id with no file (e.g. a
   half-reconciled provisional rename, §6.4) → named by `fsck`; for the
   reconciliation case a `sync` re-run repairs it.
@@ -1334,6 +1441,26 @@ a silent skip or a fallback:
 * **Issue claiming an id with no file** → reported by `sync` as a dangling
   allocation (§6.3) — distinguished from `[deleted]`-tombstoned issues (§7.2),
   which are the *expected* end state of a deletion.
+
+**Which of these BLOCK, and why the split is where it is (WI-1114).** A fault that
+leaves the store's own *routing* ambiguous blocks every command — two files claiming one
+key, a file whose path denies its fact, a row the store cannot place at all, a file that
+is several items — because the next write would have to guess which one it means. A fault
+that merely strands a row is reported and does not stand between the user and the
+tracker: deleting an item leaves its append-only feedback behind *by design* (`Feedback`
+is `monotone`, so it cannot be retracted), and refusing every later command over an
+expected state would be a check punishing the thing it was written to describe.
+
+**`fsck` validates its whole plan before moving a byte**, and refuses rather than
+half-repairing: a repair that renames files cannot discover its own refusal partway
+through and leave a tree nobody asked for. What it will not do — choose between two files
+claiming one id, split a file holding several items, guess where an unreadable row
+belongs — it says, rather than attempting.
+
+**A backend with no layout to check refuses `fsck`, in both its forms.** Silence is a
+correct answer to "is anything wrong?" (the startup gate) and a wrong answer to "check
+this layout", which a shared-file store cannot do at all. Reporting `layout ok` there
+would be the silent skip this section exists to prevent.
 
 ## 11. Migration
 
@@ -1437,7 +1564,7 @@ preference, the substrate refactor is first, not last.
 | # | WI | Increment | Ships |
 | --- | --- | --- | --- |
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
-| 2 | WI-1114 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. Plus the spec restructuring §8.2.1 names, and `open_store` on top of it — a second impl is what makes both pay. | conflict-free multi-dev on *state changes* |
+| 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
 | 2b | WI-1119 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
 | 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
 | 4 | WI-1116 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
