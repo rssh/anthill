@@ -1,7 +1,8 @@
 # Pluggable backends: the GitHub-coordinated store
 
-**Work item:** WI-437 — split 2026-08-16 into an umbrella plus six increments,
-WI-1113…WI-1118 (tag `wi437`), one per §14 row
+**Work item:** WI-437 — split 2026-08-16 into an umbrella plus seven increments,
+WI-1113…WI-1119 (tag `wi437`), one per §14 row. WI-1119 (§5.3) was inserted after the
+original six, between rows 2 and 3.
 **Status:** design, amended 2026-08-16 (WI-1113)
 **Supersedes:** `examples/github-todo/docs/pluggable-backend.md` (the original three-line sketch)
 
@@ -33,8 +34,8 @@ WI-1113…WI-1118 (tag `wi437`), one per §14 row
 ## 1. The problem
 
 `anthill-todo` keeps every fact in one file. This repo's tracker is
-`anthill-todo/workitems.anthill` — 3675 lines, holding every `WorkItem`, every
-`Feedback`, every `Tag`. That works perfectly for one developer and fails for
+`anthill-todo/workitems.anthill` — 4658 lines and 5.1 MB as of 2026-08-16 (3675 lines
+when this was written), holding every `WorkItem`, every `Feedback`, every `Tag`. That works perfectly for one developer and fails for
 several, in two distinct ways:
 
 1. **Textual conflict.** Every mutation — `add`, `claim`, `deliver`, `feedback` —
@@ -251,7 +252,10 @@ anthill-todo/
   stale/
 ```
 
-Each `WI-NNN.anthill` holds **every fact about that item**:
+Each item file holds **every fact about that item**. Shown here in plain `fact` syntax,
+which is what the store writes until WI-1119 lands; §5.3 keeps this content and changes
+its encoding to an anthill head plus markdown chapters, so the file names below become
+`WI-NNN.anthill.md` (§5.4):
 
 ```anthill
 -- anthill-todo/claimed/WI-688.anthill
@@ -380,6 +384,251 @@ on `IndexedFileStore` while the new one is built and tested against fixtures. Ha
 layout been a convention *inside* `IndexedFileStore`, every increment would have been
 surgery on the store the tracker was running on at that moment.
 
+### 5.3 The item file is a document: head + chapters (WI-1119)
+
+**Added 2026-08-16; revised the same day after review falsified three of its rules.**
+§4 writes each item as a block of `fact` declarations. That is the right *content* and
+the wrong *encoding*, and the measurement on this repo's own tracker says so — 1110
+`WorkItem`, 1129 `Feedback` and 281 `Tag` facts, of which the volume is prose:
+
+| | count | avg chars | max chars |
+| --- | --- | --- | --- |
+| `WorkItem.description` | 1110 | 2107 | 20345 |
+| `Feedback.content` | 1129 | 2116 | 19915 |
+
+Together 4,729,493 of the file's 5,115,651 characters, and 4,744,325 of its 5,130,561
+bytes: **92.5% of the tracker is prose inside string literals**, in either unit. (Counts
+are per fact record, with string literals stripped before matching. A plain
+`grep -c 'fact WorkItem('` returns three more, because ticket prose quotes fact syntax at
+itself — a small illustration of the same problem. The encoding is not self-consistent
+either: 344 descriptions are written bare and 766 as `some(value: "…")`, one datum two
+ways in one file.)
+
+The grammar has no multi-line string — `string_literal: /"([^"\\]|\\.)*"/`
+(`tree-sitter-anthill/grammar.js`) — so every one of those documents is stored as **one
+physical line of escaped text**. The longest line is 20,616 characters (20,711 bytes);
+2153 lines exceed 500; 239 feedback entries carry an escaped quote and 274 an escaped
+newline. The structured half is meanwhile thin and partly dead: `acceptance` is 92% the
+single value `ToolPasses(cargo-test)` across just 12 distinct values, and `context`,
+`generates` and `requires_capability` are each written exactly 709 times out of 1110 —
+one long-form/short-form split, not three independent fields — always `none`. All three
+`ContextRef` constructors, `FileRef` the supplied-file hook included, have **zero** uses.
+A work item is already a document with a small structured head, encoded as a string
+literal.
+
+**The shape.** One item file is an anthill **head** followed by markdown **chapters**.
+The head is anthill syntax, not YAML: there is no second scalar language, so
+`status: Claimed(agent:, since:)` needs no encoding and the head remains the single
+writable home for all structure. A declared mapping (§5.4) names which prose fields leave
+the head and which chapter fills each; the store learns exactly one concept, *this
+field's text is the chapter named N*, and never learns stage0's schema.
+
+**Heading vs chapter — the two are not the same thing, and the difference is what the
+whole format rests on.** A *heading* is markdown syntax: a line beginning with `#`,
+`##`, `###`. A **chapter** is this design's unit of meaning: a named region of prose
+that fills exactly one field of one fact. A chapter is *introduced by* a heading at the
+reserved level and runs to the next heading at that level, or to end of file.
+
+So every chapter begins with a heading, but **not every heading begins a chapter**. A
+`###` inside a description is just a heading — ordinary markdown, part of that chapter's
+text, carried verbatim. Only headings at the reserved level (§5.4 sets it) are chapter
+boundaries, which is precisely why that level has to be reserved: if any heading could
+start a chapter, a user's subsection would silently cut a field in half. ("Chapter"
+rather than "section" only to keep it distinct from this document's own §-sections.)
+
+**Eligible fields are `String` and `Option[T = String]`.** Both, not just the first —
+`Feedback.content` is a bare `String` but `WorkItem.description` is
+`Option[T = String]` (`domain.anthill`), and a rule admitting only bare `String` would
+exclude the very field this section exists for. The `Option` case is what the missing-
+chapter row below describes: absent chapter, `none`.
+
+**Where the mapping lives:** bundled with the stage0 domain, beside `Coordination`'s
+entities and on the same `StoreFormat` precedent (§3.2) — **not** in `project.anthill`.
+It is a property of the *schema*, not of the project, so §3 remains "two facts, two
+questions" and §11 step 3 has nothing new to write.
+
+**Out of scope, deliberately:** rendering payload-carrying variants as sections. It
+would mean re-inventing term syntax in a second language.
+
+**Feedback** is the interesting case — repeated 0..n, so several chapters mapping to one
+field is *correct* here and the mapping must declare repetition.
+
+The chapter name is the machine's key, and its only requirement is **uniqueness within
+the file**. It is *derived* from the entry's timestamp for readability, with a
+deterministic disambiguating suffix when that collides — because the timestamp alone is
+**not** unique, measurably: `WI-599` carries two `Feedback` facts with identical `at`
+*and* identical `author` (one collision in 1129 entries, but a one-time migration meets
+it on real data). Worth recording as a finding about existing design, not only about this
+one: §7.3 dedups ingested comments on `(workitem, author, at)`, and that key is not
+unique on the data the tracker already holds.
+
+Everything after the name in a heading — author, human-readable date — is **decoration**:
+regenerated from the head, and **checked against it at load**, a mismatch being a loud
+diagnostic that `fsck --fix` repairs. That is deliberately the same treatment §4 gives
+the directory name, "a coarse, greppable projection" of the status fact checked in §10 —
+including the loudness. A projection that were regenerated *without* being read would be
+silently overwritten when a user corrected it by hand, which is the silent drop this
+repo's conventions rule out.
+
+Feedback is also **append-only** — 21 subcommands, `feedback` adds one, and nothing edits
+or deletes an entry — so the store never re-serializes the 1129 feedback chapters. That
+is a correctness property, not a volume one: feedback is 50.5% of the prose and
+descriptions the other 49.5%, so the half that *is* rewritten is the same size. The
+precise claim is the useful one — the only prose the store ever rewrites is a single
+`description` chapter, via `update`.
+
+**Chapter level is reserved.** Headings at the declared level belong to the mapping;
+prose uses deeper levels. This is what closes the hole a first draft of this section
+left open: with unreferenced chapters simply "legal", a user who typed a level-N heading
+mid-description would end that chapter there, silently truncating the field, and the
+tail would reappear as an innocuous-looking unreferenced chapter. So an unreferenced
+heading at the reserved level is an **error**, and hand-added material lives *inside* a
+chapter at a deeper level, where it rides along as part of that chapter's text.
+
+**Malformed editing.** A format people hand-edit must say what it does with each way
+they can get it wrong:
+
+| situation | response |
+| --- | --- |
+| chapter the mapping names is missing | `Option` field → `none`; otherwise **load error** naming file and expected chapter |
+| two chapters with one name, field not declared repeated | **load error** — `update` could not know which to rewrite |
+| heading at the reserved level the mapping does not account for | **load error** naming file and heading — this is the truncation case, and it must not look like a note |
+| heading below the reserved level | prose belonging to the enclosing chapter, carried verbatim, never interpreted |
+| unknown key in the head | **load error**; the head is the machine's region |
+| a heading marker inside a fenced code block | not a heading — the scanner must track fences |
+| heading decoration disagrees with the head | loud diagnostic + `fsck --fix`, as for §4's directory name |
+| head, filename and directory disagree | directory-vs-status is §10's existing check; **filename-vs-id is a new one this increment adds** — §10 does not have it today |
+
+Row four is what keeps notes alive, and it holds only as a **tested invariant**:
+hand-add a sub-section inside a description, run `claim` (which rewrites the head *and*
+renames the file), assert the sub-section survives byte-identical. That test fails the
+day the store starts reserializing a whole file from facts — the one failure mode that
+would quietly eat a user's notes.
+
+**§5.1's relocation rule needs one sentence more under this encoding.** It says the move
+"rewrites the item's fact block in place"; here there is no fact block. `replace`
+receives a whole `WorkItem` term, so the store must split it into head fields and chapter
+fields, rewrite only the head and the chapters whose text actually changed, and leave
+every other chapter byte-identical. Both the opacity invariant above and "never
+re-serializes the feedback chapters" rest on that split, so it is part of the store's
+contract rather than an implementation choice.
+
+The fenced-code hazard is prospective but not impossible today: 392 descriptions and 240
+feedback entries already contain backticks, and although no prose currently holds a fence
+or a `#` heading, both *are* writable in a one-line literal (three backticks are
+literal characters; `\n#` is an escape away — 274 entries already carry escaped
+newlines). So migration must run the fence-aware scanner over all 2239 existing prose
+bodies rather than assume pre-migration content is fence-free.
+
+**Why its own increment.** No markdown dependency is needed — we never *render*
+markdown, GitHub does; we find headings at the reserved level while tracking fences. The
+`.anthill` glob is not the reason to split this out: `collect_files_recursive` takes its
+extension list as a parameter (`anthill-core/src/fs_util.rs`) and `anthill-todo` supplies
+`&["anthill"]` at its one call site, so widening it is a caller-side one-literal change.
+What is genuinely `anthill-core` surface is the **reader** — parsing a head-plus-chapters
+document into facts. The real reason to keep it separate from WI-1114 is §14.1: bundled,
+a bug in the format would mask a bug in the store, on the tracker we are running on. It
+depends on WI-1114 and blocks WI-1118, because the live tracker migrates **exactly once**
+and must migrate into the final format.
+
+### 5.4 The mapping, concretely
+
+§5.3 states the rules; this is the artifact. Both halves are shown for the same item
+§4 writes in fact syntax, so the two encodings can be read against each other.
+
+**File name: `WI-NNN.anthill.md`.** The trailing `.md` is what makes editors and
+GitHub render it; the `.anthill` before it makes an item file self-identifying, so a
+`README.md` sitting in the same tree is not mistaken for one. This is a **suffix**
+test, not an extension test — `Path::extension()` returns `md` for
+`WI-690.anthill.md`, so `fs_util::has_extension` cannot express it and the loader
+needs `ends_with`. A plain `.md` glob would sweep in every ordinary markdown file
+under the project directory.
+
+**The head is a fenced block with the `anthill` info string.** No new delimiter
+syntax: markdown already has one, GitHub renders it highlighted, and it composes with
+the fence tracking §5.3 requires anyway. The head is the file's first such block.
+
+**A chapter-bearing field is simply absent from the head** — no marker in the fact,
+nothing to keep in sync. The mapping is what says where it comes from:
+
+```anthill
+namespace anthill.stage0.document
+
+  -- Headings at this level belong to the mapping (§5.3); prose uses deeper ones.
+  fact DocumentFormat(level: 2)
+
+  enum ChapterName
+    entity fixed(name: String)        -- one chapter, this literal name
+    entity from_field(field: String)  -- one per fact, named by that field's value
+  end
+
+  -- One fact per prose field that leaves the head.
+  entity Chapter(
+    functor  : Term,               -- the fact the field belongs to
+    field    : String,             -- the field whose text moves out
+    named    : ChapterName,
+    decorate : List[T = String],   -- head fields regenerated into the heading
+    repeated : Bool)
+
+  fact Chapter(
+    functor: WorkItem, field: "description",
+    named: fixed(name: "description"),
+    decorate: [], repeated: false)
+
+  fact Chapter(
+    functor: Feedback, field: "content",
+    named: from_field(field: "at"),
+    decorate: ["author"], repeated: true)
+end
+```
+
+`Tag` and `MirrorEntry` need no `Chapter` fact: they carry no prose and stay in the
+head as ordinary facts.
+
+**Worked example — `anthill-todo/claimed/WI-688.anthill.md`:**
+
+````markdown
+```anthill
+fact WorkItem(
+  id: "WI-688",
+  acceptance: [ToolPasses(tool: "cargo-test", params: none)],
+  depends_on: some(value: ["WI-686", "WI-687"]),
+  status: Claimed(agent: "claude", since: "2026-07-10T09:12:44Z"))
+
+fact Tag(workitem: "WI-688", name: "prover")
+fact MirrorEntry(workitem: "WI-688", entry: 1234)
+
+fact Feedback(workitem: "WI-688", author: "user", at: "2026-07-10T11:02:10Z")
+```
+
+## description
+
+whole-`step` direct derivation — the rewriter should reach the normal form
+without the intermediate `unfold` pass.
+
+### why the intermediate pass exists
+
+Hand-added prose lives at a deeper level and rides along inside its chapter,
+untouched by `claim`, `deliver` or a state change (§5.3).
+
+## 2026-07-10T11:02:10Z — user
+
+both deferrals landed; substrate should suffice.
+````
+
+Read against §4's fact block: `description` and `content` are gone from the facts and
+are now chapters; everything else is unchanged. `WorkItem.description` is filled from
+the chapter `fixed("description")`; the `Feedback` fact is filled from the chapter
+named by its own `at`, and `— user` after the name is `decorate: ["author"]` —
+regenerated, and checked at load (§5.3).
+
+**Name collisions get an ordinal.** `from_field` is not injective — `WI-599` holds two
+`Feedback` facts with identical `at` *and* `author` (§5.3) — so the second and later
+chapters with one derived name take a `.2`, `.3` suffix in document order, and the
+reader checks that the number of facts keyed *K* equals the number of chapters named
+*K*, *K*.2, …. Deterministic on write, verifiable on read, and no domain field has to
+be added to carry an identity the data does not have.
+
 ## 6. Id allocation: the issue *is* the allocation
 
 Under a declared `Coordination`, **permanent ids come only from GitHub**, and issue
@@ -393,7 +642,7 @@ from local state alone.
 The direct mapping *id := `WI-<issue number>`* would be simpler, and is right for a
 fresh project whose tracker owns the repo's counter from issue #1. It does not fit an
 existing one: GitHub shares one counter between issues and pull requests, and this
-repo already holds ~690 dense ids that would collide with the first ~690 fresh issue
+repo already holds ~1110 dense ids that would collide with the first ~1110 fresh issue
 numbers. So the issue **allocates**, its number **orders** competing claims (§6.1),
 and neither **names**: the id in the title does.
 
@@ -669,7 +918,7 @@ reconciliation, or let a token-holding CI reconcile after merge.
 * **Body:** a pointer to the file, and nothing else of substance:
 
   ```
-  Tracked in [`anthill-todo/open/WI-690.anthill`](https://github.com/rssh/anthill/blob/main/anthill-todo/open/WI-690.anthill).
+  Tracked in [`anthill-todo/open/WI-690.anthill.md`](https://github.com/rssh/anthill/blob/main/anthill-todo/open/WI-690.anthill.md).
 
   Status: Open · Depends on: WI-686, WI-687 · Tags: prover
 
@@ -1065,9 +1314,16 @@ a silent skip or a fallback:
 anthill-todo migrate --to github-coordinated
 ```
 
-1. Explode `workitems.anthill` into `<state>/WI-NNN.anthill`, each carrying its item's
-   `Feedback` and `Tag` facts. Pure local rewrite; reviewable as one commit
-   (a large one, and a one-time one).
+1. Explode `workitems.anthill` into one file per item under `<state>/`, each carrying
+   its item's `Feedback` and `Tag` facts. Pure local rewrite; reviewable as one commit
+   (a large one, and a one-time one). **The file format is whatever §5.3 has settled by
+   the time this runs** — this repo's tracker migrates exactly once, so WI-1119 lands
+   before this step and migration writes `WI-NNN.anthill.md` (anthill head + chapters), not an
+   intermediate `.anthill` form that would have to be migrated again. Every
+   `WI-NNN.anthill` spelling elsewhere in this document predates that decision and
+   illustrates the layout, not the encoding — with one exception that is *not*
+   illustration: §7.1's mirror-body pointer is generated output, and has been
+   updated to `.md` accordingly.
 2. Create one mirror issue per item, in id order, each *born* with its `WI-NNN:`
    title (§6.1 — migration is allocation where the winner is known in advance),
    then immediately closed when its item is terminal (§7.1). **Every item is
@@ -1077,9 +1333,11 @@ anthill-todo migrate --to github-coordinated
    "permanent-id item with no `MirrorEntry` fact" check would need a permanent
    exemption for terminal items, gutting it. Full mirroring keeps one uniform
    invariant — every permanent id has exactly one issue, and the issue's
-   open/closed state is the item's coarse state. The cost is one-time: ~690
-   creations here (~600 of them create-then-close), paced under GitHub's
-   secondary rate limits. **Resumable and idempotent**: keyed on the id in the
+   open/closed state is the item's coarse state. The cost is one-time: ~1110
+   creations here, paced under GitHub's secondary rate limits. Only 47 of them
+   are create-then-close — §7.1 closes on `Verified`, `Rejected`,
+   `ProposalRejected` and `Stale` only (38 + 6 + 0 + 3 today), while §7.4 keeps
+   the 913 `Delivered` issues open as the verify gesture. **Resumable and idempotent**: keyed on the id in the
    title, and each item's file gets its `MirrorEntry` fact written as the issue
    is created, so an interrupted run resumes where it stopped.
 3. Rewrite the `ExtentBinding` store term to `ItemPerFileStore(...)` and add `fact Coordination(...)` in `project.anthill` (§3).
@@ -1115,7 +1373,13 @@ but it abandons the id registry.
   `sync --check` as a CI gate.
 * **Description in the issue body.** Keeping only a pointer means GitHub search does not
   find work items by description. Mirroring the full description makes the body large and
-  makes drift visible on every description edit. Pointer-only for v1.
+  makes drift visible on every description edit. Pointer-only for v1, and §5.3 strengthens that
+  without settling it: once the item file *is* a markdown document, the target renders
+  on GitHub and is reachable by code search. Two caveats keep this an open question
+  rather than a closed one — §7.1 regenerates the pointer only on `sync`, so between a
+  state change and the next reconciliation the link is stale; and code search is a
+  different surface from issue search, needing repo access and not surfacing the item
+  in the issue list where the mirror's audience is looking.
 
 ## 13. Non-goals
 
@@ -1147,6 +1411,7 @@ preference, the substrate refactor is first, not last.
 | --- | --- | --- | --- |
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. Plus the spec restructuring §8.2.1 names, and `open_store` on top of it — a second impl is what makes both pay. | conflict-free multi-dev on *state changes* |
+| 2b | WI-1119 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
 | 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
 | 4 | WI-1116 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
 | 5 | WI-1117 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
