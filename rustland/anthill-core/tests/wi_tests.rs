@@ -1251,3 +1251,6 @@ mod wi830_mirror_coverage_test;
 
 #[path = "include/wi830_extent_binding_test.rs"]
 mod wi830_extent_binding_test;
+
+#[path = "include/wi1114_item_per_file_store_test.rs"]
+mod wi1114_item_per_file_store_test;
