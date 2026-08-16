@@ -217,6 +217,111 @@ end
     );
 }
 
+/// THE VACUITY GUARD, and it is what the whole exclusion rests on. A body dispatching a
+/// spec op at an ABSTRACT element with no `requires` in scope must be REFUSED — there is
+/// no dictionary for it and nothing can supply one. It is listed as this ticket's own
+/// acceptance because the `Eq` experiment showed how it fails: a universal provider row
+/// (`Eq` offered for every `PartialEq` goal) makes the goal resolve and the refusal
+/// disappear, so the program loads and dies at eval instead. WI-1109 measured that
+/// vacuity on the equality tower; excluding conversions is what keeps it from happening
+/// on either.
+#[test]
+fn a_weakord_dispatch_with_no_requires_is_refused() {
+    let src = r#"
+namespace wi1110.novac
+  import anthill.prelude.{WeakOrd, Int64}
+  sort Holder
+    sort T = ?
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
+  end
+end
+"#;
+    let errs = load_errs(src);
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.WeakOrd")),
+        "an abstract `WeakOrd.compare` with no requirement in scope must be refused, not \
+         answered by a conversion that can supply nothing; got {errs:?}"
+    );
+}
+
+/// THE CONTROL for the arm above — the SAME body with the requirement declared loads and
+/// runs. Without it the assertion measures nothing: a build that refused every spec-op
+/// dispatch would pass it.
+#[test]
+fn the_same_weakord_dispatch_with_a_requires_runs() {
+    let src = r#"
+namespace wi1110.vaccontrol
+  import anthill.prelude.{WeakOrd, Int64}
+  sort Holder
+    sort T = ?
+    requires WeakOrd[T]
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
+  end
+  sort D
+    operation go(n: Int64) -> Int64 = Holder.cmp(9, 4)
+  end
+end
+"#;
+    assert!(
+        eval_int(src, "wi1110.vaccontrol.D.go") > 0,
+        "with `requires WeakOrd[T]` the same body must resolve and answer: 9 vs 4"
+    );
+}
+
+/// THE TICKET'S ORIGINAL FIXTURE, and the message it was filed about. A carrier with the
+/// partial-order floor but NO `compare` and no `provides WeakOrd` used to report
+/// `construction is cyclic: WeakOrd[T = Half] -> WeakOrd[T = Half]` — because `Ord` was
+/// offered as a provider of `WeakOrd` and `Ord requires WeakOrd` closed the loop over it.
+/// The truthful answer is that nothing provides `WeakOrd` here, and that is what a
+/// conversion being out of the search space buys.
+///
+/// THE CARRIER IS REACHED THROUGH AN ABSTRACT HOLDER, and it has to be. THREE shapes were
+/// probed and they get three different answers:
+///
+///   A. a DIRECT `WeakOrd.compare(Half.half(9), …)` from a sort with no `requires`
+///      — LOADS CLEAN, and not because of anything this ticket did. It is the mask
+///      `ordered.anthill` documents at its op-scoped `requires WeakOrd[T]`:
+///      `check_one_spec_op_requirement` returns early for a builtin functor, so the
+///      CALL-SITE half of a spec-op requirement is unchecked while the op is still a
+///      resolver builtin (WI-876 measured the same for `PartialOrd.gt`; WI-879 is where
+///      it comes due). A fixture in this shape measures the mask, not the ticket.
+///   B. an abstract `T` with `requires PartialOrd[T]` only — refused with `missing
+///      `requires WeakOrd[T = …]` on enclosing sort`. Truthful, and it is what
+///      `a_weakord_dispatch_with_no_requires_is_refused` pins.
+///   C. below — the concrete carrier reaching the goal through a holder that DOES declare
+///      the requirement, so the requirement is checked and the carrier is asked for it.
+#[test]
+fn a_carrier_with_no_compare_is_told_nothing_provides_weakord() {
+    let src = r#"
+namespace wi1110.nocmp
+  import anthill.prelude.{WeakOrd, PartialOrd, Int64}
+  enum Half
+    entity half(v: Int64)
+    provides PartialOrd[T = Half]
+  end
+  sort Holder
+    sort T = ?
+    requires WeakOrd[T]
+    operation cmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
+  end
+  sort D
+    operation go(n: Int64) -> Int64 = Holder.cmp(Half.half(9), Half.half(4))
+  end
+end
+"#;
+    let errs = load_errs(src);
+    assert!(
+        errs.iter().any(|e| e.contains("no impl provides anthill.prelude.WeakOrd")),
+        "the refusal must say nothing provides `WeakOrd`, not report a cycle through a \
+         spec that provides nothing; got {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("construction is cyclic")),
+        "and it must not be a cycle at all — that was the wart this ticket was filed \
+         about; got {errs:?}"
+    );
+}
+
 // ── the naming half ──────────────────────────────────────────────────────────
 
 /// A CONVERSION LENDS ITS NAMES, exactly as `requires` does — because both put a
