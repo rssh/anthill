@@ -1087,12 +1087,30 @@ relation. A spec's is a **conversion** and belongs only in the chain: nothing ha
 `Ord`, so offering `Ord` as a candidate answer to a `WeakOrd` goal can never resolve —
 it merely adds a candidate that the cycle detector must reject, on every ordering goal in
 every program, and closes a cycle if the same edge is also written `requires`. The two
-are told apart by the row: a provision is a conversion when it binds the target's
-**carrier parameter** (the next paragraph settles which that is) to one of the subject's
-own type parameters **and** the subject supplies none of the target's operations. Both
-halves are needed — a **parametric witness** (`sort AnyM { sort E = ?; provides
-Monoid[T = E]; operation combine(a: E, b: E) … }`) has the same shape and *is* a
-dictionary, because it carries the operations.
+are told apart by the row: a provision is a conversion when it is a **parameter
+forwarding** — every binding sends a target parameter to one of the subject's own type
+parameters — **and** the target is a constraint on something rather than a thing in its
+own right **and** the subject supplies none of the target's operations. All three are
+needed. A **parametric witness** (`sort AnyM { sort E = ?; provides Monoid[T = E];
+operation combine(a: E, b: E) … }`) is a forwarding by shape and *is* a dictionary,
+because it carries the operations. A **self-representing** target is a thing rather than
+a constraint, so `LogicalStream provides Stream[T = T, E = E]` is the membership claim "a
+LogicalStream is a Stream" and value-directed dispatch reaches `Stream.splitFirst` on a
+`Relation` through it. And a target that *does* name a carrier parameter (the next
+paragraph settles which) must have it among the forwarded ones — a row forwarding only
+the element parameters says nothing about the carrier and converts nothing.
+
+**The forwarding need not be name-for-name** (WI-1111). `provides Sp[X = A]` renames and
+`provides Sp[X = B, Y = A]` permutes; both say exactly what `provides Sp[X = X]` says,
+written with different letters, and the derived row **translates** the carrier's bindings
+through the map rather than copying them. A binding to a **concrete** sort is not a
+forwarding and translating nothing is what makes it a claim about the world.
+
+**A derived row is a conversion when the edge it was derived through is one.** A tower
+two conversions deep (`Top provides Mid[T = T]`, `Mid provides Low[T = T]`) materializes
+`Top provides Low[T = T]`, whose carrier is itself a spec; it is not an answer to a `Low`
+goal, because `Top` already holds a `Low` dictionary inside its `Mid` slot, and the
+tower's real carriers get their own derived rows in the same pass.
 
 **Which parameter is the carrier is read off the operations** (WI-1076), because
 nothing in the surface language says: no keyword declares a sort to be a spec, or

@@ -9098,11 +9098,18 @@ fn load_phase_inner(
     // a row, which is the read that makes `WeakOrd.compare` dispatch on them.
     kb.provides_index = None;
     // WI-1110 — the requires chain now READS provisions (`self_supplied_entries`), so
-    // a pass that asserts provisions invalidates it. The rows this pass adds are
-    // concrete-carrier ones and so are never conversions, i.e. no chain entry can
-    // actually change here — invalidated anyway, because "this particular producer
-    // happens not to matter" is the reasoning that leaves a stale cache behind the
-    // next producer (WI-954).
+    // a pass that asserts provisions invalidates it.
+    //
+    // WI-1111 CORRECTS THE REASON THIS COMMENT USED TO GIVE, which was "the rows this pass
+    // adds are concrete-carrier ones and so are never conversions". MEASURED FALSE: a
+    // two-floor tower (`Top provides Mid[T = T]`, `Mid provides Low[T = T]`) makes the pass
+    // assert `Top provides Low[T = T]`, whose carrier is a SPEC and whose shape is a
+    // conversion's. No chain entry changes anyway — but for a different reason, and one
+    // that is written down at its own site: `self_supplied_entries` skips a row
+    // `derived_provision_origin_of` recognizes, because reading it back would give `Top` a
+    // second slot for a dictionary already reachable inside its first. The invalidation
+    // below is unconditional regardless, because "this particular producer happens not to
+    // matter" is the reasoning that leaves a stale cache behind the next producer (WI-954).
     kb.invalidate_requires_chain_cache();
     super::typing::derive_forwarded_provisions(kb);
     kb.invalidate_requires_chain_cache();

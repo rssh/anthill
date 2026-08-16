@@ -1239,3 +1239,6 @@ mod wi1104_relational_column_test;
 
 #[path = "include/wi1106_parametric_data_sort_test.rs"]
 mod wi1106_parametric_data_sort_test;
+
+#[path = "include/wi1111_provision_chain_search_test.rs"]
+mod wi1111_provision_chain_search_test;
