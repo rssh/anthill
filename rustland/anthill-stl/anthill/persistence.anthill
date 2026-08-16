@@ -83,6 +83,10 @@ namespace anthill.persistence.filesystem
     artifact "rustland/anthill-core/src/persistence/indexed_file_store.rs"
   end
 
+  provides ItemPerFileStore language rust
+    artifact "rustland/anthill-core/src/persistence/item_per_file_store.rs"
+  end
+
   -- The traits each backend supplies. There is no `BulkStore` to supply: WI-932
   -- deleted the trait, its sole member `pull` having had no anthill-callable
   -- implementation in any host and no caller in this one.
@@ -90,4 +94,11 @@ namespace anthill.persistence.filesystem
 
   fact QueryableStore[IndexedFileStore]
   fact NonMonotonicStore[IndexedFileStore]    -- span-based retract in place
+
+  -- ItemPerFileStore retracts (a row leaves its file; the last row leaving takes
+  -- the file with it) but is NOT queryable, and the omission is a claim, not an
+  -- oversight: it keeps no index a pattern could be answered from, and a scan
+  -- over its block model would be a linear walk wearing an index's name. Its
+  -- consumers read from the KB, which holds every row the loader saw.
+  fact NonMonotonicStore[ItemPerFileStore]
 end

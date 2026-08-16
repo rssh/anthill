@@ -92,6 +92,12 @@ namespace anthill.todo
     , spec_tag_change("untag",        "Remove a work item from a named list")
     , spec_named("graph",             "Show dependency graph")
     , spec_named("migrate",           "Stamp a pre-versioning project with the current data format")
+    -- Host-served, like `init` / `skill` / `version`: it inspects the on-disk
+    -- LAYOUT against the facts, which is a property of the concrete backend and
+    -- not of the store algebra this bundle sees. It is listed here because the
+    -- registry is what `--help` prints, and a command absent from help is a
+    -- command nobody finds. (WI-1114; design §10.)
+    , spec_named("fsck",              "Check the on-disk layout against the facts (--fix repairs)")
     , spec_named("skill",             "Print Claude Code skill definition")
     , spec_named("version",           "Print version (semver + git SHA + build date)")
     ]

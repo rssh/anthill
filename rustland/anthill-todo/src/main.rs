@@ -394,6 +394,8 @@ fn collect_workitems(kb: &KnowledgeBase) -> Result<Vec<WorkItemInfo>, String> {
 use anthill_core::eval::{value_functor, Interpreter, Value};
 use anthill_core::persistence::file_store::FileConvention;
 use anthill_core::persistence::indexed_file_store::IndexedFileStore;
+use anthill_core::persistence::item_per_file_store::{ItemFields, ItemPerFileStore, LayoutFault};
+use anthill_core::persistence::Store;
 
 /// A project file paired with its parsed IR, so the store can associate each fact's
 /// RuleId with its byte range on disk.
@@ -402,7 +404,76 @@ struct ProjectFile {
     parsed: ParsedFile,
 }
 
-/// Build and register the store the project's `ExtentBinding` declares.
+/// A built backend, before it is handed to the mirror registry.
+///
+/// It exists as a named value rather than an immediate `Box<dyn Store>` because
+/// `fsck` has business with the CONCRETE store — the layout checks and the
+/// repair are `ItemPerFileStore`'s, and `Store` neither has them nor should.
+/// Once the checks have run the box goes in and this value is gone.
+enum BuiltStore {
+    Indexed(IndexedFileStore),
+    ItemPerFile(ItemPerFileStore),
+}
+
+impl BuiltStore {
+    /// The disagreements between the on-disk layout and the facts (§10), for the
+    /// STARTUP GATE. A backend whose layout means nothing has none to report —
+    /// there is no directory claiming to be a status — so an empty answer here
+    /// says "nothing to check", which is the right thing to say to a gate.
+    fn layout_faults(&self) -> Vec<LayoutFault> {
+        match self {
+            BuiltStore::Indexed(_) => Vec::new(),
+            BuiltStore::ItemPerFile(s) => s.layout_faults(),
+        }
+    }
+
+    /// The same checks asked by `fsck`, where an empty answer would be a LIE.
+    ///
+    /// The gate above and this differ deliberately: silence is a correct answer
+    /// to "is anything wrong?" and a wrong answer to "check this layout", which a
+    /// shared-file store cannot do at all. Reporting `layout ok` there is the
+    /// silent skip the repo's principles forbid — and it was inconsistent besides,
+    /// since `--fix` on the same project refused (found in review).
+    fn checked_layout(&self) -> Result<Vec<LayoutFault>, String> {
+        match self {
+            BuiltStore::Indexed(_) => Err(format!(
+                "this project's store is `{INDEXED_FILE_STORE}`, which holds every row in \
+                 one file — there is no directory-per-state layout for `fsck` to check or \
+                 repair"
+            )),
+            BuiltStore::ItemPerFile(s) => Ok(s.layout_faults()),
+        }
+    }
+
+    fn repair_paths(&mut self) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+        match self {
+            BuiltStore::Indexed(_) => Err(format!(
+                "this project's store is `{INDEXED_FILE_STORE}`, which holds every row in \
+                 one file — there is no directory-per-state layout for `fsck` to check or \
+                 repair"
+            )),
+            BuiltStore::ItemPerFile(s) => s.repair_paths().map_err(|e| e.to_string()),
+        }
+    }
+
+    fn into_boxed(self) -> Box<dyn Store> {
+        match self {
+            BuiltStore::Indexed(s) => Box::new(s),
+            BuiltStore::ItemPerFile(s) => Box::new(s),
+        }
+    }
+}
+
+/// A built store together with everything the registration still needs.
+struct DeclaredStore {
+    store: BuiltStore,
+    /// The store VALUE the anthill side receives — the declared term with `root`
+    /// resolved to the absolute path.
+    value: Value,
+    covers: Vec<String>,
+}
+
+/// Build the store the project's `ExtentBinding` declares.
 ///
 /// THE HOST'S JOB IS THE FACTORY, AND ONLY THE FACTORY (proposal 057 §"Configuration &
 /// bootstrap"). A backend is native code, so declarative configuration chooses AMONG the
@@ -421,16 +492,20 @@ struct ProjectFile {
 /// This is a default, not a fallback in the sense CLAUDE.md forbids: nothing failed and
 /// nothing is being hidden. A binding that is PRESENT and wrong is still loud.
 ///
-/// Returns the store VALUE the anthill side receives — the declared term with its `root`
-/// resolved to the absolute path. The registration key is computed from THAT value, and
-/// the same value is what the bundle's `wis(backend:, …)` cell carries, so both sides of
-/// the dispatch agree by construction.
-fn register_declared_store(
+/// Carries out the store VALUE the anthill side receives — the declared term with its
+/// `root` resolved to the absolute path. The registration key is computed from THAT
+/// value, and the same value is what the bundle's `wis(backend:, …)` cell carries, so
+/// both sides of the dispatch agree by construction.
+///
+/// BUILDING AND REGISTERING ARE SPLIT (WI-1114) because `fsck` sits between them: the
+/// layout checks belong to the concrete backend, and once the store is boxed into the
+/// mirror registry the host cannot ask it anything again.
+fn build_declared_store(
     interp: &mut Interpreter,
     store_root: &Path,
     project_items: &[ProjectFile],
     project_results: &[load::LoadResult],
-) -> Result<Value, String> {
+) -> Result<DeclaredStore, String> {
     use anthill_core::kb::extent::ExtentRole;
 
     let bindings = interp
@@ -460,9 +535,9 @@ fn register_declared_store(
     }
 
     // The one native step: the declared store term names a backend this binary must
-    // already have. `IndexedFileStore` is the only one anthill-todo compiles in — a
-    // `SqlStore` or a GitHub-backed store would be a new arm here, which is exactly the
-    // WI-437 shape and exactly why the rest of this is no longer hardcoded.
+    // already have. Adding one is an arm HERE plus a `provides` block on the anthill
+    // side — which is exactly the WI-437 shape, and exactly why the rest of this is no
+    // longer hardcoded.
     let store_functor = value_functor(interp.kb(), &binding.store)
         .ok_or_else(|| "the declared store names no backend".to_string())?;
     // By resolved SYMBOL, never by name text. A `ends_with("IndexedFileStore")` test read
@@ -471,49 +546,240 @@ fn register_declared_store(
     // silent write into its own directory instead of the refusal. That is precisely the
     // WI-437 case this guard exists for (found in review, driven by
     // `a_lookalike_backend_name_is_refused`).
-    let indexed_file_store = interp
-        .kb()
-        .try_resolve_symbol(INDEXED_FILE_STORE)
-        .ok_or_else(|| format!("the persistence substrate is not loaded: `{INDEXED_FILE_STORE}`"))?;
-    if store_functor != indexed_file_store {
-        return Err(format!(
-            "anthill-todo has no backend for the declared store `{}`; this build provides \
-             {INDEXED_FILE_STORE}",
-            interp.kb().qualified_name_of(store_functor),
-        ));
-    }
+    let backend = resolve_backend(interp, store_functor)?;
 
-    let convention = declared_convention(interp, &binding.store)?;
     let store_root = declared_root(interp, &binding.store, store_root)?;
-    let mut store = IndexedFileStore::new(store_root.clone(), convention);
-
-    // Seed the source map: pair each project file's fact RuleIds (in source order) with
-    // the byte ranges of the corresponding parsed `Item::Fact` spans, so a retract of a
-    // source-loaded RuleId knows which file and which bytes to drop.
-    for (file, result) in project_items.iter().zip(project_results.iter()) {
-        let spans = file.parsed.fact_spans();
-        for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
-            store.record_source(*rule_id, file.path.clone(), *span);
+    let store = match backend {
+        Backend::Indexed => {
+            let convention = declared_convention(interp, &binding.store)?;
+            let mut store = IndexedFileStore::new(store_root.clone(), convention);
+            // Seed the source map: pair each project file's fact RuleIds (in source
+            // order) with the byte ranges of the corresponding parsed `Item::Fact`
+            // spans, so a retract of a source-loaded RuleId knows which file and which
+            // bytes to drop.
+            for (file, result) in project_items.iter().zip(project_results.iter()) {
+                let spans = file.parsed.fact_spans();
+                for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
+                    store.record_source(*rule_id, file.path.clone(), *span);
+                }
+            }
+            BuiltStore::Indexed(store)
         }
-    }
+        Backend::ItemPerFile => {
+            // The SAME two inputs, associated differently: this backend addresses a row
+            // by the file it lives in, so it takes each file's text and cuts it into
+            // blocks, and keeps no byte offsets at all — a state change rewrites the
+            // whole file at a new path, and an offset would not survive that.
+            let mut store = ItemPerFileStore::new(store_root.clone(), declared_fields(interp, &binding.store)?);
+            for (file, result) in project_items.iter().zip(project_results.iter()) {
+                let source = fs::read_to_string(&file.path)
+                    .map_err(|e| format!("{}: {e}", file.path.display()))?;
+                let rows: Vec<_> = result
+                    .fact_rule_ids
+                    .iter()
+                    .copied()
+                    .zip(file.parsed.fact_spans())
+                    .collect();
+                store
+                    .record_file(interp.kb(), file.path.clone(), &source, &rows)
+                    .map_err(|e| format!("reading the project's layout: {e}"))?;
+            }
+            BuiltStore::ItemPerFile(store)
+        }
+    };
 
     // The runtime store value is the declared one with `root` made absolute: a config
     // file names a directory relative to itself, and the process needs the real path.
-    let store_value = with_absolute_root(interp, &binding.store, store_functor, &store_root)?;
-    let key = interp
-        .store_canonical_key(&store_value)
-        .map_err(|e| format!("computing the store key: {e}"))?;
-
+    let value = with_absolute_root(interp, &binding.store, store_functor, &store_root)?;
     let covers: Vec<String> = binding
         .covers
         .iter()
         .map(|s| interp.kb().qualified_name_of(*s).to_string())
         .collect();
-    let covers_ref: Vec<&str> = covers.iter().map(String::as_str).collect();
+    Ok(DeclaredStore {
+        store,
+        value,
+        covers,
+    })
+}
+
+/// Hand the built store to the mirror registry, and return the value the bundle sees.
+fn register_declared_store(
+    interp: &mut Interpreter,
+    declared: DeclaredStore,
+) -> Result<Value, String> {
+    let key = interp
+        .store_canonical_key(&declared.value)
+        .map_err(|e| format!("computing the store key: {e}"))?;
+    let covers_ref: Vec<&str> = declared.covers.iter().map(String::as_str).collect();
     interp
-        .register_mirror(key, Box::new(store), &covers_ref)
+        .register_mirror(key, declared.store.into_boxed(), &covers_ref)
         .map_err(|e| format!("registering the declared store: {e}"))?;
-    Ok(store_value)
+    Ok(declared.value)
+}
+
+/// `anthill-todo fsck [--fix]` — check the on-disk layout against the facts, and
+/// optionally move each misplaced file to the path its own fact names.
+///
+/// The directory is an index and the fact is the truth (design §4), so the repair
+/// direction is settled: the FACT wins. What `--fix` will not do is choose between
+/// two files claiming one id — that is a real disagreement about which is the item,
+/// and only whoever interrupted the move knows.
+fn run_fsck(store: &mut BuiltStore, args: &[String]) -> i32 {
+    let mut fix = false;
+    for arg in args {
+        match arg.as_str() {
+            "--fix" => fix = true,
+            // `fsck` is in the bundle's command registry so `--help` finds it, so
+            // asking it for its own help is a likely first move (found in review).
+            "--help" | "-h" => {
+                println!("{FSCK_USAGE}");
+                return 0;
+            }
+            other => {
+                eprintln!("error: unknown fsck option `{other}`");
+                eprintln!("{FSCK_USAGE}");
+                return runner::EXIT_COMPILE;
+            }
+        }
+    }
+
+    // Asked before anything is done, so that a backend with no layout to check
+    // refuses BOTH the read-only and the repairing form, rather than answering
+    // one with silence and the other with a refusal.
+    if let Err(e) = store.checked_layout() {
+        eprintln!("error: {e}");
+        return runner::EXIT_RUNTIME;
+    }
+
+    if fix {
+        match store.repair_paths() {
+            Ok(moves) => {
+                for (from, to) in &moves {
+                    println!("moved {} -> {}", from.display(), to.display());
+                }
+                if moves.is_empty() {
+                    println!("no misplaced files");
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        }
+    }
+
+    // Re-asked after a repair, so what is reported is what is still true.
+    let faults = match store.checked_layout() {
+        Ok(faults) => faults,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return runner::EXIT_RUNTIME;
+        }
+    };
+    if faults.is_empty() {
+        println!("layout ok");
+        return 0;
+    }
+    let mut blocking = 0usize;
+    for fault in &faults {
+        if fault.blocking() {
+            blocking += 1;
+            eprintln!("error: {fault}");
+        } else {
+            eprintln!("warning: {fault}");
+        }
+    }
+    if blocking > 0 && !fix {
+        eprintln!("run `anthill-todo fsck --fix` to repair what can be repaired mechanically");
+    }
+    if blocking > 0 {
+        runner::EXIT_RUNTIME
+    } else {
+        0
+    }
+}
+
+const FSCK_USAGE: &str = "\
+usage: anthill-todo fsck [--fix]
+
+Check the on-disk layout against the facts: that each item's file sits at the path
+its own `id` and `status` name, that no id is held twice, and that every feedback
+or tag row is in its item's file.
+
+  --fix   move each misplaced file to the path its own fact names (the fact wins).
+          It will not choose between two files claiming one id, split a file
+          holding several items, or guess where an unreadable row belongs.";
+
+/// The backends this build compiles in.
+enum Backend {
+    Indexed,
+    ItemPerFile,
+}
+
+/// Which compiled-in backend a declared store functor names — the whole of the
+/// host's remaining authority over storage, and a HARD REFUSAL when the answer is
+/// none. Falling back to a local file store would silently write a project's rows
+/// somewhere it did not ask for (design §3.1).
+fn resolve_backend(
+    interp: &Interpreter,
+    store_functor: anthill_core::intern::Symbol,
+) -> Result<Backend, String> {
+    for (name, backend) in [
+        (INDEXED_FILE_STORE, Backend::Indexed),
+        (ITEM_PER_FILE_STORE, Backend::ItemPerFile),
+    ] {
+        let sym = interp
+            .kb()
+            .try_resolve_symbol(name)
+            .ok_or_else(|| format!("the persistence substrate is not loaded: `{name}`"))?;
+        if store_functor == sym {
+            return Ok(backend);
+        }
+    }
+    Err(format!(
+        "anthill-todo has no backend for the declared store `{}`; this build provides \
+         {INDEXED_FILE_STORE} and {ITEM_PER_FILE_STORE}",
+        interp.kb().qualified_name_of(store_functor),
+    ))
+}
+
+/// The three field names `ItemPerFileStore` routes on, read off the declaration.
+///
+/// `anthill-core`'s persistence layer is domain-neutral, so `status` / `id` /
+/// `workitem` are not ITS knowledge — they are stage0's spelling, and they arrive
+/// here from the project's own binding. A missing one is a refusal: there is no
+/// default that could be right for a domain the store has never heard of.
+fn declared_fields(interp: &Interpreter, store: &Value) -> Result<ItemFields, String> {
+    let read = |field: &str| -> Result<String, String> {
+        let value = interp
+            .kb()
+            .row_field(store, field)
+            .ok_or_else(|| format!("the declared store has no `{field}` field"))?;
+        string_field(interp, &value, field)
+    };
+    Ok(ItemFields::new(
+        read("status_field")?,
+        read("id_field")?,
+        read("ref_field")?,
+    ))
+}
+
+/// A `String`-valued field of a declared store, in either carrier a declaration can
+/// arrive in: a host-built `Value::Str` or the hash-consed literal a source-written
+/// fact carries.
+fn string_field(interp: &Interpreter, value: &Value, field: &str) -> Result<String, String> {
+    match value {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Term { id, .. } => {
+            use anthill_core::kb::term::TermSource;
+            match interp.kb().term(*id) {
+                Term::Const(Literal::String(s)) => Ok(s.clone()),
+                other => Err(format!("`{field}` must be a string, got {other:?}")),
+            }
+        }
+        other => Err(format!("`{field}` must be a string, got {other:?}")),
+    }
 }
 
 /// The binding a project that declares none is treated as having: an `IndexedFileStore`
@@ -605,8 +871,9 @@ fact anthill.persistence.ExtentBinding(
   role: anthill.persistence.ExtentRole.mirror(),
   covers: [WorkItem, Feedback, Tag, StoreFormat])";
 
-/// The qualified name of the one backend this build provides.
+/// The qualified names of the backends this build provides.
 const INDEXED_FILE_STORE: &str = "anthill.persistence.filesystem.IndexedFileStore";
+const ITEM_PER_FILE_STORE: &str = "anthill.persistence.filesystem.ItemPerFileStore";
 
 /// The directory the declared store writes to.
 ///
@@ -630,17 +897,7 @@ fn declared_root(
         .kb()
         .row_field(store, "root")
         .ok_or_else(|| "the declared store has no `root` field".to_string())?;
-    let text = match &declared {
-        Value::Str(s) => s.clone(),
-        Value::Term { id, .. } => {
-            use anthill_core::kb::term::{Literal, Term, TermSource};
-            match interp.kb().term(*id) {
-                Term::Const(Literal::String(s)) => s.clone(),
-                other => return Err(format!("`root` must be a string, got {other:?}")),
-            }
-        }
-        other => return Err(format!("`root` must be a string, got {other:?}")),
-    };
+    let text = string_field(interp, &declared, "root")?;
     if text == "." {
         return Ok(scanned.to_path_buf());
     }
@@ -704,37 +961,74 @@ fn declared_convention(interp: &Interpreter, store: &Value) -> Result<FileConven
 /// CANONICAL FORM of the value the host registers, and this same value is what the
 /// bundle's `wis(backend:, …)` cell carries, so both sides render one string.
 ///
-/// The rebuild carries `root` and `convention` and NOTHING ELSE, which is total rather
-/// than lossy: `IndexedFileStore` declares exactly those two fields, and a store term
-/// carrying a third would have failed the loader's entity-field check before reaching
-/// here. If the declaration ever grows a field, this is a site that must grow with it.
+/// The rebuild carries EVERY declared field, replacing only `root` — which is total for
+/// any backend rather than for the one that happened to be first. It used to name
+/// `root` and `convention` and nothing else, on the reasoning that `IndexedFileStore`
+/// declares exactly those two; `ItemPerFileStore` declares four, and the second backend
+/// is precisely the moment a per-backend field list starts silently dropping
+/// configuration (WI-1114).
 fn with_absolute_root(
     interp: &mut Interpreter,
     store: &Value,
     store_functor: anthill_core::intern::Symbol,
     absolute: &Path,
 ) -> Result<Value, String> {
-    let convention = interp
-        .kb()
-        .row_field(store, "convention")
-        .ok_or_else(|| "the declared store has no `convention` field".to_string())?;
-    // Field symbols are minted rather than taken from the term: canonicalization renders
-    // named args by LOCAL name, so a freshly interned `root` and the declared one are the
-    // same key. The FUNCTOR is the declared one, since that is what the value is OF.
-    let root_field = interp.kb_mut().intern("root");
-    let convention_field = interp.kb_mut().intern("convention");
+    let mut named: Vec<(anthill_core::intern::Symbol, Value)> = Vec::new();
+    let mut saw_root = false;
+    for (label, value) in declared_field_values(interp, store)? {
+        // Field symbols are minted rather than taken from the term: canonicalization
+        // renders named args by LOCAL name, so a freshly interned `root` and the
+        // declared one are the same key. The FUNCTOR is the declared one, since that is
+        // what the value is OF.
+        let sym = interp.kb_mut().intern(&label);
+        if label == "root" {
+            saw_root = true;
+            named.push((sym, Value::Str(absolute.to_string_lossy().to_string())));
+        } else {
+            named.push((sym, value));
+        }
+    }
+    if !saw_root {
+        return Err("the declared store has no `root` field".to_string());
+    }
     Ok(Value::Entity {
         functor: store_functor,
         pos: vec![].into(),
-        named: vec![
-            (
-                root_field,
-                Value::Str(absolute.to_string_lossy().to_string()),
-            ),
-            (convention_field, convention),
-        ]
-        .into(),
+        named: named.into(),
     })
+}
+
+/// Every named field of a declared store, by local name, in declaration order — in
+/// either carrier a declaration arrives in (a source-loaded `Value::Term`, or the
+/// `Value::Entity` [`default_binding`] builds).
+fn declared_field_values(
+    interp: &Interpreter,
+    store: &Value,
+) -> Result<Vec<(String, Value)>, String> {
+    match store {
+        Value::Entity { named, .. } => Ok(named
+            .iter()
+            .map(|(s, v)| (interp.kb().local_name_of(*s).to_string(), v.clone()))
+            .collect()),
+        Value::Term { id, .. } => {
+            use anthill_core::kb::term::TermSource;
+            let Term::Fn { named_args, .. } = interp.kb().term(*id) else {
+                return Err("the declared store is not a store term".to_string());
+            };
+            Ok(named_args
+                .iter()
+                .map(|(label, value)| {
+                    (
+                        interp.kb().local_name_of(*label).to_string(),
+                        Value::term(*value),
+                    )
+                })
+                .collect())
+        }
+        other => Err(format!(
+            "the declared store must be a store term, got {other:?}"
+        )),
+    }
 }
 
 // ── Init command ────────────────────────────────────────────────
@@ -1109,12 +1403,45 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // project.anthill, and the host's remaining job is the one part that must stay
     // native: mapping a declared store to one of its compiled-in backends.
     let store_root = scan_dir(&project_dir);
-    let store_value = match register_declared_store(
+    let mut declared = match build_declared_store(
         &mut interp,
         &store_root,
         &project_items,
         &per_file_results[project_offset..],
     ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return runner::EXIT_RUNTIME;
+        }
+    };
+
+    // `fsck` is the ONE command that wants the concrete backend rather than the store
+    // algebra — the layout checks and the repair are a property of a directory-per-state
+    // layout, not of storage. It is served here, between building the store and handing
+    // it to the registry, because that is the only point at which the host still holds it.
+    if bundle_argv.first().map(|s| s.as_str()) == Some("fsck") {
+        return run_fsck(&mut declared.store, &bundle_argv[1..]);
+    }
+
+    // Otherwise the layout must agree with the facts before anything writes through it.
+    // A blocking fault leaves the store's own routing ambiguous, so the next write would
+    // have to guess; the remedy is named rather than guessed at.
+    let faults = declared.store.layout_faults();
+    let blocking = faults.iter().filter(|f| f.blocking()).count();
+    for fault in &faults {
+        if fault.blocking() {
+            eprintln!("error: {fault}");
+        } else {
+            eprintln!("warning: {fault}");
+        }
+    }
+    if blocking > 0 {
+        eprintln!("error: run `anthill-todo fsck --fix` to move each file to the path its own fact names");
+        return runner::EXIT_RUNTIME;
+    }
+
+    let store_value = match register_declared_store(&mut interp, declared) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1159,23 +1486,30 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         }
         let id_counter = (max_num as i64) + 1;
 
-        // Build the wis(backend, id_counter) entity. The `backend` field
-        // is the same store_value used by the FileStore registry, so
-        // anthill-side `persist`/`flush` calls through the cell route to
-        // the same underlying IndexedFileStore.
-        let wis_sym = interp
-            .kb_mut()
-            .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
-        let backend_field = interp.kb_mut().intern("backend");
-        let counter_field = interp.kb_mut().intern("id_counter");
-        let wis_value = Value::Entity {
-            functor: wis_sym,
-            pos: vec![].into(),
-            named: vec![
-                (backend_field, store_value.clone()),
-                (counter_field, Value::Int(id_counter)),
-            ]
-            .into(),
+        // THE IMPL BUILDS ITS OWN STATE (WI-1114). This used to intern
+        // `…FileBasedWorkitemStore.wis` and its `backend` / `id_counter` field names
+        // and assemble the entity here — the host knowing one impl's INTERNALS, which
+        // is a different thing from the one native step it legitimately owns (mapping a
+        // declared store term to a compiled-in backend, above). The shape of the state
+        // is the impl's business, and a second impl with a different state could not be
+        // substituted while this line spelled the first one's.
+        //
+        // The impl is named because the host is the one that PICKS it — the same symbol
+        // it pins into `chain_dicts` below, for the same reason. What it no longer knows
+        // is what the impl keeps inside.
+        //
+        // `backend` is the same store value the mirror registry is keyed on, so
+        // anthill-side `persist` / `flush` through the cell route to the instance built
+        // above.
+        let wis_value = match interp.call(
+            "anthill.todo.store.FileBasedWorkitemStore.open",
+            &[store_value.clone(), Value::Int(id_counter)],
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: building the store's initial state: {e}");
+                return runner::EXIT_RUNTIME;
+            }
         };
         let handle = interp.alloc_cell(wis_value);
         Value::Cell(handle)

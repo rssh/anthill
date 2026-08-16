@@ -37,6 +37,33 @@ namespace anthill.persistence.filesystem
   entity IndexedFileStore(root: String, convention: FileConvention)
   fact Modifiable[T = IndexedFileStore]
 
+  -- ItemPerFileStore (WI-1114): one file per PRIMARY row, one directory per
+  -- state. The opposite storage model to the two above, and therefore a SIBLING
+  -- backend rather than a `FileConvention` of theirs — the conventions are the
+  -- filename policy of stores that append into SHARED files, and here one file
+  -- IS one row, addressed by path, moved when its state changes. (Design:
+  -- rustland/anthill-todo/docs/design/backend-github-coordination.md §5.2.)
+  --
+  -- IT TAKES NO `convention`, and that absence is the point: its routing is
+  -- content-DRIVEN where a convention is content-blind. A row carrying
+  -- `id_field` is filed at `<root>/<status>/<id>.anthill`, where the directory
+  -- is the snake_case of the `status_field`'s own functor — derived, so a new
+  -- status variant cannot drift out of sync with the layout. A row carrying
+  -- `ref_field` joins the file of the row it names, which is what makes a state
+  -- change carry an item's feedback and tags along with it.
+  --
+  -- THE FIELD NAMES ARE PARAMETERS because `anthill.persistence` is
+  -- domain-neutral: `status` / `id` / `workitem` are stage0's spelling, and they
+  -- belong in the project's binding, not in the storage substrate. A different
+  -- domain files its own rows by its own fields with no change here.
+  entity ItemPerFileStore(
+    root         : String,
+    status_field : String,
+    id_field     : String,
+    ref_field    : String
+  )
+  fact Modifiable[T = ItemPerFileStore]
+
   -- ================================================================
   -- File conventions: how facts map to files
   -- ================================================================
