@@ -164,7 +164,14 @@ namespace anthill.reflect
   operation qualified_name(s: Symbol) -> String
   -- Symbol → last segment (short name)
   operation short_name(s: Symbol) -> String
-  -- Find existing symbol by qualified name (fails if not found)
+  -- Find the symbol a name DENOTES at the global scope (fails if none).
+  -- WI-913: the name takes the host-name ladder (§8.6 at `<global>`) — a
+  -- dotted path read RELATIVELY (its head segment must be in scope there),
+  -- or a bare name the implicit tier or a top-level import puts in scope.
+  -- `..a.b.c` means the root regardless of scope, and is what reaches the
+  -- loader's qualified-only kernel names (`..Member`, `..meta`), which are
+  -- delocalized so that ordinary resolution cannot surface them.
+  -- A FIELD is never nameable by path, in any reading.
   operation lookup_symbol(name: String) -> Symbol
   -- Symbol → enclosing scope symbol (None for top-level)
   operation scope(s: Symbol) -> Option[T = Symbol]
@@ -273,7 +280,9 @@ namespace anthill.reflect
   -- identity is the id, not the name.
   operation fresh_var[T](name: String) -> T
 
-  -- Build a Term::Fn whose functor is resolved by qualified-or-short name.
+  -- Build a Term::Fn whose functor is resolved exactly the way `lookup_symbol`
+  -- resolves one — the same host-name ladder, same readings (WI-913); see its
+  -- note above rather than a second copy here.
   -- The expression-level constructor call form `claimable(?id, ?desc)`
   -- only works for Operations and Entities — rule heads aren't scanned as
   -- definitions, so referencing them inline fails at evaluation time.

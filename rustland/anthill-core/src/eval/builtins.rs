@@ -2309,19 +2309,22 @@ fn splice_query_runner(
     // OVER `expected` — so a phantom sort would override the runner's real `cond:
     // LogicalQuery` hint. Resolve loudly instead. (reflect.anthill always loads before
     // user code types, so this never fires — a belt for a hostile load order.)
-    if interp
-        .kb
-        .try_resolve_symbol("anthill.reflect.LogicalQuery")
-        .is_none()
-    {
-        return Err(EvalError::Internal(format!(
-            "WI-714 {runner_qn} lowering: anthill.reflect.LogicalQuery is not resolvable"
-        )));
-    }
+    //
+    // WI-913: through the FALLIBLE form, not a `try_resolve_symbol` pre-check ahead of
+    // the infallible one. That pre-check was total only while the two spellings asked
+    // the same question, and routing the mint through the name ladder made them differ
+    // — the ladder is strictly narrower (a field, an `internal` name), so the guard
+    // could admit a name the mint then interned as the very phantom it exists to stop.
+    // One lookup, and the guard IS the mint.
     let query_ty = Value::term(
         interp
             .kb
-            .make_sort_ref_by_name("anthill.reflect.LogicalQuery"),
+            .try_make_sort_ref_by_name("anthill.reflect.LogicalQuery")
+            .ok_or_else(|| {
+                EvalError::Internal(format!(
+                    "WI-714 {runner_qn} lowering: anthill.reflect.LogicalQuery is not resolvable"
+                ))
+            })?,
     );
     spliced.set_inferred_type(query_ty);
     let runner = interp
@@ -3728,7 +3731,7 @@ fn reflect_cons_to_vec<T>(
 
 /// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
 /// Build a `Term::Fn { functor, pos_args, named_args = [] }` whose functor
-/// is resolved by qualified or short name. Companion to `fresh_var`: anthill
+/// is resolved through [`resolve_host_name`]. Companion to `fresh_var`: anthill
 /// code constructs pattern goals like `claimable(?id, ?desc)` by
 /// `make_fn("anthill.stage0.workflow.claimable", cons(id_var, cons(desc_var, nil())))`.
 ///
@@ -3744,10 +3747,7 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         Value::Str(s) => s.clone(),
         other => return Err(type_mismatch("String", other, None)),
     };
-    let functor = interp
-        .kb
-        .try_resolve_symbol(&name)
-        .ok_or_else(|| EvalError::Internal(format!("make_fn: unknown symbol `{name}`")))?;
+    let functor = resolve_host_name(interp, "make_fn", &name)?;
 
     let pos_vec: Vec<TermId> =
         reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", |v| match v {
@@ -3789,10 +3789,7 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
         Value::Str(s) => s.clone(),
         other => return Err(type_mismatch("String", other, None)),
     };
-    let functor = interp
-        .kb
-        .try_resolve_symbol(&name)
-        .ok_or_else(|| EvalError::Internal(format!("make_apply: unknown symbol `{name}`")))?;
+    let functor = resolve_host_name(interp, "make_apply", &name)?;
 
     // Reuse each argument occurrence in place (identity + span preserved). A
     // non-occurrence element is a LOUD error, never a silently-dropped node.
@@ -4643,6 +4640,53 @@ fn map_size(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
     Ok(Value::Int(n as i64))
 }
 
+/// WI-913 — THE HOST-NAME READ for an eval builtin: what functor a name that
+/// arrives as a runtime `String` denotes. Same question WI-908 gave one answer
+/// ([`KnowledgeBase::resolve_name_in_global`](crate::kb::KnowledgeBase::resolve_name_in_global)),
+/// so the same ladder — not `try_resolve_symbol`, whose absolute `by_qualified_name`
+/// lookup consults no scope and could not see the implicit tier a program writes
+/// bare (`cons`, `nil`, `some`, `SortInfo`, …).
+///
+/// An UNMARKED dotted path is the RELATIVE reading (WI-1075) — head segment resolved
+/// in scope, tail appended — so `..a.b.c` is how a host says it means the ROOT, exactly
+/// as source does. That is what re-spells the names whose only reading was the absolute
+/// one: the loader's `define_qualified_only` kernel names (`Sort`, `Fact`, `Member`,
+/// `meta`, …) answer to `..Member`, not to `Member`. Not a casualty — they are
+/// delocalized precisely so that user name resolution cannot surface them (WI-422 /
+/// WI-423), and a name a PROGRAM hands to `make_fn` IS user name resolution, while
+/// `..` is the spelling that says it is not. Driven by `wi913_host_name_ladder_test::
+/// a_qualified_only_kernel_name_is_reachable_only_by_the_root_spelling`.
+///
+/// An AMBIGUITY is its own answer, never folded into "unknown" (kernel-language.md
+/// §8.6, WI-907): the name denotes several symbols here, and reporting it as
+/// unknown sends the author looking for a declaration that already exists.
+///
+/// Not to be confused with [`require_symbol`] below, which resolves a BUILTIN'S OWN
+/// registration target — a Rust-side constant, always absolute, never host text.
+pub fn resolve_host_name(
+    interp: &mut Interpreter,
+    ctx: &str,
+    name: &str,
+) -> Result<crate::intern::Symbol, EvalError> {
+    match interp.kb.resolve_name_in_global(name) {
+        crate::intern::ResolveResult::Found(sym) => Ok(sym),
+        crate::intern::ResolveResult::Ambiguous(cands) => {
+            let names: Vec<&str> = cands
+                .iter()
+                .map(|&s| interp.kb.qualified_name_of(s))
+                .collect();
+            Err(EvalError::Internal(format!(
+                "{ctx}: `{name}` is ambiguous at <global> — {}",
+                names.join(", ")
+            )))
+        }
+        crate::intern::ResolveResult::NotFound => Err(EvalError::Internal(format!(
+            "{ctx}: unknown symbol `{name}` — a bare name must be in the implicit \
+             tier or in scope at <global>, a qualified one spelled in full"
+        ))),
+    }
+}
+
 /// Resolve a builtin's target symbol. Tries the fully-qualified name first,
 /// then falls back to the short name. Exposed so downstream crates that
 /// register their own builtins (e.g. `anthill-stl`) error consistently.
@@ -4907,21 +4951,33 @@ fn persistence_monotonicity(interp: &mut Interpreter, args: &[Value]) -> Result<
     // the functor to its store. Keeps the op honest to its signature.
     let _key = interp.store_canonical_key(&store_val)?;
 
-    let Some(functor) = crate::kb::term_view::TermView::head(&functor_val, &interp.kb)
-        .functor_sym()
-        .or_else(|| match &functor_val {
-            // A functor passed as its raw name string.
-            Value::Str(name) => interp.kb.try_resolve_symbol(name),
-            _ => None,
-        })
-    else {
-        return Err(EvalError::TypeMismatch {
-            expected: "Symbol (functor)",
-            got: functor_val.type_name().to_string(),
-        });
+    let head_sym = crate::kb::term_view::TermView::head(&functor_val, &interp.kb).functor_sym();
+    let functor = match head_sym {
+        Some(sym) => sym,
+        // A functor passed as its raw name string — HOST text, so the WI-908
+        // ladder (WI-913), not the absolute `by_qualified_name` lookup this used.
+        //
+        // An unresolvable name is now a NAME error and no longer falls through to
+        // the carrier error below: `TypeMismatch { expected: "Symbol (functor)",
+        // got: "String" }` was the single exit for both, so a misspelled functor
+        // was reported as a wrong-KIND value when the value was exactly right.
+        None => match &functor_val {
+            Value::Str(name) => {
+                let name = name.clone();
+                resolve_host_name(interp, "monotonicity", &name)?
+            }
+            other => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "Symbol (functor)",
+                    got: other.type_name().to_string(),
+                })
+            }
+        },
     };
 
     let mono = interp.resolve_fact_monotonicity(functor)?;
+    // `variant` is a Rust-side constant qualified name, not host text — the
+    // absolute lookup is the right question here and stays (WI-913).
     let variant = mono.reflect_variant_qname();
     let functor_sym = interp.kb.try_resolve_symbol(variant).ok_or_else(|| {
         EvalError::Internal(format!(

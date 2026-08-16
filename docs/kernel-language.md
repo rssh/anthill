@@ -3262,7 +3262,15 @@ relative one would have no way to say what `..` says. A name supplied by the
 a program written outside any namespace, so a short host name must be *in scope*
 (or in the implicit tier), an `internal` member is no more mountable than it is
 citable — and a host that means the root regardless of what is in scope there
-spells it `..a.b.c`, as source does. A **command-line**
+spells it `..a.b.c`, as source does. A name a **running program** supplies as a
+`String` value — `reflect.lookup_symbol`, `reflect.make_fn` / `make_apply`,
+`persistence.Store.monotonicity` — reads the same way, at the same scope (WI-913):
+the string is data, with no source occurrence and so no enclosing namespace to be
+relative to, which is what the top-level reading means. It follows that the
+loader's qualified-only kernel registrations (`Sort`, `Fact`, `Member`, `meta`, …)
+answer to `..Member` and not to `Member`: they are delocalized precisely so that
+name resolution cannot surface them, this is name resolution, and `..` is the
+spelling that says otherwise. A **command-line**
 name reads the same way, at the same scope (WI-914): `anthill query --mode functor`
 and `--mode domain` name what the same text names in `--mode pattern`, and `-i`
 therefore bears on all three — every mode `query` has, since WI-921 removed the
