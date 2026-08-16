@@ -23902,7 +23902,10 @@ fn collect_provides_candidates(
         // relation does not carry it. The finished shape marks the ROW (as
         // `mark_derived_provision` marks a derived one) so the relation itself
         // distinguishes a conversion. That is a change to the provision relation's
-        // schema, and this ticket already moves the dictionary layout twice.
+        // schema, and this ticket already moves the dictionary layout twice. WI-1111 owns
+        // it, together with the prior question of whether this skip is needed at all once
+        // a self-supplied slot is a projection rather than a search — see
+        // [`SupplySource`].
         if is_conversion_edge_at(kb, impl_sort, view_base_sym, &view_bindings) {
             continue;
         }
@@ -44292,6 +44295,18 @@ pub struct RequiresEntry {
 /// it is a SEARCH question: [`collect_provides_candidates`] must not offer a conversion
 /// as a provider. Recorded on the entry rather than recomputed there so the two readers
 /// cannot drift, and so a diagnostic can say which clause put the slot there.
+///
+/// THAT IDENTITY IS A CHOICE, AND WI-1111 OWNS REVISITING IT. "Built from self" literally
+/// says the slot is a PROJECTION of the dictionary already held, not a goal — an
+/// `Ord[Int64]` dictionary IS a `WeakOrd[Int64]` one plus a law, and nothing needs
+/// resolving to get between them. Filling it by SEARCH is why the same edge is traversed
+/// both ways (the conversion says `PartialEq` comes from `Eq`; the chain says `Eq`
+/// CONTAINS `PartialEq`), which is the `construction is cyclic` the candidate exclusion
+/// exists to break. A projected slot would start no search there, so the cycle — and
+/// possibly the exclusion — would not exist. Search was chosen because it needed no change
+/// to frame push, `DictLayout::slots_for` or `synth_req_names`; that trade is WI-1111's
+/// question 5, where the layout count, `build_sort_ops_table`'s inheritance of a forwarded
+/// spec's operations, and the eval path are each to be measured rather than argued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SupplySource {
     /// Written `requires` — the caller supplies the dictionary.
