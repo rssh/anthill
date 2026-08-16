@@ -2689,7 +2689,7 @@ fn collapse_schema(
 /// type constructor: given two NAMED-TUPLE types, produce the named tuple whose fields are
 /// `A`'s followed by `B`'s. Both operands must be named tuples with DISJOINT field names;
 /// a non-named-tuple operand (a 1-collapse / `Unit` relation schema, a scalar) or a
-/// field-name collision is an error, returned as a message [`reduce_binary_type_ctor`]
+/// field-name collision is an error, returned as a message [`reduce_type_ctor`]
 /// wraps in a `TypeError`. `Concat` is a type FORM (the surface a signature writes); this
 /// is its reduction — the projection precedent (`ExprCarried` is the form,
 /// `project_type_member` its reduction). The result is an ordinary named tuple.
@@ -2768,23 +2768,23 @@ fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool 
     }
 }
 
-/// WI-714 / WI-727 — the per-op reduction gate: which binary type constructors a return
+/// WI-714 / WI-727 — the per-op reduction gate: which type constructors a return
 /// type writes, in a SINGLE traversal, so the >99% of ops that write none skip
-/// [`reduce_binary_type_ctor`]'s descent entirely. Returns one flag per
-/// [`BINARY_TYPE_CTORS`] entry, positionally. A return type may write more than one, and
+/// [`reduce_type_ctor`]'s descent entirely. Returns one flag per
+/// [`TYPE_CTORS`] entry, positionally. A return type may write more than one, and
 /// the reduction boundary applies each flagged ctor in turn.
 ///
 /// WI-734 — indexed by the family slice rather than a hardcoded tuple, so adding a ctor is
-/// one line in [`BINARY_TYPE_CTORS`]: previously the family was enumerated independently
+/// one line in [`TYPE_CTORS`]: previously the family was enumerated independently
 /// here and at the reduction boundary, and a new ctor added to one but not the other would
 /// silently never reduce instead of failing to compile.
-fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_CTORS.len()] {
+fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; TYPE_CTORS.len()] {
     let syms = resolved_ctor_family(kb);
     fn walk(
         kb: &KnowledgeBase,
         ty: &Value,
-        syms: &[Option<Symbol>; BINARY_TYPE_CTORS.len()],
-        out: &mut [bool; BINARY_TYPE_CTORS.len()],
+        syms: &[Option<Symbol>; TYPE_CTORS.len()],
+        out: &mut [bool; TYPE_CTORS.len()],
     ) {
         match extract_type(kb, ty) {
             TypeExtractor::Parameterized { base, bindings } => {
@@ -2814,28 +2814,69 @@ fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_
             _ => {}
         }
     }
-    let mut out = [false; BINARY_TYPE_CTORS.len()];
+    let mut out = [false; TYPE_CTORS.len()];
     walk(kb, ty, &syms, &mut out);
     out
 }
 
-/// WI-714 / WI-727 — a BINARY type constructor (`Concat[A, B]`, `Without[T, Drop]`)
-/// reduced at the return-type normalization boundary by [`reduce_binary_type_ctor`]. Each is
-/// a type FORM keyed on its own sort symbol (never a domain op's identity), reading two
-/// operands by param name and merging them with `reduce`.
-struct BinaryTypeCtor {
+/// WI-714 / WI-727 — a type constructor (`Concat[A, B]`, `Without[T, Drop]`,
+/// `Membership[T]`) reduced at the return-type normalization boundary by
+/// [`reduce_type_ctor`]. Each is a type FORM keyed on its own sort symbol (never a domain
+/// op's identity), reading its operands by param name and reducing them.
+struct TypeCtor {
     /// The constructor sort's qualified name (`anthill.prelude.Concat`).
     qn: &'static str,
     /// Display label for diagnostics (`Concat`).
     label: &'static str,
-    /// The two operand parameter names, in declaration order (`["A", "B"]`).
-    operands: [&'static str; 2],
-    /// The reduction over the two resolved operands → the merged type (or an error message
-    /// the caller wraps in a `TypeError`).
-    reduce: fn(&mut KnowledgeBase, &Value, &Value, &CtorReduceSite) -> Result<Value, String>,
+    /// The operand names and the reduction over them — paired, so the two cannot disagree
+    /// about arity.
+    reduction: CtorReduction,
 }
 
-/// WI-759 — the SITE a binary type constructor reduces at. `Concat` / `Without` are purely
+/// WI-728 — a constructor's operand names PAIRED with the reduction that consumes them, so
+/// an operand list and a reducer of differing arity are unrepresentable. Two arities are in
+/// use: BINARY (the schema algebra — merge / drop / keep / select) and UNARY (a type-level
+/// PREDICATE: one operand, asserted and returned).
+enum CtorReduction {
+    /// One operand: `Ctor[T = <a>]` reduces to `reduce(a)`. The family's predicate shape —
+    /// the reduction ACCEPTS (yielding the asserted type) or raises a LOUD error, so a
+    /// constraint a signature cannot state in a parameter position is stated in the return
+    /// type and checked at load.
+    Unary {
+        /// The operand parameter's name (`"T"`).
+        operand: &'static str,
+        /// The reduction over the resolved operand → the asserted type (or an error message
+        /// the caller wraps in a `TypeError`).
+        reduce: fn(&mut KnowledgeBase, &Value, &CtorReduceSite) -> Result<Value, String>,
+    },
+    /// Two operands: `Ctor[op0 = <a>, op1 = <b>]` reduces to `reduce(a, b)`.
+    Binary {
+        /// The two operand parameter names, in declaration order (`["A", "B"]`).
+        operands: [&'static str; 2],
+        /// The reduction over the two resolved operands → the merged type (or an error
+        /// message the caller wraps in a `TypeError`).
+        reduce: fn(&mut KnowledgeBase, &Value, &Value, &CtorReduceSite) -> Result<Value, String>,
+    },
+}
+
+impl CtorReduction {
+    /// The operand names, IN DECLARATION ORDER — the order the reducer's parameters are in.
+    ///
+    /// LOAD-BEARING, not cosmetic: [`reduce_type_ctor`] reads the ctor application's
+    /// bindings THROUGH this list, so these strings decide WHICH binding each reducer
+    /// argument receives, and the list's LENGTH is what makes that read total. Changing a
+    /// name here to something prettier, or reordering, silently re-wires the reduction —
+    /// a well-formed `Concat[A = …, B = …]` would start reporting "needs `A` and `B`".
+    /// It is also what the diagnostic prints, but that is the incidental use.
+    fn operand_names(&self) -> &[&'static str] {
+        match self {
+            CtorReduction::Unary { operand, .. } => std::slice::from_ref(operand),
+            CtorReduction::Binary { operands, .. } => operands,
+        }
+    }
+}
+
+/// WI-759 — the SITE a type constructor reduces at. `Concat` / `Without` are purely
 /// STRUCTURAL — they merge and shrink named tuples and read nothing but `sp`. `FieldOf` is
 /// scope-SENSITIVE: an `internal` field is projectable only from inside its declaring scope
 /// (WI-369), so its reduction depends on WHERE it reduces, not only on its operands. Rather
@@ -2860,49 +2901,100 @@ struct CtorReduceSite {
     scope: Option<Symbol>,
 }
 
-const CONCAT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+const CONCAT_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Concat",
     label: "Concat",
-    operands: ["A", "B"],
-    reduce: concat_named_tuple_types,
+    reduction: CtorReduction::Binary {
+        operands: ["A", "B"],
+        reduce: concat_named_tuple_types,
+    },
 };
 
-const WITHOUT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+const WITHOUT_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Without",
     label: "Without",
-    operands: ["T", "Drop"],
-    reduce: without_named_tuple_types,
+    reduction: CtorReduction::Binary {
+        operands: ["T", "Drop"],
+        reduce: without_named_tuple_types,
+    },
 };
 
-const FIELD_OF_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+/// WI-759 — the type-ARGUMENT channel a `field_access` call carries its selector name on;
+/// `FieldOf`'s second operand. Named once so the synthesized call's type argument and the
+/// constructor that reads it cannot drift apart.
+const FIELD_OF_NAME_OPERAND: &str = "Name";
+
+const FIELD_OF_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.FieldOf",
     label: "FieldOf",
-    operands: ["T", "Name"],
-    reduce: field_of_type,
+    reduction: CtorReduction::Binary {
+        operands: ["T", FIELD_OF_NAME_OPERAND],
+        reduce: field_of_type,
+    },
 };
 
-const PROJECT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+/// WI-732 — the type-ARGUMENT channel a `project_run` call carries its keep spec on;
+/// `Project`'s second operand. Named once, for the reason on [`FIELD_OF_NAME_OPERAND`].
+const PROJECT_KEEP_OPERAND: &str = "Keep";
+
+const PROJECT_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Project",
     label: "Project",
-    operands: ["T", "Keep"],
-    reduce: project_schema_type,
+    reduction: CtorReduction::Binary {
+        operands: ["T", PROJECT_KEEP_OPERAND],
+        reduce: project_schema_type,
+    },
 };
 
-/// WI-714 / WI-727 — every binary type constructor, as ONE family. The family's shared
-/// rules (the abstract-operand reading below, the operand-name lookup, the reduction
-/// boundary) are stated once here rather than per constructor.
-const BINARY_TYPE_CTORS: [&BinaryTypeCtor; 4] =
-    [&CONCAT_CTOR, &WITHOUT_CTOR, &FIELD_OF_CTOR, &PROJECT_CTOR];
+const MEMBERSHIP_CTOR: TypeCtor = TypeCtor {
+    qn: "anthill.prelude.Membership",
+    label: "Membership",
+    reduction: CtorReduction::Unary {
+        operand: "T",
+        reduce: membership_schema_type,
+    },
+};
+
+/// WI-714 / WI-727 — every type constructor, as ONE family. The family's shared rules (the
+/// abstract-operand reading below, the operand-name lookup, the reduction boundary) are
+/// stated once here rather than per constructor.
+///
+/// ORDER IS PART OF THE DECLARATION, NOT COSMETIC (WI-728, review-found). The reduction
+/// boundary makes ONE pass in this order, and a ctor whose operand is a SIBLING defers on it
+/// ([`operand_not_yet_known`] case 2) — so a member placed BEFORE one that can appear inside
+/// its operands is the member whose reduction gets skipped, leaving a residual nothing
+/// revisits. Adding a member is still one line, but the line's POSITION is a decision:
+/// **place it after every member that can appear in its operands.**
+///
+/// `MEMBERSHIP_CTOR` is LAST for that reason, and the reason is sharper for a PREDICATE than
+/// for the computing members. A stranded COMPUTING ctor is caught downstream — its unreduced
+/// form offers no schema, so any use of the result fails loudly (see [`reduce_type_ctor`]'s
+/// CAVEAT, and `wi776_one_collapse_diagnostic_test`, which pins that stall deliberately). A
+/// stranded PREDICATE has no such backstop of its own: on success it reduces to its operand,
+/// so the reduced form is an ORDINARY type and an unreduced one is only noticed where
+/// something compares against the reduced form. MEASURED, by reordering: a signature that
+/// DECLARES the reduced type does catch it — and reports a correct program as wrong, blaming
+/// a residual — while a result merely consumed (`negate(r).isEmpty`) compares against nothing
+/// and would lose the assertion in silence. Being last is what makes both unreachable;
+/// `wi728_..._a_predicate_over_another_ctors_result_still_reduces` is the check, since a
+/// comment alone would not survive a reordering.
+const TYPE_CTORS: [&TypeCtor; 5] = [
+    &CONCAT_CTOR,
+    &WITHOUT_CTOR,
+    &FIELD_OF_CTOR,
+    &PROJECT_CTOR,
+    &MEMBERSHIP_CTOR,
+];
 
 /// WI-734 — the family's constructor sorts, resolved once. Kept out of the per-operand
-/// path deliberately: [`operand_not_yet_known`] runs up to twice per reduction and
+/// path deliberately: [`operand_not_yet_known`] runs once per operand per reduction and
 /// `try_resolve_symbol` is a string-keyed lookup, which the gated boundary
 /// ([`return_reducible_ctors`]) exists specifically to keep off the common path.
 /// `None` for a ctor whose sort is not loaded — the same "then it cannot appear" reading
-/// [`reduce_binary_type_ctor`] takes at its own resolve.
-fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTORS.len()] {
-    let mut out = [None; BINARY_TYPE_CTORS.len()];
-    for (i, c) in BINARY_TYPE_CTORS.iter().enumerate() {
+/// [`reduce_type_ctor`] takes at its own resolve.
+fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; TYPE_CTORS.len()] {
+    let mut out = [None; TYPE_CTORS.len()];
+    for (i, c) in TYPE_CTORS.iter().enumerate() {
         out[i] = kb.try_resolve_symbol(c.qn);
     }
     out
@@ -2919,6 +3011,19 @@ fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTOR
 ///    deferred, so the family stays internally consistent instead of the inner residual
 ///    tripping the outer reducer's concrete-operand check.
 ///
+/// 3. The operand is an UN-DISCHARGED PROJECTION — `ExprCarried` (`r.T`, WI-376) or
+///    `RigidTypeProjection` (`P.Key`, WI-428). A projection is eliminated against the
+///    RECEIVER's per-call type, so inside a wrapper whose own parameter is written bare
+///    (`negate(r)` in `once(r: Relation) -> …`) there is no receiver type to project yet
+///    and the projection survives the elimination pass. That is the same "may ground at an
+///    outer call site" situation as case 1, and WI-728 is where it became REACHABLE:
+///    `Membership`'s single operand is a bare projection, whereas every binary member has a
+///    second operand (`Keep`, `Drop`, `Name`) that is usually still a variable and so
+///    deferred the whole ctor by case 1 before the projection was ever inspected.
+///    MEASURED: without this arm, `operation once(r: Relation) -> Relation = negate(r)` —
+///    a program that loads clean before WI-728, and whose parameter is spelled exactly as
+///    `negate`'s own — is refused with the fabricated "one free column of type `r.T`".
+///
 /// Deliberately a SHALLOW head test: a variable nested *inside* an otherwise concrete
 /// operand (a named-tuple field type) does not block the merge, which copies field types
 /// verbatim. And deliberately NOT keyed on `TypeExtractor::Error` — that is a total-ness
@@ -2927,19 +3032,39 @@ fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTOR
 fn operand_not_yet_known(
     kb: &KnowledgeBase,
     v: &Value,
-    family: &[Option<Symbol>; BINARY_TYPE_CTORS.len()],
+    family: &[Option<Symbol>; TYPE_CTORS.len()],
 ) -> bool {
     if matches!(v.head(kb), ViewHead::Var(_)) {
         return true;
     }
-    matches!(
-        extract_type(kb, v),
-        TypeExtractor::Parameterized { base, .. } if family.contains(&Some(base))
-    )
+    match extract_type(kb, v) {
+        TypeExtractor::Parameterized { base, .. } => family.contains(&Some(base)),
+        TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
+        _ => false,
+    }
 }
 
-/// WI-714 / WI-727 — evaluate a binary type constructor (`cfg`) wherever it appears in a
-/// type: `Ctor[op0 = <a>, op1 = <b>]` reduces to `cfg.reduce(a, b)`. The INTERNAL type-level
+/// WI-728 — one already-reduced binding of a ctor application, by operand NAME. Short
+/// (local) name, like every other type-parameter lookup: the binding symbols carry the
+/// declaring sort's scope, and the family's operand names are written as they appear in
+/// `sort.anthill`.
+///
+/// DELIBERATELY NOT ENROLLED in [`binding_for_param`]'s ledger, which is the repo's one
+/// rule for looking a binding up BY PARAMETER SYMBOL. This asks a different question: it
+/// starts from a `&'static str` written in Rust, and the operand symbols are scoped to the
+/// declaring sort, so interning the bare name would not produce a symbol that matches
+/// (`define_qualified_only`). Extracted from the open-coded comparison the reducer already
+/// did rather than introduced here — the note exists so a later change to the binding-key
+/// rule knows this site reads names, not keys, and is unaffected by it.
+fn ctor_operand(kb: &KnowledgeBase, bindings: &[(Symbol, Value)], name: &str) -> Option<Value> {
+    bindings
+        .iter()
+        .find(|(p, _)| kb.local_name_of(*p) == name)
+        .map(|(_, v)| v.clone())
+}
+
+/// WI-714 / WI-727 — evaluate a type constructor (`cfg`) wherever it appears in a
+/// type: `Ctor[op0 = <a>, …]` reduces to `cfg.reduction` applied to its operands. The INTERNAL type-level
 /// operation behind the `Concat` / `Without` FORMS — keyed on the constructor's sort symbol
 /// and evaluated at the SAME return-type normalization boundary the `s.T` projection is, so
 /// ANY signature may write it; never keyed on a domain operation's identity. Recurses through
@@ -2957,6 +3082,16 @@ fn operand_not_yet_known(
 /// CONCRETE type is always fully reduced — there are never two comparable forms of one
 /// concrete type.
 ///
+/// ONE EXCEPTION, MEASURED (WI-728, review-found): a SIBLING family member reads as "not yet
+/// known", so an outer ctor defers on it, and if that sibling sits LATER in `TYPE_CTORS` it
+/// reduces afterwards — leaving the outer ctor unreduced over a now-concrete operand. So a
+/// fully concrete type CAN carry a residual, across members, in that one direction. It is
+/// not silent: the stranded ctor is a computing one, whose unreduced form offers no schema,
+/// so any use of the result fails loudly — `wi776_one_collapse_diagnostic_test::concat_over_-
+/// a_collapsed_without_still_stalls` pins exactly this shape, deliberately, because
+/// kernel-language.md §"1-collapse" records it as a weighed and declined limit. The boundary
+/// keeps ONE pass for that reason; see the ordering rule stated there.
+///
 /// CAVEAT: a residual reduces later only where the reduction gate fires, and
 /// [`return_reducible_ctors`] reads an op's DECLARED return type — so a generic wrapper
 /// must PROPAGATE the ctor in its own signature (as `join` / `fix` do); widening to a bare
@@ -2966,15 +3101,30 @@ fn operand_not_yet_known(
 /// offers no named-tuple schema to resolve against. The cost of widening is that the
 /// result is unusable columnwise, never that it answers wrongly.
 ///
+/// THAT SAFETY ARGUMENT IS ABOUT A SCHEMA-COMPUTING MEMBER, and does NOT transfer to a
+/// PREDICATE one (WI-728). It rests on the escaped residual being unusable — but a
+/// predicate reduces to its own operand on success, so its escaped result is a perfectly
+/// usable type and what is lost is the ASSERTION, silently. `Relation.negate` happens to
+/// keep a runtime guard that re-asks the question; a predicate written on any other sort
+/// has nothing behind it. So for a predicate: propagate it, or keep a runtime check, and
+/// do not read this paragraph as saying the escape costs only convenience.
+///
 /// A ctor nested in a non-parameterized-argument carrier (a named-tuple field, arrow,
 /// effect row) remains a LOUD error — never a silent pass-through. A carrier that mentions
 /// no `cfg` ctor returns unchanged.
-fn reduce_binary_type_ctor(
+///
+/// AN UNRESOLVABLE CTOR SORT returns the type unchanged. Sound for the same reason across
+/// the family, predicate included: the qualified name is the one a SIGNATURE writes, and a
+/// signature naming a sort that does not resolve is itself a load error — so there is no
+/// reachable state where a `Membership[..]` exists to assert and its sort does not. This is
+/// a totality arm, not a fallback, and the reasoning is recorded because for a predicate the
+/// failure mode of getting it wrong is an assertion that silently stops firing.
+fn reduce_type_ctor(
     kb: &mut KnowledgeBase,
     ty: &Value,
     ctx: &TypeErrorContext,
     site: &CtorReduceSite,
-    cfg: &BinaryTypeCtor,
+    cfg: &TypeCtor,
 ) -> Result<Value, TypeError> {
     let (sp, span) = (site.sp, site.span);
     let ctor_sym = match kb.try_resolve_symbol(cfg.qn) {
@@ -2987,49 +3137,58 @@ fn reduce_binary_type_ctor(
             // binding of `Relation[T = Ctor[..]]`), so descend before evaluating.
             let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
             for (p, v) in bindings {
-                reduced.push((p, reduce_binary_type_ctor(kb, &v, ctx, site, cfg)?));
+                reduced.push((p, reduce_type_ctor(kb, &v, ctx, site, cfg)?));
             }
             if base == ctor_sym {
-                // `Ctor[op0 = .., op1 = ..]` — read both operands by param name and merge.
-                let mut a: Option<Value> = None;
-                let mut b: Option<Value> = None;
-                for (p, v) in &reduced {
-                    let name = kb.local_name_of(*p);
-                    if name == cfg.operands[0] {
-                        a = Some(v.clone());
-                    } else if name == cfg.operands[1] {
-                        b = Some(v.clone());
-                    }
-                }
-                match (a, b) {
-                    // WI-734 — an operand that is NOT YET KNOWN leaves the ctor SYMBOLIC
-                    // rather than raising: reduction is deferred to the boundary where the
-                    // operand grounds. Distinguishing this from a CONCRETE operand the
-                    // reducer genuinely cannot merge is the whole point — handing an
-                    // unknown to `cfg.reduce` made it report the concrete-malformation
-                    // message ("must be a named-tuple type"), blaming a 1-collapse schema
-                    // for what is really an un-instantiated type parameter.
-                    (Some(a), Some(b))
-                        if {
-                            let family = resolved_ctor_family(kb);
-                            operand_not_yet_known(kb, &a, &family)
-                                || operand_not_yet_known(kb, &b, &family)
-                        } =>
-                    {
-                        let base_id = kb.make_sort_ref(base);
-                        Ok(parameterized_value(kb, base_id, &reduced, sp, None))
-                    }
-                    (Some(a), Some(b)) => (cfg.reduce)(kb, &a, &b, site)
-                        .map_err(|msg| projection_type_error(ctx, span, &msg)),
-                    _ => Err(projection_type_error(
+                // `Ctor[op0 = .., ..]` — read the operands by param name and reduce. Any
+                // operand missing is the same "needs its operands" error at every arity.
+                let operands: Option<SmallVec<[Value; 2]>> = cfg
+                    .reduction
+                    .operand_names()
+                    .iter()
+                    .map(|name| ctor_operand(kb, &reduced, name))
+                    .collect();
+                let Some(operands) = operands else {
+                    return Err(projection_type_error(
                         ctx,
                         span,
                         &format!(
-                            "`{}` needs both operands `{}` and `{}`",
-                            cfg.label, cfg.operands[0], cfg.operands[1]
+                            "`{}` needs {}",
+                            cfg.label,
+                            cfg.reduction
+                                .operand_names()
+                                .iter()
+                                .map(|n| format!("`{n}`"))
+                                .collect::<Vec<_>>()
+                                .join(" and ")
                         ),
-                    )),
+                    ));
+                };
+                // WI-734 — an operand that is NOT YET KNOWN leaves the ctor SYMBOLIC
+                // rather than raising: reduction is deferred to the boundary where the
+                // operand grounds. Distinguishing this from a CONCRETE operand the
+                // reducer genuinely cannot merge is the whole point — handing an
+                // unknown to `cfg.reduce` made it report the concrete-malformation
+                // message ("must be a named-tuple type"), blaming a 1-collapse schema
+                // for what is really an un-instantiated type parameter.
+                let family = resolved_ctor_family(kb);
+                if operands
+                    .iter()
+                    .any(|o| operand_not_yet_known(kb, o, &family))
+                {
+                    let base_id = kb.make_sort_ref(base);
+                    return Ok(parameterized_value(kb, base_id, &reduced, sp, None));
                 }
+                // `operands` was collected FROM `operand_names()`, and [`CtorReduction`]
+                // pairs those names with the reducer that consumes them — so its length is
+                // this variant's arity and the indexing below cannot be out of range.
+                match &cfg.reduction {
+                    CtorReduction::Unary { reduce, .. } => reduce(kb, &operands[0], site),
+                    CtorReduction::Binary { reduce, .. } => {
+                        reduce(kb, &operands[0], &operands[1], site)
+                    }
+                }
+                .map_err(|msg| projection_type_error(ctx, span, &msg))
             } else {
                 let base_id = kb.make_sort_ref(base);
                 Ok(parameterized_value(kb, base_id, &reduced, sp, None))
@@ -3145,6 +3304,95 @@ fn without_named_tuple_types(
         .filter(|(tn, _)| !dropped.contains(tn))
         .collect();
     Ok(collapse_schema(kb, &kept, site.sp))
+}
+
+/// WI-728 (proposal 052) — the INTERNAL type-level operation behind the `Membership[T]`
+/// type constructor: the family's first PREDICATE member. Where `Concat` / `Without` /
+/// `Project` COMPUTE a schema, this one only ASSERTS a schema is CLOSED — `Unit`, the
+/// 1-collapse of zero columns — and returns it. A schema that still has columns is a LOAD
+/// error.
+///
+/// It exists because a signature cannot state the constraint in its PARAMETER position.
+/// `negate(r: Relation[T = Unit])` leaves the parameter non-ground in `E` (a `Relation`
+/// threads an effect row too), and the arg-vs-param check is gated on groundness
+/// ([`validate_arg_against_param`]) — so the constraint was silently unchecked, and pinning
+/// `E` to close that gap over-narrows the row every caller must then match. Stating it in
+/// the RETURN type instead puts it where the family already reduces, after the projection
+/// `r.T` has been discharged against the actual argument.
+///
+/// WHAT THE MESSAGE CAN NAME, and why it differs from the runtime guard's. At the VALUE
+/// level a relation carries its `columns` list, so `Relation.negate`'s host guard names the
+/// offending columns. At the TYPE level a ONE-column schema has already 1-collapsed to the
+/// column's element type (§"1-collapse" — the collapse drops the NAME), so only a ≥2-column
+/// schema still spells its column names. The message therefore names the columns when the
+/// schema still has them and the column TYPE when the collapse took the name.
+///
+/// A SHAPE THIS CANNOT NAME GETS A SHAPE CLAIM, not an invented column. `extract_type` is
+/// TOTAL — `TypeExtractor::Error` is its catch-all for a genuinely malformed type, and an
+/// arrow / effect-row / denoted operand is well-formed but is no relation schema at all.
+/// Reporting "one free column of type `?`" for any of those states a fact about the
+/// author's code that is not true and sends them to close columns that do not exist. Only
+/// the shapes a 1-collapse can actually PRODUCE (a bare sort, a sort application) take the
+/// column reading; everything else says what it is. `without_named_tuple_types` phrases its
+/// catch-all the same way, and this is the correction that brings the two into line
+/// (review-found, WI-728).
+///
+/// KNOWN LIMIT, and the reason the runtime guard is not redundant: a ONE-column relation
+/// whose column type IS `Unit` collapses to exactly the same `Unit` a zero-column relation
+/// does, so this check ACCEPTS it and the drain refuses it. The 1-collapse is a specified,
+/// deliberately paired type-and-value convention (§"1-collapse"), so no type-level check can
+/// separate the two; `wi728_a_unit_typed_column_is_indistinguishable_from_no_columns` pins
+/// the behaviour so it is a recorded limit rather than a surprise.
+fn membership_schema_type(
+    kb: &mut KnowledgeBase,
+    t: &Value,
+    _site: &CtorReduceSite,
+) -> Result<Value, String> {
+    let extracted = extract_type(kb, t);
+    // `Unit` — the 0-column schema — is the one accepted operand; return it unchanged so
+    // the enclosing `Relation[T = Membership[T = r.T]]` reduces to `Relation[T = Unit]`.
+    // A BARE sort ref, which is exactly what `collapse_schema` mints for zero columns: a
+    // `Unit[..]` APPLICATION is a different type and must not read as closed. And if `Unit`
+    // itself does not resolve there is no verdict to give — DEFER (return the operand
+    // unreduced) rather than let a failed lookup turn the accepted type into the offender.
+    let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
+    let Some(unit) = unit else {
+        return Ok(t.clone());
+    };
+    if matches!(extracted, TypeExtractor::SortRef(s) if s == unit) {
+        return Ok(t.clone());
+    }
+    let offending = match extracted {
+        // `short_name_of`, as every other named-tuple field LIST in this module renders one
+        // (`no_such_member_message`, the projection diagnostics): a component symbol can
+        // carry its declaring scope, and a column called `test.ns.name` in a message about
+        // the author's columns is noise they cannot act on.
+        TypeExtractor::NamedTuple(fields) => format!(
+            "free column(s): {}",
+            fields
+                .iter()
+                .map(|(n, _)| short_name_of(kb.local_name_of(*n)).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        // A 1-collapsed schema: the column NAME is gone, so name its type instead. Only
+        // these two shapes — the ones a collapsed single column can be.
+        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => format!(
+            "one free column of type `{}`",
+            type_display_name_value(kb, t)
+        ),
+        // Anything else is not a relation schema at all; say so, and claim no columns.
+        _ => format!(
+            "the type `{}`, which is not a relation schema",
+            type_display_name_value(kb, t)
+        ),
+    };
+    Err(format!(
+        "`Membership` requires a CLOSED schema (`Unit` — a relation whose columns are all \
+         bound), but this one has {offending}; close the columns first — bind them by \
+         applying the relation, or project ALL of them away in one step (a projection that \
+         leaves any column behind still fails here)"
+    ))
 }
 
 /// WI-759 — the member a field projection `x.f` selects: the projected TYPE plus the
@@ -6133,7 +6381,7 @@ fn build_relation_projection(
     let keep_param = lookup_operation_info_full(kb, project_run).and_then(|op| {
         op.type_params
             .iter()
-            .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == PROJECT_CTOR.operands[1])
+            .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == PROJECT_KEEP_OPERAND)
             .map(|(n, _)| *n)
     });
     let Some(keep_param) = keep_param else {
@@ -6145,7 +6393,7 @@ fn build_relation_projection(
             &format!(
                 "`anthill.prelude.Relation.project_run` must declare a `{}` type parameter — \
                  the channel a projection's keep spec travels to type position through",
-                PROJECT_CTOR.operands[1]
+                PROJECT_KEEP_OPERAND
             ),
         )));
     };
@@ -11409,7 +11657,7 @@ fn synthesize_field_access(
         .and_then(|op| {
             op.type_params
                 .iter()
-                .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == FIELD_OF_CTOR.operands[1])
+                .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == FIELD_OF_NAME_OPERAND)
                 .map(|(n, _)| *n)
         })
         .ok_or_else(|| {
@@ -11419,7 +11667,7 @@ fn synthesize_field_access(
                 &format!(
                     "`anthill.reflect.field_access` must declare a `{}` type parameter — the \
                      channel a field projection's name travels to type position through",
-                    FIELD_OF_CTOR.operands[1]
+                    FIELD_OF_NAME_OPERAND
                 ),
             ))
         })?;
@@ -12131,7 +12379,7 @@ fn check_apply_iter(
         let op_has_projection = params_have_projection
             || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
-        // WI-714 / WI-727: does the RETURN type write a binary type constructor (`Concat`,
+        // WI-714 / WI-727: does the RETURN type write a type constructor (`Concat`,
         // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
         // declared signature, like `op_has_projection`) — ONE traversal for both — so only a
         // signature that actually reduces a schema pays for the reduction at each call.
@@ -12638,7 +12886,7 @@ fn check_apply_iter(
             // Share the single `subst`-walk (which substitutes the bound type params —
             // `Drop = R`, the captured record — into the type before the operands are
             // inspected), then apply each ctor the signature actually wrote, in family
-            // order. WI-734: folded over `BINARY_TYPE_CTORS` rather than an if-chain per
+            // order. WI-734: folded over `TYPE_CTORS` rather than an if-chain per
             // constructor, so a new ctor reduces here by construction.
             // WI-759: the reduction SITE — `FieldOf` reads its enclosing sort to decide
             // whether an `internal` field is projectable here (WI-369); the structural
@@ -12650,10 +12898,41 @@ fn check_apply_iter(
                 // `TypingEnv::referencing_scope`. Was `enclosing_sort()`, one scope out.
                 scope: env.referencing_scope(),
             };
+            // ONE PASS, IN ARRAY ORDER — and that order is LOAD-BEARING (WI-728,
+            // review-found). A ctor whose operand is another family member DEFERS (a sibling
+            // reads as "not yet known"), so if the inner member sits LATER in `TYPE_CTORS` it
+            // reduces afterwards and the outer one is left unreduced over a now-CONCRETE
+            // operand that this loop never revisits.
+            //
+            // NOT REPAIRED WITH A FIXPOINT, and the reason is a decision already taken.
+            // A fixpoint was written and measured: it works, and it FAILS
+            // `wi776_one_collapse_diagnostic_test::concat_over_a_collapsed_without_still_-
+            // stalls`, whose whole purpose is to fail if anyone makes this reduce ("someone
+            // re-reads the decision"). Re-read: kernel-language.md §"1-collapse" records
+            // `Concat`/`Without` not being inverses at arity one as a KNOWN LIMIT of the
+            // paired type-and-value collapse convention, weighed and declined. Turning the
+            // stall into `Concat`'s own refusal is a change to that specified rule, not a
+            // bug fix, and belongs with the rest of that decision rather than inside a
+            // ticket about `negate`'s operand.
+            //
+            // AND THE ESCAPE IS CAUGHT ANYWAY, for the members this loop can strand: an
+            // unreduced COMPUTING ctor offers no schema, so any use of the result fails
+            // loudly (the CAVEAT on `reduce_type_ctor`) — which is exactly what the wi776
+            // pin observes. The first probe that suggested otherwise bound the result to an
+            // unused `let`, where nothing forces the comparison; that is not a silent wrong
+            // answer, it is a program that never asks.
+            //
+            // WHAT THE ORDER THEREFORE COSTS, AND THE RULE IT IMPOSES: a member must sit
+            // AFTER any member that can appear inside its operands, or its own reduction is
+            // the one skipped. `MEMBERSHIP_CTOR` is LAST for exactly that reason — a
+            // PREDICATE stranded this way would lose its assertion silently rather than
+            // produce an unusable type, the one case the CAVEAT's safety argument does not
+            // cover. Adding a member is still one line in `TYPE_CTORS`, but WHERE that line
+            // goes is part of the decision.
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
-            for (cfg, wrote) in BINARY_TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
+            for (cfg, wrote) in TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
                 if *wrote {
-                    reduced = reduce_binary_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
+                    reduced = reduce_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
                 }
             }
             reduced

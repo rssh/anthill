@@ -1,24 +1,32 @@
-//! WI-750 — a METHOD CALL whose receiver is a CHAIN (`person_row.negate.takeN(5)`,
+//! WI-750 — a METHOD CALL whose receiver is a CHAIN (`has_alice.negate.takeN(5)`,
 //! `p.inner.abs()`).
 //!
 //! WI-749 widened the ZERO-ARG field path to admit a receiver some PREFIX of whose
 //! name resolves to a rule, so member chains on a relation re-route level by level.
 //! The METHOD-CALL path was not widened and still reached a rule receiver only at
 //! DEPTH 1, so the same receiver was a VALUE for `x.m` and a static NAME PATH for
-//! `x.m(args)` — `person_row.negate.isEmpty` loaded, `person_row.negate.takeN(5)` did
+//! `x.m(args)` — `has_alice.negate.isEmpty` loaded, `has_alice.negate.takeN(5)` did
 //! not. Not a WI-749 regression: both spellings failed before it.
+//!
+//! THE `negate` OPERAND IS A MEMBERSHIP RELATION, and must stay one (WI-728): `negate`
+//! requires a closed schema, checked at LOAD since WI-728, so a multi-column operand
+//! would fail these fixtures for a reason that has nothing to do with chained
+//! re-routing. The subject is the chain's SHAPE — `<rule>.<zero-arg member>.<method>(…)`
+//! — which is unchanged by which rule roots it. (These fixtures negated the
+//! multi-column `person_row` until WI-728 made that a load error; only the operand
+//! moved.)
 //!
 //! THE ASYMMETRY, and why the fix lives in the loader. The converter classifies a dot
 //! receiver SYNTACTICALLY (`is_value_receiver`): a receiver rooted at an identifier is
 //! a NAME, so `push_fn_term` flattens the whole dotted callee to ONE functor symbol
-//! (`person_row.negate.takeN`) while `push_field_access` keeps a nested `field_access`
+//! (`has_alice.negate.takeN`) while `push_field_access` keeps a nested `field_access`
 //! whose object is VISITED. That is the whole difference — the field path DEFERS the
 //! value-vs-name decision to the loader, where scope is known, and the call path
 //! decided it early and destroyed the structure the decision needs.
 //!
 //! It cannot be fixed by making the converter route both the same way: it is
 //! scope-blind, and `ns.Sort.op(args)` is a legitimate qualified call with exactly the
-//! shape of `person_row.negate.takeN(5)`. So the call path recovers the chain from the
+//! shape of `has_alice.negate.takeN(5)`. So the call path recovers the chain from the
 //! NAME instead — `dot_call_receiver_chain` decomposes the receiver into the value
 //! place it is ROOTED at plus the trailing zero-arg members, which
 //! `try_identifier_dot_call` folds into `DotApply`s over that root. Same lowering the
@@ -40,15 +48,16 @@ namespace test.wi750
     entity person(name: String, age: Int64)
   end
   fact person(name: "alice", age: 30)
-  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+  -- zero free head variables → Relation[Unit]: the membership operand `negate` needs.
+  rule has_alice() :- person(name: "alice", age: ?)
 
   -- WI-750: the INLINE chained-receiver CALL.
   operation inlineChain() -> List[Unit] effects Error =
-    person_row.negate.takeN(5)
+    has_alice.negate.takeN(5)
 
   -- its let-bound reference spelling.
   operation letBoundChain() -> List[Unit] effects Error =
-    let r = person_row
+    let r = has_alice
     let n = r.negate
     n.takeN(5)
 end
@@ -56,13 +65,13 @@ end
 
 /// ACCEPTANCE: a method call on a chained rule-reference receiver loads, exactly as
 /// the let-bound spelling beside it does. Before WI-750 the inline form died in the
-/// LOADER (`person_row.negate.takeN.apply: unknown functor` — the flattened callee),
+/// LOADER (`has_alice.negate.takeN.apply: unknown functor` — the flattened callee),
 /// so reaching the same lowering as the let-bound twin is the whole point.
 #[test]
 fn wi750_rule_chain_method_call_loads_like_let_bound() {
     try_load_kb_with(RULE_CHAIN).unwrap_or_else(|errs| {
         panic!(
-            "`person_row.negate.takeN(5)` must re-route and load exactly as its \
+            "`has_alice.negate.takeN(5)` must re-route and load exactly as its \
              let-bound spelling does; got:\n{}",
             errs.join("\n")
         )
@@ -129,10 +138,10 @@ namespace test.wi750dispatch
     entity person(name: String, age: Int64)
   end
   fact person(name: "alice", age: 30)
-  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+  rule has_alice() :- person(name: "alice", age: ?)
 
   operation bad() -> Bool effects Error =
-    person_row.negate.nosuchmethod(5)
+    has_alice.negate.nosuchmethod(5)
 end
 "#;
     let errs = try_load_kb_with(SRC)
@@ -259,7 +268,7 @@ namespace test.wi750ns.data
     entity person(name: String, age: Int64)
   end
   fact person(name: "alice", age: 30)
-  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+  rule has_alice() :- person(name: "alice", age: ?)
 end
 "#;
     const USE: &str = r#"
@@ -268,10 +277,10 @@ namespace test.wi750ns.use
   import anthill.prelude.Relation.{negate}
 
   operation inlineCrossFile() -> List[Unit] effects Error =
-    test.wi750ns.data.person_row.negate.takeN(5)
+    test.wi750ns.data.has_alice.negate.takeN(5)
 
   operation letBoundCrossFile() -> List[Unit] effects Error =
-    let r = test.wi750ns.data.person_row
+    let r = test.wi750ns.data.has_alice
     let n = r.negate
     n.takeN(5)
 end

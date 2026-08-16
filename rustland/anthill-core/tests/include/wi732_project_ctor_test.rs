@@ -235,7 +235,7 @@ end
 /// produced had the typer not stamped over it.
 ///
 /// Scope of what this pins, measured rather than assumed: it rejects whether or not `Project`
-/// is registered in `BINARY_TYPE_CTORS` — unregistered, the return stays an UNREDUCED
+/// is registered in `TYPE_CTORS` — unregistered, the return stays an UNREDUCED
 /// constructor, which does not conform either. So this is a guard against widening, NOT
 /// evidence that the reduction fires. The tests that distinguish those two worlds are the
 /// re-type pair above: A/B-verified, both FAIL with `Project` unregistered, because reading

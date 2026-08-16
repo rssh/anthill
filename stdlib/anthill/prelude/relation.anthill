@@ -76,7 +76,7 @@
 --   evaluated during resolution), exactly `execute`'s `effects Error`. The provides
 --   edge threads it so every inherited Stream op types at {Error}, not {}.
 sort anthill.prelude.Relation
-  import anthill.prelude.{LogicalStream, Option, Pair, Unit, Concat, Without}
+  import anthill.prelude.{LogicalStream, Option, Pair, Unit, Concat, Without, Membership}
   import anthill.reflect.{NodeOccurrence, Term, LogicalQuery}
 
   sort T = ?              -- schema: named tuple of the free head parameters
@@ -119,18 +119,31 @@ sort anthill.prelude.Relation
   -- relation with a FREE column would flounder (the resolver cannot decide
   -- `not p(?x)` with `?x` unbound — resolver changes are out of 052's scope), so
   -- negating a relation that still has columns is a loud error rather than a
-  -- silent floundered result. To negate a relation with columns, first close them
-  -- (bind via application, or project/exists — a later increment).
+  -- silent floundered result. To negate a relation with columns, first close them:
+  -- bind them by APPLYING the relation, or drop them with `r.fix(...)` — but `fix`
+  -- must close them ALL IN ONE CALL. Dropping some of several re-raises this same
+  -- error on the residual, and dropping the only column of a 1-collapsed relation is
+  -- refused by `Without` itself ("a relation with at least two named columns"), so
+  -- for a one-column relation APPLICATION is the only route.
   --
-  -- The membership requirement is enforced by the runtime (host builtin: reject a
-  -- non-empty column set), NOT by the signature: the arg-vs-param check runs only
-  -- when the param type is fully GROUND, but pinning the operand's effect row to
-  -- make it ground both over-narrows `E` and trips a param-order canonicalization
-  -- in the compatibility check — so `T = Unit` cannot be expressed as an
-  -- enforceable-yet-`E`-open constraint here. Load-time enforcement is a follow-up
-  -- (a dedicated operand-schema check). The bare `Relation` param keeps `E` open
-  -- (threaded to the result as `r.E`); body-less — the runtime does the query wrap.
-  operation negate(r: Relation) -> Relation[T = Unit, E = r.E]
+  -- That requirement is carried by the SIGNATURE and checked at LOAD (WI-728):
+  -- `Membership[T]` is the type-level predicate "this schema is CLOSED", reducing to
+  -- `Unit` for a 0-column schema and raising otherwise, at the same return-type
+  -- normalization boundary `Concat` / `Without` / `Project` reduce at (`sort.anthill`).
+  -- It is written in the RETURN rather than the parameter because a `Relation[T = Unit]`
+  -- PARAMETER is still non-ground in `E`, and the arg-vs-param check is gated on
+  -- groundness — so the constraint would be silently unchecked, while pinning `E` to
+  -- close that gap over-narrows the row every caller must match. The bare `Relation`
+  -- param therefore keeps `E` open (threaded to the result as `r.E`); body-less — the
+  -- runtime does the query wrap.
+  --
+  -- The RUNTIME guard stays, and is not redundant: it reads the VALUE's own `columns`
+  -- list, which is a different population from the SCHEMA the typer sees. Two ways to
+  -- reach it: a schema that was never statically known (an abstract `S` leaves the
+  -- assertion symbolic per WI-734, and a wrapper widening its own return to a bare
+  -- `Relation` lets that residual escape unreduced), and a relation built through
+  -- reflect rather than from surface code. Two checks, two populations.
+  operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E]
 
   -- union — the BAG union of two relations (052 §algebra; multiplicity kept, OQ6):
   -- the solutions of EITHER operand. Combines QUERIES: builds

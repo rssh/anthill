@@ -1257,3 +1257,6 @@ mod wi830_extent_binding_test;
 
 #[path = "include/wi913_host_name_ladder_test.rs"]
 mod wi913_host_name_ladder_test;
+
+#[path = "include/wi728_membership_operand_test.rs"]
+mod wi728_membership_operand_test;

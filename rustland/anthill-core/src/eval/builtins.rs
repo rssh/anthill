@@ -1919,9 +1919,27 @@ fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // is bound, the ground-goal precondition for every relation built from surface
     // code; it is an APPROXIMATION of "the goal atom is ground" — a free logic var
     // supplied as an argument VALUE (constructible only via reflect/metaprogramming,
-    // not plain code) is not reflected in `columns` and would slip through. Ideally
-    // this is load-time; see the stdlib note on why the signature can't carry the
-    // `T = Unit` constraint with `E` open.
+    // not plain code) is not reflected in `columns` and would slip through.
+    //
+    // WI-728 moved the ORDINARY verdict to LOAD time: `negate`'s return is now
+    // `Relation[T = Membership[T = r.T], …]`, and `Membership` is the type-level
+    // predicate the ctor-reduction boundary evaluates (kb/typing.rs). This guard is
+    // NOT thereby dead — it reads the VALUE's own `columns`, a different population
+    // from the SCHEMA the typer sees. Three ways it is still reached, the first two
+    // DRIVEN in `wi728_membership_operand_test`:
+    //   * a ONE-column relation whose column type is `Unit`. The 1-collapse maps it to
+    //     the same `Unit` a zero-column relation gets, so no type-level check can see
+    //     the column and this one can (`…_a_unit_typed_column_is_indistinguishable_-
+    //     from_no_columns`). The sharpest case: it needs no generic code at all.
+    //   * a schema never known statically — the WI-734 abstract-operand rule leaves the
+    //     assertion symbolic, and a wrapper widening its own return to a bare `Relation`
+    //     lets that residual escape unreduced (`…_abstract_schema_defers_to_the_runtime_-
+    //     guard`).
+    //   * a relation built through reflect rather than from surface code. NOT driven —
+    //     there is no reflect LogicalQuery BUILD interface yet (see `guarded_of`'s note
+    //     in relation.anthill), so no test can construct one. Stated so a later reader
+    //     weighing this guard's removal knows which of the three is argued and which is
+    //     merely asserted; the first two carry the case on their own.
     if !columns.is_empty() {
         let names: Vec<String> = columns
             .iter()

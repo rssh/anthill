@@ -397,16 +397,29 @@ end
 ///
 /// This is the POSITIVE pin, and it is what makes the prefix scan load-bearing rather
 /// than speculative: `negate` is zero-arg and returns a `Relation`, so
-/// `person_row.negate.isEmpty` is a real depth-2 pure-name chain. Probing only the
-/// FULL receiver name would not re-route the outer level — `person_row.negate` names
+/// `has_alice.negate.isEmpty` is a real depth-2 pure-name chain. Probing only the
+/// FULL receiver name would not re-route the outer level — `has_alice.negate` names
 /// no rule — and the member would fall back to the loader's unresolved-name error.
 ///
-/// NOTE the asymmetry with the METHOD-CALL path, which is PRE-EXISTING and deliberate:
-/// `person_row.negate.takeN(5)` still fails loudly, because that path SYNTHESIZES its
-/// receiver from a single symbol and so has no way to express a chained one — WI-443
-/// defers exactly that, and defers it for chained LOCAL receivers (`p.inner.abs()`,
-/// pinned in the WI-729 suite) in the same way. This path can chain precisely because
-/// it VISITS the receiver instead.
+/// THE OPERAND IS A MEMBERSHIP RELATION, and must stay one (WI-728): `negate` requires
+/// a closed schema, and since WI-728 that is checked at LOAD, so a multi-column operand
+/// would fail this fixture for a reason that has nothing to do with chained re-routing.
+/// The chain's SHAPE — `<rule>.<zero-arg member>.<zero-arg member>` — is the subject and
+/// is unchanged by which rule roots it.
+///
+/// THE METHOD-CALL ASYMMETRY THIS ONCE NOTED IS GONE — WI-750 CLOSED IT. As written at
+/// WI-749, the note said `<rule>.negate.takeN(5)` "still fails loudly", because the
+/// method-call path SYNTHESIZED its receiver from a single symbol and so could not express
+/// a chained one (WI-443 deferred exactly that, and the chained LOCAL receiver
+/// `p.inner.abs()` with it). WI-750 taught that path to recover the chain from the name, so
+/// the identical spelling now LOADS and is asserted to —
+/// `wi750_rule_chain_method_call_loads_like_let_bound`, which runs end to end. Kept as a
+/// correction rather than deleted because the stale note survived a rename (WI-728) that
+/// made both files spell the same string, so a reader grepping it would have found one
+/// comment denying what a passing test proves.
+///
+/// What remains true, and is the point here: this path can chain because it VISITS the
+/// receiver, where the call path had to be taught to reconstruct one.
 #[test]
 fn wi749_chained_member_reroutes_level_by_level() {
     const SRC: &str = r#"
@@ -417,22 +430,23 @@ namespace test.wi749chain
     entity person(name: String, age: Int64)
   end
   fact person(name: "alice", age: 30)
-  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+  -- zero free head variables → Relation[Unit]: the membership operand `negate` needs.
+  rule has_alice() :- person(name: "alice", age: ?)
 
   -- depth-2 pure-name chain: a zero-arg member ON a zero-arg member.
   operation chained() -> Bool effects Error =
-    person_row.negate.isEmpty
+    has_alice.negate.isEmpty
 
   -- the let-bound reference spelling for that same chain.
   operation letBound() -> Bool effects Error =
-    let r = person_row
+    let r = has_alice
     let n = r.negate
     n.isEmpty
 end
 "#;
     try_load_kb_with(SRC).unwrap_or_else(|errs| {
         panic!(
-            "`person_row.negate.isEmpty` must re-route at BOTH levels and load, \
+            "`has_alice.negate.isEmpty` must re-route at BOTH levels and load, \
              exactly as the let-bound spelling beside it does; got:\n{}",
             errs.join("\n")
         )

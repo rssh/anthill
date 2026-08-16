@@ -212,6 +212,62 @@ sort anthill.prelude.Project
   sort Keep = ?
 end
 
+{< Membership[T]: the TYPE-position surface of a CLOSED-SCHEMA requirement (WI-728 /
+   proposal 052 — `negate`'s operand contract). The family's first PREDICATE member, and
+   its first UNARY one: where `Concat` / `Without` / `Project` / `FieldOf` COMPUTE a type
+   from two operands, `Membership` only ASSERTS one and hands it back. `Membership[T = Unit]`
+   reduces to `Unit`; a `T` that still has columns is a LOAD error.
+
+   WHY A SIGNATURE NEEDS THIS. A constraint on a parameter would naturally be written in the
+   parameter — `negate(r: Relation[T = Unit])`. That does not check: a `Relation` threads an
+   effect row as well as a schema, so `Relation[T = Unit]` is still non-GROUND in `E`, and
+   the argument-vs-parameter check is gated on groundness (it leaves a polymorphic position
+   to dispatch); pinning `E` to close the gap over-narrows the row every caller must match.
+   Written in the RETURN type the same constraint lands where the ctor family already
+   reduces — AFTER the projection `r.T` is discharged against the actual argument — so it is
+   checked at load, universally, with nothing keyed on the operation's identity:
+
+     operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E]
+
+   WHAT "CLOSED" MEANS, AND WHERE IT IS LOSSY. A relation's schema 1-collapses
+   (§"1-collapse"): zero free columns give `Unit`, one gives that column's element type, two
+   or more the named tuple. So a bare `Unit` in type position is what "no free columns"
+   looks like, and it is the only schema `Membership` accepts. It is NOT a decision
+   procedure for "has no columns", and cannot be: a ONE-column relation whose column type is
+   itself `Unit` collapses to the SAME `Unit`, so this check accepts it and the drain
+   refuses it. That is the 1-collapse being lossy exactly as the spec says it is — a paired
+   type-and-value convention, not a hole here — and it is the sharpest reason a runtime
+   guard beside a `Membership` assertion is not redundant: the value's `columns` list still
+   has the column the schema forgot. The diagnostic names the offending columns when the
+   schema still spells them, and the column TYPE when the 1-collapse already dropped the
+   name; a `T` that is no relation schema at all is named as that, never as a column.
+
+   WHAT A PREDICATE CTOR DOES NOT DO. It reduces at ONE site: the return-type normalization
+   boundary, per CALL, gated on the callee's DECLARED return type. Three consequences worth
+   knowing before writing one:
+     - In a PARAMETER position it asserts NOTHING (`f(s: Slot[T = Membership[T = Int64]])`
+       loads clean), and an argument is then compared against the UNREDUCED form, so the
+       satisfying case is the one that gets refused. Write it in the return.
+     - At a DEFINITION-SITE return conformance it does not reduce either, so a body whose
+       call already reduced to `Unit` does not match a declared `Membership[T = Unit]` over
+       a CONCRETE receiver. Propagating the ctor is for a wrapper whose operand is still
+       ABSTRACT (see below); over a concrete one, declare the reduced type.
+     - The family's CAVEAT about a widened return (stated on `Concat`) reads differently
+       here. For a schema-COMPUTING member an escaped residual is merely unusable columnwise;
+       for a PREDICATE the escape means the assertion did not happen at all. Where that
+       matters, propagate it or keep a runtime guard.
+
+   ABSTRACT OPERANDS (WI-734): `Membership` follows the family rule stated on `Concat` above
+   — a `T` that is not yet known leaves the ctor symbolic to reduce once it grounds, so a
+   generic wrapper over `negate` is expressible and the assertion fires at the concrete call.
+   "Not yet known" covers an un-discharged PROJECTION (`r.T` inside a wrapper whose own
+   parameter is written bare, so there is no receiver type to project against) as well as a
+   type variable — this member is the one that made that case reachable, since every binary
+   member has a second operand that usually defers the ctor first. >}
+sort anthill.prelude.Membership
+  sort T = ?
+end
+
 {< EffectExpression: the effect-row carried by an arrow (proposal 045 §3, §6).
 
    The surface algebra a programmer writes — `present` / `absent` / `open`

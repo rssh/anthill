@@ -149,7 +149,7 @@ receiver, never as free identifiers.
 | filter | `where(r, (a) -> cond)` | `guarded` | unchanged |
 | project | `r.(f1, f2)` (rename `r.(a: f1, b: f2)`) | `projected` | `T` = the projected columns |
 | union (same schema, no columns touched) | `union(r1, r2)` / `r1 \| r2` | `disjunction` | same `T` |
-| negation-as-failure | `negate(r)` / `not r` | `negation` | — |
+| negation-as-failure | `negate(r)` / `not r` | `negation` | operand must be `T = Unit`; result `T = Unit` |
 | fix — column = constant (sugar) | `r.fix(x: 1)` | `guarded` + project | drops the column |
 | run / consume | *inherited via `provides`* | `execute` | `LogicalStream[T]` |
 
@@ -157,6 +157,25 @@ receiver, never as free identifiers.
 016). `join`/`where` each take a **row lambda** — there is no `&` join infix, because a useful join
 needs a condition, and that condition (like a filter) is the lambda. **Projection** is the distribute-dot
 `r.(f1, f2)` and **`fix`** is column-by-key — neither is a lambda op.
+
+**`negate`'s operand contract is CHECKED AT LOAD** (WI-728). NAF over a relation with a free column
+flounders — `not p(?x)` with `?x` unbound is undecidable, and reading the residual as a solution is a
+silently wrong answer — so the operand must be a **membership** relation: zero free columns, which the
+1-collapse spells `T = Unit`. The signature carries that as a type-level **predicate**, the fifth member
+of the `Concat` / `Without` / `Project` / `FieldOf` type-constructor family and its first *unary* one:
+
+```
+operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E]
+```
+
+`Membership[T]` reduces to `Unit` for a closed schema and raises otherwise, at the same return-type
+normalization boundary the rest of the family reduces at — so it is checked universally, with nothing
+keyed on `negate`'s identity. It is written in the RETURN rather than the parameter because a
+`Relation[T = Unit]` *parameter* is still non-ground in `E`, and the argument-vs-parameter check is
+gated on groundness; pinning `E` to close that gap over-narrows the row every caller must match. The
+runtime guard in the host builtin stays as the backstop for what no type sees — a schema that was never
+statically known (the WI-734 abstract-operand rule leaves the assertion symbolic), and a relation built
+through reflect rather than from surface code.
 
 **Projection — the distribute-dot `x.(f1, f2)`; `select` retired.** Projection is one use of a general
 syntactic rule: `x.(m1, …, mn)` desugars to the **ordered/named** tuple `(m1: x.m1, …, mn: x.mn)` —
