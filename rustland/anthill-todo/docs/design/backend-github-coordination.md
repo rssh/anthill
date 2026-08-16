@@ -879,9 +879,46 @@ What remains coupled is narrower: `main.rs` hand-builds the impl's state value,
 interning `anthill.todo.store.FileBasedWorkitemStore.wis` and its `backend` /
 `id_counter` fields. That is the host knowing one impl's internals, beyond the single
 legitimate native step (mapping a declared store to a compiled backend). Removing
-*that* is what `open_store` is for here — and it should take only the backend, letting
-the bundle seed its own counter from `facts_of(kb(), WorkItem)`, since §8.3 has counter
-seeding disappearing entirely under coordination.
+*that* is what `open_store` is for here.
+
+### 8.2.1 `open_store` is not expressible against today's spec (WI-1108, measured)
+
+It was attempted and it does not load. The obstruction is structural, not a syntax
+detail, and it is recorded here because it is **increment 2's problem to clear**.
+
+WI-402's existential is recognized by `detect_existential_carrier`, which looks for
+`-> C ensures Spec[C, …]` with `C` in the spec application's **first positional** slot
+— the *carrier*. The loader then rewrites the return type to the spec with that slot
+dropped, so the body must return a value whose sort **provides** the spec. That is the
+shape the delivered KVStore fixture has: `sort MemStore { provides KVStore[K = …, V = …] }`,
+carrier and members distinct.
+
+`WorkItemStore` is not that shape. Its only parameter *is* `State` (proposal 036 /
+WI-203), satisfaction is spelled `fact WorkItemStore[State = WIS]`, and `WIS` is the
+member value — nothing provides the spec as a carrier. Both spellings were built and run:
+
+| Attempt | Result |
+| --- | --- |
+| `-> C ensures WorkItemStore[C]` | `type mismatch in open_store.return: expected WorkItemStore, got WIS` |
+| `-> C ensures WorkItemStore[State = C]` | `unresolved name 'C'` — the named form is not detected as an existential at all |
+| `FileBasedWorkitemStore.wis(…)` from namespace scope | `expected known operation or arrow-typed variable, got unknown functor` |
+
+The third line matters independently: a namespace-level factory cannot construct an
+impl's state even setting the existential aside, so `open_store` must live inside the
+impl — where it can no longer select between impls, which was its point.
+
+**So the factory needs the spec restructured**, giving `WorkItemStore` a carrier sort
+that `provides WorkItemStore[State = …]` rather than a bare instance fact. That is a
+change to the store spec itself, it only pays for itself once a *second* impl exists to
+select between, and increment 2 is already opening this file to add one. It is
+increment 2's scope, not a bolt-on here.
+
+Two consequences worth keeping in view. The counter seed stays host-side for now
+regardless: the bundle has no `String -> Int64` with which to recover a number from
+`WI-1042`, so it cannot compute its own seed — and under coordination the parameter
+disappears entirely anyway (§8.3), `alloc_id` reading the forge registry instead of
+counting. And WI-402's existential half still has **no in-tree consumer**; this design
+remains its intended first one, just one increment later than §14 row 1 assumed.
 
 ### 8.3 Host side
 
@@ -1108,8 +1145,8 @@ preference, the substrate refactor is first, not last.
 
 | # | WI | Increment | Ships |
 | --- | --- | --- | --- |
-| 1 | WI-1108 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form; `open_store` via the WI-402 existential. Absent declarations → today's behavior. | no user-visible change; the seam |
-| 2 | WI-1109 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. | conflict-free multi-dev on *state changes* |
+| 1 | WI-1108 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
+| 2 | WI-1109 | **`ItemPerFileStore`.** The new `Store` implementation (§5.2), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. Plus the spec restructuring §8.2.1 names, and `open_store` on top of it — a second impl is what makes both pay. | conflict-free multi-dev on *state changes* |
 | 3 | WI-1110 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
 | 4 | WI-1111 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
 | 5 | WI-1112 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
