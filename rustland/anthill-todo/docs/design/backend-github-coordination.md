@@ -1,7 +1,7 @@
 # Pluggable backends: the GitHub-coordinated store
 
 **Work item:** WI-437 — split 2026-08-16 into an umbrella plus seven increments,
-WI-1113…WI-1119 (tag `wi437`), one per §14 row. WI-1119 (§5.3) was inserted after the
+WI-1113…WI-1120 (tag `wi437`), one per §14 row. WI-1120 (§5.3) was inserted after the
 original six, between rows 2 and 3.
 **Status:** design, amended 2026-08-16 (WI-1113)
 **Supersedes:** `examples/github-todo/docs/pluggable-backend.md` (the original three-line sketch)
@@ -253,7 +253,7 @@ anthill-todo/
 ```
 
 Each item file holds **every fact about that item**. Shown here in plain `fact` syntax,
-which is what the store writes until WI-1119 lands; §5.3 keeps this content and changes
+which is what the store writes until WI-1120 lands; §5.3 keeps this content and changes
 its encoding to an anthill head plus markdown chapters, so the file names below become
 `WI-NNN.anthill.md` (§5.4):
 
@@ -420,7 +420,7 @@ Three consequences worth knowing:
   does not track empty directories, so nothing is published; removing them would be a
   guess about which directories the project meant to keep.
 
-### 5.3 The item file is a document: head + chapters (WI-1119)
+### 5.3 The item file is a document: head + chapters (WI-1120)
 
 **Added 2026-08-16; revised the same day after review falsified three of its rules.**
 §4 writes each item as a block of `fact` declarations. That is the right *content* and
@@ -1471,7 +1471,7 @@ anthill-todo migrate --to github-coordinated
 1. Explode `workitems.anthill` into one file per item under `<state>/`, each carrying
    its item's `Feedback` and `Tag` facts. Pure local rewrite; reviewable as one commit
    (a large one, and a one-time one). **The file format is whatever §5.3 has settled by
-   the time this runs** — this repo's tracker migrates exactly once, so WI-1119 lands
+   the time this runs** — this repo's tracker migrates exactly once, so WI-1120 lands
    before this step and migration writes `WI-NNN.anthill.md` (anthill head + chapters), not an
    intermediate `.anthill` form that would have to be migrated again. Every
    `WI-NNN.anthill` spelling elsewhere in this document predates that decision and
@@ -1565,7 +1565,7 @@ preference, the substrate refactor is first, not last.
 | --- | --- | --- | --- |
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
-| 2b | WI-1119 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
+| 2b | WI-1120 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
 | 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
 | 4 | WI-1116 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
 | 5 | WI-1117 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
