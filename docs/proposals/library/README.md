@@ -9,7 +9,7 @@ Library proposals are distinct from **kernel-language proposals** (in the parent
 - **Filenames** are digit-prefixed (`001-map.md`, `002-list.md`, …) with a descriptive slug after the number. The number sequence is local to this directory — it runs independently of the kernel-proposal sequence in the parent directory, so library `001` and kernel `001` are unrelated.
 - **Structure** mirrors the kernel proposals: §Status, §Motivation, §Design, §Migration / phasing, §Interaction with other proposals, §Open questions, §Phasing.
 - **Cross-references** to kernel proposals use the parent-directory path (e.g. `[027.1-alloc-effect](../027.1-alloc-effect-and-allocator-revision.md)`).
-- **Implementation status** is tracked in workitems (`anthill-todo/workitems.anthill`) under the relevant WI; the proposal documents the *design*, not the progress.
+- **Implementation status** is tracked in workitems (`anthill-todo/<state>/WI-NNN.anthill`, one file per item) under the relevant WI; the proposal documents the *design*, not the progress.
 
 ## Current proposals
 
