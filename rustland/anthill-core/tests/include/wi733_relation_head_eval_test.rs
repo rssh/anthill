@@ -323,10 +323,15 @@ end
 /// with the same `undeclared effect: Error[T = EmptyStream]`, and so is `head(xs)`
 /// under `if not(isEmpty(xs))`. Guard discharge IS implemented and DOES fire —
 /// `Int64.div(a, 5)` against a literal divisor loads clean while `div(a, b)` is
-/// refused — it simply never fires for `isEmpty`, on ANY carrier. That gap is
-/// WI-567 (Open), whose acceptance names these two shapes verbatim. So this test
-/// is a relation-shaped instance of a currently-global refusal; when WI-567
-/// lands, the `List` half starts discharging and THIS half must not.
+/// refused — it simply never fires for `isEmpty`, on ANY carrier. WI-567 (Open)
+/// owns that gap and its acceptance names these two shapes verbatim; it had
+/// ALREADY recorded this same measurement, with the root cause I had not found:
+/// a guard discharges iff its predicate bottoms out in NATIVE SCALAR BUILTINS,
+/// and `isEmpty` is anthill-rule-defined, so refuting it needs those rules fired
+/// on the prove path — which the type-erased resolver cannot do. That is WI-502,
+/// the real wall, and WI-567 already depends on it. So this test is a
+/// relation-shaped instance of a currently-global refusal; when the discharge
+/// half lands, the `List` half starts discharging and THIS half must not.
 ///
 /// `expect_load_errors`, not `.any()`: an earlier revision scanned with `.any`
 /// and PASSED while the stdlib itself was failing to load with seven unrelated
