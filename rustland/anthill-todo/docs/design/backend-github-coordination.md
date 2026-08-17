@@ -1895,10 +1895,29 @@ but it abandons the id registry.
   five ever proved narrow you would mint six tomorrow and every existing id would
   keep working — the same heterogeneity the `WI-NNN` → `WI-<time>-<hash>`
   transition already requires.
-* **Whether the id needs a version marker.** The slug rule and the hash input are
-  frozen per id, so changing either later is harmless for existing ids — but
-  nothing in the id records *which* rule made it, so a future audit could not tell.
-  A character for a question nobody may ever ask.
+* ~~**Whether the id needs a version marker.**~~ **Settled: no**, and the reasons
+  are worth keeping because the impulse recurs. The purpose a marker would serve —
+  knowing which rule minted an id — only pays if the rule can be re-run, and §6.5
+  settled that it cannot: the hash input includes the description *at creation*,
+  which drifts. Parsing does not need it either (legacy `WI-1114` is `WI-` plus
+  pure digits, the new form `WI-` plus eight digits plus `-`, and any third scheme
+  would be shaped distinguishably because one chooses its shape). Nor does a width
+  change: a 5-character hash never equals a 6-character one, which is the right
+  answer since they are different ids, and the ladder's prefix matching spans both.
+  And **the date is already a soft era marker for free** — ids are chronological,
+  so "everything from this date uses scheme 2" is a one-line table.
+
+  Against it: a character in every id forever, in every filename and every
+  `depends_on` entry, in the one segment this design fights to keep legible — and,
+  more sharply, **a version marker on an opaque token advertises a decodability
+  this design deliberately does not offer.** Stamping `v1` implies a promise to
+  interpret `v1` later; there is nothing to interpret, and saying otherwise invites
+  exactly the re-derivation check §6.5 warns will rot.
+
+  **The right home for the question is `StoreFormat(version:)`** (WI-434), which
+  already exists, already gates the tracker, and is already stamped by migration
+  (§11 step 4). A minting-scheme change is a store-format change: one fact for the
+  whole tracker, rather than a character in 1112 ids and every reference to them.
 * **Whether destructive commands should echo what they resolved.** A mistyped
   fragment hits a *different* real item about once in 30,000 at 25 bits (§6.5's
   sparseness argument), which is comfortable for `show` and less so for `delete`.
