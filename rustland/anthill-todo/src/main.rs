@@ -797,13 +797,57 @@ fn run_migrate(
         }
     }
 
-    // IDEMPOTENT AT THE ONLY POINT IT CAN BE. The binding is the whole record of
-    // which layout a project is on, so a project already naming the target has
-    // nothing to do — and says so on stdout with exit 0, because re-running a
-    // finished migration is not an error.
+    // A PROJECT ALREADY ON THIS LAYOUT IS ANSWERED FROM THE STORE, NOT THE BINDING.
+    //
+    // The binding looked like the whole record of which layout a project is on, and
+    // is not: a project whose config was switched over while its rows still sat in
+    // one shared file answered "already migrated" and declined, while every other
+    // command blocked on the resulting layout fault — a dead end out of the one
+    // state `fsck` explicitly says is `migrate`'s to fix.
+    //
+    // The store is the thing that knows, and it already reports exactly this:
+    // `SharedFile` is one file holding several primary rows, which is the
+    // shared-file layout read by a store expecting one item per file.
+    //
+    // AND MIGRATING FROM HERE IS REFUSED RATHER THAN ATTEMPTED. Doing the move in
+    // this state means deciding, per file, which are already the target shape and
+    // which are not — which is the store's routing rule, re-derived out here. A
+    // first cut did exactly that and review found four ways it was wrong: a
+    // satellite-only file silently dropped, satellites of skipped files misfiled as
+    // orphans, the orphan file truncated over rows a previous run had saved, and a
+    // flush-failure note telling the user to delete the only copy of their data.
+    // The honest move is one loud sentence naming the remedy: migration writes the
+    // binding itself, so it must start from the layout the data is actually in.
     if matches!(declared.store, BuiltStore::ItemPerFile(_)) {
-        println!("migrate: this project already declares {ITEM_PER_FILE_STORE}");
-        return 0;
+        let shared: Vec<PathBuf> = declared
+            .store
+            .layout_faults()
+            .into_iter()
+            .filter_map(|f| match f {
+                LayoutFault::SharedFile { path, .. } => Some(path),
+                _ => None,
+            })
+            .collect();
+        if shared.is_empty() {
+            println!("migrate: this project is already one file per item");
+            return 0;
+        }
+        eprintln!(
+            "error: this project declares {ITEM_PER_FILE_STORE}, but {} file(s) still hold \
+             several work items each:",
+            shared.len()
+        );
+        for path in &shared {
+            eprintln!("  {}", path.display());
+        }
+        eprintln!(
+            "Migration writes the binding itself, so it has to start from the layout the rows are \
+             actually in. Set `store:` back to \
+             `anthill.persistence.filesystem.IndexedFileStore(root: \".\", convention: \
+             anthill.persistence.filesystem.FileConvention.single_file(file: \"<that file>\"))` \
+             and run this again."
+        );
+        return runner::EXIT_RUNTIME;
     }
 
     let mut covered = Vec::with_capacity(declared.covers.len());

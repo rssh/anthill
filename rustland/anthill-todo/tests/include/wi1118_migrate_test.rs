@@ -36,6 +36,12 @@
 //!     files it consumes, and the first cut decided "is this a store file?" by
 //!     counting facts, which is blind to every other kind of item. It deleted a
 //!     rule.
+//!   * `re_migrating_a_finished_tree_changes_nothing` — compares the WHOLE tree, so
+//!     it fails against anything that rewrites a finished tree, not just against
+//!     one that visibly damages it.
+//!   * `a_project_declaring_the_backend_before_migrating_is_told_what_to_do` —
+//!     answering that state from the BINDING made it a dead end, and the ordinary
+//!     path never reaches it (it writes the binding itself, last).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -351,19 +357,98 @@ fn migrate_help_reaches_the_usage() {
     assert!(!store_dir(&proj).join("open").exists());
 }
 
-/// Re-running a finished migration is not an error. The binding is the whole record
-/// of which layout a project is on, so that is what is asked.
+/// Re-running a finished migration is not an error, and — the part that matters —
+/// it does not TOUCH the tree.
+///
+/// Idempotence is answered from the STORE — a finished tree reports no `SharedFile`
+/// fault, so there is nothing to split — and the run must then touch nothing at all.
+/// This compares the whole tree byte for byte rather than spot-checking one file: a
+/// spot check passes against a migrator that rewrote every file identically and
+/// removed the ones it did not re-add.
 #[test]
-fn migrate_is_idempotent() {
+fn re_migrating_a_finished_tree_changes_nothing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, ITEMS);
     assert!(migrate(&proj).status.success());
 
+    let before = tree_snapshot(&store_dir(&proj));
+    assert!(before.len() >= 4, "a migrated tree to compare against: {before:?}");
+
     let out = migrate(&proj);
     assert!(out.status.success(), "a second run succeeds: {}", stderr(&out));
-    assert!(stdout(&out).contains("already declares"), "{}", stdout(&out));
-    // And it did not disturb the tree it found.
-    assert!(read(&proj, "open/WI-001.anthill").contains("a note"));
+    assert!(
+        stdout(&out).contains("already one file per item"),
+        "and says why it did nothing: {}",
+        stdout(&out)
+    );
+    assert_eq!(before, tree_snapshot(&store_dir(&proj)), "the tree is untouched");
+}
+
+/// A project whose BINDING was switched to the new backend while its rows still sit
+/// in one shared file is told what to do, rather than told "already migrated".
+///
+/// It USED to be answered from the binding — "this project already declares
+/// ItemPerFileStore" — which was a dead end: every other command blocks on the
+/// layout fault, `fsck` says splitting is `migrate`'s job, and `migrate` declined.
+/// The answer now comes from the STORE, which reports `SharedFile` for exactly this.
+///
+/// AND IT REFUSES RATHER THAN MIGRATING FROM HERE, deliberately. Doing the move in
+/// this state means deciding per file which are already the target shape — the
+/// store's routing rule, re-derived outside it — and a first cut that did so was
+/// wrong four ways (a satellite-only file silently dropped, satellites of skipped
+/// files misfiled as orphans, the orphan file truncated over saved rows, and a
+/// flush-failure note advising deletion of the only copy of the data). One loud
+/// sentence naming the remedy beats four silent ways to lose rows.
+///
+/// CONTROL: answer from the binding instead and the assertion on the remedy fails —
+/// the ordinary path never reaches this state, because it writes the binding itself
+/// and does so last.
+#[test]
+fn a_project_declaring_the_backend_before_migrating_is_told_what_to_do() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = setup_project(&tmp, ITEMS);
+    fs::write(
+        store_dir(&proj).join("project.anthill"),
+        "fact Project(name: \"switched-early\", language: \"rust\", build: \"cargo\", \
+         tools: [\"cargo-test\"])\n\n\
+         fact anthill.persistence.ExtentBinding(\n  \
+           store: anthill.persistence.filesystem.ItemPerFileStore(\n    \
+             root: \".\",\n    status_field: \"status\",\n    id_field: \"id\",\n    \
+             ref_field: \"workitem\"),\n  \
+           role: anthill.persistence.ExtentRole.mirror(),\n  \
+           covers: [WorkItem, Feedback, Tag, StoreFormat])\n",
+    )
+    .expect("write config");
+
+    let out = migrate(&proj);
+    assert!(!out.status.success(), "refused, not silently declined");
+    let err = stderr(&out);
+    assert!(err.contains("workitems.anthill"), "it names the file:\n{err}");
+    assert!(err.contains("IndexedFileStore"), "and the remedy:\n{err}");
+    // Nothing was written on the way to that refusal.
+    assert!(!store_dir(&proj).join("open").exists());
+    assert!(store_dir(&proj).join("workitems.anthill").exists());
+}
+
+/// Every `.anthill` file under `root`, as (relative path, contents).
+fn tree_snapshot(root: &Path) -> Vec<(String, String)> {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) {
+        for entry in fs::read_dir(dir).expect("read_dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if path.extension().is_some_and(|e| e == "anthill") {
+                out.push((
+                    path.strip_prefix(root).expect("under root").display().to_string(),
+                    fs::read_to_string(&path).expect("read"),
+                ));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
 }
 
 /// §11's step 4 as drafted said to stamp `StoreFormat(version: 2)`. It is not done,

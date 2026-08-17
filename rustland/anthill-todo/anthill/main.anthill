@@ -3209,7 +3209,19 @@ namespace anthill.todo
           0
         case some(v) ->
           if eq(v, current_store_format()) then
-            let _ = println(console(), "migrate: project already up to date")
+            -- NAMES WHICH QUESTION IT ANSWERED. "already up to date" alone read
+            -- as "this project is fully migrated", and a user who wanted the
+            -- LAYOUT move (`migrate --to item-per-file`, a different command
+            -- under the same name) stopped there and went looking for why
+            -- workitems.anthill was still one file. Reported by the user, 2026-08-17.
+            let _ = println(console(),
+              "migrate: data format already up to date (this is the schema version, not the file layout)")
+            -- CONDITIONAL, because this arm cannot see the layout: it is a query
+            -- over StoreFormat facts and knows nothing about which store holds
+            -- them. Stated flatly it tells an already-split project to split
+            -- itself, which is the same confusion pointing the other way.
+            let _ = println(console(),
+              "  if this project is still one shared workitems.anthill, move it with: anthill-todo migrate --to item-per-file")
             0
           else
             let _ = eprintln(console(),
