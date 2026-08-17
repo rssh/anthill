@@ -459,12 +459,14 @@ pub enum LoadError {
         required: String,
         unentailed: String,
     },
-    /// WI-363: a carrier provides a spec but does not back one of the spec's
-    /// declared operations. The op-level twin of `UnsatisfiedProviderRequires`:
-    /// `fact Spec[X]` is trusted by the typer, yet `Spec.op` has neither a
-    /// spec-level default (an `operation … = …` body or a derivation rule on
-    /// `Spec`) nor an operation `X` itself supplies — so a call resolves to
-    /// nothing at runtime. Load-blocking: the satisfaction fact is unsound.
+    /// WI-363, as amended by WI-818: a carrier provides a spec but does not back
+    /// one of the spec's declared operations. The op-level twin of
+    /// `UnsatisfiedProviderRequires`: `fact Spec[X]` is trusted by the typer, yet
+    /// `Spec.op` has neither an EXECUTABLE spec-level default (an
+    /// `operation … = …` body, or a builtin — WI-818 ruled a `rule` is a LAW, not
+    /// backing, so a derivation rule does NOT satisfy this) nor an operation `X`
+    /// itself supplies — so a call resolves to nothing at runtime.
+    /// Load-blocking: the satisfaction fact is unsound.
     UnbackedProviderOperation {
         carrier: String,
         spec: String,
@@ -9250,9 +9252,10 @@ fn load_phase_inner(
     mark!("check_provider_requires");
     // WI-363: provider-side operation coverage — the op-level twin of the
     // above. For each `fact Spec[X]`, every operation Spec declares must be
-    // backed by a spec default (body/derivation rule) or an op X supplies;
-    // an unbacked op makes the satisfaction fact unsound (calls resolve to
-    // nothing at runtime). Load-blocking.
+    // backed by an EXECUTABLE spec default (a body or a builtin — WI-818: a
+    // `rule` is a law, not backing) or an op X supplies; an unbacked op makes
+    // the satisfaction fact unsound (calls resolve to nothing at runtime).
+    // Load-blocking.
     all_errors.extend(super::typing::check_provider_operations(kb));
     mark!("check_provider_operations");
     // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq

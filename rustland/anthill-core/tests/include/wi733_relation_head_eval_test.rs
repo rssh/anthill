@@ -23,11 +23,12 @@
 //! in `stream.anthill` so they stay PRESENT but WRONG — `headOption`'s some-arm
 //! returns `none`, `head`'s raises, `tail`'s returns `s` instead of `rest`. The
 //! stdlib still LOADS, so only tests that actually EVALUATE an inherited read
-//! can notice. Across the whole `wi_tests` binary EXACTLY EIGHT fail (2994
-//! passed; 8 failed):
+//! can notice. Across the whole `wi_tests` binary EXACTLY NINE fail (2994
+//! passed; 9 failed):
 //!
 //!   * this file — `…head_evaluates`, `…head_option_evaluates`,
-//!     `…a_matching_literal_yields_a_row`, `…head_and_tail_decompose_the_stream`
+//!     `…a_matching_literal_yields_a_row`, `…head_and_tail_decompose_the_stream`,
+//!     `…head_reads_an_unboundedly_generating_relation`
 //!   * `wi818_…` — `stream_defaults_evaluate_on_inheriting_carriers`,
 //!     `stdlib_stream_reads_evaluate`, `stdlib_head_of_empty_raises_empty_stream`
 //!   * `wi714_relation_reference_test::wi714_negate_materializes_unit` — which
@@ -36,13 +37,25 @@
 //!
 //! Read honestly, that says this file is NOT the sole witness for the
 //! spec-default eval path — WI-818 already covered it over `MappedStream` and
-//! `List`. What it adds is the RESOLVER-BACKED carrier, where `splitFirst`
-//! advances an SLD search instead of walking a cons spine.
+//! `List`. What it adds is the RESOLVER-BACKED carrier: the reads run against a
+//! `splitFirst` that advances an SLD search, including one relation that
+//! GENERATES WITHOUT END.
 //!
-//! The three tests here that survive that mutation are named, not hidden: both
-//! empty-case tests (the mutation makes `head` raise, which is what they already
-//! expect) and the guard test (typing only, see below). They are defended by
-//! MEASUREMENT 2 instead.
+//! WHAT IS STILL UNPINNED, and it is the property that description leans on:
+//! LAZINESS. No test here separates "take one search step" from "enumerate, then
+//! take element 0", because the resolver's DEPTH CAP bounds even a full drain —
+//! an eager `head` on the unbounded fixture returns the same row from a
+//! truncated list, 117 ms slower and not one value different. An eager
+//! reimplementation of the `Stream` defaults would keep all nine tests green.
+//! The reasoning and the measurement are at
+//! `wi733_head_reads_an_unboundedly_generating_relation`; naming the gap here so
+//! the header cannot be read as claiming more than the tests do.
+//!
+//! The FOUR tests here that survive that mutation are named, not hidden: the
+//! three empty-case rows — the mutated `head`/`tail` still raise and the mutated
+//! `headOption` still takes its `none` arm, so all three see what they already
+//! expect — and the guard test (typing only, see below). MEASUREMENT 2 is what
+//! covers the first three; nothing but the declaration covers the fourth.
 //!
 //! MEASUREMENT 2, WEAK, and labelled as such. Deleting the three default bodies
 //! outright (the pre-WI-818 shape) fails most of this file — but it proves
@@ -239,6 +252,64 @@ fn wi733_relation_head_and_tail_decompose_the_stream() {
         n.as_ref().ok().and_then(Value::as_int),
         Some(2),
         "tail's length agrees with its drain; got {n:?}"
+    );
+}
+
+/// `.head` and `.headOption` work on an UNBOUNDED relation — one whose full
+/// drain is TRUNCATED. `reach` walks an a↔b cycle, so clause 2 regenerates
+/// forever; no other test in the repo reads an inherited `Stream` op off a
+/// relation that cannot be drained.
+///
+/// WHAT THIS DOES **NOT** MEASURE, stated because the header's framing invites
+/// the mistake: it does not separate LAZY from EAGER. The intuition is that an
+/// eager `head` (drain, then take element 0) would diverge here — it would not.
+/// The resolver's depth cap bounds every drain, so `reach.takeN(100000)` RETURNS,
+/// silently truncated to 50 rows, and an eager `head` would hand back the same
+/// `"b"` from that truncated list. Measured, the only difference is work done:
+/// `.head` 0 ms against the full drain's 117 ms. That is a timing gap, not a
+/// value gap, and a timing assertion is not a sound pin in a shared test suite,
+/// so none is made here. Laziness on this carrier therefore remains UNPINNED —
+/// an eager reimplementation of the `Stream` defaults would keep this file green.
+/// Pinning it needs a fixture where an eager drain changes the ANSWER, not just
+/// the clock; the depth cap is what stands in the way of building one.
+#[test]
+fn wi733_head_reads_an_unboundedly_generating_relation() {
+    let src = r#"
+namespace test.wi733lazy
+  import anthill.prelude.{String, Int64, Option, List, Bool, EmptyStream}
+  import anthill.prelude.List.{length}
+
+  sort Edge
+    entity edge(from: String, to: String)
+  end
+  fact edge(from: "a", to: "b")
+  fact edge(from: "b", to: "a")
+
+  -- Clause 1 yields "b" in ONE step; clause 2 walks the cycle forever.
+  rule reach(?x) :- edge(from: "a", to: ?x)
+  rule reach(?x) :- reach(?y), edge(from: ?y, to: ?x)
+
+  operation firstReach() -> String effects {Error, Error[T = EmptyStream]} =
+    reach.head
+  -- Proof the relation really does keep generating: a 2-fact graph has only two
+  -- vertices, so a THIRD row can only come from the recursive clause.
+  operation threeRows() -> Int64 effects Error = length(reach.takeN(3))
+end
+"#;
+    let mut i1 = interp_for(src);
+    let got = i1.call("test.wi733lazy.firstReach", &[]);
+    assert!(
+        matches!(&got, Ok(Value::Str(s)) if s == "b"),
+        "`.head` on an unbounded relation returns its first solution; got {got:?}"
+    );
+
+    let mut i2 = interp_for(src);
+    let n = i2.call("test.wi733lazy.threeRows", &[]);
+    assert_eq!(
+        n.as_ref().ok().and_then(Value::as_int),
+        Some(3),
+        "the relation keeps generating past its two vertices — so the read above \
+         was against a stream with no end; got {n:?}"
     );
 }
 
