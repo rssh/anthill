@@ -1039,12 +1039,12 @@ parts, each doing a different job**:
 ```
 id := "WI-" <time> "-" <hash> [ "-" <slug> ]
 
-       WI-20260817-a3f9c-item-per-file-store
+       WI-20260817-K7M2Q-item-per-file-store
           └───┬───┘ └─┬─┘ └────────┬───────┘
           ORDERS    IDENTIFIES   DESCRIBES
-     lexicographic  the item,   frozen at creation,
-     sort is        uniquely    decorative, may be
-     chronological              absent
+     lexicographic  25 bits,    frozen at creation,
+     sort is        Crockford   decorative, may be
+     chronological  base32      absent
 ```
 
 Two developers who both run `add` offline, on a plane, on the same afternoon,
@@ -1052,11 +1052,38 @@ produce different ids without exchanging a byte — because their authors differ
 their timestamps differ to the second, and their descriptions differ. No network,
 no registry, no retry loop, no losing racer.
 
-**Only the hash carries identity.** The time part is a projection of `created` and
-the slug a projection of the description; both are *renderings*, present so a
-human can read the id, and neither participates in uniqueness. That is what makes
-the three-part form safe: adding or changing a rendering cannot make two items
-collide.
+**Only `<time>-<hash>` carries identity, and this has a sharp implementation
+consequence.** The slug is a rendering; it may be absent, and it is *not* compared.
+So two items whose hashes collide have **different filenames** — their slugs differ,
+because their descriptions do — and a duplicate check that compares whole id
+strings would therefore MISS EVERY COLLISION. The `id:` field stores the full
+string and §10's `PathDisagreement` compares that; the *duplicate* predicate
+compares the `<time>-<hash>` prefix alone. §6.6 turns on this.
+
+**The alphabet is Crockford base32** — `0123456789ABCDEFGHJKMNPQRSTVWXYZ`, i.e.
+0–9 and A–Z without `I`, `L`, `O`, `U` — at five characters, so 25 bits and 33.5
+million values per day.
+
+Hex was the first choice and is wrong twice over. Crockford carries 5 bits per
+character against hex's 4, so the same five characters hold 32× the space; and it
+does not merely *exclude* confusable glyphs but **remaps them on decode** (`i`/`l`
+→ `1`, `o` → `0`), which matters because §6.5's whole reference ladder assumes
+people retype these fragments out of commit messages.
+
+**Mixed-case encodings are excluded, and not on taste.** Base58 and base64 were
+the obvious denser candidates. The id goes in a FILENAME, and this project
+develops on macOS, where APFS is case-insensitive by default — measured:
+`WI-20260817-aB3f9` and `WI-20260817-Ab3f9` resolve to one file, and the second
+write silently clobbers the first. Under case folding base58's 58 symbols collapse
+to roughly 33 usable ones, landing *below* a clean base32 while looking noisier.
+Bech32 passes the case test but spends six characters on a BCH checksum — more
+than this payload — to solve offline validation, which we do not have: the tracker
+is the authority and a mistyped fragment matches nothing about 99.997% of the time.
+
+**So: mint in ONE canonical case, and compare ids case-insensitively.** That is
+the rule that makes the filesystem's folding incapable of deciding identity, and
+it holds whatever alphabet is chosen. The hash segment is written uppercase, which
+also lets it announce itself against the lowercase slug.
 
 **The slug is what makes a file-per-item tree browsable.** `ls open/` under a bare
 hash shows 125 lines of noise; with slugs it is a readable table of contents. This
@@ -1093,12 +1120,40 @@ The one thing the hash gives over plain entropy (`fresh_token()`, §8.3) is
 and heals, where a random token would create a second item. That, and it needs no
 entropy source — the bundle already reads a timestamp for `Claimed(since:)`.
 
-**Collisions are possible, bounded, and loud.** Two *different* items collide only
-if one author writes two different descriptions in the same second that also hash
-alike in 5 hex — the birthday bound at a heavy day of 64 items is about 0.2%.
-Reached, it is not silent: the duplicate is exactly the state
-`LayoutFault::DuplicateId` already names (§10, delivered in WI-1114), and `add`
-refuses rather than overwriting.
+**A single writer never collides, because it can look before it writes.** The
+birthday bound is the wrong model here: the CLI holds the whole tracker, so it
+checks whether an id is taken *before* writing a byte. The mint therefore carries
+an attempt counter and re-hashes until free:
+
+```
+h := H(author, created, description, attempt)     attempt = 0, 1, 2, …
+```
+
+Local, deterministic, no coordination, and the id stays well-formed. This turns a
+probability into a load factor. Measured on this repo — 78 active days, mean 9.9
+items a day, **busiest day 35** — a re-hash essentially never happens; even a
+hypothetical factory minting one item per second (86,400 a day) would re-hash
+about 111 times out of 86,400, or 0.13% of mints, and effectively never twice.
+
+**The attempt counter must not break idempotent retry.** When attempt 0 is
+occupied, compare the occupant: same author, same `created`, same description
+means it **is** this item, written by a half-finished earlier run, so the mint
+succeeds with that id. Advance the attempt only when the occupant is genuinely a
+different item. Both properties survive, and the check that reconciles them is one
+comparison.
+
+**The time component is a tunable partition, and that is the scaling lever.** Two
+items can only collide if they share a partition, so the partition's resolution
+should track the creation rate: a project filing ten a day wants `YYYYMMDD`; one
+filing one a second wants `YYYYMMDDThh` or finer. This is not primarily about
+collisions — at one per second the *directory* fails first, at 86,400 files in
+`open/` and 31 million a year, and `ItemPerFileStore` holds a block model of each.
+Widening the partition fixes both axes at once: day → hour costs three characters
+and buys 24× on directory size and 24× on collision scope together. **The fix for
+scale is a finer time, never a longer hash.**
+
+**Two writers who have not synced are the only undetectable case**, and it is
+§6.6's subject.
 
 **Typing it: one resolution ladder, any fragment.** The full id is 37 characters
 and nobody will type it. Every part is separately addressable, and a reference is
@@ -1106,10 +1161,10 @@ resolved by trying each reading and requiring exactly one match:
 
 | you write | reading |
 | --- | --- |
-| `WI-a3f9c` | hash, or any unambiguous prefix of one |
-| `WI-20260817-a3f9c` | time-hash — the stable machine handle |
+| `WI-K7M2Q` | hash, or any unambiguous prefix of one |
+| `WI-20260817-K7M2Q` | time-hash — the stable machine handle |
 | `WI-item-per-file-store` | slug, or an unambiguous prefix of one |
-| `WI-20260817-a3f9c-item-per-file-store` | the whole thing, as stored |
+| `WI-20260817-K7M2Q-item-per-file-store` | the whole thing, as stored |
 
 Ambiguity is not resolved by precedence — it is **reported**, with the candidates,
 the way git reports an ambiguous object name. A slug is *not unique* (two items may
@@ -1148,13 +1203,19 @@ counter seed in `main.rs`, which this policy deletes outright.
 
 **What it removes.** All of §6.1's retry loop, §6.2's `External` row on `alloc_id`
 (minting becomes a pure function of values the bundle holds), §6.3's failure
-taxonomy, §6.4's provisional ids **and their reconciliation** — the rename plus
-`depends_on` rewrite, the fiddliest machinery in this document — §6.4's honest
-cost about references escaping before they are permanent (there is no "before"),
-§10's dangling-allocation check, and §8.3's counter seeding. Of §8.3's five-point
-substitution contract, three points (atomic ordered creation, title search
-reaching arbitrarily old entries, live newest-first listing) exist only to serve
-allocation; a mirror-only forge needs the other two.
+taxonomy, §6.4's provisional ids, §6.4's honest cost about references escaping
+before they are permanent (there is no "before"), §10's dangling-allocation check,
+and §8.3's counter seeding. Of §8.3's five-point substitution contract, three
+points (atomic ordered creation, title search reaching arbitrarily old entries,
+live newest-first listing) exist only to serve allocation; a mirror-only forge
+needs the other two.
+
+**Correction to the above, 2026-08-17:** an earlier draft of this section claimed
+it also removes §6.4's **reconciliation** — the rename plus `depends_on` rewrite.
+It does not. It *demotes* it: from machinery every offline `add` needs, to a repair
+run when two unsynced writers collide (§6.6). That is still a large win, and the
+rare path can be far simpler than the routine one, but the machinery does not
+vanish and this document should not have said it did.
 
 **And it changes what the forge IS.** Under this policy `access: disabled()`
 degrades *nothing* — today it degrades `add` to a provisional id. The forge
@@ -1166,6 +1227,72 @@ number. And the registry-as-external-truth: a stale checkout can no longer ask
 GitHub what has been allocated, because allocation leaves no trace outside the
 tree. That second one is the only loss with teeth, and it is the price of not
 needing the network. Sayability was the third, and the slug buys it back.
+
+### 6.6 When two unsynced writers mint the same id
+
+**Added 2026-08-17.** §6.5 makes a single writer collision-proof. Two writers who
+have not synced cannot check each other's trees, so this is the one case that
+reaches disk. It is rare — the exposure is not a day's items but the handful
+created independently before a merge — and everything below is about making it
+*loud and convergent* rather than about making it rarer.
+
+**Git will usually not conflict, and that is the whole difficulty.** The two items
+have different descriptions, so different slugs, so **different filenames**:
+
+```
+open/WI-20260817-K7M2Q-alpha-thing.anthill.md     ← alice
+open/WI-20260817-K7M2Q-beta-thing.anthill.md      ← bob
+```
+
+Git merges that perfectly cleanly. No conflict, no markers, exit 0. Nothing at the
+VCS or filesystem level can notice, because at that level nothing is wrong — two
+distinct paths were added. **The tracker is therefore the only possible detector**,
+and it detects by comparing the `<time>-<hash>` identity prefix (§6.5), never the
+whole id string, which the differing slugs would hide.
+
+This also settles the mechanism. It cannot be a git merge driver or a merge hook:
+the case that matters never reaches them, and §12 already notes that hooks are
+invisible and easily uninstalled. It is the ordinary load-time check every command
+already runs (WI-1114), which refuses on a blocking fault and names the remedy.
+
+**It is a different fault from a duplicate id, with the opposite remedy.** §10's
+`DuplicateId` says one file is debris from an interrupted move and refuses to pick.
+A hash collision is two *real* items, and the remedy is to renumber one — so they
+must be separate faults. They are mechanically distinguishable:
+
+| the two files hold | cause | remedy |
+| --- | --- | --- |
+| the **same** item (same author, `created`, description) | interrupted move | delete one — cannot auto-pick |
+| **different** items | hash collision | renumber the loser — *can* auto-pick |
+
+**`fsck --renumber` proposes and applies the repair.** It is deliberately not part
+of `--fix`: that verb moves a file to match its fact, where the fact is
+authoritative and the direction settled, while this one changes an **identity**.
+Different blast radius, different verb.
+
+**The loser is chosen by a deterministic total order, and this is the load-bearing
+requirement.** Both checkouts must reach the same answer without talking, or the
+repair turns one collision into a second, worse divergence. The order is: later
+`created` loses; ties break on author, then on the full description. Re-minting is
+itself deterministic (§6.5's attempt counter), so two checkouts resolving
+independently produce **byte-identical trees**, and git then merges the two
+independent fixes with no conflict — because both sides made the same change.
+`--renumber <id>` overrides which side loses, for when one has already escaped
+into commit messages.
+
+**What it rewrites, and what it refuses to.** The loser's filename, its `id:`
+field, its satellites' `workitem:` fields (same file, so §5.1's relocation carries
+them), and every `depends_on` entry in the tree. It does **not** rewrite prose: a
+`WI-…` in feedback text or a commit message may legitimately mean the winner, so
+those are *reported*, with locations. The same honest limit §6.4 states for
+provisional ids, now on a rare path instead of every offline `add`.
+
+**Where git does conflict**, the two items share a slug as well, so they share a
+path and git leaves markers in the file. That file then fails to parse and is
+warned-and-skipped by the loader — safe, because WI-1114's
+`refuse_unknown_occupant` will not write over a file the store never read, but
+unhelpful. Recognizing conflict markers specifically, and saying so, costs almost
+nothing and is far more actionable than a generic parse error.
 
 ## 7. The mirror
 
@@ -1610,11 +1737,21 @@ a silent skip or a fallback:
   the file to match the fact (the fact wins; §4). **Delivered (WI-1114)**, and the check
   is on the whole path, not the directory alone: `open/WI-9.anthill` holding
   `id: "WI-10"` is the same class of disagreement and the same repair.
-* **Duplicate id** — the same id in two files → loud load error. Under §6 this
-  should be unreachable; if it happens, the allocator is broken and we want to know
-  immediately. **Delivered (WI-1114)**; `fsck --fix` reports it and does *not* pick a
+* **Duplicate id** — the same id in two files, holding the **same item** → loud
+  load error. **Delivered (WI-1114)**; `fsck --fix` reports it and does *not* pick a
   winner, because which file is the item is a real disagreement and only whoever
   interrupted the move knows.
+* **Id collision** — the same `<time>-<hash>` in two files holding **different
+  items** (§6.6). A separate fault from the above, because the remedy is the
+  opposite one — renumber, do not delete — and the two are told apart by whether
+  the files' author / `created` / description agree. Compared on the identity
+  PREFIX, never the whole id: the colliding items have different slugs, hence
+  different filenames, and a whole-string comparison misses every case.
+  `fsck --renumber` repairs it, convergently.
+* **Unresolved merge markers in an item file** — reported as such rather than as a
+  generic parse failure. The loader already warns and skips an unparseable file and
+  the store already refuses to write over one it never read, so this is a
+  diagnostic improvement, not a safety one.
 * **A file holding several items** — the shared-file layout read by a store that gives
   each item a file. Added (WI-1114) after review found the destructive alternative: read
   as *N misplaced items*, it produced N path disagreements naming one file, and `--fix`
@@ -1711,24 +1848,41 @@ ids are grandfathered, so migration does not renumber; what it must know is
 whether a `created` field exists to write, and which shape *new* ids take
 afterwards. Deciding after the migration means migrating twice.
 
+**Migration must BACK-DATE `created` from git history, not stamp the migration
+date.** Both readings write a legal field, and the difference is not cosmetic:
+stamping one date puts all 1110 items in a single partition, where the §6.5
+collision scope is the whole tracker at once rather than a day's work — a coin
+flip at 25 bits, against 0.002% at the busiest day this project has actually had.
+Back-dating is also simply *true*: those items were created across 78+ days, git
+knows when each id first appeared in `workitems.anthill`, and the field should say
+so. The recovered dates are approximate — a commit date, not a keystroke — and
+that is fine, because `created` is used for ordering and for minting, neither of
+which needs better than a day.
+
 Migration is one-way in practice. A `--to local-single-file` inverse is trivial to write
 (concatenate the files, drop the `MirrorEntry` facts) and worth having as an escape hatch,
 but it abandons the id registry.
 
 ## 12. Open questions
 
-* **The two lengths in a `ContentHash` id** (§6.5) — how many hex digits, and how
-  many slug characters. The *shape* is settled (time-hash-slug); these are the
-  parameters, and both trade legibility against the width of a `list` line and a
-  `depends_on` entry. Four hex is enough given the time partition and five is
-  comfortable; the slug wants to be long enough to distinguish two items filed the
-  same day and short enough that `ls` still fits a terminal. Cheap to decide,
-  expensive to change once the tracker has migrated into it (§11), so it is worth
-  rendering a real `list` at two or three settings before committing.
-* **Whether the hash needs a version marker.** The slug rule and the hash input
-  are frozen per id, so changing either later is harmless for existing ids — but
+* **The slug width** (§6.5). Shape, alphabet and hash width are settled —
+  time-hash-slug, Crockford base32, five characters — but the slug's cut is still
+  a judgement: long enough to tell two items filed the same day apart, short
+  enough that `ls open/` fits a terminal. Worth rendering a real `list` at two or
+  three settings and looking at it. Note the hash width is *not* irreversible: ids
+  are grandfathered anyway (§6.5), so if five ever proved narrow you would mint
+  six tomorrow and every existing id would keep working — the same heterogeneity
+  the `WI-NNN` → `WI-<time>-<hash>` transition already requires.
+* **Whether the id needs a version marker.** The slug rule and the hash input are
+  frozen per id, so changing either later is harmless for existing ids — but
   nothing in the id records *which* rule made it, so a future audit could not tell.
-  Adding a marker costs a character and buys a question nobody may ever ask.
+  A character for a question nobody may ever ask.
+* **Whether destructive commands should echo what they resolved.** A mistyped
+  fragment hits a *different* real item about once in 30,000 at 25 bits (§6.5's
+  sparseness argument), which is comfortable for `show` and less so for `delete`.
+  Echoing the resolved item's description before acting costs a line of output and
+  removes the question; the argument against is that it makes the common case
+  chattier.
 * **Whether `StakeByCreation` is worth keeping at all** once `ContentHash` ships.
   It is strictly more machinery for a property (a dense ordered sequence) nothing
   in the tracker requires. The argument for keeping it is that the *registry* is
@@ -1789,7 +1943,7 @@ preference, the substrate refactor is first, not last.
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
 | 2b | WI-1120 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
-| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5). The `Coordination` split (allocation ⊥ mirror), the `created` field on `WorkItem`, the three-part id, the resolution ladder over hash / time-hash / slug, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
+| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5, §6.6). The `Coordination` split (allocation ⊥ mirror), the `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter, the resolution ladder, the identity-prefix duplicate check, `fsck --renumber`, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
 | 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). Now serves the MIRROR only; `fresh_token` is unneeded under `ContentHash`. | nothing alone; testable |
 | 4 | WI-1116 | **Coordinated `add`** — the `StakeByCreation` policy. The §6.1 protocol, the §6.4 provisional fallback, `MirrorEntry` facts. **Optional once row 2c lands**, and §12 asks whether it is worth building at all; `MirrorEntry` moves to row 5, where the mirror is. | a dense ordered id sequence, for a project that wants one |
 | 5 | WI-1117 | **`sync`.** Comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. Provisional-id reconciliation and allocation-debris repair belong to row 4's policy and land only with it. | the mirror + the return channels |
