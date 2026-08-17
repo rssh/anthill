@@ -1921,7 +1921,15 @@ anthill-todo migrate --to github-coordinated
    illustrates the layout, not the encoding — with one exception that is *not*
    illustration: §7.1's mirror-body pointer is generated output, and has been
    updated to `.md` accordingly.
-2. Create one mirror issue per item, in id order, each *born* with its `WI-NNN:`
+2. **OPTIONAL, and no longer part of migration (amended 2026-08-17).** Creating one
+   entry per item in a mirror is now `export` (§7), run separately and only if the
+   project wants a mirror at all. It was inseparable from migration while the forge
+   ALLOCATED ids — an unmirrored item had no id — and with `ContentHash` that tie is
+   gone. Migration is therefore a **purely local rewrite**: steps 1, 3 and 4, no
+   network, no forge, no rate limits. What follows describes the export, wherever it
+   is run from.
+
+   Create one mirror issue per item, in id order, each *born* with its `WI-NNN:`
    title (§6.1 — migration is allocation where the winner is known in advance),
    then immediately closed when its item is terminal (§7.1). **Every item is
    mirrored, terminal ones included.** The GitHub view is trustworthy only if
@@ -1950,13 +1958,34 @@ The two axes stay orthogonal: `ExtentBinding` says *which layout*, `StoreFormat`
 the *schema within* it. The version check in `main.anthill`
 (`check_store_versions`) keeps working unchanged.
 
-**The id scheme must be settled before this runs (2026-08-17).** Step 1's file
-names and step 2's issue titles both carry ids, and this repo's tracker migrates
-**exactly once** — the same argument that put §5.3's file format ahead of
-migration puts §6.5's id shape there too. Under `ContentHash` the existing 1110
-ids are grandfathered, so migration does not renumber; what it must know is
-whether a `created` field exists to write, and which shape *new* ids take
-afterwards. Deciding after the migration means migrating twice.
+**"MIGRATES EXACTLY ONCE" NO LONGER HOLDS, and the ordering it forced is
+withdrawn (amended 2026-08-17, second pass).** An earlier amendment on this same
+day argued that §5.3's format and §6.5's id shape must both precede migration,
+because the tracker migrates once. That rule was written when migration meant
+**creating ~1110 issues over the network**, paced under secondary rate limits and
+resumable across an API — something you genuinely do not want to do twice. Step 2
+above is now optional, so migration is a **purely local rewrite**, and repeating a
+local rewrite costs one mechanical commit that changes no data.
+
+So migration is free to run FIRST, and there is a reason to want it to. The
+conflict-free multi-development that §5 exists for is not real until the tracker
+actually splits; until then WI-1114 is delivered, tested and unused, and every day
+is another day of `workitems.anthill` conflicts. The risk of the split is also at
+its smallest now, because the tracker only grows.
+
+Neither of the two supposed prerequisites is technical:
+
+* **The format (§5.3)** — splitting into plain `fact` files first means a second
+  full-tree pass when the markdown format lands. Two mechanical diffs instead of
+  one, against getting the conflict benefit two tickets earlier.
+* **The id shape (§6.5)** — does not apply at all. Legacy `WI-NNN` ids are
+  **grandfathered and never renumbered**, so migration renames nothing regardless
+  of what new ids look like. `created` can be back-dated from git history in a
+  later pass exactly as easily as in this one.
+
+What *is* de-risked, and was measured (2026-08-17): the exploded tree loads. All
+1112 items across 1114 files parse and load in 1.38 s against the single file's
+1.30 s — about 6% for 1114 extra opens. Splitting does not make the tracker slower.
 
 **Migration must BACK-DATE `created` from git history, not stamp the migration
 date.** Both readings write a legal field, and the difference is not cosmetic:
@@ -2074,12 +2103,12 @@ preference, the substrate refactor is first, not last.
 | --- | --- | --- | --- |
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
+| **2a** | WI-1118 | **`migrate` — the split.** Explode `workitems.anthill` into one file per item under `<state>/`, rewrite the store term, stamp the format version. **Renumbered from row 6 and unblocked (2026-08-17):** it waited on 2b and 2c under a "migrates exactly once" rule that only held while migration created ~1110 issues over the network. Migration is now a purely local rewrite (§11 step 2 is optional), so repeating it costs one mechanical commit — and running it FIRST is what makes §5's conflict-freedom real, since until it runs WI-1114 is delivered and unused. Measured: the exploded tree loads in 1.38 s against the single file's 1.30 s. | **this repo stops conflicting on `workitems.anthill`** |
 | 2b | WI-1120 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
 | 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5, §6.6). `fact Mirror(target:, access:)` replacing `Coordination` (no allocation field — one policy is not a seam), the `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter, the resolution ladder, the identity-prefix duplicate check, `fsck --renumber`, `MirrorEntry(workitem:, target:, entry: String)` as a SET, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
 | 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, the `gh` and fake implementations. Now serves EXPORT/IMPORT only, so it shrinks hard: create/update an entry, list entries, list comments. `fresh_token` is unneeded under `ContentHash`; `retitle`, `close`/`reopen`-for-retreat and `entries_titled` were §6.1's and go with it. | nothing alone; testable |
 | ~~4~~ | ~~WI-1116~~ | ~~**Coordinated `add`**~~ — **retired unbuilt** (§6.0, §12). `MirrorEntry` moves to row 5, where the mirror is. | — |
 | 5 | WI-1117 | **`export` / `import`** (§7, amended). Export writes the tracker's state to the forge, idempotent and tracker-wins, creating `MirrorEntry` as it goes; import pulls comments back as `Feedback` for review. The continuously-reconciled `sync` — drift detection, close-as-verify, tombstones, `--check` as a CI gate — is a future extension, not this row. | a published snapshot + a return channel |
-| 6 | WI-1118 | **`migrate`.** Resumable, idempotent. Waits on 2b (file format) and 2c (id shape) — the tracker migrates exactly once, into the final form of both. | this repo's own tracker moves |
 
 ### 14.1 The self-hosting constraint
 
@@ -2103,6 +2132,11 @@ constraint that shapes the design:
   declaration changes last.
 * **Keep a known-good binary** aside before each increment. If a build breaks
   mid-increment it is the only way to keep recording work.
-* **Increment 6 is the one commit that moves the live tracker.** Rehearse on a copy,
-  verify with `sync --check`, and keep that commit atomic and alone, so a single
-  `git revert` restores `workitems.anthill` if it goes wrong.
+* **Migration is the one commit that moves the live tracker.** Rehearse on a copy,
+  verify by running the CLI against the result, and keep that commit atomic and
+  alone, so a single `git revert` restores `workitems.anthill` if it goes wrong.
+  This advice was written for increment 6 and matters *more* now that migration is
+  free to run early: it is a local rewrite, so the only thing standing between a
+  bad migration and a lost tracker is that the commit is revertible by itself.
+  Rehearsal is cheap — `-d <tmpdir>` on a copy of the tree — and the exploded tree
+  has already been shown to load (§11).
