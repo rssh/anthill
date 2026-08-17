@@ -2216,6 +2216,13 @@ impl FlowEnv {
     /// the discrim tree is persistent ([`super::discrim`]) — sharing the rest of
     /// Γ with the parent.
     ///
+    /// EVERY fact is normalized to the Γ vocabulary ([`goal_form`]) on the way
+    /// in — WI-756, and the reason this takes `&mut KnowledgeBase`. A producer
+    /// hands over a raw source occurrence, in which a nullary constructor and a
+    /// binder are the same `var_ref` shape; a consumer's goal has crossed the
+    /// goal-lowering boundary, where they are not. Γ is matched STRUCTURALLY, so
+    /// the two must be in one form or a fact simply never discharges its goal.
+    ///
     /// A fact the discrim tree cannot index — a raw `if`-condition occurrence
     /// with an elaborated / `Opaque` (or functor-less tuple/unit) head ANYWHERE
     /// in its structure, not just at the top — is NOT inserted, and that loses
@@ -2231,7 +2238,12 @@ impl FlowEnv {
     /// since a goal of the same shape now heads as a `Functor` too and can
     /// actually match it. Γ grows in exchange; the dedup probe below is what
     /// keeps that from compounding.
-    pub fn assume(&self, kb: &KnowledgeBase, fact: Value) -> FlowEnv {
+    pub fn assume(&self, kb: &mut KnowledgeBase, fact: Value) -> FlowEnv {
+        // HERE rather than at each producer, so the two sides share the vocabulary
+        // by construction: `if` / `match` / `let` / an in-body proof's conclusion
+        // all arrive through this one door, and so does a NEGATED `if` condition
+        // (`negate_goal` rebuilds from the raw children — normalized on the way in).
+        let fact = goal_form(kb, fact);
         if !super::discrim::view_is_indexable(kb, &fact) {
             return self.clone();
         }
@@ -2347,6 +2359,106 @@ pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) ->
     kb.resolve(std::slice::from_ref(goal), &config)
         .iter()
         .any(|s| s.residual.is_empty())
+}
+
+/// WI-756 — THE Γ VOCABULARY: the one form every Γ fact and every Γ goal is in.
+///
+/// A `Value::Node` occurrence crosses the GOAL-LOWERING BOUNDARY
+/// (`try_occurrence_to_term` → `term_body_to_nodes`) so a nullary CONSTRUCTOR
+/// reads as the closed datum `Ref` (WI-592) instead of the `var_ref` op-body
+/// lowering wraps EVERY bare identifier in; a genuine binder stays `var_ref` and
+/// still flounders (the sound open-world default). Compound carriers recurse —
+/// a fact like `eq(var_ref(x), <value>)` (`binding_gamma_fact`,
+/// `match_arm_gamma_facts`, a negated `if` condition) carries its operands as
+/// children, and it is the OPERANDS that need the boundary. Every other carrier
+/// is already in this form: a σ-substituted `requires`/`ensures` clause is a
+/// term (WI-539/WI-558), and a scalar is itself. Re-materializing as an
+/// occurrence rather than stopping at the `TermId` keeps op-calls foldable
+/// (`reduce_op_value`), as `proof_verify::discharge_contract_proof` does.
+///
+/// PRODUCERS AND CONSUMERS MUST SHARE IT, which is why this is applied at
+/// [`FlowEnv::assume`] (every fact's door) and at [`in_body_proof_goal`] (the
+/// one goal built from source rather than from a clause). The Γ overlay is
+/// consulted STRUCTURALLY, ahead of the builtin and its open-world delay
+/// (`resolve.rs`'s `gamma_candidates_for`), so a fact spelling `Red` as
+/// `var_ref` cannot discharge a goal spelling it `Ref`: before WI-756
+/// `if eq(c, Red) then needy(c)` did not satisfy `needy`'s `requires eq(c, Red)`
+/// though the identical program over an `Int64` literal did.
+///
+/// `try_`, NOT the asserting `occurrence_to_term`: a `conclude`/condition takes
+/// a full `_term`, which admits shapes that are deliberately NOT goals — the
+/// args-bearing `DotApply` above all — whose `None` is back-pressure the
+/// reifier's own doc says not to "finish". Such a value rides on unlowered: it
+/// can neither prove nor match a goal, so it is inert either way, where
+/// asserting would turn legal (if unprovable) source into a debug panic. `⊥` is
+/// treated the same — an elaborated-away conclusion is not a goal, and lowering
+/// it would put a `⊥` term where a proposition belongs.
+pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
+    match v {
+        Value::Node(occ) => {
+            let lowered = super::node_occurrence::try_occurrence_to_term(kb, &occ)
+                .filter(|t| !matches!(kb.get_term(*t), Term::Bottom))
+                .and_then(|t| kb.term_body_to_nodes(&[t]).into_iter().next());
+            match lowered {
+                Some(n) => Value::Node(n),
+                None => Value::Node(occ),
+            }
+        }
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => Value::Entity {
+            functor,
+            pos: pos.iter().map(|c| goal_form(kb, c.clone())).collect(),
+            named: named
+                .iter()
+                .map(|(k, c)| (*k, goal_form(kb, c.clone())))
+                .collect(),
+        },
+        Value::Tuple { pos, named } => Value::Tuple {
+            pos: pos.iter().map(|c| goal_form(kb, c.clone())).collect(),
+            named: named
+                .iter()
+                .map(|(k, c)| (*k, goal_form(kb, c.clone())))
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+/// WI-538 — the goal an in-body `proof <target> by <strategy> [conclude P]`
+/// discharges (typer, `Expr::Proof`). Named and `pub` so a test can DRIVE the
+/// site's own construction instead of re-spelling it: the Γ the site proves
+/// under is transient (`Env::flow`, never stored), and a discharged conclusion
+/// is only `assume`d into that Γ — where it is re-derivable from KB ∪ Γ by
+/// construction — so the discharge VERDICT has no end-to-end observable, and
+/// this pairing with [`prove_from_gamma`] is the closest a test can get.
+///
+/// The `conclude` proposition is put in the Γ vocabulary ([`goal_form`]) — the
+/// same form the other two `prove_from_gamma` obligation sites get for free by
+/// building their goal from a clause term (WI-539's σ-substituted `requires`,
+/// WI-558's contract `ensures`). WI-756: handing the RAW `conclude` occurrence
+/// to the resolver instead made its open-world gate (`resolve.rs`'s
+/// `force_delay` → [`KnowledgeBase::value_has_open_world_ref`] →
+/// `occurrence_has_var_ref`) read `Red` as a runtime binder, so the goal
+/// force-delayed and NO in-body proof over a bare constructor could discharge —
+/// not even the reflexive `conclude eq(Red, Red)`, and `conclude eq(Green, Red)`
+/// over a carrier whose own `eq` holds stayed unproved.
+pub fn in_body_proof_goal(
+    kb: &mut KnowledgeBase,
+    target: Symbol,
+    conclude: Option<&Rc<NodeOccurrence>>,
+) -> Value {
+    match conclude {
+        Some(c) => goal_form(kb, Value::Node(Rc::clone(c))),
+        // Short form: the goal is the `target` rule as a 0-ary atom.
+        // Incompleteness (sound, not unsound): an N-ary rule head is not
+        // reconstructed with fresh vars, so the arity mismatch fails the
+        // unifier — short-form discharge currently fires only for genuinely
+        // 0-ary rules. Reconstructing N-ary heads is a follow-on.
+        None => kb.make_goal_value(target, Vec::new()),
+    }
 }
 
 /// Constructively **refute** a guard: prove its negation from Γ (proposal
@@ -10007,40 +10119,33 @@ fn visit_type(
             // success, `assume` it into Γ for the continuation (the
             // proposal-050 in-body-`proof` modification rule, symmetric
             // to a call's `ensures`). The goal is the `conclude`
-            // proposition (carried as a `Value::Node` goal, exactly like
-            // an `if` condition), or — the short form — the `target`
-            // rule as a 0-ary atom.
+            // proposition in the Γ vocabulary, or — the short form — the
+            // `target` rule as a 0-ary atom ([`in_body_proof_goal`]).
             let target = *target;
             let strategy = *strategy;
             let conclude = conclude.clone();
             let body = Rc::clone(body);
-            let goal: Value = match &conclude {
-                Some(c) => Value::Node(Rc::clone(c)),
-                // Short form: the goal is the `target` rule as a 0-ary
-                // atom. Incompleteness (sound, not unsound): an N-ary rule
-                // head is not reconstructed with fresh vars, so the arity
-                // mismatch fails the unifier — short-form discharge
-                // currently fires only for genuinely 0-ary rules.
-                // Reconstructing N-ary heads is a follow-on.
-                None => kb.make_goal_value(target, Vec::new()),
-            };
-            let discharged = match strategy {
+            // Built INSIDE the `derivation` arm: every other strategy
+            // discards the goal, and building it interns the conclusion's
+            // term twin into the hash-consed store for the KB's lifetime
+            // (CLAUDE.md — transient terms are deliberately not interned).
+            let discharged_goal: Option<Value> = match strategy {
                 // Tier-A `by derivation`: prove inline over Γ ∪ KB under
                 // the resolver's floundering guard.
                 Some(strat) if kb.local_name_of(strat) == "derivation" => {
-                    prove_from_gamma(kb, &env.flow, &goal)
+                    let goal = in_body_proof_goal(kb, target, conclude.as_ref());
+                    prove_from_gamma(kb, &env.flow, &goal).then_some(goal)
                 }
                 // Tier-B (external) and open obligations contribute
                 // nothing here: an external proof's conclusion may be
                 // assumed only once the Γ-snapshot + prove-pass gate
                 // verifies it (follow-on); until then it stays
                 // conservatively undischarged — never a silent drop.
-                _ => false,
+                _ => None,
             };
-            let body_env = if discharged {
-                env.with_flow(env.flow.assume(kb, goal))
-            } else {
-                env.clone()
+            let body_env = match discharged_goal {
+                Some(goal) => env.with_flow(env.flow.assume(kb, goal)),
+                None => env.clone(),
             };
             // Children order [conclude?, body] (matches `for_each_child`
             // / `reassemble_group`). The proof's type is the

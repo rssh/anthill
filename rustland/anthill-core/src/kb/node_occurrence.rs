@@ -2716,6 +2716,21 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
 /// guard's binders are normalized to that form and `Γ` is built with it
 /// (`binder_ref_value`), while a bare `Ref` is a closed datum (sort/op/const).
 /// Pre-order child walk.
+///
+/// WI-756 — THE SYMMETRY IS CONDITIONAL, and the condition belongs to the
+/// CALLER. The term twin never *sees* a constructor `var_ref`, because the
+/// goal-lowering boundary strips it ([`try_occurrence_to_term`]'s WI-592 arm: a
+/// `var_ref` naming a constructor is a closed datum and lowers to `Ref`); this
+/// occurrence walk has no such boundary and answers `true` for one. So the two
+/// agree only on a goal that CROSSED that boundary. A `Value::Node` goal handed
+/// to the resolver straight off the source tree — as WI-538's in-body
+/// `proof … conclude P` did — has its nullary constructors read as open-world
+/// binders and force-delays, deciding nothing for any carrier. The fix is at the
+/// caller (lower the goal — `typing::in_body_proof_goal`), NOT here: narrowing
+/// this predicate alone would let the builtin run over operands whose VIEW still
+/// heads as `var_ref`, so `eq`'s dispatch index would miss the carrier entirely
+/// and a custom-`eq` carrier would be decided STRUCTURALLY — trading a
+/// conservative non-answer for a wrong one.
 pub fn occurrence_has_var_ref(root: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
     while let Some(occ) = stack.pop() {
@@ -3209,6 +3224,11 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // deliberately NOT included: a const NAMES a value, so a structural
         // `Ref(const)` comparison without folding would be unsound — it stays
         // `var_ref` (conservatively kept).
+        // WI-756: this arm is why a goal MUST cross this boundary before the
+        // resolver sees it. `typing::in_body_proof_goal` was added to make
+        // WI-538's `conclude P` do so — without it, `conclude eq(Red, Red)` never
+        // discharged, the constructors having stayed open-world `var_ref`s. See
+        // `occurrence_has_var_ref`'s note for why the gate is not the fix site.
         Some(Expr::VarRef { name }) if kb.is_constructor_symbol(*name) => {
             kb.alloc(Term::Ref(*name))
         }

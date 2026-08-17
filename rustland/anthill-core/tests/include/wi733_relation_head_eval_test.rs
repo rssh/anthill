@@ -122,10 +122,10 @@ namespace test.wi733
   operation emptyTailHeadOption() -> Option[T = String] effects {Error, Error[T = EmptyStream]} =
     no_name.tail.headOption
 
-  -- head/tail decomposition. Read as ONE list off ONE stream, so the assertion
-  -- is structural rather than a coincidence of two searches agreeing: `takeN`
-  -- and `tail` walk the same `splitFirst` chain, so row 0 of `all3` IS the row
-  -- `head` returns and rows 1..2 ARE `tail`.
+  -- head/tail decomposition. Both are drained off ONE interpreter, so `takeN`
+  -- and `tail` walk the same load's `splitFirst` chain and the assertion is
+  -- structural rather than a coincidence of two searches agreeing: rows 1..2 of
+  -- `all3` ARE `tailAll`, positionally.
   operation all3() -> List[T = String] effects Error =
     person_name.takeN(10)
   operation tailAll() -> List[T = String] effects {Error, Error[T = EmptyStream]} =
@@ -210,10 +210,13 @@ fn wi733_relation_tail_on_empty_raises_empty_stream() {
 /// Order-free BY CONSTRUCTION rather than by assertion. A relation is an
 /// unordered bag and enumeration order VARIES BETWEEN KB LOADS (measured on
 /// THIS fixture: six fresh interpreters gave four distinct orders of the three
-/// rows), so nothing here may name a specific row. Comparing `all3`
-/// against `tailAll` — each a full drain of one stream — makes the claim
-/// structural: whatever order this load picked, dropping row 0 of the whole
-/// drain must equal the tail's own drain.
+/// rows), so nothing here may name a specific row. Both drains are therefore
+/// read off ONE interpreter — one load, one enumeration order — which is what
+/// makes the claim structural rather than set-wise: whatever order this load
+/// picked, `all3` MINUS ITS FIRST ROW must equal the tail's own drain,
+/// positionally. Read from two loads instead (as this test first did) it
+/// degrades to "the tail is 2 of the 3", which a `tail` that dropped the LAST
+/// row would also satisfy.
 #[test]
 fn wi733_relation_head_and_tail_decompose_the_stream() {
     let mut i1 = interp_for(SRC);
@@ -227,23 +230,15 @@ fn wi733_relation_head_and_tail_decompose_the_stream() {
         "the relation's three solutions are exactly the three people; got {all:?}"
     );
 
-    let mut i2 = interp_for(SRC);
-    let got_tail = i2.call("test.wi733.tailAll", &[]);
-    let tail = string_list(&mut i2, &got_tail);
+    // SAME interpreter, so `tailAll` walks the same load's `splitFirst` chain.
+    // (Safe reuse: `all3` returned Ok — the poisoning footgun is a TRAPPED call,
+    // and a trapped `all3` fails the assertion above before we get here.)
+    let got_tail = i1.call("test.wi733.tailAll", &[]);
+    let tail = string_list(&mut i1, &got_tail);
     assert_eq!(
-        tail.len(),
-        2,
-        "a 3-solution relation's tail drains to exactly 2 rows; got {tail:?}"
-    );
-    // `all` and `tail` come from two loads, so compare as SETS: the tail is the
-    // whole relation minus exactly one row, whichever row this load put first.
-    let mut tail_sorted = tail.clone();
-    tail_sorted.sort();
-    let missing: Vec<&String> = sorted.iter().filter(|n| !tail_sorted.contains(n)).collect();
-    assert_eq!(
-        missing.len(),
-        1,
-        "tail drops exactly one of the three rows; all={all:?} tail={tail:?}"
+        tail,
+        all[1..].to_vec(),
+        "`tail` IS the whole drain minus its first row: all={all:?} tail={tail:?}"
     );
 
     let mut i3 = interp_for(SRC);

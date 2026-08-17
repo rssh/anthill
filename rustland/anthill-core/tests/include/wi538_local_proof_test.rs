@@ -240,7 +240,7 @@ fn discharged_conclusion_becomes_a_downstream_gamma_fact() {
 
     // The typer assumes a VERIFIED conclusion into Γ (here neq(b, 0), as
     // a Tier-A proof of it from an enclosing premise would).
-    let enriched = FlowEnv::empty().assume(&kb, neq_b_0.clone());
+    let enriched = FlowEnv::empty().assume(&mut kb, neq_b_0.clone());
 
     // Downstream: the conclusion is now a Γ fact — provable where it was
     // not before. This is "available as a Γ fact for downstream code."

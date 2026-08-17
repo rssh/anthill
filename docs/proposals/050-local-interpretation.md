@@ -197,9 +197,17 @@ proven `¬guard`, never on failure-to-prove.
 
 ## Open questions
 
-- **A. Fact representation.** Raw goal `Value`s vs a normalized, indexed fact
-  store (faster refutation, dedup, easier `¬` handling). Start raw, normalize when
-  a hot path demands it.
+- **A. Fact representation — RESOLVED: one vocabulary, normalized at entry
+  (2026-08-17).** A fact enters `Γ` in the **goal vocabulary**: the form a goal
+  handed to the resolver is in. It is not a performance choice — `Γ` is consulted
+  *structurally*, ahead of the builtin and its open-world delay, so a producer and
+  a consumer that spell the same value two ways can never match. The spelling that
+  differs is a bare identifier: op-body lowering wraps every one as `var_ref`, and
+  only the goal-lowering boundary separates a nullary **constructor** (a closed
+  datum, `Ref`) from a **binder** (`var_ref`, which must still flounder). So an
+  `if` condition, a `let` binding's value, a `match` arm's pattern and an in-body
+  proof's conclusion are all normalized on the way in, rather than each producer
+  being trusted to agree.
 - **B. Join precision.** Plain meet (intersection) vs limited path-sensitivity for
   hot cases (e.g. keeping a disjunction after a join). Plain meet first.
 - **C. Negation of a condition.** `¬cond` for the `else` branch / earlier match

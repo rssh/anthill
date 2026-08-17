@@ -231,6 +231,20 @@ parse → load   (proof ⇒ ProofRecord fact, result = Pending)
   feedback (a verified goal → `Γ` for the continuation, the proposal-050
   in-body-`proof` modification rule). The goal is the `conclude` proposition, or
   — short form — the `target` rule as a 0-ary atom;
+
+  **The goal crosses the goal-lowering boundary** —
+  `typing::in_body_proof_goal` = `try_occurrence_to_term` → `term_body_to_nodes`
+  — as WI-539's `requires` and WI-558's `ensures` goals do. Required, not
+  cosmetic: op-body lowering wraps *every* bare identifier as `var_ref`, and only
+  that boundary separates a nullary **constructor** (closed datum ⇒ `Ref`,
+  WI-592) from a **binder** (stays `var_ref` ⇒ flounders, the sound open-world
+  default). Off the raw occurrence the resolver's open-world gate reads `Red` as
+  a binder and delays, so no in-body proof over a bare constructor discharges,
+  `conclude eq(Red, Red)` included (WI-756). A `conclude` that is not a goal
+  shape (an args-bearing dot) does not lower and stays undischarged. `Γ`'s
+  FACTS are in the same form — `FlowEnv::assume` normalizes every one
+  ([050](../proposals/050-local-interpretation.md) OQ-A) — which is what lets a
+  premise supplied by an enclosing `if` / `let` / `match` discharge this goal;
 - `using` cites are carried on the occurrence (the lexical-scope-citation channel
   is present).
 
@@ -244,9 +258,16 @@ parse → load   (proof ⇒ ProofRecord fact, result = Pending)
 - **`using`-as-hypotheses** — the carried cites are not yet spliced into the
   discharge context (the cited lemmas don't yet seed `prove_from_gamma`).
 - the **WI-067 dispatch glue** (auto-find a local proof for an un-refuted guard,
-  check it against the same `Γ`) — WI-067's own scope note owns it. This is also
-  the consumer that makes the Tier-A discharge *outcome* observable end-to-end
-  (the typer's `Γ` is otherwise write-only — refute_guard has no caller yet).
+  check it against the same `Γ`) — WI-067's own scope note owns it.
+
+  It does **not** make the Tier-A discharge *outcome* observable end-to-end, and
+  no consumer can: a discharged `conclude` is `assume`d into `Γ`, which at that
+  point is a subset of what `KB ∪ Γ` already derives, so any downstream
+  `prove_from_gamma` re-derives it either way (WI-756). Tests therefore drive
+  `typing::in_body_proof_goal` + `prove_from_gamma` directly
+  (`wi756_proof_path_eq_override_test`); `wi538_local_proof_test` owns the
+  typer's wiring of that pair. (`Γ` itself is not write-only — it has had readers
+  since WI-573/WI-621 `conjunct_refuted` and WI-539 `precondition_proved`.)
 - generalizing `collect_proof_records` + the `anthill check` chaining for in-body
   proofs (the prove-pass gate) — a follow-on once Tier-B is exercised.
 
