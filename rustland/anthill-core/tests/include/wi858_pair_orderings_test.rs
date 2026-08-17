@@ -727,33 +727,32 @@ end
     }
 }
 
-/// THE COST THIS CHANGE WIDENS, recorded because nothing else in the suite witnesses
-/// it: a provision's carrier binding is matched by SHORT NAME at dispatch, so a user
-/// sort whose short name matches a prelude provider's is offered that provider's impl
-/// and then refused. Giving `Pair` provisions adds `Pair` — a far likelier user sort
-/// name than `Set`/`Map`/`List` — to that effectively-reserved set.
+/// THE COST THIS CHANGE WOULD HAVE WIDENED, now paid off (WI-872). Giving `Pair`
+/// provisions added `Pair` — a far likelier user sort name than `Set`/`Map`/`List` — to
+/// a set of short names that were effectively RESERVED against a user sort: a user sort
+/// sharing a prelude provider's last segment was offered that provider's impl, whose
+/// condition then resolved at the PRELUDE sort's own parameter and failed (`no impl
+/// matches — unresolved: PartialEq[T = anthill.prelude.Pair.A]`).
 ///
-/// PRE-EXISTING and not about `Pair`: the `Set` arm collides with the prelude's own
-/// `provides PartialEq[T = Set]`, which has been there since WI-616, and fails
-/// identically. `Duple` is the CONTROL — the same shape under a name nothing provides
-/// for — so the refusal is attributable to the NAME, not to the shape or to composite
-/// equality. WI-872; `wi664_composite_eq_test`'s `Pair`→`Duple` rename is the same
-/// defect met as a workaround, and reverting it is WI-872's acceptance.
+/// This arm was a RECORDED DEFECT and is now the positive assertion. It stays HERE, in
+/// the suite of the change that widened the reserved set, so that a regression is caught
+/// where the cost was incurred; the defect's own suite is
+/// `wi872_short_name_sort_identity_test`, which carries the measurement, the two-namespace
+/// ACCEPTANCE half (`sort_sym_compatible`'s short-name leg accepted a foreign sort at an
+/// argument, which WI-872 never named), and the diagnostic.
 ///
-/// WI-1098 NARROWED THE DEFECT AND DID NOT CLOSE IT, and the field type is where the
-/// two are told apart. The fixture was `(a: Int64, b: Int64)`; WI-1098 derives
-/// `provides PartialEq`+`Eq` for exactly that shape, and a local `sort Pair` carrying
-/// its OWN provision no longer needs the prelude's — so the arm LOADED, and reading
-/// that as "fixed" would have deleted the only witness of a live defect. MEASURED with
-/// one field moved to `Float`, which derives `NonEq` instead and leaves the carrier
-/// with no provision of its own: `Pair` and `Set` are refused with `no impl matches`
-/// naming the PRELUDE sort's parameter (`PartialEq[T = anthill.prelude.Pair.A]`,
-/// `Eq[T = anthill.prelude.Set.T]`) while `Duple` — same shape, unclaimed name — loads.
-/// The short-name carrier match is untouched; the population it can still bite is the
-/// composites WI-1098 leaves underivable. WI-872 stays open, and its acceptance is
-/// unchanged.
+/// **IT FIRED ONCE BEFORE, AND OBEYING IT WOULD HAVE BEEN WRONG.** The fixture was
+/// `(a: Int64, b: Int64)`; WI-1098 derives `provides PartialEq`+`Eq` for exactly that
+/// TOTAL shape, so the local sort gained a provision of its OWN and the arm loaded with
+/// the defect fully intact. It was moved to a `Float` field — which derives `NonEq`, so
+/// the carrier has no provision of its own and the prelude's is back in play — and only
+/// then did it measure the defect again. Keep the `Float`.
+///
+/// `Duple` is the shape CONTROL: the same composite under a name nothing provides for.
+/// It passed at HEAD too, which is the point — without it, "the refusal is attributable
+/// to the NAME" would be a guess about the shape.
 #[test]
-fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
+fn a_local_sort_may_share_a_prelude_providers_short_name() {
     let composite = |name: &str, ctor: &str| {
         program(
             "wi872.shadow",
@@ -765,31 +764,24 @@ fn a_local_sort_sharing_a_prelude_providers_short_name_is_a_recorded_defect() {
             ),
         )
     };
-    assert_eq!(
-        eval_int(
-            &composite("Duple", "duple"),
-            "wi872.shadow.Use.same",
-            "the CONTROL"
-        ),
-        1,
-        "a composite under a name no prelude sort provides for compares field-wise \
-         (`1.0 == 1.0`, no NaN) — without this the two arms below would prove nothing \
-         about the NAME",
-    );
-    for (name, ctor) in [("Pair", "mkpair"), ("Set", "mkset")] {
-        let errs = match crate::common::try_load_kb_with(&composite(name, ctor)) {
-            Err(e) => e,
-            Ok(_) => panic!(
-                "RECORDED DEFECT FIXED: a local `sort {name}` now loads. That is the \
-                 wanted behaviour — delete this arm, revert the `Duple` rename in \
-                 wi664_composite_eq_test, and close WI-872."
+    for (name, ctor, discriminating) in [
+        ("Duple", "duple", false),
+        ("Pair", "mkpair", true),
+        ("Set", "mkset", true),
+    ] {
+        assert_eq!(
+            eval_int(
+                &composite(name, ctor),
+                "wi872.shadow.Use.same",
+                &format!("a local `sort {name}` must compare field-wise (`1.0 == 1.0`, no NaN)"),
             ),
-        };
-        assert!(
-            errs.iter().any(|e| e.contains("no impl matches")),
-            "the recorded refusal is the prelude `{name}`'s impl being offered for a \
-             DIFFERENT sort of the same short name; a different error means the defect \
-             moved and WI-872 needs re-measuring: {errs:?}"
+            1,
+            "`{name}`{}",
+            if discriminating {
+                " was REFUSED before WI-872 — this arm fails when that change is backed out"
+            } else {
+                " is the shape CONTROL and passes either way, by design"
+            },
         );
     }
 }

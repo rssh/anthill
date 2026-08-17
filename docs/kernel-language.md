@@ -3448,6 +3448,20 @@ are different sorts even though they share a short name. Short-name matching in 
 kernel therefore survives only for name resolution against a scoped set, never as a
 test of whether two sorts are the same.
 
+**The subtype relation's nominal leg is inside that rule** (WI-872). "Is this type that
+type" is a sort-identity question wherever it is asked — at an argument, a field, a
+return, or when deciding whether a provision is *about* a carrier — so it is answered by
+the resolved symbol. A user sort may therefore be named for a library sort freely: a
+local `sort Pair` beside `anthill.prelude.Pair` is a different sort, and neither shadows
+nor reserves the other. Reading identity by last segment here is not a locally-wrong
+answer but two opposite ones at once, which is how such a violation shows itself: at a
+*value* position it **accepts** a foreign sort of the same short name (a silent wrong
+value), while at a *dispatch* it **refuses**, the foreign sort's provision being offered
+and its condition then failing at that sort's own parameter — reported as an
+implementation mismatch rather than as the name collision it is. Because both sides of a
+type mismatch render by short name, such a pair prints as `expected T, got T`; the
+diagnostic names the two qualified sorts, since those are the repair.
+
 **Distinct labels within one argument list** (WI-809). A named-argument list may not
 repeat a label, whatever the callee is: an operation, an entity constructor, a
 function value, a `fact`, or a rule-body atom. The second occurrence names a slot the

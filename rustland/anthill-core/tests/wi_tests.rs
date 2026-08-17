@@ -911,6 +911,9 @@ mod wi869_per_provision_conditions_test;
 #[path = "include/wi870_bracket_value_slot_test.rs"]
 mod wi870_bracket_value_slot_test;
 
+#[path = "include/wi872_short_name_sort_identity_test.rs"]
+mod wi872_short_name_sort_identity_test;
+
 #[path = "include/wi876_operation_mapping_test.rs"]
 mod wi876_operation_mapping_test;
 
