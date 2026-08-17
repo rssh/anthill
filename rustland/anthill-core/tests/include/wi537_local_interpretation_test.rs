@@ -73,7 +73,7 @@ fn flow_env_assume_is_copy_on_write() {
     let flow = FlowEnv::empty();
     assert!(flow.is_empty(), "Γ₀ starts empty");
 
-    let narrowed = flow.assume(&kb, fact);
+    let narrowed = flow.assume(&mut kb, fact);
     assert!(!narrowed.is_empty(), "assume extends Γ");
     assert!(
         flow.is_empty(),
@@ -91,7 +91,7 @@ fn prove_from_gamma_proves_a_fact_in_gamma_over_a_symbolic_parameter() {
     let b = param(&mut kb, "?b");
     let neq_b_0 = goal(neq, vec![b, Value::Int(0)]);
 
-    let flow = FlowEnv::empty().assume(&kb, neq_b_0.clone());
+    let flow = FlowEnv::empty().assume(&mut kb, neq_b_0.clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &neq_b_0),
         "neq(b,0) ∈ Γ ⊢ neq(b,0)"
@@ -109,7 +109,7 @@ fn gamma_fact_over_one_parameter_does_not_discharge_another() {
     let neq = neq_sym(&mut kb);
     let b = param(&mut kb, "?b");
     let c = param(&mut kb, "?c");
-    let flow = FlowEnv::empty().assume(&kb, goal(neq, vec![b, Value::Int(0)]));
+    let flow = FlowEnv::empty().assume(&mut kb, goal(neq, vec![b, Value::Int(0)]));
     assert!(
         !prove_from_gamma(&mut kb, &flow, &goal(neq, vec![c, Value::Int(0)])),
         "neq(b,0) ∈ Γ must NOT prove neq(c,0) for a distinct parameter c"
@@ -145,7 +145,7 @@ fn refute_guard_discharges_an_eq_guard_from_a_neq_fact() {
     let guard = goal(eq_sym, vec![b.clone(), Value::Int(0)]);
     let neq_fact = goal(neq, vec![b, Value::Int(0)]);
 
-    let flow = FlowEnv::empty().assume(&kb, neq_fact);
+    let flow = FlowEnv::empty().assume(&mut kb, neq_fact);
     assert!(
         refute_guard(&mut kb, &flow, &guard),
         "neq(b,0) ∈ Γ refutes the guard eq(b,0)"
@@ -219,7 +219,7 @@ fn match_case_0_carries_neq_into_the_wildcard_arm() {
     // and it refutes the div guard eq(s,0).
     let mut flow = FlowEnv::empty();
     for f in &facts[1] {
-        flow = flow.assume(&kb, f.clone());
+        flow = flow.assume(&mut kb, f.clone());
     }
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[1][0]),
@@ -251,7 +251,7 @@ fn match_negation_indexes_a_node_scrutinee() {
     let facts = match_arm_gamma_facts(&mut kb, &scrutinee, &arms, &[]);
     assert_eq!(facts[1].len(), 1, "wildcard arm ⇒ neq(node(b), 0)");
 
-    let flow = FlowEnv::empty().assume(&kb, facts[1][0].clone());
+    let flow = FlowEnv::empty().assume(&mut kb, facts[1][0].clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[1][0]),
         "a Node(Ref) scrutinee's neq is indexable and proves from Γ"
@@ -278,7 +278,7 @@ fn match_negation_indexes_a_varref_scrutinee() {
     let facts = match_arm_gamma_facts(&mut kb, &scrutinee, &arms, &[]);
     assert_eq!(facts[1].len(), 1, "wildcard arm ⇒ neq(varref(b), 0)");
 
-    let flow = FlowEnv::empty().assume(&kb, facts[1][0].clone());
+    let flow = FlowEnv::empty().assume(&mut kb, facts[1][0].clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[1][0]),
         "a VarRef (binder) scrutinee's neq must be indexable and prove from Γ"
@@ -323,7 +323,7 @@ fn match_nullary_ctor_arms_accumulate_negations() {
 
     let mut flow = FlowEnv::empty();
     for f in &facts[2] {
-        flow = flow.assume(&kb, f.clone());
+        flow = flow.assume(&mut kb, f.clone());
     }
     for f in &facts[2] {
         assert!(
@@ -351,7 +351,7 @@ fn match_binding_arm_carries_alias_fact_but_no_negation() {
         1,
         "a binding arm carries the alias fact eq(s, x)"
     );
-    let flow = FlowEnv::empty().assume(&kb, facts[0][0].clone());
+    let flow = FlowEnv::empty().assume(&mut kb, facts[0][0].clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[0][0]),
         "the binding arm's alias eq(s, x) is indexable and proves from Γ"
@@ -397,7 +397,7 @@ fn match_constructor_binder_arm_carries_destructure_fact() {
         1,
         "the some(x) arm carries one destructure fact eq(s, some(x))"
     );
-    let flow = FlowEnv::empty().assume(&kb, facts[0][0].clone());
+    let flow = FlowEnv::empty().assume(&mut kb, facts[0][0].clone());
     assert!(
         prove_from_gamma(&mut kb, &flow, &facts[0][0]),
         "eq(s, some(var_ref(x))) is indexable (binder reads as var_ref) and proves from Γ"
@@ -419,7 +419,7 @@ fn binding_gamma_fact_relates_a_let_binder_to_its_value() {
         None,
     ));
     let fact = binding_gamma_fact(&mut kb, x, value, span(), None);
-    let flow = FlowEnv::empty().assume(&kb, fact.clone());
+    let flow = FlowEnv::empty().assume(&mut kb, fact.clone());
     assert!(
         !flow.is_empty(),
         "the binding fact is indexable and enters Γ"

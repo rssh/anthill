@@ -386,18 +386,6 @@ pub fn load_stdlib_kb_with_source(
     (kb, result)
 }
 
-/// Walk an anthill cons-list `Value` into its `Int64` elements.
-///
-/// A list is a chain of `cons(head, tail)` entities terminated by a
-/// zero-field `nil`; each `cons` carries its two components as NAMED fields, so
-/// the head is the `Int` among them and the tail the `Entity`. Several
-/// per-WI suites grew a private copy of this walk (wi714_*, wi727, wi730);
-/// this is the shared one to reach for.
-/// The HEAD VALUES of a `cons`/`nil` list, in order — the element-type-agnostic
-/// peer of [`list_ints`], for suites whose elements are not `Int` (a projected
-/// relation drains to `Value::Tuple` rows, WI-762).
-///
-/// Same walk and the same limitation: within a `cons` the TAIL is the `Entity`
 /// Solutions of the unary goal `qn(?r)`, as `(the reified `?r`, the solution is
 /// definite)`.
 ///
@@ -577,63 +565,73 @@ pub fn sort_alias_backing_var(
         })
 }
 
-/// field and the head is the other one, so a list whose elements are themselves
-/// entities is out of scope for both helpers.
+/// The HEAD VALUES of a `cons`/`nil` list, in order — the element-type-agnostic
+/// peer of [`list_ints`], for suites whose elements are not `Int` (a projected
+/// relation drains to `Value::Tuple` rows, WI-762). Walks via [`cons_spine`].
+///
+/// Elements that are THEMSELVES entities used to be out of scope for both
+/// helpers, because the old walk identified the tail as "the `Entity` among the
+/// two fields" and so could not tell an entity element from the tail. Reading
+/// head/tail BY POSITION removes that restriction (WI-733 review).
 #[allow(dead_code)]
 pub fn list_heads(v: &eval::Value) -> Vec<eval::Value> {
-    use eval::Value;
-    let mut out = Vec::new();
-    let mut cur = v.clone();
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break; // nil
-        }
-        let mut head: Option<Value> = None;
-        let mut tail: Option<Value> = None;
-        for (_k, item) in named.iter() {
-            match item {
-                Value::Entity { .. } => tail = Some(item.clone()),
-                other => head = Some(other.clone()),
-            }
-        }
-        match (head, tail) {
-            (Some(h), Some(t)) => {
-                out.push(h);
-                cur = t;
-            }
-            _ => break,
-        }
-    }
-    out
+    cons_spine(v, "list_heads")
 }
 
+/// Walk an anthill cons-list `Value` into its `Int64` elements — [`list_heads`]
+/// plus an `Int64` read on each element, LOUD if one is not an `Int`.
+///
+/// A list is a chain of `cons(head, tail)` entities terminated by a zero-field
+/// `nil`. Several per-WI suites grew a private copy of this walk (wi714_*,
+/// wi727, wi730); this is the shared one to reach for.
 #[allow(dead_code)]
 pub fn list_ints(v: &eval::Value) -> Vec<i64> {
+    cons_spine(v, "list_ints")
+        .into_iter()
+        .map(|h| match h {
+            eval::Value::Int(i) => i,
+            other => panic!("list_ints: expected an Int64 element, got {other:?}"),
+        })
+        .collect()
+}
+
+/// The shared cons-spine walk behind [`list_heads`] and [`list_ints`].
+///
+/// Handles BOTH carriers a cons cell arrives in — `build_list_value` emits NAMED
+/// head/tail while `classify_ctor_arg` pushes POSITIONALLY (eval.rs) — because
+/// reading only one of them made a positionally-built list walk out as an EMPTY
+/// vector, silently and with the doc claiming the opposite (WI-733 review).
+///
+/// LOUD on a shape that is neither: a silent `break` here reads as "the list
+/// ended" and turns a malformed value into a short answer, which is what the
+/// production reader in `eval/builtins.rs` refuses to do.
+///
+/// RESIDUAL LIMITATION, stated because it cannot be fixed here: with no `&KnowledgeBase`
+/// in hand this cannot check that the functors really are `List.cons`/`List.nil`, so
+/// any 2-field entity walks as a cons and any nullary one ends the spine. A suite
+/// that needs the functor checked must do it at its own site with a KB handle.
+fn cons_spine(v: &eval::Value, who: &str) -> Vec<eval::Value> {
     use eval::Value;
     let mut out = Vec::new();
     let mut cur = v.clone();
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break; // nil
+    loop {
+        let (pos, named) = match &cur {
+            Value::Entity { pos, named, .. } => (pos.clone(), named.clone()),
+            other => panic!("{who}: expected a cons/nil entity in the list spine, got {other:?}"),
+        };
+        if pos.is_empty() && named.is_empty() {
+            return out; // nil
         }
-        let mut head: Option<i64> = None;
-        let mut tail: Option<Value> = None;
-        for (_k, item) in named.iter() {
-            match item {
-                Value::Int(i) => head = Some(*i),
-                Value::Entity { .. } => tail = Some(item.clone()),
-                _ => {}
-            }
-        }
-        match (head, tail) {
-            (Some(h), Some(t)) => {
-                out.push(h);
-                cur = t;
-            }
-            _ => break,
-        }
+        let (head, tail) = if pos.len() == 2 {
+            (pos[0].clone(), pos[1].clone())
+        } else if named.len() == 2 {
+            (named[0].1.clone(), named[1].1.clone())
+        } else {
+            panic!("{who}: a cons cell carries head+tail; got pos={pos:?} named={named:?}")
+        };
+        out.push(head);
+        cur = tail;
     }
-    out
 }
 
 // ── Tuple-cluster fixture builder (WI-786 / 788 / 803) ───────

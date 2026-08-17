@@ -82,7 +82,7 @@ The Modify effect row on `set` (`Modify[c]`) is satisfied because `Cell` has a `
 
 ## Identity scheme
 
-**Opaque-handle**, per [WI-200](../../anthill-todo/workitems.anthill) §"Multi-instance Modify state". The slot index is the identity; two slots with the same value are still distinct cells. This is what enables the recursive-allocation case: each `Cell.new` allocates a fresh slot.
+**Opaque-handle**, per [WI-200](../../anthill-todo/open/WI-200.anthill) §"Multi-instance Modify state". The slot index is the identity; two slots with the same value are still distinct cells. This is what enables the recursive-allocation case: each `Cell.new` allocates a fresh slot.
 
 This is a strict upgrade from v0.1's functor-only scheme:
 

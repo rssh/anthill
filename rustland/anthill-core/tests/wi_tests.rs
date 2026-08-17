@@ -708,6 +708,9 @@ mod wi751_namespace_root_shadow_test;
 #[path = "include/wi752_dotted_ladder_test.rs"]
 mod wi752_dotted_ladder_test;
 
+#[path = "include/wi756_proof_path_eq_override_test.rs"]
+mod wi756_proof_path_eq_override_test;
+
 #[path = "include/wi759_field_of_type_test.rs"]
 mod wi759_field_of_type_test;
 
@@ -1275,3 +1278,6 @@ mod wi1119_dot_on_constrained_param_test;
 
 #[path = "include/wi1114_item_per_file_store_test.rs"]
 mod wi1114_item_per_file_store_test;
+
+#[path = "include/wi733_relation_head_eval_test.rs"]
+mod wi733_relation_head_eval_test;

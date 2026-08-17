@@ -74,11 +74,14 @@ namespace test.wi714ref
     r.isEmpty
 
   -- The single solution of negate(empty) materializes as the 0-column Unit row.
+  -- WI-733: read with `.headOption`, which is exactly what this expresses. It
+  -- used to hand-roll the same read out of `splitFirst`, because `headOption`
+  -- was defined only by an equational law and so resolved under SLD without
+  -- evaluating; WI-818's default bodies over `splitFirst` made the direct
+  -- spelling run. `Relation.splitFirst` keeps its own direct witness in
+  -- `firstName` above — this site changed its SPELLING, not the coverage.
   operation negateEmptyHead() -> Option[Unit] effects Error =
-    let r = negate(has_zed)
-    match r.splitFirst
-      case some(pair(h, _)) -> some(h)
-      case none() -> none()
+    negate(has_zed).headOption
 
   -- negate COMPOSES on itself — only possible because it returns a composable,
   -- query-carrying Relation (combining QUERIES, not streams). not(not(provable))
@@ -258,9 +261,10 @@ fn wi714_negate_of_empty_is_nonempty() {
 }
 
 /// The single solution of `negate(empty)` materializes as `unit` — the 0-column
-/// membership row. Spelled `splitFirst` + `some(h)`, NOT `.headOption`: the latter
-/// is given by an equational rule on `Stream`, so it resolves under SLD but does
-/// not evaluate (the interpreter has no equational-rewrite fallback).
+/// membership row, read with `.headOption` (WI-733). The eval-side capability
+/// that spelling depends on is pinned on its own in
+/// `wi733_relation_head_eval_test`; here it is just the natural way to say
+/// "the one row".
 #[test]
 fn wi714_negate_materializes_unit() {
     let mut interp = interp_for(SRC);

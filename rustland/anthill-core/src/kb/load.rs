@@ -209,10 +209,14 @@ fn unbacked_provider_operation_detail(
     derived_from: Option<&str>,
 ) -> String {
     format!(
+        // WI-818 reversed WI-363 here: BACKING IS EXECUTABLE — a runnable body or a
+        // builtin. A spec-level `rule` is a LAW, not backing (`op_is_executable`,
+        // typing.rs), so this message must NOT offer one as a repair; an author who
+        // added `rule {op}(…) = …` got the byte-identical error back.
         "'{carrier}' provides '{spec}' but does not back operation '{spec}.{op}': there \
-         is no default on '{spec}' (an `operation {op}(…) = …` body or a derivation rule) \
-         and '{carrier}' supplies no own '{op}' (add a body/rule on '{spec}' or an \
-         `operation {op}(…)` on '{carrier}'){}",
+         is no executable default on '{spec}' (an `operation {op}(…) = …` body or a \
+         builtin — a `rule` is a law, not backing) and '{carrier}' supplies no own \
+         '{op}' (add a body on '{spec}' or an `operation {op}(…) = …` on '{carrier}'){}",
         derived_row_clause(spec, derived_from)
     )
 }
@@ -455,12 +459,14 @@ pub enum LoadError {
         required: String,
         unentailed: String,
     },
-    /// WI-363: a carrier provides a spec but does not back one of the spec's
-    /// declared operations. The op-level twin of `UnsatisfiedProviderRequires`:
-    /// `fact Spec[X]` is trusted by the typer, yet `Spec.op` has neither a
-    /// spec-level default (an `operation … = …` body or a derivation rule on
-    /// `Spec`) nor an operation `X` itself supplies — so a call resolves to
-    /// nothing at runtime. Load-blocking: the satisfaction fact is unsound.
+    /// WI-363, as amended by WI-818: a carrier provides a spec but does not back
+    /// one of the spec's declared operations. The op-level twin of
+    /// `UnsatisfiedProviderRequires`: `fact Spec[X]` is trusted by the typer, yet
+    /// `Spec.op` has neither an EXECUTABLE spec-level default (an
+    /// `operation … = …` body, or a builtin — WI-818 ruled a `rule` is a LAW, not
+    /// backing, so a derivation rule does NOT satisfy this) nor an operation `X`
+    /// itself supplies — so a call resolves to nothing at runtime.
+    /// Load-blocking: the satisfaction fact is unsound.
     UnbackedProviderOperation {
         carrier: String,
         spec: String,
@@ -9246,9 +9252,10 @@ fn load_phase_inner(
     mark!("check_provider_requires");
     // WI-363: provider-side operation coverage — the op-level twin of the
     // above. For each `fact Spec[X]`, every operation Spec declares must be
-    // backed by a spec default (body/derivation rule) or an op X supplies;
-    // an unbacked op makes the satisfaction fact unsound (calls resolve to
-    // nothing at runtime). Load-blocking.
+    // backed by an EXECUTABLE spec default (a body or a builtin — WI-818: a
+    // `rule` is a law, not backing) or an op X supplies; an unbacked op makes
+    // the satisfaction fact unsound (calls resolve to nothing at runtime).
+    // Load-blocking.
     all_errors.extend(super::typing::check_provider_operations(kb));
     mark!("check_provider_operations");
     // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
