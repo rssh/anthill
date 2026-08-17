@@ -1,10 +1,23 @@
-# Pluggable backends: the GitHub-coordinated store
+# Pluggable backends: the coordinated store
 
-**Work item:** WI-437 — split 2026-08-16 into an umbrella plus seven increments,
-WI-1113…WI-1120 (tag `wi437`), one per §14 row. WI-1120 (§5.3) was inserted after the
-original six, between rows 2 and 3.
-**Status:** design, amended 2026-08-16 (WI-1113)
+**Work item:** WI-437 — split 2026-08-16 into an umbrella plus increments (tag
+`wi437`), one per §14 row. WI-1120 (§5.3) was inserted between rows 2 and 3;
+WI-1121 (§6.5) between rows 2b and 3.
+**Status:** design, amended 2026-08-17 (allocation policy)
 **Supersedes:** `examples/github-todo/docs/pluggable-backend.md` (the original three-line sketch)
+
+> **Amendment, 2026-08-17. GitHub is no longer required for anything.** The draft
+> assumed one answer to "who allocates ids" — the forge's counter — because a forge
+> was already present for the mirror. Allocation is now a **policy** (§3.2), and
+> the default one, `ContentHash` (§6.5), mints ids locally from the item's own
+> author, timestamp and description. Nothing coordinates; nothing waits.
+>
+> That collapses the forge's two fused roles. It was *allocator* **and** *mirror*;
+> it is now only a mirror, and an optional one. §1's two problems are then both
+> answered without a network: textual conflicts by file-per-item (§5, delivered),
+> id collisions by local minting. The title says "coordinated", not
+> "GitHub-coordinated", for that reason — §6.0–§6.4 and all of §7 remain, as the
+> forge-backed *option*.
 
 > **Amendment, 2026-08-16 (WI-1113).** Three things in the original draft were
 > overtaken or misplaced, and are corrected throughout:
@@ -108,15 +121,23 @@ The layout change (§4) is what removes textual conflicts. The issue-creation
 protocol (§6) is what removes id collisions. They are independent, and land in that
 order.
 
-## 3. Configuration: two facts, two questions
+## 3. Configuration: two facts, three questions
 
 Configuration lives in `anthill-todo/project.anthill`, alongside the existing
-`fact Project(...)`. It answers two independent questions, and each gets exactly one
-writable home:
+`fact Project(...)`. It answers three independent questions, and each gets exactly
+one writable home:
 
 * **Where do the rows live, and in what layout?** → `fact ExtentBinding`, already the
   channel (WI-830). Its `store` field names the backend to build.
-* **Who allocates ids, and where is the mirror?** → `fact Coordination`, below.
+* **How are ids minted?** → `Coordination.allocation`, below.
+* **Where is the mirror, if there is one?** → `Coordination.forge`, below.
+
+The last two shared a field until 2026-08-17, because one forge answered both.
+They are independent — a local allocator with a mirror is the ordinary
+configuration, and a local allocator with no mirror is a tracker that needs no
+network at all — so they are two fields (§3.2). They stay in one fact because
+both describe *coordination between checkouts*, and because the one illegal
+combination is a cross-field check that a single fact can state.
 
 ### 3.1 Layout: the extent binding
 
@@ -148,12 +169,20 @@ the host maps it to one of its compiled-in backends (§8.2). Declarative configu
 chooses *among* the host's backends; it cannot introduce native code. A declared store
 this build does not provide is a **hard refusal**, not a fallback.
 
-### 3.2 Coordination: the forge is a parameter
+### 3.2 Coordination: the forge is a parameter, and so is the allocator
+
+**Amended 2026-08-17.** The draft fused two questions into one fact, because
+GitHub answered both: *how are ids minted* and *where does the mirror live*. They
+are independent, and separating them is what lets a project coordinate ids with
+**no forge at all** (§6.5). `allocation` is now its own field, and `forge` names
+only the mirror — plus the registry, when the allocation policy is the one that
+reads it.
 
 ```anthill
 fact anthill.stage0.Coordination(
-  forge:  GithubForge(repo: "rssh/anthill", project: some(value: "Anthill Roadmap")),
-  access: ForgeAccess.enabled())
+  allocation: ContentHash(),
+  forge:      some(value: GithubForge(repo: "rssh/anthill", project: some(value: "Anthill Roadmap"))),
+  access:     ForgeAccess.enabled())
 ```
 
 The entities live in the **bundled** `anthill.stage0` domain, in a new
@@ -162,12 +191,28 @@ The entities live in the **bundled** `anthill.stage0` domain, in a new
 ```anthill
 namespace anthill.stage0
 
-  -- WHO allocates permanent ids and holds the mirror. `forge` is a Term, on the
-  -- exact `ExtentBinding.store` precedent above: it names a forge to BUILD, written
-  -- where no forge exists yet, and the host resolves it to one of its compiled-in
-  -- carrier implementations. `Forge` (§8.3) is the algebra a built one satisfies,
-  -- which is a different thing and one a config file cannot hold.
-  entity Coordination(forge: Term, access: ForgeAccess)
+  -- HOW permanent ids are minted, and WHERE the mirror lives. Both are Terms, on
+  -- the exact `ExtentBinding.store` precedent above: each names a thing to BUILD,
+  -- written where no such thing exists yet, and the host resolves it to one of its
+  -- compiled-in implementations. `Forge` (§8.3) is the algebra a built forge
+  -- satisfies, which is a different thing and one a config file cannot hold.
+  --
+  -- `forge` is an Option because a tracker can be fully local: under
+  -- `ContentHash` allocation there is nothing a forge is needed FOR, and a
+  -- project that does not want a mirror writes `none`. ONE forge field, not one
+  -- per role — a project on `StakeByCreation` would otherwise name its forge
+  -- twice, which is the two-writable-homes failure §7's governing principle
+  -- exists to prevent.
+  entity Coordination(allocation: Term, forge: Option[T = Term], access: ForgeAccess)
+
+  -- The allocation policies. Adding one is an entity here plus one host
+  -- implementation, exactly as for stores and forges.
+  entity ContentHash                    -- §6.5: minted locally, no coordination
+  entity StakeByCreation                -- §6.1: the forge's counter orders claims
+
+  -- LOUD, at load: `StakeByCreation` with `forge: none` has nothing to allocate
+  -- against, and is refused naming both fields. The converse — `ContentHash`
+  -- with a forge — is the ordinary mirrored configuration, not an error.
 
   -- One entity per forge, carrying that forge's own parameters. Adding GitLab,
   -- Gitea, or a plain coordination service is ONE entity here plus ONE carrier
@@ -692,10 +737,24 @@ over flat top-level entries, where two identically-named chapters had nothing bu
 `.2` suffix to tell them apart. No domain field has to be added to carry an identity
 the data does not have.
 
-## 6. Id allocation: the issue *is* the allocation
+## 6. Id allocation
 
-Under a declared `Coordination`, **permanent ids come only from GitHub**, and issue
-creation is the allocation event. GitHub's issue counter is a monotone,
+**Amended 2026-08-17: allocation is a POLICY, and this section describes one of
+two.** The draft had exactly one answer — the forge's counter — because the forge
+was already there for the mirror. It is not the only answer, and it is not the
+default one: §6.5's content-hash policy mints ids locally, needs no network, and
+deletes most of what §6.1–§6.4 below exist to manage. Read §6.5 first if you are
+choosing; read on if you are implementing `StakeByCreation`.
+
+What every policy must deliver is the §1 requirement and nothing more: **two
+developers who both run `add` without talking must not produce the same id.**
+Density is not required. A monotone global sequence is not required — it is one
+way to get uniqueness, and the expensive one.
+
+### 6.0 The issue *is* the allocation (`StakeByCreation`)
+
+Under `allocation: StakeByCreation()`, **permanent ids come only from GitHub**, and
+issue creation is the allocation event. GitHub's issue counter is a monotone,
 atomically-incremented, globally-visible sequence — exactly the shared resource
 git lacks. `add` itself never *waits* on GitHub, though: when the network or a
 token is missing it allocates a *provisional* id and `sync` finishes the naming
@@ -970,6 +1029,143 @@ permanent may not last. Two mitigations: reconcile before you start referencing
 (the `add` notice says exactly this), and `sync --check` flags any provisional id
 that reaches `main`, so the team chooses its policy — gate merges on
 reconciliation, or let a token-holding CI reconcile after merge.
+
+### 6.5 `ContentHash`: the id is minted where the item is written
+
+**Added 2026-08-17.** The other policy, and the one to reach for by default. The
+id is derived, at `add`, from facts the tracker already holds, and it has **three
+parts, each doing a different job**:
+
+```
+id := "WI-" <time> "-" <hash> [ "-" <slug> ]
+
+       WI-20260817-a3f9c-item-per-file-store
+          └───┬───┘ └─┬─┘ └────────┬───────┘
+          ORDERS    IDENTIFIES   DESCRIBES
+     lexicographic  the item,   frozen at creation,
+     sort is        uniquely    decorative, may be
+     chronological              absent
+```
+
+Two developers who both run `add` offline, on a plane, on the same afternoon,
+produce different ids without exchanging a byte — because their authors differ,
+their timestamps differ to the second, and their descriptions differ. No network,
+no registry, no retry loop, no losing racer.
+
+**Only the hash carries identity.** The time part is a projection of `created` and
+the slug a projection of the description; both are *renderings*, present so a
+human can read the id, and neither participates in uniqueness. That is what makes
+the three-part form safe: adding or changing a rendering cannot make two items
+collide.
+
+**The slug is what makes a file-per-item tree browsable.** `ls open/` under a bare
+hash shows 125 lines of noise; with slugs it is a readable table of contents. This
+is the concern §12 raised against the directory-per-item variant, answered here
+for free. It also restores sayability — "the item-per-file-store one" — which a
+bare hash destroys.
+
+**Slug rules**, because they must be total and deterministic: lowercase the
+description's opening, keep `[a-z0-9]`, collapse every other run to a single `-`,
+cut at a word boundary near 30 characters, drop a trailing `-`. **An empty result
+is legal and the slug is then simply omitted** — a description that is entirely
+non-ASCII (this project writes Ukrainian) or entirely punctuation must still yield
+an id, so the slug can never be load-bearing. WI-1114's `check_segment` already
+accepts this shape and refuses anything that would escape the tree.
+
+**The slug goes stale, and that is accepted.** Descriptions here are rewritten for
+months — WI-1114's own was corrected by an amendment days after it was filed — so
+a frozen slug will eventually describe an item that has moved on. The precedent is
+the Nix store path (`<hash>-<name>`), where the name is understood as *provenance*,
+not current state. `list` and `show` render the live description, so the drift is
+visible only in filenames and raw references. State it rather than fix it: an id
+that changed when its description did would not be an id.
+
+**What this buys, stated precisely, because the name oversells it.** The property
+is *minted locally without coordination*. It is **not** verifiability: the hash
+input is the description **at creation**, and descriptions are edited constantly
+here (this repo's own items grow feedback and revisions for months), so the input
+is not preserved and the id cannot be recomputed from the item later. Treat the id
+as **opaque** — a minting rule, not an integrity check. Building a "does the hash
+still match" check would be building something guaranteed to rot.
+
+The one thing the hash gives over plain entropy (`fresh_token()`, §8.3) is
+**idempotence**: an `add` retried after a partial failure re-derives the same id
+and heals, where a random token would create a second item. That, and it needs no
+entropy source — the bundle already reads a timestamp for `Claimed(since:)`.
+
+**Collisions are possible, bounded, and loud.** Two *different* items collide only
+if one author writes two different descriptions in the same second that also hash
+alike in 5 hex — the birthday bound at a heavy day of 64 items is about 0.2%.
+Reached, it is not silent: the duplicate is exactly the state
+`LayoutFault::DuplicateId` already names (§10, delivered in WI-1114), and `add`
+refuses rather than overwriting.
+
+**Typing it: one resolution ladder, any fragment.** The full id is 37 characters
+and nobody will type it. Every part is separately addressable, and a reference is
+resolved by trying each reading and requiring exactly one match:
+
+| you write | reading |
+| --- | --- |
+| `WI-a3f9c` | hash, or any unambiguous prefix of one |
+| `WI-20260817-a3f9c` | time-hash — the stable machine handle |
+| `WI-item-per-file-store` | slug, or an unambiguous prefix of one |
+| `WI-20260817-a3f9c-item-per-file-store` | the whole thing, as stored |
+
+Ambiguity is not resolved by precedence — it is **reported**, with the candidates,
+the way git reports an ambiguous object name. A slug is *not unique* (two items may
+both be `fix-flaky-test`), and neither is a four-character hash prefix forever, so
+one mechanism handles both and there is no rule about which reading wins.
+
+**`WI-` is the reference marker, and that matters most in prose.** Feedback text
+mentions other items constantly — this document's own tracker has thousands of such
+mentions — and a bare `item-per-file-store` appearing in a sentence is a phrase, not
+a citation. Keeping the prefix means a reference stays greppable and linkifiable
+exactly as `WI-1114` is today, while everything after it is a resolvable fragment
+rather than a fixed number. The `depends_on` field stores the full id; prose stores
+whatever the author typed.
+
+**Why the time is in it at all**, given it costs nine characters. `WI-1114` is not
+valuable because it is short; it is valuable because it is **monotone** — you can
+see at a glance that WI-1114 came after WI-437, and people use that constantly. A
+bare hash destroys that, and putting the time first restores it *lexicographically*,
+so `ls`, a sorted `depends_on`, and a plain `sort` all read chronologically with no
+comparator that knows anything.
+
+**It needs a `created` field on `WorkItem`, and that is a real prerequisite.** The
+entity has none today — `status` carries `since`/`at` for some variants and `Open`
+carries nothing — so there is no creation timestamp to hash, and, once ids stop
+being ordered, nothing for `list` to sort by. The chronological order the tracker
+shows today is an *accident* of ids being dense and ascending. Adding `created`
+pays for both.
+
+**Existing ids are grandfathered, never renumbered.** `WI-1114` appears in 4,700+
+feedback texts, in commit messages, in branch names, in conversations. Renumbering
+the 1110 existing items would break every one of those references to buy nothing.
+So two id shapes coexist permanently, and every site that reads an id must stay
+shape-agnostic — the id is already a `String`, and WI-1114's `check_segment` cares
+only that it names one path component. The one site that parses digits is the
+counter seed in `main.rs`, which this policy deletes outright.
+
+**What it removes.** All of §6.1's retry loop, §6.2's `External` row on `alloc_id`
+(minting becomes a pure function of values the bundle holds), §6.3's failure
+taxonomy, §6.4's provisional ids **and their reconciliation** — the rename plus
+`depends_on` rewrite, the fiddliest machinery in this document — §6.4's honest
+cost about references escaping before they are permanent (there is no "before"),
+§10's dangling-allocation check, and §8.3's counter seeding. Of §8.3's five-point
+substitution contract, three points (atomic ordered creation, title search
+reaching arbitrarily old entries, live newest-first listing) exist only to serve
+allocation; a mirror-only forge needs the other two.
+
+**And it changes what the forge IS.** Under this policy `access: disabled()`
+degrades *nothing* — today it degrades `add` to a provisional id. The forge
+becomes a pure publishing channel: §7 survives whole, §6.0–§6.4 become optional,
+and the null forge is a first-class configuration rather than a test fixture.
+
+**What is lost.** Density — ids stop being consecutive, and there is no "next"
+number. And the registry-as-external-truth: a stale checkout can no longer ask
+GitHub what has been allocated, because allocation leaves no trace outside the
+tree. That second one is the only loss with teeth, and it is the price of not
+needing the network. Sayability was the third, and the slug buys it back.
 
 ## 7. The mirror
 
@@ -1507,12 +1703,39 @@ The two axes stay orthogonal: `ExtentBinding` says *which layout*, `StoreFormat`
 the *schema within* it. The version check in `main.anthill`
 (`check_store_versions`) keeps working unchanged.
 
+**The id scheme must be settled before this runs (2026-08-17).** Step 1's file
+names and step 2's issue titles both carry ids, and this repo's tracker migrates
+**exactly once** — the same argument that put §5.3's file format ahead of
+migration puts §6.5's id shape there too. Under `ContentHash` the existing 1110
+ids are grandfathered, so migration does not renumber; what it must know is
+whether a `created` field exists to write, and which shape *new* ids take
+afterwards. Deciding after the migration means migrating twice.
+
 Migration is one-way in practice. A `--to local-single-file` inverse is trivial to write
 (concatenate the files, drop the `MirrorEntry` facts) and worth having as an escape hatch,
 but it abandons the id registry.
 
 ## 12. Open questions
 
+* **The two lengths in a `ContentHash` id** (§6.5) — how many hex digits, and how
+  many slug characters. The *shape* is settled (time-hash-slug); these are the
+  parameters, and both trade legibility against the width of a `list` line and a
+  `depends_on` entry. Four hex is enough given the time partition and five is
+  comfortable; the slug wants to be long enough to distinguish two items filed the
+  same day and short enough that `ls` still fits a terminal. Cheap to decide,
+  expensive to change once the tracker has migrated into it (§11), so it is worth
+  rendering a real `list` at two or three settings before committing.
+* **Whether the hash needs a version marker.** The slug rule and the hash input
+  are frozen per id, so changing either later is harmless for existing ids — but
+  nothing in the id records *which* rule made it, so a future audit could not tell.
+  Adding a marker costs a character and buys a question nobody may ever ask.
+* **Whether `StakeByCreation` is worth keeping at all** once `ContentHash` ships.
+  It is strictly more machinery for a property (a dense ordered sequence) nothing
+  in the tracker requires. The argument for keeping it is that the *registry* is
+  visible to a stale checkout, which no local policy can offer; the argument
+  against is §6.1–§6.4's whole weight. Answer it after living on `ContentHash`,
+  not before — and note that deleting it later is easy precisely because
+  allocation is now a policy.
 * **Concurrent feedback on one item** is the one conflict the layout does not remove
   (§9). The fix is to make the item's unit a *directory* — `open/WI-690/item.anthill`
   plus `open/WI-690/feedback/<timestamp>-<author>.anthill` — which keeps the "move the
@@ -1566,10 +1789,11 @@ preference, the substrate refactor is first, not last.
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
 | 2b | WI-1120 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
-| 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). | nothing alone; testable |
-| 4 | WI-1116 | **Coordinated `add`.** The §6.1 stake-by-creation protocol, the §6.4 provisional fallback, `MirrorEntry` facts. | conflict-free **and** collision-free `add`, online or off |
-| 5 | WI-1117 | **`sync`.** Provisional-id reconciliation (§6.4), allocation-debris repair, comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. | the mirror + the return channels; autonomous mode closes the loop |
-| 6 | WI-1118 | **`migrate --to github-coordinated`.** Resumable, idempotent. | this repo's own tracker moves |
+| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5). The `Coordination` split (allocation ⊥ mirror), the `created` field on `WorkItem`, the three-part id, the resolution ladder over hash / time-hash / slug, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
+| 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). Now serves the MIRROR only; `fresh_token` is unneeded under `ContentHash`. | nothing alone; testable |
+| 4 | WI-1116 | **Coordinated `add`** — the `StakeByCreation` policy. The §6.1 protocol, the §6.4 provisional fallback, `MirrorEntry` facts. **Optional once row 2c lands**, and §12 asks whether it is worth building at all; `MirrorEntry` moves to row 5, where the mirror is. | a dense ordered id sequence, for a project that wants one |
+| 5 | WI-1117 | **`sync`.** Comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. Provisional-id reconciliation and allocation-debris repair belong to row 4's policy and land only with it. | the mirror + the return channels |
+| 6 | WI-1118 | **`migrate`.** Resumable, idempotent. Waits on 2b (file format) and 2c (id shape) — the tracker migrates exactly once, into the final form of both. | this repo's own tracker moves |
 
 ### 14.1 The self-hosting constraint
 
