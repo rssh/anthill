@@ -125,4 +125,3 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
  - Prefer implement changes after review immediatly instead firing follow-ups tickets. Fire follow-up only if it is a big task, which can't be implemented inline.
  - If the size of code in change less then tocket description -- not open new ticket, make inline.
  - Monitor the number of open unblocked tickets in queue
- - Do not fire follow-ups on follow-ups.

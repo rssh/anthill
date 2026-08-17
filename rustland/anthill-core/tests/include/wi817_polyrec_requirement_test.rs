@@ -120,9 +120,9 @@ fn eval_fresh(src: &str, entry: &str, n: i64) -> Result<Value, anthill_core::eva
 }
 
 /// The WI-325 ladder's suggestion for this spec — asserted by the three pins
-/// WI-824 moved onto that ladder. Spelled once: it carries a U+2026, easy to
-/// mistype and awkward to grep for when the diagnostic is reworded.
-const MISSING_REQUIRES: &str = "missing `requires Desc[T = …]`";
+/// WI-824 moved onto that ladder. One owner beside `DESC_INSTANCES`, which the
+/// same three files share; see `common::MISSING_DESC_REQUIRES`.
+const MISSING_REQUIRES: &str = crate::common::MISSING_DESC_REQUIRES;
 
 fn load_errs(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src)

@@ -91,7 +91,9 @@ fn clauses_under(kb: &mut KnowledgeBase, qn: &str) -> usize {
 ///   clause is absent from the index SLD consults. A written connective head resolves to
 ///   the connective's own symbol (WI-896) and WI-139 unindexes it; WI-899 owns making
 ///   that loud.
-/// * BOUNDED — refused today: `unresolved name 't' in scope 'bounded'` (the `:- Eq[t]`
+/// * BOUNDED — refused today: `unresolved name 't' in scope '…'`, the scope named
+///   QUALIFIED since WI-977 and left elided here because this row describes the
+///   guard-less variant, which the assertion below does not run (the `:- Eq[t]`
 ///   guard never folded into a bound, so `t` reached scope resolution as an ordinary
 ///   term) plus the `call-site type arguments 'eq[…](…)' are not supported here` sweep.
 ///   With the guard it loads. It does NOT thereby run — see the row above.

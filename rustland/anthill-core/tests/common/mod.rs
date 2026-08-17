@@ -707,6 +707,25 @@ pub const DESC_INSTANCES: &str = r#"
   end
 "#;
 
+/// The WI-325 ladder's suggestion for [`DESC_INSTANCES`]' spec — what an UNCOVERED
+/// abstract `Desc.describe` call is refused with, and what the requirement-supply
+/// cluster's positive pins revert to when their fix is backed out.
+///
+/// Lifted here for the same reason [`DESC_INSTANCES`] was, at the same count: it had
+/// been copy-pasted byte-identically into three files (`wi817_polyrec_requirement`,
+/// `wi822_op_scoped_supply`, `wi824_abstract_mispin`) and WI-823 was about to add a
+/// fourth. It is PRODUCER-COUPLED — the `format!` raising `MissingRequiresForSpecOp`
+/// in `kb/typing.rs` — so a reworded diagnostic must desync one reader, not four
+/// independently. It also carries a U+2026, easy to mistype and awkward to grep for.
+///
+/// Assign it to a file-local `const MISSING_REQUIRES: &str =
+/// common::MISSING_DESC_REQUIRES;` so each file's assertions keep reading their own
+/// short name. Pair it with the SITE (`<ns>.Desc.describe.requires`) when asserting:
+/// `DESC_INSTANCES` contains its own abstract call in `WrapDesc.describe`, so the
+/// text alone does not say WHICH call was refused.
+#[allow(dead_code)]
+pub const MISSING_DESC_REQUIRES: &str = "missing `requires Desc[T = …]`";
+
 /// Assert that a dispatching dict's requirement-param name belongs to the SPEC the
 /// caller expects — `__req_partialeq`, or a DISAMBIGUATED sibling of it.
 ///

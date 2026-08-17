@@ -831,6 +831,9 @@ mod wi829_defer_sole_cover_sigma_test;
 #[path = "include/wi826_cover_walk_orientation_test.rs"]
 mod wi826_cover_walk_orientation_test;
 
+#[path = "include/wi823_op_param_requires_coverage_test.rs"]
+mod wi823_op_param_requires_coverage_test;
+
 #[path = "include/wi824_abstract_mispin_test.rs"]
 mod wi824_abstract_mispin_test;
 
@@ -1083,6 +1086,9 @@ mod wi722_compile_time_macro_test;
 #[path = "include/wi722_read_builtins_test.rs"]
 mod wi722_read_builtins_test;
 
+#[path = "include/wi977_scope_display_name_test.rs"]
+mod wi977_scope_display_name_test;
+
 #[path = "include/wi978_secondary_entry_provision_test.rs"]
 mod wi978_secondary_entry_provision_test;
 
@@ -1251,6 +1257,15 @@ mod wi830_mirror_coverage_test;
 
 #[path = "include/wi830_extent_binding_test.rs"]
 mod wi830_extent_binding_test;
+
+#[path = "include/wi913_host_name_ladder_test.rs"]
+mod wi913_host_name_ladder_test;
+
+#[path = "include/wi728_membership_operand_test.rs"]
+mod wi728_membership_operand_test;
+
+#[path = "include/wi1119_dot_on_constrained_param_test.rs"]
+mod wi1119_dot_on_constrained_param_test;
 
 #[path = "include/wi1114_item_per_file_store_test.rs"]
 mod wi1114_item_per_file_store_test;

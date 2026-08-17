@@ -96,10 +96,10 @@ fn eval_fresh(src: &str, entry: &str, n: i64) -> Result<Value, anthill_core::eva
     interp.call(entry, &[Value::Int(n)])
 }
 
-/// The WI-325 ladder's suggestion for an uncovered spec-op call. Spelled once:
-/// it carries a U+2026, easy to mistype and awkward to grep for when the
-/// diagnostic is reworded. Same constant the WI-817 suite keeps.
-const MISSING_REQUIRES: &str = "missing `requires Desc[T = …]`";
+/// The WI-325 ladder's suggestion for an uncovered spec-op call. One owner beside
+/// `DESC_INSTANCES`, which this file also shares; see
+/// `common::MISSING_DESC_REQUIRES`.
+const MISSING_REQUIRES: &str = crate::common::MISSING_DESC_REQUIRES;
 
 // ── LEG 2: the supply is resolved at the VALUE's type, not inherited ──
 

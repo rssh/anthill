@@ -18,7 +18,9 @@
 
 use std::rc::Rc;
 
-use anthill_core::eval::builtins::{expect_args, register_if_present, require_symbol};
+use anthill_core::eval::builtins::{
+    expect_args, register_if_present, require_symbol, resolve_host_name,
+};
 use anthill_core::eval::{EvalError, Interpreter, Value};
 use anthill_core::intern::Symbol;
 use anthill_core::kb::resolve::ResolveConfig;
@@ -850,12 +852,18 @@ fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     Ok(Value::Str(interp.kb().local_name_of(sym).to_string()))
 }
 
+/// WI-913 — the MESSAGE was the true half and the CODE was not: this said "'{name}'
+/// not in scope" while `try_resolve_symbol` consulted no scope at all, so a bare
+/// `cons` — a name the implicit tier answers — was reported as out of scope by a
+/// lookup that had never looked. It now reads the shared host-name ladder
+/// (`resolve_host_name` → `KnowledgeBase::resolve_name_in_global`, WI-908), which is
+/// also what the SLD-side backing of this SAME declared operation
+/// (`KnowledgeBase::builtin_lookup_symbol`) reads — one operation, one question, the
+/// WI-984 rule.
 fn lookup_symbol_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [name] = expect_args::<1>("lookup_symbol", args)?;
     let name_str = str_arg(name)?;
-    let sym = interp.kb().try_resolve_symbol(&name_str).ok_or_else(|| {
-        EvalError::Internal(format!("lookup_symbol: '{}' not in scope", name_str))
-    })?;
+    let sym = resolve_host_name(interp, "lookup_symbol", &name_str)?;
     Ok(Value::term(interp.kb_mut().alloc(CoreTerm::Ref(sym))))
 }
 
@@ -2403,6 +2411,61 @@ end
             )
             .expect("lookup_symbol");
         assert!(matches!(ls, Value::Term { .. }));
+    }
+
+    /// The symbol a `lookup_symbol` result denotes, by qualified name.
+    fn looked_up_name(interp: &mut Interpreter, name: &str) -> Result<String, EvalError> {
+        let v = interp.call("anthill.reflect.lookup_symbol", &[Value::Str(name.into())])?;
+        let sym = interp
+            .kb()
+            .value_symbol(&v)
+            .expect("lookup_symbol answers a symbol reference");
+        Ok(interp.kb().qualified_name_of(sym).to_string())
+    }
+
+    /// WI-913 — FAILS PRE-FIX with `lookup_symbol: 'cons' not in scope`, a message
+    /// whose claim the code never checked: `try_resolve_symbol` is
+    /// `by_qualified_name` and consults no scope. `cons` is the implicit tier's own
+    /// name, so the message was wrong about a name that DOES denote something here.
+    ///
+    /// It asserts the same targets as `anthill-core`'s
+    /// `wi913_host_name_ladder_test::sld_lookup_symbol_reads_the_implicit_tier`, and
+    /// that pairing is the point: one declared operation, two backings, and after
+    /// WI-984 they may not answer differently.
+    #[test]
+    fn lookup_symbol_reads_the_implicit_tier() {
+        let mut interp = load_stdlib_and_source(
+            r#"
+namespace test.wi913_stl
+  sort Color
+    entity red
+  end
+end
+"#,
+        );
+        assert_eq!(
+            looked_up_name(&mut interp, "cons").expect("cons denotes its target"),
+            "anthill.prelude.List.cons",
+        );
+        assert_eq!(
+            looked_up_name(&mut interp, "SortInfo").expect("SortInfo denotes its target"),
+            "anthill.reflect.SortInfo",
+        );
+        // CONTROL — a qualified name resolves identically on both sides of the fix.
+        assert_eq!(
+            looked_up_name(&mut interp, "test.wi913_stl.Color.red").expect("qualified name"),
+            "test.wi913_stl.Color.red",
+        );
+        // …and a short USER name still denotes nothing at `<global>`, before and
+        // after: the ladder adds the implicit tier, not a global short-name scan
+        // (WI-476). The error names the operation and the name.
+        match looked_up_name(&mut interp, "Color") {
+            Err(EvalError::Internal(msg)) => assert!(
+                msg.contains("lookup_symbol") && msg.contains("Color"),
+                "got: {msg}",
+            ),
+            other => panic!("expected a loud unknown-name error, got {other:?}"),
+        }
     }
 
     #[test]

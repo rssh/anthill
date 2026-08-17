@@ -2066,6 +2066,41 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-977 — WHAT WE CALL A SCOPE IN A DIAGNOSTIC. Its QUALIFIED name, spec §8.6.
+    ///
+    /// It lives HERE, next to [`Self::qualified_name_of`], and not in the loader that
+    /// first needed it: the question gets ONE answer for every raise site rather than a
+    /// helper per site. There were THREE, and they did not agree — `scope_qualified_name`
+    /// answered qualified while `Loader::scope_display_name` and an open-coded copy in
+    /// `forbid_internal_import` answered LOCAL, so ONE `expect_load_errors` list pinned
+    /// both spellings eleven lines apart
+    /// (`wi997_declaration_ledger_test::entity_and_sort_siblings_are_refused`:
+    /// `in scope 'wi997.sib'` on the duplicate-declaration row, a bare `in scope 'peek'`
+    /// on the unresolved-name rows below it).
+    /// Qualified is the argument-carrying one — a short `C` does not say WHICH `C` among
+    /// sibling scopes, and the reader chasing the diagnostic has only the name to go on.
+    ///
+    /// TOTAL, and that is [`ScopeId`]'s doing, not a fallback: the owner projection is
+    /// total off the symbol, so there is no not-a-scope arm to degrade. It used to
+    /// project off the scope's TERM and answered the string `"_unknown"` for every
+    /// carrier that was not `Term::Fn` (WI-984 retired that arm at all three sites).
+    ///
+    /// TOTAL IS NOT THE SAME AS ALWAYS-QUALIFIED, and the difference is load-bearing
+    /// rather than a gap: [`Self::qualified_name_of`] answers the SHORT name for a
+    /// `SymbolDef::Unresolved` owner, and that arm is exactly how the synthetic global
+    /// scope answers [`crate::intern::GLOBAL_SCOPE_NAME`] — `global_scope()` mints it
+    /// through `symbols.intern`, which resolves nothing. That is the intended reading
+    /// (§8.6: the top-level scope is not a declaration and HAS no qualified name), and
+    /// `<global>` collides with no qualified name because it is no identifier (WI-987).
+    /// Every other scope owner is `define`d and therefore resolved, so the short arm
+    /// is not a silent degrade for them — but a caller minting a scope off a bare
+    /// `intern` would get a local name where §8.6 promises a qualified one.
+    ///
+    /// Scaland holds the same rule at `KnowledgeBase.scopeDisplayName` (WI-962/976).
+    pub fn scope_display_name(&self, scope: ScopeId) -> &str {
+        self.qualified_name_of(scope.owner())
+    }
+
     /// WI-995 — the file whose text the following resolutions belong to, so an import
     /// written in another file is not read on its behalf. The load entry points set it
     /// per file; the CLI sets it for the source its query text came from. Returns the
@@ -7444,13 +7479,55 @@ impl KnowledgeBase {
     }
 
     /// Convenience: sort_ref from a name string (resolves or interns the name).
+    ///
+    /// WI-913: the resolution is [`Self::resolve_name_in_global`], not the absolute
+    /// `by_qualified_name` lookup it used. A bare `Modify` / `Error` denoted NOTHING
+    /// absolutely and fell straight to `intern`, minting a bare global symbol beside
+    /// the `anthill.prelude.Modify` the KB already had — WI-894's collapse, arrived at
+    /// from the other side. Driven by `wi913_host_name_ladder_test::
+    /// make_sort_ref_by_name_prefers_the_ladder_over_a_bare_intern`.
+    ///
+    /// The `intern` fallback STAYS, narrowed rather than deleted: the signature has no
+    /// failure channel (`-> TermId`), and callers use it to name a sort the KB may not
+    /// carry yet. It now runs only for a name the ladder could not resolve, so it can
+    /// no longer twin a name the KB CAN denote. An `Ambiguous` name interns too —
+    /// deliberately, since picking a candidate here would be the silent wrong-symbol
+    /// choice §8.6 forbids, and this position cannot report.
+    ///
+    /// COST, measured because the typer names a literal's sort through here and that
+    /// LOOKS like a per-literal hot path: the ladder is 4–8x the old hash lookup per
+    /// call (41 → 190 ns for `Int64`, 53 → 461 ns for a dotted name; paired,
+    /// in-process, min of 7). It runs 83 TIMES in a full stdlib + `anthill-stl` load,
+    /// so the whole change is ~11 µs. Cold, not hot — counted, not assumed.
     pub fn make_sort_ref_by_name(&mut self, name: &str) -> TermId {
-        let sym = if let Some(s) = self.try_resolve_symbol(name) {
-            s
-        } else {
-            self.intern(name)
-        };
-        self.make_sort_ref(sym)
+        match self.try_make_sort_ref_by_name(name) {
+            Some(tid) => tid,
+            None => {
+                let sym = self.intern(name);
+                self.make_sort_ref(sym)
+            }
+        }
+    }
+
+    /// [`Self::make_sort_ref_by_name`] WITHOUT the intern fallback — `None` when the
+    /// name denotes nothing at `<global>`.
+    ///
+    /// For a caller that must not receive a phantom: the infallible form mints an
+    /// Unresolved sort out of an unknown name, which a typer arm then reads as a real
+    /// type. Such a caller used to write a PRE-CHECK — resolve the name itself, error,
+    /// then call the infallible form — and that is two lookups asking one question,
+    /// which is only safe while they ask it the same way. WI-913 made them differ (the
+    /// call took the name ladder while the guard stayed on `try_resolve_symbol`), so a
+    /// name the guard admitted could still reach `intern`. Handing the caller the
+    /// resolution's own verdict removes the second question rather than re-aligning it
+    /// (CLAUDE.md: make illegal state unrepresentable over check logic).
+    pub fn try_make_sort_ref_by_name(&mut self, name: &str) -> Option<TermId> {
+        match self.resolve_name_in_global(name) {
+            crate::intern::ResolveResult::Found(s) => Some(self.make_sort_ref(s)),
+            crate::intern::ResolveResult::Ambiguous(_) | crate::intern::ResolveResult::NotFound => {
+                None
+            }
+        }
     }
 
     /// `parameterized(base: <type>, bindings: List[TypeBinding])`.
@@ -11990,5 +12067,87 @@ mod wi628_guard_truncation_tests {
         let guard = forall_condition_guard(&mut kb, leaf);
         kb.add_guard_labeled(guard, Some("forall_loop".to_string()));
         expect_undecidable(&kb.check_all_guards(), "forall_loop");
+    }
+}
+
+/// WI-913 — the invariant the host-name routing rests on. Its own module because it
+/// loads the stdlib AND `anthill-stl` (which `kb::tests` does not) and because what
+/// it asserts is a property of the whole symbol population, not of a fixture.
+#[cfg(test)]
+mod wi913_host_name_ladder_tests {
+    use super::*;
+    use crate::intern::SymbolKind;
+
+    /// WI-913 — THE POPULATION CHECK that makes routing the host-name positions
+    /// through [`KnowledgeBase::resolve_name_in_global`] safe rather than merely
+    /// plausible.
+    ///
+    /// Those positions used to read `by_qualified_name` directly, so every dotted
+    /// name a load produces was reachable by definition. The ladder is a different
+    /// question: since WI-1075 an unmarked dotted path is the RELATIVE reading, and
+    /// it also refuses fields and `internal` names. So the routing is only sound if
+    /// the two agree over the names a real KB holds — and "the suite is green" cannot
+    /// say that, because no fixture names more than a handful.
+    ///
+    /// MEASURED over stdlib + `anthill-stl`: 2638 dotted qualified names, of which
+    /// 441 the ladder does not reach — 436 fields (`resolve_dotted_in_kb`'s
+    /// `not_a_field`, applied to the whole ladder by WI-1075) and 5 `internal` (its
+    /// `VisibleOnly` pass). ZERO otherwise, and zero that resolve to a DIFFERENT
+    /// symbol. This asserts that residue: a name that goes missing for any other
+    /// reason is a capability the routing dropped silently.
+    ///
+    /// Deliberately not asserting the counts themselves — the stdlib grows, and a
+    /// count would fail for the wrong reason. The claim is the CLASSIFICATION.
+    #[test]
+    fn wi913_every_dotted_name_is_reachable_or_explained() {
+        let mut kb = crate::kb::test_support::load_stdlib_and_stl(None);
+        let global = kb.global_scope();
+        let dotted: Vec<(String, Symbol)> = kb
+            .symbols
+            .by_qualified_name
+            .iter()
+            .filter(|(n, _)| n.contains('.'))
+            .map(|(n, s)| (n.clone(), *s))
+            .collect();
+        assert!(
+            dotted.len() > 1000,
+            "premise: a stdlib + anthill-stl load carries a real population of dotted \
+             names, got {}",
+            dotted.len(),
+        );
+
+        let mut unexplained: Vec<String> = Vec::new();
+        let mut wrong_symbol: Vec<String> = Vec::new();
+        for (name, expected) in &dotted {
+            match crate::kb::load::resolve_name_in_kb(&kb, name, global) {
+                crate::intern::ResolveResult::Found(sym) if sym == *expected => {}
+                crate::intern::ResolveResult::Found(sym) => {
+                    wrong_symbol.push(format!("{name} -> {}", kb.qualified_name_of(sym)))
+                }
+                crate::intern::ResolveResult::Ambiguous(_) => {
+                    unexplained.push(format!("{name} (ambiguous)"))
+                }
+                crate::intern::ResolveResult::NotFound => {
+                    let is_field = matches!(kb.kind_of(*expected), Some(SymbolKind::Field));
+                    let visible = kb.symbols.internal_visible_from(*expected, global);
+                    if !is_field && visible {
+                        unexplained.push(format!("{name} kind={:?}", kb.kind_of(*expected)));
+                    }
+                }
+            }
+        }
+        unexplained.sort();
+        wrong_symbol.sort();
+        assert!(
+            wrong_symbol.is_empty(),
+            "the ladder bound a dotted name to a DIFFERENT symbol than its own \
+             qualified-name entry: {wrong_symbol:?}",
+        );
+        assert!(
+            unexplained.is_empty(),
+            "a dotted name is unreachable at <global> for a reason other than being a \
+             field or `internal` — the host-name positions lost it silently: \
+             {unexplained:?}",
+        );
     }
 }

@@ -115,8 +115,11 @@ end
             // free-standing `entity` created no scope for the later `sort` body to
             // inherit, so the body resolves nothing from outside itself (WI-979 left
             // this loud deliberately — R1 is why the link must not be supplied).
-            "unresolved name 'Int64' in scope 'peek'",
-            "unresolved name 'Rec' in scope 'peek'",
+            // WI-977: qualified, as the R1 row above always was. This pair was the
+            // clearest witness that the two spellings disagreed — one `expect`
+            // list, `wi997.sib` on the R1 row and a bare `peek` eleven lines later.
+            "unresolved name 'Int64' in scope 'wi997.sib.Rec.peek'",
+            "unresolved name 'Rec' in scope 'wi997.sib.Rec.peek'",
             "no such member (dot dispatch)",
         ],
     );

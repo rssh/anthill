@@ -4224,9 +4224,22 @@ impl KnowledgeBase {
     }
 
     /// `lookup_symbol(?name_str, ?result)` — if `?name_str` is a bound String,
-    /// search the symbol table for that qualified name and bind `?result` to
-    /// `Ref(symbol)` if found, fail if not. Delay if `?name_str` is unbound.
-    /// Goal AND name carrier both read through [`TermView`] — no reify.
+    /// resolve what that name DENOTES and bind `?result` to `Ref(symbol)`, fail if
+    /// it denotes nothing. Delay if `?name_str` is unbound. Goal AND name carrier
+    /// both read through [`TermView`] — no reify.
+    ///
+    /// WI-913: THE OTHER BACKING of `anthill.reflect.lookup_symbol`. The eval side
+    /// (`anthill-stl/src/reflect/builtins.rs::lookup_symbol_op`) answers the same
+    /// declared operation for a caller in expression position, so the two must ask
+    /// one question — the WI-984 rule, learned when `scope` had two backings and no
+    /// shared answer. Both now read [`KnowledgeBase::resolve_name_in_global`], where
+    /// this read `by_qualified_name` directly.
+    ///
+    /// An AMBIGUOUS name FAILS here rather than reporting: a resolver builtin has no
+    /// diagnostic channel (`BuiltinResult` is Success / Bindings / Delay / Failure),
+    /// and a goal whose name denotes several symbols has no unique answer to bind.
+    /// The eval-side backing, which HAS an error channel, says which candidates —
+    /// that asymmetry is the channel's, not the question's.
     fn builtin_lookup_symbol<V: TermView>(
         &mut self,
         goal: &V,
@@ -4253,13 +4266,13 @@ impl KnowledgeBase {
             ViewHead::Const(super::term::Literal::String(s)) => s,
             _ => return BuiltinResult::Failure,
         };
-        // Look up the symbol by qualified name (read-only).
-        match self.symbols.by_qualified_name.get(&name).copied() {
-            Some(sym) => {
+        match self.resolve_name_in_global(&name) {
+            crate::intern::ResolveResult::Found(sym) => {
                 let ref_term = self.alloc(Term::Ref(sym));
                 self.finish_result(target, ref_term)
             }
-            None => BuiltinResult::Failure,
+            crate::intern::ResolveResult::Ambiguous(_)
+            | crate::intern::ResolveResult::NotFound => BuiltinResult::Failure,
         }
     }
 
@@ -11933,14 +11946,30 @@ mod tests {
         }
     }
 
+    /// WI-913: `ns` is DECLARED, and that is now load-bearing rather than scenery.
+    /// The builtin reads the shared ladder, where an unmarked dotted path is the
+    /// RELATIVE reading (WI-1075) — head segment resolved in scope, tail appended.
+    /// A KB that registers `ns.Qux` with no `ns` symbol is a shape no load produces
+    /// (`ensure_intermediate_namespaces` builds the chain), and the fixture used to
+    /// be one; `..ns.Qux` — the spelling that means the root — is the sibling row
+    /// below.
+    fn define_in_namespace(kb: &mut KnowledgeBase, ns: &str, short: &str) -> Symbol {
+        let g = kb.global_scope();
+        kb.symbols
+            .define(ns, ns, crate::intern::SymbolKind::Namespace, g);
+        let ns_sym = *kb.symbols.by_qualified_name.get(ns).unwrap();
+        let ns_scope = kb.symbols.scope_id(ns_sym);
+        let qualified = format!("{ns}.{short}");
+        kb.symbols
+            .define(short, &qualified, crate::intern::SymbolKind::Sort, ns_scope);
+        *kb.symbols.by_qualified_name.get(&qualified).unwrap()
+    }
+
     #[test]
     fn builtin_lookup_symbol_finds_existing() {
         let mut kb = kb_with_prelude();
 
-        let g = kb.global_scope();
-        kb.symbols
-            .define("Qux", "ns.Qux", crate::intern::SymbolKind::Sort, g);
-        let qux_sym = *kb.symbols.by_qualified_name.get("ns.Qux").unwrap();
+        let qux_sym = define_in_namespace(&mut kb, "ns", "Qux");
 
         let name_str = kb.alloc(Term::Const(Literal::String("ns.Qux".into())));
 
@@ -12017,10 +12046,7 @@ mod tests {
         use crate::span::{SourceId, SourceSpan};
 
         let mut kb = kb_with_prelude();
-        let g = kb.global_scope();
-        kb.symbols
-            .define("Quux", "ns.Quux", crate::intern::SymbolKind::Sort, g);
-        let quux_sym = *kb.symbols.by_qualified_name.get("ns.Quux").unwrap();
+        let quux_sym = define_in_namespace(&mut kb, "ns", "Quux");
 
         let result_sym = kb.intern("?result");
         let result_vid = kb.fresh_var(result_sym);

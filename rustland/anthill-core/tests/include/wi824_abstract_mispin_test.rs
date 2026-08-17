@@ -127,9 +127,10 @@ fn program(ns: &str, parts: &[&str]) -> String {
     )
 }
 
-/// The WI-325 ladder's suggestion for this spec. Spelled once because it
-/// carries a U+2026, which is easy to mistype and awkward to grep for.
-const MISSING_REQUIRES: &str = "missing `requires Desc[T = …]`";
+/// The WI-325 ladder's suggestion for this spec. One owner beside
+/// `DESC_INSTANCES`, which this file also shares; see
+/// `common::MISSING_DESC_REQUIRES`.
+const MISSING_REQUIRES: &str = crate::common::MISSING_DESC_REQUIRES;
 
 fn load_errs(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src)

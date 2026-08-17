@@ -20,10 +20,80 @@ use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
-use crate::intern::{is_positional_label_at, positional_label, Symbol};
+use crate::intern::{is_positional_label_at, positional_label, ScopeId, Symbol};
 use crate::span::Span;
 
 // ── TypeError ──────────────────────────────────────────────────
+
+/// WI-1119 — a dot receiver that is a `requires`-constrainable TYPE PARAMETER: what the
+/// [`TypeError::DotDispatchNoMatch`] refusal names when the member reached no spec. Both
+/// halves are computed where the ladder ran, not re-derived at rendering: `specs` is the
+/// set [`constraining_spec_definers`] actually searched, so an EMPTY one says "the
+/// parameter is unconstrained" and a populated one says "these constrain it and none
+/// declares the member" — two different repairs.
+#[derive(Clone, Debug)]
+pub struct ConstrainedParamReceiver {
+    /// The parameter as written, rendered — `?PT`.
+    pub param: String,
+    /// The specs constraining it, from both chain sources, transitively.
+    pub specs: Vec<Symbol>,
+}
+
+/// WI-1119 — the half of a [`TypeError::DotDispatchNoMatch`] on a type-parameter receiver
+/// that says what to DO, shared by the `format` and `LoadError` faces so the two cannot
+/// drift. Two repairs, told apart by whether anything constrains the parameter at all:
+/// write a `requires` clause, or reach for a member one of the clauses actually declares.
+fn constrained_param_repair(kb: &KnowledgeBase, specs: &[Symbol], member: &str) -> String {
+    if specs.is_empty() {
+        return format!(
+            "no `requires` clause constrains it, so no spec declares '{member}' for it — \
+             add one on the operation or its sort",
+        );
+    }
+    format!(
+        "the specs constraining it declare no '{}' ({})",
+        member,
+        specs
+            .iter()
+            .map(|s| kb.qualified_name_of(*s).to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+/// WI-1119 — [`TypeError::AmbiguousConstrainedParamMember`]'s body, shared by both faces.
+/// Names each tied spec and the qualified spelling that settles it: unlike a supplier tie
+/// (`AmbiguousSpecOpDispatch`), this one always HAS a repair the author can write, because
+/// the ambiguity is in the member NAME and qualifying the call removes it.
+fn ambiguous_constrained_param_message(
+    kb: &KnowledgeBase,
+    member: &str,
+    receiver: &str,
+    specs: &[Symbol],
+) -> String {
+    format!(
+        "ambiguous member '{}' on `{}`: {} constrain it and each declares '{}' — \
+         neither refines the other, so write the call qualified ({}) to say which",
+        member,
+        receiver,
+        specs
+            .iter()
+            .map(|s| kb.qualified_name_of(*s).to_string())
+            .collect::<Vec<_>>()
+            .join(" and "),
+        member,
+        // QUALIFIED, not short-named: two tied specs may share a short name in different
+        // namespaces (`a.Desc` and `b.Desc`), and the short form would then print the same
+        // suggestion twice — neither of which disambiguates at the call site either. The
+        // qualified name is a writable spelling, so the repair stays one the author can
+        // paste.
+        specs
+            .iter()
+            .map(|s| format!("{}.{}(…)", kb.qualified_name_of(*s), member))
+            .collect::<Vec<_>>()
+            .join(" or "),
+    )
+}
 
 #[derive(Clone, Debug)]
 pub enum TypeError {
@@ -185,6 +255,27 @@ pub enum TypeError {
     /// `&[String]` signature — but that alone would not rule out symbols HERE.)
     /// What pre-rendering does discard is the routes, so the repair that depends on
     /// them is computed at the same moment and carried beside the strings.
+    /// WI-1119 — a dot on a `requires`-constrained TYPE-PARAMETER receiver whose member
+    /// name is declared by TWO of the specs constraining it, with neither refining the
+    /// other (§8.7's requires-REFINEMENT rule, [`most_refined_spec`], already settled the
+    /// orderable case). Refused rather than resolved by the order the clauses are written
+    /// — see [`find_spec_op_for_constrained_param`], which owns the reasoning.
+    ///
+    /// NOT [`Self::AmbiguousSpecOpDispatch`], which is a different question at a different
+    /// moment: there ONE operation is named and two TEXTS supply an implementation of it
+    /// for one carrier, so its candidates render by supply route. Here two distinct
+    /// operations answer to one member NAME and no implementation has been looked for yet;
+    /// naming the specs is the whole repair, since qualifying the call (`Desc.describe(x)`)
+    /// is what resolves it.
+    AmbiguousConstrainedParamMember {
+        span: Option<Span>,
+        /// The member name written after the dot.
+        member: Symbol,
+        /// The receiver's rendered type — the parameter, e.g. `?PT`.
+        receiver: String,
+        /// The tied constraining specs, in the order their clauses are written.
+        specs: Vec<Symbol>,
+    },
     AmbiguousSpecOpDispatch {
         span: Option<Span>,
         /// The spec op being dispatched, e.g. `ns.Desc.describe`.
@@ -475,6 +566,17 @@ pub enum TypeError {
         span: Option<Span>,
         member: Symbol,
         receiver_sort: Option<Symbol>,
+        /// WI-1119 — the receiver's rendered TYPE, when it has no sort head but IS a type
+        /// PARAMETER declared in scope, together with the specs a `requires` clause
+        /// constrains that parameter by. `None` for every other unresolved receiver.
+        ///
+        /// The split is not cosmetic and is not read off the rendering: an anonymous
+        /// unification variable renders `??logical_var` and genuinely has nothing to name,
+        /// while `?PT` is a parameter the author wrote and whose constraints are the whole
+        /// content of the repair — either "no clause constrains it" or "these do, and none
+        /// of them declares this member". Membership in [`TypingEnv::param_rigids`] is what
+        /// tells the two apart, not the string.
+        receiver_param: Option<ConstrainedParamReceiver>,
     },
     /// WI-369: a cross-scope projection (`s.field`) of a field whose owning
     /// entity is declared `internal`. The field name resolves, but the entity
@@ -485,6 +587,15 @@ pub enum TypeError {
         span: Option<Span>,
         entity: Symbol,
         field: Symbol,
+        /// WI-977 — the scope the projection was WRITTEN IN, so the `LoadError`
+        /// conversion can name it. Carried rather than re-derived: it is the very
+        /// scope [`hidden_field_owner`] asked the visibility question against, and
+        /// the conversion runs far from the frame that knew it — which is why that
+        /// conversion used to fill the slot with the literal `"another scope"`.
+        /// A `ScopeId` and not the enclosing sort's `Symbol`, because top-level code
+        /// has no enclosing sort and is written in the global scope, which no symbol
+        /// from the frame names.
+        from_scope: ScopeId,
     },
     /// WI-757 (the WI-722 macro contract's diagnostic channel): a `[simp]` lowering
     /// whose macro-headed RHS was expanded here, and the MACRO rejected the
@@ -979,25 +1090,56 @@ impl TypeError {
             TypeError::DotDispatchNoMatch {
                 member,
                 receiver_sort,
+                receiver_param,
                 ..
             } => {
                 let m = kb.local_name_of(*member);
-                match receiver_sort {
-                    Some(s) => format!(
+                match (receiver_sort, receiver_param) {
+                    (Some(s), _) => format!(
                         "no member '{}' on {}: dot dispatch found no operation '{}' declared on the receiver's sort",
                         m, kb.qualified_name_of(*s), m,
                     ),
-                    None => format!(
+                    // WI-1119 — a type PARAMETER receiver: name it, and say what does or
+                    // does not constrain it. `<unresolved receiver>` was true and useless
+                    // here — the parameter is written right there in the signature.
+                    (None, Some(p)) => format!(
+                        "no member '{}' on `{}`: {}",
+                        m,
+                        p.param,
+                        constrained_param_repair(kb, &p.specs, m),
+                    ),
+                    (None, None) => format!(
                         "cannot dispatch `.{}`: the receiver's type is unresolved",
                         m,
                     ),
                 }
             }
-            TypeError::ForbiddenInternalField { entity, field, .. } => {
+            TypeError::AmbiguousConstrainedParamMember {
+                member,
+                receiver,
+                specs,
+                ..
+            } => ambiguous_constrained_param_message(
+                kb,
+                kb.local_name_of(*member),
+                receiver,
+                specs,
+            ),
+            TypeError::ForbiddenInternalField {
+                entity,
+                field,
+                from_scope,
+                ..
+            } => {
+                // WI-977 — names the scope, as the `LoadError` rendering of this same
+                // diagnostic does. "another scope" was honest prose here (this is a
+                // sentence, not a name slot) but it told the author nothing they did
+                // not already know, and the variant now carries the scope.
                 format!(
-                    "'{}' is an internal field of {} and cannot be projected from another scope",
+                    "'{}' is an internal field of {} and cannot be projected from scope '{}'",
                     kb.local_name_of(*field),
                     kb.qualified_name_of(*entity),
+                    kb.scope_display_name(*from_scope),
                 )
             }
             // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
@@ -1039,6 +1181,7 @@ impl TypeError {
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::AmbiguousSpecOpDispatch { span, .. }
+            | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
             | TypeError::DuplicateCallTypeArg { span, .. }
@@ -1448,18 +1591,65 @@ impl TypeError {
             TypeError::DotDispatchNoMatch {
                 member,
                 receiver_sort,
+                receiver_param,
                 ..
             } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: receiver_sort
-                    .map(|s| kb.qualified_name_of(s).to_string())
-                    .unwrap_or_else(|| "<unresolved receiver>".to_string()),
+                entity_name: match (receiver_sort, receiver_param) {
+                    (Some(s), _) => kb.qualified_name_of(*s).to_string(),
+                    // WI-1119 — the parameter as written, not `<unresolved receiver>`.
+                    (None, Some(p)) => p.param.clone(),
+                    (None, None) => "<unresolved receiver>".to_string(),
+                },
                 field_name: kb.local_name_of(*member).to_string(),
-                expected_type: "operation declared on the receiver's sort".to_string(),
-                actual_type: "no such member (dot dispatch)".to_string(),
+                expected_type: match receiver_param {
+                    // WI-1119 — what the author must supply differs by receiver: a sort
+                    // needs the member declared ON it, a constrained parameter needs a
+                    // constraining SPEC to declare it.
+                    Some(_) => "operation declared by a spec constraining the receiver's \
+                                type parameter"
+                        .to_string(),
+                    None => "operation declared on the receiver's sort".to_string(),
+                },
+                actual_type: match receiver_param {
+                    Some(p) => format!(
+                        "no such member (dot dispatch) — {}",
+                        constrained_param_repair(kb, &p.specs, kb.local_name_of(*member)),
+                    ),
+                    None => "no such member (dot dispatch)".to_string(),
+                },
                 span: self.span(kb),
             },
-            TypeError::ForbiddenInternalField { entity, field, .. } => {
+            // WI-1119 — its OWN variant for the reason `AmbiguousSpecOpDispatch` is one:
+            // the candidate list IS the diagnostic, and the "expected X, got Y" frame has
+            // no room for it. Rendered through the shared body so the `format` face and
+            // this one cannot drift.
+            TypeError::AmbiguousConstrainedParamMember {
+                member,
+                receiver,
+                specs,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: receiver.clone(),
+                field_name: kb.local_name_of(*member).to_string(),
+                expected_type: "one spec constraining the receiver's type parameter to \
+                                declare this member"
+                    .to_string(),
+                actual_type: ambiguous_constrained_param_message(
+                    kb,
+                    kb.local_name_of(*member),
+                    receiver,
+                    specs,
+                ),
+                span: self.span(kb),
+            },
+            TypeError::ForbiddenInternalField {
+                entity,
+                field,
+                from_scope,
+                ..
+            } => {
                 let declared_in = {
                     let q = kb.qualified_name_of(*entity);
                     q.rsplit_once('.')
@@ -1469,7 +1659,12 @@ impl TypeError {
                 LoadError::ForbiddenInternalAccess {
                     name: kb.local_name_of(*field).to_string(),
                     declared_in,
-                    scope_name: "another scope".to_string(),
+                    // WI-977 — the scope the projection was written in. Was the
+                    // literal `"another scope"`, which the renderer wrapped as
+                    // `from scope 'another scope'`: a `scope_name` slot filled with
+                    // prose, reading as a scope so named. The variant carries the
+                    // real one now, so this is the same answer as every other site.
+                    scope_name: kb.scope_display_name(*from_scope).to_string(),
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
@@ -1593,6 +1788,14 @@ pub struct TypingEnv {
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection.
     enclosing_sort: Option<Symbol>,
+
+    /// WI-977 — the scope a RULE BODY is written in (the rule's `domain`), for
+    /// diagnostics only. Its own field rather than a reuse of `enclosing_sort`
+    /// because the rule-body sweep leaves that empty ON PURPOSE — a rule body carries
+    /// no lexical params and must not acquire a sort's requirement frame — and this
+    /// must not change what defers to what. Read only by
+    /// [`Self::referencing_scope`]. `None` outside the rule-body sweep.
+    rule_scope: Option<Symbol>,
     /// The enclosing SORT's dictionary chain, snapshotted once per body. It is
     /// consulted at every spec-op call site under this body; caching it here avoids
     /// re-walking `SortRequiresInfo` per apply.
@@ -1684,6 +1887,7 @@ impl TypingEnv {
             sort_rigid_len: 0,
             local_resources: Vec::new(),
             enclosing_sort: None,
+            rule_scope: None,
             enclosing_chain: DictChain::empty(),
             enclosing_op_chain: None,
             op_requires: Rc::new(Vec::new()),
@@ -1812,6 +2016,63 @@ impl TypingEnv {
 
     pub fn enclosing_sort(&self) -> Option<Symbol> {
         self.enclosing_sort
+    }
+
+    /// WI-977 — THE SCOPE THE CODE BEING CHECKED IS WRITTEN IN, for a diagnostic that
+    /// must name it (§8.6) and for the `internal` visibility question that diagnostic
+    /// reports. TWO contexts reach it today, each carrying its own answer:
+    ///
+    ///  * an OPERATION body — `enclosing_op`, the operation's own scope;
+    ///  * a RULE body — `rule_scope`, the rule's `domain`;
+    ///  * `None` everywhere else, which [`hidden_field_owner`] reads as the GLOBAL
+    ///    scope — the scope a file's top-level declarations are written in.
+    ///
+    /// The `enclosing_sort` arm is a THIRD answer that nothing currently selects, and
+    /// it is kept deliberately rather than as an oversight: `set_enclosing_sort` has
+    /// one caller, the operation-body loop, which unconditionally calls
+    /// `set_enclosing_op` twelve lines later, so `enclosing_op` is `Some` whenever
+    /// `enclosing_sort` is. A future sweep that installs only the sort would then get
+    /// the right granularity's nearest available answer instead of falling through to
+    /// the global scope — but it would still be one scope OUT from where its code is
+    /// written, which is the split this ticket closed. A sweep in that position should
+    /// set its own scope, as `type_rule_bodies` does.
+    ///
+    /// Not `enclosing_sort` alone, which is one scope OUT of an operation body and
+    /// made the typer disagree with the loader about the same code. MEASURED, one
+    /// file, two rows: `unresolved name 'Nope' in scope 'wi977r.peek.Peeker.other'`
+    /// from the loader (which reads `current_scope`, the operation's) beside
+    /// `cannot be referenced from scope 'wi977r.peek.Peeker'` from here — one
+    /// question, two answers, which is the split this ticket exists to close.
+    ///
+    /// THE RULE-BODY ARM IS NOT COSMETIC, and assuming it was cost a regression:
+    /// `set_enclosing_sort` has ONE caller, the operation-body loop, so before
+    /// `rule_scope` existed EVERY rule body answered `None` here — not just top-level
+    /// code, as this doc then claimed. With [`hidden_field_owner`] reading `None` as
+    /// the global scope, a rule written INSIDE the declaring sort and projecting its
+    /// own `internal` field became a hard load error
+    /// (`'x' is internal to '…Point' and cannot be referenced from scope '<global>'`).
+    /// The whole workspace stayed green: no fixture projected an internal field from a
+    /// rule body until `a_rule_inside_the_declaring_sort_sees_its_internal_field`.
+    ///
+    /// THE TWO ARMS CHANGE THE VISIBILITY VERDICT DIFFERENTLY, and only one of them is
+    /// a narrowing. For an OPERATION body this is purely a rename: `scan_operation_params`
+    /// installs an `is_enclosing` link from each op scope to its declaring scope, so an
+    /// op scope's chain is a strict SUPERSET of its sort's and
+    /// [`crate::intern::SymbolTable::internal_visible_from`] cannot hide a name that was
+    /// visible before. For a RULE body it is a WIDENING — from no check at all — so
+    /// programs that loaded before can now be refused; that is the §8.6 rule finally
+    /// being enforced there, pinned by
+    /// `a_rule_outside_the_declaring_sort_is_refused_naming_the_rules_scope`, and its
+    /// in-scope counterpart by `a_rule_inside_the_declaring_sort_sees_its_internal_field`.
+    /// Migration risk measured: one `internal entity` exists across `stdlib/`,
+    /// `examples/` and `anthill-todo/`, projected only inside its own sort.
+    fn referencing_scope(&self) -> Option<Symbol> {
+        self.enclosing_op.or(self.rule_scope).or(self.enclosing_sort)
+    }
+
+    /// WI-977 — see [`Self::rule_scope`]. Set once per rule by the rule-body sweep.
+    fn set_rule_scope(&mut self, domain: Symbol) {
+        self.rule_scope = Some(domain);
     }
 
     /// The enclosing SORT's slots alone.
@@ -2594,7 +2855,7 @@ fn collapse_schema(
 /// type constructor: given two NAMED-TUPLE types, produce the named tuple whose fields are
 /// `A`'s followed by `B`'s. Both operands must be named tuples with DISJOINT field names;
 /// a non-named-tuple operand (a 1-collapse / `Unit` relation schema, a scalar) or a
-/// field-name collision is an error, returned as a message [`reduce_binary_type_ctor`]
+/// field-name collision is an error, returned as a message [`reduce_type_ctor`]
 /// wraps in a `TypeError`. `Concat` is a type FORM (the surface a signature writes); this
 /// is its reduction — the projection precedent (`ExprCarried` is the form,
 /// `project_type_member` its reduction). The result is an ordinary named tuple.
@@ -2673,23 +2934,23 @@ fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool 
     }
 }
 
-/// WI-714 / WI-727 — the per-op reduction gate: which binary type constructors a return
+/// WI-714 / WI-727 — the per-op reduction gate: which type constructors a return
 /// type writes, in a SINGLE traversal, so the >99% of ops that write none skip
-/// [`reduce_binary_type_ctor`]'s descent entirely. Returns one flag per
-/// [`BINARY_TYPE_CTORS`] entry, positionally. A return type may write more than one, and
+/// [`reduce_type_ctor`]'s descent entirely. Returns one flag per
+/// [`TYPE_CTORS`] entry, positionally. A return type may write more than one, and
 /// the reduction boundary applies each flagged ctor in turn.
 ///
 /// WI-734 — indexed by the family slice rather than a hardcoded tuple, so adding a ctor is
-/// one line in [`BINARY_TYPE_CTORS`]: previously the family was enumerated independently
+/// one line in [`TYPE_CTORS`]: previously the family was enumerated independently
 /// here and at the reduction boundary, and a new ctor added to one but not the other would
 /// silently never reduce instead of failing to compile.
-fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_CTORS.len()] {
+fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; TYPE_CTORS.len()] {
     let syms = resolved_ctor_family(kb);
     fn walk(
         kb: &KnowledgeBase,
         ty: &Value,
-        syms: &[Option<Symbol>; BINARY_TYPE_CTORS.len()],
-        out: &mut [bool; BINARY_TYPE_CTORS.len()],
+        syms: &[Option<Symbol>; TYPE_CTORS.len()],
+        out: &mut [bool; TYPE_CTORS.len()],
     ) {
         match extract_type(kb, ty) {
             TypeExtractor::Parameterized { base, bindings } => {
@@ -2719,28 +2980,69 @@ fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; BINARY_TYPE_
             _ => {}
         }
     }
-    let mut out = [false; BINARY_TYPE_CTORS.len()];
+    let mut out = [false; TYPE_CTORS.len()];
     walk(kb, ty, &syms, &mut out);
     out
 }
 
-/// WI-714 / WI-727 — a BINARY type constructor (`Concat[A, B]`, `Without[T, Drop]`)
-/// reduced at the return-type normalization boundary by [`reduce_binary_type_ctor`]. Each is
-/// a type FORM keyed on its own sort symbol (never a domain op's identity), reading two
-/// operands by param name and merging them with `reduce`.
-struct BinaryTypeCtor {
+/// WI-714 / WI-727 — a type constructor (`Concat[A, B]`, `Without[T, Drop]`,
+/// `Membership[T]`) reduced at the return-type normalization boundary by
+/// [`reduce_type_ctor`]. Each is a type FORM keyed on its own sort symbol (never a domain
+/// op's identity), reading its operands by param name and reducing them.
+struct TypeCtor {
     /// The constructor sort's qualified name (`anthill.prelude.Concat`).
     qn: &'static str,
     /// Display label for diagnostics (`Concat`).
     label: &'static str,
-    /// The two operand parameter names, in declaration order (`["A", "B"]`).
-    operands: [&'static str; 2],
-    /// The reduction over the two resolved operands → the merged type (or an error message
-    /// the caller wraps in a `TypeError`).
-    reduce: fn(&mut KnowledgeBase, &Value, &Value, &CtorReduceSite) -> Result<Value, String>,
+    /// The operand names and the reduction over them — paired, so the two cannot disagree
+    /// about arity.
+    reduction: CtorReduction,
 }
 
-/// WI-759 — the SITE a binary type constructor reduces at. `Concat` / `Without` are purely
+/// WI-728 — a constructor's operand names PAIRED with the reduction that consumes them, so
+/// an operand list and a reducer of differing arity are unrepresentable. Two arities are in
+/// use: BINARY (the schema algebra — merge / drop / keep / select) and UNARY (a type-level
+/// PREDICATE: one operand, asserted and returned).
+enum CtorReduction {
+    /// One operand: `Ctor[T = <a>]` reduces to `reduce(a)`. The family's predicate shape —
+    /// the reduction ACCEPTS (yielding the asserted type) or raises a LOUD error, so a
+    /// constraint a signature cannot state in a parameter position is stated in the return
+    /// type and checked at load.
+    Unary {
+        /// The operand parameter's name (`"T"`).
+        operand: &'static str,
+        /// The reduction over the resolved operand → the asserted type (or an error message
+        /// the caller wraps in a `TypeError`).
+        reduce: fn(&mut KnowledgeBase, &Value, &CtorReduceSite) -> Result<Value, String>,
+    },
+    /// Two operands: `Ctor[op0 = <a>, op1 = <b>]` reduces to `reduce(a, b)`.
+    Binary {
+        /// The two operand parameter names, in declaration order (`["A", "B"]`).
+        operands: [&'static str; 2],
+        /// The reduction over the two resolved operands → the merged type (or an error
+        /// message the caller wraps in a `TypeError`).
+        reduce: fn(&mut KnowledgeBase, &Value, &Value, &CtorReduceSite) -> Result<Value, String>,
+    },
+}
+
+impl CtorReduction {
+    /// The operand names, IN DECLARATION ORDER — the order the reducer's parameters are in.
+    ///
+    /// LOAD-BEARING, not cosmetic: [`reduce_type_ctor`] reads the ctor application's
+    /// bindings THROUGH this list, so these strings decide WHICH binding each reducer
+    /// argument receives, and the list's LENGTH is what makes that read total. Changing a
+    /// name here to something prettier, or reordering, silently re-wires the reduction —
+    /// a well-formed `Concat[A = …, B = …]` would start reporting "needs `A` and `B`".
+    /// It is also what the diagnostic prints, but that is the incidental use.
+    fn operand_names(&self) -> &[&'static str] {
+        match self {
+            CtorReduction::Unary { operand, .. } => std::slice::from_ref(operand),
+            CtorReduction::Binary { operands, .. } => operands,
+        }
+    }
+}
+
+/// WI-759 — the SITE a type constructor reduces at. `Concat` / `Without` are purely
 /// STRUCTURAL — they merge and shrink named tuples and read nothing but `sp`. `FieldOf` is
 /// scope-SENSITIVE: an `internal` field is projectable only from inside its declaring scope
 /// (WI-369), so its reduction depends on WHERE it reduces, not only on its operands. Rather
@@ -2752,55 +3054,113 @@ struct CtorReduceSite {
     sp: crate::span::SourceSpan,
     /// The reducing occurrence's diagnostic span, for a nested resolution that raises.
     span: Option<Span>,
-    /// The enclosing SORT of the code the reduction runs in (`TypingEnv::enclosing_sort`),
-    /// or `None` at top level / in a free operation — the lexical scope an `internal`
-    /// visibility check tests against. A structural reduction ignores it.
+    /// The scope of the code the reduction runs in ([`TypingEnv::referencing_scope`]),
+    /// or `None` at a file's top level, where [`hidden_field_owner`] reads it as the
+    /// global scope (WI-977). The lexical scope an `internal` visibility check tests
+    /// against, and the one its diagnostic NAMES. A structural reduction ignores it.
+    ///
+    /// TWO producers, and the second is easy to miss: an OPERATION body supplies the
+    /// operation's own scope, and a RULE body supplies the rule's `domain` — a
+    /// `FieldOf` reduction is reached from the rule-body dot-dispatch sweep as well as
+    /// from an op body, which is why `type_rule_bodies` sets a scope at all. Naming
+    /// only the enclosing sort here is what let a rule body's projection go unchecked.
     scope: Option<Symbol>,
 }
 
-const CONCAT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+const CONCAT_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Concat",
     label: "Concat",
-    operands: ["A", "B"],
-    reduce: concat_named_tuple_types,
+    reduction: CtorReduction::Binary {
+        operands: ["A", "B"],
+        reduce: concat_named_tuple_types,
+    },
 };
 
-const WITHOUT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+const WITHOUT_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Without",
     label: "Without",
-    operands: ["T", "Drop"],
-    reduce: without_named_tuple_types,
+    reduction: CtorReduction::Binary {
+        operands: ["T", "Drop"],
+        reduce: without_named_tuple_types,
+    },
 };
 
-const FIELD_OF_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+/// WI-759 — the type-ARGUMENT channel a `field_access` call carries its selector name on;
+/// `FieldOf`'s second operand. Named once so the synthesized call's type argument and the
+/// constructor that reads it cannot drift apart.
+const FIELD_OF_NAME_OPERAND: &str = "Name";
+
+const FIELD_OF_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.FieldOf",
     label: "FieldOf",
-    operands: ["T", "Name"],
-    reduce: field_of_type,
+    reduction: CtorReduction::Binary {
+        operands: ["T", FIELD_OF_NAME_OPERAND],
+        reduce: field_of_type,
+    },
 };
 
-const PROJECT_CTOR: BinaryTypeCtor = BinaryTypeCtor {
+/// WI-732 — the type-ARGUMENT channel a `project_run` call carries its keep spec on;
+/// `Project`'s second operand. Named once, for the reason on [`FIELD_OF_NAME_OPERAND`].
+const PROJECT_KEEP_OPERAND: &str = "Keep";
+
+const PROJECT_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Project",
     label: "Project",
-    operands: ["T", "Keep"],
-    reduce: project_schema_type,
+    reduction: CtorReduction::Binary {
+        operands: ["T", PROJECT_KEEP_OPERAND],
+        reduce: project_schema_type,
+    },
 };
 
-/// WI-714 / WI-727 — every binary type constructor, as ONE family. The family's shared
-/// rules (the abstract-operand reading below, the operand-name lookup, the reduction
-/// boundary) are stated once here rather than per constructor.
-const BINARY_TYPE_CTORS: [&BinaryTypeCtor; 4] =
-    [&CONCAT_CTOR, &WITHOUT_CTOR, &FIELD_OF_CTOR, &PROJECT_CTOR];
+const MEMBERSHIP_CTOR: TypeCtor = TypeCtor {
+    qn: "anthill.prelude.Membership",
+    label: "Membership",
+    reduction: CtorReduction::Unary {
+        operand: "T",
+        reduce: membership_schema_type,
+    },
+};
+
+/// WI-714 / WI-727 — every type constructor, as ONE family. The family's shared rules (the
+/// abstract-operand reading below, the operand-name lookup, the reduction boundary) are
+/// stated once here rather than per constructor.
+///
+/// ORDER IS PART OF THE DECLARATION, NOT COSMETIC (WI-728, review-found). The reduction
+/// boundary makes ONE pass in this order, and a ctor whose operand is a SIBLING defers on it
+/// ([`operand_not_yet_known`] case 2) — so a member placed BEFORE one that can appear inside
+/// its operands is the member whose reduction gets skipped, leaving a residual nothing
+/// revisits. Adding a member is still one line, but the line's POSITION is a decision:
+/// **place it after every member that can appear in its operands.**
+///
+/// `MEMBERSHIP_CTOR` is LAST for that reason, and the reason is sharper for a PREDICATE than
+/// for the computing members. A stranded COMPUTING ctor is caught downstream — its unreduced
+/// form offers no schema, so any use of the result fails loudly (see [`reduce_type_ctor`]'s
+/// CAVEAT, and `wi776_one_collapse_diagnostic_test`, which pins that stall deliberately). A
+/// stranded PREDICATE has no such backstop of its own: on success it reduces to its operand,
+/// so the reduced form is an ORDINARY type and an unreduced one is only noticed where
+/// something compares against the reduced form. MEASURED, by reordering: a signature that
+/// DECLARES the reduced type does catch it — and reports a correct program as wrong, blaming
+/// a residual — while a result merely consumed (`negate(r).isEmpty`) compares against nothing
+/// and would lose the assertion in silence. Being last is what makes both unreachable;
+/// `wi728_..._a_predicate_over_another_ctors_result_still_reduces` is the check, since a
+/// comment alone would not survive a reordering.
+const TYPE_CTORS: [&TypeCtor; 5] = [
+    &CONCAT_CTOR,
+    &WITHOUT_CTOR,
+    &FIELD_OF_CTOR,
+    &PROJECT_CTOR,
+    &MEMBERSHIP_CTOR,
+];
 
 /// WI-734 — the family's constructor sorts, resolved once. Kept out of the per-operand
-/// path deliberately: [`operand_not_yet_known`] runs up to twice per reduction and
+/// path deliberately: [`operand_not_yet_known`] runs once per operand per reduction and
 /// `try_resolve_symbol` is a string-keyed lookup, which the gated boundary
 /// ([`return_reducible_ctors`]) exists specifically to keep off the common path.
 /// `None` for a ctor whose sort is not loaded — the same "then it cannot appear" reading
-/// [`reduce_binary_type_ctor`] takes at its own resolve.
-fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTORS.len()] {
-    let mut out = [None; BINARY_TYPE_CTORS.len()];
-    for (i, c) in BINARY_TYPE_CTORS.iter().enumerate() {
+/// [`reduce_type_ctor`] takes at its own resolve.
+fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; TYPE_CTORS.len()] {
+    let mut out = [None; TYPE_CTORS.len()];
+    for (i, c) in TYPE_CTORS.iter().enumerate() {
         out[i] = kb.try_resolve_symbol(c.qn);
     }
     out
@@ -2817,6 +3177,19 @@ fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTOR
 ///    deferred, so the family stays internally consistent instead of the inner residual
 ///    tripping the outer reducer's concrete-operand check.
 ///
+/// 3. The operand is an UN-DISCHARGED PROJECTION — `ExprCarried` (`r.T`, WI-376) or
+///    `RigidTypeProjection` (`P.Key`, WI-428). A projection is eliminated against the
+///    RECEIVER's per-call type, so inside a wrapper whose own parameter is written bare
+///    (`negate(r)` in `once(r: Relation) -> …`) there is no receiver type to project yet
+///    and the projection survives the elimination pass. That is the same "may ground at an
+///    outer call site" situation as case 1, and WI-728 is where it became REACHABLE:
+///    `Membership`'s single operand is a bare projection, whereas every binary member has a
+///    second operand (`Keep`, `Drop`, `Name`) that is usually still a variable and so
+///    deferred the whole ctor by case 1 before the projection was ever inspected.
+///    MEASURED: without this arm, `operation once(r: Relation) -> Relation = negate(r)` —
+///    a program that loads clean before WI-728, and whose parameter is spelled exactly as
+///    `negate`'s own — is refused with the fabricated "one free column of type `r.T`".
+///
 /// Deliberately a SHALLOW head test: a variable nested *inside* an otherwise concrete
 /// operand (a named-tuple field type) does not block the merge, which copies field types
 /// verbatim. And deliberately NOT keyed on `TypeExtractor::Error` — that is a total-ness
@@ -2825,19 +3198,39 @@ fn resolved_ctor_family(kb: &KnowledgeBase) -> [Option<Symbol>; BINARY_TYPE_CTOR
 fn operand_not_yet_known(
     kb: &KnowledgeBase,
     v: &Value,
-    family: &[Option<Symbol>; BINARY_TYPE_CTORS.len()],
+    family: &[Option<Symbol>; TYPE_CTORS.len()],
 ) -> bool {
     if matches!(v.head(kb), ViewHead::Var(_)) {
         return true;
     }
-    matches!(
-        extract_type(kb, v),
-        TypeExtractor::Parameterized { base, .. } if family.contains(&Some(base))
-    )
+    match extract_type(kb, v) {
+        TypeExtractor::Parameterized { base, .. } => family.contains(&Some(base)),
+        TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
+        _ => false,
+    }
 }
 
-/// WI-714 / WI-727 — evaluate a binary type constructor (`cfg`) wherever it appears in a
-/// type: `Ctor[op0 = <a>, op1 = <b>]` reduces to `cfg.reduce(a, b)`. The INTERNAL type-level
+/// WI-728 — one already-reduced binding of a ctor application, by operand NAME. Short
+/// (local) name, like every other type-parameter lookup: the binding symbols carry the
+/// declaring sort's scope, and the family's operand names are written as they appear in
+/// `sort.anthill`.
+///
+/// DELIBERATELY NOT ENROLLED in [`binding_for_param`]'s ledger, which is the repo's one
+/// rule for looking a binding up BY PARAMETER SYMBOL. This asks a different question: it
+/// starts from a `&'static str` written in Rust, and the operand symbols are scoped to the
+/// declaring sort, so interning the bare name would not produce a symbol that matches
+/// (`define_qualified_only`). Extracted from the open-coded comparison the reducer already
+/// did rather than introduced here — the note exists so a later change to the binding-key
+/// rule knows this site reads names, not keys, and is unaffected by it.
+fn ctor_operand(kb: &KnowledgeBase, bindings: &[(Symbol, Value)], name: &str) -> Option<Value> {
+    bindings
+        .iter()
+        .find(|(p, _)| kb.local_name_of(*p) == name)
+        .map(|(_, v)| v.clone())
+}
+
+/// WI-714 / WI-727 — evaluate a type constructor (`cfg`) wherever it appears in a
+/// type: `Ctor[op0 = <a>, …]` reduces to `cfg.reduction` applied to its operands. The INTERNAL type-level
 /// operation behind the `Concat` / `Without` FORMS — keyed on the constructor's sort symbol
 /// and evaluated at the SAME return-type normalization boundary the `s.T` projection is, so
 /// ANY signature may write it; never keyed on a domain operation's identity. Recurses through
@@ -2855,6 +3248,16 @@ fn operand_not_yet_known(
 /// CONCRETE type is always fully reduced — there are never two comparable forms of one
 /// concrete type.
 ///
+/// ONE EXCEPTION, MEASURED (WI-728, review-found): a SIBLING family member reads as "not yet
+/// known", so an outer ctor defers on it, and if that sibling sits LATER in `TYPE_CTORS` it
+/// reduces afterwards — leaving the outer ctor unreduced over a now-concrete operand. So a
+/// fully concrete type CAN carry a residual, across members, in that one direction. It is
+/// not silent: the stranded ctor is a computing one, whose unreduced form offers no schema,
+/// so any use of the result fails loudly — `wi776_one_collapse_diagnostic_test::concat_over_-
+/// a_collapsed_without_still_stalls` pins exactly this shape, deliberately, because
+/// kernel-language.md §"1-collapse" records it as a weighed and declined limit. The boundary
+/// keeps ONE pass for that reason; see the ordering rule stated there.
+///
 /// CAVEAT: a residual reduces later only where the reduction gate fires, and
 /// [`return_reducible_ctors`] reads an op's DECLARED return type — so a generic wrapper
 /// must PROPAGATE the ctor in its own signature (as `join` / `fix` do); widening to a bare
@@ -2864,15 +3267,30 @@ fn operand_not_yet_known(
 /// offers no named-tuple schema to resolve against. The cost of widening is that the
 /// result is unusable columnwise, never that it answers wrongly.
 ///
+/// THAT SAFETY ARGUMENT IS ABOUT A SCHEMA-COMPUTING MEMBER, and does NOT transfer to a
+/// PREDICATE one (WI-728). It rests on the escaped residual being unusable — but a
+/// predicate reduces to its own operand on success, so its escaped result is a perfectly
+/// usable type and what is lost is the ASSERTION, silently. `Relation.negate` happens to
+/// keep a runtime guard that re-asks the question; a predicate written on any other sort
+/// has nothing behind it. So for a predicate: propagate it, or keep a runtime check, and
+/// do not read this paragraph as saying the escape costs only convenience.
+///
 /// A ctor nested in a non-parameterized-argument carrier (a named-tuple field, arrow,
 /// effect row) remains a LOUD error — never a silent pass-through. A carrier that mentions
 /// no `cfg` ctor returns unchanged.
-fn reduce_binary_type_ctor(
+///
+/// AN UNRESOLVABLE CTOR SORT returns the type unchanged. Sound for the same reason across
+/// the family, predicate included: the qualified name is the one a SIGNATURE writes, and a
+/// signature naming a sort that does not resolve is itself a load error — so there is no
+/// reachable state where a `Membership[..]` exists to assert and its sort does not. This is
+/// a totality arm, not a fallback, and the reasoning is recorded because for a predicate the
+/// failure mode of getting it wrong is an assertion that silently stops firing.
+fn reduce_type_ctor(
     kb: &mut KnowledgeBase,
     ty: &Value,
     ctx: &TypeErrorContext,
     site: &CtorReduceSite,
-    cfg: &BinaryTypeCtor,
+    cfg: &TypeCtor,
 ) -> Result<Value, TypeError> {
     let (sp, span) = (site.sp, site.span);
     let ctor_sym = match kb.try_resolve_symbol(cfg.qn) {
@@ -2885,49 +3303,58 @@ fn reduce_binary_type_ctor(
             // binding of `Relation[T = Ctor[..]]`), so descend before evaluating.
             let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
             for (p, v) in bindings {
-                reduced.push((p, reduce_binary_type_ctor(kb, &v, ctx, site, cfg)?));
+                reduced.push((p, reduce_type_ctor(kb, &v, ctx, site, cfg)?));
             }
             if base == ctor_sym {
-                // `Ctor[op0 = .., op1 = ..]` — read both operands by param name and merge.
-                let mut a: Option<Value> = None;
-                let mut b: Option<Value> = None;
-                for (p, v) in &reduced {
-                    let name = kb.local_name_of(*p);
-                    if name == cfg.operands[0] {
-                        a = Some(v.clone());
-                    } else if name == cfg.operands[1] {
-                        b = Some(v.clone());
-                    }
-                }
-                match (a, b) {
-                    // WI-734 — an operand that is NOT YET KNOWN leaves the ctor SYMBOLIC
-                    // rather than raising: reduction is deferred to the boundary where the
-                    // operand grounds. Distinguishing this from a CONCRETE operand the
-                    // reducer genuinely cannot merge is the whole point — handing an
-                    // unknown to `cfg.reduce` made it report the concrete-malformation
-                    // message ("must be a named-tuple type"), blaming a 1-collapse schema
-                    // for what is really an un-instantiated type parameter.
-                    (Some(a), Some(b))
-                        if {
-                            let family = resolved_ctor_family(kb);
-                            operand_not_yet_known(kb, &a, &family)
-                                || operand_not_yet_known(kb, &b, &family)
-                        } =>
-                    {
-                        let base_id = kb.make_sort_ref(base);
-                        Ok(parameterized_value(kb, base_id, &reduced, sp, None))
-                    }
-                    (Some(a), Some(b)) => (cfg.reduce)(kb, &a, &b, site)
-                        .map_err(|msg| projection_type_error(ctx, span, &msg)),
-                    _ => Err(projection_type_error(
+                // `Ctor[op0 = .., ..]` — read the operands by param name and reduce. Any
+                // operand missing is the same "needs its operands" error at every arity.
+                let operands: Option<SmallVec<[Value; 2]>> = cfg
+                    .reduction
+                    .operand_names()
+                    .iter()
+                    .map(|name| ctor_operand(kb, &reduced, name))
+                    .collect();
+                let Some(operands) = operands else {
+                    return Err(projection_type_error(
                         ctx,
                         span,
                         &format!(
-                            "`{}` needs both operands `{}` and `{}`",
-                            cfg.label, cfg.operands[0], cfg.operands[1]
+                            "`{}` needs {}",
+                            cfg.label,
+                            cfg.reduction
+                                .operand_names()
+                                .iter()
+                                .map(|n| format!("`{n}`"))
+                                .collect::<Vec<_>>()
+                                .join(" and ")
                         ),
-                    )),
+                    ));
+                };
+                // WI-734 — an operand that is NOT YET KNOWN leaves the ctor SYMBOLIC
+                // rather than raising: reduction is deferred to the boundary where the
+                // operand grounds. Distinguishing this from a CONCRETE operand the
+                // reducer genuinely cannot merge is the whole point — handing an
+                // unknown to `cfg.reduce` made it report the concrete-malformation
+                // message ("must be a named-tuple type"), blaming a 1-collapse schema
+                // for what is really an un-instantiated type parameter.
+                let family = resolved_ctor_family(kb);
+                if operands
+                    .iter()
+                    .any(|o| operand_not_yet_known(kb, o, &family))
+                {
+                    let base_id = kb.make_sort_ref(base);
+                    return Ok(parameterized_value(kb, base_id, &reduced, sp, None));
                 }
+                // `operands` was collected FROM `operand_names()`, and [`CtorReduction`]
+                // pairs those names with the reducer that consumes them — so its length is
+                // this variant's arity and the indexing below cannot be out of range.
+                match &cfg.reduction {
+                    CtorReduction::Unary { reduce, .. } => reduce(kb, &operands[0], site),
+                    CtorReduction::Binary { reduce, .. } => {
+                        reduce(kb, &operands[0], &operands[1], site)
+                    }
+                }
+                .map_err(|msg| projection_type_error(ctx, span, &msg))
             } else {
                 let base_id = kb.make_sort_ref(base);
                 Ok(parameterized_value(kb, base_id, &reduced, sp, None))
@@ -3045,6 +3472,95 @@ fn without_named_tuple_types(
     Ok(collapse_schema(kb, &kept, site.sp))
 }
 
+/// WI-728 (proposal 052) — the INTERNAL type-level operation behind the `Membership[T]`
+/// type constructor: the family's first PREDICATE member. Where `Concat` / `Without` /
+/// `Project` COMPUTE a schema, this one only ASSERTS a schema is CLOSED — `Unit`, the
+/// 1-collapse of zero columns — and returns it. A schema that still has columns is a LOAD
+/// error.
+///
+/// It exists because a signature cannot state the constraint in its PARAMETER position.
+/// `negate(r: Relation[T = Unit])` leaves the parameter non-ground in `E` (a `Relation`
+/// threads an effect row too), and the arg-vs-param check is gated on groundness
+/// ([`validate_arg_against_param`]) — so the constraint was silently unchecked, and pinning
+/// `E` to close that gap over-narrows the row every caller must then match. Stating it in
+/// the RETURN type instead puts it where the family already reduces, after the projection
+/// `r.T` has been discharged against the actual argument.
+///
+/// WHAT THE MESSAGE CAN NAME, and why it differs from the runtime guard's. At the VALUE
+/// level a relation carries its `columns` list, so `Relation.negate`'s host guard names the
+/// offending columns. At the TYPE level a ONE-column schema has already 1-collapsed to the
+/// column's element type (§"1-collapse" — the collapse drops the NAME), so only a ≥2-column
+/// schema still spells its column names. The message therefore names the columns when the
+/// schema still has them and the column TYPE when the collapse took the name.
+///
+/// A SHAPE THIS CANNOT NAME GETS A SHAPE CLAIM, not an invented column. `extract_type` is
+/// TOTAL — `TypeExtractor::Error` is its catch-all for a genuinely malformed type, and an
+/// arrow / effect-row / denoted operand is well-formed but is no relation schema at all.
+/// Reporting "one free column of type `?`" for any of those states a fact about the
+/// author's code that is not true and sends them to close columns that do not exist. Only
+/// the shapes a 1-collapse can actually PRODUCE (a bare sort, a sort application) take the
+/// column reading; everything else says what it is. `without_named_tuple_types` phrases its
+/// catch-all the same way, and this is the correction that brings the two into line
+/// (review-found, WI-728).
+///
+/// KNOWN LIMIT, and the reason the runtime guard is not redundant: a ONE-column relation
+/// whose column type IS `Unit` collapses to exactly the same `Unit` a zero-column relation
+/// does, so this check ACCEPTS it and the drain refuses it. The 1-collapse is a specified,
+/// deliberately paired type-and-value convention (§"1-collapse"), so no type-level check can
+/// separate the two; `wi728_a_unit_typed_column_is_indistinguishable_from_no_columns` pins
+/// the behaviour so it is a recorded limit rather than a surprise.
+fn membership_schema_type(
+    kb: &mut KnowledgeBase,
+    t: &Value,
+    _site: &CtorReduceSite,
+) -> Result<Value, String> {
+    let extracted = extract_type(kb, t);
+    // `Unit` — the 0-column schema — is the one accepted operand; return it unchanged so
+    // the enclosing `Relation[T = Membership[T = r.T]]` reduces to `Relation[T = Unit]`.
+    // A BARE sort ref, which is exactly what `collapse_schema` mints for zero columns: a
+    // `Unit[..]` APPLICATION is a different type and must not read as closed. And if `Unit`
+    // itself does not resolve there is no verdict to give — DEFER (return the operand
+    // unreduced) rather than let a failed lookup turn the accepted type into the offender.
+    let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
+    let Some(unit) = unit else {
+        return Ok(t.clone());
+    };
+    if matches!(extracted, TypeExtractor::SortRef(s) if s == unit) {
+        return Ok(t.clone());
+    }
+    let offending = match extracted {
+        // `short_name_of`, as every other named-tuple field LIST in this module renders one
+        // (`no_such_member_message`, the projection diagnostics): a component symbol can
+        // carry its declaring scope, and a column called `test.ns.name` in a message about
+        // the author's columns is noise they cannot act on.
+        TypeExtractor::NamedTuple(fields) => format!(
+            "free column(s): {}",
+            fields
+                .iter()
+                .map(|(n, _)| short_name_of(kb.local_name_of(*n)).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        // A 1-collapsed schema: the column NAME is gone, so name its type instead. Only
+        // these two shapes — the ones a collapsed single column can be.
+        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => format!(
+            "one free column of type `{}`",
+            type_display_name_value(kb, t)
+        ),
+        // Anything else is not a relation schema at all; say so, and claim no columns.
+        _ => format!(
+            "the type `{}`, which is not a relation schema",
+            type_display_name_value(kb, t)
+        ),
+    };
+    Err(format!(
+        "`Membership` requires a CLOSED schema (`Unit` — a relation whose columns are all \
+         bound), but this one has {offending}; close the columns first — bind them by \
+         applying the relation, or project ALL of them away in one step (a projection that \
+         leaves any column behind still fails here)"
+    ))
+}
+
 /// WI-759 — the member a field projection `x.f` selects: the projected TYPE plus the
 /// constructor that DECLARES it. The result of [`resolve_projected_member`], which is the
 /// ONE resolution both directions of the projection share.
@@ -3116,15 +3632,39 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
 /// constructor gets NAMED when several are, is a diagnostic detail.) Conservative by
 /// construction: a field reachable through an `internal` variant stays encapsulated even
 /// when a public sibling variant declares the same name.
+/// WI-977 — answers the REFERENCING SCOPE alongside the owner, because the caller's
+/// diagnostic has to name it and this is the only place it is known to exist. It used
+/// to answer only the owner, and the caller filled the scope slot with the literal
+/// string `"another scope"` — a fabricated name in a user-visible diagnostic, which
+/// rendered as `cannot be referenced from scope 'another scope'`.
+///
+/// THE `None` IS RESOLVED HERE, ONCE, AND IT IS THE GLOBAL SCOPE — not "no scope, so
+/// skip the check". `scope` in is [`TypingEnv::referencing_scope`], absent for a
+/// projection written at a file's top level;
+/// [`internal_field_hidden_from`] used to answer `false` for
+/// that and say so ("there is no lexical scope to test against, so enforcement is
+/// skipped (permissive)"). MEASURED against that arm: a top-level
+/// `operation topPeek(b: Box) -> Int64 = b.v` reading an `internal` constructor's
+/// field of another sort loaded CLEAN, while the identical body inside any `sort` or
+/// `namespace` was refused — so WI-369 encapsulation was unenforced for exactly the
+/// code with no scope to be inside. §8.6 makes `internal` "hidden from outside the
+/// declaring scope", and top-level code is outside it; the global scope is the scope
+/// such code is written in, so asking the question against it is both the honest
+/// reading and the one that closes the hole. A top-level `internal` declaration is
+/// unaffected — its declaring scope IS the global one, so it stays visible there.
 fn hidden_field_owner(
     kb: &mut KnowledgeBase,
     m: &ProjectedMember,
     scope: Option<Symbol>,
-) -> Option<(Symbol, Symbol)> {
+) -> Option<(Symbol, Symbol, ScopeId)> {
+    let from = match scope {
+        Some(s) => kb.symbols.scope_id(s),
+        None => kb.global_scope(),
+    };
     m.owners
         .iter()
-        .find(|(ctor, _)| internal_field_hidden_from(kb, scope, *ctor))
-        .copied()
+        .find(|(ctor, _)| internal_field_hidden_from(kb, from, *ctor))
+        .map(|(ctor, fsym)| (*ctor, *fsym, from))
 }
 
 /// WI-759 — resolve `recv_ty`'s member named `field_name`: the projection lookup, stated
@@ -3255,12 +3795,17 @@ fn field_of_type(
     // constructor owns the field. A source-level `x.f` is rejected earlier, at the dot's own
     // span with the precise diagnostic; this closes the hand-written desugared form, which
     // never passes through dot dispatch.
-    if let Some((ctor, field)) = hidden_field_owner(kb, &member, site.scope) {
+    if let Some((ctor, field, from_scope)) = hidden_field_owner(kb, &member, site.scope) {
+        // WI-977 — names the referencing scope, as the two dot-dispatch renderings of
+        // this same refusal do. "outside its declaring scope" restated the rule the
+        // author had just hit; the scope they wrote it in is what locates the line.
+        let from = kb.scope_display_name(from_scope).to_string();
         return Err(format!(
             "field `{}` is declared by the `internal` constructor `{}` and cannot be \
-             projected from outside its declaring scope",
+             projected from scope '{}'",
             short_name_of(kb.qualified_name_of(field)),
             short_name_of(kb.qualified_name_of(ctor)),
+            from,
         ));
     }
     Ok(member.ty)
@@ -6002,7 +6547,7 @@ fn build_relation_projection(
     let keep_param = lookup_operation_info_full(kb, project_run).and_then(|op| {
         op.type_params
             .iter()
-            .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == PROJECT_CTOR.operands[1])
+            .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == PROJECT_KEEP_OPERAND)
             .map(|(n, _)| *n)
     });
     let Some(keep_param) = keep_param else {
@@ -6014,7 +6559,7 @@ fn build_relation_projection(
             &format!(
                 "`anthill.prelude.Relation.project_run` must declare a `{}` type parameter — \
                  the channel a projection's keep spec travels to type position through",
-                PROJECT_CTOR.operands[1]
+                PROJECT_KEEP_OPERAND
             ),
         )));
     };
@@ -8111,6 +8656,265 @@ fn find_spec_op_for_required_sort(
     definers.first().map(|(_, op)| *op)
 }
 
+/// WI-1119 — is this dot receiver a TYPE PARAMETER declared in the body's scope, and if so
+/// what is its type term? The gate on the third member-resolution rung, and on the refusal
+/// that names the parameter.
+///
+/// MEMBERSHIP IN [`TypingEnv::param_rigids`], NOT merely [`is_type_param_value`]: every
+/// receiver that reaches this point has no sort head, and a fair share of them are
+/// anonymous unification variables — a rule-head variable the goals never constrained
+/// (WI-282), a `Value::Node` the typer has not grounded. Those ARE `Term::Var`s, so the
+/// coarse predicate admits them, and there is nothing about them to name or constrain: no
+/// clause can mention a variable the author never wrote. The rigid list holds exactly the
+/// parameters in scope — the enclosing sort's and the operation's own (WI-942) — so it is
+/// the precise question, and it is the same list the σ-alignment below bridges through.
+fn constrained_param_receiver_type(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: &Value,
+) -> Option<TermId> {
+    // A `Value::Node` receiver type carries no `TermId` and so names no parameter: the
+    // rigid list is keyed by term, and a denoted type is WI-348 Phase C work.
+    let Value::Term { id: tid, .. } = recv_ty else {
+        return None;
+    };
+    let tid = *tid;
+    let (vid, _) = elem_var_step(kb, tid)?;
+    let canon = canonical_global_var(kb, vid, env.param_rigids());
+    env.param_rigids()
+        .iter()
+        .any(|(g, rigid)| {
+            *g == canon
+                || matches!(kb.get_term(*rigid), Term::Var(Var::Rigid(rv)) if *rv == canon)
+        })
+        .then_some(tid)
+}
+
+/// WI-1119 — dot dispatch on a `requires`-CONSTRAINED TYPE-PARAMETER receiver: the third
+/// member-resolution rung, beside [`find_spec_op_for_provided_sort`] (the receiver sort's
+/// PROVIDES graph) and [`find_spec_op_for_required_sort`] (an abstract-spec receiver's
+/// REQUIRES graph). Those two are gated on a resolved `recv_sort`; a type parameter has
+/// none, so `x.describe()` inside `operation probe[PT](x: PT) requires Desc[PT]` used to
+/// skip the whole ladder and land on `DotDispatchNoMatch{None}` while its own named twin
+/// `Desc.describe(x)` loaded and ran. The dot **reaches the same rule** as the named
+/// spelling (§8.7 "Operation override"), so what it resolves to here is the spec
+/// operation, handed on for the value to decide — and the licence that admits the call is
+/// then the named spelling's own ([`op_requires_covers_call`] for the op-scoped clause, the
+/// sort-level defer-to-requirement for the sort's). This rung performs RESOLUTION only.
+///
+/// TWO CHAIN SOURCES, COMPOSED AT ONE READ, because a clause may be written in either
+/// scope and the receiver cannot tell which: the enclosing OPERATION's own
+/// ([`TypingEnv::op_requires`], §5.4 / proposal 042) and the enclosing SORT's dictionary
+/// chain ([`TypingEnv::enclosing_requires`]). MEASURED at the miss: the op-scoped spellings
+/// reach the constraining spec through the first and the sort-level one through the second
+/// alone, so a rung wired to either half serves two of the three shapes and refuses the
+/// third — the defect WI-945 and WI-1098 each record from a different side.
+///
+/// THE TWO SOURCES NEED DIFFERENT SEED DECODERS, and that is not drift but the established
+/// split: an op-scoped clause is stored as the written application (`Desc[PT]`, a plain
+/// `Fn`), which [`op_requires_entry_carrier_map`] pairs positionally against the spec's
+/// declared params, while a sort-level entry is a `SortView`, whose bindings are named and
+/// which [`compose_reached_carrier_map`] decodes — seeded here with an EMPTY parent map,
+/// which is the identity, exactly as [`op_requires_covers`]' BFS composes every entry it
+/// reaches. Feeding a `SortView` to the positional decoder pairs the spec's first type
+/// param with the view's own base (measured: `{Desc.T ↦ Desc}` beside the real
+/// `{Desc.T ↦ HT}`), which is why the seeds are picked by the entry's shape.
+///
+/// THE ALIGNMENT IS [`reached_carrier_matches_call`]'s QUESTION ASKED FROM THE OTHER SIDE:
+/// there a chain entry's carrier is σ-matched against a deferred call's carriers; here
+/// against the RECEIVER's type. A clause lends its spec's members only where it constrains
+/// *this* parameter — `probe[PT, QT](x: PT, y: QT) requires Desc[QT]` must not resolve
+/// `x.describe()` off the `QT` clause, which is WI-823's "the clause is keyed on the param
+/// it names" read at the dot. WHICH param of the spec the receiver must fill is
+/// [`spec_carrier_param_or_sole`]'s answer, the same owner [`requires_edge_is_carrier_preserving`]
+/// asks on the sibling rung (WI-1076: two independent "first type param" readers silently
+/// disagreed).
+///
+/// TRANSITIVE, like both siblings and like the licence: `requires Ord[PT]` lends
+/// `PartialEq.eq` because `Ord requires Eq requires PartialEq` (WI-644 / proposal 004), and
+/// [`op_requires_covers`] already licenses the named spelling of exactly that call. The
+/// expansion composes carriers at every hop, so a spec reached over a SIBLING element
+/// (`requires Foo[PT]`, `Foo requires Bar[T = Foo.E]`) lands unaligned and lends nothing.
+///
+/// A TIE IS REFUSED, NOT ORDERED. Two constraining specs declaring one member name are
+/// settled first by the §8.7 requires-REFINEMENT rule the sibling rungs use
+/// ([`most_refined_spec`] — `FiniteCollection.map` beats `Iterable.map`); a genuine
+/// ambiguity is an error naming both, rather than the siblings' first-match. It has to be:
+/// those two order their candidates by provision distance / requires pre-order, while a
+/// clause on the operation and a clause on its sort have no distance between them at all,
+/// so first-match here would let the ORDER THE TWO CLAUSES ARE WRITTEN decide the program's
+/// meaning — the very thing §"Where the ambiguity error is raised" refuses.
+fn find_spec_op_for_constrained_param(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: TermId,
+    short: &str,
+    call_shape: (usize, usize),
+    span: Option<Span>,
+) -> Result<Option<Symbol>, TypeError> {
+    let definers = constraining_spec_definers(kb, env, recv_ty, short, call_shape);
+    if definers.len() <= 1 {
+        return Ok(definers.first().map(|(_, op)| *op));
+    }
+    let tied: Vec<Symbol> = definers.iter().map(|(s, _)| *s).collect();
+    if let Some(winner) = most_refined_spec(kb, &tied) {
+        if let Some((_, op)) = definers
+            .iter()
+            .find(|(s, _)| same_sort_canonical(kb, *s, winner))
+        {
+            return Ok(Some(*op));
+        }
+    }
+    Err(TypeError::AmbiguousConstrainedParamMember {
+        span,
+        member: kb.intern(short),
+        receiver: type_display_name(kb, recv_ty),
+        specs: tied,
+    })
+}
+
+/// WI-1119 — of the specs that constrain the receiver's type parameter, those declaring
+/// `short`, paired with the operation each declares. [`find_spec_op_for_constrained_param`]
+/// owns the rule; this is the member filter over [`constraining_specs_for_param`]'s walk.
+///
+/// `call_shape` is the SYNTHESIZED call's `(positional count including the receiver, named
+/// count)`. It is used to narrow a MULTI-candidate result and never to empty one: see
+/// [`definer_accepts_call_shape`].
+fn constraining_spec_definers(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: TermId,
+    short: &str,
+    call_shape: (usize, usize),
+) -> Vec<(Symbol, Symbol)> {
+    let declaring: Vec<(Symbol, Symbol)> = constraining_specs_for_param(kb, env, recv_ty)
+        .into_iter()
+        .filter_map(|spec| {
+            let spec_term = kb.alloc(Term::Ref(spec));
+            super::load::find_operation_in_scope(kb, spec_term, short).map(|op| (spec, op))
+        })
+        .collect();
+    if declaring.len() <= 1 {
+        return declaring;
+    }
+    // A TIE IS COUNTED ONLY AMONG CANDIDATES THE CALL COULD REACH. Two specs declaring one
+    // name are not rivals when only one of them can take this call: `Desc.describe(x: T)`
+    // and `Show.describe(x: S, prefix: Int64)` are distinguished by the dot's own argument
+    // list, and refusing the pair would both reject a call that is unambiguous and offer a
+    // repair (`Show.describe(…)`) that is itself an arity error — which §"Where the
+    // ambiguity error is raised" forbids ("the message says to keep exactly one text rather
+    // than suggest a spelling that would be refused"). It is also stricter than the
+    // shadowing rule this mirrors (WI-1048), whose distinguishability test starts at arity.
+    //
+    // NARROWS, NEVER EMPTIES: if no candidate fits, the ORIGINAL set stands. A lone definer
+    // is never dropped either — an arity mismatch there is the synthesized call's own error
+    // to report, and it says what is wrong far better than "no such member" would.
+    let applicable: Vec<(Symbol, Symbol)> = declaring
+        .iter()
+        .copied()
+        .filter(|(_, op)| definer_accepts_call_shape(kb, *op, call_shape))
+        .collect();
+    if applicable.is_empty() {
+        declaring
+    } else {
+        applicable
+    }
+}
+
+/// WI-1119 — could `op` be the callee of a dot synthesized with `pos` positional arguments
+/// (the receiver among them) and `named` named ones? Exact, because the language has no
+/// default parameter values — a declaration is refused the `= Type` form on its type params
+/// (WI-850) and has no value-level counterpart — so a call supplies every declared parameter
+/// exactly once.
+///
+/// Answers TRUE when it cannot tell (no operation record). This predicate only narrows a
+/// tie, and a wrong `false` would drop a real candidate and change which implementation
+/// runs; a wrong `true` merely leaves the tie to be refused as before.
+fn definer_accepts_call_shape(kb: &KnowledgeBase, op: Symbol, (pos, named): (usize, usize)) -> bool {
+    lookup_operation_info_full(kb, op).is_none_or(|info| info.params.len() == pos + named)
+}
+
+/// WI-1119 — every spec constraining the receiver's type parameter, in source order (the
+/// enclosing operation's own clauses, then its sort's, each expanded transitively over the
+/// requires graph with carriers composed at every hop). Deduplicated by spec.
+///
+/// SPLIT FROM THE MEMBER FILTER because the two readers ask it differently: the resolution
+/// wants the specs declaring one member, while `DotDispatchNoMatch` must name the specs
+/// that were SEARCHED — including every one that declares nothing, which is exactly the set
+/// that makes "these constrain it and none declares that member" a usable sentence.
+fn constraining_specs_for_param(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: TermId,
+) -> Vec<Symbol> {
+    // σ has no per-call substitution to chase here: the receiver's type is already the
+    // body's own, so the whole bridge is `param_rigids` (written `Var::Global` ↔ body
+    // `Var::Rigid`). An empty `Substitution` is that context, not a stand-in for a missing
+    // one — `sigma_class` reads it only to chase bindings a call would have made.
+    let subst = Substitution::new();
+    let ctx = SigmaCtx {
+        subst: &subst,
+        param_rigids: env.param_rigids(),
+    };
+    // BFS state, exactly [`op_requires_covers`]': (spec, {spec's type-param ↦ carrier in
+    // the BODY's scope}). Grown by index rather than popped so the walk stays in source
+    // order — which spec a tie NAMES is then stable across runs.
+    type State = (Symbol, SmallVec<[(Symbol, TermId); 2]>);
+    let mut states: Vec<State> = Vec::new();
+    for e in env.op_requires().to_vec() {
+        states.push((
+            kb.canonical_sort_sym(e.required_sort),
+            op_requires_entry_carrier_map(kb, &e),
+        ));
+    }
+    for e in env.enclosing_requires().to_vec() {
+        states.push((
+            kb.canonical_sort_sym(e.required_sort),
+            compose_reached_carrier_map(kb, &[], &e),
+        ));
+    }
+    let mut constraining: Vec<Symbol> = Vec::new();
+    let mut i = 0;
+    while i < states.len() {
+        let (cs, map) = states[i].clone();
+        i += 1;
+        // Does this constraint range over the RECEIVER — is the receiver's type what fills
+        // the spec's carrier param? A spec whose carrier goes somewhere else constrains a
+        // SIBLING element and not this receiver (`Set requires Eq[T]` constrains the
+        // element), so it lends nothing; its own requires are still expanded below, since a
+        // spec it requires may bind its carrier here.
+        //
+        // [`spec_carrier_param_or_sole`], the WI-1102 owner of "WHICH type parameter of
+        // this spec the carrier goes in" — the question actually being asked. An earlier
+        // draft used rung 1 alone ([`spec_carrier_param`], "a param some declared operation
+        // RECEIVES on") on the argument that only a receiving spec can lend a member. That
+        // is true of RESOLUTION and false of this walk, which the refusal ALSO reads to name
+        // what constrains the parameter: a spec no operation receives on still constrains
+        // it, and dropping it here made `requires Zeroed[PT]` report "no `requires` clause
+        // constrains it" at a program that wrote one — telling the author to add the clause
+        // they had written. The two questions are separated where they belong, at the member
+        // filter in [`constraining_spec_definers`].
+        if let Some(carrier_param) = spec_carrier_param_or_sole(kb, cs) {
+            let bound = binding_for_param(kb, &map, carrier_param, BindingKeyMatch::Label).copied();
+            if bound.is_some_and(|v| sigma_pair_precise(kb, &ctx, v, recv_ty))
+                && !constraining.iter().any(|s| same_sort_canonical(kb, *s, cs))
+            {
+                constraining.push(cs);
+            }
+        }
+        for reached in direct_requires_chain(kb, cs) {
+            let composed = compose_reached_carrier_map(kb, &map, &reached);
+            let next = (kb.canonical_sort_sym(reached.required_sort), composed);
+            // Dedup on the FULL state, [`op_requires_covers`]' rule: a spec re-reached
+            // under a DIFFERENT carrier is a different constraint and must be re-explored.
+            if !states.contains(&next) {
+                states.push(next);
+            }
+        }
+    }
+    constraining
+}
+
 /// WI-614 — is `recv_sort requires <entry>` CARRIER-PRESERVING: does it bind the required
 /// spec's carrier to `recv_sort`'s OWN carrier, so a `recv_sort` value can serve as the
 /// required spec's self-receiver? Carrier-preserving requires (refinements) lend their members
@@ -10029,6 +10833,29 @@ fn build_type(
                             .then(|| find_spec_op_for_required_sort(kb, s, &short))
                             .flatten()
                     })
+            } else if let Some(param_ty) = constrained_param_receiver_type(kb, &env, &recv.ty) {
+                // WI-1119: the receiver is a TYPE PARAMETER, so it has no sort whose
+                // members the three rungs above could search — but a `requires` clause on
+                // the enclosing operation or its sort may constrain it, and the NAMED
+                // spelling of this very call is already licensed by that clause. Resolve
+                // the member against the constraining specs so the dot reaches the same
+                // spec operation the named spelling does (§8.7).
+                // The call shape is the SYNTHESIZED call's, receiver included — the same
+                // `(receiver, …pos_nodes)` list built below when a member is found.
+                let call_shape = (1 + pos_nodes.len(), named_nodes.len());
+                match find_spec_op_for_constrained_param(
+                    kb, &env, param_ty, &short, call_shape, dot_span,
+                ) {
+                    Ok(found) => found,
+                    // A tie between two constraining specs is refused HERE rather than
+                    // fallen through: the arms below (field access, relation projection)
+                    // would answer nothing and the frame would end in `DotDispatchNoMatch`,
+                    // reporting "no such member" for a member found TWICE.
+                    Err(e) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                }
             } else {
                 None
             };
@@ -10104,12 +10931,14 @@ fn build_type(
                         // reduction report it against the rewritten node. (The reduction
                         // checks too, off this same resolution, which is what closes the
                         // hand-written desugared form that never passes through dot dispatch.)
-                        if let Some((ctor, fsym)) = hidden_field_owner(kb, &m, env.enclosing_sort())
+                        if let Some((ctor, fsym, from_scope)) =
+                            hidden_field_owner(kb, &m, env.referencing_scope())
                         {
                             results.push(Err(TypeError::ForbiddenInternalField {
                                 span: dot_span,
                                 entity: ctor,
                                 field: fsym,
+                                from_scope,
                             }));
                             return;
                         }
@@ -10167,10 +10996,23 @@ fn build_type(
             }
 
             // No method and no field matched → clear diagnostic at the dot span.
+            // WI-1119: when the receiver is a type PARAMETER, name it and the specs that
+            // do constrain it. Recomputing the constraint set here rather than threading it
+            // down from the rung is deliberate — the rung returns `None` on the ordinary
+            // "not a member of any of them" path, and every arm between it and here can
+            // also decline, so the refusal must be able to say what was searched no matter
+            // which arm fell through last.
+            let receiver_param = constrained_param_receiver_type(kb, &env, &recv.ty).map(|tid| {
+                ConstrainedParamReceiver {
+                    param: type_display_name(kb, tid),
+                    specs: constraining_specs_for_param(kb, &env, tid),
+                }
+            });
             results.push(Err(TypeError::DotDispatchNoMatch {
                 span: dot_span,
                 member,
                 receiver_sort: recv_sort,
+                receiver_param,
             }));
         }
         TypeBuildFrame::LetAfterValue {
@@ -11276,7 +12118,7 @@ fn synthesize_field_access(
         .and_then(|op| {
             op.type_params
                 .iter()
-                .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == FIELD_OF_CTOR.operands[1])
+                .find(|(n, _)| short_name_of(kb.local_name_of(*n)) == FIELD_OF_NAME_OPERAND)
                 .map(|(n, _)| *n)
         })
         .ok_or_else(|| {
@@ -11286,7 +12128,7 @@ fn synthesize_field_access(
                 &format!(
                     "`anthill.reflect.field_access` must declare a `{}` type parameter — the \
                      channel a field projection's name travels to type position through",
-                    FIELD_OF_CTOR.operands[1]
+                    FIELD_OF_NAME_OPERAND
                 ),
             ))
         })?;
@@ -11319,31 +12161,43 @@ fn synthesize_field_access(
     ))
 }
 
-/// WI-369: whether projecting a field of `ctor` is forbidden from `scope` — true when
-/// `ctor` is declared `internal` and `scope`'s body scope cannot see it
-/// (kernel-language.md §8.6). The enclosing sort's body scope is the hash-consed `Fn{sort}`
-/// term raw — the same scope id the loader recorded — so a projection inside the declaring
-/// sort's own ops (`s.rep` in `MutableStack.push`) is visible, while one from another sort is
-/// not. With no enclosing sort (a free op / top-level), there is no lexical
-/// scope to test against, so enforcement is skipped (permissive).
+/// WI-369: whether projecting a field of `ctor` is forbidden from `from` — true when
+/// `ctor` is declared `internal` and `from` cannot see it (kernel-language.md §8.6).
+/// A projection inside the declaring sort's own ops (`s.rep` in `MutableStack.push`)
+/// is visible, because an operation's scope reaches its sort through the
+/// `is_enclosing` link `scan_operation_params` installs; one from another sort is not.
 ///
-/// WI-759: takes the enclosing SORT rather than the whole `TypingEnv` — that is all it ever
+/// WI-984 retired the derivation this doc used to describe (the scope as a
+/// hash-consed `Fn{sort}` term raw): a [`ScopeId`] carries its owner, and for a sort
+/// with an eponymous constructor the term form canonicalizes to `Term::Ref`, so the
+/// term-keyed lookup found a scope holding nothing and every `internal` field of such
+/// a sort read as VISIBLE.
+///
+/// WI-977 — TAKES THE SCOPE ALREADY RESOLVED, and there is no permissive arm left.
+/// This doc used to end "with no enclosing sort (a free op / top-level), there is no
+/// lexical scope to test against, so enforcement is skipped (permissive)", and that
+/// was a measured hole rather than a design: a projection written at a file's top
+/// level, or in ANY rule body, was never checked. [`hidden_field_owner`] now resolves
+/// every context to a real scope — the operation's, the rule's `domain`, or the
+/// global scope — so the question is always asked. See [`TypingEnv::referencing_scope`].
+///
+/// WI-759: takes a scope rather than the whole `TypingEnv` — that is all it ever
 /// read, and it is what a `FieldOf` reduction can carry to its site
 /// ([`CtorReduceSite::scope`]) without reaching for an ambient env.
-fn internal_field_hidden_from(kb: &mut KnowledgeBase, scope: Option<Symbol>, ctor: Symbol) -> bool {
+fn internal_field_hidden_from(kb: &mut KnowledgeBase, from: ScopeId, ctor: Symbol) -> bool {
     if !kb.symbols.is_internal(ctor) {
         return false;
     }
-    match scope {
-        // WI-984: the enclosing sort's scope, straight off its symbol. Was an
-        // `alloc(Fn{s}).raw()`, which for a sort with an eponymous constructor
-        // canonicalizes to `Term::Ref` (WI-511) and so keyed a scope that holds
-        // nothing — every `internal` field of such a sort read as visible.
-        Some(s) => !kb
-            .symbols
-            .internal_visible_from(ctor, kb.symbols.scope_id(s)),
-        None => false,
-    }
+    // WI-984: the enclosing sort's scope, straight off its symbol. Was an
+    // `alloc(Fn{s}).raw()`, which for a sort with an eponymous constructor
+    // canonicalizes to `Term::Ref` (WI-511) and so keyed a scope that holds
+    // nothing — every `internal` field of such a sort read as visible.
+    //
+    // WI-977: takes the scope ALREADY RESOLVED, so the "no enclosing sort" case
+    // cannot be answered here by skipping the check. It used to arrive as an
+    // `Option` whose `None` arm returned `false` — permissive, and a measured hole
+    // for top-level code. [`hidden_field_owner`] resolves it to the global scope.
+    !kb.symbols.internal_visible_from(ctor, from)
 }
 
 /// WI-727 (proposal 056) — the rewritten call a variadic capture produces: the SAME
@@ -11986,7 +12840,7 @@ fn check_apply_iter(
         let op_has_projection = params_have_projection
             || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
-        // WI-714 / WI-727: does the RETURN type write a binary type constructor (`Concat`,
+        // WI-714 / WI-727: does the RETURN type write a type constructor (`Concat`,
         // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
         // declared signature, like `op_has_projection`) — ONE traversal for both — so only a
         // signature that actually reduces a schema pays for the reduction at each call.
@@ -12493,7 +13347,7 @@ fn check_apply_iter(
             // Share the single `subst`-walk (which substitutes the bound type params —
             // `Drop = R`, the captured record — into the type before the operands are
             // inspected), then apply each ctor the signature actually wrote, in family
-            // order. WI-734: folded over `BINARY_TYPE_CTORS` rather than an if-chain per
+            // order. WI-734: folded over `TYPE_CTORS` rather than an if-chain per
             // constructor, so a new ctor reduces here by construction.
             // WI-759: the reduction SITE — `FieldOf` reads its enclosing sort to decide
             // whether an `internal` field is projectable here (WI-369); the structural
@@ -12501,12 +13355,45 @@ fn check_apply_iter(
             let site = CtorReduceSite {
                 sp: occ.span,
                 span,
-                scope: env.enclosing_sort(),
+                // WI-977: the OPERATION's scope where there is one — see
+                // `TypingEnv::referencing_scope`. Was `enclosing_sort()`, one scope out.
+                scope: env.referencing_scope(),
             };
+            // ONE PASS, IN ARRAY ORDER — and that order is LOAD-BEARING (WI-728,
+            // review-found). A ctor whose operand is another family member DEFERS (a sibling
+            // reads as "not yet known"), so if the inner member sits LATER in `TYPE_CTORS` it
+            // reduces afterwards and the outer one is left unreduced over a now-CONCRETE
+            // operand that this loop never revisits.
+            //
+            // NOT REPAIRED WITH A FIXPOINT, and the reason is a decision already taken.
+            // A fixpoint was written and measured: it works, and it FAILS
+            // `wi776_one_collapse_diagnostic_test::concat_over_a_collapsed_without_still_-
+            // stalls`, whose whole purpose is to fail if anyone makes this reduce ("someone
+            // re-reads the decision"). Re-read: kernel-language.md §"1-collapse" records
+            // `Concat`/`Without` not being inverses at arity one as a KNOWN LIMIT of the
+            // paired type-and-value collapse convention, weighed and declined. Turning the
+            // stall into `Concat`'s own refusal is a change to that specified rule, not a
+            // bug fix, and belongs with the rest of that decision rather than inside a
+            // ticket about `negate`'s operand.
+            //
+            // AND THE ESCAPE IS CAUGHT ANYWAY, for the members this loop can strand: an
+            // unreduced COMPUTING ctor offers no schema, so any use of the result fails
+            // loudly (the CAVEAT on `reduce_type_ctor`) — which is exactly what the wi776
+            // pin observes. The first probe that suggested otherwise bound the result to an
+            // unused `let`, where nothing forces the comparison; that is not a silent wrong
+            // answer, it is a program that never asks.
+            //
+            // WHAT THE ORDER THEREFORE COSTS, AND THE RULE IT IMPOSES: a member must sit
+            // AFTER any member that can appear inside its operands, or its own reduction is
+            // the one skipped. `MEMBERSHIP_CTOR` is LAST for exactly that reason — a
+            // PREDICATE stranded this way would lose its assertion silently rather than
+            // produce an unusable type, the one case the CAVEAT's safety argument does not
+            // cover. Adding a member is still one line in `TYPE_CTORS`, but WHERE that line
+            // goes is part of the decision.
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
-            for (cfg, wrote) in BINARY_TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
+            for (cfg, wrote) in TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
                 if *wrote {
-                    reduced = reduce_binary_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
+                    reduced = reduce_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
                 }
             }
             reduced
@@ -52206,6 +53093,12 @@ fn type_rule_bodies(
             // the typer's normal env handling.
             let mut env = TypingEnv::empty();
             env.set_debruijn_types(var_types.clone());
+            // WI-977: the scope this rule was WRITTEN in, for the `internal`
+            // visibility check a dot projection runs and for the scope its refusal
+            // names. Deliberately NOT `set_enclosing_sort` — that installs a
+            // requirement frame this body must not acquire (see above); this field
+            // is read by `referencing_scope` alone.
+            env.set_rule_scope(kb.rule_domain(rid));
             // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
             // treats the WI-539 value-precondition `requires`-check as refutation-
             // aware — a rule body is SLD/relational with no call-site Γ, so a

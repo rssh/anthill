@@ -282,8 +282,14 @@ fn wi714_negate_materializes_unit() {
 /// negate REQUIRES a membership operand: negating a relation with a FREE column
 /// would flounder under NAF (the resolver cannot decide `not p(?x)` with `?x`
 /// unbound — resolver changes are out of 052's scope), so it is a LOUD error
-/// rather than a silent floundered result. Enforced at runtime (see the stdlib
-/// note on why the signature can't carry a `T = Unit`-with-`E`-open constraint).
+/// rather than a silent floundered result.
+///
+/// WI-728 moved that verdict from the CALL to the LOAD: the signature now carries
+/// the constraint as `-> Relation[T = Membership[T = r.T], …]`, a type-level
+/// predicate the ctor-reduction boundary evaluates. This test kept its subject and
+/// changed its timing; the WHOLE surface — both message arms, the accepted path
+/// driven end to end, generality off any sort, and the abstract-schema escape that
+/// still lands on the runtime guard — is in `wi728_membership_operand_test`.
 #[test]
 fn wi714_negate_requires_membership_operand() {
     let src = r#"
@@ -305,15 +311,13 @@ namespace test.wi714negcol
     r.isEmpty
 end
 "#;
-    // Loads clean (the guard is at runtime); the call surfaces the loud error.
-    let mut interp = interp_for(src);
-    let err = interp
-        .call("test.wi714negcol.bad", &[])
-        .expect_err("negate over a relation with free columns must error, not flounder");
-    let msg = format!("{err:?}");
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("negate over a relation with free columns must be refused at LOAD (WI-728)");
+    let joined = errs.join("\n");
     assert!(
-        msg.contains("membership") || msg.contains("free column") || msg.contains("flounder"),
-        "negate must loudly reject a non-membership operand, got: {msg}"
+        joined.contains("Membership") && joined.contains("close the columns first"),
+        "negate must loudly reject a non-membership operand, got: {joined}"
     );
 }
 
