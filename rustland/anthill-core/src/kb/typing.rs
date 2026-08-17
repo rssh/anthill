@@ -4644,10 +4644,138 @@ fn render_mismatch_pair(kb: &KnowledgeBase, expected: &Value, actual: &Value) ->
     // most expensive. The user still gets the underlying rejection; they
     // additionally get told the message is incomplete, instead of silently
     // receiving one that cannot be acted on.
+    // WI-872: ONE CAUSE NAMED OUT OF THE BACKSTOP'S RESIDUE, and it is the residue's
+    // most likely member — two sorts that differ ONLY in namespace render alike by
+    // construction, because every type rendering here is by SHORT name. Checked inside
+    // the `e == a` guard rather than beside the arity cause: it is not a re-rendering
+    // (there is no qualified renderer, and adding a parallel one to name a namespace
+    // would duplicate the renderer), it is a NOTE, so it belongs exactly where the
+    // untargeted note would otherwise go.
     if e == a {
+        if let Some((expected_qn, actual_qn)) = short_name_sort_collision(kb, expected, actual) {
+            return (e, format!("{a} {}", short_name_collision_note(&expected_qn, &actual_qn)));
+        }
         return (e, format!("{a} {IDENTICAL_RENDERING_NOTE}"));
     }
     (e, a)
+}
+
+/// WI-872 — the sort symbols a type MENTIONS, at any depth.
+///
+/// Shape-agnostic on purpose: it decodes no `sort_ref` / `parameterized` / tuple / arrow
+/// layout, it collects every referenced symbol the KB knows as a SORT. A collision NESTED
+/// under a parameterized type is therefore found by the same walk that finds a bare one,
+/// and both are MEASURED reachable — `takeA(f: a.Foo)` given a `b.Foo`, and
+/// `takeL(f: List[T = a.Foo])` given a `List[T = b.Foo]`, which before this printed
+/// `expected List[T = Foo], got List[T = Foo]` with the "please report it" note.
+fn mentioned_sort_syms<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Symbol>) {
+    let head = ty.head(kb);
+    match head {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        }
+        | ViewHead::Ref(f)
+        | ViewHead::Ident(f) => {
+            // A TYPE PARAMETER IS NOT A SORT HERE, though `sort_kind` says it is:
+            // `load_abstract_sort` registers a `sort T = ?` alias with
+            // `register_sort(.., SortKind::Sort)`, and after a stdlib load 37 `SortAlias`
+            // sources are named `T`. Collecting them would let a `T`/`T` pair be found
+            // FIRST and short-circuit a real sort collision deeper in the same type, and
+            // would make the note's repair ("qualify it, or rename one sort") advice the
+            // reader cannot take about a foreign sort's own parameter.
+            // Canonical too: `sort_info` is keyed by the resolved copy, and a type term
+            // may carry another interning of the same name.
+            // Skipping the SYMBOL, not the subtree: a parameterized head still has its
+            // bindings walked below, so a collision under `T[A = a.Foo]` is not lost.
+            if !is_sort_param_symbol(kb, f)
+                && (kb.sort_kind(f).is_some() || kb.sort_kind(kb.canonical_sort_sym(f)).is_some())
+            {
+                out.push(f);
+            }
+        }
+        _ => {}
+    }
+    if let ViewHead::Functor {
+        pos_arity,
+        named_arity,
+        ..
+    } = head
+    {
+        for i in 0..pos_arity {
+            if let Some(child) = ty.pos_arg(kb, i) {
+                mentioned_sort_syms(kb, &child, out);
+            }
+        }
+        if named_arity > 0 {
+            for k in ty.named_keys(kb) {
+                if let Some(child) = ty.named_arg(kb, k) {
+                    mentioned_sort_syms(kb, &child, out);
+                }
+            }
+        }
+    }
+}
+
+/// WI-872 — do the two sides of an identically-rendering mismatch mention two DIFFERENT
+/// sorts under one short name? Returns the offending pair's QUALIFIED names.
+///
+/// THE PAIR MUST BE THE DIFFERENCE BETWEEN THE SIDES, not merely present on both. A
+/// naive cross product finds `a.Foo` on the expected side and `b.Foo` on the actual side
+/// even when BOTH sides are `Map[K = a.Foo, V = b.Foo]` — one type that lawfully mentions
+/// two same-short-named sorts — and would then blame a collision that is not the cause
+/// while SUPPRESSING [`IDENTICAL_RENDERING_NOTE`], i.e. hiding exactly the renderer gap
+/// the backstop exists to surface. So a symbol qualifies only if it is UNIQUE TO ITS
+/// SIDE: `e` absent from the actual side, `a` absent from the expected side.
+///
+/// NOT DRIVEN, AND THE HONEST REASON: the population this guard protects is WI-795's
+/// unknown residue — pairs that render alike for a cause nobody has named — so a fixture
+/// for it cannot be written without first naming that cause, which is what the backstop
+/// exists in place of. It is a guard against MISATTRIBUTION, and the direction it is
+/// wrong in (silencing the backstop) is the expensive one. The two collision tests in
+/// `wi872_short_name_sort_identity_test` do NOT discriminate it: in both, each sort is
+/// unique to its side, so they pass with or without the uniqueness filter.
+///
+/// The first qualifying pair is reported — with two, the message would name a cause per
+/// pair and the reader needs one to see what happened.
+fn short_name_sort_collision(
+    kb: &KnowledgeBase,
+    expected: &Value,
+    actual: &Value,
+) -> Option<(String, String)> {
+    let (mut expected_syms, mut actual_syms) = (Vec::new(), Vec::new());
+    mentioned_sort_syms(kb, expected, &mut expected_syms);
+    mentioned_sort_syms(kb, actual, &mut actual_syms);
+    let unique_to =
+        |s: &Symbol, other: &[Symbol]| !other.iter().any(|o| same_sort_canonical(kb, *s, *o));
+    for e in &expected_syms {
+        if !unique_to(e, &actual_syms) {
+            continue;
+        }
+        for a in &actual_syms {
+            if unique_to(a, &expected_syms)
+                && !same_sort_canonical(kb, *e, *a)
+                && kb.local_name_of(*e) == kb.local_name_of(*a)
+            {
+                return Some((
+                    kb.qualified_name_of(*e).to_string(),
+                    kb.qualified_name_of(*a).to_string(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// WI-872: appended in place of [`IDENTICAL_RENDERING_NOTE`] when the identical rendering
+/// has a KNOWN cause — a short-name sort collision. Phrased so the reader can act: the
+/// two qualified names ARE the repair (qualify the reference, or rename one sort), which
+/// "please report it" could never be.
+fn short_name_collision_note(expected_qn: &str, actual_qn: &str) -> String {
+    format!(
+        "(these render alike because two different sorts share the short name \
+         `{}` — expected `{expected_qn}`, got `{actual_qn}`)",
+        short_name_of(expected_qn)
+    )
 }
 
 /// WI-795: appended to a mismatch whose two sides render identically — see
@@ -44800,15 +44928,39 @@ fn sort_ref_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> 
 
 /// Check if sort symbol A is compatible with sort symbol B:
 /// same symbol, entity_of, or refines via requires chain.
+///
+/// WI-872 — THE IDENTITY LEG IS [`same_sort_canonical`], NEVER THE LAST SEGMENT. This
+/// read `local_name_of(a) == local_name_of(b)` under the comment "handles qualified vs
+/// short name", which is the unsound short-name comparison of two SORT identities that
+/// WI-672 deleted `same_symbol` for (spec §8.6: identity is by resolved symbol, never by
+/// last segment). It is not on some peripheral path: this IS the nominal leg of
+/// [`types_compatible`], so every position that asks "is this type that type" asked it by
+/// short name — five call sites, all in that one relation.
+///
+/// TWO OPPOSITE SYMPTOMS FROM ONE BRANCH, which is why the ticket's account was half of
+/// it. At an ARGUMENT position it ACCEPTED — `operation takeA(f: a.Foo)` swallowed a
+/// `b.Foo` from another namespace, a silent wrong value. At a DISPATCH it REFUSED: a
+/// local `sort Pair`/`Set`/`Map` was offered the PRELUDE sort's provision, whose condition
+/// then resolved at the prelude sort's own parameter and failed — `no impl matches …
+/// PartialEq[T = anthill.prelude.Pair.A]` — so those short names were effectively
+/// RESERVED against a user sort. WI-872 was filed for the second and named only it.
+///
+/// MEASURED, both directions, with the branch stashed and rebuilt for the control:
+/// a two-namespace `Foo` pair LOADED CLEAN before and is refused after; local
+/// `Set`/`Map`/`Pair` (the WI-1098-underivable `(a: Float, b: Int64)` shape) were refused
+/// before and load after. `List`/`Option`/`Stream`/`Duple` load EITHER WAY and are
+/// therefore not evidence — see `wi872_short_name_sort_identity_test`, which says so at
+/// each row.
+///
+/// WHAT THE DELETED BRIDGE WAS HOLDING UP: nothing. Instrumented to fire only on the
+/// bridging case (symbols differ, short names agree), it logged ZERO firings across
+/// `stdlib/`, `examples/github-todo/` and `anthill-todo/`, and the full workspace stayed
+/// green but for the recorded-defect arm that panics BECAUSE the defect is fixed. A
+/// genuinely bare-interned copy would have to be fixed at its PRODUCER anyway — the rule
+/// [`KnowledgeBase::canonical_sym`] states for itself, "never papered over by a
+/// `canonical_sym` call at the consumer".
 fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Symbol) -> bool {
-    if actual_sym == expected_sym {
-        return true;
-    }
-
-    // Name-based equality (handles qualified vs short name)
-    let actual_name = kb.local_name_of(actual_sym);
-    let expected_name = kb.local_name_of(expected_sym);
-    if actual_name == expected_name {
+    if same_sort_canonical(kb, actual_sym, expected_sym) {
         return true;
     }
 
