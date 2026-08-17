@@ -1272,3 +1272,6 @@ mod wi728_membership_operand_test;
 
 #[path = "include/wi1119_dot_on_constrained_param_test.rs"]
 mod wi1119_dot_on_constrained_param_test;
+
+#[path = "include/wi1114_item_per_file_store_test.rs"]
+mod wi1114_item_per_file_store_test;

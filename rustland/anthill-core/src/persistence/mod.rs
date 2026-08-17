@@ -1,5 +1,6 @@
 pub mod file_store;
 pub mod indexed_file_store;
+pub mod item_per_file_store;
 /// Persistence — traits and backends for storing/loading KB facts.
 ///
 /// The `Store` trait provides persist/retract/flush for individual facts.

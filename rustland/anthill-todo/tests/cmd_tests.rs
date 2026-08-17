@@ -102,3 +102,6 @@ mod wi748_init_honors_dir_test;
 
 #[path = "include/wi830_declared_store_test.rs"]
 mod wi830_declared_store_test;
+
+#[path = "include/wi1114_item_per_file_backend_test.rs"]
+mod wi1114_item_per_file_backend_test;

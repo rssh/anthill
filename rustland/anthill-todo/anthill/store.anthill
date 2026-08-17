@@ -11,7 +11,7 @@
 
 namespace anthill.todo.store
   import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag, StoreFormat}
-  import anthill.persistence.filesystem.{IndexedFileStore}
+  import anthill.persistence.{NonMonotonicStore}
   import anthill.persistence.{persist, retract, update, flush}
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
   import anthill.prelude.Int64.{to_string}
@@ -104,18 +104,52 @@ namespace anthill.todo.store
   end
 
   -- ─── 2. File-backed impl ────────────────────────────────────────
-  -- The WIS state holds the IndexedFileStore backend plus a fresh-id
-  -- counter. No in-memory by_id / by_status caches: the backend is
-  -- QueryableStore (per WI-202), so every lookup delegates to its
-  -- retrieve query. The Rust IndexedFileStore impl maintains the
-  -- internal cache for fast retrieve — backend concern, transparent
-  -- here.
+  -- The WIS state holds a filesystem backend plus a fresh-id counter. No
+  -- in-memory by_id / by_status caches: every read goes through
+  -- `facts_of(kb(), …)`, which answers from the rows the loader put in the
+  -- KB — so this impl needs `persist` / `retract` / `update` / `flush` from
+  -- its backend and nothing else.
+  --
+  -- WI-1114: `backend` is typed by the SPEC, not by one backend. It used to
+  -- read `backend: IndexedFileStore`, which pinned this whole impl to a single
+  -- storage layout — the second one (`ItemPerFileStore`, one file per item)
+  -- could be declared in a project's binding and built by the host, and then
+  -- would not type here. `NonMonotonicStore` is the algebra this body actually
+  -- consumes: it retracts (forget / replace / untag_item), so the mutation
+  -- capability is a REQUIREMENT of the impl and saying so is what makes the
+  -- backend swappable. It is deliberately not `QueryableStore` — nothing here
+  -- calls `retrieve`, and demanding it would refuse a perfectly good backend
+  -- for an operation this impl never performs.
   sort FileBasedWorkitemStore
     enum WIS
-      entity wis(backend: IndexedFileStore, id_counter: Int64)
+      entity wis(backend: NonMonotonicStore, id_counter: Int64)
     end
 
     provides WorkItemStore[State = WIS]
+
+    -- THE STATE FACTORY (WI-1114). The host used to build this value itself,
+    -- interning `…FileBasedWorkitemStore.wis` and its two field names — the last
+    -- place a host knew one impl's INTERNALS, as opposed to the one native step
+    -- it legitimately owns (mapping a declared store term to a compiled-in
+    -- backend). It calls this instead, and the shape of the state is now the
+    -- impl's business alone. That is what has to be true before a second
+    -- `WorkItemStore` impl with a different state can be selected at all
+    -- (design §8.2, "what remains coupled").
+    --
+    -- IT LIVES ON THE IMPL, NOT ON THE SPEC, and deliberately: a state factory's
+    -- PARAMETERS are the impl's own. Under coordination the counter disappears
+    -- entirely (§8.3 — `alloc_id` reads the forge registry instead of counting),
+    -- so a spec-level `open(backend, next)` would fix one impl's parameter list
+    -- across every future one, which is the coupling this removes wearing a
+    -- different hat.
+    --
+    -- WHAT IT IS NOT: §8.2's `open_store` existential. That one SELECTS between
+    -- impls, and WI-402's `-> C ensures Spec[C, …]` does not fit a spec whose
+    -- carrier is its dictionary and whose value is its `State` — §8.2.2 carries
+    -- the measurement. Selection is already done, by `sort Main`'s
+    -- `requires WorkItemStore[State]` and the host's requirement dictionary.
+    operation open(backend: NonMonotonicStore, next: Int64) -> WIS =
+      wis(backend, next)
 
     -- Format an Int64 as a 3-zero-padded decimal string. Larger numbers
     -- expand naturally (`WI-1000` is fine).
