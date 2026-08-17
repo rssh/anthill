@@ -111,6 +111,18 @@ Hence the name: `github-coordinated`, not `github`. Nothing in `anthill-todo`'s 
 model moves into GitHub. An issue is a pointer to a file, plus a title you can read
 without cloning the repo.
 
+> **Amended 2026-08-17: job (a) is gone, and with it the name.** Ids are minted
+> locally (§6.5), so GitHub coordinates nothing. Job (b) survives, demoted from a
+> continuously reconciled mirror to on-demand **export / import** (§7). What is
+> left of the sentence above is:
+>
+> > **git holds the truth. A mirror publishes it. Publishing is optional.**
+>
+> The asynchrony clause survives verbatim and is now trivially true: no command
+> waits on a network because no command touches one. Reading this section, treat
+> "coordinates" as historical — it describes the design this document started as,
+> which is worth keeping because §6.0's retirement only makes sense against it.
+
 What this buys, relative to the backed variant, is that work items stay facts in the
 knowledge base — the same substrate the workflow rules already reason over — stay
 greppable, stay reviewable in a diff, and stay editable offline. What it costs is the
@@ -121,23 +133,22 @@ The layout change (§4) is what removes textual conflicts. The issue-creation
 protocol (§6) is what removes id collisions. They are independent, and land in that
 order.
 
-## 3. Configuration: two facts, three questions
+## 3. Configuration: two facts, two questions
 
 Configuration lives in `anthill-todo/project.anthill`, alongside the existing
-`fact Project(...)`. It answers three independent questions, and each gets exactly
+`fact Project(...)`. It answers two independent questions, and each gets exactly
 one writable home:
 
 * **Where do the rows live, and in what layout?** → `fact ExtentBinding`, already the
   channel (WI-830). Its `store` field names the backend to build.
-* **How are ids minted?** → `Coordination.allocation`, below.
-* **Where is the mirror, if there is one?** → `Coordination.forge`, below.
+* **Is there a mirror, and where?** → `fact Mirror`, below.
 
-The last two shared a field until 2026-08-17, because one forge answered both.
-They are independent — a local allocator with a mirror is the ordinary
-configuration, and a local allocator with no mirror is a tracker that needs no
-network at all — so they are two fields (§3.2). They stay in one fact because
-both describe *coordination between checkouts*, and because the one illegal
-combination is a cross-field check that a single fact can state.
+**There is no configuration for id allocation, and that is the point (§6.5).**
+The draft's `Coordination` fact fused "who allocates ids" with "where is the
+mirror" because one forge answered both. Splitting them made allocation local, and
+once it is local there is exactly one way to do it — so the field disappears
+rather than becoming a seam with a single implementation. What is left describes
+only the mirror, so it is named for that.
 
 ### 3.1 Layout: the extent binding
 
@@ -169,20 +180,19 @@ the host maps it to one of its compiled-in backends (§8.2). Declarative configu
 chooses *among* the host's backends; it cannot introduce native code. A declared store
 this build does not provide is a **hard refusal**, not a fallback.
 
-### 3.2 Coordination: the forge is a parameter, and so is the allocator
+### 3.2 The mirror: the forge is a parameter
 
-**Amended 2026-08-17.** The draft fused two questions into one fact, because
-GitHub answered both: *how are ids minted* and *where does the mirror live*. They
-are independent, and separating them is what lets a project coordinate ids with
-**no forge at all** (§6.5). `allocation` is now its own field, and `forge` names
-only the mirror — plus the registry, when the allocation policy is the one that
-reads it.
+**Amended 2026-08-17, twice.** The draft's `Coordination` fused two questions
+because GitHub answered both: *how are ids minted* and *where does the mirror
+live*. Splitting them is what let allocation become local (§6.5) — and once it is
+local there is one way to do it, so the allocation field went too rather than
+becoming a seam with a single implementation. What remains describes only the
+mirror, and is named for it.
 
 ```anthill
-fact anthill.stage0.Coordination(
-  allocation: ContentHash(),
-  forge:      some(value: GithubForge(repo: "rssh/anthill", project: some(value: "Anthill Roadmap"))),
-  access:     ForgeAccess.enabled())
+fact anthill.stage0.Mirror(
+  forge:  GithubForge(repo: "rssh/anthill", project: some(value: "Anthill Roadmap")),
+  access: MirrorAccess.enabled())
 ```
 
 The entities live in the **bundled** `anthill.stage0` domain, in a new
@@ -191,45 +201,43 @@ The entities live in the **bundled** `anthill.stage0` domain, in a new
 ```anthill
 namespace anthill.stage0
 
-  -- HOW permanent ids are minted, and WHERE the mirror lives. Both are Terms, on
-  -- the exact `ExtentBinding.store` precedent above: each names a thing to BUILD,
-  -- written where no such thing exists yet, and the host resolves it to one of its
-  -- compiled-in implementations. `Forge` (§8.3) is the algebra a built forge
+  -- WHERE the mirror publishes. `target` is a Term, on the exact
+  -- `ExtentBinding.store` precedent above: it names a thing to BUILD, written
+  -- where no such thing exists yet, and the host resolves it to one of its
+  -- compiled-in implementations. `Forge` (§8.3) is the algebra a built one
   -- satisfies, which is a different thing and one a config file cannot hold.
   --
-  -- `forge` is an Option because a tracker can be fully local: under
-  -- `ContentHash` allocation there is nothing a forge is needed FOR, and a
-  -- project that does not want a mirror writes `none`. ONE forge field, not one
-  -- per role — a project on `StakeByCreation` would otherwise name its forge
-  -- twice, which is the two-writable-homes failure §7's governing principle
-  -- exists to prevent.
-  entity Coordination(allocation: Term, forge: Option[T = Term], access: ForgeAccess)
+  -- `target`, NOT `forge`, and the rename is not cosmetic. A *forge* is a
+  -- repository host with issues attached — GitHub, GitLab, Gitea, sourcehut, the
+  -- word descends from SourceForge. That is the right word for §6's retired
+  -- allocator, which genuinely needed a forge's issue counter. Export (§7) needs
+  -- far less: somewhere to put an entry and read comments back. Jira, Linear, a
+  -- static site or a directory of files can all be that, and none of them is a
+  -- forge. The field is named for the ROLE it fills, so the vocabulary does not
+  -- promise more than the contract asks.
+  --
+  -- NO `Option`, and no allocation field. An absent `Mirror` fact means no
+  -- mirror — that is what absence is for — so every state means exactly one
+  -- thing: no fact, no mirror; fact plus `enabled`, publish; fact plus
+  -- `disabled`, configured but quiet.
+  entity Mirror(target: Term, access: MirrorAccess)
 
-  -- The allocation policies. Adding one is an entity here plus one host
-  -- implementation, exactly as for stores and forges.
-  entity ContentHash                    -- §6.5: minted locally, no coordination
-  entity StakeByCreation                -- §6.1: the forge's counter orders claims
-
-  -- LOUD, at load: `StakeByCreation` with `forge: none` has nothing to allocate
-  -- against, and is refused naming both fields. The converse — `ContentHash`
-  -- with a forge — is the ordinary mirrored configuration, not an error.
-
-  -- One entity per forge, carrying that forge's own parameters. Adding GitLab,
-  -- Gitea, or a plain coordination service is ONE entity here plus ONE carrier
+  -- One entity per target, carrying that target's own parameters. Adding GitLab,
+  -- Gitea, or a plain issue tracker is ONE entity here plus ONE carrier
   -- implementation (§8.3) — never a new config variant for the model, because the
-  -- model is the same and only the forge differs. This is what §8.3's substitution
-  -- contract is FOR, and the draft's `GithubCoordinated` variant contradicted it.
+  -- model is the same and only the target differs. This is what §8.3's
+  -- substitution contract is FOR, and the draft's `GithubCoordinated` variant
+  -- contradicted it.
   entity GithubForge(repo: String, project: Option[T = String])
 
-  -- Whether to TALK to the forge at all: attempt allocation on `add`, push the
-  -- mirror on `sync`. The fact is the project-wide DEFAULT; a single checkout
-  -- overrides it with ANTHILL_TODO_GITHUB=on|off (or --offline) — CI test
-  -- jobs, air-gapped machines, and fork checkouts without write access run
-  -- off. `disabled` does not disable the tracker: every command still works,
-  -- `add` allocates a provisional id (§6.4), and a later `sync` from an
-  -- enabled checkout reconciles. What `disabled` removes is the synchronous
-  -- attempt, never the work.
-  enum ForgeAccess
+  -- Whether to TALK to the target at all: publish on `export`, read on `import`.
+  -- The fact is the project-wide DEFAULT; a single checkout overrides it with
+  -- ANTHILL_TODO_MIRROR=on|off (or --offline) — CI test jobs, air-gapped
+  -- machines, and fork checkouts without write access run off. `disabled` does
+  -- not disable the tracker: every command still works, and ids are minted
+  -- locally either way (§6.5). What `disabled` removes is the publishing, never
+  -- the work.
+  enum MirrorAccess
     entity enabled
     entity disabled
   end
@@ -242,8 +250,8 @@ the `StoreFormat` precedent in `version.anthill`: a project's own domain may pre
 the entity, and an unresolved import fails the *whole* bundle load — on exactly the
 projects that most need the new code path. See WI-505/WI-684.
 
-**Defaults.** An absent `Coordination` fact means an uncoordinated tracker: `next_id`
-counts locally, exactly as today. An absent `ExtentBinding` already defaults to
+**Defaults.** An absent `Mirror` fact means a purely local tracker — nothing is
+published, and ids are minted locally either way (§6.5). An absent `ExtentBinding` already defaults to
 today's single-file layout (WI-830's `default_binding`). So every existing project
 keeps working untouched, with no migration and no new fact.
 
@@ -277,11 +285,25 @@ by omission — precisely the case a project migrating in is most likely to prod
 it adds the coordination fact first and forgets the layout. Whatever answers "which
 store am I using" must answer it post-default, and the check must ask that.
 
+> **Retired 2026-08-17, along with its subject.** Everything in §3.3 above is
+> about a `Coordination` fact that no longer exists, and the check it argues for
+> must NOT be built. Its whole premise was that coordination-without-state-dirs is
+> a forbidden combination, because "directories alone fix conflicts but not id
+> collisions" — and §6.5 fixes id collisions *unconditionally and locally*, for
+> every layout. So there is no forbidden combination left to refuse: a `Mirror`
+> fact beside a single-file store is a perfectly good configuration, and publishing
+> a single-file tracker to GitHub is a reasonable thing to want.
+>
+> The section stays as the record of a coupling that was designed, argued about,
+> and then dissolved by making the thing it protected against impossible. That is
+> the better outcome than the check — "make illegal state unrepresentable over
+> check logic," arrived at from the far side.
+
 ## 4. On-disk layout: a directory per state, a file per item
 
 ```
 anthill-todo/
-  project.anthill              fact Project(...) + fact ExtentBinding(...) + fact Coordination(...)
+  project.anthill              fact Project(...) + fact ExtentBinding(...) + fact Mirror(...)
   draft/
   pre_opened/
   open/
@@ -320,17 +342,38 @@ fact Feedback(workitem: "WI-688", author: "user",
   at: "2026-07-10T11:02:10Z")
 ```
 
-`MirrorEntry` is a new fact (in `coordination.anthill`, next to `Coordination`), keyed
-on the work-item id — the same additive shape as `Tag`. It records the mirror link
-*without* touching the `WorkItem` entity, so the stage0 domain stays backend-neutral
-and an uncoordinated project never sees the field.
+`MirrorEntry` is a new fact (in `mirror.anthill`, next to `Mirror`), keyed on the
+work-item id — the same additive shape as `Tag`.
 
-Its name and shape are **forge-neutral**: `entry` is the forge's own identifier for
-the mirrored item — a GitHub issue number, a GitLab issue iid, whatever the substitute
-uses. It is `Int64` because §6.1's soundness rests on identifiers *totally ordered by
-creation*, and a counter is the only thing every candidate forge offers. A forge whose
-identifiers are not numeric cannot back this protocol, which §8.3 states as a
-requirement rather than discovering at runtime.
+**It stays OUT of the `WorkItem` entity, and the reason has only got stronger.** A
+`WorkItem` field would put a mirror concern in the stage0 domain, where it would
+read `none` in 1110 of this tracker's 1112 items. As a fact it is additive: absent
+means absent, and the domain stays backend-neutral.
+
+**An item's external ids are a SET, and the relational form already is one**
+(amended 2026-08-17). N `MirrorEntry` facts for one item is N rows — exactly how
+`Tag` gives an item a set of tags — so multiple targets need no list field, no
+schema change, and no `Option` nesting. Under §7's import/export framing that
+multiplicity is the normal case rather than an exotic one: a project may publish
+to a public forge and an internal tracker, or import from one and export to
+another.
+
+```anthill
+entity MirrorEntry(workitem: String, target: String, entry: String)
+```
+
+Two fields changed when §6.1 was retired, and both were consequences of it rather
+than free choices:
+
+* **`entry` is a `String`, not an `Int64`.** The draft required a number because
+  §6.1's soundness rested on identifiers *totally ordered by creation*, and a
+  counter is the only thing every candidate forge offers. With the allocator gone
+  the external id is an opaque handle, and it must be — a Jira key is `PROJ-123`,
+  a Linear id is a ULID, a URL is a URL. Requiring a counter would exclude every
+  target that is not a forge, which §7's amendment explicitly wants to allow.
+* **`target` says WHICH external system**, which was implicit while there was
+  exactly one GitHub repo and cannot stay implicit once a set is the point. It
+  names a `Mirror` fact, so the two sides agree by construction.
 
 **Directory names are derived, not listed.** The directory for an item is the
 snake_case of its status functor's short name — `Open` → `open/`,
@@ -533,7 +576,7 @@ timestamps where it could show `description` and `Feedback`.
 exclude the very field this section exists for. The `Option` case is what the missing-
 chapter row below describes: absent chapter, `none`.
 
-**Where the mapping lives:** bundled with the stage0 domain, beside `Coordination`'s
+**Where the mapping lives:** bundled with the stage0 domain, beside `Mirror`'s
 entities and on the same `StoreFormat` precedent (§3.2) — **not** in `project.anthill`.
 It is a property of the *schema*, not of the project, so §3 remains "two facts, two
 questions" and §11 step 3 has nothing new to write.
@@ -751,7 +794,22 @@ developers who both run `add` without talking must not produce the same id.**
 Density is not required. A monotone global sequence is not required — it is one
 way to get uniqueness, and the expensive one.
 
-### 6.0 The issue *is* the allocation (`StakeByCreation`)
+### 6.0 The issue *is* the allocation (`StakeByCreation`) — NOT PLANNED
+
+> **Retired 2026-08-17, before implementation.** §6.5's `ContentHash` supersedes
+> everything from here to §6.4, and this is kept as a **recorded alternative**, not
+> as work anyone should do. Read it for the analysis — §6.1's both-keep
+> interleaving, which killed an earlier retitle-CAS design, is a real result and
+> would have to be rediscovered by anyone attempting forge-side allocation again.
+> Do not read it as the plan.
+>
+> **Why retire it unbuilt.** It buys one property `ContentHash` cannot: a registry
+> visible to a *stale or shallow* checkout, since local minting leaves no trace
+> outside the tree. Nothing requires that — `ContentHash` handles collisions by
+> detection and convergent repair (§6.6) rather than by prevention — so the price
+> is ~250 lines of retry loop, lost-race retreat, provisional ids and
+> reconciliation for a nicety. Deleting unbuilt spec costs nothing: no migration,
+> no deprecation, no users.
 
 Under `allocation: StakeByCreation()`, **permanent ids come only from GitHub**, and
 issue creation is the allocation event. GitHub's issue counter is a monotone,
@@ -1317,7 +1375,36 @@ warned-and-skipped by the loader — safe, because WI-1114's
 unhelpful. Recognizing conflict markers specifically, and saying so, costs almost
 nothing and is far more actionable than a generic parse error.
 
-## 7. The mirror
+## 7. The mirror — demoted to import / export
+
+> **Amended 2026-08-17.** §7 was written as a *continuously reconciled* mirror:
+> `sync` keeps issues in step, ingests comments as feedback, honours a close as a
+> verify gesture, and detects drift in every other direction. That is now a
+> **future extension**, and what ships instead — when anything does — is two
+> one-shot commands:
+>
+> * **`export`** — write the tracker's current state to the forge. Idempotent,
+>   keyed by `MirrorEntry`, and **unconditionally tracker-wins**.
+> * **`import`** — pull comments back in as `Feedback`, for review before they land.
+>
+> **What that collapses, and it is most of the section.** §7.2's
+> "reconciliation, not write-through" exists because `sync` tried to be
+> bidirectional-ish; export has one direction, settled, so reconciliation becomes
+> a loop that overwrites. §7.4's close-as-verify — an *event* honoured in exactly
+> one legal transition and re-derived otherwise, with a drift report for every
+> other case — collapses entirely. §10's "permanent-id item with no `MirrorEntry`"
+> check goes with it, since export creates the link as it goes and there is no
+> continuous invariant to violate. §7.3's ingest-once bookkeeping softens to a
+> cheap dedup on `(author, at)`, because import is reviewed rather than automatic.
+>
+> **What it costs** is that a GitHub reader sees the last export, not live state.
+> Running `export` from CI on `main` recovers most of that for free — precisely
+> *because* it is idempotent and tracker-wins, so there is no drift machinery to
+> get wrong.
+>
+> Everything below is the continuously-reconciled design, kept as the record of
+> what a future extension would have to handle. §7.1's issue *content* is the part
+> that survives unchanged: export writes exactly that.
 
 ### 7.1 Issue content
 
@@ -1790,7 +1877,7 @@ a silent skip or a fallback:
 * **Dangling reference** — a `depends_on` naming an id with no file (e.g. a
   half-reconciled provisional rename, §6.4) → named by `fsck`; for the
   reconciliation case a `sync` re-run repairs it.
-* **Permanent-id item with no `MirrorEntry` fact**, under a declared `Coordination` → loud
+* **Permanent-id item with no `MirrorEntry` fact**, under a declared `Mirror` → loud
   in `sync` (migration incomplete, or an `add` died between steps 4 and 5).
   Provisional items lack the fact by definition and are reported as *unreconciled*,
   with a count — expected state, not an error.
@@ -1850,7 +1937,7 @@ anthill-todo migrate --to github-coordinated
    the 913 `Delivered` issues open as the verify gesture. **Resumable and idempotent**: keyed on the id in the
    title, and each item's file gets its `MirrorEntry` fact written as the issue
    is created, so an interrupted run resumes where it stopped.
-3. Rewrite the `ExtentBinding` store term to `ItemPerFileStore(...)` and add `fact Coordination(...)` in `project.anthill` (§3).
+3. Rewrite the `ExtentBinding` store term to `ItemPerFileStore(...)`, and add `fact Mirror(...)` in `project.anthill` if the tracker is to be published (§3).
 4. Stamp `StoreFormat(version: 2)` through the store, the way `migrate` already
    stamps version 1 (WI-434).
 
@@ -1924,13 +2011,17 @@ but it abandons the id registry.
   Echoing the resolved item's description before acting costs a line of output and
   removes the question; the argument against is that it makes the common case
   chattier.
-* **Whether `StakeByCreation` is worth keeping at all** once `ContentHash` ships.
-  It is strictly more machinery for a property (a dense ordered sequence) nothing
-  in the tracker requires. The argument for keeping it is that the *registry* is
-  visible to a stale checkout, which no local policy can offer; the argument
-  against is §6.1–§6.4's whole weight. Answer it after living on `ContentHash`,
-  not before — and note that deleting it later is easy precisely because
-  allocation is now a policy.
+* ~~**Whether `StakeByCreation` is worth keeping at all.**~~ **Settled: no,
+  retired unbuilt** (§6.0). Its one irreplaceable property — a registry visible to
+  a stale or shallow checkout — is a nicety, since `ContentHash` handles collisions
+  by detection and convergent repair rather than prevention. Retiring spec that was
+  never implemented costs nothing, and the analysis stays on the page.
+* ~~**Whether `Coordination` should keep an `allocation` field.**~~ **Settled: no**
+  (§3.2). One policy means the field would be a seam with a single implementation,
+  and what remains describes only the mirror — so the fact is `Mirror`, and the
+  field it carries is `target` rather than `forge`, because an export target need
+  not be a forge. The *split* that made allocation local had already delivered its
+  value; the seam was its residue.
 * **Concurrent feedback on one item** is the one conflict the layout does not remove
   (§9). The fix is to make the item's unit a *directory* — `open/WI-690/item.anthill`
   plus `open/WI-690/feedback/<timestamp>-<author>.anthill` — which keeps the "move the
@@ -1984,10 +2075,10 @@ preference, the substrate refactor is first, not last.
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
 | 2b | WI-1120 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
-| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5, §6.6). The `Coordination` split (allocation ⊥ mirror), the `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter, the resolution ladder, the identity-prefix duplicate check, `fsck --renumber`, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
-| 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, `fresh_token`, the `gh` and fake implementations (the fake can force the §6.1 lost-race interleavings). Now serves the MIRROR only; `fresh_token` is unneeded under `ContentHash`. | nothing alone; testable |
-| 4 | WI-1116 | **Coordinated `add`** — the `StakeByCreation` policy. The §6.1 protocol, the §6.4 provisional fallback, `MirrorEntry` facts. **Optional once row 2c lands**, and §12 asks whether it is worth building at all; `MirrorEntry` moves to row 5, where the mirror is. | a dense ordered id sequence, for a project that wants one |
-| 5 | WI-1117 | **`sync`.** Comment ingestion (§7.3), close-as-verify (§7.4), the mirror push, deletion tombstones, `--check`, CI gate. Provisional-id reconciliation and allocation-debris repair belong to row 4's policy and land only with it. | the mirror + the return channels |
+| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5, §6.6). `fact Mirror(target:, access:)` replacing `Coordination` (no allocation field — one policy is not a seam), the `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter, the resolution ladder, the identity-prefix duplicate check, `fsck --renumber`, `MirrorEntry(workitem:, target:, entry: String)` as a SET, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
+| 3 | WI-1115 | **`Forge` carrier.** The embedder host-fn prerequisite (§8.3), the `Forge` sort + contract, its `provides`/`operation_map` bindings, the `gh` and fake implementations. Now serves EXPORT/IMPORT only, so it shrinks hard: create/update an entry, list entries, list comments. `fresh_token` is unneeded under `ContentHash`; `retitle`, `close`/`reopen`-for-retreat and `entries_titled` were §6.1's and go with it. | nothing alone; testable |
+| ~~4~~ | ~~WI-1116~~ | ~~**Coordinated `add`**~~ — **retired unbuilt** (§6.0, §12). `MirrorEntry` moves to row 5, where the mirror is. | — |
+| 5 | WI-1117 | **`export` / `import`** (§7, amended). Export writes the tracker's state to the forge, idempotent and tracker-wins, creating `MirrorEntry` as it goes; import pulls comments back as `Feedback` for review. The continuously-reconciled `sync` — drift detection, close-as-verify, tombstones, `--check` as a CI gate — is a future extension, not this row. | a published snapshot + a return channel |
 | 6 | WI-1118 | **`migrate`.** Resumable, idempotent. Waits on 2b (file format) and 2c (id shape) — the tracker migrates exactly once, into the final form of both. | this repo's own tracker moves |
 
 ### 14.1 The self-hosting constraint
