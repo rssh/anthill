@@ -11,6 +11,18 @@ proposals).
 main-sequence number and move it to `docs/proposals/NNN-….md` (updating
 back-references).
 
+**Demotion.** The other direction — a *numbered* proposal deferred past the
+current release — moves here **keeping its number in the filename**
+(`future/NNN-….md`), and the number is retired rather than reused. Proposals are
+cited by number from the spec, from each other, and from work-item descriptions,
+so a number that changed meaning would silently falsify text nobody re-reads.
+A proposal *declined* rather than deferred goes to
+[`../rejected/`](../rejected/README.md), under the same number rule; that file
+documents what a rejection has to say.
+
+A sketch that was never numbered has nothing to retire, and promotion above is
+its only move.
+
 ## Index
 
 - [unification-framework.md](unification-framework.md) — unification as a
