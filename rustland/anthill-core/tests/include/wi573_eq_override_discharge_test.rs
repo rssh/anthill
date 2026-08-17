@@ -31,44 +31,45 @@
 //! intact; it is now the resolver's, and the cases the gate could only suspend are
 //! decided.
 //!
-//! **EXCEPT ONE**, which is why a narrowed gate survives: the resolver's dispatch
-//! index keys `PartialEq.eq` suppliers only, so a carrier supplying a `neq` and no
-//! `eq` is invisible to it and would be decided STRUCTURALLY, against that very
-//! override. WI-573's gate covered `eq` and `neq` alike; WI-755 keeps the `neq`-only
-//! half as `guard_conjunct_reaches_undispatchable_neq`. Where an `eq` DOES exist it
-//! is the authority (`neq <=> not(eq)`, §8.3) and the gate stands aside — the
-//! resolver's dispatch of that `eq` is the carrier's own equality. See the section
-//! below; both edges have a row.
+//! **EXCEPT ONE**, which WI-755 kept a narrowed gate for and **WI-1125 removed
+//! outright**: the resolver's dispatch index keys `PartialEq.eq` suppliers only, so a
+//! carrier supplying a `neq` and no `eq` was invisible to it and was decided
+//! STRUCTURALLY, against that very override. WI-755 held the `neq`-only half as
+//! `guard_conjunct_reaches_undispatchable_neq`; WI-1125 made such a carrier a LOAD
+//! ERROR instead (`neq` is derived — `neq <=> not(eq)`, §8.3 — so it is not an
+//! override point at all) and deleted the gate. Where an `eq` exists it always was
+//! the authority, and still is: the resolver's dispatch of that `eq` IS the carrier's
+//! own equality. See the section below and `wi1125_neq_not_an_override_test`.
 //!
 //! WHICH ROWS MEASURE WI-755. Restore WI-573's BLANKET gate — block whenever a
 //! reachable carrier supplies an own `eq` OR an own `neq`, with no index check;
 //! that is the retired `guard_conjunct_overrides_structural_eq`, whose ~140 lines
-//! of helpers went with it and are recoverable from this ticket's commit. MEASURED
-//! against this file's 12 rows and `wi756_proof_path_eq_override_test`'s 26:
-//! THREE fail, and each names a distinct thing WI-755 buys —
+//! of helpers went with it and are recoverable from this ticket's commit. WI-755
+//! MEASURED that against this file's then-12 rows and
+//! `wi756_proof_path_eq_override_test`'s 26 and found THREE failures; TWO of them
+//! survive here, and each names a distinct thing WI-755 buys —
 //!
 //!   * `custom_eq_override_dispatches_and_drops` — the override refutes and the old
 //!     gate suspends instead, so `Boom` is kept and the program stops loading;
-//!   * `carrier_supplying_both_members_dispatches_its_eq` — the old gate blocked on
-//!     the carrier's own `neq`, discarding a correct `eq` dispatch; the narrowed
-//!     floor stands aside there, and this is the one place the two floors differ in
-//!     the DROP direction;
 //!   * `wi756…::custom_eq_rule_body_refutation_rejects_too` — the same gate on the
 //!     precondition polarity.
 //!
+//! The THIRD was `carrier_supplying_both_members_dispatches_its_eq`, the one place
+//! the blanket and narrowed floors differed in the DROP direction. WI-1125 retired it
+//! with the shape it measured: a carrier spelling both members is now refused at
+//! load, so there is no own `neq` left for any gate to key on, and
+//! `custom_eq_override_dispatches_and_drops` carries the eq-dispatch claim alone.
+//! THREE→TWO is therefore a DEDUCTION from deleting that row, not a re-measurement:
+//! restoring the blanket gate would mean rewriting the ~140 lines WI-755 deleted, and
+//! this ticket did not. What WI-1125 did measure, against the shape it owns, is
+//! recorded in `wi1125_neq_not_an_override_test`'s header — two back-outs, 7 and 1.
+//!
 //! Every other row passes EITHER WAY, and each for its own stated reason: the two
-//! `*_keeps_effect` rows, the two nested rows and the symbolic row because
-//! gate-suspend and resolver-delay produce the same KEEP (what changes is WHO
-//! decided — the nested pair now pins the resolver's buried-override reach rather
-//! than the typer's scan, and the symbolic row pins its open-world force-delay);
-//! the two native rows because the gate never fired on a carrier with no override;
-//! the three `neq`-supply rows because the narrowed floor keeps them itself.
-//! Backing out THAT floor instead (leave the
-//! `guard_conjunct_reaches_undispatchable_neq` call, drop its early return) fails
-//! exactly those three and nothing else.
-//! The other row WI-755 flips lives in `wi756_proof_path_eq_override_test`
-//! (`custom_eq_rule_body_refutation_rejects_too`) — same gate, precondition
-//! polarity.
+//! nested rows and the symbolic row because gate-suspend and resolver-delay produce
+//! the same KEEP (what changes is WHO decided — the nested pair now pins the
+//! resolver's buried-override reach rather than the typer's scan, and the symbolic
+//! row pins its open-world force-delay); the two native rows because the gate never
+//! fired on a carrier with no override.
 //!
 //! Contrast `wi592_constructor_arg_discharge_test`, whose `Color` carrier is
 //! STRUCTURAL (`provides Eq`, no `operation eq`) — there the structural verdict IS
@@ -348,225 +349,32 @@ end
     );
 }
 
-// ── The `neq`-only carrier: the residual WI-573 floor WI-755 KEPT ────────────
+// ── The `neq`-only carrier: WI-755's residual floor, and its removal ─────────
 // Found by review of WI-755, then measured. WI-573's gate detected an own `eq` OR
 // an own `neq`; the resolver's replacement sees only `eq`, because
 // `build_eq_dispatch_index` keys `PartialEq.eq` suppliers alone. So a carrier
-// declaring `operation neq` and no `eq` keys nothing: the dispatch probe finds no
-// target, the buried-override reach finds nothing to delay on, and `sem_eq_values`
-// falls to its structural verdict — against the carrier's own inequality. Eval is
-// blind the same way (`builtin_neq` is `!semantic_equal`).
+// declaring `operation neq` and no `eq` keyed nothing and was decided STRUCTURALLY
+// — against its own inequality. WI-755 kept a narrowed typer gate for exactly that
+// shape (`guard_conjunct_reaches_undispatchable_neq`) and this file carried three
+// `*_keeps_effect` rows plus `carrier_supplying_both_members_dispatches_its_eq` to
+// bound it.
 //
-// The declaration is legal and deliberately so: WI-1098/WI-999 accept it as an
-// OVERRIDE (`wi1098_derive_eq_total_test::
-// declaring_neq_on_a_derived_carrier_is_an_override_not_a_capture`), so it can be
-// neither refused nor ignored. WI-755 therefore kept the gate for exactly this
-// shape and no other — `guard_conjunct_reaches_undispatchable_neq`.
+// **WI-1125 deleted the gate and all four rows**, by removing the SHAPE instead of
+// guarding it: a carrier supplying its own `neq` — through any of the three supply
+// routes — is now a load error (`LoadError::CarrierSuppliesNeq`), because
+// `neq(a,b) <=> not(eq(a,b))` (§8.3) makes `neq` derived and no evaluator ever
+// consulted it. The gate was the wrong shape of fix for a second reason this file
+// could not see: it sat on the REFUTATION route alone, while the three other
+// `prove_from_gamma` consumers and the interpreter answered such a carrier
+// structurally with no floor at all.
 //
-// MEASURED THREE WAYS on the row below: HEAD (blanket gate) keeps `Boom`; WI-755
-// with the gate removed outright DROPS it — a silent wrong answer; WI-755 with the
-// narrowed gate keeps it again. Its control is `custom_eq_override_dispatches_and_
-// drops`, which must keep DROPPING: a gate that blocked both members would take the
-// whole ticket back.
-//
-// The PROOF-side twin of this hole (`requires neq(c, Red)` proving over the same
-// carrier) predates WI-755 — measured on HEAD — and is WI-1125's, not this file's.
-
-/// `Color` overriding `neq` and NOT `eq`: nothing is unequal, so under this
-/// carrier's own inequality everything is equal and the guard `eq(c, Red)` HOLDS.
-/// A structural verdict says the opposite (`Green != Red`), which is what makes the
-/// row discriminating.
-const NEQ_ONLY_COLOR: &str = r#"
-  sort Color
-    entity Red
-    entity Green
-    provides PartialEq[T = Color]
-    provides Eq[T = Color]
-    operation neq(a: Color, b: Color) -> Bool = false
-  end
-"#;
-
-#[test]
-fn neq_only_override_keeps_effect() {
-    // The residual floor. `risky(Green)` against `{ Boom :- eq(c, Red) }`: nothing
-    // dispatches `Color.neq`, so the resolver would refute the guard structurally
-    // and drop a real effect. The narrowed gate suspends the conjunct instead and
-    // `Boom` is kept, so the caller must declare it.
-    //
-    // MEASURED both directions, against this file's 12 rows and
-    // `wi756_proof_path_eq_override_test`'s 26: back out
-    // `guard_conjunct_reaches_undispatchable_neq` (leave the call, drop its early
-    // return) ⇒ exactly 3 fail — this row, `nested_neq_only_override_keeps_effect`
-    // and `fact_bound_neq_override_keeps_effect` — and nothing else, notably not
-    // `carrier_supplying_both_members_dispatches_its_eq`, which is the floor's other
-    // edge. Back out the WI-755 gate REMOVAL instead ⇒ all three pass while
-    // `custom_eq_override_dispatches_and_drops` fails. That pair of back-outs is
-    // what separates "the floor is narrow" from "the floor is back".
-    let src = format!(
-        r#"
-namespace anthill.test.wi755neqonly
-  import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
-
-  sort Boom
-    entity Bang
-  end
-{NEQ_ONLY_COLOR}
-  operation risky(c: Color) -> Int64
-    effects {{ Boom :- eq(c, Red) }}
-
-  operation caller() -> Int64 =
-    risky(Green)
-end
-"#
-    );
-    let errs = load_result(&src).expect_err(
-        "nothing dispatches a carrier-own `neq`, so the structural refutation of \
-         `eq(Green, Red)` is unsound here; `Boom` is kept and omitting \
-         `effects Boom` must fail",
-    );
-    assert!(
-        is_undeclared_boom(&errs),
-        "expected the kept `Boom` (undispatchable `neq` override) to surface as \
-         undeclared; got: {errs:#?}"
-    );
-}
-
-#[test]
-fn nested_neq_only_override_keeps_effect() {
-    // The same hole one level down: `Option[Color]` where `Color` overrides `neq`
-    // only. The gate's reach must descend into the element exactly as the resolver's
-    // does for an `eq` override — a head-only check would refute
-    // `eq(some(Green), some(Red))` structurally and drop `Boom`.
-    let src = format!(
-        r#"
-namespace anthill.test.wi755neqnested
-  import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Option}}
-  import anthill.prelude.Option.{{some, none}}
-
-  sort Boom
-    entity Bang
-  end
-{NEQ_ONLY_COLOR}
-  operation risky(o: Option[T = Color]) -> Int64
-    effects {{ Boom :- eq(o, some(Red)) }}
-
-  operation caller() -> Int64 =
-    risky(some(Green))
-end
-"#
-    );
-    let errs = load_result(&src).expect_err(
-        "an undispatchable `neq` override on the ELEMENT carrier of `Option[Color]` \
-         must suspend the structural refutation; `Boom` is kept, so omitting it \
-         must fail",
-    );
-    assert!(
-        is_undeclared_boom(&errs),
-        "expected the kept `Boom` (nested undispatchable `neq`) to surface as \
-         undeclared; got: {errs:#?}"
-    );
-}
-
-#[test]
-fn fact_bound_neq_override_keeps_effect() {
-    // The same hole one SUPPLY ROUTE over, and the row that says the floor asks its
-    // question the way the eq index asks its own. Here `Color` declares no member at
-    // all: its `neq` arrives as a route-2 instance-fact binding, `fact PartialEq(T:
-    // Color, neq: colorNeq)`. Just as undispatchable, and a route-1-only reader
-    // (`carrier_own_op` — what the retired WI-573 gate used, and what this gate used
-    // until review caught it) sees nothing and refutes structurally.
-    //
-    // MEASURED: with the detection narrowed to route 1 this row loaded clean, i.e.
-    // `Boom` dropped though `colorNeq` says every colour is equal to every other.
-    let src = r#"
-namespace anthill.test.wi755factneq
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
-
-  sort Boom
-    entity Bang
-  end
-
-  sort Color
-    entity Red
-    entity Green
-  end
-
-  operation colorNeq(a: Color, b: Color) -> Bool = false
-  fact PartialEq(T: Color, neq: colorNeq)
-
-  operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Red) }
-
-  operation caller() -> Int64 =
-    risky(Green)
-end
-"#;
-    let errs = load_result(src).expect_err(
-        "a `neq` supplied by an instance FACT is as undispatchable as a declared \
-         member; the structural refutation must be suspended and `Boom` kept, so \
-         omitting `effects Boom` must fail",
-    );
-    assert!(
-        is_undeclared_boom(&errs),
-        "expected the kept `Boom` (fact-bound `neq`) to surface as undeclared; \
-         got: {errs:#?}"
-    );
-}
-
-#[test]
-fn carrier_supplying_both_members_dispatches_its_eq() {
-    // THE BOUND ON THE FLOOR, and a recorded decision. `Color` spells BOTH members,
-    // consistently: `eq = false` and `neq = true` satisfy `neq <=> not(eq)`. Its own
-    // equality says `eq(Green, Red)` is false, so the guard is genuinely refuted and
-    // `Boom` must DROP — the WI-755 dispatch, working, on a carrier that also
-    // happens to declare the derived member.
-    //
-    // This row exists because the obvious reading of the `neq` floor — "block
-    // whenever the carrier supplies its own `neq`, since nothing dispatches one" —
-    // is wrong, and only measurement shows it: MEASURED, a gate keyed that way (and
-    // WI-573's blanket gate, which was) fails this row, turning a correct drop back
-    // into a keep and silently un-delivering WI-755 for every carrier spelling both.
-    // The spec settles which member wins: `neq` is DERIVED (`neq(a,b) <=>
-    // not(eq(a,b))`, §8.3), so where an `eq` exists it is the authority and the
-    // resolver's dispatch of it IS the carrier's own equality.
-    //
-    // A carrier whose two members CONTRADICT each other is answered by its `eq` for
-    // the same reason. That is a load-time coherence question — nothing checks it
-    // today — and it is WI-1125's, not a discharge question.
-    let src = r#"
-namespace anthill.test.wi755bothmembers
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
-
-  sort Boom
-    entity Bang
-  end
-
-  sort Color
-    entity Red
-    entity Green
-    provides PartialEq[T = Color]
-    provides Eq[T = Color]
-    operation eq(a: Color, b: Color) -> Bool = false
-    operation neq(a: Color, b: Color) -> Bool = true
-  end
-
-  operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Red) }
-
-  operation caller() -> Int64 =
-    risky(Green)
-end
-"#;
-    let res = load_result(src);
-    assert!(
-        res.is_ok(),
-        "a carrier supplying BOTH members consistently must still have its `eq` \
-         dispatched — `eq(Green, Red)` is false, so the guard is refuted and `Boom` \
-         drops; blocking on the mere presence of an own `neq` would regress this to \
-         'kept'; got: {:#?}",
-        res.err()
-    );
-}
+// The rows live in `wi1125_neq_not_an_override_test` now — one per supply route,
+// one per consumer, plus the both-members and contradictory-members arms. What
+// stays HERE is the behaviour they bounded: `custom_eq_override_dispatches_and_drops`
+// is the eq-only carrier whose guard is genuinely refuted and whose `Boom` drops,
+// which is what `carrier_supplying_both_members_dispatches_its_eq` existed to
+// protect from a gate keyed on the mere presence of an own `neq`. No such gate can
+// exist now — there is no own `neq` for one to key on.
 
 // ── Nested carriers: the BURIED override ─────────────────────────────────────
 // A structural comparison recurses into every positional and named child, so a

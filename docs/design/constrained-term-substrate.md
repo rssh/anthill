@@ -497,13 +497,18 @@ and no `requires` dictionary — then proves `<carrier>.eq(a, b)` by bounded sub
 eval bridge for a bodied instance). The predicted soundness boundary held under the substitution: it
 is now "an operand not deep-ground, or an override reachable only *inside* the operand, suspends",
 which is the same conservative floor arrived at from the value's structure rather than from its type.
-One case the structural route cannot reach and the type route could: an override supplied as a
+One case the structural route could not reach and the type route could: an override supplied as a
 carrier's **`neq`** with no `eq` keys nothing in an index built from `eq` suppliers, so WI-755 kept a
-narrow type-based gate for it (`typing::guard_conjunct_reaches_undispatchable_neq`) — evidence that
-the two routes are not interchangeable, and that what replaced the carried type here covers *most* of
-its job, not all of it. Note which half of the gate had to stay: the *carried-type* read, because the
-question is "what does this carrier declare", which a head-functor index answers only for the members
-it was built from. WI-1125 owns closing the gap properly.
+narrow type-based gate for it (`typing::guard_conjunct_reaches_undispatchable_neq`) — read at the time
+as evidence that the two routes are not interchangeable, and that what replaced the carried type here
+covers *most* of its job, not all of it. **WI-1125 withdrew that evidence.** The gap was not in the
+dispatch route; it was in the language admitting the shape. `neq(a,b) <=> not(eq(a,b))` makes `neq`
+derived, no evaluator ever consulted a carrier-supplied one, and a carrier that supplies one is now a
+LOAD ERROR — so the gate and its carried-type read are deleted, and the head-functor index answers
+every equality override a program can express. The lesson for this section is the opposite of the one
+first drawn: the residual was not a capability the structural route lacked but a declaration nothing
+implemented, and a type-carried gate is the wrong instrument for "what does this carrier declare" when
+the answer should have been "it may not declare that."
 The general case this section describes — an arbitrary spec-op guard such as `isEmpty(s)` over an
 abstract `Collection`, which has no builtin and no per-functor index — is still open (WI-566/WI-567)
 and does still want the carried type. Read the `eq` outcome as evidence about *one* predicate family

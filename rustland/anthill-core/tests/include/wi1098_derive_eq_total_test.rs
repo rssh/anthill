@@ -602,26 +602,34 @@ fn no_carrier_derives_both_eq_and_noneq_over_the_corpus() {
     );
 }
 
-/// A CONSEQUENCE, measured rather than intended, and correct: WI-999's name-capture
-/// refusal is EXCUSED for `neq` on a derived carrier.
+/// A CONSEQUENCE, measured rather than intended: WI-999's name-capture refusal is
+/// EXCUSED for `neq` on a derived carrier — and WI-1125 has since refused the
+/// declaration for a DIFFERENT reason, which is what this row now separates.
 ///
 /// WI-999 refuses a declaration that captures a name already resolving in its scope,
 /// and excuses it when the sort provides or requires the sort that OWNS the name.
-/// `PartialEq` owns `eq` and `neq`, so a total composite that now derives
-/// `provides PartialEq` turns a capture into an override — which is WI-999's own
-/// rule, applied to a premise this ticket made true.
+/// `PartialEq` owns `eq` and `neq`, so a total composite that derives
+/// `provides PartialEq` turns a capture into an override — WI-999's own rule, applied
+/// to a premise this ticket made true. MEASURED both ways when this row was written,
+/// with the import present so the name genuinely resolves: backing the derivation out,
+/// `operation neq` was refused with "'C' neither provides nor requires the sort that
+/// owns 'anthill.prelude.PartialEq.neq'"; with it, the declaration stood.
 ///
-/// MEASURED both ways, with the import present so the name genuinely resolves:
-/// backing the derivation out, `operation neq` is refused with "'C' neither provides
-/// nor requires the sort that owns 'anthill.prelude.PartialEq.neq'"; with it, `C`
-/// does provide it and the declaration stands.
+/// THE FLIP. That "stood" was measured on the LOADER, and the loader was the only
+/// reader agreeing: no evaluator ever dispatched a carrier-own `neq`, because
+/// `neq(a,b) <=> not(eq(a,b))` (§8.3) makes it derived and every one of them computes
+/// it that way. WI-1125 refuses it at load rather than teaching four evaluators to
+/// dispatch a derived member — so `operation neq` on a derived carrier is now an
+/// error, and the assertion below is that it is **not the capture one**. WI-999's
+/// excusal is still in force; it is simply no longer the last word.
 ///
-/// `operation eq` stays REFUSED either way, and the two halves agree for one reason:
-/// a sort declaring `eq` is a lawful-Eq BOUNDARY, so nothing is derived for it and
-/// WI-999's premise is untouched. That is the row that would move if the boundary
-/// exclusion were dropped.
+/// `operation eq` stays refused BY CAPTURE either way, and the two halves agree for
+/// one reason: a sort declaring `eq` is a lawful-Eq BOUNDARY, so nothing is derived
+/// for it and WI-999's premise is untouched. That is the row that would move if the
+/// boundary exclusion were dropped, and it is what makes the `neq` half above a
+/// statement about the derivation rather than about `PartialEq` members in general.
 #[test]
-fn declaring_neq_on_a_derived_carrier_is_an_override_not_a_capture() {
+fn declaring_neq_on_a_derived_carrier_is_not_a_capture_but_is_still_refused() {
     let program = |ns: &str, member: &str| {
         format!(
             r#"
@@ -641,9 +649,18 @@ end
             .err()
             .unwrap_or_default()
     };
+    let neq_errs = errs(&program("ovneq", "operation neq(a: C, b: C) -> Bool = true"));
     assert!(
-        errs(&program("ovneq", "operation neq(a: C, b: C) -> Bool = true")).is_empty(),
-        "a derived `provides PartialEq` makes an `neq` declaration an OVERRIDE"
+        !neq_errs.iter().any(|e| e.contains("captures a name")),
+        "a derived `provides PartialEq` still EXCUSES the capture — WI-999's rule is \
+         untouched; got {neq_errs:?}"
+    );
+    assert!(
+        neq_errs
+            .iter()
+            .any(|e| e.contains("`neq` is not an override point")),
+        "WI-1125: the excused declaration is refused on its own grounds — `neq` is \
+         derived from `eq` and nothing dispatches it; got {neq_errs:?}"
     );
     let eq_errs = errs(&program("capeq", "operation eq(a: C, b: C) -> Bool = true"));
     assert!(

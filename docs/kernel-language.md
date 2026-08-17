@@ -1861,14 +1861,18 @@ they are the ones a *structural* answer would get wrong: an operand still rangin
 over a runtime parameter; an **override reachable inside** an operand whose own
 carrier declares none (`eq(some(Green), some(Red))` over `Option[Color]`) — there is
 no instance at the head to dispatch, and recursing structurally would ignore
-`Color`'s; and a carrier supplying a **`neq`** and no `eq`, which *nothing
-dispatches* — equality dispatch keys `PartialEq.eq` suppliers, and every evaluator
-computes `neq` as the negation of the dispatched `eq` (the §8.3 law), so such an
-override is honoured nowhere and a guard must not be decided against it (WI-1125
-owns making it dispatchable, or deciding it is not an override point). Where the
-carrier supplies **both**, its `eq` decides: `neq` is defined as that `eq`'s
-negation, so dispatching the `eq` *is* consulting the carrier's own equality, and
-the two disagreeing is a coherence question nothing checks today (also WI-1125).
+`Color`'s; and — until WI-1125 — a carrier supplying a **`neq`**, which *nothing
+dispatches*: equality dispatch keys `PartialEq.eq` suppliers, and every evaluator
+computes `neq` as the negation of the dispatched `eq` (the §8.3 law). WI-755 held
+that case as a narrowed typer gate on this route alone; **WI-1125 decided `neq` is
+not an override point and refuses the declaration at load** (§8.3, and §8.7 for the
+binding forms), so no program
+reaching a guard discharge can carry an equality the resolver cannot see, and the
+gate is gone. Where the carrier supplies **both**, that is refused too and for the
+second half of the same reason: its `eq` decides — `neq` is defined as that `eq`'s
+negation, so dispatching the `eq` *is* consulting the carrier's own equality — which
+leaves the written `neq` able only to disagree with it, a coherence question no load
+can settle.
 This replaces WI-573's earlier floor, which kept the effect whenever an override of
 *either* member was merely reachable: sound, but it suspended the `eq` dispatch it
 was waiting for — including on carriers that spelled both members consistently.
@@ -3076,7 +3080,7 @@ The kernel's reasoning engine supports:
 - Only **fully ground** operand pairs dispatch — `=` never binds, so a compare containing an unbound variable *suspends* (undecided) rather than proving-by-binding or deciding structurally.
 - An overriding carrier **buried** inside non-overriding structure (`some({1,2})` vs `some({2,1})`) also suspends: a structural verdict would ignore the inner instance.
 - The sub-proof is bounded; a compare too large for the budget degrades to *undecided*, never to a wrong verdict.
-- Caveats: write relational base cases with a **body** or on a helper op — a bodyless 2-ary rule whose head is short-named `eq` is currently classified as an equational law and never fires at resolution (WI-627). Supply `eq` only: `neq`/`!=` is always derived as the negation of the dispatched `eq`, so an own `neq` member is never consulted. And the instance dispatches at **SLD resolution** — an *evaluated* operation body reaches it through the typeclass dispatch machinery, while the interpreter's raw `eq` fallback is still the structural compare pending the SLD→eval bridge (WI-625).
+- Caveats: write relational base cases with a **body** or on a helper op — a bodyless 2-ary rule whose head is short-named `eq` is currently classified as an equational law and never fires at resolution (WI-627). Supply `eq` only: `neq`/`!=` is always derived as the negation of the dispatched `eq`, so an own `neq` member is never consulted — and since **WI-1125** a carrier that supplies one is a **load error** (`CarrierSuppliesNeq`), through any of the three supply routes (own member, `fact PartialEq[T = C, neq = …]`, witness sort) and whether or not it also supplies an `eq`. It was accepted and ignored before: with no `eq` beside it the equality answered *structurally*, against the very inequality the carrier had written, at all four `prove_from_gamma` consumers and in the interpreter; with an `eq` beside it the `eq` decided (correctly — it is the authority the law names) and the `neq` was dead text that could only disagree, which nothing checked and nothing can, since `∀a,b. neq(a,b) = not(eq(a,b))` is not decidable at load. Refusing the member makes that disagreement unrepresentable rather than partially checked. The repair is the same equality one member over: `operation neq(a, b) = false` is `operation eq(a, b) = true`. A **spec** declaring the family for its own type parameter (`sort MyEq { sort T = ?; operation neq(a: T, b: T) -> Bool }`) is a declaration, not a carrier override, and is untouched. And the instance dispatches at **SLD resolution** — an *evaluated* operation body reaches it through the typeclass dispatch machinery, while the interpreter's raw `eq` fallback is still the structural compare pending the SLD→eval bridge (WI-625).
 
 **`let ?v = expr`** is directed sugar for **`?v <=> expr`** — one primitive, two surfaces: `<=>` for symmetric equations, `let` for introducing a named binding in a goal sequence. (`:=` is *not* this — it is reserved for the mutable-cell `Cell.set`, `c := v`, which overwrites state rather than binding a logical variable once.)
 
@@ -3565,6 +3569,8 @@ end
 ```
 
 Every part of that is load-bearing, and each was measured (WI-1092). The clauses are **predicate heads**, so they are indexed under `ceq` and the eval→SLD `eq` bridge (WI-625) can prove them; written as equations (`rule ceq(red, red) <=> true`) they index under the connective instead, `ceq` owns nothing, and the operation is unrunnable — §5.3. There is no `rule ceq(?_, ?_) <=> false` catch-all beside them: the sub-proof is a closed test over a complete search, so an unmatched pair is unequal by absence. And the **binding** is what points the carrier's equality at those clauses: the same rules under a bare `fact Eq[T = Color]`, with no member bound as `eq`, are never consulted — nothing dispatches to them and structural equality answers instead. The binding may also be written from outside the sort, as `fact PartialEq[T = Color, eq = Color.ceq]`.
+
+**Only `eq` may be bound (WI-1125).** Every binding form on this page — a member of the carrier, `provides PartialEq[T = Color, eq = ceq]`, a witness sort's member, `fact PartialEq[T = Color, eq = Color.ceq]` — supplies `eq` and only `eq`. Supplying the carrier's **`neq`** through any of them is a **load error** (`CarrierSuppliesNeq`), because `neq(a, b) <=> not(eq(a, b))` makes it derived and equality dispatch keys `eq` suppliers alone: such a binding is honoured nowhere, and beside an `eq` it can only contradict the equality that decides. §8.3 states the rule and the two shapes it covers; write the `eq` and `neq` follows. A member merely *named* `neq` that does not compare the carrier's own values — an abstract spec's `neq(a: T, b: T)` for its own parameter, or an unrelated helper on a witness sort — supplies nothing and is untouched.
 
 This rule-given shape is specific to the **predicate-shaped** `eq`/`neq` family. It does **not** generalize to value-returning operations: under WI-818 ("Backing is executable", §8.7) a rule is a law, not backing — a concrete carrier providing a spec must back every other declared operation with a runnable body or a builtin, or the load is rejected.
 

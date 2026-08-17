@@ -584,6 +584,60 @@ pub enum LoadError {
         carrier: String,
         providers: Vec<String>,
     },
+    /// WI-1125 — a carrier supplies its own **`neq`**. Refused, because `neq` is not
+    /// an override point at all: `neq(a, b) <=> not(eq(a, b))` (§8.3,
+    /// `stdlib/anthill/prelude/eq.anthill`) makes `neq` DERIVED, and every evaluator
+    /// implements it that way — the resolver's `sem_eq_core` runs one
+    /// `sem_eq_values` with the verdict inverted, `eval::builtins`' `builtin_neq` is
+    /// `!semantic_equal`, and C++ codegen maps the pair to `==`/`!=` so the host
+    /// language derives one from the other. Equality dispatch keys `PartialEq.eq`
+    /// suppliers only ([`build_eq_dispatch_index`]), so a supplied `neq` is honoured
+    /// NOWHERE. That symmetry is why refusing the declaration touches ONE pass: had
+    /// `neq` been made dispatchable instead, the index would have had to carry a
+    /// polarity and all three evaluators change together to keep the WI-645
+    /// agreement.
+    ///
+    /// Before this variant such a declaration was ACCEPTED and silently ignored, in
+    /// two shapes that failed differently and both silently:
+    ///
+    /// * `neq` and no `eq` — nothing dispatches, so `sem_eq_values` fell to its
+    ///   STRUCTURAL verdict, against the carrier's own inequality. WI-755 held a
+    ///   typer-side floor over the guard-refutation route alone; the three other
+    ///   `prove_from_gamma` consumers (`requires`, contract `ensures`, in-body
+    ///   `proof`) and the interpreter had no floor and answered structurally.
+    /// * `neq` BESIDE an `eq` — the `eq` is dispatched and is right (it is the
+    ///   authority the law names), so the `neq` is dead text that can only disagree
+    ///   with the equality that actually decides. Nothing checked the two for
+    ///   coherence, and nothing can: `∀a,b. neq(a,b) = not(eq(a,b))` is not
+    ///   decidable at load. Refusing the member makes the contradiction
+    ///   UNREPRESENTABLE instead of partially checked.
+    ///
+    /// Both arms are therefore one refusal. `eq_supplier` is `Some` for the second,
+    /// and only changes the REPAIR the message offers — delete the `neq` (the `eq`
+    /// already decides it) versus supply an `eq` instead.
+    ///
+    /// Load-blocking, and at LOAD for [`Self::AmbiguousEqDispatch`]'s reason rather
+    /// than by analogy: equality dispatches from UNIFICATION, so there is no call
+    /// site at which to be loud about a member nobody consults.
+    ///
+    /// SCOPE — a candidate the collector reached by MATCHING THE SHORT NAME (the
+    /// carrier's own member, or a witness sort's) must still compare the carrier's
+    /// own values, so an abstract spec DECLARING the family for its type parameter
+    /// (`sort MyEq { sort T = ?; operation neq(a: T, b: T) -> Bool }`) and an
+    /// unrelated `neq(a: Int64, b: Int64)` helper on a witness are both untouched.
+    /// A WRITTEN binding (`fact PartialEq(T: C, neq: f)`, `provides PartialEq[T = C,
+    /// neq = f]`) is refused as written — the author named the slot.
+    /// [`neq_supplier_is_the_carriers`] owns the split.
+    CarrierSuppliesNeq {
+        carrier: String,
+        /// Each `neq` supplier rendered by its ROUTE (own member / instance-fact
+        /// binding / witness sort) — the three are written in three syntaxes and the
+        /// author must know which text to delete.
+        suppliers: Vec<String>,
+        /// The `eq` that already decides this carrier's equality, if it supplies one
+        /// — rendered by its route. `None` when the carrier supplies `neq` alone.
+        eq_supplier: Option<String>,
+    },
     /// WI-1012 (proposal 058 §4.9) — the LOAD face of
     /// [`crate::eval::EvalError::AmbiguousSpecOpDispatch`]: a call whose carrier the
     /// typer can pin STATICALLY found two or more runnable suppliers of one spec op
@@ -2030,6 +2084,11 @@ impl LoadError {
                 format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
                     providers.len(), carrier, providers.join("; "))
             }
+            LoadError::CarrierSuppliesNeq {
+                carrier,
+                suppliers,
+                eq_supplier,
+            } => carrier_supplies_neq_message(carrier, suppliers, eq_supplier.as_deref()),
             LoadError::AmbiguousSpecOpDispatch {
                 op,
                 carrier,
@@ -2898,6 +2957,18 @@ impl std::fmt::Display for LoadError {
                 write!(f, "ambiguous semantic equality: {} distinct `eq` implementations for carrier '{}' ({}) — `eq` dispatches from unification, with no call site to select at (keep exactly one)",
                     providers.len(), carrier, providers.join("; "))
             }
+            // ONE spelling, unlike its `AmbiguousEqDispatch` neighbour above, whose two
+            // renderings have drifted apart: the message names a law and a repair, and
+            // two copies of that is two things to keep true.
+            LoadError::CarrierSuppliesNeq {
+                carrier,
+                suppliers,
+                eq_supplier,
+            } => write!(
+                f,
+                "{}",
+                carrier_supplies_neq_message(carrier, suppliers, eq_supplier.as_deref())
+            ),
             LoadError::AmbiguousSpecOpDispatch {
                 op,
                 carrier,
@@ -11065,7 +11136,13 @@ pub fn build_host_const_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 /// selected — so proposal 058 §4.9's rule that a SELECTING read goes loud on the
 /// second candidate can only be met at LOAD. Hence the return type: two distinct `eq`
 /// impls for one carrier is a load-blocking [`LoadError::AmbiguousEqDispatch`].
-#[must_use = "the ambiguity refusals are load-blocking and must be merged"]
+///
+/// WI-1125 adds the sibling refusal in the same return value: a carrier supplying its
+/// own **`neq`** is a load-blocking [`LoadError::CarrierSuppliesNeq`]
+/// ([`neq_supplier_refusals`]). It belongs to this pass and not beside it, because the
+/// reason it is refused is exactly the sentence above — this index keys `eq` suppliers,
+/// nothing keys a `neq`, and there is no later site to complain from.
+#[must_use = "the equality refusals are load-blocking and must be merged"]
 pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // Its own `SortInfo` scan rather than a threaded-in map, so this pass is callable
     // on its own (it is `pub`, and it is what a driver must call to get a KB whose
@@ -11079,6 +11156,10 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         return Vec::new();
     };
     let carriers = eq_dispatch_carrier_domain(kb, sort_ops.keys().copied());
+    // WI-1125 — the SIBLING refusal, over the same carrier domain and the same three
+    // supply routes, one member over. Collected first so it is reported even when a
+    // carrier is also ambiguous in its `eq`.
+    let mut refusals = neq_supplier_refusals(kb, &carriers, &eq_index);
     let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
     // Collected rather than built into `LoadError`s as we go: `carriers` comes from
     // two `HashMap` walks, so this loop visits carriers in an arbitrary order, and a
@@ -11086,7 +11167,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // by carrier below (each carrier's own candidate list is already deterministic —
     // the index walks provisions in `provides_rids_by_spec` order).
     let mut ambiguous: Vec<(String, Vec<String>)> = Vec::new();
-    for sort_sym in carriers {
+    for &sort_sym in &carriers {
         let cands = eq_index.candidates(kb, sort_sym);
         let target = match cands.as_slice() {
             // No eq override for this sort — structural equality IS its instance.
@@ -11137,10 +11218,203 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         }
     }
     ambiguous.sort_by(|(a, _), (b, _)| a.cmp(b));
-    ambiguous
-        .into_iter()
-        .map(|(carrier, providers)| LoadError::AmbiguousEqDispatch { carrier, providers })
+    refusals.extend(
+        ambiguous
+            .into_iter()
+            .map(|(carrier, providers)| LoadError::AmbiguousEqDispatch { carrier, providers }),
+    );
+    refusals
+}
+
+/// WI-1125 — refuse every carrier that supplies its own **`neq`**. See
+/// [`LoadError::CarrierSuppliesNeq`] for WHY it is refused rather than dispatched;
+/// this is the detection, and it is deliberately built the way
+/// [`build_eq_dispatch_index`] builds its own, over the same carrier DOMAIN and the
+/// same three supply ROUTES ([`EqDispatchIndex::build_neq`]).
+///
+/// WHICH CANDIDATES SURVIVE is [`neq_supplier_is_the_carriers`], and its per-route
+/// split is stated there. The short of it: a candidate the collector reached by
+/// matching the short name `neq` on a sort must still be shown to compare THIS
+/// carrier's values; a candidate that arrived as a written `neq = f` binding needs
+/// nothing shown, because the author said it.
+///
+/// WHAT THIS DOES NOT ASK is whether the carrier PROVIDES `Eq`/`PartialEq`. It
+/// cannot: this pass runs before WI-1098's `derive_total_eq`, so the total composite
+/// that is the ticket's headline case provides nothing yet. See
+/// [`member_operands_are_the_carrier`] — a provides-gate here would excuse that case
+/// by pass order, so the criterion is the member's own shape.
+///
+/// The `eq` half is read through the caller's already-built index rather than
+/// re-derived, so the "does an `eq` also decide here" the message reports is the
+/// same answer the dispatch index acted on. Only carriers that supply a `neq` pay
+/// for it — no stdlib carrier does, so in practice that probe never runs.
+///
+/// COST, measured rather than inherited from WI-837's number for the `eq` half:
+/// release CLI, stdlib + an empty namespace, `ANTHILL_LOAD_TIMING=1`, min of 9 with
+/// this call and min of 9 without it (the pass is the only thing that changes), the
+/// whole `build_eq_dispatch_index` mark goes 228 µs → 446 µs — so this sweep is
+/// ~218 µs against a ~109 ms load, 0.2%. It is a second whole-KB provision walk plus
+/// one `carrier_own_op` table hit per carrier, which is the `eq` index's own shape,
+/// and that is why it is affordable to ask the question the same way twice rather
+/// than fold `neq` into the `eq` walk and complicate what that walk means.
+///
+/// Sorted by carrier: `carriers` comes from two `HashMap` walks, so a program with
+/// two offending carriers must still report them the same way on every load.
+fn neq_supplier_refusals(
+    kb: &mut KnowledgeBase,
+    carriers: &[Symbol],
+    eq_index: &EqDispatchIndex,
+) -> Vec<LoadError> {
+    let Some(neq_index) = EqDispatchIndex::build_neq(kb) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+    for &carrier in carriers {
+        let cands = neq_index.candidates(kb, carrier);
+        let kept: SmallVec<[super::typing::SpecOpSupplier; 2]> = cands
+            .into_iter()
+            .filter(|c| neq_supplier_is_the_carriers(kb, &neq_index, carrier, c))
+            .collect();
+        if kept.is_empty() {
+            continue;
+        }
+        // The `eq` that DOES decide this carrier's equality, if any. Two of them is a
+        // separate refusal (`AmbiguousEqDispatch`, raised by the caller over the same
+        // index); naming the first here is enough for the repair this message offers,
+        // and both errors surface on the same load.
+        let eq_supplier = eq_index
+            .candidates(kb, carrier)
+            .first()
+            .map(|c| c.render(kb, "eq"));
+        out.push((
+            kb.qualified_name_of(carrier).to_string(),
+            kept.iter().map(|c| c.render(kb, "neq")).collect(),
+            eq_supplier,
+        ));
+    }
+    out.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+    out.into_iter()
+        .map(
+            |(carrier, suppliers, eq_supplier)| LoadError::CarrierSuppliesNeq {
+                carrier,
+                suppliers,
+                eq_supplier,
+            },
+        )
         .collect()
+}
+
+/// WI-1125 — is this candidate really a supplier of THIS CARRIER's `neq`, as opposed
+/// to a same-named member the collector reached by name? Two of the three routes
+/// need the question asked and one does not, and the split is about how each route
+/// NAMES its target, not about where it is written:
+///
+/// * [`SupplyRoute::Own`] — `carrier_own_op` matched the carrier's own member on the
+///   short name `neq`. That is also true of an abstract SPEC declaring the family for
+///   its own type parameter (`sort MyEq { sort T = ?; operation neq(a: T, b: T) }`),
+///   which overrides nothing for itself. Checked.
+/// * [`SupplyRoute::Witness`] — `provision_supplier`'s witness leg reads
+///   `carrier_own_op(provider, …)` FIRST and only then the provision's own `neq = f`
+///   binding. The first leg is the same name match one sort over, so a witness that
+///   supplies `Color`'s `eq` and happens to also declare an unrelated
+///   `neq(a: Int64, b: Int64)` would be read as supplying `Color`'s `neq`. Checked —
+///   but ONLY for that leg: a written `provides PartialEq[T = Color, neq = f]` is a
+///   deliberate claim about `Color`, whatever `f`'s signature, and is refused as
+///   written.
+/// * [`SupplyRoute::Fact`] — reached ONLY through `instance_fact_op_in_bindings`,
+///   i.e. an explicit `fact PartialEq(T: Color, neq: colorNeq)`. Nothing is inferred
+///   from a name, so there is nothing to establish.
+///
+/// (Finding 2 of this ticket's review, reproduced: without the witness leg an
+/// `Int64` helper on a witness sort refused an innocent carrier, and the message
+/// told its author to delete a member that had nothing to do with equality.)
+fn neq_supplier_is_the_carriers(
+    kb: &KnowledgeBase,
+    neq_index: &EqDispatchIndex,
+    carrier: Symbol,
+    cand: &super::typing::SpecOpSupplier,
+) -> bool {
+    match cand.route {
+        super::typing::SupplyRoute::Own => {
+            member_operands_are_the_carrier(kb, carrier, cand.target)
+        }
+        super::typing::SupplyRoute::Fact => true,
+        super::typing::SupplyRoute::Witness(w) => {
+            let by_name =
+                super::typing::carrier_own_op(kb, w, neq_index.eq_spec, neq_index.eq_short);
+            // Matched by NAME on the witness ⇒ ask whose values it compares. Reached
+            // any other way it is the provision's written binding ⇒ deliberate.
+            by_name != Some(cand.target) || member_operands_are_the_carrier(kb, carrier, cand.target)
+        }
+    }
+}
+
+/// WI-1125 — does `target` compare `carrier`'s OWN values? True for
+/// `Color.neq(a: Color, b: Color)` and for `Set.neq(a: Set[T = T], b: Set[T = T])`;
+/// FALSE for an abstract spec's `MyEq.neq(a: T, b: T)`, whose operands are the spec's
+/// type parameter, and false for any member that merely shares the short name.
+///
+/// Reads the FIRST parameter: the family is binary and both operands share the
+/// `PartialEq[T]` carrier by the spec's own signature, so one is the whole question.
+///
+/// A member with no `OperationInfo`, no parameter, or a first parameter that is not a
+/// sort answers `false` — it is not the shape of `PartialEq.neq` and therefore
+/// supplies nothing, which is a VERDICT and not a skipped case. Note in particular
+/// that a nullary `operation neq() -> Bool` is ordinary parsable source: an earlier
+/// cut asserted the binary arity here and PANICKED the loader on it in every debug
+/// build (finding 1 of this ticket's review, reproduced). A parsable program must
+/// never reach an assertion, and this one does not need to — a 0-ary member is not
+/// this spec op under any reading.
+///
+/// This is NOT [`super::typing::carrier_has_unbacked_eq_override`]'s exclusion, which
+/// asks whether the carrier SELF-PROVIDES `Eq`/`PartialEq`. That question cannot be
+/// asked here: [`build_eq_dispatch_index`] runs BEFORE WI-1098's `derive_total_eq`,
+/// so a total composite that will provide `PartialEq` a few lines later still
+/// provides nothing at this point — and that composite (`sort C { entity c(n: Int64);
+/// operation neq(…) }`) is precisely the shape WI-1098's own row is about. A
+/// provides-gate here would therefore excuse the ticket's headline case by an
+/// accident of pass order. The criterion is the member's own shape instead, and it
+/// gives the same answer whenever both can be asked.
+fn member_operands_are_the_carrier(kb: &KnowledgeBase, carrier: Symbol, target: Symbol) -> bool {
+    let Some(rec) = super::op_info::lookup_operation_info(kb, target) else {
+        return false;
+    };
+    let Some((_, first_param_ty)) = rec.params.first() else {
+        return false;
+    };
+    super::typing::sort_functor_of_view(kb, first_param_ty)
+        .map(|h| kb.canonical_sort_sym(h) == kb.canonical_sort_sym(carrier))
+        .unwrap_or(false)
+}
+
+/// WI-1125 — the ONE rendering of [`LoadError::CarrierSuppliesNeq`], shared by both
+/// of `LoadError`'s formatting faces. The message has to carry three things the
+/// author cannot otherwise know — that `neq` is derived, that this is why the
+/// declaration was doing nothing, and which text to change — so a second copy would
+/// be a second thing to keep true.
+fn carrier_supplies_neq_message(
+    carrier: &str,
+    suppliers: &[String],
+    eq_supplier: Option<&str>,
+) -> String {
+    let supplied = suppliers.join("; ");
+    match eq_supplier {
+        Some(eq) => format!(
+            "`neq` is not an override point: carrier '{carrier}' supplies its own `neq` ({supplied}) \
+             beside its `eq` ({eq}). `neq(a, b) <=> not(eq(a, b))` (kernel-language.md §8.3) makes \
+             the `eq` the authority — every evaluator computes `neq` as its negation, so the `neq` \
+             is never consulted and can only disagree with the equality that decides. Delete the \
+             `neq`; the `eq` already gives it."
+        ),
+        None => format!(
+            "`neq` is not an override point: carrier '{carrier}' supplies its own `neq` ({supplied}) \
+             and no `eq`. Equality dispatch keys `PartialEq.eq` suppliers only, and every evaluator \
+             computes `neq` as the negation of the dispatched `eq` (`neq(a, b) <=> not(eq(a, b))`, \
+             kernel-language.md §8.3) — so this `neq` is honoured nowhere and equality would answer \
+             STRUCTURALLY against it. Supply the `eq` instead: `operation eq(a, b) -> Bool = \
+             not(<your neq body>)`."
+        ),
+    }
 }
 
 /// WI-856 — the eq-dispatch index's carrier DOMAIN: every sort whose values can head
@@ -11227,11 +11501,28 @@ impl EqDispatchIndex {
     /// `None` on a prelude-less KB (no `PartialEq.eq` ⇒ the `eq` spec op does not
     /// exist, so nothing can supply an impl of it).
     pub(crate) fn build(kb: &mut KnowledgeBase) -> Option<Self> {
-        let eq_spec = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq")?;
+        Self::build_for(kb, "anthill.prelude.PartialEq.eq", "eq")
+    }
+
+    /// WI-1125 — the same index over `PartialEq.neq`. NOT a second dispatch index:
+    /// nothing dispatches a `neq`, and after this ticket nothing may supply one
+    /// either — this is how [`neq_supplier_refusals`] asks "who supplies this
+    /// carrier's `neq`" in the SAME vocabulary the `eq` index asks its own question,
+    /// so the refusal covers exactly the routes the `eq` index would have had to
+    /// cover if `neq` were an override point (WI-755's floor asked it a second way
+    /// and had to be told, by review, that it was missing route 2).
+    pub(crate) fn build_neq(kb: &mut KnowledgeBase) -> Option<Self> {
+        Self::build_for(kb, "anthill.prelude.PartialEq.neq", "neq")
+    }
+
+    /// Bucket every provision-supplied impl of ONE spec op of the equality family.
+    /// `None` on a prelude-less KB (no such spec op ⇒ nothing can supply an impl).
+    fn build_for(kb: &mut KnowledgeBase, spec_op_qn: &str, short: &str) -> Option<Self> {
+        let eq_spec = kb.try_resolve_symbol(spec_op_qn)?;
         // Interned up front so the walk below stays `&self`-read-only.
-        let eq_short = kb.intern("eq");
-        // BOTH specs are swept: `eq` may be bound under `PartialEq` (where it
-        // canonically lives post-WI-644) or under `Eq` by a user who wrote only
+        let eq_short = kb.intern(short);
+        // BOTH specs are swept: the member may be bound under `PartialEq` (where the
+        // family canonically lives post-WI-644) or under `Eq` by a user who wrote only
         // `fact Eq[…, eq = …]`. `PartialEq` first, so a carrier binding it in both
         // renders in the order the author is likelier to recognize.
         let specs: SmallVec<[Symbol; 2]> = ["anthill.prelude.PartialEq", "anthill.prelude.Eq"]

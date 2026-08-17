@@ -13862,7 +13862,7 @@ fn check_apply_iter(
                 }
                 // Unproved. In an op body that alone is the WI-539 violation. In a
                 // rule body only a ground REFUTATION is (a float is skipped — WI-602).
-                if !in_rule_body || precondition_refuted(kb, flow, &subst, &req_sigma, clause) {
+                if !in_rule_body || precondition_refuted(kb, flow, &req_sigma, clause) {
                     return Err(TypeError::UnsatisfiedPrecondition {
                         span,
                         op: fn_sym,
@@ -42011,7 +42011,7 @@ fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> O
 /// `true` only on a DECIDED refutation — a symbolic float, or an `eq`/`neq` the
 /// resolver leaves undecided, yields `false`.
 ///
-/// WI-755 — THE OVERRIDE FLOOR IS THE RESOLVER'S, NOT A PRE-GATE HERE. WI-573 sat
+/// WI-755/WI-1125 — THE OVERRIDE FLOOR IS THE RESOLVER'S, NOT A PRE-GATE HERE. WI-573 sat
 /// a gate in front of [`refute_guard`] that suspended every `eq`/`neq` conjunct
 /// whose operands could reach a carrier with its own equality, because `eq` was
 /// then a purely STRUCTURAL builtin whose refutation would have ignored the
@@ -42027,6 +42027,18 @@ fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> O
 /// `step_init` / the `Delay` arm) — so every case the gate suspended still returns
 /// `false` here, now decided by the resolver rather than assumed by the typer.
 ///
+/// WI-755 left ONE case behind — a carrier supplying a `neq` and no `eq`, which the
+/// dispatch index does not key — as a narrowed residual gate here
+/// (`guard_conjunct_reaches_undispatchable_neq`, with its own value scan and depth
+/// cap). **WI-1125 deleted all of it**, by removing the shape rather than the gate:
+/// a carrier supplying its own `neq` is now a load error
+/// ([`super::load::LoadError::CarrierSuppliesNeq`]), so no program reaching this
+/// function can hold an equality override the resolver cannot see. The gate had
+/// covered the refutation route ALONE; the three other [`prove_from_gamma`] consumers
+/// and the interpreter never had one and answered such a carrier structurally, which
+/// is what made a floor here the wrong shape of fix — it was one consumer's guard
+/// against a program the loader should never have accepted.
+///
 /// WATCH — WI-648 (scoped / non-canonical instances). A refutation now depends on
 /// WHICH `eq` is the carrier's, which today is a global fact: instance coherence
 /// gives exactly one provider per (spec, carrier), so the eq-dispatch index has one
@@ -42038,14 +42050,10 @@ fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> O
 fn conjunct_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
-    subst: &Substitution,
     sigma: &HashMap<Symbol, TermId>,
     conj: &Value,
 ) -> bool {
     let conj = substitute_ref_terms(kb, conj, sigma);
-    if guard_conjunct_reaches_undispatchable_neq(kb, subst, &conj) {
-        return false;
-    }
     refute_guard(kb, flow, &conj)
 }
 
@@ -42058,7 +42066,6 @@ fn conjunct_refuted(
 fn guarded_atom_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
-    subst: &Substitution,
     sigma: &HashMap<Symbol, TermId>,
     guard_value: &Value,
 ) -> bool {
@@ -42084,194 +42091,20 @@ fn guarded_atom_refuted(
     // the shared per-conjunct core carrier-neutrally (WI-621 — no reification).
     goals
         .iter()
-        .any(|g| conjunct_refuted(kb, flow, subst, sigma, g))
+        .any(|g| conjunct_refuted(kb, flow, sigma, g))
 }
 
 /// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.PartialEq.{eq,neq}` —
 /// WI-644 moved them off `Eq` onto its base); `neq` is `None` in a prelude-less KB.
-/// The single source for the eq/neq family pair, shared by [`negate_goal`]'s
-/// `eq ⇄ neq` swap and [`guard_conjunct_reaches_undispatchable_neq`], so the two
-/// can never silently diverge on how `neq` is qualified.
+/// The single source for the eq/neq family pair. WI-1125 left [`negate_goal`]'s
+/// `eq ⇄ neq` swap as the only reader — the second one, WI-755's undispatchable-`neq`
+/// floor, went with the shape it guarded (a carrier-supplied `neq` is now refused at
+/// load, [`super::load::LoadError::CarrierSuppliesNeq`]).
 fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>) {
     (
         kb.eq_functor(),
         kb.try_resolve_symbol("anthill.prelude.PartialEq.neq"),
     )
-}
-
-/// Maximum structural depth [`value_reaches_undispatchable_neq`] descends. Guard
-/// operands are small literals; the cap is a runaway/cyclic guard only.
-const NEQ_OVERRIDE_SCAN_DEPTH_CAP: usize = 256;
-
-/// Does any carrier reachable in `value` — its own OR that of any positional/named
-/// child, recursively — declare its own `neq` that NOTHING WILL DISPATCH? The
-/// residual half of WI-573's floor, kept by WI-755 for the one case its removal
-/// would otherwise decide wrongly. See [`guard_conjunct_reaches_undispatchable_neq`]
-/// for why the question is asked at all; this is its traversal, mirroring the
-/// structural comparison (`views_structurally_equal`: every positional + named
-/// child) so the scan covers precisely the carriers a structural verdict touches.
-///
-/// "Undispatchable" is the load-time eq-dispatch index's own answer, not a second
-/// opinion: a carrier keyed there (it supplies an `eq`) is handled by the resolver
-/// and must NOT be blocked here — that is the whole of WI-755. Only a carrier
-/// supplying a `neq` and no `eq` reaches nobody. At the depth cap it reports `true`
-/// (block ⇒ keep the effect, sound) rather than risk an unscanned override, which is
-/// both what the retired WI-573 scan did and what the resolver's twin
-/// (`resolve.rs`'s `REACHES_EQ_OVERRIDE`, same 256) still answers at its own cap —
-/// two scanners of one question must not disagree about their edges.
-fn value_reaches_undispatchable_neq(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    value: &Value,
-    depth: usize,
-) -> bool {
-    if depth >= NEQ_OVERRIDE_SCAN_DEPTH_CAP {
-        return true;
-    }
-    // This node's carrier. An abstract/structural node yields no carrier sort
-    // (`None`) — nothing to override there; the recursion still descends below.
-    let ty = value_type_term(kb, subst, value);
-    if let Some(carrier) = carrier_sort_of_value(kb, &ty) {
-        if carrier_has_undispatchable_neq(kb, carrier) {
-            return true;
-        }
-    }
-    // Collect owned child values first so the immutable view borrows end before the
-    // recursive `&mut kb` calls.
-    let mut children: Vec<Value> = Vec::new();
-    if let ViewHead::Functor { pos_arity, .. } = value.head(kb) {
-        for i in 0..pos_arity {
-            if let Some(c) = value.pos_arg(kb, i) {
-                children.push(c.to_value());
-            }
-        }
-        let keys: Vec<Symbol> = value.named_keys(kb);
-        for key in keys {
-            if let Some(c) = value.named_arg(kb, key) {
-                children.push(c.to_value());
-            }
-        }
-    }
-    children
-        .iter()
-        .any(|c| value_reaches_undispatchable_neq(kb, subst, c, depth + 1))
-}
-
-/// Does `carrier` supply a `neq` while supplying no `eq` the resolver can dispatch?
-///
-/// BOTH halves are asked in the eq-dispatch index's own vocabulary, because the
-/// point is to cover exactly what that index does not:
-///
-/// * the `neq` half reads ALL THREE supply routes
-///   ([`spec_op_suppliers_for_carrier`], swept over `PartialEq` AND `Eq` exactly as
-///   `EqDispatchIndex::build` sweeps them for `eq`) — a route-1 read would miss a
-///   `fact PartialEq[T = C, neq = cNeq]` binding, which is just as undispatchable
-///   and which the retired WI-573 gate did miss;
-/// * the `eq` half reads index MEMBERSHIP through a CONSTRUCTOR of the carrier —
-///   the key `build_eq_dispatch_index` writes and `eq_dispatch_target` reads — so
-///   the two agree by construction rather than by a re-derivation that can drift.
-///   A constructor-less carrier (`Set`, keyed by its self-returning ops) reads as
-///   unkeyed, which errs toward blocking; no such carrier supplies its own `neq`.
-///
-/// WHY AN `eq` TURNS THIS OFF, even though the `neq` is undispatchable either way:
-/// the spec makes `eq` the authority — `neq(a,b) <=> not(eq(a,b))` (§8.3,
-/// `stdlib/anthill/prelude/eq.anthill`), so a carrier's `neq` is DERIVED from its
-/// `eq`, not a second, independent opinion. When an `eq` exists the resolver
-/// dispatches it and answers `neq` as its negation, which IS the carrier's own
-/// equality; blocking there would discard a correct dispatch — WI-755's entire
-/// subject — to defer to a member the spec defines in terms of the one just used.
-/// MEASURED: a carrier spelling both CONSISTENTLY (`eq = false`, `neq = true`)
-/// correctly drops its `eq(c, Red)` guard today, and a gate keyed on the mere
-/// presence of an own `neq` would regress it to "kept". A carrier whose two members
-/// CONTRADICT each other is answered by its `eq` and is a load-time COHERENCE
-/// question — WI-1125's, alongside the rest of `neq`-as-override.
-fn carrier_has_undispatchable_neq(kb: &mut KnowledgeBase, carrier: Symbol) -> bool {
-    if !carrier_supplies_neq(kb, carrier) {
-        return false;
-    }
-    !kb.field_constructors_of_sort(carrier)
-        .into_iter()
-        .any(|ctor| kb.eq_dispatch_target(ctor).is_some())
-}
-
-/// Does any supply route give `carrier` a `neq` implementation? The `neq` twin of
-/// `EqDispatchIndex::build`'s sweep: both `PartialEq` (where the pair canonically
-/// lives, WI-644) and `Eq` (a user who wrote only `fact Eq[…, neq = …]`), each
-/// through all three routes. Asked before the index probe in
-/// [`carrier_has_undispatchable_neq`] because it is the cheap, almost-always-`false`
-/// half — no carrier in the stdlib supplies its own `neq`, so the constructor walk
-/// behind it effectively never runs.
-fn carrier_supplies_neq(kb: &mut KnowledgeBase, carrier: Symbol) -> bool {
-    let (_, neq_sym) = eq_neq_functors(kb);
-    let Some(neq_sym) = neq_sym else {
-        return false;
-    };
-    let neq_short = kb.intern("neq");
-    let specs: Vec<Symbol> = ["anthill.prelude.PartialEq", "anthill.prelude.Eq"]
-        .into_iter()
-        .filter_map(|qn| kb.try_resolve_symbol(qn))
-        .collect();
-    specs.into_iter().any(|spec| {
-        !spec_op_suppliers_for_carrier(kb, spec, carrier, neq_sym, neq_short).is_empty()
-    })
-}
-
-/// WI-755 — the RESIDUAL of WI-573's override floor: would refuting this conjunct
-/// consult an equality override that NOTHING in the system dispatches?
-///
-/// WI-755 removed WI-573's blanket pre-gate because `eq`/`neq` became semantic
-/// (`resolve.rs` `sem_eq_values`) and the gate shadowed the very dispatch it waited
-/// for. That argument covers a carrier's own **`eq`** exactly, and does not cover
-/// its own **`neq`**: `build_eq_dispatch_index` keys `PartialEq.eq` suppliers ONLY,
-/// so a carrier declaring `operation neq` and no `eq` keys nothing — the resolver's
-/// dispatch probe and its buried-override reach both see nothing, and outcome 6
-/// hands back the structural verdict the override contradicts. Eval agrees with the
-/// resolver and is wrong the same way (`builtin_neq` is `!semantic_equal`). Such a
-/// declaration is not malformed: WI-1098/WI-999 explicitly accept it as an OVERRIDE
-/// (`wi1098_derive_eq_total_test::declaring_neq_on_a_derived_carrier_is_an_override_not_a_capture`),
-/// so it cannot be refused here either.
-///
-/// MEASURED, not inferred: over a carrier whose only member is `operation neq(a, b)
-/// = false` (nothing unequal ⇒ everything equal, so the guard `eq(c, Red)` HOLDS),
-/// removing WI-573's gate outright dropped `Boom` where HEAD kept it. That is a
-/// silent wrong answer, so the floor stays — narrowed, per WI-755's own instruction
-/// to "narrow the gate to just that path instead of removing it".
-///
-/// SCOPE, stated because it is easy to read this as more than it is. This restores
-/// the floor on the REFUTATION route only, which is the only route the gate ever
-/// sat on. The PROOF routes (`precondition_proved`, contract `ensures`, in-body
-/// `proof`) reach the same blind resolver and already decided a `neq`-only carrier
-/// structurally BEFORE WI-755 — measured on HEAD: a `requires neq(c, Red)` at
-/// `needy(Green)` PROVES though the carrier's own `neq` says false. That half is
-/// **WI-1125**, which owns making a carrier-own `neq` dispatchable across the index,
-/// the resolver and eval together (or deciding it is not an override point and
-/// revisiting WI-1098's row). This gate is a floor, not that fix.
-fn guard_conjunct_reaches_undispatchable_neq(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    goal: &Value,
-) -> bool {
-    let (functor, pos_arity) = match goal.head(kb) {
-        ViewHead::Functor {
-            functor: Some(f),
-            pos_arity,
-            ..
-        } => (f, pos_arity),
-        _ => return false,
-    };
-    let (eq_sym, neq_sym) = eq_neq_functors(kb);
-    if (functor != eq_sym && Some(functor) != neq_sym) || pos_arity == 0 {
-        return false;
-    }
-    // Scan BOTH operands: they share the `Eq[T]` carrier, so scanning both also
-    // covers the case where one rides as a carrier `value_type_term` cannot pin
-    // while the other types cleanly.
-    let operands: Vec<Value> = (0..pos_arity)
-        .filter_map(|i| goal.pos_arg(kb, i).map(|a| a.to_value()))
-        .collect();
-    operands
-        .iter()
-        .any(|op| value_reaches_undispatchable_neq(kb, subst, op, 0))
 }
 
 /// Build the call substitution σ: callee parameter ↦ the actual argument's
@@ -42316,7 +42149,7 @@ fn guarded_atom_value_refuted(
     let guard_key = kb.intern("guard");
     let walked = walk_value_to_resolved(kb, subst, atom.clone());
     match named_child_value(kb, &walked, guard_key) {
-        Some(guard) => guarded_atom_refuted(kb, flow, subst, sigma, &guard),
+        Some(guard) => guarded_atom_refuted(kb, flow, sigma, &guard),
         None => false,
     }
 }
@@ -42337,7 +42170,7 @@ fn drop_refuted_guarded_labels(
     let guarded = collect_guarded_atoms(kb, subst, row);
     let mut dropped: Vec<Value> = Vec::new();
     for (label, guard) in guarded {
-        if guarded_atom_refuted(kb, flow, subst, sigma, &guard) {
+        if guarded_atom_refuted(kb, flow, sigma, &guard) {
             dropped.push(label);
         }
     }
@@ -42491,13 +42324,12 @@ fn precondition_proved(
 fn precondition_refuted(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
-    subst: &Substitution,
     sigma: &HashMap<Symbol, TermId>,
     clause: &Value,
 ) -> bool {
     clause_conjuncts(kb, clause)
         .iter()
-        .any(|conj| conjunct_refuted(kb, flow, subst, sigma, conj))
+        .any(|conj| conjunct_refuted(kb, flow, sigma, conj))
 }
 
 /// WI-539 (proposal 050 "operation call" modification rule, `ensures` half): if
@@ -54855,6 +54687,10 @@ fn inherited_spec_op_witness_grounds_soundly(
 /// Only the EQ override's backing is probed — a `neq` call dispatches through the
 /// carrier's `eq` override too (`sem_eq_dispatch` resolves `eq_dispatch_target`
 /// for both, negating the verdict), so there is no distinct `neq` override to key.
+/// Since WI-1125 that last clause is ENFORCED rather than merely true in practice:
+/// a carrier supplying its own `neq` is refused at load
+/// ([`super::load::LoadError::CarrierSuppliesNeq`]), so no program reaching this
+/// pass can hold one for this probe to have missed.
 struct EqFamilySyms {
     eq_spec: Symbol,
     eq_short: Symbol,

@@ -362,11 +362,19 @@ end
 //
 // WI-755 did keep a NARROW residual of that gate, for the one shape the resolver
 // cannot see — a carrier whose override is its own `neq`, which keys nothing in an
-// `eq`-built dispatch index. It is not what these rows exercise (their carrier
-// overrides `eq`), and the proof-side face of that hole predates WI-755 and is
-// WI-1125's: a `requires neq(c, Red)` over a `neq`-only carrier PROVES here, and
-// did before this file existed. Every fixture above overrides `eq`, which is why
-// WI-756 never reached it.
+// `eq`-built dispatch index. It was not what these rows exercise (their carrier
+// overrides `eq`), and the proof-side face of that hole predated WI-755: a
+// `requires neq(c, Red)` over a `neq`-only carrier PROVED here, structurally,
+// against the carrier's own inequality, and did before this file existed — every
+// fixture above overrides `eq`, which is why WI-756 never reached it.
+//
+// **WI-1125 closed it by refusing the shape**: a carrier supplying its own `neq`
+// (any of the three routes, with or without an `eq`) is a load error, because
+// `neq <=> not(eq)` makes it derived and no evaluator ever consulted it. So the
+// residual gate is gone and no program reaching any of this file's four sites can
+// carry an equality the resolver cannot see. The rows are in
+// `wi1125_neq_not_an_override_test`, one per consumer — including this file's
+// sites 1-3, whose `neq`-only shapes it drives directly rather than by analogy.
 
 /// A rule-body call to `needy(Red)`, whose precondition `neq(c, Red)` is FALSE
 /// under either carrier's own equality — structurally by reflexivity, and under

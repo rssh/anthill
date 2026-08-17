@@ -25,6 +25,14 @@ sort anthill.prelude.PartialEq
     eq(a: T, b: T) -> Bool
     neq(a: T, b: T) -> Bool
   }
+  -- The law that makes `neq` DERIVED, and since WI-1125 the reason a carrier may
+  -- not supply its own: `eq` is the authority, every evaluator computes `neq` as
+  -- its negation (resolver `sem_eq_core`, eval `builtin_neq`, C++ `!=`), and
+  -- equality dispatch keys `PartialEq.eq` suppliers alone. A `neq` binding —
+  -- own member, `fact PartialEq[T = C, neq = …]`, or witness sort — was therefore
+  -- accepted and honoured nowhere; it is now a load error (`CarrierSuppliesNeq`).
+  -- Override `eq` instead; `neq` follows. Spec §8.3 (the rule), §8.7 (the
+  -- binding forms it applies to).
   rule neq(?a, ?b) <=> not(eq(?a, ?b))
 end
 
