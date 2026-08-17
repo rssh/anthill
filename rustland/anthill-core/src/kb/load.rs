@@ -209,10 +209,14 @@ fn unbacked_provider_operation_detail(
     derived_from: Option<&str>,
 ) -> String {
     format!(
+        // WI-818 reversed WI-363 here: BACKING IS EXECUTABLE — a runnable body or a
+        // builtin. A spec-level `rule` is a LAW, not backing (`op_is_executable`,
+        // typing.rs), so this message must NOT offer one as a repair; an author who
+        // added `rule {op}(…) = …` got the byte-identical error back.
         "'{carrier}' provides '{spec}' but does not back operation '{spec}.{op}': there \
-         is no default on '{spec}' (an `operation {op}(…) = …` body or a derivation rule) \
-         and '{carrier}' supplies no own '{op}' (add a body/rule on '{spec}' or an \
-         `operation {op}(…)` on '{carrier}'){}",
+         is no executable default on '{spec}' (an `operation {op}(…) = …` body or a \
+         builtin — a `rule` is a law, not backing) and '{carrier}' supplies no own \
+         '{op}' (add a body on '{spec}' or an `operation {op}(…) = …` on '{carrier}'){}",
         derived_row_clause(spec, derived_from)
     )
 }

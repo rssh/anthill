@@ -1275,3 +1275,6 @@ mod wi1119_dot_on_constrained_param_test;
 
 #[path = "include/wi1114_item_per_file_store_test.rs"]
 mod wi1114_item_per_file_store_test;
+
+#[path = "include/wi733_relation_head_eval_test.rs"]
+mod wi733_relation_head_eval_test;

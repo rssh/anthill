@@ -3,8 +3,10 @@
 -- A LogicalStream[T = S] represents a computation producing zero or more
 -- values of sort S, with backtracking. This is LogicT from Kiselyov et al.
 --
--- Satisfies Stream — head, tail, splitFirst, takeN, collect, isEmpty
--- are inherited via fact Stream[T]. LogicalStream provides splitFirst
+-- Satisfies Stream — head, tail, splitFirst, takeN, isEmpty are inherited
+-- via the `provides Stream` edge below. NOT collect: the eager drains moved
+-- to FiniteCollection (WI-589), which a maybe-infinite carrier cannot honor
+-- — bound it first (takeN -> List) and fold there. LogicalStream provides splitFirst
 -- as the primitive; the rest run through Stream's default bodies over it
 -- (WI-818 — laws alone are SLD-world specification, not evaluable backing).
 --
@@ -25,8 +27,8 @@ sort anthill.prelude.LogicalStream
   effects E = ?
 
   -- LogicalStream satisfies Stream for any T.
-  -- Stream operations (head, tail, splitFirst, takeN, collect, isEmpty)
-  -- are inherited — not redeclared here.
+  -- Stream operations (head, tail, splitFirst, takeN, isEmpty) are
+  -- inherited — not redeclared here. `collect` is NOT among them (WI-589).
   -- LogicalStream must provide splitFirst (Stream's primitive);
   -- head, tail, isEmpty run through Stream's default bodies over it (WI-818).
   -- WI-714: binds Stream.E = LogicalStream.E (not a bare `fact Stream[T]`), so

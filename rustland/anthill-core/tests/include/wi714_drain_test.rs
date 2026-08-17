@@ -15,17 +15,21 @@
 //!   provides `LogicalStream`/`Stream`, never `FiniteCollection`. The eager drains
 //!   (`collect`/`size`/`foldLeft`/`foldRight`) live on `FiniteCollection` precisely
 //!   because they walk to the end and so diverge on a maybe-infinite carrier
-//!   (`stream.anthill:63-68`, WI-589 / proposal library/003 Phase C). Providing
+//!   (`stream.anthill:78-83`, WI-589 / proposal library/003 Phase C). Providing
 //!   `collect` IS the finiteness guarantee (`finite_collection.anthill:27-29`), and
 //!   a Relation cannot honor it — so `r.collect()` / `r.toList` DO NOT exist, by
 //!   design rather than by omission. `Relation`'s provision closure is exactly
 //!   {LogicalStream, Stream, Iterable}.
-//! * `takeN` is the bounded drain: body-backed over `splitFirst` (so eval-reachable,
-//!   unlike the rule-backed `head`/`headOption`), and it returns a `List` — which
-//!   DOES provide `FiniteCollection` (`list.anthill:168`), so the fold is the
-//!   ordinary one. Bound → List → fold: the finiteness enters where it is real.
+//! * `takeN` is the bounded drain: body-backed over `splitFirst`, and it returns a
+//!   `List` — which DOES provide `FiniteCollection` (`list.anthill:176`), so the
+//!   fold is the ordinary one. Bound → List → fold: the finiteness enters where it
+//!   is real. (This bullet used to add "unlike the rule-backed `head`/`headOption`".
+//!   That stopped being true at WI-818, which gave those three default bodies over
+//!   `splitFirst` — the reason for `takeN` here is the BOUND, not evaluability.
+//!   WI-733 supplied no body; it is the Relation-carrier DEFENCE for WI-818's fix,
+//!   in `wi733_relation_head_eval_test`.)
 //! * The bound is not new. WI-713's own walk is already capped (`collect_id_set(…,
-//!   100000)`, `main.anthill:2725` — "a runaway guard; the predicate yields one
+//!   100000)`, `main.anthill:3035` — "a runaway guard; the predicate yields one
 //!   solution per matching WorkItem, far fewer"). So this expresses the SAME
 //!   semantics the consumer has today, with the boilerplate deleted.
 

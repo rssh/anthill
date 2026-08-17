@@ -404,15 +404,31 @@ The empty solution set is just an empty stream; "not found" reuses the Stream AP
 
 | want | use | on empty |
 |---|---|---|
-| a value, assume present | `.head` | partial — errors per `Stream.head` |
+| a value, assume present | `.head` | partial — raises `Error[EmptyStream]` |
 | a total result | `.headOption` | `Option` — `None` = not found |
-| the first solution, today | `.splitFirst` | `none` |
+| the first solution and the rest | `.splitFirst` | `none` |
 | all solutions | the stream / `.takeN(n)` (bounded — see above) | empty stream / list |
 
-`.head`/`.headOption` are given by equational **rules** on `Stream`, so they resolve under SLD but do
-**not** evaluate — the interpreter has no equational-rewrite fallback. Until that gap closes (a WI-567
-follow-on, not 052's), reach the first solution through `.splitFirst`, the primitive both are defined
-from.
+All of these **evaluate** on a relation. `Stream` defines `.head`/`.headOption`/`.tail` by default
+**bodies** over `.splitFirst`, so a carrier supplying only the primitive inherits working
+implementations; the equational laws alongside them are *specification*, and a law is not backing.
+
+**Every one of them carries the relation's own observation row `E ⊇ {Error}`** — reading a relation
+runs the resolver, which can fail — so none of these is callable from a pure operation. `.headOption`
+is *total in its value* (`None` rather than a raise), not effect-free. On top of that row, `.head` and
+`.tail` add `Error[EmptyStream]`, **guarded** by `isEmpty`; a relation is lazy, so that guard is never
+statically refutable and the label always stays. Concretely, `queens.head` is `Board` with
+`{Error, Error[EmptyStream]}`, while `queens.headOption` is `Option[Board]` with `{Error}`. Prefer
+`.headOption` wherever "no solution" is an ordinary outcome — it drops a label, not the row.
+
+Guard discharge is a general typer mechanism, not a relation-specific one: `Int64.div`'s
+`Error[DivisionByZero] :- eq(b, 0)` *does* discharge against a literal divisor. It does not yet fire
+for `isEmpty` on **any** carrier — `head(cons(7, nil))` in a pure operation is refused today, exactly
+as on a relation. Closing that is WI-567; until it lands, "the guard stays" is the rule everywhere,
+and the laziness argument above says only that a relation is where it must stay *permanently*.
+
+A relation is an unordered **bag**: which solution `.head` returns is the resolver's enumeration
+order, not a promise.
 
 ### Destructuring — positional today, by-name optional
 
