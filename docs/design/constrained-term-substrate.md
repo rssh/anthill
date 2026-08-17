@@ -488,6 +488,27 @@ Soundness: this holds **only for a concrete carrier** (a ground sort, so a real 
 instance to dispatch through, so the guard **suspends** (residual `C`, never decided — WI-067).
 Dispatch-under-uncertainty is *labeling*, deferred (§"Limitation ↔ generation").
 
+**Shipped for `eq`/`neq` (WI-616 → WI-755, DELIVERED) — and NOT by this route.** A guarded `{ Error
+:- eq(b, 0) }` now discharges against the carrier's own equality, so the capability this section
+forecasts exists; what it did *not* need was the carried type. `eq`/`neq` are resolver builtins
+(`SemEq`/`SemNeq`), and dispatch keys on the operand's **head functor** through a load-time index of
+every constructor of an eq-overriding carrier — a structural read of the value, no `value_type_term`
+and no `requires` dictionary — then proves `<carrier>.eq(a, b)` by bounded sub-resolution (or the
+eval bridge for a bodied instance). The predicted soundness boundary held under the substitution: it
+is now "an operand not deep-ground, or an override reachable only *inside* the operand, suspends",
+which is the same conservative floor arrived at from the value's structure rather than from its type.
+One case the structural route cannot reach and the type route could: an override supplied as a
+carrier's **`neq`** with no `eq` keys nothing in an index built from `eq` suppliers, so WI-755 kept a
+narrow type-based gate for it (`typing::guard_conjunct_reaches_undispatchable_neq`) — evidence that
+the two routes are not interchangeable, and that what replaced the carried type here covers *most* of
+its job, not all of it. Note which half of the gate had to stay: the *carried-type* read, because the
+question is "what does this carrier declare", which a head-functor index answers only for the members
+it was built from. WI-1125 owns closing the gap properly.
+The general case this section describes — an arbitrary spec-op guard such as `isEmpty(s)` over an
+abstract `Collection`, which has no builtin and no per-functor index — is still open (WI-566/WI-567)
+and does still want the carried type. Read the `eq` outcome as evidence about *one* predicate family
+with a resolver-level implementation, not as this section delivered.
+
 ## Limitation ↔ generation (CLP/CHR framing)
 
 A constraint both *prunes* and *generates* (CLP labeling; CHR propagation):
@@ -542,8 +563,10 @@ full-refinement constraints are a door opened deliberately, not by drift.
   resolver skips today becomes *matchable*. See *§Typed rule patterns — Status*.
 
 **Consumers (dependent tickets, not WI-502 itself):** WI-292 (type-directed `[simp]` firing),
-WI-573 (guarded-effect guard discharge over spec-op guards), runtime monomorphization (dispatch on
-the carried concrete type), WI-574 (generative labeling — deferred).
+WI-573 → **WI-755 (DELIVERED)** — guarded-effect guard discharge over spec-op guards; note that it
+arrived by a *different route* than this document forecasts (see §"A type guard selects a
+dictionary"), runtime monomorphization (dispatch on the carried
+concrete type), WI-574 (generative labeling — deferred).
 
 ## Soundness watch-points
 

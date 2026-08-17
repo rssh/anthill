@@ -1850,6 +1850,29 @@ proof debts. A guard over an enclosing parameter can propagate with that
 parameter substituted. The same effect label may also occur unconditionally;
 refuting one guarded occurrence never removes the unconditional occurrence.
 
+**An `eq`/`neq` guard is refuted by the carrier's OWN equality** (WI-755), because
+the refutation is an ordinary resolution of the negated goal and `=` is the
+dispatched semantic test of §8.3 — so `{ Boom :- eq(c, Red) }` at `risky(Green)`
+drops `Boom` exactly when that carrier's `eq(Green, Red)` is *false*, and keeps it
+when the carrier calls them equal even though they are structurally distinct. A
+carrier with no override is decided structurally, since structural equality *is*
+its instance. The undecided cases keep the effect on the general rule above, and
+they are the ones a *structural* answer would get wrong: an operand still ranging
+over a runtime parameter; an **override reachable inside** an operand whose own
+carrier declares none (`eq(some(Green), some(Red))` over `Option[Color]`) — there is
+no instance at the head to dispatch, and recursing structurally would ignore
+`Color`'s; and a carrier supplying a **`neq`** and no `eq`, which *nothing
+dispatches* — equality dispatch keys `PartialEq.eq` suppliers, and every evaluator
+computes `neq` as the negation of the dispatched `eq` (the §8.3 law), so such an
+override is honoured nowhere and a guard must not be decided against it (WI-1125
+owns making it dispatchable, or deciding it is not an override point). Where the
+carrier supplies **both**, its `eq` decides: `neq` is defined as that `eq`'s
+negation, so dispatching the `eq` *is* consulting the carrier's own equality, and
+the two disagreeing is a coherence question nothing checks today (also WI-1125).
+This replaces WI-573's earlier floor, which kept the effect whenever an override of
+*either* member was merely reachable: sound, but it suspended the `eq` dispatch it
+was waiting for — including on carriers that spelled both members consistently.
+
 Currently implemented effect kinds:
 
 | Effect kind | Meaning |

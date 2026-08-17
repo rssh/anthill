@@ -3,9 +3,10 @@
 //! never by the structural comparison.
 //!
 //! WI-573 gated only the guard-REFUTATION route (`refute_guard` →
-//! `conjunct_refuted`, whose WI-573 floor suspends an `eq`-family conjunct whose
-//! operands reach an overriding carrier). The other three `prove_from_gamma`
-//! call sites do not pass through that gate:
+//! `conjunct_refuted`, whose floor suspended an `eq`-family conjunct whose
+//! operands reach an overriding carrier; WI-755 has since retired that gate — see
+//! the `*_rule_body_refutation_*` section). The other three `prove_from_gamma`
+//! call sites never passed through it:
 //!
 //!   1. `typing.rs` `Expr::Proof` — WI-538's in-body `proof … by derivation`;
 //!   2. `typing.rs` `precondition_proved` — WI-539's call-site `requires`;
@@ -71,8 +72,10 @@
 //!   * every site-2 and site-3 row pins WI-616's behaviour at sites WI-756 did
 //!     not touch. They are this file's regression guard, not its measurement:
 //!     they fail if a future typer-side gate re-structuralizes those paths;
-//!   * the two `*_rule_body_refutation_*` rows pin the asymmetry WI-755 owns —
-//!     see their own section note;
+//!   * the two `*_rule_body_refutation_*` rows pinned the asymmetry WI-755 owned.
+//!     WI-755 has since landed and the custom half flipped from ACCEPT to REJECT,
+//!     so that pair now measures WI-755 (back out its gate removal and the custom
+//!     row loads clean again) rather than WI-756 — see their own section note;
 //!   * `match_arm_constructor_...` and `if_premise_over_an_int_literal_...` are
 //!     the channels that already worked — see the last section's note.
 //!
@@ -335,22 +338,35 @@ end
     );
 }
 
-// ── the two POLARITIES of site 2 are asymmetric (WI-755's subject) ─────────
+// ── the two POLARITIES of site 2 agree again (WI-755) ──────────────────────
 //
-// `check_apply_iter` runs BOTH: `precondition_proved` (ungated — it reaches the
-// resolver, so it consults the carrier's `eq`, as every row above shows) and,
-// in RULE-BODY context only, `precondition_refuted` — which routes through the
-// WI-573-gated `conjunct_refuted` and therefore SUSPENDS on any override rather
-// than deciding. So the same call, with the same definitely-false precondition,
-// is REJECTED on a structural carrier and ACCEPTED on an overriding one. The two
-// rows below pin that; they are the ticket's "the asymmetry is itself worth
-// asserting on", NOT a defect this ticket fixes. Its owner is **WI-755** (retire
-// the now-stale WI-573 pre-gate, WI-573's deferred "option (a)"), which depends
-// on WI-756: the fix is not a proof-path change but an EFFECT-DISCHARGE one —
-// the same gate decides whether a guarded effect DROPS, and
-// `wi573_eq_override_discharge_test::custom_eq_override_suspends_rather_than_dispatches`
-// pins today's conservative keep. When WI-755 lands, the custom row below flips
-// to REJECT and joins its control.
+// `check_apply_iter` runs BOTH: `precondition_proved` (which reaches the resolver
+// and so consults the carrier's `eq`, as every row above shows) and, in RULE-BODY
+// context only, `precondition_refuted` (via `conjunct_refuted`). WI-756 measured
+// those two DISAGREEING: `conjunct_refuted` sat behind WI-573's pre-gate, which
+// suspended every eq-family conjunct over an overriding carrier rather than
+// deciding it, so the same call with the same definitely-false precondition was
+// REJECTED on a structural carrier and ACCEPTED on an overriding one. WI-756
+// recorded that asymmetry here rather than fixing it — its owner was **WI-755**
+// (retire the now-stale pre-gate, WI-573's deferred "option (a)").
+//
+// **WI-755 landed**, so the two rows below now agree: the refutation polarity
+// reaches the resolver, `neq(Red, Red)` is refuted by reflexivity under either
+// carrier, and both programs are rejected with the same diagnostic. The custom row
+// is the one that flips — restore the deleted pre-gate (its call in
+// `conjunct_refuted` AND the ~140 lines of helpers removed with it; recover both
+// from WI-755's commit) and it loads clean again, which is what makes this pair
+// (not just its effect-discharge twin,
+// `wi573_eq_override_discharge_test::custom_eq_override_dispatches_and_drops`) a
+// measurement of WI-755 rather than a restatement of it.
+//
+// WI-755 did keep a NARROW residual of that gate, for the one shape the resolver
+// cannot see — a carrier whose override is its own `neq`, which keys nothing in an
+// `eq`-built dispatch index. It is not what these rows exercise (their carrier
+// overrides `eq`), and the proof-side face of that hole predates WI-755 and is
+// WI-1125's: a `requires neq(c, Red)` over a `neq`-only carrier PROVES here, and
+// did before this file existed. Every fixture above overrides `eq`, which is why
+// WI-756 never reached it.
 
 /// A rule-body call to `needy(Red)`, whose precondition `neq(c, Red)` is FALSE
 /// under either carrier's own equality — structurally by reflexivity, and under
@@ -394,23 +410,33 @@ fn structural_carrier_rule_body_refutation_rejects() {
 }
 
 #[test]
-fn custom_eq_rule_body_refutation_is_suspended_by_the_wi573_gate() {
-    // THE ASYMMETRY. The identical program, plus one `operation eq` member. The
-    // precondition is just as definitely false, and `precondition_proved` still
-    // declines it semantically — but `precondition_refuted` never asks: the WI-573
-    // pre-gate short-circuits every `eq`-family conjunct whose operand carrier has
-    // an override, so the violation reads as an undetermined float and the rule
-    // body loads CLEAN. Sound (never a false rejection), incomplete, and exactly
-    // what WI-755 retires. If this row starts FAILING with an unsatisfied-`neq`
-    // error, WI-755 has landed and this test should move to assert the rejection —
-    // pairing with its control instead of contrasting with it.
-    let res = load_result(&rule_body_src("wi756.rulebody.custom", CUSTOM_EQ));
+fn custom_eq_rule_body_refutation_rejects_too() {
+    // THE ASYMMETRY, CLOSED (WI-755). The identical program, plus one `operation
+    // eq` member. The precondition is just as definitely false — `Color.eq` is
+    // reflexive whatever else it says, so `neq(Red, Red)` is FALSE under this
+    // carrier's own equality too — and now `precondition_refuted` asks: with the
+    // WI-573 pre-gate gone, the conjunct reaches the resolver, whose `sem_eq_values`
+    // answers reflexivity before any dispatch. So the violation is DECIDED and the
+    // rule body is rejected, exactly as its structural control is.
+    //
+    // This row is one of the two WI-755 measures: restore the deleted pre-gate (see
+    // the section note for what "restore" involves) and it loads clean again — that
+    // WAS its assertion until WI-755, under its old name
+    // `custom_eq_rule_body_refutation_is_suspended_by_the_wi573_gate`.
+    // `structural_carrier_rule_body_refutation_rejects` passes either way
+    // — the gate never fired on a carrier with no override — so it is the control
+    // that says the rejection here is about the polarity, not about `neq(Red, Red)`
+    // being unrejectable in general.
+    let errs = load_result(&rule_body_src("wi756.rulebody.custom", CUSTOM_EQ)).expect_err(
+        "`neq(Red, Red)` is definitely FALSE under the override too (reflexivity is \
+         answered before dispatch), so the rule-body call to `needy(Red)` is a \
+         decided violation and must be rejected — the same verdict as its \
+         structural control",
+    );
     assert!(
-        res.is_ok(),
-        "TODAY the WI-573 pre-gate suspends the refutation polarity over an \
-         overriding carrier, so the same violation the structural row rejects \
-         loads clean here (WI-755 owns closing this); got: {:#?}",
-        res.err()
+        is_unsatisfied_precondition(&errs, "neq"),
+        "expected the rule-body precondition violation over the OVERRIDING \
+         carrier; got: {errs:#?}"
     );
 }
 

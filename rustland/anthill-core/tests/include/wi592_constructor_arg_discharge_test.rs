@@ -12,9 +12,10 @@
 //!
 //! This is the constructor-argument analog of `wi067_guard_discharge_test`
 //! (which only exercised Int64 *literal* arguments, never a constructor). The
-//! carrier here uses the STRUCTURAL `Eq` builtin (it only `provides Eq`, with no
-//! override): dispatching a guard whose predicate is a carrier's *custom* spec-op
-//! override is the separate WI-573 work.
+//! carrier here is STRUCTURAL (it only `provides Eq`, with no override), so
+//! structural equality IS its equality. A guard over a carrier's *custom* `eq` is
+//! the separate WI-573 → WI-755 work (`wi573_eq_override_discharge_test`), which
+//! dispatches the override rather than comparing structurally.
 
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
