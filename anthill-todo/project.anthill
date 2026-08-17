@@ -40,9 +40,10 @@ fact Module(name: "scaland", root: "scaland", language: "scala", build: "sbt")
 -- keeps no durable home: its retract would drop the in-memory row and leave the
 -- line on disk.
 fact anthill.persistence.ExtentBinding(
-  store: anthill.persistence.filesystem.IndexedFileStore(
+  store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    convention: anthill.persistence.filesystem.FileConvention.single_file(
-      file: "workitems.anthill")),
+    status_field: "status",
+    id_field: "id",
+    ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
   covers: [WorkItem, Feedback, Tag, StoreFormat])

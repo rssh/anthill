@@ -1,0 +1,1 @@
+fact WorkItem(id: "WI-012", description: some(value: "Bug: deliver/claim commands don't update status in workitems.anthill file — claim reports success but list still shows Open"), context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none)], depends_on: some(value: nil), generates: none, requires_capability: none, status: Verified(at: "2026-03-30T18:49:26Z"))

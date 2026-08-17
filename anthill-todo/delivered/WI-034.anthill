@@ -1,0 +1,1 @@
+fact WorkItem(id: "WI-034", description: some(value: "Rule body type-checking: verify rule body goals have compatible argument types"), context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none)], depends_on: some(value: ["WI-031", "WI-032"]), generates: none, requires_capability: none, status: Delivered(agent: "claude", at: "2026-05-20T10:21:01Z"))

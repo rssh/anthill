@@ -1,0 +1,3 @@
+fact WorkItem(id: "WI-018", description: some(value: "Top-level typing entry point: walk ALL operations, facts, rules in the KB and invoke type_check_operation/type_check_fact/type_check_rule. Integrate into load pipeline (after load_all, before constraint checking)."), context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none)], depends_on: some(value: nil), generates: none, requires_capability: none, status: Verified(at: "2026-03-30T19:14:03Z"))
+
+fact Feedback(workitem: "WI-018", author: "user", content: "Spec only - Rust implementation needed, see WI-031", at: "2026-03-30T19:11:02Z")
