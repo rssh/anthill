@@ -1093,11 +1093,34 @@ bare hash destroys.
 
 **Slug rules**, because they must be total and deterministic: lowercase the
 description's opening, keep `[a-z0-9]`, collapse every other run to a single `-`,
-cut at a word boundary near 30 characters, drop a trailing `-`. **An empty result
+**cut at a word boundary at 30 characters**, drop a trailing `-`. **An empty result
 is legal and the slug is then simply omitted** — a description that is entirely
 non-ASCII (this project writes Ukrainian) or entirely punctuation must still yield
 an id, so the slug can never be load-bearing. WI-1114's `check_segment` already
 accepts this shape and refuses anything that would escape the tree.
+
+**Thirty, measured on 772 of this tracker's own descriptions**, which is the knee:
+24 leaves 10% of items sharing a slug, 30 leaves 4%, and 40 leaves 0.8% for ten
+more characters. Median id 45, filename 56. SEO guidance for blog slugs (3–5 words,
+50–60 characters) does not transfer, because those live in URLs where nobody reads
+them in a column; these are stacked in `ls` output, and terminal width is the
+binding constraint.
+
+**A repeated slug is not a defect — it groups a family.** The largest duplicate
+sets at 30 are `anthill-todo-backend` ×8 (the WI-437 increments) and
+`typer-wi-447-bare-form-prereq` ×4. In an `ls` that reads as structure. The only
+cost is that the ladder reports candidates for such a slug, and the candidate list
+is itself informative.
+
+**Nothing in the storage layer is close to binding.** A 56-character filename sits
+far under the universal 255 component limit, and under Windows' `MAX_PATH` of 260
+for the whole path — the constraint that actually binds first — a typical deep
+checkout still lands around 133. And because the slug rule emits only `[a-z0-9-]`,
+filenames are pure ASCII, so 255 *bytes* and 255 *characters* are the same number
+here and the UTF-8 mismatch that bites ext4 never arises. (FAT32 and exFAT survive
+on USB sticks and every EFI System Partition, but not as a git working tree — no
+symlinks, no permission bits — and what they contribute is another case-insensitive
+filesystem, which the canonical-case rule above already covers.)
 
 **The slug goes stale, and that is accepted.** Descriptions here are rewritten for
 months — WI-1114's own was corrected by an amendment days after it was filed — so
@@ -1865,14 +1888,13 @@ but it abandons the id registry.
 
 ## 12. Open questions
 
-* **The slug width** (§6.5). Shape, alphabet and hash width are settled —
-  time-hash-slug, Crockford base32, five characters — but the slug's cut is still
-  a judgement: long enough to tell two items filed the same day apart, short
-  enough that `ls open/` fits a terminal. Worth rendering a real `list` at two or
-  three settings and looking at it. Note the hash width is *not* irreversible: ids
-  are grandfathered anyway (§6.5), so if five ever proved narrow you would mint
-  six tomorrow and every existing id would keep working — the same heterogeneity
-  the `WI-NNN` → `WI-<time>-<hash>` transition already requires.
+* ~~**The slug width.**~~ **Settled at 30** (§6.5), measured on 772 of this
+  tracker's own descriptions — the knee of the ambiguity curve, median id 45. The
+  whole id shape is now settled: `WI-<YYYYMMDD>-<5 Crockford>-<slug≤30>`. Note the
+  hash width was never irreversible either: ids are grandfathered anyway, so if
+  five ever proved narrow you would mint six tomorrow and every existing id would
+  keep working — the same heterogeneity the `WI-NNN` → `WI-<time>-<hash>`
+  transition already requires.
 * **Whether the id needs a version marker.** The slug rule and the hash input are
   frozen per id, so changing either later is harmless for existing ids — but
   nothing in the id records *which* rule made it, so a future audit could not tell.
