@@ -355,6 +355,43 @@ fn a_satellite_persisted_after_a_move_lands_at_the_new_path() {
     );
 }
 
+/// A satellite buffered BEFORE its own item, in the same flush, still lands in
+/// that item's file (WI-1118).
+///
+/// A satellite's path is whatever file holds its item, so a single sequential
+/// pass over the buffer makes the answer depend on the order the caller happened
+/// to persist in — this exact sequence failed with "this store holds no file for
+/// WI-9". Nothing about these two rows says one must be written first; the flush
+/// places every primary before it asks any satellite where it goes.
+///
+/// CONTROL: back out the partition in pass 3 and this is the only test here that
+/// fails. `a_satellite_persisted_after_a_move_lands_at_the_new_path` above passes
+/// either way — it buffers the item's move first.
+#[test]
+fn a_satellite_buffered_before_its_item_lands_in_the_item_file() {
+    let mut f = Fixture::new(&[("open/WI-1.anthill", WI1)]);
+    let note = f.note("WI-9", "arrived first");
+    f.persist(note).expect("persist buffers");
+    let open = f.open();
+    let item = f.item("WI-9", "the item it names", open);
+    f.persist(item).expect("persist buffers");
+    f.flush();
+
+    let text = f.read("open/WI-9.anthill");
+    assert!(text.contains("id: \"WI-9\""), "the item is there: {text}");
+    assert!(
+        text.contains("arrived first"),
+        "and so is the satellite that was buffered ahead of it: {text}"
+    );
+    // The item's own row is written first regardless of buffer order, so the file
+    // reads item-then-satellites (§4).
+    let (i, n) = (
+        text.find("fact Item(").expect("item row"),
+        text.find("fact Note(").expect("note row"),
+    );
+    assert!(i < n, "the item leads its own file: {text}");
+}
+
 /// A row carrying neither key is filed under its own functor at the root — the
 /// store-level home a format stamp needs (§11 step 4). It is NOT an error and it
 /// is NOT an item.

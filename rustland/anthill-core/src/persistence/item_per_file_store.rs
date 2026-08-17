@@ -952,7 +952,25 @@ impl Store for ItemPerFileStore {
 
         // Pass 3 — plain appends. Satellites resolve here, so an item persisted
         // in this same flush is already at its final path.
-        for write in unpaired_writes {
+        //
+        // PRIMARIES ARE PLACED BEFORE ANY SATELLITE IS ASKED WHERE IT GOES. A
+        // satellite's path is whatever file holds its item, so without this the
+        // answer depends on the order the caller happened to buffer in: a
+        // `Feedback` persisted ahead of its own `WorkItem` in one flush failed
+        // with "this store holds no file for X" — a property of the sequence,
+        // not of the rows. A migration (WI-1118) replays a whole tracker in one
+        // flush and has no business sorting its input by a routing rule that
+        // lives in here.
+        //
+        // A STABLE PARTITION, not a sort: within each group the caller's order
+        // is the order rows land in their file, so an item file reads
+        // item-then-satellites (§4) and two feedback rows keep their sequence.
+        // `Route::StoreLevel` rides with the satellites — its path depends on
+        // nothing this flush does.
+        let (primaries, rest): (Vec<PendingWrite>, Vec<PendingWrite>) = unpaired_writes
+            .into_iter()
+            .partition(|w| matches!(w.route, Route::Item { .. }));
+        for write in primaries.into_iter().chain(rest) {
             if let Route::Item { id, dir } = &write.route {
                 let path = self.item_path(id, dir);
                 match self.by_item.get(id) {

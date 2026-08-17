@@ -392,10 +392,11 @@ fn collect_workitems(kb: &KnowledgeBase) -> Result<Vec<WorkItemInfo>, String> {
 // ── The declared store (WI-830) ─────────────────────────────────
 
 use anthill_core::eval::{value_functor, Interpreter, Value};
+use anthill_core::kb::typing::get_named_string_arg;
 use anthill_core::persistence::file_store::FileConvention;
 use anthill_core::persistence::indexed_file_store::IndexedFileStore;
 use anthill_core::persistence::item_per_file_store::{ItemFields, ItemPerFileStore, LayoutFault};
-use anthill_core::persistence::Store;
+use anthill_core::persistence::{print, Store};
 
 /// A project file paired with its parsed IR, so the store can associate each fact's
 /// RuleId with its byte range on disk.
@@ -710,6 +711,527 @@ or tag row is in its item's file.
   --fix   move each misplaced file to the path its own fact names (the fact wins).
           It will not choose between two files claiming one id, split a file
           holding several items, or guess where an unreadable row belongs.";
+
+/// `anthill-todo migrate --to item-per-file` — the LAYOUT move (design §11).
+///
+/// Explodes the rows this project's store covers into one file per item under a
+/// directory per state, and rewrites the project's `ExtentBinding` to name the
+/// new layout. Steps 1 and 3 of §11; step 4 is deliberately absent and
+/// [`MIGRATE_USAGE`] says why.
+///
+/// PURELY LOCAL, which is a change from what §11 was drafted as. Creating one
+/// mirror entry per item was step 2 for as long as the forge ALLOCATED ids — an
+/// unmirrored item had no permanent id, so mirroring and migrating were
+/// inseparable. With ids minted locally that step is `export`, run separately and
+/// only if the project wants a mirror at all. So there is no network here,
+/// nothing paced under a rate limit, and nothing to resume across an API.
+///
+/// IT WRITES NOTHING UNTIL IT CAN WRITE EVERYTHING. Every row is buffered and one
+/// `flush` lays down the whole tree. That flush routes and path-checks every row —
+/// including [`ItemPerFileStore`]'s refusal of a file it never read — before it
+/// writes the first byte, so a tree with debris in it aborts with the old layout
+/// untouched.
+fn run_migrate(
+    interp: &Interpreter,
+    declared: &DeclaredStore,
+    store_root: &Path,
+    project_items: &[ProjectFile],
+    per_file: &[load::LoadResult],
+    args: &[String],
+) -> i32 {
+    let mut to: Option<&str> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                println!("{MIGRATE_USAGE}");
+                return 0;
+            }
+            "--to" => match iter.next() {
+                Some(v) => to = Some(v.as_str()),
+                None => {
+                    eprintln!("error: --to requires a value");
+                    eprintln!("{MIGRATE_USAGE}");
+                    return runner::EXIT_COMPILE;
+                }
+            },
+            other => match other.strip_prefix("--to=") {
+                Some(v) => to = Some(v),
+                None => {
+                    eprintln!("error: unknown migrate option `{other}`");
+                    eprintln!("{MIGRATE_USAGE}");
+                    return runner::EXIT_COMPILE;
+                }
+            },
+        }
+    }
+    match to {
+        Some("item-per-file") => {}
+        // The ticket and §11 were written when this move also created ~1110
+        // GitHub issues, and named it after that. It no longer does anything with
+        // a forge, so the old name is refused with the reason rather than
+        // accepted as an alias — a user typing it is asking for the mirror, and
+        // silently giving them a local rewrite would answer a different question.
+        Some("github-coordinated") => {
+            eprintln!(
+                "error: `--to github-coordinated` no longer names this operation. Migration is \
+                 a purely local rewrite of the on-disk layout (`--to item-per-file`); publishing \
+                 the tracker to a forge is a separate `export`, run only if the project wants a \
+                 mirror at all (design §11 step 2, §7)."
+            );
+            return runner::EXIT_COMPILE;
+        }
+        Some(other) => {
+            eprintln!("error: `{other}` is not a layout this build can migrate to");
+            eprintln!("{MIGRATE_USAGE}");
+            return runner::EXIT_COMPILE;
+        }
+        // Not reachable through the dispatch, which routes here only on `--to`
+        // or `--help` — and it stays because the two are 400 lines apart. If the
+        // dispatch condition ever loosens, this says so instead of migrating a
+        // project that asked for the schema stamp.
+        None => {
+            eprintln!("error: migrate requires `--to <layout>`");
+            eprintln!("{MIGRATE_USAGE}");
+            return runner::EXIT_COMPILE;
+        }
+    }
+
+    // IDEMPOTENT AT THE ONLY POINT IT CAN BE. The binding is the whole record of
+    // which layout a project is on, so a project already naming the target has
+    // nothing to do — and says so on stdout with exit 0, because re-running a
+    // finished migration is not an error.
+    if matches!(declared.store, BuiltStore::ItemPerFile(_)) {
+        println!("migrate: this project already declares {ITEM_PER_FILE_STORE}");
+        return 0;
+    }
+
+    let mut covered = Vec::with_capacity(declared.covers.len());
+    for name in &declared.covers {
+        match interp.kb().try_resolve_symbol(name) {
+            Some(s) => covered.push(s),
+            None => {
+                eprintln!("error: this project's binding covers `{name}`, which resolves to nothing");
+                return runner::EXIT_RUNTIME;
+            }
+        }
+    }
+
+    // WHICH FILES THIS MOVES, and it is a per-FILE decision. A file all of whose
+    // facts the binding covers is a store file: its rows move and it goes. A file
+    // with none is somebody else's (`project.anthill` holds `Project`, `Module`
+    // and the binding itself) and is left alone.
+    //
+    // A file holding SOME of each is refused rather than split. Splitting means
+    // rewriting a hand-written file around the rows removed from it, and the two
+    // readings of what should survive — the prose above a moved fact, say — are
+    // not something to guess at on a one-way rewrite of a tracker.
+    let mut consumed: Vec<(&Path, Vec<anthill_core::kb::RuleId>)> = Vec::new();
+    for (file, result) in project_items.iter().zip(per_file.iter()) {
+        let mut mine = Vec::new();
+        for &rule in &result.fact_rule_ids {
+            let head = interp.kb().rule_head(rule);
+            let Some(functor) = fact_functor(interp.kb(), head) else {
+                eprintln!(
+                    "error: {}: a fact whose head has no functor cannot be routed",
+                    file.path.display()
+                );
+                return runner::EXIT_RUNTIME;
+            };
+            if covered.contains(&functor) {
+                mine.push(rule);
+            }
+        }
+        if mine.is_empty() {
+            continue;
+        }
+        // AGAINST EVERY ITEM IN THE FILE, not against its facts. A file is
+        // consumed — its rows moved, and the file itself REMOVED below — so the
+        // question is whether it holds anything else at all, and `fact_rule_ids`
+        // can only ever answer for facts. Counting facts passed a file whose rows
+        // were all covered but which also held a `rule`, and then deleted it: an
+        // unrecoverable loss on a one-way rewrite (found in review, driven by
+        // `a_file_holding_a_rule_beside_its_rows_is_refused`).
+        let (facts, others) = item_census(&file.parsed);
+        if mine.len() != facts || others != 0 {
+            eprintln!(
+                "error: {} holds {} row(s) this store covers and {} item(s) it does not; \
+                 migration moves a whole file or none of it, and it removes the files it moves. \
+                 Move the covered rows into the store's own file first",
+                file.path.display(),
+                mine.len(),
+                facts - mine.len() + others,
+            );
+            return runner::EXIT_RUNTIME;
+        }
+        consumed.push((file.path.as_path(), mine));
+    }
+    if consumed.is_empty() {
+        eprintln!("error: this project has no rows to migrate — no file holds any of the functors its binding covers");
+        return runner::EXIT_RUNTIME;
+    }
+
+    // ORPHANS ARE CARRIED ACROSS, NOT REFUSED AND NOT DROPPED. A satellite whose
+    // item has no row names a file that will never exist, so it cannot go through
+    // the store: `path_of` refuses it, deliberately and under test
+    // (`a_satellite_naming_no_item_is_refused_at_flush`).
+    //
+    // THAT REFUSAL IS ABOUT CREATING ONE, AND THIS IS INHERITING ONE — the store
+    // draws exactly that line, tolerating on READ (`LayoutFault::OrphanRow`, and
+    // explicitly NOT blocking) what it refuses on write. And the read side has to
+    // tolerate it, because orphans are not a defect to be cleaned up before
+    // migrating: `Feedback` is `monotone` (proposal 053), so it cannot be
+    // retracted at all, and `delete` therefore leaves an item's feedback behind
+    // BY DESIGN. Refusing to migrate over them would lock out every tracker that
+    // has ever deleted an item that had feedback.
+    //
+    // So they are written where they will be read back, reported here, and
+    // reported by `fsck` from then on — which is the state §10 already describes.
+    let orphans = orphan_satellites(interp.kb(), &consumed);
+
+    let mut target = ItemPerFileStore::new(
+        store_root.to_path_buf(),
+        ItemFields::new(STAGE0_STATUS_FIELD, STAGE0_ID_FIELD, STAGE0_REF_FIELD),
+    );
+    let mut rows = 0usize;
+    for (path, rules) in &consumed {
+        for &rule in rules {
+            if orphans.iter().any(|(r, _, _)| *r == rule) {
+                continue;
+            }
+            let kb = interp.kb();
+            if let Err(e) = target.persist(
+                kb,
+                kb.rule_head(rule),
+                kb.rule_clause_kind(rule),
+                kb.rule_domain(rule),
+                kb.rule_meta(rule),
+            ) {
+                eprintln!("error: {}: {e}", path.display());
+                return runner::EXIT_RUNTIME;
+            }
+            rows += 1;
+        }
+    }
+    if let Err(e) = target.flush(interp.kb()) {
+        eprintln!("error: writing the new layout: {e}");
+        // NOT "nothing was written", which was the first version of this line and
+        // was false: the flush routes everything before it writes anything, but it
+        // then writes file by file, so an I/O failure part way through leaves the
+        // files before it on disk (found in review). And the debris is not inert —
+        // a re-run builds a store that never read those files and refuses them
+        // with `refuse_unknown_occupant`'s message, which diagnoses a parse
+        // failure that did not happen. So say what may be there and how to clear it.
+        eprintln!(
+            "note: the project still names its old layout and {} is untouched, but a partly \
+             written tree may be on disk. Remove the state directories under {} before running \
+             this again — a re-run will otherwise refuse them as files it never read",
+            consumed
+                .iter()
+                .map(|(p, _)| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            store_root.display()
+        );
+        return runner::EXIT_RUNTIME;
+    }
+
+    // The orphans, written with the same printer the store writes rows with, so
+    // they reload exactly as they were.
+    if !orphans.is_empty() {
+        let path = store_root.join(ORPHAN_FILE);
+        let mut text = String::from(ORPHAN_HEADER);
+        for (rule, _, _) in &orphans {
+            let kb = interp.kb();
+            text.push_str(&print::print_fact(kb, kb.rule_head(*rule), kb.rule_meta(*rule)));
+            text.push_str("\n\n");
+        }
+        if let Err(e) = write_atomic(&path, &text) {
+            eprintln!("error: writing {ORPHAN_FILE}: {e}");
+            return runner::EXIT_RUNTIME;
+        }
+    }
+
+    // THE BINDING IS REWRITTEN BEFORE THE OLD FILES GO, and the order is the
+    // crash story rather than a preference. Both files present is the dangerous
+    // state — every row exists twice — and only the NEW binding makes it loud:
+    // the item-per-file store reads the old file too, finds each id in two places
+    // and reports `DuplicateId`, which blocks at startup. Under the old binding
+    // the same tree just loads every row twice and answers `list` with doubles.
+    // So the window between these two steps is the one that shouts.
+    let binding_file = match rewrite_binding(interp, project_items, per_file, store_root, &covered) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: rewriting the extent binding: {e}");
+            eprintln!(
+                "note: the new layout is written but this project still names the old one. \
+                 Delete the new state directories to abandon the migration, or fix the binding by hand"
+            );
+            return runner::EXIT_RUNTIME;
+        }
+    };
+    for (path, _) in &consumed {
+        if let Err(e) = fs::remove_file(path) {
+            eprintln!("error: removing the migrated file {}: {e}", path.display());
+            return runner::EXIT_RUNTIME;
+        }
+    }
+
+    println!(
+        "migrated {rows} row(s) from {} file(s) into {}",
+        consumed.len(),
+        store_root.display()
+    );
+    println!("binding rewritten in {}", binding_file.display());
+    if !orphans.is_empty() {
+        println!(
+            "{} row(s) name a work item that has no row of its own; they are kept in {ORPHAN_FILE}:",
+            orphans.len()
+        );
+        for (_, functor, item) in &orphans {
+            println!("  {functor} names `{item}`");
+        }
+        println!("`fsck` reports these from now on — they do not block anything");
+    }
+    println!("run `anthill-todo fsck` to check the new layout against the facts");
+    0
+}
+
+/// Where migration keeps rows naming an item that has none of its own.
+const ORPHAN_FILE: &str = "orphaned.anthill";
+
+const ORPHAN_HEADER: &str = "\
+-- Rows naming a work item that has no row of its own, kept here by
+-- `anthill-todo migrate --to item-per-file`: the new layout files a row in its
+-- item's file, and these have no item.
+--
+-- They are not damage. `Feedback` is `monotone` — it cannot be retracted — so
+-- deleting a work item leaves its feedback behind by design, and this is where
+-- that feedback lives once every other row has moved into its item's file.
+-- `fsck` reports each one as an orphan and does not block on it.
+--
+-- To retire one, delete it here. To give it a home again, restore the item it
+-- names and move the row into that item's file.
+
+";
+
+const MIGRATE_USAGE: &str = "\
+usage: anthill-todo migrate [--to item-per-file]
+
+  migrate                   stamp a pre-versioning project with the current data
+                            format (the SCHEMA a row is written in).
+  migrate --to item-per-file
+                            move this project's work items from one shared file to
+                            one file per item under a directory per state, and
+                            rewrite its `ExtentBinding` to name the new layout.
+
+Two jobs under one name, and they do not overlap: the first versions how a row is
+written, the second which file it lives in.
+
+The layout move is purely local: no network, no forge. Publishing the tracker to a
+forge is a separate operation.
+
+THE DATA-FORMAT STAMP IS NOT TOUCHED. `StoreFormat` versions the SCHEMA a row is
+written in, and this changes no schema — the same entities with the same fields,
+redistributed across files. What changed is the layout, which `ExtentBinding`
+already records and which the host already refuses loudly when a build has no
+backend for it.";
+
+/// The rows about to be migrated that name a work item no row defines, as
+/// `(the row, its functor, the id it names)` in source order.
+///
+/// The same classification the store routes by — a row carrying the id field is
+/// the item, a row carrying the reference field is a satellite of one — but asked
+/// of the whole set at once, which is the question migration has and a per-write
+/// store does not: the store is handed one row and cannot know whether the item
+/// it names is somewhere later in the same flush.
+fn orphan_satellites(
+    kb: &KnowledgeBase,
+    consumed: &[(&Path, Vec<anthill_core::kb::RuleId>)],
+) -> Vec<(anthill_core::kb::RuleId, String, String)> {
+    let mut items: Vec<String> = Vec::new();
+    let mut refs: Vec<(anthill_core::kb::RuleId, String, String)> = Vec::new();
+    for (_, rules) in consumed {
+        for &rule in rules {
+            let head = kb.rule_head(rule);
+            let Term::Fn {
+                functor, named_args, ..
+            } = kb.get_term(head)
+            else {
+                continue;
+            };
+            // The store's own field reader, so "carries the id field" means here
+            // exactly what it means when the store routes the same row.
+            let arg = |field: &str| get_named_string_arg(kb, named_args, field);
+            if let Some(id) = arg(STAGE0_ID_FIELD) {
+                items.push(id);
+            } else if let Some(item) = arg(STAGE0_REF_FIELD) {
+                refs.push((rule, kb.local_name_of(*functor).to_string(), item));
+            }
+        }
+    }
+    refs.retain(|(_, _, item)| !items.contains(item));
+    refs
+}
+
+/// What a parsed file holds, as `(facts, everything else)`.
+///
+/// "Everything else" counts an `import` and a namespace `{< … >}` description
+/// block too: they are not `items` (a `Namespace` carries them as its own fields)
+/// but they are content, and a file being consumed must have none of it.
+///
+/// Namespaces are descended rather than counted, and the synthetic one
+/// [`assign_default_namespace`] wraps a bare fact file in is exactly why: counted,
+/// every project file would look like it held one non-fact item.
+fn item_census(parsed: &ParsedFile) -> (usize, usize) {
+    use anthill_core::parse::ir::Item;
+
+    fn walk(items: &[Item], facts: &mut usize, others: &mut usize) {
+        for item in items {
+            match item {
+                Item::Fact(_) => *facts += 1,
+                Item::Namespace(ns) => {
+                    *others += ns.imports.len() + ns.descriptions.len();
+                    walk(&ns.items, facts, others);
+                }
+                _ => *others += 1,
+            }
+        }
+    }
+
+    let (mut facts, mut others) = (0, 0);
+    walk(&parsed.items, &mut facts, &mut others);
+    (facts, others)
+}
+
+/// The functor a fact's head names, or `None` for a head that has none.
+fn fact_functor(
+    kb: &KnowledgeBase,
+    term: TermId,
+) -> Option<anthill_core::intern::Symbol> {
+    match kb.get_term(term) {
+        Term::Fn { functor, .. } => Some(*functor),
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
+    }
+}
+
+/// Point the project's `ExtentBinding` at the item-per-file layout, and answer
+/// which file was changed.
+///
+/// A SPLICE OVER THE FACT'S OWN SPAN, not a regenerated file. `project.anthill` is
+/// hand-written and its comments explain the binding they sit above; rewriting the
+/// whole file would deliver a correct binding and silently drop the prose that
+/// says why it reads the way it does.
+///
+/// A project that declared NO binding was running on [`default_binding`], which is
+/// a value with no text behind it — so there is no span to splice and the binding
+/// is appended instead. That shape is supported (`PROJECT_MARKERS` accepts a
+/// directory holding nothing but `workitems.anthill`), so it gets a written
+/// binding here rather than a refusal.
+fn rewrite_binding(
+    interp: &Interpreter,
+    project_items: &[ProjectFile],
+    per_file: &[load::LoadResult],
+    store_root: &Path,
+    covered: &[anthill_core::intern::Symbol],
+) -> Result<PathBuf, String> {
+    let binding_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.persistence.ExtentBinding")
+        .ok_or("`anthill.persistence.ExtentBinding` does not resolve")?;
+
+    // `covers` is carried across verbatim rather than re-derived: it is the
+    // project's statement of what this store holds, and migration changes where
+    // rows live, not which ones are held. Short names, because that is what
+    // resolves in the file being written.
+    let covers: Vec<&str> = covered
+        .iter()
+        .map(|s| interp.kb().local_name_of(*s))
+        .collect();
+    let text = item_per_file_binding(&covers);
+
+    for (file, result) in project_items.iter().zip(per_file.iter()) {
+        let spans = file.parsed.fact_spans();
+        if spans.len() != result.fact_rule_ids.len() {
+            return Err(format!(
+                "{}: {} fact span(s) against {} loaded fact(s)",
+                file.path.display(),
+                spans.len(),
+                result.fact_rule_ids.len()
+            ));
+        }
+        for (&rule, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
+            let head = interp.kb().rule_head(rule);
+            if fact_functor(interp.kb(), head) != Some(binding_sym) {
+                continue;
+            }
+            let source = fs::read_to_string(&file.path)
+                .map_err(|e| format!("{}: {e}", file.path.display()))?;
+            let (start, end) = (span.start as usize, span.end as usize);
+            let (before, after) = (
+                source
+                    .get(..start)
+                    .ok_or_else(|| format!("{}: {start} is not a character boundary", file.path.display()))?,
+                source
+                    .get(end..)
+                    .ok_or_else(|| format!("{}: {end} is not a character boundary", file.path.display()))?,
+            );
+            write_atomic(&file.path, &format!("{before}{text}{after}"))?;
+            return Ok(file.path.clone());
+        }
+    }
+
+    let path = store_root.join("project.anthill");
+    let mut source = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if !source.is_empty() && !source.ends_with('\n') {
+        source.push('\n');
+    }
+    source.push_str("\n-- Written by `anthill-todo migrate --to item-per-file`.\n");
+    source.push_str(&text);
+    source.push('\n');
+    write_atomic(&path, &source)?;
+    Ok(path)
+}
+
+/// Write through a temp file and a rename, the way the stores do.
+///
+/// The binding rewrite is the step whose interruption the migration's ordering is
+/// designed around (see [`run_migrate`]), and that reasoning assumes the file is
+/// either the old binding or the new one. A truncating write can leave it neither.
+fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
+    let temp = path.with_extension("anthill.tmp");
+    fs::write(&temp, content).map_err(|e| format!("{}: {e}", temp.display()))?;
+    fs::rename(&temp, path).map_err(|e| format!("{} → {}: {e}", temp.display(), path.display()))
+}
+
+/// The `ExtentBinding` text a migrated project carries. Twin of the
+/// [`EXAMPLE_BINDING`] `init` scaffolds, for the other layout.
+fn item_per_file_binding(covers: &[&str]) -> String {
+    format!(
+        "fact anthill.persistence.ExtentBinding(\n  \
+           store: anthill.persistence.filesystem.ItemPerFileStore(\n    \
+             root: \".\",\n    \
+             status_field: \"{STAGE0_STATUS_FIELD}\",\n    \
+             id_field: \"{STAGE0_ID_FIELD}\",\n    \
+             ref_field: \"{STAGE0_REF_FIELD}\"),\n  \
+           role: anthill.persistence.ExtentRole.mirror(),\n  \
+           covers: [{}])",
+        covers.join(", ")
+    )
+}
+
+/// stage0's spelling of the three fields [`ItemPerFileStore`] routes on. They are
+/// this CLI's knowledge, not the storage substrate's — which is why they travel in
+/// the project's binding — and these constants are where the binding gets written
+/// from and, through it, where `declared_fields` reads them back.
+const STAGE0_STATUS_FIELD: &str = "status";
+const STAGE0_ID_FIELD: &str = "id";
+const STAGE0_REF_FIELD: &str = "workitem";
 
 /// The backends this build compiles in.
 enum Backend {
@@ -1422,6 +1944,38 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // it to the registry, because that is the only point at which the host still holds it.
     if bundle_argv.first().map(|s| s.as_str()) == Some("fsck") {
         return run_fsck(&mut declared.store, &bundle_argv[1..]);
+    }
+
+    // `migrate --to <layout>` is served here for the same reason and one more.
+    // Like `fsck` it wants the concrete backend — to answer "already migrated" off
+    // the binding rather than by guessing at the tree. Unlike `fsck` it also needs
+    // the SECOND store, and the bundle cannot construct one: `open_store` is not
+    // expressible against today's spec (design §8.2.1, WI-1113 measured), so the
+    // anthill side has no way to write rows through a store other than the one it
+    // was handed. The host holds both, so the layout move lives here.
+    //
+    // The bundle keeps its own `migrate`, which stamps a pre-versioning project
+    // with the current data format (WI-434). The two do not overlap: that one is
+    // about the SCHEMA a row is written in, this one about which file it lives in.
+    //
+    // `--to` is what selects THIS `migrate` over the bundle's, so a bare
+    // `migrate` still reaches the schema stamp. `--help` is taken too, because
+    // otherwise the one command that has options is the one whose usage text is
+    // unreachable (found in review) — and the text covers both forms, since from
+    // the outside they are one command's two jobs.
+    if bundle_argv.first().map(|s| s.as_str()) == Some("migrate")
+        && bundle_argv[1..]
+            .iter()
+            .any(|a| a == "--to" || a.starts_with("--to=") || a == "--help" || a == "-h")
+    {
+        return run_migrate(
+            &interp,
+            &declared,
+            &store_root,
+            &project_items,
+            &per_file_results[project_offset..],
+            &bundle_argv[1..],
+        );
     }
 
     // Otherwise the layout must agree with the facts before anything writes through it.
