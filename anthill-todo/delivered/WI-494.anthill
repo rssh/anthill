@@ -1,0 +1,3 @@
+fact WorkItem(id: "WI-494", description: some(value: "anthill-todo help does not show preopen and promote commands"), context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none)], depends_on: some(value: nil), generates: none, requires_capability: none, status: Delivered(agent: "claude", at: "2026-07-01T14:45:11Z"))
+
+fact Tag(workitem: "WI-494", name: "bug")

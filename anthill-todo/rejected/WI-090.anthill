@@ -1,0 +1,1 @@
+fact WorkItem(id: "WI-090", description: some(value: "test"), context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none)], depends_on: some(value: nil), generates: none, requires_capability: none, status: Rejected(reason: "invalid: test entry", at: "2026-05-30T08:35:19Z"))

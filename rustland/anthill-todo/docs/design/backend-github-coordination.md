@@ -1908,19 +1908,32 @@ would be the silent skip this section exists to prevent.
 ## 11. Migration
 
 ```bash
-anthill-todo migrate --to github-coordinated
+anthill-todo migrate --to item-per-file
 ```
+
+**The spelling changed with the operation (WI-1118).** It was `--to
+github-coordinated` while this also created ~1110 issues; it now touches no forge,
+so the old spelling is *refused with its reason* rather than accepted as an alias —
+someone typing it is asking for the mirror, and quietly handing them a local
+rewrite answers a different question. Host-served, beside `fsck`, and for one more
+reason than `fsck` has: it needs a SECOND store, and the bundle cannot build one
+(§8.2.1 — `open_store` is not expressible against today's spec).
 
 1. Explode `workitems.anthill` into one file per item under `<state>/`, each carrying
    its item's `Feedback` and `Tag` facts. Pure local rewrite; reviewable as one commit
    (a large one, and a one-time one). **The file format is whatever §5.3 has settled by
-   the time this runs** — this repo's tracker migrates exactly once, so WI-1120 lands
-   before this step and migration writes `WI-NNN.anthill.md` (anthill head + chapters), not an
-   intermediate `.anthill` form that would have to be migrated again. Every
-   `WI-NNN.anthill` spelling elsewhere in this document predates that decision and
-   illustrates the layout, not the encoding — with one exception that is *not*
-   illustration: §7.1's mirror-body pointer is generated output, and has been
-   updated to `.md` accordingly.
+   the time this runs**, which as shipped (WI-1118) is plain `fact` syntax in
+   `WI-NNN.anthill` — the rows are re-printed through the same printer every other
+   write uses, so what lands is what the store would have written anyway.
+
+   An earlier draft required WI-1120's markdown encoding to land FIRST, on the rule
+   that the tracker migrates exactly once. That ordering was withdrawn (see below):
+   with the forge out of the picture a repeat is one mechanical commit that changes
+   no data, and the conflict relief was worth two tickets more than the second diff
+   costs. When WI-1120 lands it rewrites the tree to `WI-NNN.anthill.md` (§5.4).
+   Every `WI-NNN.anthill` spelling elsewhere in this document illustrates the
+   layout, not the encoding — with one exception that is *not* illustration:
+   §7.1's mirror-body pointer is generated output, and names `.md` accordingly.
 2. **OPTIONAL, and no longer part of migration (amended 2026-08-17).** Creating one
    entry per item in a mirror is now `export` (§7), run separately and only if the
    project wants a mirror at all. It was inseparable from migration while the forge
@@ -1946,13 +1959,47 @@ anthill-todo migrate --to github-coordinated
    title, and each item's file gets its `MirrorEntry` fact written as the issue
    is created, so an interrupted run resumes where it stopped.
 3. Rewrite the `ExtentBinding` store term to `ItemPerFileStore(...)`, and add `fact Mirror(...)` in `project.anthill` if the tracker is to be published (§3).
-4. Stamp `StoreFormat(version: 2)` through the store, the way `migrate` already
-   stamps version 1 (WI-434).
+4. ~~Stamp `StoreFormat(version: 2)` through the store, the way `migrate` already
+   stamps version 1 (WI-434).~~ **WITHDRAWN (WI-1118), and the reason is this
+   document's own orthogonality.** `ExtentBinding` says which layout;
+   `StoreFormat` versions the schema *within* it. This step changes no schema —
+   the same four entities with the same fields, redistributed across files — so
+   there is nothing for a schema version to record. The stamp migrates like any
+   other row (a store-level one, so it lands at `<root>/store_format.anthill`) and
+   keeps the value it had.
+
+   The cost of doing it anyway is not zero, which is what settles it. There is one
+   `current_store_format()` for the binary, so bumping it to 2 makes every project
+   still on `IndexedFileStore` — a supported, non-deprecated layout (§5.2) — warn
+   on every command that it is out of date, and point at a `migrate` that would
+   *refuse* the bump ("no data migrator for this bump yet"). A version that fires
+   on projects with nothing wrong with them is worse than no version.
+
+   Version 2 is better spent on §5.3's markdown encoding (WI-1120), which really
+   does change how a row is written. `wi1118_migrate_test::the_data_format_stamp_is_not_bumped`
+   is the control, so this decision fails loudly if it is quietly reversed.
+
+**Orphaned satellites are carried across, not refused (WI-1118).** A row naming an
+item that has no row of its own has no file to go in, and the store refuses to
+*create* one (`path_of`, under test). But inheriting one is not the same as
+creating one, and the store already draws that line: `LayoutFault::OrphanRow` is
+explicitly NON-blocking, because `Feedback` is `monotone` (proposal 053) and so
+cannot be retracted — `delete` leaves an item's feedback behind **by design**.
+Refusing to migrate over one would lock out every tracker that has ever deleted an
+item that had feedback. So migration writes them to `<root>/orphaned.anthill`,
+names each on stdout, and leaves them to `fsck`, which reports them from then on
+and blocks on nothing. This repo's own tracker had two, both feedback on a `WI-237`
+deleted long ago, invisible for as long as every row shared one file.
+
+**A file is moved whole or not at all**, and "whole" counts every item in it, not
+every fact: migration REMOVES the files it consumes, so a file holding a covered
+row beside a `rule` or an `import` is refused rather than emptied and deleted.
 
 Migration runs in the working tree and is pushed as one commit when it completes.
-An interruption is local — step 2 resumes — and other checkouts never observe a
-half-migrated state: they see the old layout or the new one, atomically, the way
-git always publishes.
+Other checkouts never observe a half-migrated state: they see the old layout or the
+new one, atomically, the way git always publishes. An interruption is purely local
+now that step 2 is optional — there is no API to resume across, and the remedy is
+`git checkout` or removing the partly written state directories.
 
 The two axes stay orthogonal: `ExtentBinding` says *which layout*, `StoreFormat` versions
 the *schema within* it. The version check in `main.anthill`
