@@ -16,7 +16,13 @@
 //!      usage dump; `--help` is the spec-driven catalogue;
 //!   5. exit codes are LOUD: `show`/`delete` on an unknown id exit 1
 //!      (legacy printed the error but exited 0 — the "exit-0-with-stderr"
-//!      display-command convention is retired with the native dispatch).
+//!      display-command convention is retired with the native dispatch);
+//!   6. `delete WI-004` warns that WI-003 still depends on it (WI-1123).
+//!      THIS SCENARIO IS THE CASE THE WARNING EXISTS FOR, and the golden
+//!      shows why on the very next line: `list --all` renders WI-003 as
+//!      `(depends: WI-002, WI-004)`, an edge to an item that no longer
+//!      exists. A dep naming no work item counts as unmet, so WI-003 is
+//!      unclaimable from here on and nothing used to say so.
 //! Everything else — every message, marker, ordering, and exit code — is
 //! the legacy behavior.
 

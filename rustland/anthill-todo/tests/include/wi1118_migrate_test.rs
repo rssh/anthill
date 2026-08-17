@@ -28,7 +28,8 @@
 //!   * `an_orphan_satellite_is_carried_across_and_reported` — the store refuses an
 //!     unplaceable row at `persist`, so a migrator that just fed everything
 //!     through it dies mid-flush naming one row. Orphans are not a defect to clean
-//!     up first: `Feedback` is `monotone`, so `delete` always leaves some behind.
+//!     up first: every build before WI-1123 left some behind on each `delete`
+//!     (`Feedback` was `monotone`), and those are the trackers that migrate.
 //!   * `the_data_format_stamp_is_not_bumped` — §11 step 4 as drafted said to stamp
 //!     version 2. This asserts the opposite, so it fails the moment someone
 //!     implements the step as written; the reasoning is in §11 and `MIGRATE_USAGE`.
@@ -234,10 +235,12 @@ fn a_project_with_no_written_binding_gets_one() {
 }
 
 /// A satellite whose item has no row is CARRIED ACROSS, not refused and not
-/// dropped. Found in the live tracker, and it is not a defect: `Feedback` is
-/// `monotone` (proposal 053) so it cannot be retracted, which means `delete`
-/// leaves an item's feedback behind BY DESIGN. Refusing to migrate over one would
-/// lock out every tracker that has ever deleted an item that had feedback.
+/// dropped. Found in the live tracker, and it is not damage the project could have
+/// avoided: `Feedback` was `monotone` (proposal 053) until WI-1123 and so could not
+/// be retracted, which means every `delete` of an item that had feedback stranded
+/// it. `delete` cascades now, but the trackers that migrate are precisely the ones
+/// written by builds that predate the fix, so refusing over one would lock them
+/// out.
 ///
 /// CONTROL, and it is the whole reason this is not left to the store: the store
 /// REFUSES an orphan at `persist` (`a_satellite_naming_no_item_is_refused_at_flush`

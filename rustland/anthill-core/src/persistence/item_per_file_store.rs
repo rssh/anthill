@@ -123,10 +123,13 @@ pub enum LayoutFault {
         first: PathBuf,
         second: PathBuf,
     },
-    /// A satellite row naming an item no file holds. Not blocking — deleting an
-    /// item leaves its append-only feedback behind by design (feedback is
-    /// `monotone`, so it cannot be retracted), and that is a state to REPORT,
-    /// not one to refuse every later command over.
+    /// A satellite row naming an item no file holds. Not blocking: a tracker can
+    /// arrive in this state through a hand-edit, a partial merge, or a `delete`
+    /// run by a build predating WI-1123 (which flipped `Feedback` to
+    /// `non_monotone` so that deleting an item takes its satellites with it —
+    /// before that, every delete minted one of these by construction). A store
+    /// refuses to CREATE an orphan (`path_of`) and tolerates INHERITING one, so
+    /// this is a state to REPORT, not one to refuse every later command over.
     OrphanRow {
         path: PathBuf,
         functor: String,

@@ -501,9 +501,13 @@ Three consequences worth knowing:
   block has no name. A retract of such a row in the same process is a loud refusal, not
   a silent no-op — the shared-file store's content-keyed fallback would compare a
   loader-normalized canonical against source text and match nothing (WI-187).
-* **Deleting an item leaves its feedback.** `Feedback` is `monotone`, so it cannot be
-  retracted; the file therefore stays, holding rows that name an item no file holds.
-  That is reported (§10) rather than repaired — dropping them would lose live facts.
+* **Deleting an item takes its feedback with it** (WI-1123; it did NOT until then).
+  `Feedback` was `monotone` and could not be retracted at all, so `delete` retracted
+  the item's row and left the file standing, holding rows naming an item no file
+  holds. `WorkItemStore.forget` now buffers the item's satellites with the item and
+  flushes once, so the file runs out of rows and is removed. An orphan is still a
+  state this store READS without refusing — a hand-edit, a tracker migrated from a
+  build that predates the fix — and §10 reports it.
 * **Emptied directories are left behind.** `open/` survives its last item's move. Git
   does not track empty directories, so nothing is published; removing them would be a
   guess about which directories the project meant to keep.
@@ -1499,9 +1503,10 @@ state — which is why ingesting it does not breach §7.2's one-way discipline.
 * **Ingest-once, keyed on `(workitem, author, at)`** — an existence check before
   persisting, the same shape WI-432 added for feedback targets. Later edits or
   deletions of the comment do not propagate: the fact records what was said when
-  it was said. This keeps `Feedback` exactly what `store.anthill` declares it to
-  be — monotone, only ever persisted — so ingestion composes with the
-  append-only contract instead of straining it.
+  it was said. Ingestion therefore only ever PERSISTS, which is the property this
+  bullet needs and the one that survives WI-1123: `Feedback` is now
+  `non_monotone`, so that it can be removed *with the item it describes*, but
+  nothing removes a feedback row on its own and ingestion adds no reason to.
 * Ingestion is deterministic (same comments → same facts), so two checkouts
   syncing concurrently converge, and the existence check makes re-runs no-ops.
 * `sync`'s own comments (the §7.4 drift explanations) open with a fixed
@@ -1876,7 +1881,13 @@ a silent skip or a fallback:
   one command written to diagnose it.
 * **Dangling reference** — a `depends_on` naming an id with no file (e.g. a
   half-reconciled provisional rename, §6.4) → named by `fsck`; for the
-  reconciliation case a `sync` re-run repairs it.
+  reconciliation case a `sync` re-run repairs it. **Partly delivered (WI-1123)**, at
+  the other end: `delete` names every item that still depends on the id it is about
+  to remove, because that is the moment the edge becomes dangling and the only
+  moment someone is looking. It reports and does not cascade — deleting the
+  dependents is a delete of the ITEM graph, which no one asked for by typing
+  `delete <id>`. The `fsck` half, which catches an edge dangling for any of the
+  other reasons above, is still open.
 * **Permanent-id item with no `MirrorEntry` fact**, under a declared `Mirror` → loud
   in `sync` (migration incomplete, or an `add` died between steps 4 and 5).
   Provisional items lack the fact by definition and are reported as *unreconciled*,
@@ -1890,9 +1901,12 @@ leaves the store's own *routing* ambiguous blocks every command — two files cl
 key, a file whose path denies its fact, a row the store cannot place at all, a file that
 is several items — because the next write would have to guess which one it means. A fault
 that merely strands a row is reported and does not stand between the user and the
-tracker: deleting an item leaves its append-only feedback behind *by design* (`Feedback`
-is `monotone`, so it cannot be retracted), and refusing every later command over an
-expected state would be a check punishing the thing it was written to describe.
+tracker. When this was written the stranded row was the *expected* case — `Feedback` was
+`monotone` and could not be retracted, so deleting an item left its feedback behind by
+design. WI-1123 flipped that policy and `delete` cascades, so the tool no longer mints
+one; the split stays where it is because the state is still reachable without any bug (a
+hand-edit, a partial merge, a tree written by an older build), and refusing every later
+command over a row nobody can un-write would be a check punishing what it describes.
 
 **`fsck` validates its whole plan before moving a byte**, and refuses rather than
 half-repairing: a repair that renames files cannot discover its own refusal partway
@@ -1983,13 +1997,17 @@ reason than `fsck` has: it needs a SECOND store, and the bundle cannot build one
 item that has no row of its own has no file to go in, and the store refuses to
 *create* one (`path_of`, under test). But inheriting one is not the same as
 creating one, and the store already draws that line: `LayoutFault::OrphanRow` is
-explicitly NON-blocking, because `Feedback` is `monotone` (proposal 053) and so
-cannot be retracted — `delete` leaves an item's feedback behind **by design**.
-Refusing to migrate over one would lock out every tracker that has ever deleted an
-item that had feedback. So migration writes them to `<root>/orphaned.anthill`,
-names each on stdout, and leaves them to `fsck`, which reports them from then on
-and blocks on nothing. This repo's own tracker had two, both feedback on a `WI-237`
-deleted long ago, invisible for as long as every row shared one file.
+explicitly NON-blocking. When this was written, `Feedback` was `monotone`
+(proposal 053) and so could not be retracted at all, which made `delete` leave an
+item's feedback behind by design; WI-1123 flipped that policy and `delete` now
+cascades, so the tool no longer MINTS orphans. The tolerance stays, and the reason
+survives the fix: a tracker migrating today may have been deleted from by a build
+that predates it, and refusing to migrate over the result would lock out exactly
+the projects that need migrating. So migration writes them to
+`<root>/orphaned.anthill`, names each on stdout, and leaves them to `fsck`, which
+reports them from then on and blocks on nothing. This repo's own tracker had two,
+both feedback on a `WI-237` deleted long ago, invisible for as long as every row
+shared one file — and the measurement that produced WI-1123.
 
 **A file is moved whole or not at all**, and "whole" counts every item in it, not
 every fact: migration REMOVES the files it consumes, so a file holding a covered

@@ -456,12 +456,18 @@ fn retracting_the_last_row_removes_the_file() {
     assert!(!f.exists("open/WI-2.anthill"));
 }
 
-/// Deleting an item whose feedback is append-only leaves the file standing with
-/// the stranded rows, and SAYS SO. Dropping them would lose facts the KB still
-/// holds and no one asked to delete; silently keeping them would leave a file
+/// Retracting an item's row WITHOUT its satellites leaves the file standing with
+/// the stranded rows, and SAYS SO. Dropping them here would lose facts the KB still
+/// holds and no caller asked to remove; silently keeping them would leave a file
 /// named after an item that no longer exists.
+///
+/// THIS IS THE STORE'S CONTRACT, NOT THE TRACKER'S POLICY, and the two moved apart
+/// in WI-1123: `anthill-todo`'s `delete` now buffers an item's satellites with it
+/// so this state is not one the tool produces. It is still one the store must READ
+/// — a hand-edit, a partial merge, a tree written by an older build — so what is
+/// pinned here is unchanged: retract exactly what you were handed, report the rest.
 #[test]
-fn deleting_an_item_strands_its_satellites_loudly() {
+fn an_item_row_retracted_alone_strands_its_satellites_loudly() {
     let mut f = Fixture::new(&[("open/WI-1.anthill", WI1)]);
     let item = f.rule("open/WI-1.anthill", 0);
     f.store.retract(&f.kb, item).expect("retract");

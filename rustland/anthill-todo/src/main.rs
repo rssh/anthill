@@ -535,6 +535,8 @@ fn build_declared_store(
         );
     }
 
+    check_covers_every_retracted_functor(interp, &binding.covers)?;
+
     // The one native step: the declared store term names a backend this binary must
     // already have. Adding one is an arm HERE plus a `provides` block on the anthill
     // side — which is exactly the WI-437 shape, and exactly why the rest of this is no
@@ -602,6 +604,84 @@ fn build_declared_store(
         value,
         covers,
     })
+}
+
+/// Refuse a binding that omits a functor this tool retracts, at STARTUP and by name.
+///
+/// WHY IT EXISTS (WI-1123). `delete` used to retract only `WorkItem`, so a binding
+/// naming `covers: [WorkItem, Tag]` looked like it worked — the omission cost the
+/// project nothing until it hit the one command that needed it. Now that `delete`
+/// takes an item's `Feedback` rows with it, that same binding dies mid-command with
+/// `retract: FactRef does not belong to the supplied store` — true, loud, and
+/// diagnosing nothing: the reader is looking at `delete`, and the fault is four
+/// lines of `project.anthill`.
+///
+/// ONLY THE RETRACTED SET IS REQUIRED. A persist through the declared backend works
+/// whether or not the binding names the functor; it is a RETRACT that needs the
+/// row's reference to belong to the store being asked. So `StoreFormat`, which is
+/// stamped and never removed, is not demanded — and `examples/github-todo`, whose
+/// binding predates it, keeps loading.
+///
+/// IT BLOCKS EVERY COMMAND, INCLUDING `fsck` AND `migrate`, and that is deliberate
+/// — not the same call as the orphan tolerance a few hundred lines down, which lets
+/// `migrate` run over rows a project CANNOT un-write. This is four characters of
+/// `project.anthill`, which the user owns and must edit whatever else they do:
+/// `migrate` carries `covers` across verbatim (`rewrite_binding`), so migrating
+/// would not repair it. Its two nearest neighbours already refuse every command on
+/// the same grounds — `role: owner()`, and a backend this build does not provide.
+/// What review found and this no longer does is send the reader in a circle: the
+/// message must name the spelling that works, or blocking the repair commands has
+/// no way out.
+///
+/// Not a fallback: the binding is the project's statement of what its store holds,
+/// and a statement that omits rows the tool will ask that store to remove is wrong,
+/// not merely incomplete.
+fn check_covers_every_retracted_functor(
+    interp: &Interpreter,
+    covers: &[anthill_core::intern::Symbol],
+) -> Result<(), String> {
+    let declared: Vec<&str> = covers
+        .iter()
+        .map(|s| interp.kb().qualified_name_of(*s))
+        .collect();
+    let required: Vec<&str> = STORED_FUNCTORS
+        .iter()
+        .filter(|(_, r)| *r == Retracted::Yes)
+        .map(|(name, _)| *name)
+        .collect();
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|want| !declared.contains(want))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    // NAMED THE WAY THEY MUST BE WRITTEN, which is the SHORT name (found in
+    // review). The comparison above is on the qualified name — that is what the
+    // resolved symbol gives back, whatever the file said — but a `covers:` list is
+    // read in a scope where `Feedback` resolves and `anthill.stage0.Feedback` does
+    // not, so an error telling the reader to add the qualified name sends them to a
+    // spelling that is refused again, identically. `rewrite_binding` writes short
+    // names for exactly this reason; so does this.
+    let spell = |names: &[&str]| -> String {
+        names
+            .iter()
+            .map(|n| n.rsplit('.').next().unwrap_or(n))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Err(format!(
+        "this project's extent binding does not cover {}. anthill-todo RETRACTS rows of \
+         {} — `delete` removes a work item together with its feedback and tags — and a \
+         retract needs the row's reference to belong to the store being asked, so an \
+         uncovered functor fails at that command rather than here. Add {} to the \
+         binding's `covers:` list in project.anthill (short names: that is what \
+         resolves there).",
+        spell(&missing),
+        spell(&required),
+        spell(&missing),
+    ))
 }
 
 /// Hand the built store to the mirror registry, and return the value the bundle sees.
@@ -923,11 +1003,13 @@ fn run_migrate(
     // THAT REFUSAL IS ABOUT CREATING ONE, AND THIS IS INHERITING ONE — the store
     // draws exactly that line, tolerating on READ (`LayoutFault::OrphanRow`, and
     // explicitly NOT blocking) what it refuses on write. And the read side has to
-    // tolerate it, because orphans are not a defect to be cleaned up before
-    // migrating: `Feedback` is `monotone` (proposal 053), so it cannot be
-    // retracted at all, and `delete` therefore leaves an item's feedback behind
-    // BY DESIGN. Refusing to migrate over them would lock out every tracker that
-    // has ever deleted an item that had feedback.
+    // tolerate it, because orphans are not a defect a project can be asked to
+    // clean up before migrating: until WI-1123 `Feedback` was `monotone`
+    // (proposal 053) and could not be retracted at all, so every `delete` of an
+    // item that had feedback stranded it. `delete` cascades now — but the
+    // trackers arriving HERE are precisely the ones written by older builds, so
+    // refusing to migrate over their orphans would lock out the projects that
+    // most need migrating.
     //
     // So they are written where they will be read back, reported here, and
     // reported by `fsck` from then on — which is the state §10 already describes.
@@ -1049,9 +1131,10 @@ const ORPHAN_HEADER: &str = "\
 -- `anthill-todo migrate --to item-per-file`: the new layout files a row in its
 -- item's file, and these have no item.
 --
--- They are not damage. `Feedback` is `monotone` — it cannot be retracted — so
--- deleting a work item leaves its feedback behind by design, and this is where
+-- They are not damage. Until WI-1123 `Feedback` was `monotone` — it could not be
+-- retracted — so deleting a work item left its feedback behind, and this is where
 -- that feedback lives once every other row has moved into its item's file.
+-- `delete` takes an item's feedback with it now, so nothing new lands here.
 -- `fsck` reports each one as an orphan and does not block on it.
 --
 -- To retire one, delete it here. To give it a home again, restore the item it
@@ -1377,8 +1460,8 @@ fn default_binding(
              not resolve"
                 .to_string()
         })?;
-    let mut covers = Vec::with_capacity(DEFAULT_COVERAGE.len());
-    for name in DEFAULT_COVERAGE {
+    let mut covers = Vec::with_capacity(STORED_FUNCTORS.len());
+    for (name, _) in STORED_FUNCTORS {
         covers.push(
             interp
                 .kb()
@@ -1416,13 +1499,30 @@ fn default_binding(
 }
 
 /// The functors the bundle persists (`store.anthill`: commit / commit_feedback /
-/// tag_item / stamp_format), and so the ones the default binding covers.
-const DEFAULT_COVERAGE: [&str; 4] = [
-    "anthill.stage0.WorkItem",
-    "anthill.stage0.Feedback",
-    "anthill.stage0.Tag",
-    "anthill.stage0.StoreFormat",
+/// tag_item / stamp_format), and so the ones the default binding covers — each
+/// flagged with whether the bundle also RETRACTS its rows.
+///
+/// The flag is `store.anthill` §0's `non_monotone` set, read from the other side:
+/// `WorkItem` (forget / replace), `Feedback` (forget, since WI-1123) and `Tag`
+/// (forget / untag_item). `StoreFormat` is persisted and never retracted.
+///
+/// ONE LIST, TWO READERS, deliberately: `default_binding` takes every name, and
+/// [`check_covers_every_retracted_functor`] takes the flagged ones. Kept apart they
+/// drift, and the drift is silent in the direction that matters — a functor added
+/// to the default while the guard still names three.
+const STORED_FUNCTORS: [(&str, Retracted); 4] = [
+    ("anthill.stage0.WorkItem", Retracted::Yes),
+    ("anthill.stage0.Feedback", Retracted::Yes),
+    ("anthill.stage0.Tag", Retracted::Yes),
+    ("anthill.stage0.StoreFormat", Retracted::No),
 ];
+
+/// Whether the bundle ever asks the store to remove a functor's rows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Retracted {
+    Yes,
+    No,
+}
 
 /// The file the default store writes to — the same one the loader reads.
 const DEFAULT_STORE_FILE: &str = "workitems.anthill";

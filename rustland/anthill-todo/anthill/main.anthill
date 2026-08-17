@@ -84,7 +84,7 @@ namespace anthill.todo
     , spec_with_id("deliver",         "Mark a work item as delivered")
     , spec_with_id("verify",          "Mark a delivered work item as verified")
     , spec_feedback()
-    , spec_with_id("delete",          "Delete a work item")
+    , spec_with_id("delete",          "Delete a work item, with its feedback and tags")
     , spec_update()
     , spec_dep_change("add-dependency",    "Add a dependency to a work item")
     , spec_dep_change("remove-dependency", "Remove a dependency from a work item")
@@ -2548,9 +2548,21 @@ namespace anthill.todo
       0
 
     -- ── cmd_delete ───────────────────────────────────────────────
-    -- `delete <id>` retracts the WorkItem fact entirely (no
-    -- replacement). The impl's forget selects a StoredRef, then retracts
-    -- through its opaque reference so the IndexedFileStore drops the on-disk block.
+    -- `delete <id>` retracts the WorkItem fact together with the Feedback and
+    -- Tag rows that describe it — WorkItemStore.forget owns that cascade and
+    -- carries the argument for it (WI-1123). The impl selects each StoredRef,
+    -- then retracts through its opaque reference so the backend drops the
+    -- on-disk blocks; no replacement row is written.
+    --
+    -- WHAT IT DOES NOT DELETE, AND SAYS SO: other work items naming `id` in
+    -- their own `depends_on`. Deleting THEM is a cascade over the item graph,
+    -- which is not what `delete <id>` asks for and would take three items with
+    -- it in the case that prompted this. But leaving the edges silent is the
+    -- other half of the same measured bug: a dep naming no work item counts as
+    -- UNMET (`any_unmet`), so each dependent quietly stops being claimable and
+    -- nothing on screen says why. So the ones it costs something are NAMED —
+    -- `blocked_dependents_of` filters to items still on the queue — with the
+    -- command that clears one, and the delete still succeeds.
 
     operation cmd_delete(args: List[Binding],
                           s: Cell[State]) -> Int64
@@ -2567,9 +2579,65 @@ namespace anthill.todo
                 concat("error: work item '", concat(id, "' not found")))
               1
             case some(_) ->
+              -- Collected BEFORE the retract: afterwards the item is gone from
+              -- the KB, but every edge naming it is still there.
+              let orphaned_edges = blocked_dependents_of(WorkItemStore.all(s), id)
               let _ = WorkItemStore.forget(s, id)
               let _ = println(console(), concat("deleted: ", id))
+              let _ = warn_dangling_deps(id, orphaned_edges)
               0
+
+    -- Ids of work items whose `depends_on` names `target` AND for which that
+    -- costs something.
+    --
+    -- THE STATUS FILTER IS WHAT MAKES THE MESSAGE TRUE (found in review). An
+    -- unmet dep gates CLAIMING and nothing else, so a Delivered or Verified
+    -- item's stale edge changes nothing anyone will do. Unfiltered, deleting a
+    -- much-referenced id on this repo's own tracker prints nine finished items
+    -- under a claim that is false for them and buries the one open item that is
+    -- genuinely now stuck.
+    operation blocked_dependents_of(items: List[WorkItem], target: String)
+      -> List[String] =
+      match items
+        case nil() -> nil()
+        case cons(w, rest) ->
+          match w
+            case WorkItem(wid, _, _, _, _, _, _, _) ->
+              if is_off_queue(status_name_w(w)) then
+                blocked_dependents_of(rest, target)
+              else if list_contains_string(deps_of_w(w), target) then
+                cons(wid, blocked_dependents_of(rest, target))
+              else blocked_dependents_of(rest, target)
+
+    -- An item nobody will claim: finished (is_closed) or on one of the three
+    -- off-ramps. WRITTEN AS THE TERMINAL SET RATHER THAN THE LIVE ONE so that a
+    -- status added later is reported by default instead of silently dropped from
+    -- the warning.
+    operation is_off_queue(status: String) -> Bool =
+      if is_closed(status) then true
+      else if eq(status, "Rejected") then true
+      else if eq(status, "ProposalRejected") then true
+      else if eq(status, "Stale") then true
+      else false
+
+    operation warn_dangling_deps(id: String, dependents: List[String]) -> Unit
+      effects ConsoleError
+    =
+      match dependents
+        case nil() -> ()
+        case cons(_, _) ->
+          -- Phrased so it reads the same for one dependent and for five: the
+          -- deleted id is the subject, the list is the object.
+          let _ = eprintln(console(),
+            concat("warning: ",
+              concat(id,
+                concat(" is still named in the depends_on of: ",
+                  join_strings(dependents, ", ")))))
+          let _ = eprintln(console(),
+            "  a dependency naming no work item counts as unmet, so those items are now unclaimable")
+          let _ = eprintln(console(),
+            concat("  clear each with: anthill-todo remove-dependency <id> ", id))
+          ()
 
     -- ── cmd_update ───────────────────────────────────────────────
     -- `update <id> [--description X] [--acceptance Y]+ [--status S]

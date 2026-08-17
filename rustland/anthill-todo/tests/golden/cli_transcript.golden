@@ -119,6 +119,9 @@ tag 'seq' (3 item(s), sequence order):
 [exit=0]
 $ anthill-todo delete WI-004
 deleted: WI-004
+warning: WI-004 is still named in the depends_on of: WI-003
+  a dependency naming no work item counts as unmet, so those items are now unclaimable
+  clear each with: anthill-todo remove-dependency <id> WI-004
 [exit=0]
 $ anthill-todo list --all
 Open:

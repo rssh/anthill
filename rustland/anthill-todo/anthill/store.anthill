@@ -28,11 +28,26 @@ namespace anthill.todo.store
   import anthill.reflect.KB.{kb, facts_of, stored_facts_of}
 
   -- ─── 0. Fact monotonicity (proposal 053) ───────────────────────
-  -- This store owns WorkItem and Tag and RETRACTS them at runtime
-  -- (forget / replace / untag_item), so both are non_monotone. Feedback
-  -- and StoreFormat are only ever persisted → they keep the `monotone`
-  -- default (append-only). The retract guard consults these rules.
+  -- This store owns WorkItem, Feedback and Tag and RETRACTS all three at
+  -- runtime (forget / replace / untag_item), so all three are non_monotone.
+  -- StoreFormat is only ever persisted → it keeps the `monotone` default
+  -- (append-only). The retract guard consults these rules.
+  --
+  -- FEEDBACK WAS `monotone` UNTIL WI-1123, and flipping it is a decision, not
+  -- an oversight being corrected. Append-only was meant as "an item's history
+  -- is never rewritten", which is still the rule this tracker keeps. But the
+  -- policy is per-FUNCTOR, so it ALSO said "a feedback row outlives the item
+  -- it describes", and that half was never intended: `forget` retracted the
+  -- WorkItem row and stranded every Feedback row naming it, leaving rows that
+  -- describe an id nothing holds. Under the shared file that was invisible;
+  -- under ItemPerFileStore it is a `LayoutFault::OrphanRow` at every startup
+  -- (measured on this repo's own tracker during WI-1118's rehearsal — two of
+  -- them, for months). Proposal 053's vocabulary has three values and none
+  -- spells "retractable only together with its item", so the closest TRUE
+  -- policy is non_monotone; what keeps the audit trail is the COMMAND SURFACE,
+  -- which offers no way to retract a Feedback row on its own.
   rule fact_monotonicity(WorkItem) = non_monotone() [simp]
+  rule fact_monotonicity(Feedback) = non_monotone() [simp]
   rule fact_monotonicity(Tag) = non_monotone() [simp]
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
@@ -47,6 +62,15 @@ namespace anthill.todo.store
       effects Modify[s]
     operation commit(s: Cell[V = State], w: WorkItem) -> Unit
       effects {Modify[s], Error}
+    -- Remove the work item `id` AND every satellite row that describes it —
+    -- the Feedback and Tag rows keyed `workitem: id` (WI-1123). A satellite
+    -- names its item by primary key and means nothing without it, so the two
+    -- are one act: retracted in ONE flush, which is also what lets the
+    -- per-file layout drop the item's file rather than leave it holding
+    -- stranded rows. It deliberately does NOT touch other work items that
+    -- name `id` in their `depends_on` — that is a cascade over the ITEM
+    -- graph, a different and far more destructive operation; the caller
+    -- reports those edges instead (cmd_delete).
     operation forget(s: Cell[V = State], id: String) -> Unit
       effects {Modify[s], Error}
     -- Atomic update: retract the existing block for `id` and persist `w`
@@ -298,21 +322,79 @@ namespace anthill.todo.store
           let _ = persist(b, fact, Meta(entries: as_term(nil())))
           ()
 
+    -- Buffer a retract of one already-selected row through its owner-minted
+    -- reference. The single point where this impl asks the backend to drop a
+    -- row; every retract path (forget_buffer / forget_satellites_buffer /
+    -- untag_item) goes through it, so none of them re-spells the destructuring.
+    -- Does NOT flush.
+    operation retract_row(s: Cell[V = WIS], row: StoredRef[T = Term]) -> Unit
+      effects {Modify[s], Error}
+    =
+      match Cell.get(s)
+        case wis(b, _) ->
+          match row
+            case stored_ref(_, reference) ->
+              let _ = retract(b, reference)
+              ()
+
+    operation retract_rows(s: Cell[V = WIS], rows: List[T = StoredRef[T = Term]]) -> Unit
+      effects {Modify[s], Error}
+    =
+      match rows
+        case nil() -> ()
+        case cons(row, rest) ->
+          let _ = retract_row(s, row)
+          retract_rows(s, rest)
+
     -- Buffer a retract of the WorkItem fact whose `id` field matches
     -- `target` through its owner-minted StoredRef. No-op if no
     -- such fact. Does NOT flush.
     operation forget_buffer(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
-      match Cell.get(s)
-        case wis(b, _) ->
-          match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
-            case none() -> ()
-            case some(row) ->
-              match row
-                case stored_ref(_, reference) ->
-                  let _ = retract(b, reference)
-                  ()
+      match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
+        case none() -> ()
+        case some(row) -> retract_row(s, row)
+
+    -- Buffer a retract of every SATELLITE row describing `target` — the
+    -- Feedback and Tag rows keyed `workitem: target` (WI-1123). Does NOT
+    -- flush: forget buffers these together with the item's own row so one
+    -- flush drops them all, which is what lets ItemPerFileStore remove the
+    -- item's file instead of leaving it holding rows that name nothing.
+    --
+    -- The two functors are named one by one rather than swept generically:
+    -- `stored_facts_of` is keyed by functor, and a satellite kind that is
+    -- added later must be added HERE deliberately, not inherited silently by
+    -- a scan that happens to see a `workitem` field.
+    operation forget_satellites_buffer(s: Cell[V = WIS], target: String) -> Unit
+      effects {Modify[s], Error}
+    =
+      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Feedback), target))
+      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Tag), target))
+      ()
+
+    -- The stored rows whose `workitem` field is the string `target`.
+    operation stored_rows_naming(rows: List[T = StoredRef[T = Term]], target: String)
+      -> List[T = StoredRef[T = Term]]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(row, rest) ->
+          match row
+            case stored_ref(t, _) ->
+              if names_item(t, target) then cons(row, stored_rows_naming(rest, target))
+              else stored_rows_naming(rest, target)
+
+    -- True when `t` carries a string-literal `workitem` field equal to `id` —
+    -- the shape of a satellite row keyed to that work item. A non-string slot
+    -- yields none from term_as_string and fails the test.
+    operation names_item(t: Term, id: String) -> Bool =
+      match term_field(t, "workitem")
+        case none() -> false
+        case some(wt) ->
+          match term_as_string(wt)
+            case none() -> false
+            case some(w) -> eq(w, id)
 
     operation flush_backend(s: Cell[V = WIS]) -> Unit
       effects {Modify[s], Error}
@@ -344,12 +426,20 @@ namespace anthill.todo.store
     =
       persist_through(s, as_term(fb))
 
-    -- Retract the WorkItem fact whose `id` matches `target`, then flush —
-    -- the IndexedFileStore drops the on-disk source block atomically with
-    -- the in-memory rule.
+    -- Retract the WorkItem fact whose `id` matches `target` TOGETHER WITH its
+    -- satellite rows, then flush once — the backend drops every on-disk block
+    -- atomically with the in-memory rules.
+    --
+    -- ONE FLUSH, and it is load-bearing under ItemPerFileStore: the item's file
+    -- holds its satellites too, so retracting the item alone would leave that
+    -- file standing with rows naming an item that no longer exists (an
+    -- OrphanRow at every later startup). Buffered together, the file runs out
+    -- of rows and is removed. Under IndexedFileStore the same buffering just
+    -- drops the blocks; the difference does not reach this body.
     operation forget(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
+      let _ = forget_satellites_buffer(s, target)
       let _ = forget_buffer(s, target)
       let _ = flush_backend(s)
       ()
@@ -375,20 +465,14 @@ namespace anthill.todo.store
     -- name == name (both string-literal fields); non-string slots
     -- yield none from term_as_string and fail the match.
     operation tag_term_matches(t: Term, id: String, name: String) -> Bool =
-      match term_field(t, "workitem")
-        case none() -> false
-        case some(wt) ->
-          match term_as_string(wt)
-            case none() -> false
-            case some(w) ->
-              if eq(w, id) then
-                match term_field(t, "name")
-                  case none() -> false
-                  case some(nt) ->
-                    match term_as_string(nt)
-                      case none() -> false
-                      case some(n) -> eq(n, name)
-              else false
+      if names_item(t, id) then
+        match term_field(t, "name")
+          case none() -> false
+          case some(nt) ->
+            match term_as_string(nt)
+              case none() -> false
+              case some(n) -> eq(n, name)
+      else false
 
     operation find_tag_term(ts: List[T = Term], id: String, name: String)
       -> Option[T = Term]
@@ -499,15 +583,11 @@ namespace anthill.todo.store
     operation untag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
       effects {Modify[s], Error}
     =
-      match Cell.get(s)
-        case wis(b, _) ->
-          match find_stored_tag(stored_facts_of(kb(), Tag), id, name)
-            case none() -> ()
-            case some(row) ->
-              match row
-                case stored_ref(_, reference) ->
-                  let _ = retract(b, reference)
-                  let _ = flush(b, nil())
-                  ()
+      match find_stored_tag(stored_facts_of(kb(), Tag), id, name)
+        case none() -> ()
+        case some(row) ->
+          let _ = retract_row(s, row)
+          let _ = flush_backend(s)
+          ()
   end
 end
