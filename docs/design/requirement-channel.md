@@ -16,6 +16,15 @@ rule — including its second anchor, WI-742's typed relational head (`?x: T` �
 **One representation delivered** (WI-1045): §9 is no longer a rule to apply but a
 state of the code — there is one dictionary carrier, one constructor, and no
 conversion at a crossing.
+**And §9 held under pressure** (WI-865): carrying WHY an unresolvable slot pins no
+provider — a no-match, a TIE and its candidates, a cycle, a slot the strictness rule
+declined to search, a host-entry stand-in — did **not** widen the value. Both ways to
+put the reason on it break §9 (extra named children put keys on `Dictionary` that its
+sort does not declare and that the canonical named-arg order must then place;
+payload-carrying positional children make "the children are sub-dictionaries" false in
+meaning while true in form). The marker is already a *symbol* both producers can name,
+so the reason is keyed by it in a KB side table (`KnowledgeBase::absence_records`) and
+the crossing still carries one shape.
 **Consumers:** WI-1037; **WI-070** (`Branch` effect) and **WI-069** (`Suspension`
 snapshot/resume) — jointly 027.2's eval↔SLD switch.
 

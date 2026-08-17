@@ -492,7 +492,7 @@ fn cyclic_when_conditional_subgoal_recurses() {
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::Cyclic { path } => {
+        ResolutionResult::Cyclic { path, .. } => {
             assert!(
                 path.len() >= 2,
                 "cycle path should record at least the entering and looping goals: {path:?}"
@@ -541,7 +541,9 @@ fn no_match_when_no_candidate_for_bindings() {
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::NoMatch { goal_text, hint } => {
+        ResolutionResult::NoMatch {
+            goal_text, hint, ..
+        } => {
             assert!(
                 goal_text.contains("NoMatchSpec"),
                 "goal_text should reference the spec; got {goal_text}"

@@ -449,6 +449,23 @@ fn reading_a_sibling_provisions_evidence_is_loud() {
         text.contains("wi869.tower.Strong.strong") && text.contains("pins no provider"),
         "the refusal must name the operation whose evidence was missing; got {text}",
     );
+    // WI-865 — AND IT SAYS THIS IS NOT A DEFECT IN THE PROGRAM. A slot the strictness
+    // rule declined to search is not a slot nothing provides: `Strong[A]` HAS a
+    // provider here (`Leaf`), and the old payload-free marker reported it with the
+    // same sentence a genuine no-match got, sending the author to declare a provider
+    // that already exists. The record now distinguishes them
+    // (`UnavailableWhy::NotThisDispatch`).
+    // CONTROL: back WI-865 out and the two `contains` below fail (the message reverts
+    // to "nothing provides that spec at those bindings, or more than one does").
+    assert!(
+        text.contains("conditions ANOTHER of `wi869.tower.Box`'s provisions"),
+        "the refusal must name the CARRIER whose other provision put the slot there; \
+         got {text}",
+    );
+    assert!(
+        !text.contains("nothing provides"),
+        "…and must not report a missing provider for a spec that has one; got {text}",
+    );
 }
 
 /// THE TWO COMPOSE (058 §3.8): a sort-level `requires` keeps its meaning — it

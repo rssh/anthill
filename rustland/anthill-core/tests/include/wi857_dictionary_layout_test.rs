@@ -37,6 +37,7 @@ use anthill_core::eval::Value;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     dict_layout, resolve, ResolutionResult, ResolutionScope, ResolvedRequiresNode, SortGoal,
+    UnavailableWhy,
 };
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
@@ -572,11 +573,33 @@ fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
                  dictionary is the spec half alone: {sub_resolutions:?}",
             );
             match &sub_resolutions[0] {
-                ResolvedRequiresNode::Unavailable { spec_sort } => assert_eq!(
-                    kb.qualified_name_of(*spec_sort),
-                    "wi857.gap.Base",
-                    "the recorded absence must name the requirement it is missing",
-                ),
+                ResolvedRequiresNode::Unavailable {
+                    spec_sort,
+                    why,
+                    below,
+                } => {
+                    assert_eq!(
+                        kb.qualified_name_of(*spec_sort),
+                        "wi857.gap.Base",
+                        "the recorded absence must name the requirement it is missing",
+                    );
+                    // WI-865: …and WHY. Nothing provides `Base` at these bindings, so
+                    // this is the plain no-provider arm and not one of the three the
+                    // old payload-free marker was indistinguishable from — and the
+                    // goal it names is the SLOT's own, since the failure is at this
+                    // level and not below it.
+                    assert_eq!(
+                        *why,
+                        UnavailableWhy::NoProvider { goal: *spec_sort },
+                        "one candidate would have resolved and two would have tied; \
+                         neither happened here",
+                    );
+                    assert!(
+                        !below,
+                        "and the failure is at THIS goal — `Base[T = Wrap[E = Int64]]` \
+                         has no candidate at all, so nothing was forwarded from below",
+                    );
+                }
                 other => panic!(
                     "nothing provides `Base[T = Wrap[E = Int64]]`, so the slot must be \
                      Unavailable — neither dropped nor filled with a provider that \

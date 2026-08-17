@@ -732,6 +732,39 @@ pub struct KnowledgeBase {
     // Populated by register_entity_of, used by is_constructor_symbol for O(1) lookup.
     constructor_symbols: HashSet<Symbol>,
 
+    /// WI-865 — WHY each `NoProvider` marker symbol records an absence.
+    ///
+    /// The marker occupies a dictionary slot whose goal did not resolve, and until
+    /// this ticket the slot carried nothing but the marker's identity: a two-provider
+    /// TIE and a plain no-match were the same symbol, so the refusal at the read could
+    /// only hedge ("nothing provides it, or more than one does"). That was an
+    /// attribution regression against WI-843, which goes to specific trouble to
+    /// FORWARD a sub-goal tie verbatim rather than restamp it.
+    ///
+    /// A SIDE TABLE rather than a payload on the dictionary VALUE, deliberately: 058
+    /// §9 / WI-1045 make a dictionary one shape — `(impl symbol, ordered children)` —
+    /// and the two ways to widen that shape both break it (extra named children put
+    /// keys on `Dictionary` that its sort does not declare and that the canonical
+    /// named-arg order must then place; payload-carrying positional children make
+    /// "the children are sub-dictionaries" false in meaning while true in form). The
+    /// marker is already a SYMBOL both dictionary producers can name — the IR-term
+    /// one (`emit_tree_as_projection`) and the value one (`dictionary_of_tree`) — so
+    /// keying the record by it needs nothing new at either crossing.
+    ///
+    /// Written only by [`crate::kb::typing::absence_marker_sym`], which interns a name
+    /// rendered FROM the record, so the key is a function of the value and re-minting
+    /// the same absence is idempotent. Read only by
+    /// [`crate::kb::typing::marker_refusal`].
+    absence_records: HashMap<Symbol, crate::kb::typing::AbsenceRecord>,
+
+    /// The same relation the other way — an intern table's back-index, not a second
+    /// fact. It exists so a RE-MINT costs one probe instead of rendering the name
+    /// again (the mint is per-call on the dispatch path; see
+    /// [`crate::kb::typing::absence_marker_sym`]). Both directions are written
+    /// together by [`Self::record_absence`], which is why they cannot come to
+    /// disagree — the pair is one insertion, not two facts to keep in step.
+    absence_marker_syms: HashMap<crate::kb::typing::AbsenceRecord, Symbol>,
+
     // Variable counter for fresh VarId allocation
     next_var: u32,
 
@@ -1555,6 +1588,8 @@ impl KnowledgeBase {
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
+            absence_records: HashMap::new(),
+            absence_marker_syms: HashMap::new(),
             next_var: 0,
             sort_base_subst: HashMap::new(),
             sort_sort: None,
@@ -8600,6 +8635,40 @@ impl KnowledgeBase {
     /// head before it builds the atom). One table, read in one place.
     pub fn builtin_of(&self, functor: Symbol) -> Option<BuiltinTag> {
         self.builtins.get(&functor).copied()
+    }
+
+    /// WI-865 — file the reason `sym` records an absence. See [`Self::absence_records`].
+    ///
+    /// `pub(crate)` and called from exactly one place
+    /// ([`crate::kb::typing::absence_marker_sym`]), which is what keeps the key a
+    /// function of the value: a second minter could intern a marker name and file a
+    /// record that does not render to it, and the two would then disagree silently.
+    pub(crate) fn record_absence(&mut self, sym: Symbol, rec: crate::kb::typing::AbsenceRecord) {
+        self.absence_marker_syms.insert(rec.clone(), sym);
+        self.absence_records.insert(sym, rec);
+    }
+
+    /// WI-865 — the marker already minted for `rec`, if any. The mint side of
+    /// [`Self::absence_records`]; see [`crate::kb::typing::absence_marker_sym`] for
+    /// why re-minting takes this route rather than re-rendering the name.
+    pub(crate) fn absence_marker_for(
+        &self,
+        rec: &crate::kb::typing::AbsenceRecord,
+    ) -> Option<Symbol> {
+        self.absence_marker_syms.get(rec).copied()
+    }
+
+    /// WI-865 — the reason `sym` records, if it is a marker this KB minted.
+    ///
+    /// `None` for every ordinary provider symbol (the overwhelming case, one hash
+    /// lookup on the dispatch path) AND for a marker built outside
+    /// [`crate::kb::typing::absence_marker_sym`] — a hand-interned one in a test, say.
+    /// That second case is why identity is decided by [`crate::kb::typing::
+    /// is_absence_marker`] on the NAME and not by this table's membership: a marker
+    /// with no record must still be refused, just without the reason. Two questions,
+    /// two channels — "is this a marker" and "why".
+    pub(crate) fn absence_record(&self, sym: Symbol) -> Option<&crate::kb::typing::AbsenceRecord> {
+        self.absence_records.get(&sym)
     }
 }
 

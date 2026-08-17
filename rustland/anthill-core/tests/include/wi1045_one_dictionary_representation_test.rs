@@ -337,6 +337,14 @@ fn a_conditional_provisions_sub_dictionary_projects_by_index_on_both_sides() {
 ///
 /// PASSES EITHER WAY BY DESIGN: this is a regression guard on WI-857, not a new
 /// claim. The carrier under it changed; the refusal must not have.
+///
+/// WI-865 NOTE: the bare name below is now one member of a FAMILY — a marker's name
+/// carries the record it was minted from, and the bare spelling is the host-entry
+/// stand-in's. So the sentence this asserts on is the host-entry arm's, which is why
+/// the needle is the family's shared head ("no provider") and not one arm's tail.
+/// Recognition is by PREFIX (`kb::typing::is_absence_marker`), so this hand-interned
+/// symbol is still refused; the reason-bearing members are driven in
+/// `wi865_absence_reason_test`.
 #[test]
 fn the_marker_is_refused_at_every_dispatch_read() {
     let mut interp = crate::common::interp_for(SRC);

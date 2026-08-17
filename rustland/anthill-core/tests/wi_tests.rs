@@ -890,6 +890,9 @@ mod wi1110_supply_source_test;
 #[path = "include/wi857_dictionary_layout_test.rs"]
 mod wi857_dictionary_layout_test;
 
+#[path = "include/wi865_absence_reason_test.rs"]
+mod wi865_absence_reason_test;
+
 #[path = "include/wi858_pair_orderings_test.rs"]
 mod wi858_pair_orderings_test;
 

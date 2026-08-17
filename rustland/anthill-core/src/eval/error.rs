@@ -137,9 +137,8 @@ pub enum EvalError {
     /// WI-857: a dictionary slot that pins NO provider was used — dispatched
     /// through, projected into, or enumerated. The slot carries an empty bundle over
     /// the `NoProvider` marker because its goal did not resolve when the dictionary
-    /// was built (nothing provides that spec at those bindings, or more than one
-    /// does), or because it is a host-entry stand-in that supplied no dictionary at
-    /// all.
+    /// was built, because the strictness rule declined to search it, or because it is
+    /// a host-entry stand-in that supplied no dictionary at all.
     ///
     /// The THIRD member of the family above, and a variant for the same reason: this
     /// is a PROGRAM (or host-entry) error, not an evaluator-invariant one, so the
@@ -148,8 +147,10 @@ pub enum EvalError {
     /// would have aborted any test whose rule body dispatched through such a slot.
     ///
     /// `detail` is pre-rendered by `kb::typing::marker_refusal`, the one owner of the
-    /// sentence (the marker carries no payload, so the wording must hedge over the
-    /// three causes — narrowing it is what carrying the reason to runtime would buy).
+    /// sentence. WI-865 stopped it hedging: the marker now names the
+    /// `kb::typing::AbsenceRecord` its mint filed, so each cause above gets its own
+    /// wording — a two-provider TIE names the providers that tied instead of reading
+    /// as "no provider".
     UnpinnedRequirement {
         detail: String,
     },

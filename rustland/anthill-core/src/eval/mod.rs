@@ -231,13 +231,17 @@ pub(crate) struct FieldSymbols {
     pub requirements: Symbol,
     pub predicate: Symbol,
     /// WI-857 — `anthill.reflect.NoProvider`, the functor a dictionary slot carries
-    /// when the spec's requirement had no provider at the goal's bindings. Interned
-    /// ONCE here, like every other well-known name, so eval never re-derives it: it is
-    /// what `port_resolved_tree` allocates (removing a `lookup_symbol(..)?` that would
-    /// have silently residualized a whole resolved tree if nothing had interned the
-    /// name yet). NOTE the typer-side readers still test by NAME
-    /// (`kb::typing::is_no_provider`) because they hold only a `&KnowledgeBase`, so
-    /// there are two spellings, not one; see that function for the cost.
+    /// when it pins no provider. Interned ONCE here, like every other well-known
+    /// name, so eval never re-derives it.
+    ///
+    /// WI-865 narrowed WHICH marker this is: eval's ONE remaining producer of a marker
+    /// is [`Interpreter::stand_in_requirement`]'s host-entry sub-slots, so this is
+    /// that record's symbol and no other. The resolver's markers are minted per
+    /// absence by `kb::typing::absence_marker_sym` and travel on the tree
+    /// (`port_resolved_tree` no longer needs a marker of its own). NOTE the typer-side
+    /// readers still test by NAME (`kb::typing::is_absence_marker`) because they hold
+    /// only a `&KnowledgeBase`, so there are two spellings, not one; see that
+    /// function for the cost.
     pub no_provider: Symbol,
     /// `__req_self` — the Self-slot requirement-param name (WI-237
     /// names model). Interned, not a stdlib symbol.
@@ -275,7 +279,10 @@ impl FieldSymbols {
             impl_functor: kb.intern("impl_functor"),
             requirements: kb.intern("requirements"),
             predicate: kb.intern("predicate"),
-            no_provider: crate::kb::typing::no_provider_sym(kb),
+            no_provider: crate::kb::typing::absence_marker_sym(
+                kb,
+                crate::kb::typing::AbsenceRecord::HostEntry,
+            ),
             req_self: kb.intern("__req_self"),
         }
     }
