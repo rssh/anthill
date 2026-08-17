@@ -24090,6 +24090,26 @@ pub(crate) struct ProvidesIndex {
     /// Providers keyed by canonical carrier (`canonical_sort_sym(carrier)`): the carrier
     /// is a resolved sort functor, so the canonical key IS the carrier identity.
     by_carrier: SymbolKeyedFactIndex,
+    /// WI-864 — the same relation DECODED: canonical carrier → the `(rid, canonical spec
+    /// base)` edges out of it, which is what [`provides_out_edges`] recomputes per hop of
+    /// every transitive `sort_provides` walk. Two other buckets over the same facts would
+    /// be redundant; this is not, because the cost it removes is the DECODE
+    /// (`fact_head_named_args` + two `get_named_arg`s + `sort_ref_functor` +
+    /// `provides_spec_base_sym` + two `canonical_sym` string hashes per fact), not the
+    /// bucket lookup. Built in the SAME pass, by calling the very decode
+    /// `provides_out_edges` uses, so the memo is that function computed once rather than a
+    /// second spelling of it that could drift.
+    ///
+    /// The `rid` rides along because a bucket is frozen at build time while retraction is
+    /// not — the reason [`SymbolKeyedFactIndex::rids_or_scan`] filters `is_rule_alive`,
+    /// and the same filter applies here for the same reason.
+    ///
+    /// LIFECYCLE BY CONSTRUCTION: it lives INSIDE `ProvidesIndex`, so every point that
+    /// drops `kb.provides_index` drops it, and the one builder fills it. There is no new
+    /// invalidation surface to audit — which is the whole reason it is a field here rather
+    /// than a cache of its own (cf. WI-1112, where a new index needed its producers
+    /// enumerated, and WI-954, where a stale index answered EMPTY).
+    carrier_edges: HashMap<Symbol, SmallVec<[(crate::kb::RuleId, Symbol); 4]>>,
 }
 
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
@@ -24112,10 +24132,22 @@ fn provides_rids_by_spec(kb: &KnowledgeBase, spec_canon: Symbol) -> Vec<crate::k
 /// keeps its own per-fact `canonical_sort_sym` re-filter (the no-index scan fallback
 /// returns EVERY provides fact, so the re-filter is load-bearing there).
 fn provides_rids_by_carrier(kb: &KnowledgeBase, carrier: Symbol) -> Vec<crate::kb::RuleId> {
+    provides_rids_by_carrier_canon(kb, kb.canonical_sort_sym(carrier))
+}
+
+/// [`provides_rids_by_carrier`] for a caller that ALREADY holds the canonical carrier —
+/// the transitive `provides` walk (WI-864), which canonicalizes once per walk and then
+/// carries canonical symbols. Split rather than relying on `canonical_sym`'s idempotence
+/// at the entry: idempotence makes the extra call harmless, not free, and the walk asks
+/// per hop.
+fn provides_rids_by_carrier_canon(
+    kb: &KnowledgeBase,
+    carrier_canon: Symbol,
+) -> Vec<crate::kb::RuleId> {
     SymbolKeyedFactIndex::rids_or_scan(
         kb,
         kb.provides_index.as_ref().map(|p| &p.by_carrier),
-        kb.canonical_sort_sym(carrier),
+        carrier_canon,
         "anthill.reflect.SortProvidesInfo",
     )
 }
@@ -24139,6 +24171,9 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
     };
     let mut by_spec_base = SymbolKeyedFactIndex::default();
     let mut by_carrier = SymbolKeyedFactIndex::default();
+    // WI-864 — the decoded adjacency, filled from this same walk. See `carrier_edges`.
+    let mut carrier_edges: HashMap<Symbol, SmallVec<[(crate::kb::RuleId, Symbol); 4]>> =
+        HashMap::new();
     for rid in kb.rules_by_functor(provides_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -24173,13 +24208,28 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
                      would misbucket it; resolve the `provides` carrier at its producer",
                     kb.qualified_name_of(carrier),
                 );
-                by_carrier.insert(kb.canonical_sort_sym(carrier), rid);
+                let carrier_canon = kb.canonical_sort_sym(carrier);
+                by_carrier.insert(carrier_canon, rid);
+                // WI-864: the out-edge, decoded once. `provides_spec_base_sym` and NOT the
+                // `unwrap_spec_view` above, because this memoizes `provides_out_edges` —
+                // whose spec decode is that one. The two agree on every shape the loader
+                // emits, but "agree today" is not the invariant a memo may rest on: using
+                // the consumer's own decode makes the memo the function, not a lookalike.
+                if let Some(dst) = get_named_arg(kb, &named, "spec")
+                    .and_then(|t| super::load::provides_spec_base_sym(kb, t))
+                {
+                    carrier_edges
+                        .entry(carrier_canon)
+                        .or_default()
+                        .push((rid, kb.canonical_sort_sym(dst)));
+                }
             }
         }
     }
     kb.provides_index = Some(ProvidesIndex {
         by_spec_base,
         by_carrier,
+        carrier_edges,
     });
 }
 
@@ -50638,21 +50688,79 @@ fn check_entity_facts(
 /// `fact <Spec>` declarations so this closure has something to chase.
 pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-    sort_provides_reach(kb, carrier, spec, &mut visited)
+    // WI-864 — CANONICALIZE ONCE PER WALK, not once per comparison. `same_sort_canonical`
+    // is `a == b || canonical(a) == canonical(b)`, and `a == b` implies the canonical
+    // equality, so the predicate IS `canonical(a) == canonical(b)` — which means the walk
+    // can carry canonical symbols and compare them RAW. Identical verdicts, and the
+    // `canonical_sym` call (a `qualified_name_of` plus a `HashMap<String, _>` probe, i.e.
+    // a string hash) drops from O(visited) per node to O(1) per walk.
+    sort_provides_reach(
+        kb,
+        kb.canonical_sort_sym(carrier),
+        kb.canonical_sort_sym(spec),
+        &mut visited,
+    )
 }
 
 /// WI-660/WI-672 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the
 /// specs `node` directly provides). Uses the provider index's carrier direction (canonical
-/// bucket + `same_sort_canonical` exactness), so the transitive walk queries only the
-/// out-edges per hop instead of re-extracting the whole edge table on every `sort_provides`
-/// call. Falls back to the full scan before the index is built (the same
-/// `same_sort_canonical(c, node)` re-filter makes both paths identical). A value-fact
-/// `SortProvidesInfo` (denoted-bearing spec) is skipped here; occurrence-based provides
-/// lookup is gated effect-expressions-as-types work (avoid the term-only `rule_head`
-/// panic on a value head).
-fn provides_out_edges(kb: &KnowledgeBase, node: Symbol) -> SmallVec<[Symbol; 4]> {
+/// bucket + canonical exactness), so the transitive walk queries only the out-edges per hop
+/// instead of re-extracting the whole edge table on every `sort_provides` call. Falls back
+/// to the full scan before the index is built (the same canonical re-filter makes both
+/// paths identical). A value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped
+/// here; occurrence-based provides lookup is gated effect-expressions-as-types work (avoid
+/// the term-only `rule_head` panic on a value head).
+///
+/// WI-864 — CANONICAL IN, CANONICAL OUT, and both halves are a CONTRACT rather than a
+/// convention. `node_canon` must already be `canonical_sort_sym`'d: the memo is keyed that
+/// way, so a raw symbol whose canonical form differs would MISS the bucket and read as "no
+/// provisions" — the WI-954 failure mode. The returned spec bases are canonical for the
+/// same reason the input is: the sole caller compares them against a canonical `spec` and
+/// recurses on them as the next `node_canon`.
+///
+/// The obligation is discharged at ONE place — [`sort_provides`], which canonicalizes both
+/// ends once and then never leaves canonical space — and that is why this takes the
+/// canonical symbol rather than canonicalizing defensively here: canonicalizing per hop is
+/// exactly the cost this ticket removed.
+///
+/// AND IT IS ASSERTED, because the failure is SILENT and WRONG rather than loud. A raw
+/// symbol whose canonical form differs misses the canonically-keyed bucket and comes back
+/// `unwrap_or_default()` — "this carrier provides nothing" — which is not a refusal but a
+/// wrong verdict, feeding `sort_provides_admissibly`, the dispatch carrier filter and
+/// requires-coverage, so a conforming program is silently REFUSED. Exactly WI-954's mode.
+/// The corpus cannot catch it today (every provides carrier is already its own canonical
+/// form, which `build_provides_index`' own `debug_assert` asserts), so a second caller
+/// added later is the hazard, and this turns it into a test-time panic instead.
+fn provides_out_edges(kb: &KnowledgeBase, node_canon: Symbol) -> SmallVec<[Symbol; 4]> {
+    debug_assert_eq!(
+        node_canon,
+        kb.canonical_sort_sym(node_canon),
+        "WI-864: `provides_out_edges` is keyed on the CANONICAL carrier; `{}` is not \
+         canonical, so the bucket lookup would miss and answer `provides nothing`",
+        kb.qualified_name_of(node_canon),
+    );
+    // WI-864 — the decoded bucket when the index is live. Every filter the loop below
+    // applies is already discharged at BUILD time (`is_fact`, a readable `sort_ref` whose
+    // canonical form IS this key, a readable `spec` base) except liveness, which a frozen
+    // bucket cannot answer — so `is_rule_alive` stays here, exactly as
+    // `SymbolKeyedFactIndex::rids_or_scan` keeps it on the rid path.
+    if let Some(ix) = &kb.provides_index {
+        return ix
+            .carrier_edges
+            .get(&node_canon)
+            .map(|edges| {
+                edges
+                    .iter()
+                    .filter(|(rid, _)| kb.is_rule_alive(*rid))
+                    .map(|(_, dst_canon)| *dst_canon)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    // No index (the load-time windows where the relation is being written): decode live.
+    // This is the definition the memo above is built from.
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
-    for rid in provides_rids_by_carrier(kb, node) {
+    for rid in provides_rids_by_carrier_canon(kb, node_canon) {
         // Match `build_provides_index`, which only buckets facts: a non-fact rule with a
         // `SortProvidesInfo` head is not a provider edge. Can't arise today (provides are
         // only ever asserted as facts), but keeps the indexed and scan paths identical —
@@ -50668,7 +50776,7 @@ fn provides_out_edges(kb: &KnowledgeBase, node: Symbol) -> SmallVec<[Symbol; 4]>
         else {
             continue;
         };
-        if !same_sort_canonical(kb, c, node) {
+        if kb.canonical_sort_sym(c) != node_canon {
             continue;
         }
         let Some(s) = get_named_arg(kb, &named, "spec")
@@ -50676,32 +50784,42 @@ fn provides_out_edges(kb: &KnowledgeBase, node: Symbol) -> SmallVec<[Symbol; 4]>
         else {
             continue;
         };
-        out.push(s);
+        // CANONICAL out-edges: the sole caller compares them canonically and recurses on
+        // them (where the recursion would canonicalize anyway), so canonicalizing at the
+        // producer is the same relation with the conversion done once.
+        out.push(kb.canonical_sort_sym(s));
     }
     out
 }
 
-/// Transitive-reachability worker for [`sort_provides`]: from `carrier`, follow each
-/// provides edge out of it — succeed if its target IS `spec`, else recurse on the
+/// Transitive-reachability worker for [`sort_provides`]: from `carrier_canon`, follow each
+/// provides edge out of it — succeed if its target IS `spec_canon`, else recurse on the
 /// target. `visited` is a cycle guard against a cyclic `provides` declaration (a sort
 /// that transitively provides itself), so the walk terminates and stays
 /// O(reachable × bucket).
+///
+/// WI-864 — BOTH ENDS ARE CANONICAL, and so is everything `visited` holds. `sort_provides`
+/// converts once at the entry and the walk stays in canonical space, so every comparison
+/// here is a raw `Symbol` equality rather than a `same_sort_canonical` (two
+/// `qualified_name_of` reads and two `HashMap<String, _>` probes). The two are the same
+/// predicate — `same_sort_canonical(a, b)` is `a == b || canonical(a) == canonical(b)`, and
+/// `a == b` implies the right disjunct, so the relation IS canonical equality.
 fn sort_provides_reach(
     kb: &KnowledgeBase,
-    carrier: Symbol,
-    spec: Symbol,
+    carrier_canon: Symbol,
+    spec_canon: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> bool {
-    if visited.iter().any(|&v| same_sort_canonical(kb, v, carrier)) {
+    if visited.contains(&carrier_canon) {
         return false;
     }
-    visited.push(carrier);
-    for dst in provides_out_edges(kb, carrier) {
+    visited.push(carrier_canon);
+    for dst_canon in provides_out_edges(kb, carrier_canon) {
         // Direct hop, then the transitive chain through the intermediate spec. WI-672
         // canonical: `spec` may be a `required_sort` (via `check_provider_requires` /
         // `check_requires_shadows`), but those are resolved (stdlib qualified; top-level
         // user specs self-consistent — see `entries_cover`), so canonical is exact.
-        if same_sort_canonical(kb, dst, spec) || sort_provides_reach(kb, dst, spec, visited) {
+        if dst_canon == spec_canon || sort_provides_reach(kb, dst_canon, spec_canon, visited) {
             return true;
         }
     }
@@ -60184,6 +60302,299 @@ mod wi1084_arrow_function_unify_tests {
 }
 
 
+
+/// WI-864 — [`ProvidesIndex::carrier_edges`] is a MEMO OF [`provides_out_edges`], and a
+/// memo is only sound while it answers what the function answers. These tests are that
+/// equality, driven at the two states the KB is ever in (index live / index dropped) and
+/// over EVERY sort the KB names rather than the handful the fixture writes.
+///
+/// A wrong answer here is not a slow one. `provides_out_edges` is the step relation of
+/// [`sort_provides`], which decides subtype admissibility (`sort_provides_admissibly`),
+/// the dispatch carrier filter, and requires-coverage — so an edge that falls out of the
+/// memo is a PROVISION THAT STOPS EXISTING: a value of a carrier stops conforming to a
+/// spec it provides, and a program that should load is refused. An edge that lingers
+/// fails the other way, admitting a value nothing licenses. That is WI-954's failure mode
+/// on the provides side, which is why the memo lives INSIDE `ProvidesIndex` (one
+/// lifecycle, nothing new to remember) and why its agreement with the decode is tested
+/// rather than argued.
+#[cfg(test)]
+mod wi864_provides_edges_tests {
+    use super::{build_provides_index, provides_out_edges, sort_provides};
+    use crate::kb::term::Term;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::{KnowledgeBase, Symbol};
+
+    /// A THREE-FLOOR provides tower plus a non-provider sibling. `Bottom` reaches `Top`
+    /// only through `Mid`, so the answer is produced by the TRANSITIVE walk — the code
+    /// WI-864 rewrote — and not by a single direct edge.
+    const SRC: &str = r#"
+namespace test.wi864
+  import anthill.prelude.{Int64}
+  sort Top
+    sort T = ?
+  end
+  sort Mid
+    sort T = ?
+    provides Top[T = T]
+  end
+  sort Bottom
+    sort T = ?
+    provides Mid[T = T]
+  end
+  sort Unrelated
+    sort T = ?
+  end
+end
+"#;
+
+    /// Every sort the KB names — the POPULATION, so the memo/decode comparison is not
+    /// scoped to the fixture's four sorts. The stdlib alone contributes the diamond
+    /// (`Ordered` → `Eq` + `PartialOrd` → `PartialEq`) this ticket is about.
+    fn all_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+        let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+            panic!("the stdlib declares SortInfo");
+        };
+        let mut out = Vec::new();
+        for rid in kb.rules_by_functor(sort_info) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let head = kb.rule_head_value(rid);
+            let Some(name_tid) = crate::kb::op_info::head_field_term(kb, head, "name") else {
+                continue;
+            };
+            match kb.get_term(name_tid) {
+                Term::Ref(s) => out.push(*s),
+                Term::Fn { functor, .. } => out.push(*functor),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("{qn} resolves"))
+    }
+
+    /// THE MEMO IS THE FUNCTION, over the whole population. With the index live every
+    /// `provides_out_edges` answer comes from `carrier_edges`; with it dropped every one
+    /// is decoded live. The two lists must agree per carrier, ORDER INCLUDED — the walk
+    /// takes the first reaching edge, so a permuted list is a different search.
+    ///
+    /// CONTROL, AND TWO OF THE THREE I EXPECTED DO NOT FIRE — measured, not predicted:
+    ///
+    ///  * Building `carrier_edges` from the `unwrap_spec_view` base beside it (the OTHER
+    ///    spec decode in `build_provides_index`) instead of `provides_spec_base_sym`:
+    ///    ALL THREE TESTS STILL PASS. The two decodes agree on every provides fact this
+    ///    corpus holds, so which one the memo is built from is unobservable today. Using
+    ///    the consumer's own decode therefore ships on the rule that a memo should BE its
+    ///    function rather than a lookalike — not on a failing case.
+    ///  * Filing the edge under the RAW carrier instead of `canonical_sort_sym(carrier)`:
+    ///    the whole workspace stays green (4984 tests). Every provides carrier here is a
+    ///    resolved sort functor that is already its own canonical form — which is what
+    ///    `build_provides_index`' own `debug_assert` asserts — so the two keys coincide.
+    ///    Canonical keying ships because the lookup key IS canonical (the walk
+    ///    canonicalizes once and carries it) and because the sibling `by_carrier` bucket
+    ///    keys that way for WI-672's reason. MEASURED INERT on this corpus; no test covers
+    ///    it.
+    ///
+    /// The one control that DOES fire is the retraction test below. And none of the three
+    /// fails with WI-864 backed out, nor can it: backed out, both arms ARE the decode.
+    /// What these guard is the risk the memo introduces, which is the only new risk.
+    #[test]
+    fn the_memo_answers_what_the_live_decode_answers_for_every_carrier() {
+        let mut kb = load_stdlib(Some(SRC));
+        assert!(
+            kb.provides_index.is_some(),
+            "premise: a full load leaves the provides index BUILT — without this the test \
+             would compare the decode with itself and measure nothing",
+        );
+        let sorts = all_sorts(&kb);
+        assert!(
+            sorts.len() > 50,
+            "premise: the population is the KB's sorts, not the fixture's ({} found)",
+            sorts.len(),
+        );
+
+        let via_memo: Vec<_> = sorts
+            .iter()
+            .map(|&s| provides_out_edges(&kb, kb.canonical_sort_sym(s)))
+            .collect();
+        kb.provides_index = None;
+        let via_decode: Vec<_> = sorts
+            .iter()
+            .map(|&s| provides_out_edges(&kb, kb.canonical_sort_sym(s)))
+            .collect();
+
+        let mut with_edges = 0usize;
+        for (i, s) in sorts.iter().enumerate() {
+            if !via_memo[i].is_empty() {
+                with_edges += 1;
+            }
+            assert_eq!(
+                via_memo[i].as_slice(),
+                via_decode[i].as_slice(),
+                "provides out-edges of `{}` disagree between the memo and the live decode",
+                kb.qualified_name_of(*s),
+            );
+        }
+        assert!(
+            with_edges >= 10,
+            "premise: the comparison is not vacuous — only {with_edges} carriers have any \
+             out-edge at all, so an all-empty agreement would prove nothing",
+        );
+    }
+
+    /// THE CONSUMER, DRIVEN TRANSITIVELY. `Bottom provides Mid provides Top` is two hops:
+    /// the walk must canonicalize, follow, and answer — and answer the same with the memo
+    /// and without it. `Unrelated` is the negative in the same run, so a walk that said
+    /// `true` for everything would fail here rather than pass silently.
+    #[test]
+    fn a_two_hop_chain_resolves_identically_with_and_without_the_memo() {
+        let mut kb = load_stdlib(Some(SRC));
+        let bottom = sym(&kb, "test.wi864.Bottom");
+        let mid = sym(&kb, "test.wi864.Mid");
+        let top = sym(&kb, "test.wi864.Top");
+        let unrelated = sym(&kb, "test.wi864.Unrelated");
+
+        for (label, index_live) in [("memo", true), ("decode", false)] {
+            if !index_live {
+                kb.provides_index = None;
+            }
+            assert!(
+                kb.provides_index.is_some() == index_live,
+                "the {label} arm runs in the state it names",
+            );
+            assert!(
+                sort_provides(&kb, bottom, mid),
+                "{label}: Bottom provides Mid directly",
+            );
+            assert!(
+                sort_provides(&kb, bottom, top),
+                "{label}: Bottom provides Top TRANSITIVELY (Bottom -> Mid -> Top)",
+            );
+            assert!(
+                !sort_provides(&kb, bottom, unrelated),
+                "{label}: Bottom does not provide Unrelated — the negative that says the \
+                 walk discriminates",
+            );
+            assert!(
+                !sort_provides(&kb, top, bottom),
+                "{label}: the relation is directed — Top does not provide Bottom",
+            );
+        }
+    }
+
+    /// THE PRECONDITION IS DRIVABLE, so it is driven rather than merely asserted. A guard
+    /// nothing can fire is a guard nobody has measured (and would be dead weight); this one
+    /// fires, because `intern` mints a symbol WITHOUT registering its qualified name
+    /// (`define_qualified_only` is the registering door), so an interned copy of a name the
+    /// stdlib already owns is a genuine non-canonical symbol — precisely the shape WI-617
+    /// says the KB grows on its own.
+    ///
+    /// WITHOUT the guard this call returns an EMPTY edge list — "this carrier provides
+    /// nothing" — which is a wrong verdict, not a refusal. MEASURED: with the
+    /// `debug_assert_eq!` removed, this test fails on the `should_panic` instead of the
+    /// lookup, and the bare call answers `[]` for a carrier that provides `Top`.
+    #[test]
+    #[should_panic(expected = "is not canonical")]
+    fn a_non_canonical_carrier_is_refused_loudly_not_answered_empty() {
+        let mut kb = load_stdlib(Some(SRC));
+        let mid_canon = kb.canonical_sort_sym(sym(&kb, "test.wi864.Mid"));
+        // Premise: canonically, `Mid` HAS an out-edge — so an empty answer below would be
+        // wrong rather than merely uninformative.
+        assert!(
+            !provides_out_edges(&kb, mid_canon).is_empty(),
+            "premise: Mid provides Top, so the canonical lookup is non-empty",
+        );
+
+        // A second interned copy of the SAME qualified name: `intern` does not register it
+        // in `by_qualified_name`, so the registered canonical stays the loader's symbol and
+        // this copy is not its own canonical form.
+        let twin = kb.intern("test.wi864.Mid");
+        assert_ne!(
+            twin,
+            kb.canonical_sort_sym(twin),
+            "premise: the interned twin is genuinely non-canonical — without this the test \
+             would assert nothing",
+        );
+        let _ = provides_out_edges(&kb, twin);
+    }
+
+    /// A RETRACTED PROVISION IS NOT IN THE RELATION, AND THE MEMO MUST AGREE — the
+    /// provides-side twin of WI-1112's `a_retracted_requires_fact_is_dropped_by_the_index`.
+    /// `carrier_edges` is frozen at build time, so it carries the `RuleId` for exactly this
+    /// question; `rules_by_functor` (the decode arm) filters retracted at query time.
+    ///
+    /// THIS SIDE FAILS UPWARD: without the filter the edge OUTLIVES its declaration, and a
+    /// value keeps conforming to a spec nothing says it provides.
+    ///
+    /// CONTROL: drop the `is_rule_alive` filter from `provides_out_edges`' memo arm and the
+    /// first assertion below fails while the decode arm still passes — the disagreement
+    /// stated as a test. NO REBUILD between the retract and the read: `build_provides_index`
+    /// reads `rules_by_functor`, so rebuilding would refresh the bucket and measure nothing.
+    #[test]
+    fn a_retracted_provision_is_dropped_by_the_memo_as_it_is_by_the_decode() {
+        let mut kb = load_stdlib(Some(SRC));
+        let bottom = kb.canonical_sort_sym(sym(&kb, "test.wi864.Bottom"));
+        let mid = kb.canonical_sort_sym(sym(&kb, "test.wi864.Mid"));
+        build_provides_index(&mut kb);
+        assert!(
+            provides_out_edges(&kb, bottom).contains(&mid),
+            "premise: Bottom -> Mid is an edge before the retraction",
+        );
+
+        let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
+        let rid = kb
+            .rules_by_functor(provides_sym)
+            .into_iter()
+            .find(|rid| {
+                if !kb.is_fact(*rid) {
+                    return false;
+                }
+                let Some(named) = kb.fact_head_named_args(*rid) else {
+                    return false;
+                };
+                let Some(c) = super::get_named_arg(&kb, &named, "sort_ref")
+                    .and_then(|t| crate::kb::load::sort_ref_functor(&kb, t))
+                else {
+                    return false;
+                };
+                // BOTH ENDS, not the carrier alone. Selecting by carrier picks the right
+                // fact only while `Bottom` has exactly one provision — and later passes DO
+                // emit extra ones (`eq_derive` derives `NonEq`/`PartialEq` provisions for
+                // other carriers today). Unpinned, this would one day retract an unrelated
+                // edge and then fail at the assertion below naming the wrong cause.
+                let Some(dst) = super::get_named_arg(&kb, &named, "spec")
+                    .and_then(|t| crate::kb::load::provides_spec_base_sym(&kb, t))
+                else {
+                    return false;
+                };
+                kb.canonical_sort_sym(c) == bottom && kb.canonical_sort_sym(dst) == mid
+            })
+            .expect("the `Bottom provides Mid` fact");
+
+        // A retractor that does NOT invalidate — the case the filter has to survive.
+        kb.retract(rid);
+        assert!(
+            kb.provides_index.is_some(),
+            "the index built above is still the live one — nothing rebuilt or dropped it",
+        );
+        assert!(
+            !provides_out_edges(&kb, bottom).contains(&mid),
+            "through the MEMO built BEFORE the retraction: a retracted provision must not \
+             be served",
+        );
+
+        kb.provides_index = None;
+        assert!(
+            !provides_out_edges(&kb, bottom).contains(&mid),
+            "through the DECODE: `rules_by_functor` already filtered it — the answer the \
+             memo has to match",
+        );
+    }
+}
 
 /// WI-1112 — [`build_requires_index`] and the consumer it serves,
 /// [`collect_sort_requires`], must answer the SAME chain the `rules_by_functor` scan
