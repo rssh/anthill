@@ -1423,11 +1423,34 @@ end
       case other => fail(s"expected TupleLiteral, got $other")
   }
 
-  test("WI-639: a single member `?x.(f)` 1-collapses to the scalar accessor `?x.f`") {
-    val (pf, t) = factTerm("fact ?x.(f)")
-    t match
-      case fn: Term.Fn => assertEquals(pf.symbols.name(fn.functor), "dot_apply")
-      case other => fail(s"expected dot_apply (1-collapse), got $other")
+  // WI-20260818-YQB1Y (052 OQ5, option A): a single member NO LONGER 1-collapses.
+  // `?x.(f)` is the one-field named tuple `(f: ?x.f)`, and a single RENAME keeps its
+  // key too — where both used to yield the bare accessor `?x.f` and drop the label.
+  // Asserting the KEY, not just the tuple: returning `(<anything>: ?x.f)` would
+  // satisfy a shape-only check while losing exactly what the change is about.
+  //
+  // CONTROL: both rows FAIL on a back-out — the pre-change parser hands back the
+  // `dot_apply` accessor, so `expected TupleLiteral, got Fn(dot_apply)`.
+  test("WI-YQB1Y: a single member `?x.(f)` is the one-field tuple `(f: ?x.f)`") {
+    for (src, key) <- Seq("fact ?x.(f)" -> "f", "fact ?x.(a: f)" -> "a") do
+      val (pf, t) = factTerm(src)
+      t match
+        case fn: Term.Fn =>
+          assertEquals(pf.symbols.name(fn.functor), "TupleLiteral", src)
+          assertEquals(fn.namedArgs.length, 1, s"$src: one keyed component")
+          assertEquals(pf.symbols.name(fn.namedArgs(0)._1), key, s"$src: result key")
+          assertEquals(functorName(pf, fn.namedArgs(0)._2), "dot_apply", s"$src: accessor")
+        case other => fail(s"$src: expected TupleLiteral, got $other")
+  }
+
+  // The named-only rule now applies at ARITY ONE too: `?x.(_1)` builds `(_1: ?x._1)`,
+  // whose key collides with the positional-tuple convention exactly as `?x.(_1, _2)`
+  // does. It used to be exempt because it collapsed to the plain access `?x._1`.
+  //
+  // CONTROL: FAILS on a back-out — the pre-change parser skips `validateProjectionLabels`
+  // at arity one, so this source parses clean.
+  test("WI-YQB1Y: a `_`-prefixed key is refused at arity one as well") {
+    assertProjectionRejected("fact ?x.(_1)", "prefixed")
   }
 
   test("WI-639: a name receiver `Rec.(x, y)` uses field_access accessors") {

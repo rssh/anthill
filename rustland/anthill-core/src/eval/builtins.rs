@@ -2073,12 +2073,8 @@ fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // `Relation[T = Membership[T = r.T], …]`, and `Membership` is the type-level
     // predicate the ctor-reduction boundary evaluates (kb/typing.rs). This guard is
     // NOT thereby dead — it reads the VALUE's own `columns`, a different population
-    // from the SCHEMA the typer sees. Three ways it is still reached, the first two
-    // DRIVEN in `wi728_membership_operand_test`:
-    //   * a ONE-column relation whose column type is `Unit`. The 1-collapse maps it to
-    //     the same `Unit` a zero-column relation gets, so no type-level check can see
-    //     the column and this one can (`…_a_unit_typed_column_is_indistinguishable_-
-    //     from_no_columns`). The sharpest case: it needs no generic code at all.
+    // from the SCHEMA the typer sees. TWO ways it is still reached, only the first DRIVEN
+    // (in `wi728_membership_operand_test`):
     //   * a schema never known statically — the WI-734 abstract-operand rule leaves the
     //     assertion symbolic, and a wrapper widening its own return to a bare `Relation`
     //     lets that residual escape unreduced (`…_abstract_schema_defers_to_the_runtime_-
@@ -2086,8 +2082,15 @@ fn relation_negate(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     //   * a relation built through reflect rather than from surface code. NOT driven —
     //     there is no reflect LogicalQuery BUILD interface yet (see `guarded_of`'s note
     //     in relation.anthill), so no test can construct one. Stated so a later reader
-    //     weighing this guard's removal knows which of the three is argued and which is
-    //     merely asserted; the first two carry the case on their own.
+    //     weighing this guard's removal knows which of the two is argued and which is
+    //     merely asserted.
+    //
+    // A THIRD WAY IS GONE (WI-20260818-YQB1Y): a ONE-column relation whose column type is
+    // `Unit` used to 1-collapse to the same `Unit` a zero-column relation gets, so no
+    // type-level check could see the column and only this guard could. Its schema is now
+    // `(t: Unit)` and `Membership` refuses it at LOAD, which is where WI-728's recorded
+    // limit went. That was the SHARPEST of the three — it needed no generic code at all —
+    // so this guard's case is now weaker than it was, and rests on the two above.
     if !columns.is_empty() {
         let names: Vec<String> = columns
             .iter()
@@ -2259,11 +2262,8 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r, cond, params] = expect_args::<3>("Relation.where_run", args)?;
     let (query, columns) = expect_relation(r)?;
-    // The whole-row sentinel symbol (if `compile_operand` ever minted one) — resolved
-    // ONCE here, not per `Var::Global` node in the recipe walk.
-    let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
     let params = spec_record_fields(&params, "a where-condition parameter record")?;
-    let condition = fill_recipe_holes(&interp.kb, &cond, &columns, whole_row, params)?;
+    let condition = fill_recipe_holes(&interp.kb, &cond, &columns, params)?;
     let filtered = interp.build_logical_query_value(
         "conjunction",
         vec![("left", (*query).clone()), ("right", condition)],
@@ -2274,64 +2274,36 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     })
 }
 
-/// Reserved hole name for a bare-binder (WHOLE-ROW) reference `c` in a `where`
-/// condition over a 1-collapse (single-column) relation — `eq(c, 30)`. `where_run`
-/// maps it to the relation's sole column. A dunder name that cannot clash with a user
-/// field (column names are head-variable names, never dunders).
-///
-/// WI-1128 — ONE SENTINEL, AND `join` HAS TWO BINDERS. [`compile_operand`] mints this same
-/// name for a bare `c` and a bare `q`, so in a join condition the hole can say neither WHICH
-/// row it came from nor match [`fill_recipe_holes`]'s sole-column arm, which tests the
-/// MERGED column list. A `join` whose 1-collapsed operand is read as a bare binder —
-/// `join(r, ages, (c, q) -> eq(c.age, q))`, the natural spelling — would therefore still
-/// fail even if the TYPER could name the collapsed column: the missing name is one blocker,
-/// this is a second and independent one. That is exactly why WI-1128 censused the readers
-/// rather than fixing `Concat` alone.
-///
-/// DOCUMENTED, NOT CHANGED, because there is no drivable control TODAY: keying the sentinel
-/// per binder is a change no test could measure, since no program in which the two holes
-/// differ can load. WI-20260818-YQB1Y REMOVES THAT GATE — it lets a one-column operand through
-/// `Concat` — so the sentinel must be keyed per binder in that same change, where it finally
-/// has a control; that ticket carries this as a named blocker. Until then, no program in
-/// which the two holes differ can load (the WI-1078 shape, and the discipline WI-731 applied to `binder_field_access`
-/// for the same reason). THE ENFORCEMENT SITES, measured on the current tree — three
-/// spellings, each refused at LOAD by an INDEPENDENT gate:
-///  * `eq(c, q)` over two rows with DIFFERENT schemas — refused by `eq`'s own operand
-///    typing (`expected (name: String, age: Int64), got (who: String, dept: Int64)`);
-///  * the same over rows with the SAME schema — refused by `concat_named_tuple_types`'
-///    disjoint-name rule, since identical schemas collide on every column;
-///  * a user rule as the condition atom, `pairup(c, q)` — refused by the rule goal's own
-///    argument typing.
-///
-/// And if some fourth spelling ever escapes those, [`fill_recipe_holes`]'s whole-row arm is
-/// a LOUD `TypeMismatch` over any merged set that is not exactly one column — never a
-/// silent fill. So the ambiguity costs a worse message, never a wrong answer.
-const WHOLE_ROW_HOLE: &str = "__anthill_where_whole_row__";
 
 /// WI-1127 — name prefix for a PARAMETER hole in a row-condition recipe: the operand
 /// that is neither a column nor a literal (`eq(c.age, v)`, `eq(c.age, thirty())`).
 /// `compile_operand` mints `<prefix>N__` for the Nth such operand and hands the
 /// EXPRESSION to the runner as a captured argument under that SAME label, so
 /// `where_run`/`join_run` fill the hole by exact interned-`Symbol` match — the seam a
-/// column hole already uses. A dunder, so it can clash with neither a user field
-/// (column names are head-variable names) nor the whole-row sentinel above.
+/// column hole already uses. A dunder, so it cannot clash with a user field (column names
+/// are head-variable names).
 const PARAM_HOLE_PREFIX: &str = "__anthill_row_param_";
 
 /// Replace each HOLE in a `LogicalQuery` recipe `Value` with what fills it. A hole is a
 /// `Var::Global` variable minted by the row-lambda compiler and identified by its NAME
-/// symbol; there are three kinds, and the name space is disjoint by construction:
+/// symbol; there are TWO kinds, and the name space is disjoint by construction:
 /// a COLUMN hole named by a schema field symbol (`guarded_of` mints it from `c.x`) takes
-/// `r`'s real column variable of that name (WI-714), the WHOLE-ROW sentinel takes the
-/// sole column of a 1-collapse relation, and a PARAMETER hole (WI-1127) takes the value
-/// its captured operand evaluated to.
+/// `r`'s real column variable of that name (WI-714), and a PARAMETER hole (WI-1127) takes
+/// the value its captured operand evaluated to.
+///
+/// WI-20260818-YQB1Y — THE THIRD KIND IS GONE. A bare binder `c` used to mint a WHOLE-ROW
+/// sentinel that this function filled with the sole column of a 1-collapse relation. With
+/// the collapse dropped, a row is a named tuple at every arity and no column variable
+/// carries it, so `compile_operand` refuses a bare binder outright and no such hole is
+/// ever minted.
 ///
 /// The walk is over the whole recipe, so it reaches the atoms nested under a WI-730
 /// `&&`/`||`/`!` spine exactly as it reached the lone atom of the first increment.
-/// Matching is by the interned `Symbol` in all three cases: the SAME symbol names the
+/// Matching is by the interned `Symbol` in both cases: the SAME symbol names the
 /// lambda's field access and the relation's column, and the SAME symbol names a parameter
 /// hole and its capture-record field — exact canonical equality, NOT a cross-scope
 /// short-name compare (WI-672). Every `Var::Global` in a `guarded_of` goal is one of the
-/// three (the translation introduces vars for nothing else), so a hole matching none —
+/// two (the translation introduces vars for nothing else), so a hole matching neither —
 /// or a `Value::Node` occurrence, which never appears in a MACRO-BUILT recipe — is a loud
 /// error, never a silent drop.
 ///
@@ -2345,7 +2317,6 @@ fn fill_recipe_holes(
     kb: &crate::kb::KnowledgeBase,
     v: &Value,
     columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
-    whole_row: Option<crate::intern::Symbol>,
     params: &[(crate::intern::Symbol, Value)],
 ) -> Result<Value, EvalError> {
     use crate::kb::term::Var;
@@ -2357,11 +2328,11 @@ fn fill_recipe_holes(
         } => {
             let mut pos2 = Vec::with_capacity(pos.len());
             for c in pos.iter() {
-                pos2.push(fill_recipe_holes(kb, c, columns, whole_row, params)?);
+                pos2.push(fill_recipe_holes(kb, c, columns, params)?);
             }
             let mut named2 = Vec::with_capacity(named.len());
             for (k, c) in named.iter() {
-                named2.push((*k, fill_recipe_holes(kb, c, columns, whole_row, params)?));
+                named2.push((*k, fill_recipe_holes(kb, c, columns, params)?));
             }
             Ok(Value::Entity {
                 functor: *functor,
@@ -2381,25 +2352,6 @@ fn fill_recipe_holes(
             // spell, so the three hole kinds cannot collide.
             if let Some((_, val)) = params.iter().find(|(p, _)| *p == name) {
                 return Ok(val.clone());
-            }
-            // A WHOLE-ROW hole (bare binder `c`, e.g. `eq(c, 30)`) refers to the entire
-            // row, which is a single column ONLY for a 1-collapse (single-column)
-            // relation. Over a multi-column relation the whole row is a named tuple with
-            // no eq column — a USER error, not a compiler invariant break: `eq(c, c)`
-            // type-checks for a multi-column row (named-tuple `eq`), so this IS reachable
-            // (compile_operand can't see the arity — only the runtime schema can).
-            if whole_row == Some(name) {
-                return match columns {
-                    [(_, vid)] => Ok(Value::Var(Var::Global(*vid))),
-                    _ => Err(EvalError::TypeMismatch {
-                        expected: "a single-column relation for a whole-row `where` condition \
-                                   (compare a specific column `c.field` over a multi-column row)",
-                        got: format!(
-                            "a bare whole-row binder `c` over a {}-column relation",
-                            columns.len()
-                        ),
-                    }),
-                };
             }
             let (_, vid) = columns.iter().find(|(cn, _)| *cn == name).ok_or_else(|| {
                 let local = kb.local_name_of(name);
@@ -2705,12 +2657,12 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 ///      (`conjunction` conjoins the two queries, `guarded` adds the join predicate) — so
 ///      the result stays a composable `Relation` over the merged schema.
 ///
-/// WI-1128 — THIS SIDE NEEDS NO TYPER NAME. A relation VALUE carries `(name, VarId)` for
-/// every column whether or not its schema type 1-collapsed, so the merge below is already
-/// correct for a one-column operand: it is the TYPE that cannot state the merged schema
-/// (`collapse_schema` in kb/typing.rs holds that census). Which is why the refusal lives in
-/// `Concat` and not here — a runtime backstop cannot repair a schema type that downstream
-/// consumers have already read.
+/// WI-1128 / WI-20260818-YQB1Y — THE TYPE CAUGHT UP WITH THIS SIDE. A relation VALUE has
+/// always carried `(name, VarId)` for every column, so the merge below was already correct
+/// for a one-column operand while the schema TYPE could not state the merged result and
+/// `Concat` refused it. Dropping the 1-collapse (`relation_schema_type`, kb/typing.rs) gives
+/// the type the same column names the value has, so a one-column operand now merges at both
+/// levels and the refusal is gone.
 fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r1, r2, cond, params] = expect_args::<4>("Relation.join_run", args)?;
     let (q1, cols1) = expect_relation(r1)?;
@@ -2765,9 +2717,8 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     // WI-730, conjoined exactly as `where_run` conjoins its own (see the note there on
     // why this is `conjunction` and not `guarded`). Condition LAST, so both rows'
     // columns are bound before it runs.
-    let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
     let params = spec_record_fields(&params, "a join-condition parameter record")?;
-    let condition = fill_recipe_holes(&interp.kb, &cond, &merged, whole_row, params)?;
+    let condition = fill_recipe_holes(&interp.kb, &cond, &merged, params)?;
     let product = interp.build_logical_query_value(
         "conjunction",
         vec![("left", (*q1).clone()), ("right", q2_fresh)],
@@ -3166,15 +3117,31 @@ fn compile_operand(
         let hole = interp.kb.fresh_var(field);
         return Ok(Value::Var(Var::Global(hole)));
     }
-    // A BARE binder reference `c` is the WHOLE ROW. For a 1-collapse (single-column)
-    // relation it IS the sole column (`eq(c, 30)`); over a multi-column row a whole-row
-    // comparison has no single eq column. The arity is NOT visible here (only the
-    // runtime schema is) and a multi-column `eq(c, c)` DOES type-check (named-tuple eq),
-    // so the single-column check is deferred to `where_run` when it fills the hole.
+    // A BARE binder reference `c` is the WHOLE ROW, and WI-20260818-YQB1Y made that a
+    // loud rejection rather than a hole. It used to mint a WHOLE-ROW sentinel that
+    // `where_run` filled with the relation's sole column, which was only ever correct
+    // because a one-column relation's row WAS its column under the 1-collapse. With the
+    // collapse gone a row is a named tuple at every arity — `(age: 30)`, never `30` — so
+    // no column variable carries it and there is nothing honest to fill the hole with.
+    //
+    // A REFUSAL AND NOT A TUPLE-BUILDING FILL: a query goal compares columns, and
+    // reconstructing the row as a tuple TERM would put a shape in the goal that the
+    // resolver has no column to unify against. The remedy is one dot — `eq(c.age, 30)`
+    // for `where`, `eq(c.age, q.age)` for `join` — which is also what the row's own type
+    // now says. This is where the sentinel's OTHER defect went too: one symbol was minted
+    // for a bare `c` and a bare `q`, so in a join condition the hole could say neither
+    // which row it meant nor match the sole-column arm over the MERGED column list
+    // (WI-1128 recorded it as a second, independent blocker with no drivable control).
+    // Deleting the sentinel closes both at once — there is no per-binder keying to get
+    // right when there is no whole-row hole.
     if is_binder_ref(occ, binders) {
-        let sole = interp.kb.intern(WHOLE_ROW_HOLE);
-        let hole = interp.kb.fresh_var(sole);
-        return Ok(Value::Var(Var::Global(hole)));
+        return Err(macro_rejects(
+            "a COLUMN of the row (`c.age`) as a condition operand",
+            "a bare row binder, which is the WHOLE row — a named tuple of every column, \
+             not a value a query goal can compare. Name the column you mean (`c.age`)"
+                .to_string(),
+            occ,
+        ));
     }
     // A LITERAL folds into the recipe directly — no capture, no runtime argument.
     // (Only the four scalar kinds; any other `Const` takes the parameter channel below,

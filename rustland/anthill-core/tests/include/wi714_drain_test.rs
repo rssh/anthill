@@ -9,6 +9,12 @@
 //! falls out of naming the rule: the reference IS a `Relation[String]`, so the
 //! solution materializes as a TYPED row and the walk is an ordinary stream drain.
 //!
+//! WI-20260818-YQB1Y (052 OQ5, option A) — THE ROW IS THE ONE-COLUMN TUPLE `(name: …)`,
+//! not the bare `String` it used to 1-collapse to, so the accumulator step reads the column
+//! by name (`put(acc, row.name, true)`). That is the ergonomic price of dropping the
+//! collapse, paid here in one dot — and the column name is what makes the step SAY which
+//! column it accumulates, where before it took whatever the sole column happened to be.
+//!
 //! THE DRAIN IS BOUNDED, and that is the honest shape — not a concession:
 //!
 //! * A relation is MAYBE-INFINITE (a recursive rule enumerates unboundedly), so it
@@ -49,8 +55,8 @@ namespace test.wi714drain
   fact person(name: "bob", age: 25)
   fact person(name: "carol", age: 30)
 
-  -- One free head var → Relation[String] (1-collapse), the `dep_satisfied(?id)`
-  -- shape exactly: a 1-arg predicate cited BY NAME.
+  -- One free head var → Relation[(name: String)], the `dep_satisfied(?id)` shape
+  -- exactly: a 1-arg predicate cited BY NAME.
   rule person_name(?name) :- person(name: ?name, age: ?)
 
   -- A repeated-id relation: clause 1 yields the two age-30 people (alice, carol),
@@ -60,9 +66,10 @@ namespace test.wi714drain
   rule dup_name(?name) :- person(name: ?name, age: ?)
 
   -- The accumulator step — `put(acc, id, true)`, exactly collect_id_set's body
-  -- minus the Substitution/string-key read (the row IS already a typed String).
-  operation add_name(acc: Map[String, Bool], n: String) -> Map[String, Bool] =
-    put(acc, n, true)
+  -- minus the Substitution/string-key read (the row IS already a typed one-column row,
+  -- and `row.name` reads its column by name rather than by string key).
+  operation add_name(acc: Map[String, Bool], row: (name: String)) -> Map[String, Bool] =
+    put(acc, row.name, true)
 
   -- THE PATTERN: query_id_set, as a relation drain. Compare main.anthill:2719.
   operation nameSet() -> Map[String, Bool] effects Error =

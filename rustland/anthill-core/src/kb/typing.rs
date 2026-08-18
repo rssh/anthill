@@ -2945,234 +2945,134 @@ fn named_tuple_value(
     }
 }
 
-/// WI-714 — collapse an ordered column list to a relation SCHEMA type: `Unit` for zero
-/// columns, the sole element's type for one (the 1-collapse — the column NAME is dropped),
-/// else the named tuple keyed by the columns IN GIVEN ORDER (not re-sorted, so the type's
-/// field order matches the runtime materialized row). The shared shape that
-/// [`assemble_relation_type`] (a fresh / projected relation) and [`without_named_tuple_types`]
-/// (fix's post-drop residual) both produce.
+/// WI-714 / WI-20260818-YQB1Y — build a relation SCHEMA type from an ordered column list:
+/// `Unit` for zero columns, else the named tuple keyed by the columns IN GIVEN ORDER (not
+/// re-sorted, so the type's field order matches the runtime materialized row). The shared
+/// shape that [`assemble_relation_type`] (a fresh / projected relation) and
+/// [`without_named_tuple_types`] (fix's post-drop residual) both produce.
 ///
-/// WI-1128 — THE COLLAPSE ERASES THE RELATION'S ARITY, and every refusal below follows
-/// from that one fact. The 1-arm returns `columns[0].1` — the sole column's TYPE — and the
-/// 0-arm returns `Unit`, so after this function a schema type no longer says how many
-/// columns it came from. Three consequences, and only the first is the one the ticket was
-/// filed about:
+/// THE SCHEMA IS THE ROW TYPE, AT EVERY ARITY — 052 OQ5, option A, decided
+/// 2026-08-18. There is no arity-one special case: a one-column relation's schema is the
+/// one-field named tuple `(age: Int64)`, its rows are `(age: 30)`, and `r.head.age` reads
+/// the column. This function used to 1-collapse arity one to the sole column's TYPE, which
+/// is what erased the relation's ARITY and made three distinct schemas indistinguishable:
 ///
-///  * ARITY 1 — the column's NAME is gone. A derived schema (`Concat` / `Without` /
-///    `Project`) needs a name for every column and cannot invent one.
-///  * ARITY 0 vs 1 — `Unit` is both "no columns" and "one `Unit`-typed column" (WI-728's
-///    recorded limit, pinned by
-///    `wi728_a_unit_typed_column_is_indistinguishable_from_no_columns`).
-///  * ARITY n vs 1 — a named tuple is both "n columns" and "ONE column whose type is that
-///    named tuple". MEASURED (review-found): over `entity pair_holder(p: (a: Int64, b:
-///    String))`, `rule pairs(?p)` has schema `(a: Int64, b: String)` — the SAME type a
-///    two-column relation over `a`/`b` has. This one is NOT a refusal, because the shape
-///    it is confused with is the ordinary working case; see the backstop table below.
+///  * ARITY 1 — the column's NAME was gone, so a derived schema (`Concat` / `Without` /
+///    `Project`) had no name for it and each REFUSED a one-column operand.
+///  * ARITY 0 vs 1 — `Unit` meant both "no columns" and "one `Unit`-typed column"
+///    (WI-728's recorded limit). `Unit` now means zero columns and nothing else, because
+///    a one-`Unit`-column relation is `(u: Unit)`.
+///  * ARITY n vs 1 — a named tuple meant both "n columns" and "ONE column whose type is
+///    that named tuple". That one was a SILENT WRONG ANSWER rather than a refusal, because
+///    the shape it was confused with is the ordinary working case and no type-level check
+///    could separate them: over `entity pair_holder(p: (a: Int64, b: String))`,
+///    `rule pairs(?p)` had the SAME schema type as a two-column relation over `a`/`b`, so
+///    `person_row.join(pairs, …)` type-checked against a four-column merged schema while
+///    the row `join_run` materializes had three. `Concat` was the one member of the family
+///    with no runtime backstop for it — `fix` / `project` / `negate` each ask the VALUE
+///    "is there a column of this name?" and refuse loudly, but merging is name-free, so
+///    there was nothing to detect and nothing to check. Dropping the collapse is what
+///    closes it; there was no fix inside the collapse.
 ///
-/// THE NAME IS NOT RECOVERABLE, which is what the ticket asked. It was filed on the
-/// hypothesis that the name is "recoverable at the boundary rather than reconstructed —
-/// find the site that collapses it and read the pre-collapse name there". This IS that
-/// site, and it is not on the path from a later `join`: by then a relation operand carries
-/// nothing but its TYPE, and it may be a `let`-bound value, a `where`, a projection, not
-/// the citation whose column list was passed here. Reading the name off an argument
-/// OCCURRENCE that happens to be a bare rule citation would work for `r.join(ages, …)` and
-/// not for `let a = ages; r.join(a, …)`: a fallback whose behaviour changes with the
-/// spelling, not a fix. Recovering it means keeping the column in the SCHEMA while the
-/// value half still collapses — the paired type-and-value convention kernel-language.md
-/// §6.8 records as weighed and declined ("revisiting it means moving both halves
-/// together"), whose closing note already states this family's case: `Concat` and `Without`
-/// are not inverses at arity one, and "nothing downstream can supply the lost `a`".
-///
-/// WHO PAYS, AND WHO HAS A BACKSTOP — the census, measured on the current tree, because a
-/// fix at one reader would have left the others paying for the same erasure. The second
-/// column is what happens when the TYPE-level check is fooled by the arity ambiguity above,
-/// and it is the one that decides how bad each row is:
-///
-/// | reader | on a plainly 1-collapsed operand | when the ambiguity fools it |
-/// |---|---|---|
-/// | [`concat_named_tuple_types`] (`join`) | REFUSES | **NOTHING** — see below |
-/// | [`without_named_tuple_types`] (`fix`) | REFUSES | loud at runtime: "fix: restricts column `a`, which is not in the relation's schema" |
-/// | [`projection_columns`] (`project`) | REFUSES | loud at runtime: "project_run: the projection selects column `a`, which is not in the relation's schema" |
-/// | [`membership_schema_type`] (`negate`) | accepts `Unit` | loud at runtime: the host guard reads the value's own `columns` |
-///
-/// `Concat` IS THE ONE MEMBER WITH NO RUNTIME BACKSTOP, and the reason is structural rather
-/// than an omission: the other three ask the VALUE a question it can answer — "is there a
-/// column of this name?" — whereas merging is name-free, so at runtime there is nothing
-/// wrong to detect. `join_run` merging a 2-column relation with a 1-column one is CORRECT;
-/// only the type disagrees. MEASURED: `person_row.join(pairs, …)` type-checks against a
-/// declared `(name, age, a, b)` while the row materialized is `(name, age, p)` — four
-/// columns promised, three delivered, one of them absent from the type. That is the
-/// type-disagrees-with-its-own-value lie this family refuses `Unit` to avoid, arriving
-/// through the one door that cannot be closed from either side. OWNED BY WI-20260818-YQB1Y
-/// (the 052 OQ5 split), and it is that ticket's strongest single argument; pinned meanwhile
-/// as a recorded limit by
-/// `wi1128_a_tuple_typed_column_is_indistinguishable_from_two_columns`.
-///
-/// Three more readers pay nothing:
-///  * `Relation.join_run`'s merged column set and `materialize_solution` (eval) — the
-///    runtime relation VALUE keeps `(name, VarId)` for every column, 1-collapsed or not, so
-///    the merge and the row build want nothing the type lost. READ, not driven — the typer
-///    refuses first, so no program reaches `join_run` with a plainly collapsed operand.
-///  * `where`'s condition compiler (eval) — a 1-collapsed row is reached with a BARE binder
-///    (`eq(c, 30)`, the `WHOLE_ROW_HOLE`), which needs no column name. Driven by
-///    `wi1128_where_over_a_one_collapsed_relation_still_runs`.
-///
-/// One caveat on the `project` row: a recovered name would fix its reducer, but the DOT
-/// surface never reaches its message — `r.(f)` 1-collapses at convert time to `r.f` (§6.8),
-/// so the recognizer declines and the fallthrough reports dot dispatch's "no such member".
-/// Only a WRITTEN `Project[T, Keep]` sees it. Owned by WI-20260818-7X7NK.
-fn collapse_schema(
+/// THE VALUE AND TERM HALVES MOVED WITH IT, which is what kernel-language.md §6.8 required
+/// of any revision ("revisiting it means moving both halves together"): `materialize_solution`
+/// (eval/mod.rs) builds a one-column row as the one-field tuple, and `convert.rs` no longer
+/// 1-collapses a single-member distributive projection `x.(f)` to the scalar `x.f`. All
+/// three sides now agree at arity one.
+fn relation_schema_type(
     kb: &mut KnowledgeBase,
     columns: &[(Symbol, Value)],
     sp: crate::span::SourceSpan,
 ) -> Value {
     match columns.len() {
         0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
-        1 => columns[0].1.clone(),
         _ => named_tuple_value(kb, columns, sp, None),
     }
 }
 
-/// WI-1128 — WHY a relation SCHEMA type carries no column names, for the derived-schema
-/// constructors that need them (`Concat` / `Without` / `Project`). Three shapes, kept apart
-/// because each wants DIFFERENT advice and because they are not one question:
+/// WI-1128 / WI-20260818-YQB1Y — read a relation schema's COLUMNS, or `None` if the type is
+/// no relation schema at all. `Some` is the field list in schema order; the EMPTY list is
+/// the membership (0-column) schema `Unit`, which is a real answer and not a refusal.
 ///
-///  * `Membership` — the schema is `Unit`. Read as a relation with NO columns; nothing to
-///    merge, drop or select.
-///  * `Collapsed` — the schema is a bare sort or a sort application. Read as ONE column's
-///    ELEMENT type (the 1-collapse, §6.8), whose NAME [`collapse_schema`] dropped — but it
-///    is also what a written non-schema operand looks like (a scalar, a `Relation[..]` type
-///    passed where its schema `r.T` was meant), so the message must offer BOTH readings
-///    rather than assert a collapse that may never have happened.
-///  * `NotASchema` — an arrow, an effect row, a denoted value: shapes a relation schema
-///    cannot be at all. A WRITTEN type can spell these, so they get a shape claim rather
-///    than an invented column — the rule [`membership_schema_type`] states for its catch-all.
+/// TOTAL AND EXACT SINCE THE COLLAPSE WAS DROPPED. While arity one presented as the sole
+/// column's element type, this reader had to classify three shapes it could not tell apart
+/// (a collapsed single column, a written non-schema operand, and — undetectably — an
+/// n-column schema versus a one-column schema over an n-field tuple), and every caller had
+/// to phrase a two-reading message about a collapse that may never have happened. A schema
+/// is now `Unit` or a named tuple, full stop: `Some(fields)` states the arity, and the
+/// callers below can compute merged / dropped / selected schemas from it without a special
+/// case at one column.
 ///
-/// THE `Ok` ARM IS NOT A CERTAINTY EITHER, and that is the sharp edge (review-found on
-/// WI-1128, MEASURED). A named tuple answers "n columns" and "ONE column whose type is that
-/// named tuple" identically — `collapse_schema`'s 1-arm returns `columns[0].1` verbatim, so
-/// a relation over `entity pair_holder(p: (a: Int64, b: String))` has schema `(a: Int64,
-/// b: String)`, the SAME type a two-column relation over `a`/`b` has. So this function
-/// CANNOT be made total in the direction that matters, and no caller may treat `Ok` as
-/// proof of arity. See [`collapse_schema`] for what that costs each caller and which of
-/// them has a runtime backstop.
-///
-/// The CLASSIFICATION is shared; the MESSAGE is not. Each caller phrases its own, because
-/// what the author should do next differs per operation (merge / drop / select), and a
-/// shared sentence would have to be vague about all three.
-enum NonTupleSchema {
-    Membership,
-    Collapsed,
-    NotASchema,
-}
-
-/// WI-1128 — read a relation schema's columns, or say WHICH shape it is instead
-/// ([`NonTupleSchema`]). `Ok` is the field list in schema order.
-fn schema_fields_or_shape(
-    kb: &KnowledgeBase,
-    t: &Value,
-) -> Result<Vec<(Symbol, Value)>, NonTupleSchema> {
-    // Resolved ONCE, and read as a THREE-valued answer. `membership_schema_type` DEFERS when
-    // `anthill.prelude.Unit` is unresolvable, because there it decides a VERDICT (accept or
-    // raise) and a failed lookup would turn the accepted type into the offender. Here every
-    // arm refuses, so an unresolvable `Unit` costs only a WRONG MESSAGE — a membership schema
-    // described as a collapsed column. Written out rather than left to `== Some(s)`'s silent
-    // `false`, because that is the shape `without_named_tuple_types` guards with `.zip(..)`
-    // and the difference between the two sites is a reason, not an oversight (review-found).
+/// The MESSAGE is still each caller's own, because what the author should do next differs
+/// per operation (merge / drop / select) and a shared sentence would have to be vague about
+/// all three.
+fn schema_fields(kb: &KnowledgeBase, t: &Value) -> Option<Vec<(Symbol, Value)>> {
+    // Resolved ONCE. A `Unit` that does not resolve costs a WRONG REFUSAL rather than a
+    // wrong acceptance — every caller here refuses on `None`, so the failure mode is a
+    // loud error naming `Unit` as a non-schema, not a silently mis-computed schema.
     let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
     match extract_type(kb, t) {
-        // NOT a certainty — see the doc above: this is also every ONE-column relation whose
-        // column type is itself a named tuple.
-        TypeExtractor::NamedTuple(fields) => Ok(fields),
-        // A BARE `Unit` sort ref — exactly what `collapse_schema` mints for zero columns. A
-        // `Unit[..]` APPLICATION is a different type and must not read as membership, the
-        // same distinction `membership_schema_type` draws.
-        TypeExtractor::SortRef(s) if unit == Some(s) => Err(NonTupleSchema::Membership),
-        // What a collapsed single column can be — a sort or a sort application — and equally
-        // what a written non-schema operand looks like. One classification, two readings; the
-        // callers' messages carry both.
-        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => {
-            Err(NonTupleSchema::Collapsed)
-        }
-        _ => Err(NonTupleSchema::NotASchema),
+        TypeExtractor::NamedTuple(fields) => Some(fields),
+        // A BARE `Unit` sort ref — exactly what [`relation_schema_type`] mints for zero
+        // columns, and now ONLY that. A `Unit[..]` APPLICATION is a different type and must
+        // not read as membership, the same distinction `membership_schema_type` draws.
+        TypeExtractor::SortRef(s) if unit == Some(s) => Some(Vec::new()),
+        _ => None,
     }
 }
 
+/// WI-1128 / WI-20260818-YQB1Y — the sentence every derived-schema constructor appends when
+/// its operand is not a relation schema. ONE wording, because after the collapse was dropped
+/// there is exactly ONE way to fail this test — the operand is neither `Unit` nor a named
+/// tuple — where there used to be three shapes needing three different pieces of advice.
+fn not_a_schema_tail(kb: &KnowledgeBase, v: &Value) -> String {
+    format!(
+        "`{}` is not a relation schema — a schema is the named tuple of the relation's \
+         columns (`(name: String, age: Int64)`), or `Unit` for a membership relation with \
+         none. If a `Relation[..]` type was written where its SCHEMA `r.T` was meant, or a \
+         plain scalar where a relation was, it names no columns at all.",
+        type_display_name_value(kb, v)
+    )
+}
+
 /// WI-1128 — [`concat_named_tuple_types`]'s per-operand read, and the refusal when the
-/// operand carries no column names. ONE function for BOTH operands, so `a` and `b` cannot
+/// operand is no relation schema. ONE function for BOTH operands, so `a` and `b` cannot
 /// drift apart — the discipline [`CtorReduction::operand_names`] states one level up.
 ///
-/// Every arm still contains the words "named-tuple type": the existing pins
-/// (`wi714_join_one_collapse_operand_is_load_error`, `wi734_denoted_operand_is_still_loud`)
-/// measure that the refusal is LOUD and concrete, not its wording, and keeping the marker
-/// leaves them measuring what they were written to measure.
+/// WI-20260818-YQB1Y — A MEMBERSHIP OPERAND IS NO LONGER REFUSED, and the reason it was is
+/// exactly the reason that went away. `Unit` used to mean both "no columns" and "one
+/// `Unit`-typed column", so reading it as "nothing to merge" could emit a merged schema
+/// TYPE with one column fewer than the merged column list `join_run` builds from the two
+/// VALUES. `Unit` is now zero columns and nothing else, so merging one contributes no
+/// fields and the merged type matches the merged row exactly. Joining a membership relation
+/// is a FILTER, and it now types as one.
 fn concat_operand_fields(
     kb: &KnowledgeBase,
     v: &Value,
     which: &str,
 ) -> Result<Vec<(Symbol, Value)>, String> {
-    schema_fields_or_shape(kb, v).map_err(|shape| {
-        let ty = type_display_name_value(kb, v);
-        match shape {
-            // DECIDED IN WI-1128, and decided SEPARATELY from the 1-collapse above it: a
-            // membership operand stays refused, for a STRONGER reason than a missing name.
-            // `Unit` does not distinguish "no columns" from "one `Unit`-typed column"
-            // (WI-728), so reading it as "nothing to merge" would emit a merged schema TYPE
-            // with one column fewer than the merged column list `join_run` actually builds
-            // from the two VALUES — a type that disagrees with its own row, which is the
-            // WI-737 lie rather than a refusal. `negate` can afford the same imprecision
-            // because its runtime guard re-asks the question; a merged SCHEMA has no such
-            // backstop, since the type is what every downstream consumer reads.
-            NonTupleSchema::Membership => format!(
-                "`Concat` cannot merge operand `{which}`: its schema is `Unit`, not a \
-                 named-tuple type — a MEMBERSHIP relation, whose columns are all bound, \
-                 so it has no column to contribute to a merged schema. Joining one is a \
-                 FILTER, not a merge: write the two predicates as goals in a rule body, \
-                 where a 0-column predicate conjoins directly. (`Unit` is also what a \
-                 single `Unit`-typed column collapses to, and the schema type cannot tell \
-                 those apart — WI-728 — so treating it as `no columns` here could \
-                 silently drop a real column that the joined relation still \
-                 materializes.)"
-            ),
-            // BOTH readings, because this classification cannot tell them apart and the
-            // one-sided version blamed a collapse on operands that never underwent one — a
-            // scalar, or a `Relation[..]` written where its schema `r.T` was meant
-            // (review-found; the old doc on `concat_named_tuple_types` listed "a scalar"
-            // among the reachable operands and the first WI-1128 wording dropped it).
-            NonTupleSchema::Collapsed => format!(
-                "`Concat` cannot merge operand `{which}`: its schema is `{ty}`, not a \
-                 named-tuple type — and a relation schema IS the named tuple of its \
-                 columns. If this is a ONE-COLUMN relation, the 1-collapse presented that \
-                 column's type and dropped its NAME (kernel-language.md §6.8), so no \
-                 merged schema can name it and nothing downstream can supply it: write \
-                 the join as a rule body instead (shared logic variables join without a \
-                 schema), or cite a relation that keeps two or more columns. If it is \
-                 anything else — a scalar, or a `Relation[..]` type where its SCHEMA \
-                 `r.T` was meant — it names no columns to merge at all."
-            ),
-            NonTupleSchema::NotASchema => format!(
-                "`Concat` cannot merge operand `{which}`: `{ty}` is not a named-tuple \
-                 type, and is no relation schema at all — it names no columns to merge."
-            ),
-        }
+    schema_fields(kb, v).ok_or_else(|| {
+        format!(
+            "`Concat` cannot merge operand `{which}`: {}",
+            not_a_schema_tail(kb, v)
+        )
     })
 }
 
 /// WI-714 (proposal 052) — the INTERNAL type-level operation behind the `Concat[A, B]`
-/// type constructor: given two NAMED-TUPLE types, produce the named tuple whose fields are
-/// `A`'s followed by `B`'s. Both operands must be named tuples with DISJOINT field names;
-/// a non-named-tuple operand (a 1-collapse / `Unit` relation schema, a scalar) or a
-/// field-name collision is an error, returned as a message [`reduce_type_ctor`]
+/// type constructor: given two relation SCHEMAS, produce the named tuple whose fields are
+/// `A`'s followed by `B`'s. Both operands must be schemas ([`schema_fields`] — a named
+/// tuple, or `Unit` for a membership relation) with DISJOINT field names; anything else,
+/// or a field-name collision, is an error, returned as a message [`reduce_type_ctor`]
 /// wraps in a `TypeError`.
 ///
-/// WI-1128 — THE TWO REFUSALS THIS SITE OWNS, decided and not deferred. A 1-COLLAPSED
-/// operand stays refused because the column name is gone from the type and nothing can
-/// supply it ([`collapse_schema`] holds the measurement and the census; §6.8 holds the
-/// declined alternative). A MEMBERSHIP (`Unit`) operand stays refused for its own,
-/// independent reason — `Unit` does not distinguish zero columns from one `Unit`-typed
-/// column — and reading it as "nothing to merge" would produce a merged schema type with
-/// fewer columns than the row `join_run` materializes. Both are phrased in
-/// [`concat_operand_fields`], one arm each.
+/// WI-20260818-YQB1Y — BOTH REFUSALS THIS SITE USED TO OWN ARE GONE, because the fact each
+/// rested on is gone with the 1-collapse ([`relation_schema_type`]). A ONE-COLUMN operand
+/// merges like any other: its schema names its column, so the merged schema names it too.
+/// A MEMBERSHIP (`Unit`) operand contributes no fields: `Unit` now means zero columns and
+/// only that, so the merged TYPE has exactly the columns the merged VALUE
+/// (`join_run`'s `cols1 ++ cols2`) carries. The disjoint-name rule below is the only
+/// operand check left, and it is a real one — the merged row is keyed by name.
 ///
 /// `Concat` is a type FORM (the surface a signature writes); this is its reduction — the
 /// projection precedent (`ExprCarried` is the form, `project_type_member` its reduction).
@@ -3197,7 +3097,16 @@ fn concat_named_tuple_types(
         }
         merged.push((name, ty));
     }
-    Ok(named_tuple_value(kb, &merged, site.sp, None))
+    // Through [`relation_schema_type`], NOT `named_tuple_value` directly — every producer in
+    // this family goes through it, and `Concat` was the one that did not (review-found,
+    // MEASURED). Since WI-20260818-YQB1Y a `Unit` operand contributes an EMPTY field list, so
+    // `merged` can legitimately be empty — and an empty named tuple is `()`, which is NOT the
+    // `Unit` a zero-column relation's schema is and NOT what `materialize_solution` builds for
+    // a zero-column row. Measured before the fix: `anyone.join(anyone, …)` over two membership
+    // relations typed as `Relation[T = ()]` against a `Unit`-declared consumer, and `negate`
+    // over it reported "free column(s): " with an empty list. That is the same
+    // type-disagrees-with-its-own-value lie this ticket removed, one arity further down.
+    Ok(relation_schema_type(kb, &merged, site.sp))
 }
 
 /// WI-714 / WI-727 — does a type mention the sort `sort_sym` as a HEAD ANYWHERE? The
@@ -3430,10 +3339,23 @@ const MEMBERSHIP_CTOR: TypeCtor = TypeCtor {
 /// revisits. Adding a member is still one line, but the line's POSITION is a decision:
 /// **place it after every member that can appear in its operands.**
 ///
-/// `MEMBERSHIP_CTOR` is LAST for that reason, and the reason is sharper for a PREDICATE than
-/// for the computing members. A stranded COMPUTING ctor is caught downstream — its unreduced
-/// form offers no schema, so any use of the result fails loudly (see [`reduce_type_ctor`]'s
-/// CAVEAT, and `wi776_one_collapse_diagnostic_test`, which pins that stall deliberately). A
+/// WI-20260818-YQB1Y WEAKENED THIS RULE FROM CORRECTNESS TO COST, and the array order is
+/// UNCHANGED because of it. The reduction boundary is now a FIXPOINT rather than one pass, so
+/// a member stranded by the order is revisited on the next pass and every nesting reduces
+/// whatever the order is. NO TOTAL ORDER COULD HAVE DONE THAT: `Concat[A = Without[…]]` and
+/// `Without[T = Concat[…]]` are duals, each wanting the other member first, and both are four
+/// lines of ordinary source — reordering to serve one MEASURABLY regressed the other before
+/// the fixpoint replaced it. Both are pinned, in both directions, by
+/// `yqb1y_concat_and_without_are_inverses_at_arity_one`.
+///
+/// What the order still decides is HOW MANY PASSES a given nesting costs, so placing a member
+/// after those that can appear in its operands is still the cheaper arrangement — just no
+/// longer a correctness rule.
+///
+/// `MEMBERSHIP_CTOR` is LAST for a reason that is sharper for a PREDICATE than for the
+/// computing members. A stranded COMPUTING ctor is caught downstream — its unreduced form
+/// offers no schema, so any use of the result fails loudly (see [`reduce_type_ctor`]'s
+/// CAVEAT). A
 /// stranded PREDICATE has no such backstop of its own: on success it reduces to its operand,
 /// so the reduced form is an ORDINARY type and an unreduced one is only noticed where
 /// something compares against the reduced form. MEASURED, by reordering: a signature that
@@ -3538,23 +3460,22 @@ fn ctor_operand(kb: &KnowledgeBase, bindings: &[(Symbol, Value)], name: &str) ->
 /// WI-734 — the family's ABSTRACT-OPERAND rule, settled once for `Concat` / `Without` and
 /// any future member: an operand that is NOT YET KNOWN ([`operand_not_yet_known`]) leaves
 /// the ctor SYMBOLIC (returned unreduced) so it can reduce later, once the operand grounds;
-/// an operand that IS known but cannot be merged (a collision, a 1-collapse / scalar
-/// schema) stays a LOUD error. "Cannot reduce yet" and "cannot reduce ever" are different
+/// an operand that IS known but cannot be merged (a name collision, or a shape that is no
+/// relation schema at all) stays a LOUD error. "Cannot reduce yet" and "cannot reduce ever"
+/// are different
 /// answers and no longer share the concrete-malformation diagnostic.
 ///
 /// CONFLUENCE: a residual can only exist over an un-instantiated operand, so a fully
 /// CONCRETE type is always fully reduced — there are never two comparable forms of one
 /// concrete type.
 ///
-/// ONE EXCEPTION, MEASURED (WI-728, review-found): a SIBLING family member reads as "not yet
-/// known", so an outer ctor defers on it, and if that sibling sits LATER in `TYPE_CTORS` it
-/// reduces afterwards — leaving the outer ctor unreduced over a now-concrete operand. So a
-/// fully concrete type CAN carry a residual, across members, in that one direction. It is
-/// not silent: the stranded ctor is a computing one, whose unreduced form offers no schema,
-/// so any use of the result fails loudly — `wi776_one_collapse_diagnostic_test::concat_over_-
-/// a_collapsed_without_still_stalls` pins exactly this shape, deliberately, because
-/// kernel-language.md §"1-collapse" records it as a weighed and declined limit. The boundary
-/// keeps ONE pass for that reason; see the ordering rule stated there.
+/// THE EXCEPTION THAT USED TO EXIST HERE IS CLOSED (WI-20260818-YQB1Y). A SIBLING family
+/// member reads as "not yet known", so an outer ctor defers on it; with ONE pass in array
+/// order, a sibling sitting LATER reduced afterwards and left the outer ctor unreduced over a
+/// now-concrete operand nothing revisited — so a fully concrete type COULD carry a residual,
+/// across members, in whichever nesting direction the order did not favour (WI-728,
+/// review-found). The boundary is now a FIXPOINT, which revisits until nothing changes, so
+/// both nesting directions reduce and no order has to be chosen between them.
 ///
 /// CAVEAT: a residual reduces later only where the reduction gate fires, and
 /// [`return_reducible_ctors`] reads an op's DECLARED return type — so a generic wrapper
@@ -3633,8 +3554,8 @@ fn reduce_type_ctor(
                 // operand grounds. Distinguishing this from a CONCRETE operand the
                 // reducer genuinely cannot merge is the whole point — handing an
                 // unknown to `cfg.reduce` made it report the concrete-malformation
-                // message ("must be a named-tuple type"), blaming a 1-collapse schema
-                // for what is really an un-instantiated type parameter.
+                // message ("is not a relation schema"), blaming a shape the author never
+                // wrote for what is really an un-instantiated type parameter.
                 let family = resolved_ctor_family(kb);
                 if operands
                     .iter()
@@ -3683,8 +3604,8 @@ fn reduce_type_ctor(
 /// WI-727 (proposal 056) — the INTERNAL type-level operation behind the `Without[T, Drop]`
 /// type constructor, the DUAL of [`concat_named_tuple_types`]: given a named-tuple type `t`
 /// and a record type `drop` naming the columns to remove, produce `t` with every field
-/// named in `drop` dropped. The residual 1-collapses exactly as a relation schema does (the
-/// element for one kept column, `Unit` for none) — `Without` can shrink to 0/1 fields, which
+/// named in `drop` dropped. The residual is typed exactly as a relation schema is (`Unit`
+/// for no kept column, else the named tuple) — `Without` can shrink to 0/1 fields, which
 /// `Concat` (only grows) never does. BOTH checks the capture is deliberately unconstrained
 /// about live HERE (proposal 056 §2.2): a `drop` field naming no `t` field, or one whose
 /// (captured) type mismatches its column, is an error the caller wraps in a `TypeError`.
@@ -3721,35 +3642,19 @@ fn without_named_tuple_types(
     if drop_fields.is_empty() {
         return Ok(t.clone());
     }
-    // The base schema must be a named tuple to drop columns BY NAME — a 1-collapse /
-    // membership schema has no named column to match a dropped field against. WI-1128:
-    // classified by the shared [`schema_fields_or_shape`], phrased HERE, because what the
-    // author should do next about a DROP differs from what they should do about a merge.
-    let t_fields = schema_fields_or_shape(kb, t).map_err(|shape| {
-        let ty = type_display_name_value(kb, t);
-        match shape {
-            NonTupleSchema::Membership =>
-                "`Without` cannot drop from operand `T`: its schema is `Unit`, not a \
-                 named-tuple type — a membership relation has no columns left to drop."
-                    .to_string(),
-            // `fix`'s own doc in relation.anthill already routes the author here: dropping
-            // the only column of a 1-collapsed relation is refused, so APPLYING the relation
-            // (which binds the column instead of dropping it) is the route that works. Both
-            // readings offered, for the reason given on `concat_operand_fields`.
-            NonTupleSchema::Collapsed => format!(
-                "`Without` cannot drop from operand `T`: its schema is `{ty}`, not a \
-                 named-tuple type — and a relation schema IS the named tuple of its \
-                 columns. If this is a ONE-COLUMN relation, the 1-collapse dropped that \
-                 column's NAME (kernel-language.md §6.8), so no captured argument can name \
-                 it: APPLY the relation to bind its only column rather than `fix` it away. \
-                 If it is anything else — a scalar, or a `Relation[..]` type where its \
-                 SCHEMA `r.T` was meant — it names no columns to drop at all."
-            ),
-            NonTupleSchema::NotASchema => format!(
-                "`Without` cannot drop from operand `T`: `{ty}` is not a named-tuple type, \
-                 and is no relation schema at all — it names no columns to drop."
-            ),
-        }
+    // The base schema's columns, to match each dropped field against BY NAME. WI-1128:
+    // read by the shared [`schema_fields`], phrased HERE, because what the author should do
+    // next about a DROP differs from what they should do about a merge.
+    //
+    // WI-20260818-YQB1Y — a ONE-COLUMN base is no longer a special case: its schema names
+    // its column, so `fix` can drop it like any other. A MEMBERSHIP base yields the empty
+    // field list, and each dropped field then fails the name check below with a message
+    // naming the field the author actually wrote — which is more use than a shape claim.
+    let t_fields = schema_fields(kb, t).ok_or_else(|| {
+        format!(
+            "`Without` cannot drop from operand `T`: {}",
+            not_a_schema_tail(kb, t)
+        )
     })?;
     // Membership + type checks — the LOAD errors that give the capture its meaning (§2.2).
     // Each dropped field must NAME a column of the base schema (recording the name to drop),
@@ -3778,20 +3683,22 @@ fn without_named_tuple_types(
         }
         dropped.push(*dname);
     }
-    // Keep every base field NOT dropped, in the base's order; collapse the residual as a
-    // relation schema does (0 → `Unit`, 1 → the element, ≥2 → the named tuple).
+    // Keep every base field NOT dropped, in the base's order; type the residual as any
+    // relation schema is typed (0 → `Unit`, else the named tuple). WI-20260818-YQB1Y: at one
+    // remaining column that is `(a: A)`, so `Concat` and `Without` are now INVERSES at every
+    // arity — the §6.8 limit the collapse imposed ("nothing downstream can supply the lost
+    // `a`") is retired rather than worked around.
     let kept: Vec<(Symbol, Value)> = t_fields
         .into_iter()
         .filter(|(tn, _)| !dropped.contains(tn))
         .collect();
-    Ok(collapse_schema(kb, &kept, site.sp))
+    Ok(relation_schema_type(kb, &kept, site.sp))
 }
 
 /// WI-728 (proposal 052) — the INTERNAL type-level operation behind the `Membership[T]`
 /// type constructor: the family's first PREDICATE member. Where `Concat` / `Without` /
-/// `Project` COMPUTE a schema, this one only ASSERTS a schema is CLOSED — `Unit`, the
-/// 1-collapse of zero columns — and returns it. A schema that still has columns is a LOAD
-/// error.
+/// `Project` COMPUTE a schema, this one only ASSERTS a schema is CLOSED — `Unit`, the schema
+/// of zero columns — and returns it. A schema that still has columns is a LOAD error.
 ///
 /// It exists because a signature cannot state the constraint in its PARAMETER position.
 /// `negate(r: Relation[T = Unit])` leaves the parameter non-ground in `E` (a `Relation`
@@ -3801,29 +3708,31 @@ fn without_named_tuple_types(
 /// the RETURN type instead puts it where the family already reduces, after the projection
 /// `r.T` has been discharged against the actual argument.
 ///
-/// WHAT THE MESSAGE CAN NAME, and why it differs from the runtime guard's. At the VALUE
-/// level a relation carries its `columns` list, so `Relation.negate`'s host guard names the
-/// offending columns. At the TYPE level a ONE-column schema has already 1-collapsed to the
-/// column's element type (§"1-collapse" — the collapse drops the NAME), so only a ≥2-column
-/// schema still spells its column names. The message therefore names the columns when the
-/// schema still has them and the column TYPE when the collapse took the name.
+/// WHAT THE MESSAGE NAMES. A relation schema spells its column names at EVERY arity since
+/// the 1-collapse was dropped (WI-20260818-YQB1Y), so an open schema is always a named tuple
+/// and the message always names the free columns — including the one-column case, which used
+/// to have collapsed to its element type and could only be described by that type.
 ///
 /// A SHAPE THIS CANNOT NAME GETS A SHAPE CLAIM, not an invented column. `extract_type` is
 /// TOTAL — `TypeExtractor::Error` is its catch-all for a genuinely malformed type, and an
 /// arrow / effect-row / denoted operand is well-formed but is no relation schema at all.
-/// Reporting "one free column of type `?`" for any of those states a fact about the
-/// author's code that is not true and sends them to close columns that do not exist. Only
-/// the shapes a 1-collapse can actually PRODUCE (a bare sort, a sort application) take the
+/// Reporting a free column for any of those states a fact about the author's code that is
+/// not true and sends them to close columns that do not exist. Only a NAMED TUPLE takes the
 /// column reading; everything else says what it is. `without_named_tuple_types` phrases its
 /// catch-all the same way, and this is the correction that brings the two into line
 /// (review-found, WI-728).
 ///
-/// KNOWN LIMIT, and the reason the runtime guard is not redundant: a ONE-column relation
-/// whose column type IS `Unit` collapses to exactly the same `Unit` a zero-column relation
-/// does, so this check ACCEPTS it and the drain refuses it. The 1-collapse is a specified,
-/// deliberately paired type-and-value convention (§"1-collapse"), so no type-level check can
-/// separate the two; `wi728_a_unit_typed_column_is_indistinguishable_from_no_columns` pins
-/// the behaviour so it is a recorded limit rather than a surprise.
+/// WI-728'S RECORDED LIMIT IS RETIRED (WI-20260818-YQB1Y). A one-column relation whose
+/// column type IS `Unit` used to collapse to the same `Unit` a zero-column relation does, so
+/// this check accepted it and only the drain refused it. Without the collapse that relation's
+/// schema is `(u: Unit)` — a named tuple with one free column — so it is refused HERE, at
+/// load, by the ordinary arm above. `wi728_a_unit_typed_column_is_distinguishable_from_no_columns`
+/// drives the retirement: it asserts the load error, and fails on a back-out (the pre-change
+/// tree loads that program clean).
+///
+/// The runtime guard in `Relation.negate` is still NOT redundant, for its other two reasons:
+/// a schema that was never statically known (an abstract `S` leaves the assertion symbolic,
+/// WI-734) and a relation built through reflect rather than from surface code.
 fn membership_schema_type(
     kb: &mut KnowledgeBase,
     t: &Value,
@@ -3832,8 +3741,8 @@ fn membership_schema_type(
     let extracted = extract_type(kb, t);
     // `Unit` — the 0-column schema — is the one accepted operand; return it unchanged so
     // the enclosing `Relation[T = Membership[T = r.T]]` reduces to `Relation[T = Unit]`.
-    // A BARE sort ref, which is exactly what `collapse_schema` mints for zero columns: a
-    // `Unit[..]` APPLICATION is a different type and must not read as closed. And if `Unit`
+    // A BARE sort ref, which is exactly what `relation_schema_type` mints for zero columns:
+    // a `Unit[..]` APPLICATION is a different type and must not read as closed. And if `Unit`
     // itself does not resolve there is no verdict to give — DEFER (return the operand
     // unreduced) rather than let a failed lookup turn the accepted type into the offender.
     let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
@@ -3848,6 +3757,11 @@ fn membership_schema_type(
         // (`no_such_member_message`, the projection diagnostics): a component symbol can
         // carry its declaring scope, and a column called `test.ns.name` in a message about
         // the author's columns is noise they cannot act on.
+        //
+        // WI-20260818-YQB1Y — this arm now covers EVERY open schema, arity one included:
+        // a one-column relation is `(age: Int64)`, so the message names `age` where it used
+        // to have to fall back to naming the column's TYPE. There is no longer a shape a
+        // free column can hide in.
         TypeExtractor::NamedTuple(fields) => format!(
             "free column(s): {}",
             fields
@@ -3855,12 +3769,6 @@ fn membership_schema_type(
                 .map(|(n, _)| short_name_of(kb.local_name_of(*n)).to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ),
-        // A 1-collapsed schema: the column NAME is gone, so name its type instead. Only
-        // these two shapes — the ones a collapsed single column can be.
-        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => format!(
-            "one free column of type `{}`",
-            type_display_name_value(kb, t)
         ),
         // Anything else is not a relation schema at all; say so, and claim no columns.
         _ => format!(
@@ -4933,15 +4841,14 @@ fn display_arrow_param(rendered: String, arity: Option<usize>, param_is_tuple: b
 /// present and UNEQUAL, which no param-type difference satisfies.
 fn render_mismatch_pair(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> (String, String) {
     let (e, a) = render_mismatch_pair_by_cause(kb, expected, actual);
-    // WI-776: a 1-collapse mismatch. Appended to the ACTUAL side so the note lands at the
-    // END of `expected …, got …`, matching IDENTICAL_RENDERING_NOTE's placement. Checked
-    // BEFORE the identical-rendering backstop below and returning directly: the two sides
-    // here are genuinely different types that render differently, so the backstop would
-    // not fire anyway — but ordering it first keeps "the pair has a KNOWN cause" ahead of
-    // "the pair is inexplicable", which is the same precedence the arity cause has.
-    if let Some((label, elem)) = one_collapse_site(kb, expected, actual) {
-        return (e, format!("{a} {}", one_collapse_note(&label, &elem)));
-    }
+    // WI-776's 1-COLLAPSE NOTE WAS DELETED HERE (WI-20260818-YQB1Y), not moved. It explained
+    // an `expected (a: Int64), got Int64` pair in which BOTH sides were correct — the two
+    // faces of the schema 1-collapse, which the reader had no way to know about. 052 OQ5
+    // option A dropped that collapse, so nothing computes a bare element where a one-field
+    // tuple is expected any more: a `Without`/`Project` residual, a single-member projection
+    // and a materialized one-column row are all `(a: A)` now. Every surviving instance of that
+    // pair is an ordinary author error whose two rendered types state the whole fault, and a
+    // note attributing it to a collapse that no longer exists would be a WRONG explanation.
     // WI-795: the CAUSE-AGNOSTIC backstop. Everything above fixes one KNOWN way
     // for two unequal types to render alike (the unwalked `arity` child). This
     // catches the rest without having to name them.
@@ -5127,172 +5034,6 @@ fn render_mismatch_pair_by_cause(
             arity_qualified_arrow(kb, actual, na, a),
         ),
         _ => (e, a),
-    }
-}
-
-/// WI-776: the note appended when the expected side writes a ONE-COMPONENT named tuple
-/// and the actual side is exactly that component's type — the shape a
-/// [`collapse_schema`] 1-collapse always produces.
-///
-/// This is the second CAUSE in the [`render_mismatch_pair`] family, and it exists for the
-/// same reason as the first: the pair says something neither side does. `expected
-/// (a: Int64), got Int64` is a true and useless message — both types are correct, they are
-/// simply the two sides of a collapse the reader has no way to know about.
-///
-/// WI-776 was a DECIDE ticket and this is the "explain it" branch; the two sides are NOT
-/// made to agree.
-///
-/// WHY NOT MAKE THEM AGREE — stated correctly, because the first version of this comment
-/// got it wrong and a reviewer caught it. It is NOT that a one-column result would be
-/// unconstructible. It is constructible two ways: DIRECTLY, as the one-field literal
-/// `(a: 1)` (WI-1131 — before it, arity one was writable as a type but not as a value, and
-/// this note's advice had to send the reader the long way round); and by WIDTH SUBTYPING
-/// from a wider tuple, which §4.5 states and which is measured — `operation narrow() ->
-/// (a: Int64) = wide()` over `wide() -> (a: Int64, b: String)` loads clean. The value side
-/// is equally capable — `materialize_solution` (eval/mod.rs) already builds the row as
-/// `(name, value)` pairs and then DISCARDS the name at arity one.
-///
-/// The real reason is that the collapse is a PAIRED type-and-value convention, and §6.8
-/// fixes the value half at the TERM level: `x.(f)` yields the scalar `x.f`, and a single
-/// RENAME `x.(a: f)` collapses too, dropping the label (WI-639). Keeping the column in the
-/// SCHEMA alone would desynchronize type from term across projection, relation drain, and
-/// `Without`/`Project`. Option A is therefore a breaking change to a SPECIFIED term-level
-/// rule — a real cost to weigh, not an impossibility.
-///
-/// What the note must convey is that `(a: A)` is not a broken spelling of `A` — it is a
-/// real type, matching any tuple whose `a` column CONFORMS (width subtyping is `S_n <: T_n`
-/// per §4.5, not merely "has a column named a"). A message saying only "write `A`" would
-/// teach the reader the type is useless. It must NOT call it an "input-position type":
-/// width subtyping is stated generally, the arity-1 callback rule is one consequence of it,
-/// and the note fires at op-ARG positions too — where telling the author their input-position
-/// type is an input-position type is both wrong and useless.
-///
-/// NOT FIXED by this, and deliberately not claimed to be: `Concat`/`Without` are not
-/// inverses at arity one. The collapse DESTROYS the column name, so
-/// `Concat[A = Without[T = (a: Int64, b: String), Drop = (b: String)], B = (c: Bool)]`
-/// stalls as `Concat[A = Int64, B = (c: Bool)]` — no expectation supplies the lost `a`,
-/// so no diagnostic here can recover it. That is a type-level algebra gap, not a
-/// rendering one.
-fn one_collapse_note(label: &str, elem: &str) -> String {
-    format!(
-        "(the expected type is a ONE-COMPONENT tuple whose component is exactly the actual \
-         type. A one-column computed schema 1-collapses to its element type and drops the \
-         column name — a `Without`/`Project` residual or a single-member projection yields \
-         `{elem}`, never `({label}: {elem})` — which is the usual source of this pair. \
-         `({label}: {elem})` is a real type: by width subtyping it matches any tuple whose \
-         `{label}` column conforms to `{elem}`. Either write `{elem}` here, or supply a \
-         tuple carrying a `{label}` column — the one-field literal `({label}: …)`, or any \
-         wider tuple)"
-    )
-}
-
-/// WI-776: the label and element rendering of a one-component named tuple on the EXPECTED
-/// side whose component is exactly what the ACTUAL side has in that position, else `None`.
-///
-/// Descends through same-functor parameterized types, aligning type ARGUMENTS by parameter
-/// name, because the measured `Relation` case puts the collapse one level in — `expected
-/// Relation[T = (name: String)], got Relation[T = String, E = {…}]`. Arguments present on
-/// only one side are skipped rather than treated as a difference: that `E` is absent from
-/// the written type is not part of this fault (`Relation[T = String]` loads clean against
-/// the same actual), so requiring whole-type equality would silence the note on the very
-/// case it was written for.
-///
-/// Compares the element to the actual by RENDERING, not by `==`. That is the carrier-
-/// neutral comparison here: one type can ride as a hash-consed `Value::Term` and an equal
-/// one as a transient `Value::Node` (see the CLAUDE.md representation note), so `==` would
-/// answer "different" for two types this diagnostic is about to print identically. The
-/// message speaks in rendered types, so rendering is also the granularity the reader sees.
-///
-/// TWO RESIDUAL HAZARDS, both reviewed, neither reached by any constructed program — stated
-/// so the next reader inherits the analysis instead of redoing it:
-///
-/// 1. Rendering equality is not type equality, which is the very gap WI-795's
-///    `IDENTICAL_RENDERING_NOTE` exists to flag. Collision sources are real (`Term::Var`
-///    deliberately renders two distinct vars sharing a textual name alike; occurrence and
-///    denoted renderers fall through to `"?"`; an arrow pair differing only in `arity`
-///    renders alike, and this compare does not route through the arity qualification). A hit
-///    would make the note recommend a spelling that also fails. Not reachable from the
-///    surface in review — generic passthrough, cross-op instantiation, type-member
-///    projection and lambda-into-a-1-tuple-slot were all tried and all render distinctly.
-///    The softened wording limits the damage: it states the SHAPE relation it actually
-///    tested, and offers the collapse as the usual cause rather than asserting it.
-/// 2. `same_label` carries a `debug_assert!` that panics on two distinct DOTTED qualified
-///    names sharing a last segment — and [`render_mismatch_pair`] is a diagnostic path,
-///    where the WI-795 comment above expressly argues an assert is wrong because it turns a
-///    user's type error into a crash. This is a fourth caller of a helper whose doc
-///    enumerates three. Measured over the whole `anthill-core` suite: 33 distinct
-///    Parameterized/Parameterized pairs reach here, ZERO trips, because the assert needs
-///    BOTH sides dotted while the written side's binding keys are always interned bare
-///    (dotted keys appear only on the inferred side, and a dotted key written in source is
-///    normalized to bare by the loader). Bounded by that asymmetry, not by luck — but it is
-///    the asymmetry, not the assert, that is load-bearing, so re-measure if binding-key
-///    interning changes.
-fn one_collapse_site(
-    kb: &KnowledgeBase,
-    expected: &Value,
-    actual: &Value,
-) -> Option<(String, String)> {
-    match extract_type(kb, expected) {
-        TypeExtractor::NamedTuple(fields) if fields.len() == 1 => {
-            let (label, elem) = &fields[0];
-            let elem_rendered = type_display_name_value(kb, elem);
-            (elem_rendered == type_display_name_value(kb, actual))
-                .then(|| (kb.local_name_of(*label).to_string(), elem_rendered))
-        }
-        TypeExtractor::Parameterized {
-            base: expected_base,
-            bindings: expected_args,
-        } => {
-            let TypeExtractor::Parameterized {
-                base: actual_base,
-                bindings: actual_args,
-            } = extract_type(kb, actual)
-            else {
-                return None;
-            };
-            // Sort identity by canonical name, then the type-param key by SHORT name —
-            // the exact pairing [`same_label`] documents for a type-param binding key,
-            // and the base gate above is the "already-established same-spec context" it
-            // requires. Raw `Symbol` equality is WRONG here and silently so: measured, the
-            // written `Relation[T = …]` keys its argument on a different `Symbol` than the
-            // inferred one does (WI-708 dual-keying — bare vs op-scoped), both resolving
-            // to "T", so an identity compare found no shared argument and the note went
-            // missing on the very case that motivated the descent.
-            if !same_sort_canonical(kb, expected_base, actual_base) {
-                return None;
-            }
-            // The collapse must be the ONLY fault, else the advice is a fix that does not
-            // fix. Taking the first hit and ignoring the rest was measured actively wrong:
-            // `Vec[T = (a: Int64), N = 4]` against `Vec[T = Int64, N = 3]` named the `T`
-            // fix confidently, and applying it verbatim still failed on `N`. So a second
-            // differing argument, or a second collapse site (which would make "write
-            // `{elem}` here" ambiguous about WHICH here), withdraws the note entirely.
-            //
-            // An argument on the ACTUAL side only is skipped, not counted: the measured
-            // `Relation` case has `E` there and `Relation[T = String]` loads clean against
-            // it, so its absence from the written type is not part of the fault. One on the
-            // EXPECTED side only IS a fault, and not one this note explains.
-            let mut site = None;
-            for (param, expected_arg) in &expected_args {
-                let Some((_, actual_arg)) =
-                    actual_args.iter().find(|(q, _)| same_label(kb, *q, *param))
-                else {
-                    return None;
-                };
-                if let Some(hit) = one_collapse_site(kb, expected_arg, actual_arg) {
-                    if site.is_some() {
-                        return None;
-                    }
-                    site = Some(hit);
-                } else if type_display_name_value(kb, expected_arg)
-                    != type_display_name_value(kb, actual_arg)
-                {
-                    return None;
-                }
-            }
-            site
-        }
-        _ => None,
     }
 }
 
@@ -6409,8 +6150,8 @@ fn check_bare_ref(
 
 /// WI-714 (proposal 052) C3 — synthesize the `Relation[T]` type a BARE rule
 /// reference denotes. `T` is the named tuple of the relation's free head parameters
-/// in declaration order — **1-collapsed** to the element for one, **`Unit`** for
-/// zero (a boolean/membership relation) — each column typed at the **lub** of that
+/// in declaration order (**`Unit`** for zero — a boolean/membership relation), each
+/// column typed at the **lub** of that
 /// head parameter across the relation's clauses (WI-287 `join_types`; a disjoint
 /// pair with no lub is a load error, never a silent widen to `Term`). `sym` is a
 /// rule label or head functor (the caller gates on `SymbolKind::Goal | Rule`).
@@ -6687,7 +6428,7 @@ fn join_column_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value
 
 /// WI-714 — assemble the `Relation[T = schema, E = {Error}]` value type from a final
 /// (post-subtraction) column list: dedup by name (a nonlinear head var is ONE
-/// column), 1-collapse to the element / `Unit` for zero, else the named tuple.
+/// column), `Unit` for zero columns, else the named tuple.
 /// Shared by both citation positions.
 fn relation_type_from_columns(
     kb: &mut KnowledgeBase,
@@ -6732,10 +6473,9 @@ fn error_effect_row(kb: &mut KnowledgeBase) -> Option<Value> {
     })
 }
 
-/// WI-714 — assemble `Relation[T = <schema from `columns`>, E = <effect_row>]`. The schema
-/// 1-collapses to the element for one column, `Unit` for none, else the named tuple keyed by
-/// the column symbols in the GIVEN order (NOT re-sorted, so the type's field order matches
-/// the runtime materialized row). `effect_row` binds the sort's effect-row param
+/// WI-714 — assemble `Relation[T = <schema from `columns`>, E = <effect_row>]`. The schema is
+/// `Unit` for no columns, else the named tuple keyed by the column symbols in the GIVEN order
+/// (NOT re-sorted, so the type's field order matches the runtime materialized row). `effect_row` binds the sort's effect-row param
 /// (`sort_param_is_effect_row`) when `Some` — `{Error}` for a fresh relation reference
 /// ([`relation_type_from_columns`]). `make_parameterized_type`'s producer flip makes the base
 /// sort the functor; `parameterized_value` keeps a ground schema hash-consed and a
@@ -6754,7 +6494,7 @@ fn assemble_relation_type(
     effect_row: Option<Value>,
     sp: crate::span::SourceSpan,
 ) -> Value {
-    let schema = collapse_schema(kb, columns, sp);
+    let schema = relation_schema_type(kb, columns, sp);
     let params = sort_type_params_as_pairs(kb, relation_sym);
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
     let mut schema = Some(schema);
@@ -6776,10 +6516,10 @@ fn assemble_relation_type(
 /// WI-714 (proposal 052) — PROJECTION `r.(f1, f2)`. The projected `Relation[T', E]`
 /// TYPE for selecting `projections` (an ordered `(result-key, source-column-short-name)`
 /// map — bare `r.(f)` auto-labels result = source, rename `r.(a: f)` differs) from a
-/// relation whose type is `recv_ty`. The receiver's schema `T` (a NAMED TUPLE — a
-/// 1-collapsed / membership relation has no named column to select by name) supplies
-/// each kept column's TYPE; the projected schema 1-collapses to the element for one
-/// kept column, `Unit` for none, else the named tuple keyed by the RESULT keys. The
+/// relation whose type is `recv_ty`. The receiver's schema `T` (a named tuple, or `Unit`
+/// for a membership relation, which has no column to select) supplies each kept column's
+/// TYPE; the projected schema is `Unit` for no kept column, else the named tuple keyed by
+/// the RESULT keys. The
 /// access-effect row `E` threads through unchanged (projection runs no extra search).
 /// `None` when the receiver is not a Relation, its schema is not a named tuple, or a
 /// source names no column — the caller then falls through (dot dispatch →
@@ -6789,35 +6529,19 @@ fn projection_columns(
     schema: &Value,
     projections: &[(Symbol, String)],
 ) -> Result<Vec<(Symbol, Value)>, String> {
-    // WI-1128: classified by the shared [`schema_fields_or_shape`], phrased here.
+    // WI-1128: read by the shared [`schema_fields`], phrased here.
     //
-    // WHERE THIS MESSAGE IS AND IS NOT SEEN, measured: only a WRITTEN `Project[T, Keep]`
-    // reaches it. On the DOT surface `r.(f)` 1-collapses at convert time to `r.f` (§6.8), so
-    // a one-column receiver never builds a projection at all — this function's `Err` makes
-    // the forward recognizer DECLINE and the call falls through to dot dispatch, which
-    // reports "no such member". WI-20260818-7X7NK owns that.
-    let fields = schema_fields_or_shape(kb, schema).map_err(|shape| {
-        let ty = type_display_name_value(kb, schema);
-        match shape {
-            NonTupleSchema::Membership =>
-                "`Project` cannot select from operand `T`: its schema is `Unit`, not a \
-                 named-tuple type — a membership relation has no columns to select."
-                    .to_string(),
-            NonTupleSchema::Collapsed => format!(
-                "`Project` cannot select from operand `T`: its schema is `{ty}`, not a \
-                 named-tuple type — and a relation schema IS the named tuple of its \
-                 columns. If this is a ONE-COLUMN relation, the 1-collapse dropped that \
-                 column's NAME (kernel-language.md §6.8), so there is no name to select \
-                 by — and a one-column relation already IS that column, so the projection \
-                 would be the identity. If it is anything else — a scalar, or a \
-                 `Relation[..]` type where its SCHEMA `r.T` was meant — it names no \
-                 columns to select at all."
-            ),
-            NonTupleSchema::NotASchema => format!(
-                "`Project` cannot select from operand `T`: `{ty}` is not a named-tuple \
-                 type, and is no relation schema at all — it names no columns to select."
-            ),
-        }
+    // WI-20260818-YQB1Y — REACHED FROM BOTH SURFACES NOW. It used to be reachable only from a
+    // WRITTEN `Project[T, Keep]`, because on the dot surface `r.(f)` 1-collapsed at convert
+    // time to `r.f` (§6.8) and a one-column receiver never built a projection at all — so
+    // `ages.(age)` fell through to dot dispatch and reported "no such member"
+    // (WI-20260818-7X7NK). `.( )` no longer collapses, so a single-member projection over a
+    // one-column relation is an ordinary projection and selects `age` by name.
+    let fields = schema_fields(kb, schema).ok_or_else(|| {
+        format!(
+            "`Project` cannot select from operand `T`: {}",
+            not_a_schema_tail(kb, schema)
+        )
     })?;
     // Resolve each source column against the schema by SHORT name — the schema field
     // symbol IS the runtime column symbol (both from `rule_head_var_slots`), so this is
@@ -6877,7 +6601,7 @@ fn keep_spec_projections(
         .collect::<Result<_, _>>()?;
     // WI-763 — a duplicate RESULT key. The dot surface rejects this at parse
     // (`validate_projection_labels` on `r.(a: f1, a: f2)`), but a WRITTEN `Keep` does not pass
-    // through that check — so the two keys would silently reach `collapse_schema` and build a
+    // through that check — so the two keys would silently reach `relation_schema_type` and build a
     // schema with two `a` columns, which no field lookup can then answer unambiguously.
     // Checked here so the invariant holds for BOTH surfaces of the same spec rather than only
     // the one that happens to route through the parser.
@@ -6920,8 +6644,9 @@ fn keep_spec_projections(
 /// Shares [`projection_columns`] with the FORWARD dot/tuple recognition, so the direction that
 /// decides "this IS a projection" and the direction that re-derives its schema on a re-type
 /// are ONE decision procedure and cannot drift (the WI-759 `FieldOf` discipline; the drift
-/// WI-758 recorded is what that discipline exists to prevent). The result 1-collapses to the
-/// element for one kept column and `Unit` for none, exactly as any relation schema does.
+/// WI-758 recorded is what that discipline exists to prevent). The result is `Unit` for no
+/// kept column and the named tuple of the kept ones otherwise, exactly as any relation schema
+/// is typed — arity one included (WI-20260818-YQB1Y).
 fn project_schema_type(
     kb: &mut KnowledgeBase,
     t: &Value,
@@ -6930,7 +6655,7 @@ fn project_schema_type(
 ) -> Result<Value, String> {
     let projections = keep_spec_projections(kb, keep)?;
     let columns = projection_columns(kb, t, &projections)?;
-    Ok(collapse_schema(kb, &columns, site.sp))
+    Ok(relation_schema_type(kb, &columns, site.sp))
 }
 
 /// WI-714 (proposal 052) — synthesize the `project_run(receiver, <spec>)` call for a
@@ -7194,12 +6919,19 @@ fn try_relation_projection_tuple(
         return None;
     }
     // A TOTAL guard, not a `debug_assert`. Both conditions are implied by the mark —
-    // `convert.rs` builds the projection tuple with named args only, and 1-collapses a
-    // single member to a scalar before any tuple exists — but an assert compiles out, and
-    // the release-mode consequence of a violation is that a positional field is SILENTLY
-    // DROPPED from the synthesized projection. Falling through to ordinary tuple typing is
-    // the safe reading of a shape this function does not understand.
-    if positional > 0 || named_args.len() < 2 {
+    // `convert.rs` builds the projection tuple with named args only, and never with none —
+    // but an assert compiles out, and the release-mode consequence of a violation is that a
+    // positional field is SILENTLY DROPPED from the synthesized projection. Falling through
+    // to ordinary tuple typing is the safe reading of a shape this function does not
+    // understand.
+    //
+    // WI-20260818-YQB1Y — the floor moved from TWO named args to ONE. `convert.rs` used to
+    // 1-collapse `r.(f)` to the scalar `r.f` before any tuple existed, so a marked tuple
+    // always had ≥2 fields; it now builds and marks the one-field tuple too, and a
+    // single-member projection is recognized HERE rather than falling through to dot
+    // dispatch's single-column arm. Both surfaces still agree — `r.f` and `r.(f)` each yield
+    // `Relation[T = (f: …)]` — because both end at [`build_relation_projection`].
+    if positional > 0 || named_args.is_empty() {
         return None;
     }
     let mut receiver: Option<Rc<NodeOccurrence>> = None;
@@ -11430,11 +11162,16 @@ fn build_type(
             }
 
             // WI-714 (proposal 052) — FOURTH dot-dispatch mode: a zero-arg member naming
-            // a COLUMN of a RELATION receiver is a single-column PROJECTION `r.f` (also
-            // `r.(f)`, which 1-collapses to this at convert). Select that column, the
-            // result 1-collapsing to its element (`person_row.name : Relation[String]`).
-            // Multi-column `r.(f1, f2)` is the name-keyed-tuple form, recognized at the
-            // tuple checker's pre-check; this arm is the single-member / 1-collapse leaf.
+            // a COLUMN of a RELATION receiver is a single-column PROJECTION `r.f`. Select
+            // that column: `person_row.name : Relation[T = (name: String)]`.
+            //
+            // WI-20260818-YQB1Y — `r.(f)` NO LONGER ARRIVES HERE. It used to 1-collapse at
+            // convert time into exactly this member access, which is why this arm was
+            // documented as the single-member leaf of the `.( )` form. It now builds a
+            // marked one-field tuple and is recognized at the tuple checker's pre-check
+            // with every other arity. Both routes end at `build_relation_projection`, so
+            // `r.f` and `r.(f)` still yield the SAME schema.
+            //
             // Sits last: an ordinary op/field member already resolved above.
             if pos_nodes.is_empty() && named_nodes.is_empty() {
                 let member_short = short_name_of(kb.local_name_of(member)).to_string();
@@ -13926,42 +13663,92 @@ fn check_apply_iter(
                 // `TypingEnv::referencing_scope`. Was `enclosing_sort()`, one scope out.
                 scope: env.referencing_scope(),
             };
-            // ONE PASS, IN ARRAY ORDER — and that order is LOAD-BEARING (WI-728,
-            // review-found). A ctor whose operand is another family member DEFERS (a sibling
-            // reads as "not yet known"), so if the inner member sits LATER in `TYPE_CTORS` it
-            // reduces afterwards and the outer one is left unreduced over a now-CONCRETE
-            // operand that this loop never revisits.
+            // A FIXPOINT OVER THE FAMILY, not one pass in array order — WI-20260818-YQB1Y,
+            // and the reason it had to change is a REGRESSION the one-pass version caused.
             //
-            // NOT REPAIRED WITH A FIXPOINT, and the reason is a decision already taken.
-            // A fixpoint was written and measured: it works, and it FAILS
+            // THE PROBLEM ONE PASS HAS: a ctor whose operand is another family member DEFERS
+            // (a sibling reads as "not yet known" — WI-734), so if that inner member sits
+            // LATER in `TYPE_CTORS` it reduces afterwards and the OUTER one is left unreduced
+            // over a now-concrete operand nothing revisits. Whichever order is chosen, the
+            // nesting in the other direction is the one that strands.
+            //
+            // MEASURED, BOTH DIRECTIONS, four lines of ordinary source each:
+            //   * `Concat[A = Without[T = (a, b), Drop = (b)], B = (c)]`
+            //   * `Without[T = Concat[A = (a), B = (b)], Drop = (b)]`
+            // With `Concat` first the second loads and the first stalls; with `Without` first
+            // the first loads and the second stalls. This ticket FIRST tried reordering to
+            // `Without`-first, because its own composition is the first shape — and that
+            // REGRESSED the dual, which had loaded clean. A fix that recurred one coordinate
+            // over, caught in review. The reorder was reverted: `TYPE_CTORS` keeps its
+            // original order and the fixpoint reduces both, which no order can do.
+            //
+            // WHY THIS IS NOW THE RIGHT CHANGE, when it was previously declined: a fixpoint
+            // was written and measured before, and its ONLY stated blocker was
             // `wi776_one_collapse_diagnostic_test::concat_over_a_collapsed_without_still_-
-            // stalls`, whose whole purpose is to fail if anyone makes this reduce ("someone
-            // re-reads the decision"). Re-read: kernel-language.md §"1-collapse" records
-            // `Concat`/`Without` not being inverses at arity one as a KNOWN LIMIT of the
-            // paired type-and-value collapse convention, weighed and declined. Turning the
-            // stall into `Concat`'s own refusal is a change to that specified rule, not a
-            // bug fix, and belongs with the rest of that decision rather than inside a
-            // ticket about `negate`'s operand.
+            // stalls`, a tripwire pinning kernel-language.md's "`Concat`/`Without` are not
+            // inverses at arity one" as a weighed and declined limit of the 1-collapse. 052
+            // OQ5 option A retired that decision, so the tripwire is gone and its successor
+            // (`yqb1y_concat_and_without_are_inverses_at_arity_one`) requires the opposite.
             //
-            // AND THE ESCAPE IS CAUGHT ANYWAY, for the members this loop can strand: an
-            // unreduced COMPUTING ctor offers no schema, so any use of the result fails
-            // loudly (the CAVEAT on `reduce_type_ctor`) — which is exactly what the wi776
-            // pin observes. The first probe that suggested otherwise bound the result to an
-            // unused `let`, where nothing forces the comparison; that is not a silent wrong
-            // answer, it is a program that never asks.
+            // TERMINATION rests on a monotone measure: no reduction ever INTRODUCES a family
+            // ctor, so the set of ctor kinds present can only shrink, and `flags` (recomputed
+            // from the reduced type) can only lose entries. The loop ends when it is empty or
+            // when a pass leaves it unchanged.
             //
-            // WHAT THE ORDER THEREFORE COSTS, AND THE RULE IT IMPOSES: a member must sit
-            // AFTER any member that can appear inside its operands, or its own reduction is
-            // the one skipped. `MEMBERSHIP_CTOR` is LAST for exactly that reason — a
-            // PREDICATE stranded this way would lose its assertion silently rather than
-            // produce an unusable type, the one case the CAVEAT's safety argument does not
-            // cover. Adding a member is still one line in `TYPE_CTORS`, but WHERE that line
-            // goes is part of the decision.
+            // THE STOP CONDITION IS AN APPROXIMATION, stated rather than glossed: unchanged
+            // FLAGS mean "no ctor kind was eliminated", which is not quite "nothing changed"
+            // — a pass could in principle remove some `Concat` nodes and leave others. In
+            // that case this breaks one pass early and leaves a residual, which is exactly
+            // the PRE-fixpoint behaviour and fails loudly downstream (the CAVEAT on
+            // `reduce_type_ctor`), never a wrong answer. It is not reachable from any shape
+            // measured here, because `reduce_type_ctor` descends into bindings before
+            // evaluating, so same-ctor nesting collapses within a single call and only
+            // CROSS-member deferral survives a pass — and eliminating the member deferred on
+            // is what clears its flag.
+            //
+            // `MAX_PASSES` is a backstop for a reduction that neither reduces nor stabilizes,
+            // which would be a bug in a `TypeCtor`. It is a LOUD error rather than a silent
+            // truncation, because a silently-stranded residual is the failure mode this loop
+            // exists to remove.
+            //
+            // ARRAY ORDER STILL MATTERS, just far less: it decides how many passes a given
+            // nesting costs, not whether it reduces. `MEMBERSHIP_CTOR` stays LAST for its own
+            // reason — a stranded PREDICATE loses its assertion silently rather than
+            // producing an unusable type, so it must see every computing member's result.
+            const MAX_PASSES: usize = 16;
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
-            for (cfg, wrote) in TYPE_CTORS.iter().zip(op_return_ctors.iter()) {
-                if *wrote {
-                    reduced = reduce_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
+            let mut flags = op_return_ctors;
+            let mut passes = 0;
+            while flags.iter().any(|f| *f) {
+                passes += 1;
+                if passes > MAX_PASSES {
+                    return Err(projection_type_error(
+                        &ret_ctx,
+                        span,
+                        &format!(
+                            "internal: type-constructor reduction did not reach a \
+                             fixpoint in {MAX_PASSES} passes over `{}` — a `TypeCtor` \
+                             that neither reduces its operands nor leaves the type \
+                             unchanged. Please report it.",
+                            type_display_name_value(kb, &reduced)
+                        ),
+                    ));
                 }
+                for (cfg, wrote) in TYPE_CTORS.iter().zip(flags.iter()) {
+                    if *wrote {
+                        reduced = reduce_type_ctor(kb, &reduced, &ret_ctx, &site, cfg)?;
+                    }
+                }
+                // Which ctors SURVIVED this pass. Recomputed from the reduced type rather
+                // than tracked, because that is the same question the per-op gate asks and
+                // there is one answer to it (`return_reducible_ctors`). Unchanged flags mean
+                // every remaining ctor is stuck on an operand that is not yet known, so the
+                // next pass would do exactly what this one did.
+                let next = return_reducible_ctors(kb, &reduced);
+                if next == flags {
+                    break;
+                }
+                flags = next;
             }
             reduced
         } else {

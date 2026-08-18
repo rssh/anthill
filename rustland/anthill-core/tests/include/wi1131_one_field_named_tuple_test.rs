@@ -110,8 +110,8 @@ fn drive_int(decls: &str) -> i64 {
 
 /// `(a: 1)` is a tuple literal, and its single component is readable by name. The value
 /// `1` is the component's, not the operation's: `drive` returns `t.a`, so a `(a: 1)` that
-/// silently degenerated to the scalar `1` (the §6.8 1-collapse shape) would fail on the
-/// field access, not agree with this row by accident.
+/// silently degenerated to the scalar `1` would fail on the field access, not agree with
+/// this row by accident.
 #[test]
 fn one_field_named_tuple_is_writable_as_a_value() {
     assert_eq!(
@@ -137,7 +137,7 @@ fn one_field_named_tuple_fills_a_one_field_parameter() {
 /// declared one-component tuple type. Supply and read are two questions, and §4.5 now
 /// claims BOTH — that a one-component type is inhabited by its own literal "in any
 /// position" — so the claim is measured at an op-return as well as at an op-arg.
-/// `drive` reads the component back, so a value that had silently 1-collapsed to `Int64`
+/// `drive` reads the component back, so a value that had silently degenerated to `Int64`
 /// would fail here rather than agree by accident.
 #[test]
 fn one_field_named_tuple_conforms_in_return_position() {

@@ -99,36 +99,37 @@ namespace test.wi733
   fact person(name: "bob", age: 25)
   fact person(name: "carol", age: 41)
 
-  -- One free head var → Relation[String] (1-collapse).
+  -- One free head var → Relation[(name: String)] (WI-20260818-YQB1Y: the schema names
+  -- the column; it used to 1-collapse to `Relation[String]`).
   rule person_name(?name) :- person(name: ?name, age: ?)
   rule one_name(?name) :- person(name: ?name, age: 30)
   rule rare_name(?name) :- person(name: ?name, age: 41)
   rule no_name(?name) :- person(name: ?name, age: 999)
 
-  operation oneHeadOption() -> Option[T = String] effects Error =
+  operation oneHeadOption() -> Option[T = (name: String)] effects Error =
     one_name.headOption
-  operation oneHead() -> String effects {Error, Error[T = EmptyStream]} =
+  operation oneHead() -> (name: String) effects {Error, Error[T = EmptyStream]} =
     one_name.head
 
   -- The POSITIVE neighbour for the empty rows below: same shape, same column,
   -- an age literal that DOES match.
-  operation rareHeadOption() -> Option[T = String] effects Error =
+  operation rareHeadOption() -> Option[T = (name: String)] effects Error =
     rare_name.headOption
 
-  operation emptyHeadOption() -> Option[T = String] effects Error =
+  operation emptyHeadOption() -> Option[T = (name: String)] effects Error =
     no_name.headOption
-  operation emptyHead() -> String effects {Error, Error[T = EmptyStream]} =
+  operation emptyHead() -> (name: String) effects {Error, Error[T = EmptyStream]} =
     no_name.head
-  operation emptyTailHeadOption() -> Option[T = String] effects {Error, Error[T = EmptyStream]} =
+  operation emptyTailHeadOption() -> Option[T = (name: String)] effects {Error, Error[T = EmptyStream]} =
     no_name.tail.headOption
 
   -- head/tail decomposition. Both are drained off ONE interpreter, so `takeN`
   -- and `tail` walk the same load's `splitFirst` chain and the assertion is
   -- structural rather than a coincidence of two searches agreeing: rows 1..2 of
   -- `all3` ARE `tailAll`, positionally.
-  operation all3() -> List[T = String] effects Error =
+  operation all3() -> List[T = (name: String)] effects Error =
     person_name.takeN(10)
-  operation tailAll() -> List[T = String] effects {Error, Error[T = EmptyStream]} =
+  operation tailAll() -> List[T = (name: String)] effects {Error, Error[T = EmptyStream]} =
     person_name.tail.takeN(10)
   operation tailLength() -> Int64 effects {Error, Error[T = EmptyStream]} =
     length(person_name.tail.takeN(10))
@@ -154,7 +155,7 @@ fn wi733_relation_head_evaluates() {
     let mut interp = interp_for(SRC);
     let got = interp.call("test.wi733.oneHead", &[]);
     assert!(
-        matches!(&got, Ok(Value::Str(s)) if s == "alice"),
+        matches!(&got.as_ref().map(crate::common::sole_column), Ok(Value::Str(s)) if s == "alice"),
         "`.head` on a one-solution relation yields the row; got {got:?}"
     );
 }
@@ -284,7 +285,7 @@ namespace test.wi733lazy
   rule reach(?x) :- edge(from: "a", to: ?x)
   rule reach(?x) :- reach(?y), edge(from: ?y, to: ?x)
 
-  operation firstReach() -> String effects {Error, Error[T = EmptyStream]} =
+  operation firstReach() -> (x: String) effects {Error, Error[T = EmptyStream]} =
     reach.head
   -- Proof the relation really does keep generating: a 2-fact graph has only two
   -- vertices, so a THIRD row can only come from the recursive clause.
@@ -294,7 +295,7 @@ end
     let mut i1 = interp_for(src);
     let got = i1.call("test.wi733lazy.firstReach", &[]);
     assert!(
-        matches!(&got, Ok(Value::Str(s)) if s == "b"),
+        matches!(&got.as_ref().map(crate::common::sole_column), Ok(Value::Str(s)) if s == "b"),
         "`.head` on an unbounded relation returns its first solution; got {got:?}"
     );
 
@@ -344,7 +345,7 @@ namespace test.wi733guard
 
   rule one_name(?name) :- person(name: ?name, age: 30)
 
-  operation underDeclared() -> String effects Error =
+  operation underDeclared() -> (name: String) effects Error =
     one_name.head
 end
 "#;
@@ -362,14 +363,16 @@ fn entity_functor_is(interp: &mut Interpreter, r: &Result<Value, EvalError>, qn:
         if interp.kb().qualified_name_of(*functor) == qn)
 }
 
-/// The `String` inside a `some(..)` — the payload rides positionally.
+/// The one-column ROW inside a `some(..)` — the payload rides positionally — read down to
+/// its `String` column. WI-20260818-YQB1Y: `.headOption` on a one-column relation yields
+/// `some((name: "alice"))`, not `some("alice")`.
 fn some_string(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Option<String> {
     match r {
         Ok(Value::Entity { functor, pos, .. })
             if interp.kb().qualified_name_of(*functor) == "anthill.prelude.Option.some" =>
         {
-            match pos.first() {
-                Some(Value::Str(s)) => Some(s.clone()),
+            match pos.first().map(crate::common::sole_column) {
+                Some(Value::Str(s)) => Some(s),
                 _ => None,
             }
         }
@@ -377,7 +380,7 @@ fn some_string(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Option
     }
 }
 
-/// A `cons`-list of `String`s, flattened.
+/// A `cons`-list of one-column relation rows, flattened to their `String` column.
 ///
 /// Every step CHECKS THE FUNCTOR — `cons` or `nil`, by qualified name — and
 /// panics otherwise. Shape alone is not enough: a `pair` and a 2-column tuple
@@ -412,8 +415,11 @@ fn string_list(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Vec<St
             panic!("`cons` must carry head+tail, got pos={pos:?} named={named:?}")
         };
         match head {
-            Value::Str(s) => out.push(s),
-            other => panic!("expected a String element, got {other:?}"),
+            Value::Tuple { .. } => out.push(match crate::common::sole_column(&head) {
+                Value::Str(s) => s,
+                other => panic!("expected a String column in the row, got {other:?}"),
+            }),
+            other => panic!("expected a one-column relation row, got {other:?}"),
         }
         cur = tail;
     }

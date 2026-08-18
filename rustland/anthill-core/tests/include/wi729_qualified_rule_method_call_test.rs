@@ -38,18 +38,18 @@ namespace test.wi729sort
   fact queen(row: 2, col: 3)
 
   -- WI-729: the INLINE spelling — a method call on the bare-qualified rule ref.
-  operation inlineRows() -> List[Int64] effects Error =
-    let r = Queen.find.where(lambda c -> eq(c, 2))
+  operation inlineRows() -> List[(row: Int64)] effects Error =
+    let r = Queen.find.where(lambda c -> eq(c.row, 2))
     r.takeN(5)
 
   -- the let-bound spelling (WI-714 citation + WI-723 dot call), the reference answer.
-  operation letBoundRows() -> List[Int64] effects Error =
+  operation letBoundRows() -> List[(row: Int64)] effects Error =
     let q = Queen.find
-    let r = q.where(lambda c -> eq(c, 2))
+    let r = q.where(lambda c -> eq(c.row, 2))
     r.takeN(5)
 
   -- unfiltered, to prove the guard above actually drops a row.
-  operation allRows() -> List[Int64] effects Error =
+  operation allRows() -> List[(row: Int64)] effects Error =
     let r = Queen.find
     r.takeN(5)
 end
@@ -73,7 +73,7 @@ fn wi729_sort_qualified_receiver_method_call_matches_let_bound() {
     assert_eq!(
         collect_int_list(&inline),
         vec![2],
-        "`Queen.find.where(c -> eq(c, 2))` keeps only row 2"
+        "`Queen.find.where(c -> eq(c.row, 2))` keeps only row 2"
     );
     assert_eq!(
         collect_int_list(&inline),
@@ -303,11 +303,10 @@ end
 
 // ── list decoders (cons-cell walkers over the drained results) ──
 
+/// WI-20260818-YQB1Y — a one-column relation drains as one-component tuples, so the `Int64`
+/// is read out of the row's sole column rather than off a bare head.
 fn collect_int_list(v: &Value) -> Vec<i64> {
-    collect_list(v, |head| match head {
-        Value::Int(n) => Some(*n),
-        _ => None,
-    })
+    crate::common::list_column_ints(v)
 }
 
 fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {

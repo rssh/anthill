@@ -175,35 +175,9 @@ end
     }
 }
 
-/// A 1-collapse (single-column) operand has no named-tuple schema — its column name is
-/// dropped from the type — so `Concat` cannot merge it: a loud LOAD error (deferred:
-/// single-column joins are a follow-up). `ages` is `Relation[Int64]` (1-collapse).
-#[test]
-fn wi714_join_one_collapse_operand_is_load_error() {
-    const SRC: &str = r#"
-namespace test.wi714join1col
-  import anthill.prelude.{String, Int64, Bool}
-  import anthill.prelude.Relation.{join}
-  import anthill.prelude.PartialEq.{eq}
-  sort Person
-    entity person(name: String, age: Int64)
-  end
-  fact person(name: "a", age: 1)
-  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)   -- (name, age)
-  rule ages(?age) :- person(age: ?age)                              -- Int64 (1-collapse)
-  operation p() -> Bool effects Error =
-    let r = person_row.join(ages, lambda (c, q) -> eq(c.age, q))
-    r.isEmpty
-end
-"#;
-    match try_load_kb_with(SRC) {
-        Err(errs) => assert!(
-            errs.iter()
-                .any(|e| e.contains("named-tuple") || e.contains("named tuple")),
-            "expected a non-named-tuple Concat operand error, got: {errs:?}",
-        ),
-        Ok(_) => {
-            panic!("expected a load error for a join with a 1-collapse (non-named-tuple) operand")
-        }
-    }
-}
+// A ONE-COLUMN OPERAND USED TO BE REFUSED HERE, and the test that pinned that refusal is
+// gone rather than moved: WI-20260818-YQB1Y (052 OQ5, option A) dropped the schema
+// 1-collapse, so a one-column relation names its column and `Concat` merges it like any
+// other. The capability that replaced the refusal is driven in
+// `wi_yqb1y_one_column_relation_test::yqb1y_join_with_a_one_column_operand_runs`, which
+// asserts the merged schema AND the joined rows.

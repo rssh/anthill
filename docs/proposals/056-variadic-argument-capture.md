@@ -52,7 +52,7 @@ The result type is a function of `R` — the captured record's type — expresse
 operation fix[R](p: Relation, ...args: R) -> Relation[T = Without[T = p.T, Drop = R]]
 ```
 
-`Without[T, Drop]` reduces at the **return-type normalization boundary** — the same place `Concat` and `s.T` reduce: drop from named-tuple `T` every field whose name is a field of `Drop`; the residual 1-collapses / `Unit`s as any relation schema does. The **membership + type checks live in the reduction**: a `Drop` field naming no `T` field, or one whose type mismatches its column, is a **load error** there. So the capture itself stays **unconstrained** (`R` is inferred, collecting whatever is passed); the consumer's type constructor supplies the meaning. `Without` is generic — any op that writes `Without[…]` reuses it, exactly as any op may write `Concat[…]`.
+`Without[T, Drop]` reduces at the **return-type normalization boundary** — the same place `Concat` and `s.T` reduce: drop from named-tuple `T` every field whose name is a field of `Drop`; the residual is typed as any relation schema is — `Unit` for no remaining column, else the named tuple of the ones left (052 OQ5 dropped the arity-one collapse, so `Concat` and `Without` are inverses at every arity). The **membership + type checks live in the reduction**: a `Drop` field naming no `T` field, or one whose type mismatches its column, is a **load error** there. So the capture itself stays **unconstrained** (`R` is inferred, collecting whatever is passed); the consumer's type constructor supplies the meaning. `Without` is generic — any op that writes `Without[…]` reuses it, exactly as any op may write `Concat[…]`.
 
 ### 2.3 Rule-head face — the variadic `[simp]` head
 

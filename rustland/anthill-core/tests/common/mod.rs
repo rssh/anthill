@@ -595,6 +595,55 @@ pub fn list_ints(v: &eval::Value) -> Vec<i64> {
         .collect()
 }
 
+/// WI-20260818-YQB1Y — the SOLE COLUMN's value of a one-column relation row.
+///
+/// 052 OQ5 option A dropped the schema 1-collapse, so a relation row is a named tuple at
+/// EVERY arity: a one-column drain yields `(name: "alice")` where it used to yield the bare
+/// `"alice"`. The suites that drain a one-column relation read the column through here.
+///
+/// STRICT, and that is the point: anything but a ONE-component named tuple panics. A lenient
+/// "take the first named field" would keep passing if a fixture started draining a
+/// two-column relation, reading its first column and reporting a pass — which is the exact
+/// silent-wrong-answer shape this ticket removed from the typer.
+#[allow(dead_code)]
+pub fn sole_column(v: &eval::Value) -> eval::Value {
+    match v {
+        eval::Value::Tuple { pos, named } if pos.is_empty() && named.len() == 1 => {
+            named[0].1.clone()
+        }
+        other => panic!(
+            "sole_column: expected a ONE-column relation row (a one-component named tuple), \
+             got {other:?}"
+        ),
+    }
+}
+
+/// Walk a one-column relation drain into its `String` column values — [`list_heads`], then
+/// [`sole_column`] on each row, then a `Str` read. LOUD on any other shape.
+#[allow(dead_code)]
+pub fn list_column_strings(v: &eval::Value) -> Vec<String> {
+    cons_spine(v, "list_column_strings")
+        .into_iter()
+        .map(|h| match sole_column(&h) {
+            eval::Value::Str(s) => s,
+            other => panic!("list_column_strings: expected a String column, got {other:?}"),
+        })
+        .collect()
+}
+
+/// Walk a one-column relation drain into its `Int64` column values — the [`list_ints`] of
+/// [`list_column_strings`].
+#[allow(dead_code)]
+pub fn list_column_ints(v: &eval::Value) -> Vec<i64> {
+    cons_spine(v, "list_column_ints")
+        .into_iter()
+        .map(|h| match sole_column(&h) {
+            eval::Value::Int(i) => i,
+            other => panic!("list_column_ints: expected an Int64 column, got {other:?}"),
+        })
+        .collect()
+}
+
 /// The shared cons-spine walk behind [`list_heads`] and [`list_ints`].
 ///
 /// Handles BOTH carriers a cons cell arrives in — `build_list_value` emits NAMED

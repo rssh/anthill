@@ -8,7 +8,7 @@
 //! `Symbol` match. Schema is unchanged. Consumed through the inherited Stream API.
 
 use crate::common::interp_for;
-use anthill_core::eval::{EvalError, Value};
+use anthill_core::eval::Value;
 
 const SRC: &str = r#"
 namespace test.wi714where
@@ -67,10 +67,18 @@ fn wi714_where_drops_nonmatching_rows() {
     }
 }
 
-/// Single-column (1-collapse) relation: the row binder `c` IS the sole `Int64`
-/// column, so a BARE `eq(c, 30)` (not `c.field`) compiles to a WHOLE-ROW hole that
-/// `where_run` maps to the one column. `ages` holds one row of age 30, so `eq(c, 30)`
-/// keeps it (non-empty) and `eq(c, 99)` drops it (empty).
+/// Single-column relation: WI-20260818-YQB1Y (052 OQ5, option A) dropped the schema
+/// 1-collapse, so a one-column row is the named tuple `(age: 30)` and the condition names
+/// its column exactly as a multi-column one does. `ages` holds one row of age 30, so
+/// `eq(c.age, 30)` keeps it (non-empty) and `eq(c.age, 99)` drops it (empty).
+///
+/// WHAT THIS REPLACES: the bare-binder spelling `eq(c, 30)`, which rode a WHOLE-ROW hole
+/// that `where_run` filled with the relation's sole column. That fill was only ever correct
+/// BECAUSE the row was the column; with the row a tuple, no column variable carries it, so
+/// the sentinel is gone and the bare binder is refused at load (below).
+///
+/// CONTROL: this pair FAILS on a back-out. On the pre-change tree `ages`'s schema is the
+/// bare `Int64`, so `c.age` resolves to no member and the program does not load.
 const SINGLE_COL_SRC: &str = r#"
 namespace test.wi714where1
   import anthill.prelude.{String, Int64, Option, List, Pair, Unit, Bool}
@@ -82,22 +90,22 @@ namespace test.wi714where1
   end
   fact person(name: "alice", age: 30)
 
-  -- ONE free head var → Relation[Int64] (1-collapse); the row IS the age.
+  -- ONE free head var → Relation[(age: Int64)]; the row is `(age: 30)`.
   rule ages(?age) :- person(age: ?age)
 
   operation hasThirty() -> Bool effects Error =
-    let r = ages.where(lambda c -> eq(c, 30))
+    let r = ages.where(lambda c -> eq(c.age, 30))
     r.isEmpty
 
   operation hasNinetyNine() -> Bool effects Error =
-    let r = ages.where(lambda c -> eq(c, 99))
+    let r = ages.where(lambda c -> eq(c.age, 99))
     r.isEmpty
 end
 "#;
 
-/// `eq(c, 30)` on the bare 1-collapse binder keeps the age-30 row → non-empty.
+/// `eq(c.age, 30)` over the one-column relation keeps the age-30 row → non-empty.
 #[test]
-fn wi714_where_single_column_whole_row_keeps() {
+fn wi714_where_single_column_keeps() {
     let mut interp = interp_for(SINGLE_COL_SRC);
     let r = interp
         .call("test.wi714where1.hasThirty", &[])
@@ -108,10 +116,10 @@ fn wi714_where_single_column_whole_row_keeps() {
     }
 }
 
-/// `eq(c, 99)` on the bare 1-collapse binder matches no row → empty (the whole-row
-/// hole actually constrains the sole column, not vacuously true).
+/// `eq(c.age, 99)` matches no row → empty. The negative half: the condition really
+/// constrains the sole column rather than being vacuously true.
 #[test]
-fn wi714_where_single_column_whole_row_drops() {
+fn wi714_where_single_column_drops() {
     let mut interp = interp_for(SINGLE_COL_SRC);
     let r = interp
         .call("test.wi714where1.hasNinetyNine", &[])
@@ -122,16 +130,45 @@ fn wi714_where_single_column_whole_row_drops() {
     }
 }
 
-/// A bare whole-row binder `eq(c, c)` over a MULTI-column relation is a whole-row
-/// comparison with no single eq column. It is REACHABLE — named-tuple `eq(c, c)`
-/// type-checks, so the row lambda compiles and the whole-row hole is minted — so
-/// `where_run` must reject it with a clean USER-facing error (not an internal
-/// invariant break) naming the multi-column limitation, when the relation is run.
+/// A BARE row binder is refused at LOAD, at every arity — WI-20260818-YQB1Y.
+///
+/// The row is a named tuple now, so `c` names no column variable and there is nothing
+/// honest to compile it into: `compile_operand` mints no whole-row hole and refuses.
+///
+/// BOTH ARITIES, because they used to take DIFFERENT paths and neither survives — and
+/// they are refused by DIFFERENT gates, which is why each arm asserts its own message:
+///  * one column — `eq(c, 30)` used to LOAD AND RUN, filling the whole-row hole with the
+///    sole column. The ROW TYPE now refuses it before the macro is reached: `c` is
+///    `(age: Int64)` and `30` is `Int64`, so `eq`'s own operand typing rejects the pair,
+///    and the message names the row type — better than anything the macro could say.
+///  * two columns — `eq(c, c)` used to load and fail at RUNTIME with `where_run`'s
+///    "a single-column relation for a whole-row `where` condition". It still type-checks
+///    (a named tuple compares with itself), so the MACRO refuses it, at load, naming the
+///    remedy `c.age`.
+///
+/// CONTROL: both arms fail on a back-out — the one-column arm because that program loads
+/// and runs clean on the pre-change tree, the two-column arm because its failure is a
+/// runtime `EvalError` there rather than a load error.
 #[test]
-fn wi714_where_multicolumn_whole_row_is_a_clean_error() {
-    const SRC: &str = r#"
-namespace test.wi714where2
-  import anthill.prelude.{String, Int64, Option, List, Pair, Unit, Bool}
+fn wi714_where_a_bare_row_binder_is_refused_at_load() {
+    const ONE_COL: &str = r#"
+namespace test.wi714whereb1
+  import anthill.prelude.{String, Int64, Bool}
+  import anthill.prelude.Relation.{where}
+  import anthill.prelude.PartialEq.{eq}
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  rule ages(?age) :- person(age: ?age)
+  operation p() -> Bool effects Error =
+    let r = ages.where(lambda c -> eq(c, 30))
+    r.isEmpty
+end
+"#;
+    const TWO_COL: &str = r#"
+namespace test.wi714whereb2
+  import anthill.prelude.{String, Int64, Bool}
   import anthill.prelude.Relation.{where}
   import anthill.prelude.PartialEq.{eq}
   sort Person
@@ -144,14 +181,24 @@ namespace test.wi714where2
     r.isEmpty
 end
 "#;
-    let mut interp = interp_for(SRC);
-    match interp.call("test.wi714where2.p", &[]) {
-        Err(EvalError::TypeMismatch { got, .. }) => assert!(
-            got.contains("2-column"),
-            "expected a multi-column whole-row diagnostic, got: {got}",
-        ),
-        other => panic!(
-            "expected a clean TypeMismatch for a multi-column whole-row where, got {other:?}"
-        ),
-    }
+    // The one-column arm: `eq`'s operand typing, naming the ROW type the binder now has.
+    let errs = crate::common::try_load_kb_with(ONE_COL)
+        .err()
+        .expect("one-column: a bare row binder must be a LOAD error");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("expected (age: Int64), got Int64"),
+        "one-column: the refusal must name the ROW type the bare binder has; got: {joined}"
+    );
+
+    // The two-column arm: the macro, because `eq(c, c)` type-checks and so reaches it.
+    let errs = crate::common::try_load_kb_with(TWO_COL)
+        .err()
+        .expect("two-column: a bare row binder must be a LOAD error");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("bare row binder") && joined.contains("c.age"),
+        "two-column: the refusal must say the binder is the WHOLE row and name the remedy; \
+         got: {joined}"
+    );
 }

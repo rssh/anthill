@@ -79,7 +79,7 @@ fn short_of(qn: &str) -> String {
 }
 
 /// Render a relation SCHEMA for assertion: a named tuple as `(k: T, …)` in field order, and
-/// a 1-collapsed scalar as its own sort name. Deliberately hand-rolled rather than reusing
+/// a bare scalar as its own sort name. Deliberately hand-rolled rather than reusing
 /// the typer's own display helper — an assertion that shared the renderer with the code under
 /// test could agree with it about a wrong answer. An UNREDUCED `Project[..]` renders with its
 /// constructor head, which is exactly the failure this must be able to report.
@@ -140,17 +140,18 @@ const REL: &str = r#"
 /// absence of errors.
 ///
 /// `person_row` has schema `(name, age)`; the body projects ONE column and renames it, so the
-/// three possible answers are all distinguishable: `String` is the projection (a single kept
-/// column 1-collapses to its element), `(name: String, age: Int64)` would be the widening the
-/// retired stamp existed to prevent, and a `Project[..]` head would be a constructor that
-/// never reduced.
+/// three possible answers are all distinguishable: `(who: String)` is the projection (the
+/// kept column under its RESULT key — WI-20260818-YQB1Y, where a single kept column used to
+/// 1-collapse to its element and drop the key), `(name: String, age: Int64)` would be the
+/// widening the retired stamp existed to prevent, and a `Project[..]` head would be a
+/// constructor that never reduced.
 #[test]
 fn wi732_retype_keeps_the_projected_schema() {
     let src = format!(
         r#"
 namespace test.wi732retype
 {REL}
-  operation justNames() -> List[String] effects Error =
+  operation justNames() -> List[(who: String)] effects Error =
     let rel = person_row
     let cols = rel.(who: name)
     cols.takeN(9)
@@ -159,7 +160,7 @@ end
     );
     assert_eq!(
         retyped_body_schema(&src, "test.wi732retype.justNames"),
-        "String",
+        "(who: String)",
         "a re-typed projection must keep its RESTRICTED schema"
     );
 }
@@ -197,7 +198,7 @@ end
 /// It also pins WI-734's ABSTRACT-OPERAND rule, which `Project` inherits by joining the
 /// family: neither operand is known here, so the constructor stays SYMBOLIC to reduce once
 /// they ground, instead of raising the concrete-malformation diagnostic ("must be a
-/// named-tuple type … a 1-collapse / membership schema is not supported") against a shape the
+/// named-tuple type …") against a shape the
 /// user never wrote. Before that rule, both operands went straight to the reducer.
 ///
 /// Honest about its own reach: this passes with `Project` unregistered too (an unregistered

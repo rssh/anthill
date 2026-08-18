@@ -95,7 +95,7 @@ namespace test.wi728one
   end
   fact person(name: "alice", age: 30)
 
-  -- one free head variable → Relation[String]: a column, not a membership relation
+  -- one free head variable → Relation[(name: String)]: a column, not a membership relation
   rule person_name(?name) :- person(name: ?name, age: ?)
 
   operation bad() -> Bool effects Error =
@@ -108,8 +108,10 @@ end
     });
     let joined = errs.join("\n");
     assert!(
-        joined.contains("Membership") && joined.contains("one free column of type `String`"),
-        "the load error must name the offending schema, got: {joined}"
+        joined.contains("Membership") && joined.contains("free column(s): name"),
+        "the load error must NAME the offending column — WI-20260818-YQB1Y dropped the \
+         1-collapse, so a one-column schema spells its column and the message no longer has \
+         to fall back to naming the column's TYPE; got: {joined}"
     );
     assert!(
         joined.contains("close the columns first"),
@@ -296,21 +298,23 @@ end
     );
 }
 
-/// THE KNOWN LIMIT, recorded rather than discovered later (review-found, measured): a
-/// ONE-column relation whose column type IS `Unit` 1-collapses to exactly the `Unit` a
-/// ZERO-column relation collapses to, so `Membership` accepts it and the DRAIN refuses it.
+/// WI-728'S KNOWN LIMIT, RETIRED (WI-20260818-YQB1Y) — rewritten rather than patched, which
+/// is what its own note asked for ("if it now does, the 1-collapse changed and this recorded
+/// limit should be retired").
 ///
-/// This is not a defect in the check — it is the 1-collapse, a specified and deliberately
-/// paired type-and-value convention (§"1-collapse"), being lossy in exactly the way the spec
-/// says it is. No type-level predicate can separate the two, because at type level they are
-/// the same value. It is also the sharpest reason the host builtin's runtime guard is not
-/// redundant: `columns` still has the column that the schema forgot.
+/// A ONE-column relation whose column type IS `Unit` used to 1-collapse to exactly the `Unit`
+/// a ZERO-column relation presents, so `Membership` ACCEPTED it at load and only the drain's
+/// runtime guard refused it. No type-level predicate could separate the two, because at type
+/// level they were the same value.
 ///
-/// This test PASSES both before and after WI-728 by design — it measures a boundary, not a
-/// change — which is why the load half asserts a clean load explicitly rather than leaving
-/// it implied.
+/// Dropping the collapse separates them for free, without touching the `()`-vs-`Unit` typing
+/// gap: a zero-column schema is still `Unit`, and a one-`Unit`-column one is `(t: Unit)` — a
+/// named tuple with one free column, refused by `Membership`'s ordinary arm.
+///
+/// CONTROL: this FAILS on a back-out — the program loads clean on the pre-change tree, which
+/// is precisely what the retired limit recorded.
 #[test]
-fn wi728_a_unit_typed_column_is_indistinguishable_from_no_columns() {
+fn wi728_a_unit_typed_column_is_distinguishable_from_no_columns() {
     let src = r#"
 namespace test.wi728unitcol
   import anthill.prelude.{String, Bool, Unit}
@@ -321,29 +325,23 @@ namespace test.wi728unitcol
   end
   fact person(name: "alice", tag: unit())
 
-  -- ONE free column, of type Unit → the schema 1-collapses to `Unit`, which is also what
-  -- a ZERO-column relation's schema is. The type cannot tell them apart.
+  -- ONE free column, of type Unit → the schema is `(t: Unit)`, which a ZERO-column
+  -- relation's `Unit` is not. The type tells them apart.
   rule person_tag(?t) :- person(name: ?, tag: ?t)
 
-  operation slipsThrough() -> Bool effects Error =
+  operation caught() -> Bool effects Error =
     let r = negate(person_tag)
     r.isEmpty
 end
 "#;
-    try_load_kb_with(src).unwrap_or_else(|errs| {
-        panic!(
-            "the load-time check cannot see this column — if it now does, the 1-collapse \
-             changed and this recorded limit should be retired, not patched; got: {errs:#?}"
-        )
-    });
-    let mut interp = interp_for(src);
-    let err = interp
-        .call("test.wi728unitcol.slipsThrough", &[])
-        .expect_err("the RUNTIME guard reads `columns` and must still refuse it");
-    let msg = format!("{err:?}");
+    let errs = try_load_kb_with(src)
+        .err()
+        .expect("a one-`Unit`-column relation must be refused at LOAD, not only at the drain");
+    let joined = errs.join("\n");
     assert!(
-        msg.contains("free column(s): t"),
-        "the runtime guard names the column the schema forgot, got: {msg}"
+        joined.contains("Membership") && joined.contains("free column(s): t"),
+        "the LOAD error names the column, where this used to slip through to the runtime \
+         guard; got: {joined}"
     );
 }
 

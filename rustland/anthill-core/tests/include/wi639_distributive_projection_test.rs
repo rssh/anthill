@@ -4,8 +4,15 @@
 //! desugars (at convert) to the ordered/named tuple `(m1: x.m1, …, mn: x.mn)`
 //! — distribute the receiver `x` over the members, each `x.mi` an ordinary
 //! dot-dispatch (WI-638), the result keyed by the member names. A bare member
-//! auto-labels (`x.(f)` ⇒ key `f`); `a: f` renames (key `a`, member `f`); a
-//! single member 1-collapses to the bare `x.m` value. Two load-bearing rules:
+//! auto-labels (`x.(f)` ⇒ key `f`); `a: f` renames (key `a`, member `f`).
+//!
+//! WI-20260818-YQB1Y (052 OQ5, option A) — THE ARITY-ONE CASE NO LONGER COLLAPSES. A single
+//! member used to yield the bare `x.m` value, dropping its key (and a single RENAME dropped
+//! its label too); it now builds `(m: x.m)` like every other arity. That was the TERM half of
+//! the paired type-and-value convention kernel-language.md §6.8 recorded, and it moved
+//! together with the relation SCHEMA and the materialized ROW.
+//!
+//! Two load-bearing rules:
 //! the result is the ORDERED/NAMED tuple (labels preserved, never positional
 //! `_1/_2`), and members resolve at TYPING (never a value-position scope
 //! symbol) — so `x`/`y` below are members of the receiver, not free idents.
@@ -29,8 +36,21 @@ fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     }
 }
 
+/// WI-20260818-YQB1Y — the `Int64` inside a ONE-COMPONENT tuple, which is what a
+/// single-member projection yields since the term-level 1-collapse was dropped. STRICT via
+/// [`crate::common::sole_column`]: a bare `Int64` here would mean the collapse came back.
+fn run_int_column(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
+    let v = interp
+        .call(op, &[])
+        .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
+    match crate::common::sole_column(&v) {
+        Value::Int(i) => i,
+        other => panic!("call {op}: expected a one-component tuple of Int, got {other:?}"),
+    }
+}
+
 /// THE acceptance shape: keep-projection over a literal (schema narrows to the
-/// selected columns), rename-projection, single-member 1-collapse, and a
+/// selected columns), rename-projection, single-member projection, and a
 /// named-tuple PARAM projected then re-read. Members (`x`, `y`, …) are never
 /// declared as values — they resolve as receiver components at typing.
 #[test]
@@ -46,9 +66,9 @@ namespace test.wi639
     = (x: 10, y: 20).(a: x, b: y).a
   operation rename_b() -> Int64
     = (x: 10, y: 20).(a: x, b: y).b
-  operation single_collapse() -> Int64
+  operation single_member() -> (x: Int64)
     = (x: 10, y: 20).(x)
-  operation single_rename_collapse() -> Int64
+  operation single_rename() -> (a: Int64)
     = (x: 10, y: 20).(a: x)
   operation param_keep(t: (x: Int64, y: Int64)) -> (x: Int64, y: Int64)
     = t.(x, y)
@@ -84,14 +104,15 @@ end
         20,
         "(x,y).(a: x, b: y).b"
     );
-    // 1-collapse: a single member is the scalar value, not a 1-tuple.
+    // WI-20260818-YQB1Y: NO 1-collapse. A single member builds the one-field tuple, and a
+    // single RENAME keeps its key — where both used to yield the bare scalar `x.m`.
     assert_eq!(
-        run_int(&mut interp, "test.wi639.single_collapse"),
+        run_int_column(&mut interp, "test.wi639.single_member"),
         10,
-        "(x,y).(x) ⇒ 10"
+        "(x,y).(x) ⇒ (x: 10)"
     );
     assert_eq!(
-        run_int(&mut interp, "test.wi639.single_rename_collapse"),
+        run_int_column(&mut interp, "test.wi639.single_rename"),
         10,
         "(x,y).(a: x) ⇒ 10"
     );

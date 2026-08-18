@@ -113,29 +113,30 @@ end
 /// the arrow parameter list's single form; WI-766 later admitted that too, by merging the
 /// parameter list and the tuple type into one production so the ambiguity disappeared.)
 ///
-/// A single kept column 1-COLLAPSES to its element type, exactly as any relation schema does,
-/// so this reduces to `String` and not to a one-field tuple. That collapse is why the declared
-/// `-> String` is a real assertion here.
-///
-/// WI-776 kept this behaviour deliberately after weighing the alternative: the collapse
-/// stays, and a mismatch against a written `(who: String)` now EXPLAINS it rather than the
-/// schema growing a column. So this test still asserts `-> String`, and it is the assertion
-/// that pins the decision — see `wi776_one_collapse_diagnostic_test`.
+/// A single kept column keeps its RESULT KEY, exactly as any relation schema keeps its
+/// columns, so this reduces to the one-field tuple `(who: String)` and the declared
+/// `-> (who: String)` is a real assertion. WI-20260818-YQB1Y (052 OQ5, option A) is what made
+/// it so: before it, a single kept column 1-collapsed to `String` and the `who` the author
+/// wrote in the keep spec was discarded — the rename existed in the spec and nowhere in the
+/// result. WI-776 had weighed keeping the collapse and explaining it in the mismatch message
+/// instead; that decision is retired, so this test asserts the key rather than its loss.
 #[test]
-fn wi763_single_component_keep_spec_reduces_and_collapses() {
+fn wi763_single_component_keep_spec_reduces_to_a_one_column_schema() {
     let src = format!(
         r#"
 namespace test.wi763one
 {REL}
   operation kept_one(r: Relation[T = (name: String, age: Int64)])
     -> Project[T = (name: String, age: Int64), Keep = (who: "name")]
-  operation use_one(r: Relation[T = (name: String, age: Int64)]) -> String = kept_one(r)
+  operation use_one(r: Relation[T = (name: String, age: Int64)]) -> (who: String) = kept_one(r)
 end
 "#
     );
     assert!(
         load_errs(&src).is_empty(),
-        "a one-entry keep spec must parse and 1-collapse to the kept column's type; got: {:?}",
+        "a one-entry keep spec must parse and reduce to the one-column schema `(who: String)` \
+         — WI-20260818-YQB1Y, where it used to 1-collapse to the kept column's element type \
+         and drop the result key; got: {:?}",
         load_errs(&src),
     );
 }

@@ -58,9 +58,9 @@ pub struct SimpleTermStore {
     type_applications: HashSet<TermId>,
     /// WI-762: the named-tuple `Term::Fn` nodes this converter DESUGARED a
     /// distributive projection `x.(m1, …, mn)` into (§6.8; the sole producer is
-    /// `BuildFrame::DistributiveProjection`). Only the MULTI-member case is
-    /// recorded — a single member 1-collapses to the scalar `x.m`, which is not a
-    /// tuple and has nothing to mark.
+    /// `BuildFrame::DistributiveProjection`). EVERY arity is recorded — since
+    /// WI-20260818-YQB1Y a single member builds and marks `(m: x.m)` too, where it
+    /// used to 1-collapse to the scalar `x.m` and leave nothing to mark.
     ///
     /// The desugaring distributes ONE receiver over the members, and until this set
     /// existed that fact was thrown away: the typer's relation-projection recognizer

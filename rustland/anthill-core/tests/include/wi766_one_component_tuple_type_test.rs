@@ -96,6 +96,16 @@ end
 /// added the arity-matching literal `(a: 1)`, so that second job is gone and this row now
 /// measures width subtyping and nothing else — deliberately, since the two routes reach the
 /// same type through different rules and a regression in either must be visible on its own.
+///
+/// WI-20260818-YQB1Y MADE THIS LOAD-BEARING RATHER THAN CURIOUS. Dropping the relation-schema
+/// 1-collapse made `(a: A)` the type of EVERY computed one-column result — a `Without` /
+/// `Project` residual, a single-member projection, a materialized one-column row — so "a
+/// wider tuple conforms to a one-field tuple" is now a rule ordinary code leans on rather than
+/// a corner of the type surface. THIS ROW IS ITS ONLY DRIVER: `wi776_one_collapse_diagnostic_-
+/// test` carried a duplicate of it and was deleted with the collapse diagnostic it existed to
+/// explain, and `wi1131_one_field_named_tuple_test` drives the LITERAL route, not this one.
+/// Recorded here because a reviewer looked for this property in those two files and concluded
+/// it had been dropped.
 #[test]
 fn wi766_one_component_tuple_is_inhabited_by_width_subtyping() {
     let src = r#"

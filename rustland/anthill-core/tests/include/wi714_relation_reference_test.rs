@@ -1,6 +1,6 @@
 //! WI-714 (proposal 052) — C2/C3: a rule cited BY NAME (bare unqualified) resolves
 //! to a `Relation[T]` VALUE — C3 typer arm in `check_bare_ref` (schema `T` =
-//! named tuple of the free head params, 1-collapsed / `Unit`, `E = {Error}`) + C2
+//! named tuple of the free head params, `Unit` for none, `E = {Error}`) + C2
 //! eval arm in `reduce_var` (builds the `Value::Relation` carrying
 //! `pattern_query(head(?cols))` + columns). Because `Relation provides
 //! LogicalStream provides Stream`, the reference consumes through the ordinary
@@ -8,6 +8,12 @@
 //! C1 `MaterializedResolver`) and the body-backed combinators built on it
 //! (`takeN`, which drains the whole stream). These drive the full surface
 //! end-to-end from source.
+//!
+//! WI-20260818-YQB1Y (052 OQ5, option A) — THE SCHEMA NO LONGER 1-COLLAPSES, and this file
+//! is where that is most visible. A one-column relation is `Relation[(name: String)]`, its
+//! rows are `(name: "alice")`, and every one-column drain below reads the column by name
+//! through `common::list_column_strings` / `list_column_ints` rather than taking a bare
+//! scalar. The multi-column and 0-column (`Unit`) cases are unchanged.
 
 use anthill_core::eval::Value;
 
@@ -24,7 +30,7 @@ namespace test.wi714ref
   fact person(name: "alice", age: 30)
   fact person(name: "bob", age: 25)
 
-  -- one free head variable → Relation[String] (1-collapse)
+  -- one free head variable → Relation[(name: String)] — the schema names the column
   rule person_name(?name) :- person(name: ?name, age: ?)
 
   -- two free head variables → Relation[(name: String, age: Int64)] (named tuple)
@@ -34,16 +40,16 @@ namespace test.wi714ref
   rule has_alice() :- person(name: "alice", age: ?)
 
   -- splitFirst directly: the Relation primitive. Runs the query one step and
-  -- materializes (1-collapse) the first row to a `String`.
-  operation firstName() -> Option[String] effects Error =
+  -- materializes the first row as the one-column tuple `(name: …)`.
+  operation firstName() -> Option[(name: String)] effects Error =
     let r = person_name
     match r.splitFirst
       case some(pair(h, _)) -> some(h)
       case none() -> none()
 
   -- takeN: an inherited Stream combinator (body-backed, calls splitFirst) — drains
-  -- the whole relation as a stream into a `List[String]`.
-  operation allNames() -> List[String] effects Error =
+  -- the whole relation as a stream into a `List[(name: String)]`.
+  operation allNames() -> List[(name: String)] effects Error =
     let r = person_name
     r.takeN(5)
 
@@ -97,12 +103,12 @@ namespace test.wi714ref
   -- union = disjunction: the solutions of EITHER operand (a bag). alice_name ∪
   -- bob_name yields both names — proof the two operands' independent column vars are
   -- aligned onto one materialization column.
-  operation unionNames() -> List[String] effects Error =
+  operation unionNames() -> List[(name: String)] effects Error =
     let r = union(alice_name, bob_name)
     r.takeN(5)
 
   -- Bag semantics (OQ6): union keeps multiplicity — alice ∪ alice yields alice twice.
-  operation unionBag() -> List[String] effects Error =
+  operation unionBag() -> List[(name: String)] effects Error =
     let r = union(alice_name, alice_name)
     r.takeN(5)
 
@@ -120,9 +126,11 @@ namespace test.wi714ref
 end
 "#;
 
-/// `splitFirst` on a bare rule reference: the reference types as `Relation[String]`
-/// (C3) and evaluates to a `Value::Relation` (C2); `Relation.splitFirst` runs the
-/// query one step, materializing (1-collapse) the first row to a `String`.
+/// `splitFirst` on a bare rule reference: the reference types as
+/// `Relation[(name: String)]` (C3) and evaluates to a `Value::Relation` (C2);
+/// `Relation.splitFirst` runs the query one step, materializing the first row as the
+/// one-column tuple `(name: …)` — WI-20260818-YQB1Y, where it used to 1-collapse to a
+/// bare `String`.
 #[test]
 fn wi714_bare_rule_reference_split_first() {
     let mut interp = interp_for(SRC);
@@ -135,35 +143,34 @@ fn wi714_bare_rule_reference_split_first() {
         Value::Entity { named, .. } if !named.is_empty() => named[0].1.clone(),
         other => panic!("expected some(name), got {other:?}"),
     };
-    match &inner {
+    match crate::common::sole_column(&inner) {
         Value::Str(s) => assert!(
             s == "alice" || s == "bob",
-            "splitFirst materializes a person name (1-collapse to String), got {s:?}"
+            "splitFirst materializes a person name in its `name` column, got {s:?}"
         ),
-        other => panic!("expected a String element (1-collapse), got {other:?}"),
+        other => panic!("expected a String `name` column, got {other:?}"),
     }
 }
 
 /// The full inherited Stream API: `takeN` (built on `splitFirst`) drains the whole
-/// relation as a stream — every solution materialized (1-collapse) into a
-/// `List[String]`.
+/// relation as a stream — every solution materialized into a `List[(name: String)]`.
 #[test]
 fn wi714_bare_rule_reference_drains_via_takeN() {
     let mut interp = interp_for(SRC);
     let r = interp
         .call("test.wi714ref.allNames", &[])
         .expect("allNames() drains the relation via takeN");
-    let mut got = collect_string_list(&r);
+    let mut got = crate::common::list_column_strings(&r);
     got.sort();
     assert_eq!(
         got,
         vec!["alice".to_string(), "bob".to_string()],
-        "takeN drains every solution, each materialized (1-collapse) to its String"
+        "takeN drains every solution, each materialized as its `name` column"
     );
 }
 
 /// Multi-column schema: two free head vars → each row is a named tuple
-/// `(name, age)`, NOT 1-collapsed. `takeN` drains them into a `List` of tuples.
+/// `(name, age)`. `takeN` drains them into a `List` of tuples.
 #[test]
 fn wi714_multi_column_rows_are_named_tuples() {
     let mut interp = interp_for(SRC);
@@ -499,27 +506,27 @@ namespace test.wi714edge
   end
   fact pet(petName: "rex")
 
-  -- nonlinear head var: ?n fills BOTH slots but is ONE column → Relation[String].
+  -- nonlinear head var: ?n fills BOTH slots but is ONE column → Relation[(n: String)].
   rule twin(?n, ?n) :- person(name: ?n, age: ?)
 
   -- uniform two-clause relation: both clauses free the same slot (Pos 0), both
-  -- String → Relation[String]; the union of solutions (person names + pet names).
+  -- String → Relation[(nm: String)]; the union of solutions (person names + pet names).
   rule any_name(?nm) :- person(name: ?nm, age: ?)
   rule any_name(?nm) :- pet(petName: ?nm)
 
-  operation twins() -> List[String] effects Error =
+  operation twins() -> List[(n: String)] effects Error =
     let r = twin
     r.takeN(5)
 
-  operation anyNames() -> List[String] effects Error =
+  operation anyNames() -> List[(nm: String)] effects Error =
     let r = any_name
     r.takeN(5)
 end
 "#;
 
-/// A nonlinear head variable (`twin(?n, ?n)`) is ONE logical column: the schema
-/// collapses to `Relation[String]` (not a duplicate-named 2-tuple), and the rows
-/// materialize (1-collapse) to the element.
+/// A nonlinear head variable (`twin(?n, ?n)`) is ONE logical column: the schema is the
+/// one-column `Relation[(n: String)]` (not a duplicate-named 2-tuple), and each row
+/// materializes as `(n: …)`.
 #[test]
 fn wi714_nonlinear_head_var_is_single_column() {
     let mut interp = interp_for(SRC2);
@@ -531,7 +538,7 @@ fn wi714_nonlinear_head_var_is_single_column() {
     assert_eq!(
         got,
         vec!["alice".to_string(), "bob".to_string()],
-        "a nonlinear head var is a single String column (dedup), 1-collapsed per row"
+        "a nonlinear head var is a single `n` String column (dedup)"
     );
 }
 
@@ -641,20 +648,20 @@ namespace test.wi714applied
     let r = person_row("ghost", 99)
     r.isEmpty
 
-  -- applied, bind name POSITIONALLY → the age column narrows T to Relation[Int64]
-  -- (1-collapse). alice appears once (age 30).
-  operation alicesAges() -> List[Int64] effects Error =
+  -- applied, bind name POSITIONALLY → the age column narrows T to
+  -- Relation[(age: Int64)]. alice appears once (age 30).
+  operation alicesAges() -> List[(age: Int64)] effects Error =
     let r = person_row("alice")
     r.takeN(5)
 
-  -- applied, bind age BY PARAM NAME → the name column narrows T to Relation[String].
-  -- both alice and carol are 30.
-  operation namesAged30() -> List[String] effects Error =
+  -- applied, bind age BY PARAM NAME → the name column narrows T to
+  -- Relation[(name: String)]. both alice and carol are 30.
+  operation namesAged30() -> List[(name: String)] effects Error =
     let r = person_row(age: 30)
     r.takeN(5)
 
   -- the bound value is a LOCAL (an operation parameter), not a literal.
-  operation agesOf(who: String) -> List[Int64] effects Error =
+  operation agesOf(who: String) -> List[(age: Int64)] effects Error =
     let r = person_row(who)
     r.takeN(5)
 end
@@ -684,8 +691,12 @@ fn wi714_applied_full_binding_is_membership() {
 }
 
 /// Applied form binding one free variable POSITIONALLY subtracts that column: the
-/// remaining single column narrows `T` (1-collapse), so `person_row("alice")` is a
-/// `Relation[Int64]` of alice's ages.
+/// remaining single column narrows `T`, so `person_row("alice")` is a
+/// `Relation[(age: Int64)]` of alice's ages.
+///
+/// WI-20260818-YQB1Y — THE NARROWED RELATION KEEPS ITS COLUMN NAME. This is the case 052
+/// OQ5 called an argument FOR dropping the collapse: application is exactly where a column
+/// name used to be destroyed, and `(age: 30)` is what it yields now.
 #[test]
 fn wi714_applied_positional_binding_narrows_schema() {
     let mut interp = interp_for(SRC3);
@@ -697,12 +708,13 @@ fn wi714_applied_positional_binding_narrows_schema() {
     assert_eq!(
         got,
         vec![30],
-        "binding name leaves the age column, materialized (1-collapse) to Int64"
+        "binding name leaves the age column, materialized as `(age: 30)`"
     );
 }
 
 /// Applied form binding a free variable BY PARAM NAME (`age: 30`) subtracts the age
-/// column; the name column narrows `T` to `Relation[String]`. alice and carol are 30.
+/// column; the name column narrows `T` to `Relation[(name: String)]`. alice and carol
+/// are 30.
 #[test]
 fn wi714_applied_named_binding_narrows_schema() {
     let mut interp = interp_for(SRC3);
@@ -831,7 +843,7 @@ end
 namespace test.wi714q.use
   import anthill.prelude.{String, Int64, List}
 
-  operation bobsAges() -> List[Int64] effects Error =
+  operation bobsAges() -> List[(age: Int64)] effects Error =
     let r = test.wi714q.data.person_row("bob")
     r.takeN(5)
 end
@@ -974,8 +986,8 @@ end
 /// any argument (it is not the reflect `TypeVar` wildcard `types_compatible` alone
 /// recognizes). Binding it also NARROWS the shared column: `rel(?x, ?y) :- eq(?x, ?y)`
 /// types both columns at one var, so `rel(5)` pins that var to `Int64` — the surviving
-/// `y` column is `Int64`, proven by a `List[String]` consumer being rejected while the
-/// matching `List[Int64]` one loads.
+/// `y` column is `Int64`, proven by a `List[(y: String)]` consumer being rejected while the
+/// matching `List[(y: Int64)]` one loads.
 #[test]
 fn wi714_applied_unconstrained_column_accepts_and_narrows() {
     // The matching consumer loads: binding is accepted AND the surviving column is Int64.
@@ -985,7 +997,7 @@ namespace test.wi714poly
 
   rule rel(?x, ?y) :- eq(?x, ?y)
 
-  operation relFiveInt() -> List[Int64] effects Error =
+  operation relFiveInt() -> List[(y: Int64)] effects Error =
     let r = rel(5)
     r.takeN(3)
 end
@@ -1005,7 +1017,7 @@ namespace test.wi714poly2
 
   rule rel(?x, ?y) :- eq(?x, ?y)
 
-  operation relFiveStr() -> List[String] effects Error =
+  operation relFiveStr() -> List[(y: String)] effects Error =
     let r = rel(5)
     r.takeN(3)
 end
@@ -1013,8 +1025,8 @@ end
     let errs = try_load_kb_with(bad_src).err().unwrap_or_default();
     assert!(
         !errs.is_empty(),
-        "binding x = 5 narrows the shared column to Int64, so a List[String] result must \
-         be rejected — the column did not stay an open var"
+        "binding x = 5 narrows the shared column to Int64, so a List[(y: String)] result \
+         must be rejected — the column did not stay an open var"
     );
 }
 
@@ -1075,7 +1087,7 @@ end
 /// The proposal's canonical `Queen.find` — a rule declared inside a SORT body,
 /// cited bare as `Sort.rule` (no application). The receiver `Queen` is a sort symbol
 /// (§6.7 mode-2), and `find` names a rule in its scope, so the reference is the
-/// `Relation[Int64]` value of solved rows.
+/// `Relation[(row: Int64)]` value of solved rows.
 #[test]
 fn wi714_bare_qualified_sort_scoped_reference() {
     const SRC: &str = r#"
@@ -1090,12 +1102,12 @@ namespace test.wi714bqsort
   fact queen(row: 2, col: 3)
 
   -- bare `Sort.rule` (no parens): the relation value, consumed as a stream.
-  operation bareRows() -> List[Int64] effects Error =
+  operation bareRows() -> List[(row: Int64)] effects Error =
     let r = Queen.find
     r.takeN(5)
 
   -- and the applied form `Sort.rule()` resolves to the same relation.
-  operation appliedRows() -> List[Int64] effects Error =
+  operation appliedRows() -> List[(row: Int64)] effects Error =
     let r = Queen.find()
     r.takeN(5)
 end
@@ -1177,11 +1189,11 @@ namespace test.wi714label
   -- a namespace-level LABELED rule: label `adult`, head functor `isAdult`.
   rule adult: isAdult(?name) :- person(name: ?name, age: ?)
 
-  operation viaBareLabel() -> List[String] effects Error =
+  operation viaBareLabel() -> List[(name: String)] effects Error =
     let r = adult
     r.takeN(5)
 
-  operation viaQualifiedLabel() -> List[String] effects Error =
+  operation viaQualifiedLabel() -> List[(name: String)] effects Error =
     let r = test.wi714label.adult
     r.takeN(5)
 end
@@ -1224,7 +1236,7 @@ namespace test.wi714lm
   rule grouped: named(?n) :- person(name: ?n, age: ?)
   rule grouped: named(?n) :- pet(petName: ?n)
 
-  operation everyName() -> List[String] effects Error =
+  operation everyName() -> List[(n: String)] effects Error =
     let r = grouped
     r.takeN(5)
 end
@@ -1266,7 +1278,7 @@ namespace test.wi714dhf
   rule things: fromPerson(?n) :- person(name: ?n, age: ?)
   rule things: fromPet(?n) :- pet(petName: ?n)
 
-  operation allThings() -> List[String] effects Error =
+  operation allThings() -> List[(n: String)] effects Error =
     let r = things
     r.takeN(5)
 end
@@ -1320,7 +1332,7 @@ namespace test.wi714xsort
   fact s2e(w: 9)
 
   -- consume the sort-scoped relation as a WI-714 bare-qualified value.
-  operation q2Rows() -> List[Int64] effects Error =
+  operation q2Rows() -> List[(x: Int64)] effects Error =
     let r = S2.q2
     r.takeN(5)
 end
@@ -1379,70 +1391,16 @@ fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
     rows
 }
 
-/// Decode an anthill `List[Int64]` value (`cons(head, tail)` chain, `nil` end) into a
-/// `Vec<i64>`.
+/// WI-20260818-YQB1Y — every drain in this file is of a ONE-COLUMN relation, whose rows are
+/// now one-component named tuples rather than bare scalars. Both readers delegate to the
+/// shared strict column readers, which panic on any other row shape: a lenient
+/// "find the Int/Str among the fields" walk would keep passing if a fixture started draining
+/// a two-column relation and silently report its first column.
 fn collect_int_list(v: &Value) -> Vec<i64> {
-    let mut out = Vec::new();
-    let mut cur = v.clone();
-    loop {
-        match cur {
-            Value::Entity { ref named, .. } if !named.is_empty() => {
-                let mut head: Option<i64> = None;
-                let mut tail: Option<Value> = None;
-                for (_k, val) in named.iter() {
-                    match val {
-                        Value::Int(n) => head = Some(*n),
-                        Value::Entity { .. } => tail = Some(val.clone()),
-                        _ => {}
-                    }
-                }
-                match (head, tail) {
-                    (Some(h), Some(t)) => {
-                        out.push(h);
-                        cur = t;
-                    }
-                    _ => break,
-                }
-            }
-            _ => break,
-        }
-    }
-    out
+    crate::common::list_column_ints(v)
 }
 
-/// Decode an anthill `List[String]` value (`cons(head, tail)` chain, `nil` end)
-/// into a `Vec<String>`.
+/// The `String` twin of [`collect_int_list`].
 fn collect_string_list(v: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = v.clone();
-    loop {
-        match cur {
-            Value::Entity {
-                functor: _,
-                ref named,
-                ..
-            } if !named.is_empty() => {
-                // cons(head: <String>, tail: <List>)
-                let mut head: Option<String> = None;
-                let mut tail: Option<Value> = None;
-                for (_k, val) in named.iter() {
-                    match val {
-                        Value::Str(s) => head = Some(s.clone()),
-                        Value::Entity { .. } => tail = Some(val.clone()),
-                        _ => {}
-                    }
-                }
-                match (head, tail) {
-                    (Some(h), Some(t)) => {
-                        out.push(h);
-                        cur = t;
-                    }
-                    _ => break,
-                }
-            }
-            // nil / empty entity (no fields) ends the list.
-            _ => break,
-        }
-    }
-    out
+    crate::common::list_column_strings(v)
 }

@@ -223,7 +223,7 @@ namespace test.wi750dotted1
 
   rule a.b: r2(?x) :- q(row: ?x)
 
-  operation cite() -> List[Int64] effects Error =
+  operation cite() -> List[(x: Int64)] effects Error =
     a.b.takeN(5)
 end
 "#;
@@ -239,7 +239,7 @@ namespace test.wi750dotted2
   rule a: r1(?x) :- q(row: ?x)
   rule a.b: r2(?x) :- q(row: ?x)
 
-  operation cite() -> List[Int64] effects Error =
+  operation cite() -> List[(x: Int64)] effects Error =
     a.b.takeN(5)
 end
 "#;

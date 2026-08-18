@@ -52,9 +52,10 @@ end
 
    SCOPE: `Concat` reduces only as a DIRECT type argument (the schema position
    `Relation[T = Concat[A = .., B = ..]]`). Each of the following is a LOUD error —
-   deferred to a follow-up, never a silent skip: a field-name collision; a non-named-tuple
-   operand (a 1-collapse / membership schema); and a `Concat` nested in any other carrier
-   (a tuple field, an arrow, an effect row).
+   deferred to a follow-up, never a silent skip: a field-name collision; an operand that is
+   no relation schema at all (a scalar, an arrow, a denoted value — NOT a one-column or a
+   membership schema, both of which merge fine since WI-20260818-YQB1Y); and a `Concat`
+   nested in any other carrier (a tuple field, an arrow, an effect row).
 
    ABSTRACT OPERANDS (WI-734) — settled once for the whole ctor family (`Concat`,
    `Without`, and any later member): an operand that is NOT YET KNOWN leaves the ctor
@@ -89,8 +90,9 @@ end
    typer performs it as an INTERNAL type-level operation: `Without[T = nt, Drop = r]`
    REDUCES to the named tuple `nt` minus `r`'s fields, at the same normalization boundary
    `Concat` / the `s.T` projection reduce (`reduce_without_in_type` in kb/typing.rs, sharing
-   `without_named_tuple_types`). The residual 1-collapses (element / `Unit`) as any relation
-   schema does.
+   `without_named_tuple_types`). The residual is typed as any relation schema is — `Unit` for
+   no remaining column, else the named tuple of the ones left, so `Concat` and `Without` are
+   inverses at every arity (WI-20260818-YQB1Y).
 
    `Drop` is the record produced by a variadic argument CAPTURE (`...args: R`, §2.1), so it
    stays UNCONSTRAINED at the capture site — the MEANING is supplied HERE: a `Drop` field
@@ -99,15 +101,17 @@ end
 
    SCOPE: `Without` reduces only as a DIRECT type argument (the schema position
    `Relation[T = Without[T = .., Drop = ..]]`) over a CONCRETE named tuple `T`. A `Drop`
-   naming no column, a type mismatch, a non-named-tuple `T` (a 1-collapse / membership
-   schema, which has no named column to drop by), and a `Without` nested in any other
-   carrier are each a LOUD error — deferred, never a silent skip.
+   naming no column, a type mismatch, a `T` that is no relation schema at all, and a
+   `Without` nested in any other carrier are each a LOUD error — deferred, never a silent
+   skip. A ONE-COLUMN `T` is not among them: its schema names its column, so `fix` drops it
+   and leaves the membership relation (WI-20260818-YQB1Y).
 
    ABSTRACT OPERANDS (WI-734): `Without` follows the family rule stated on `Concat` above
    — an operand that is not yet known (a logic variable, or an unreduced residual) leaves
    the ctor symbolic to reduce once it grounds, while a KNOWN but undroppable operand
    stays loud. `p.fix(name: "a")` on a `p: Relation[T = S]` with `S` abstract therefore
-   type-checks instead of reporting the 1-collapse diagnostic against a type parameter. >}
+   type-checks instead of reporting the concrete non-schema diagnostic against a type
+   parameter. >}
 sort anthill.prelude.Without
   sort T = ?
   sort Drop = ?
@@ -164,8 +168,10 @@ end
    `Project` RESTRICTS one to a keep-set (and renames while doing it). Prior art: TypeScript
    `Pick<T, K>`, the dual of the `Omit<T, K>` that `Without` mirrors.
 
-   The surface is the distribute-dot `r.(f1, f2)` (bare) / `r.(a: f1, b: f2)` (rename); a
-   single member 1-collapses to `r.f`. That desugars (WI-639) to a name-keyed row tuple, and
+   The surface is the distribute-dot `r.(f1, f2)` (bare) / `r.(a: f1, b: f2)` (rename), at
+   every arity — a single member `r.(f)` is the one-column projection `Relation[(f: ..)]`,
+   where it used to 1-collapse into the member access `r.f` and lose its key
+   (WI-20260818-YQB1Y). That desugars (WI-639) to a name-keyed row tuple, and
    the typer recognizes it and synthesizes `project_run(r, <spec>)` — so unlike `where` /
    `join` there is no compile-time macro, because there is no lambda to read.
 
@@ -196,8 +202,8 @@ end
 
    SCOPE: like the rest of the family, `Project` reduces only as a DIRECT type argument (the
    schema position `Relation[T = Project[T = .., Keep = ..]]`). A `Keep` naming no column of
-   `T`, a non-named-tuple `T` (a 1-collapse / membership schema, which has no named column to
-   select by name), a `Keep` component that is not a denoted name, and a `Project` nested in
+   `T`, a `T` that is no relation schema at all, a `Keep` component that is not a denoted
+   name, and a `Project` nested in
    any other carrier are each a LOUD error — never a silent skip. Duplicate RESULT keys are
    rejected earlier, at parse (`validate_projection_labels`).
 
@@ -229,18 +235,19 @@ end
 
      operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E]
 
-   WHAT "CLOSED" MEANS, AND WHERE IT IS LOSSY. A relation's schema 1-collapses
-   (§"1-collapse"): zero free columns give `Unit`, one gives that column's element type, two
-   or more the named tuple. So a bare `Unit` in type position is what "no free columns"
-   looks like, and it is the only schema `Membership` accepts. It is NOT a decision
-   procedure for "has no columns", and cannot be: a ONE-column relation whose column type is
-   itself `Unit` collapses to the SAME `Unit`, so this check accepts it and the drain
-   refuses it. That is the 1-collapse being lossy exactly as the spec says it is — a paired
-   type-and-value convention, not a hole here — and it is the sharpest reason a runtime
-   guard beside a `Membership` assertion is not redundant: the value's `columns` list still
-   has the column the schema forgot. The diagnostic names the offending columns when the
-   schema still spells them, and the column TYPE when the 1-collapse already dropped the
-   name; a `T` that is no relation schema at all is named as that, never as a column.
+   WHAT "CLOSED" MEANS. A relation's schema is `Unit` for zero free columns and the named
+   tuple of its columns otherwise, at every arity. So a bare `Unit` in type position is what
+   "no free columns" looks like, and it is the only schema `Membership` accepts — and since
+   WI-20260818-YQB1Y that IS a decision procedure for "has no columns". A ONE-column relation
+   whose column type is itself `Unit` used to collapse to the SAME `Unit`, so this check
+   accepted it and only the drain refused it (WI-728's recorded limit); its schema is now
+   `(t: Unit)` and it is refused here, at load. The diagnostic always names the offending
+   columns, because an open schema always spells them; a `T` that is no relation schema at
+   all is named as that, never as a column.
+
+   A runtime guard beside a `Membership` assertion is still not redundant, for its other two
+   reasons: an abstract schema leaves the assertion symbolic (WI-734), and a relation built
+   through reflect never passed a typer at all.
 
    WHAT A PREDICATE CTOR DOES NOT DO. It reduces at ONE site: the return-type normalization
    boundary, per CALL, gated on the callee's DECLARED return type. Three consequences worth

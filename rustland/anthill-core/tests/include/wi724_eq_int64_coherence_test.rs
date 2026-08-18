@@ -49,9 +49,11 @@ end
     }
 }
 
-/// The EXACT ticket scenario: a single-column relation, so the row binder `c`
-/// collapses to the element type `Int64` (`Relation[Int64]`) and the lambda is
-/// literally `eq(c, 30)` with `c : Int64` (ticket acceptance, part 2).
+/// The ticket scenario, in its post-WI-20260818-YQB1Y spelling: a single-column relation,
+/// whose row is now `(age: Int64)`, so the lambda is `eq(c.age, 30)` with `c.age : Int64`
+/// (ticket acceptance, part 2). The coherence question is unchanged — one `PartialEq[Int64]`
+/// impl for an `Int64` reached through a row binder — only the route to the `Int64` moved
+/// from the bare binder to its column, because the schema no longer 1-collapses.
 #[test]
 fn wi724_eq_int64_single_column_row_binder_is_unique() {
     let source = r#"
@@ -65,18 +67,18 @@ namespace test.wi724.single
   end
   fact person(name: "alice", age: 30)
 
-  -- ONE free head var → Relation[Int64]: the schema collapses to the element, so
-  -- the row `c` IS an Int64 and `eq(c, 30)` is a scalar Int64 comparison.
+  -- ONE free head var → Relation[(age: Int64)], so `c.age` is the Int64 and
+  -- `eq(c.age, 30)` is a scalar Int64 comparison.
   rule ages(?age) :- person(age: ?age)
 
   operation probe() -> Bool effects Error =
-    let r = ages.where(lambda c -> eq(c, 30))
+    let r = ages.where(lambda c -> eq(c.age, 30))
     r.isEmpty
 end
 "#;
     if let Err(errs) = try_load_kb_with(source) {
         panic!(
-            "eq(c, 30) with c : Int64 (single-column relation) must type-check with a \
+            "eq(c.age, 30) with c.age : Int64 (single-column relation) must type-check with a \
              unique impl — this is the exact WI-724 coherence scenario; got {} error(s):\n{}",
             errs.len(),
             errs.join("\n"),

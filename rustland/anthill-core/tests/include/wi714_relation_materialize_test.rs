@@ -140,9 +140,16 @@ fn wi714_materializes_multi_column_named_tuple_rows() {
     );
 }
 
-/// One free var → the element value itself (1-collapse), NOT a 1-field tuple.
+/// One free var → the ONE-FIELD named tuple `(name: "alice")`.
+///
+/// WI-20260818-YQB1Y (052 OQ5, option A): this used to materialize the bare element, which
+/// was the VALUE half of the §6.8 paired collapse convention. It moved together with the
+/// type half (`relation_schema_type`) and the term half (the `.( )` desugar), so a row now
+/// has exactly the columns its schema states at every arity.
+///
+/// CONTROL: FAILS on a back-out — the pre-change tree yields `Value::Str("alice")` here.
 #[test]
-fn wi714_single_free_var_collapses_to_element() {
+fn wi714_single_free_var_materializes_as_a_one_column_row() {
     let mut interp = interp_for(SRC);
     // age pinned to 30 → only alice matches; name is the sole free column.
     let (query, columns) = person_query(
@@ -152,9 +159,9 @@ fn wi714_single_free_var_collapses_to_element() {
     assert_eq!(columns.len(), 1, "one free var");
     let rows = materialized_rows(&mut interp, query, columns);
     assert_eq!(rows.len(), 1, "only alice is 30");
-    match &rows[0] {
-        Value::Str(s) => assert_eq!(s, "alice", "1-collapse yields the element, not a tuple"),
-        other => panic!("expected a bare String element (1-collapse), got {other:?}"),
+    match crate::common::sole_column(&rows[0]) {
+        Value::Str(s) => assert_eq!(s, "alice", "the sole column carries the element"),
+        other => panic!("expected a String in the sole column, got {other:?}"),
     }
 }
 

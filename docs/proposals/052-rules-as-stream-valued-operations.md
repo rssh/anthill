@@ -65,12 +65,14 @@ machinery — declaration-typed heads agree by construction, WI-603-inferred one
 (no lub) is a **load error**, never a silent widening to `Term`. To **expose** an
 intermediate, put it in the head (a wider relation: `path(?x, ?z, ?y) :- …` makes `z` a column). These
 head columns are, via the `provides` edge, the stream's element type (the *same* `T` on both faces).
-Two degenerate arities:
+One degenerate arity, and one that only looks degenerate:
 
-- **one free variable → `T` is that value** (a 1-tuple auto-collapses): a relation with only `board`
-  free is `Relation[Board]`, so `queens.head : Board`;
+- **one free variable → `T` is the ONE-FIELD named tuple**: a relation with only `board` free is
+  `Relation[(board: Board)]`, so `queens.head : (board: Board)`, read as `row.board`. *(Revised —
+  OQ5 below. This originally read "`T` is that value (a 1-tuple auto-collapses)", so
+  `queens.head : Board`. That collapse erased the relation's arity and was dropped.)*
 - **zero free variables → `T = Unit`** — a boolean/membership relation; non-empty ⇔ provable,
-  multiplicity = number of proofs.
+  multiplicity = number of proofs. `Unit` means zero columns and only that.
 
 Named tuples are **ordered products and preserve declaration order** (kernel spec §4.6; verified — the
 value representation does not reorder fields), so destructuring is order-faithful. Field types come from
@@ -160,8 +162,8 @@ needs a condition, and that condition (like a filter) is the lambda. **Projectio
 
 **`negate`'s operand contract is CHECKED AT LOAD** (WI-728). NAF over a relation with a free column
 flounders — `not p(?x)` with `?x` unbound is undecidable, and reading the residual as a solution is a
-silently wrong answer — so the operand must be a **membership** relation: zero free columns, which the
-1-collapse spells `T = Unit`. The signature carries that as a type-level **predicate**, the fifth member
+silently wrong answer — so the operand must be a **membership** relation: zero free columns, spelled
+`T = Unit`. The signature carries that as a type-level **predicate**, the fifth member
 of the `Concat` / `Without` / `Project` / `FieldOf` type-constructor family and its first *unary* one:
 
 ```
@@ -249,7 +251,7 @@ so they read as `row.x`. Both forms — the row is a named tuple whose field nam
 
 ```anthill
 -- the CONDITION reads column values (a lambda); PROJECTION is the distribute-dot .( ) (no lambda).
--- r.(y) lifts the tuple projection over the relation to `projected`; .(y) 1-collapses to the value.
+-- r.(y) lifts the tuple projection over the relation to `projected`, giving `Relation[(y: …)]`.
 -- destructuring the condition's row:
 firstCell = cells.where(lambda (x, y) -> eq(x, 1)).(y)
 pCell     = cells.join(p, lambda ((x, y), (px)) -> eq(x, px)).(y)
@@ -455,8 +457,8 @@ Three new typer obligations, all over the 026.1 boundary:
 
 1. **Schema synthesis.** For a relation used as a value, take its parameters (rule head / WI-603),
    subtract those supplied at the site (partial-entity expansion §8.3) → the **free** set; the schema
-   `T` is the named tuple of the free set in declaration order, **collapsed to the element for one,
-   `Unit` for zero**, with each column typed at the **lub across clauses** (§"The schema `T`"). Each
+   `T` is the named tuple of the free set in declaration order (**`Unit` for zero**; no arity-one
+   special case — OQ5), with each column typed at the **lub across clauses** (§"The schema `T`"). Each
    algebra op transforms `T` per the table (fix removes, join merges, project selects).
 2. **The `provides` edge.** `Relation[T] provides LogicalStream[T, E]` threads the *same* `T` as the
    stream element type, so every inherited Stream op (`head`/`map`/`find`/…) is typed at `T`. Running
@@ -495,7 +497,7 @@ No change to `Substitution`, `SearchStream`, or unification.
 **Core:**
 1. **`Relation[T]` + `provides LogicalStream[T, E]`** — the sort, the provision backed by `execute`
    (lazy `splitFirst`), and named-tuple projection of a `Solution`'s substitution onto the free vars
-   (declaration order; 1-collapse / 0-`Unit`).
+   (declaration order; `Unit` for zero columns, the named tuple otherwise).
 2. **Rule reference + fix** — resolve a rule name to a `Relation[T]` in **both** citation positions
    (§Naming): applied `Sort.rule(…)` via `rule_id_by_qn`, and the **new bare-qualified arm** —
    `field_access(Sort, ruleName)` on a sort symbol → `Relation[T]` (the one new name-resolution piece).
@@ -560,73 +562,108 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    canonical, infix sugar per 016). `join`/`where` take a lambda, projection is the distribute-dot, and
    `fix` names a column by key, so there is **no `&` join infix**. Sub-question: whether `|` reuses the
    existing logical-or (WI-529) or a distinct glyph.
-5. **1-field collapse boundary — DECIDED: the typer, single site; and what that costs is now
-   settled too (WI-1128).** Do the 1-tuple → element collapse once, at the schema-typing / projection
-   boundary (`Relation[(board: Board)]` presents as `Relation[Board]`); keep the *stored* element as
-   the 1-field record so passing the whole solution around round-trips, and treat the collapse as a
-   consumption-site presentation only. Zero → `Unit`.
+5. **1-field collapse — DECIDED, AND THE DECISION IS TO DROP IT** (option A, WI-20260818-YQB1Y,
+   2026-08-18). A relation's schema **is** its row type, always the full named tuple of its columns:
+   `Relation[(age: Int64)]`, rows `(age: 30)`, read as `row.age`. Zero columns is `Unit` and means
+   exactly that. There is no arity-one special case anywhere.
 
-   **"Stored" turned out to mean the runtime VALUE, not the type.** A relation value carries
-   `(column name, VarId)` for every column, collapsed or not, so `join_run`'s merge and the row
-   materialization are correct at one column. The TYPE keeps nothing: `collapse_schema` returns the
-   sole column's type and discards its symbol. The two halves of "keep the stored element as the
-   1-field record" therefore landed on different sides of the boundary, and only the value half kept
-   the name.
+   **What was decided before, and why it was revisited.** The original answer was "do the 1-tuple →
+   element collapse once, at the schema-typing / projection boundary, and keep the *stored* element as
+   the 1-field record so passing the whole solution around round-trips". Its whole stated rationale was
+   one line of ergonomics: "a relation with only `board` free is `Relation[Board]`, so
+   `queens.head : Board`". Implementation split the two halves onto opposite sides of the boundary —
+   the runtime VALUE kept `(column name, VarId)` for every column while the TYPE discarded the symbol —
+   so the collapse was lossy in the type and not in the value.
 
-   **Consequence, decided rather than deferred:** `join` / `fix` / `project` all refuse a
-   1-collapsed operand, because each computes a schema that needs a name the collapse discarded.
-   WI-1128 was filed on the hypothesis that the name is recoverable *at the collapse site*; it is
-   not — that site is where a relation's own type is built, and it is not on the path from a later
-   `join`, whose operand may be any expression (a `let`-bound value, a `where`, a projection) with
-   nothing left but its type. Reading it off an argument occurrence that happens to be a bare rule
-   citation would make `r.join(ages, …)` and `let a = ages; r.join(a, …)` behave differently.
-   kernel-language.md §6.8 carries the rule; `relation.anthill`'s `join` doc carries the surface.
+   **THE MEASUREMENT THAT DECIDED IT** is that the erasure is of **ARITY**, not of a name. A collapsed
+   schema no longer said how many columns it came from, so three schemas became the *same type*:
 
-   **AND ONE CASE CANNOT BE REFUSED AT ALL — the strongest argument for the redesign below.**
-   The erasure is of ARITY, not merely of the name, so a schema that *is* a named tuple reads
-   equally as "n columns" and as "ONE column whose type is that n-field tuple". The second is
-   spelled exactly like the ordinary working case, so no type-level check separates them.
-   Measured: over `entity pair_holder(p: (a: Int64, b: String))`, `rule pairs(?p)` joined with
-   a two-column relation **type-checks against a four-column merged schema** while the row
-   `join_run` materializes has three columns — one of them absent from the type. `fix`,
-   `project` and `negate` survive the same ambiguity because each asks the VALUE a question it
-   can answer ("is there a column of this name?") and refuses loudly at runtime; **merging is
-   name-free**, so `Concat` has no such question and nothing to detect. It is the one member
-   of the family whose type/value disagreement has no backstop on either side.
+   - **one column** — its name was gone, so `Concat` / `Without` / `Project` each **refused** a
+     one-column operand, and `Concat`/`Without` were not inverses at arity one;
+   - **zero columns vs one `Unit`-typed column** — both `Unit`, so `Membership` accepted a relation
+     that still had a column (WI-728's recorded limit) and only the drain refused it;
+   - **n columns vs one column whose type is an n-field tuple** — both that tuple. This one was a
+     **silent wrong answer**, not a refusal: over `entity pair_holder(p: (a: Int64, b: String))`,
+     `rule pairs(?p)` joined with a two-column relation type-checked against a FOUR-column merged
+     schema while the row `join_run` materialized had THREE. No type-level check could exist, because
+     the two schemas were the same type; and no runtime check either, because **merging is name-free**
+     — `fix` / `project` / `negate` each ask the value "is there a column of this name?" and refuse
+     loudly, `Concat` has no such question. It was the one member of the family with no backstop on
+     either side.
 
-   **Membership (0 columns) is refused for its own reason,** not as the same case one arity smaller:
-   `Unit` is also what a single `Unit`-typed column collapses to (WI-728's recorded limit), so
-   reading `Unit` as "nothing to merge" would compute a merged schema with fewer columns than the
-   row `join_run` materializes. `negate` can live with that imprecision because its runtime guard
-   re-asks the question against the value's own column list; a merged schema TYPE has no such
-   backstop.
+   **THE CENSUS.** The ticket's static count (`examples/`, `stdlib/`, `rustland/*/anthill/`) was that
+   no one-column rule is consumed as a relation *value* — every citation is a goal in a rule body,
+   where the schema type never arises — and that the only one-column drain anywhere,
+   `examples/classic-mini/ancestor`, is reached by APPLICATION and does `length(ofBart.takeN(100))`
+   without ever touching an element. Re-counted at delivery the shape holds (≈49 rule names with
+   exactly one head variable, all cited as goals), though the exact number depends on whether
+   equational `[simp]` heads are counted, so treat it as an order of magnitude rather than a figure.
 
-   **STILL OPEN, and owned by WI-20260818-YQB1Y — the redesign that would let `join`,
-   `fix` and `project` accept a one-column operand,** recorded here because the refusals above are
-   its price and not an argument against it.
-   `T` answers two questions at once: *what is a row's type* (where the collapse is the ergonomic
-   win — `colouring.takeN(20) : List[Board]`) and *what are the columns* (where it is a loss). Splitting them — the schema stays the full named
-   tuple — would make all three of them work at one column, uniformly, would make `Membership`
-   arity-exact, and would close the un-refusable tuple-typed-column case above, which is the only
-   one of these that is a silent wrong answer rather than a refusal.
+   **WHAT ACTUALLY SETTLED IT WAS THE DELIVERY, NOT THE COUNT.** Dropping the collapse moves the type,
+   the row and the term together, so ANY shipped source draining a one-column relation as a value would
+   have failed to load. None did: every `.anthill` file under `stdlib/`, `examples/` and the project's
+   own program is unchanged and the whole workspace suite is green — the only edits the change forced
+   were in per-feature test fixtures. So the count of call sites that had to change from `x` to `x.col`
+   in shipped code is **zero**, measured rather than surveyed.
 
-   **Two ways to split them, and the simpler one is recommended.** *(A)* Drop the collapse: the
-   schema IS the row type, so `queens.head : (board: Board)`, read as `row.board`. *(B)* Keep the
-   collapsed row type behind a new `Collapse[T]` constructor in this family, reduced at the same
-   boundary. **(A) needs no new constructor and is simpler than what we have today**, and it makes
-   `Membership` exact for free — a 0-column relation stays `Unit` while a one-`Unit`-column one is
-   `(u: Unit)`. What (B) buys is exactly the one line above (`queens.head : Board`) and nothing
-   else. Measured against the shipped sources, that line is barely exercised: of 46 one-column
-   rules, none is consumed as a relation *value*, and the only 1-column drain
-   (`examples/classic-mini/ancestor`, reached by application) passes the result to `length` without
-   touching an element. (A)'s real cost is structural rather than ergonomic — §6.8 desugars `x.(f)`
-   to `x.f` at convert time, so relation projection must stop riding that desugar and `r.(f)`
-   diverges from `t.(f)` on a plain tuple. It is a breaking change to a specified rule (§6.8's paired
-   type-and-value convention), it moves `where`'s bare-binder spelling `eq(c, 30)` (a 1-collapsed
-   row would then be a 1-field tuple, read as `c.age`), and it must thread through the
-   `provides LogicalStream[T = …]` edge so consumers keep seeing the element type. Not costed
-   further here; the ticket above owns costing it and deciding it, and its acceptance is a
-   RECORDED DECISION in this section — done or declined — not silence.
+   And the application case is an argument *for* dropping the collapse: `ancestor("bart")` is exactly
+   where a column name used to be destroyed, and the narrowed relation now keeps its column.
+
+   **THE ALTERNATIVE, RECORDED AND DECLINED.** *(B)* keep the collapsed row type behind a new
+   `Collapse[T]` constructor in the family, reduced at the same boundary. It buys exactly the one
+   ergonomic line above and nothing else; it needs a new constructor where (A) needs none; it does not
+   make `Membership` arity-exact by itself; and it carries a risk (A) simply deletes — whether a ctor
+   reduces across the `provides LogicalStream[T = T, E = E]` edge with the sort's own abstract `T` as
+   operand, which WI-734 says leaves it symbolic. (A) is simpler than the code that shipped the
+   collapse, not merely simpler than (B). *(WI-1131 had also removed the old objection to (A): a
+   one-field named tuple was a syntax error as a VALUE until 2026-08-18, so "just use a one-element
+   tuple" was not fully writable when this section first chose the collapse.)*
+
+   **WHAT IT COST TO LAND**, since it is a breaking change to a specified rule and the price belongs
+   next to the decision:
+
+   - **Both halves of the paired convention moved together**, which kernel-language.md §6.8 required of
+     any revision. The TERM half — `x.(f)` desugared at convert time to the scalar `x.f`, and a single
+     rename `x.(a: f)` dropped its label — now builds `(f: x.f)` / `(a: x.f)` at every arity. The TYPE
+     half (`relation_schema_type`) and the VALUE half (`materialize_solution`) moved with it. Keeping
+     the collapse for a plain tuple while dropping it for a relation was considered and declined: it
+     would make `r.(f)` and `t.(f)` mean different things at one surface.
+   - **`where`'s bare-binder spelling is gone**, and the WHOLE-ROW sentinel with it. `eq(c, 30)` over a
+     one-column relation used to compile to a sentinel hole that `where_run` filled with the sole
+     column — correct only *because* the row was the column. A row is a tuple now, so no column
+     variable carries it and a bare binder is a **loud error**; the spelling is `eq(c.age, 30)`, and a
+     join reads `q.who`. This also dissolves the second, independent blocker WI-1128 recorded (one
+     sentinel symbol shared by both `join` binders, able to say neither which row it meant nor match
+     the sole-column arm over a merged column list): there is no per-binder keying to get right when
+     there is no whole-row hole.
+   - **The ctor reduction boundary became a FIXPOINT.** The residual `Without` leaves is now an
+     operand `Concat` can merge, but the boundary made ONE pass over `TYPE_CTORS` and a ctor whose
+     operand is a sibling DEFERS on it — so `Concat[A = Without[…]]` stalled anyway. The first
+     attempt reordered the array to put `Without` first, which fixed that shape and **regressed its
+     dual** `Without[T = Concat[…]]`, four lines of ordinary source that had loaded clean (found in
+     review, measured both ways). The two are duals and no total order satisfies both, so the reorder
+     was reverted and the boundary iterates to a fixpoint instead. That is what makes "`Concat` and
+     `Without` are inverses at every arity" true rather than merely unblocked, and both directions
+     are pinned.
+   - **`Concat` was the one schema producer not routed through `relation_schema_type`** (review-found).
+     With a `Unit` operand contributing an empty field list, its merged result could be empty — and an
+     empty *named tuple* `()` is not the `Unit` a zero-column row actually materializes as. Merging two
+     membership relations typed as `Relation[T = ()]`, and `Membership` over it reported an empty
+     free-column list: this ticket's own defect, one arity further down. Fixed and pinned.
+   - **WI-776's 1-collapse diagnostic was deleted**, not reworded. It explained an
+     `expected (a: Int64), got Int64` pair in which both sides were correct — the two faces of the
+     collapse. Nothing computes a bare element where a one-field tuple is expected any more, so every
+     surviving instance of that pair is an ordinary author error whose two rendered types state the
+     whole fault.
+   - **Two recorded limits retired rather than patched**: WI-728's `Unit`-typed column (now refused at
+     LOAD, and *without* depending on the `()`-vs-`Unit` typing gap) and WI-1128's unrefusable
+     tuple-typed column (now a correct three-column schema, with the four-column declaration a load
+     error). Their pins were rewritten to assert the capability, per the discipline each recorded.
+
+   **What is still open and NOT part of this**: `Without[T = Concat[…]]`, the dual of the composition
+   above, has no witness in any source and the one-pass order cannot serve both directions. A fixpoint
+   over the family (written and measured once, and it works) is the change to make when it acquires
+   one; recorded at `reduce_type_ctor`.
 6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
    de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
 7. **Naming an operation and its relational face — OPEN; original convention WITHDRAWN, explicit

@@ -1755,10 +1755,14 @@ impl Interpreter {
             };
             named.push((name, bound));
         }
-        // One free variable → the element value (1-collapse).
-        if named.len() == 1 {
-            return Ok(named.pop().unwrap().1);
-        }
+        // WI-20260818-YQB1Y — NO 1-COLLAPSE. A one-column row used to return the bare
+        // element value here, dropping the column name; it is now the one-field tuple
+        // `(age: 30)`, so the row a caller receives has exactly the columns the schema
+        // type states at EVERY arity. This is the VALUE half of the paired convention
+        // kernel-language.md §6.8 required to move together with the type half
+        // (`relation_schema_type`, kb/typing.rs) and the term half (the `.( )` desugar,
+        // parse/convert.rs).
+        //
         // A named tuple is an ORDERED PRODUCT — its field order IS the relation
         // schema (§4.6). So, unlike `make_solution_value` (which canonicalizes a
         // Solution ENTITY into its declared field order), the row is built in

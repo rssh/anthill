@@ -2746,7 +2746,8 @@ not only a field), so no new typer/eval machinery is involved.
 ```
 x.(f1, f2)        →  (f1: x.f1, f2: x.f2)       -- bare: member is BOTH key and dot-member
 x.(a: f1, b: f2)  →  (a: x.f1, b: x.f2)         -- rename: `a:`/`b:` are the result keys
-x.(f)             →  x.f                         -- single member 1-collapses to the scalar
+x.(f)             →  (f: x.f)                    -- one member is still the named tuple
+x.(a: f)          →  (a: x.f)                    -- and a single rename still keys by `a`
 ```
 
 Two properties are load-bearing:
@@ -2761,64 +2762,66 @@ Two properties are load-bearing:
    (`x.(f1, f2)`) and rename (`x.(a: f1)`) are therefore free of any
    free-identifier hazard.
 
-**1-collapse.** A single-member projection yields the scalar `x.m` (not a
-1-field tuple) — arity-based, so a single *rename* `x.(a: f)` also collapses to
-`x.f` (the label has no multi-column tuple to key, and is dropped). A computed
-one-column result is therefore always the bare scalar, and projections disagree
-with the tuple type at arity one — a `Without`/`Project` residual with one column
-left has type `A`, not `(a: A)`.
+**No arity-one special case (revised: 052 OQ5, option A).** `.( )` builds the named tuple at
+every arity, one member included, so a projection's result type is always the tuple of its
+keys and a computed one-column result is `(a: A)` rather than the bare `A`. `Concat` and
+`Without` are therefore inverses at every arity, and a relation SCHEMA is the named tuple of
+its columns at every arity too (§4.6): `Relation[(board: Board)]`, whose rows are
+`(board: …)` and whose column reads as `row.board`.
 
-That disagreement is **deliberate** (WI-776). Note what it is *not*: it is not that
-`(a: A)` is uninhabited, and — since WI-1131 — not that it is unwritable either.
-Per §4.5 its inhabitants arrive both from the one-component literal `(a: v)` and by
-width subtyping from a wider tuple, in any position: `operation narrow() ->
-(a: Int64) = (a: 1)` and `operation narrow() -> (a: Int64) = wide()` over a
-`wide() -> (a: Int64, b: String)` are each well-typed. What no *collapsed* result
-ever has is that type.
+This **replaces** the earlier 1-collapse, under which a single member yielded the scalar
+`x.m` — arity-based, so a single *rename* `x.(a: f)` collapsed as well and dropped its label.
+That was a paired **type-and-value** convention: the term half here, the schema half in the
+typer, and the row half in materialization. This section recorded the cost of revising it as
+"moving both halves together", and that is what was done — the term desugaring above, the
+schema (`relation_schema_type`) and the materialized row all changed in one step, so no two
+of them can disagree at arity one.
 
-The two sides are kept apart because the collapse is a paired **type-and-value**
-convention. The value half is fixed above at the term level — `x.(f)` yields the
-scalar `x.f`, and a single rename `x.(a: f)` collapses too — so a one-column
-*schema* keeping its column would desynchronize the type from the term across
-projection, relation drain, and `Without`/`Project`. Changing that is a breaking
-change to a specified rule, not an impossibility; it is a cost weighed and
-declined, and revisiting it means moving both halves together.
+**What the collapse cost, and why it was dropped.** It erased the schema's *arity*, not
+merely a name. A collapsed schema no longer said how many columns it came from, so three
+readings became indistinguishable at the type level:
 
-What the implementation owes the author meanwhile is an explanation, so a mismatch
-between a written `(a: A)` and a computed `A` **names the collapse** rather than
-printing two correct-looking types.
+- **one column** — its name was gone, so a derived schema could not name it: `Concat`,
+  `Without` and `Project` each *refused* a one-column operand, and `Concat`/`Without` were
+  not inverses at arity one ("nothing downstream can supply the lost `a`");
+- **zero columns vs one `Unit`-typed column** — both spelled `Unit`, so `Membership` accepted
+  a relation that still had a column and only the drain refused it;
+- **n columns vs one column whose type is an n-field tuple** — both spelled that tuple.
 
-One consequence is **not** repaired by that and is a known limit: `Concat` and
-`Without` are not inverses at arity one. The collapse drops the column *name*, so
-`Concat[A = Without[T = (a: A, b: B), Drop = (b: B)], B = (c: C)]` stalls with `A`
-where a named tuple is required, and nothing downstream can supply the lost `a`.
+The third was the one that decided it, because it was a **silent wrong answer** rather than a
+refusal. The collapsed reading is spelled identically to an ordinary working one, so the two
+schemas were the *same type* and no checker could tell them apart; refusing one would refuse
+the other. A construct needing the arity had only two options — recognise and refuse the
+shapes it *could* name, or carry its own check against a relation value's column list, the
+one place the arity survived. `Concat` had neither: merging is name-free, so there was no
+runtime question to ask, and a `join` over a tuple-typed column type-checked against a merged
+schema with more columns than the row it materialized. The other three members survived the
+same ambiguity only because each asks the value "is there a column of this name?".
 
-The general statement is that **the collapse erases the schema's arity**, and the lost
-name is the arity-one case of it. A collapsed schema no longer says how many columns it
-came from, so three readings become indistinguishable at the type level:
+What the collapse bought was one line — `queens.head : Board` instead of `(board: Board)` —
+and no shipped source used it. That is a measurement, not a survey: dropping the collapse
+changed the type, the row and the term all at once, so any source draining a one-column
+relation as a *value* would have failed to load. None did — every `.anthill` file under
+`stdlib/`, `examples/` and the project's own program still loads and runs unchanged, and the
+only edits the change forced were in per-feature test fixtures. (A static count agrees:
+of the ~49 rule names with exactly one head variable, the citations are all rule-body goals,
+where the schema type never arises.)
 
-- **one column** — its name is gone, so a derived schema cannot name it;
-- **zero columns vs one `Unit`-typed column** — both spell `Unit`;
-- **n columns vs one column whose type is an n-field tuple** — both spell that tuple.
+**What did not change.** A one-component named tuple type was never a broken spelling of its
+component: per §4.5 its inhabitants arrive both from the one-component literal `(a: v)` and by
+width subtyping from a wider tuple, in any position — `operation narrow() -> (a: Int64) =
+(a: 1)` and `operation narrow() -> (a: Int64) = wide()` over `wide() -> (a: Int64, b: String)`
+are each well-typed. Under the collapse that type was simply never what a *computed*
+one-column result had.
 
-The first is decided rather than deferred (WI-1128): a derived-schema constructor refuses
-a *plainly* one-column schema operand — `Concat`'s `A` and `B`, `Without`'s `T`,
-`Project`'s `T` — because each needs a name the collapse discarded, and an operand carries
-nothing but its type by the time it arrives. "Recover the name at the collapse boundary" is
-not an available fix: that boundary is where the relation's own type is built, and it is
-not on the path from any later use of it. Recovering the name *is* the "move both halves
-together" change above.
+**Consequences elsewhere in the surface**, each stated where it lives:
 
-The other two are **ambiguities, not refusals**, and they are ambiguities of the
-*definition* rather than of any checker: in each, the collapsed reading is spelled
-identically to an ordinary working one, so the two schemas are the **same type** and there
-is nothing to tell apart. Refusing one would refuse the other. So a construct that needs
-the arity has only two options — recognise and refuse the shapes it *can* name, or carry
-its own check against a relation value's column list, which is the one place the arity
-survives the collapse. Where neither is open to it, a derived schema can disagree with the
-row it types. That is a known cost of this convention, weighed with the rest of it;
-`stdlib/anthill/prelude/relation.anthill` records which of the relation operations pay it,
-and how each one does or does not catch it.
+- a bare row binder in a `where` / `join` condition is a **loud error**. The row is a named
+  tuple at every arity, so `c` names no column variable and `eq(c, 30)` becomes
+  `eq(c.age, 30)`; joining a one-column relation reads `q.who`, not `q`.
+- a **membership** (`Unit`) operand merges as zero columns, because `Unit` now means zero
+  columns and nothing else. Joining one is a filter, and types as one.
+- `stdlib/anthill/prelude/relation.anthill` records the per-operation surface.
 
 **Grammar note.** The opener is a single fused `.(` token (a `.` immediately
 followed by `(`, no interior space). `.(` is otherwise-free syntax, so the
@@ -2830,7 +2833,10 @@ a plain `.`).
 **Well-formedness (loud errors, checked at convert):**
 - **Named-only.** A projection key may not be `_`-prefixed (the positional-tuple
   convention): `x.(_1, _2)` is rejected — positional selection is written out as
-  `(x.f1, x.f2)`. Renaming a positional member is fine: `x.(a: _1)`.
+  `(x.f1, x.f2)`. Renaming a positional member is fine: `x.(a: _1)`. This applies at
+  **every arity**, one member included: `x.(_1)` builds `(_1: x._1)` and is rejected with
+  the rest (before the arity-one case was unified it desugared to the plain access `x._1`
+  and was exempt).
 - **Distinct keys.** Duplicate result keys are rejected: `x.(a, a)` and the
   rename collision `x.(k: f1, k: f2)` are errors (a duplicate-key tuple would
   silently drop the later column). This is one instance of the general rule that a

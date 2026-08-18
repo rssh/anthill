@@ -1,5 +1,6 @@
 //! WI-714 (proposal 052) — `project`: SELECT columns of a relation via the distribute-dot
-//! `r.(f1, f2)` (rename `r.(a: f1, b: f2)`; a single member `r.(f)` 1-collapses to `r.f`).
+//! `r.(f1, f2)` (rename `r.(a: f1, b: f2)`; a single member `r.(f)` is the one-column
+//! projection `Relation[(f: …)]`).
 //!
 //! Lifted over a relation, the tuple the distribute-dot desugars to (WI-639) IS projection:
 //! the typer maps it to a `projected` query and stamps the kept columns' schema. Since
@@ -14,6 +15,12 @@
 //! A bare rule-ref receiver's members desugar to `field_access(…, Ident)` and error before
 //! the projection is recognized, so — like `where`/`join` (F1) — a bare rule ref is
 //! `let`-bound first; a let-bound / computed relation value works directly.
+//!
+//! WI-20260818-YQB1Y (052 OQ5, option A) — A PROJECTION IS A PROJECTION AT EVERY ARITY.
+//! `r.(f)` used to 1-collapse at CONVERT time to the member access `r.f`, so a one-member
+//! projection never built a tuple and its result schema dropped the column name. It now
+//! builds `(f: r.f)` and marks it, so both spellings — `r.f` and `r.(f)` — yield
+//! `Relation[T = (f: …)]` through the same [`build_relation_projection`].
 
 use crate::common::{interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -37,14 +44,15 @@ namespace test.wi714project
   -- canonical interned symbol (not only positional-var-named columns).
   rule person_named(name: ?name, age: ?age) :- person(name: ?name, age: ?age)
 
-  -- SINGLE-column projection: rel.name : Relation[String] (1-collapse).
-  operation names() -> List[String] effects Error =
+  -- SINGLE-column projection: rel.name : Relation[(name: String)].
+  operation names() -> List[(name: String)] effects Error =
     let rel = person_row
     let col = rel.name
     col.takeN(9)
 
-  -- SINGLE-column via the distribute-dot 1-collapse: rel.(age) : Relation[Int64].
-  operation ages() -> List[Int64] effects Error =
+  -- SINGLE-column via the distribute-dot: rel.(age) : Relation[(age: Int64)] — the SAME
+  -- schema the bare `rel.age` above yields, which is what makes the two surfaces agree.
+  operation ages() -> List[(age: Int64)] effects Error =
     let rel = person_row
     let col = rel.(age)
     col.takeN(9)
@@ -58,15 +66,15 @@ namespace test.wi714project
     cols.takeN(9)
 
   -- MULTI-column with RENAME: keep both, renamed (`name`→`person`, `age`→`years`). A
-  -- SINGLE renamed member (`rel.(years: age)`) instead 1-collapses and drops the label
-  -- (WI-639), so rename only manifests on a ≥2-column projection.
+  -- SINGLE renamed member (`rel.(years: age)`) renames too, since WI-20260818-YQB1Y —
+  -- it used to 1-collapse and drop the label, so rename only manifested at ≥2 columns.
   operation renamed() -> List[(person: String, years: Int64)] effects Error =
     let rel = person_row
     let cols = rel.(person: name, years: age)
     cols.takeN(9)
 
   -- PROJECTION AFTER WHERE: filter, then project the surviving column.
-  operation youngNames() -> List[String] effects Error =
+  operation youngNames() -> List[(name: String)] effects Error =
     let rel = person_row
     let filtered = rel.where(lambda c -> eq(c.age, 25))
     let col = filtered.name
@@ -88,7 +96,7 @@ namespace test.wi714project
     cols.takeN(9)
 
   -- SINGLE-column projection over a NAMED-ARG-head relation.
-  operation namedNames() -> List[String] effects Error =
+  operation namedNames() -> List[(name: String)] effects Error =
     let rel = person_named
     let col = rel.name
     col.takeN(9)
@@ -106,67 +114,25 @@ namespace test.wi714project
   rule owns_row(?who, ?item) :- owns(who: ?who, item: ?item)   -- (who, item)
 
   -- project `who`, dropping `item`: alice appears TWICE (cat, dog), bob once.
-  operation owners() -> List[String] effects Error =
+  operation owners() -> List[(who: String)] effects Error =
     let rel = owns_row
     let col = rel.who
     col.takeN(9)
 end
 "#;
 
-/// Walk a cons list of scalar-collapsed rows, collecting the `String` element of each.
+/// WI-20260818-YQB1Y — a one-column projection's rows are one-component named tuples, so
+/// both readers go through the shared STRICT column reader (which panics on any other row
+/// shape) rather than scanning a cons cell for the first `Str`/`Int` it can find.
 fn drain_strings(v: Value) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = v;
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break;
-        }
-        let (mut head, mut tail) = (None, None);
-        for (_k, x) in named.iter() {
-            match x {
-                Value::Str(s) => head = Some(s.clone()),
-                Value::Entity { .. } => tail = Some(x.clone()),
-                _ => {}
-            }
-        }
-        match (head, tail) {
-            (Some(s), Some(t)) => {
-                out.push(s);
-                cur = t;
-            }
-            _ => break,
-        }
-    }
-    out
+    crate::common::list_column_strings(&v)
 }
 
 fn drain_ints(v: Value) -> Vec<i64> {
-    let mut out = Vec::new();
-    let mut cur = v;
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break;
-        }
-        let (mut head, mut tail) = (None, None);
-        for (_k, x) in named.iter() {
-            match x {
-                Value::Int(n) => head = Some(*n),
-                Value::Entity { .. } => tail = Some(x.clone()),
-                _ => {}
-            }
-        }
-        match (head, tail) {
-            (Some(n), Some(t)) => {
-                out.push(n);
-                cur = t;
-            }
-            _ => break,
-        }
-    }
-    out
+    crate::common::list_column_ints(&v)
 }
 
-/// `rel.name` selects the `name` column, 1-collapsing to `Relation[String]`.
+/// `rel.name` selects the `name` column, yielding `Relation[(name: String)]`.
 #[test]
 fn wi714_project_single_column() {
     let mut interp = interp_for(SRC);
@@ -178,9 +144,11 @@ fn wi714_project_single_column() {
     assert_eq!(got, vec!["alice".to_string(), "bob".to_string()]);
 }
 
-/// `rel.(age)` — a single-member distribute-dot 1-collapses to `rel.age : Relation[Int64]`.
+/// `rel.(age)` — a single-member distribute-dot is the one-column projection
+/// `Relation[(age: Int64)]`, the SAME schema the bare `rel.age` above yields
+/// (WI-20260818-YQB1Y; it used to 1-collapse at convert time into that bare member access).
 #[test]
-fn wi714_project_distribute_dot_1collapse() {
+fn wi714_project_distribute_dot_one_member() {
     let mut interp = interp_for(SRC);
     let r = interp
         .call("test.wi714project.ages", &[])

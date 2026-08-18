@@ -209,7 +209,8 @@ enum BuildFrame<'t> {
     /// `x` is visited ONCE (its TermId shared across every member); each
     /// entry carries the result label + dot-member. `is_value_recv` picks
     /// the same `dot_apply` vs `field_access` desugaring `push_field_access`
-    /// uses. A single entry 1-collapses to the bare `x.m` access (no tuple).
+    /// uses. The result is the named tuple at EVERY arity, one entry included
+    /// (WI-20260818-YQB1Y — it used to 1-collapse to the bare `x.m` access).
     DistributiveProjection {
         node: Node<'t>,
         entries: SmallVec<[ProjEntry; 4]>,
@@ -1410,15 +1411,16 @@ impl<'a> Converter<'a> {
                 member_span,
             });
         }
-        // A multi-member projection builds a NAMED tuple keyed by the labels;
-        // validate those keys are well-formed BEFORE building (a single member
-        // 1-collapses to a scalar — no tuple, nothing to key). Each check turns
-        // an otherwise-SILENT wrong result into a loud load error (WI-639
-        // review). A single member is exempt: `t.(_1)` = `t._1` is a fine
-        // scalar access.
-        if entries.len() > 1 {
-            self.validate_projection_labels(node, &entries);
-        }
+        // A projection builds a NAMED tuple keyed by the labels; validate those keys
+        // are well-formed BEFORE building. Each check turns an otherwise-SILENT wrong
+        // result into a loud load error (WI-639 review).
+        //
+        // WI-20260818-YQB1Y — RUN AT EVERY ARITY NOW. A single member used to be exempt
+        // because it 1-collapsed to the scalar `t._1`, so there was no tuple to key; it
+        // now builds `(_1: t._1)`, whose key collides with the positional-tuple
+        // convention exactly as `t.(_1, _2)` does. Positional selection stays written
+        // out as `(t._1)`, and the rename `t.(a: _1)` still works.
+        self.validate_projection_labels(node, &entries);
         let is_value_recv = self.is_value_receiver(object_node);
         work.push(WorkOp::Build(BuildFrame::DistributiveProjection {
             node,
@@ -2206,36 +2208,42 @@ impl<'a> Converter<'a> {
                     );
                     named.push((entry.label, access));
                 }
-                // 1-collapse: a single member IS `x.m` (no tuple wrapper) —
-                // matches proposal 052 ".(y) 1-collapses to the value" and the
-                // WI's `(f: x.f) -> x.f`. A single result is scalar whether the
-                // member is bare or renamed (the tuple key is only meaningful
-                // for a multi-column result; `.( )` with one member always
-                // yields the selected value, mirroring the relational lift).
-                if named.len() == 1 {
-                    results.push(named[0].1);
-                } else {
-                    let tuple_functor = self.intern("TupleLiteral");
-                    let tid = self.terms.alloc(
-                        Term::Fn {
-                            functor: tuple_functor,
-                            pos_args: SmallVec::new(),
-                            named_args: named,
-                        },
-                        span,
-                    );
-                    // WI-762: PROVENANCE — this tuple IS a projection. The desugaring
-                    // above distributes ONE receiver over the members, and the term it
-                    // builds is indistinguishable from the same tuple written by hand
-                    // (`x.(a, b)` and `(a: x.a, b: x.b)` are the same `Term::Fn`). The
-                    // typer's relation-projection recognizer needs that distinction, and
-                    // before this mark it RE-DERIVED it by comparing the fields'
-                    // receiver SOURCE SPANS — an inference about a fact known right here.
-                    // Marked only in the multi-member arm: the 1-collapse above yields a
-                    // scalar `x.m`, which ordinary dot dispatch already projects.
-                    self.terms.mark_projection(tid);
-                    results.push(tid);
-                }
+                // NO 1-COLLAPSE — the tuple is built at EVERY arity, one member
+                // included (WI-20260818-YQB1Y, 052 OQ5 option A). `x.(f)` is
+                // `(f: x.f)`, and a single RENAME `x.(a: f)` is `(a: x.f)`, so the
+                // key the author wrote survives instead of being dropped for
+                // having no siblings.
+                //
+                // This is the TERM half of the paired type-and-value convention
+                // kernel-language.md §6.8 used to fix here, and it moves together
+                // with the other two: the relation SCHEMA (`relation_schema_type`,
+                // kb/typing.rs) and the materialized ROW (`materialize_solution`,
+                // eval/mod.rs). The collapse's cost was that a one-column relation
+                // had no column NAME anywhere in its type, which made `join` / `fix`
+                // / `project` refuse it and — worse — made an n-column schema
+                // indistinguishable from a one-column schema over an n-field tuple.
+                // Keeping the collapse for a PLAIN tuple while dropping it for a
+                // relation was the alternative, and it was declined: it makes
+                // `r.(f)` and `t.(f)` mean different things at the same surface,
+                // and §6.8 requires both halves to move together.
+                let tuple_functor = self.intern("TupleLiteral");
+                let tid = self.terms.alloc(
+                    Term::Fn {
+                        functor: tuple_functor,
+                        pos_args: SmallVec::new(),
+                        named_args: named,
+                    },
+                    span,
+                );
+                // WI-762: PROVENANCE — this tuple IS a projection. The desugaring
+                // above distributes ONE receiver over the members, and the term it
+                // builds is indistinguishable from the same tuple written by hand
+                // (`x.(a, b)` and `(a: x.a, b: x.b)` are the same `Term::Fn`). The
+                // typer's relation-projection recognizer needs that distinction, and
+                // before this mark it RE-DERIVED it by comparing the fields'
+                // receiver SOURCE SPANS — an inference about a fact known right here.
+                self.terms.mark_projection(tid);
+                results.push(tid);
             }
             BuildFrame::MatchExpr { node, branch_count } => {
                 let span = self.span(node);

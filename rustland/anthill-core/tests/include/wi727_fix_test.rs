@@ -48,7 +48,7 @@ namespace test.wi727fix
   rule person_named(name: ?name, age: ?age) :- person(name: ?name, age: ?age)
 
   -- fix over a NAMED-ARG-head relation: `age` (the drop) must match the named-head column.
-  operation named_head_at_30() -> List[String] effects Error =
+  operation named_head_at_30() -> List[(name: String)] effects Error =
     let rel = person_named
     let f = rel.fix(age: 30)
     f.takeN(9)
@@ -56,20 +56,20 @@ namespace test.wi727fix
   -- MIXED capture: the PREFIX form binds `p` as a NAMED argument matching the declared
   -- parameter, while `age` is a leftover captured into the record — exercises the general
   -- matched-named + captured partition (not just fix's all-leftover dot form).
-  operation mixed_prefix_at_30() -> List[String] effects Error =
+  operation mixed_prefix_at_30() -> List[(name: String)] effects Error =
     let rel = person_row
     let f = fix(p: rel, age: 30)
     f.takeN(9)
 
-  -- fix age = 30, DROP age → Relation[String] (the sole remaining column `name`,
-  -- 1-collapsed). Keeps alice & carol (age 30), excludes bob (25).
-  operation names_at_30() -> List[String] effects Error =
+  -- fix age = 30, DROP age → Relation[(name: String)] — the sole remaining column keeps
+  -- its NAME (WI-20260818-YQB1Y). Keeps alice & carol (age 30), excludes bob (25).
+  operation names_at_30() -> List[(name: String)] effects Error =
     let rel = person_row
     let f = rel.fix(age: 30)
     f.takeN(9)
 
-  -- fix name = "alice", DROP name → Relation[Int64] (`age`). Keeps only alice's row.
-  operation ages_of_alice() -> List[Int64] effects Error =
+  -- fix name = "alice", DROP name → Relation[(age: Int64)]. Keeps only alice's row.
+  operation ages_of_alice() -> List[(age: Int64)] effects Error =
     let rel = person_row
     let f = rel.fix(name: "alice")
     f.takeN(9)
@@ -87,14 +87,14 @@ namespace test.wi727fix
   -- (`PartialEq.eq`, WI-616) over whatever value arrived.
   operation thirty() -> Int64 = 30
 
-  operation names_at_computed() -> List[String] effects Error =
+  operation names_at_computed() -> List[(name: String)] effects Error =
     let rel = person_row
     let f = rel.fix(age: thirty())
     f.takeN(9)
 
   -- A `let`-bound value — the third form the doc names, and (until WI-1127) one the
   -- `where` half of the documented equivalence refused.
-  operation names_at_letbound() -> List[String] effects Error =
+  operation names_at_letbound() -> List[(name: String)] effects Error =
     let target = 30
     let rel = person_row
     let f = rel.fix(age: target)
@@ -102,7 +102,7 @@ namespace test.wi727fix
 
   -- A genuinely RUNTIME fixed value: the enclosing operation's PARAMETER, unknown
   -- until the call. ONE call site, two different restrictions.
-  operation names_at(target: Int64) -> List[String] effects Error =
+  operation names_at(target: Int64) -> List[(name: String)] effects Error =
     let rel = person_row
     let f = rel.fix(age: target)
     f.takeN(9)
@@ -116,75 +116,34 @@ namespace test.wi727fix
 
   rule triple_row(?a, ?b, ?c) :- triple(a: ?a, b: ?b, c: ?c)   -- (a, b, c)
 
-  -- fix a = 1, DROP a → Relation[(b, c)] (TWO remaining columns — a named tuple, not a
-  -- 1-collapse). Keeps the two a=1 rows. The declared `List[(b, c)]` return IS the schema
-  -- test: it type-checks only if `Without` dropped exactly `a`.
+  -- fix a = 1, DROP a → Relation[(b, c)] (TWO remaining columns). Keeps the two a=1 rows.
+  -- The declared `List[(b, c)]` return IS the schema test: it type-checks only if
+  -- `Without` dropped exactly `a`.
   operation bc_where_a1() -> List[(b: Int64, c: Int64)] effects Error =
     let rel = triple_row
     let f = rel.fix(a: 1)
     f.takeN(9)
 
-  -- fix a = 1 AND c = 3 (TWO captured values), DROP both → Relation[Int64] (`b`). Keeps
+  -- fix a = 1 AND c = 3 (TWO captured values), DROP both → Relation[(b: Int64)]. Keeps
   -- only (a=1, b=2, c=3) → b = 2.
-  operation b_where_a1_c3() -> List[Int64] effects Error =
+  operation b_where_a1_c3() -> List[(b: Int64)] effects Error =
     let rel = triple_row
     let f = rel.fix(a: 1, c: 3)
     f.takeN(9)
 end
 "#;
 
-/// Walk a cons list of scalar-collapsed `String` rows.
+/// WI-20260818-YQB1Y — walk a ONE-COLUMN relation drain into its `String` column values.
+/// A row is a one-component named tuple now, not a bare scalar, so this goes through the
+/// shared strict reader — which panics on any other row shape rather than hunting for the
+/// first `Str` among the fields.
 fn drain_strings(v: Value) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = v;
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break;
-        }
-        let (mut head, mut tail) = (None, None);
-        for (_k, x) in named.iter() {
-            match x {
-                Value::Str(s) => head = Some(s.clone()),
-                Value::Entity { .. } => tail = Some(x.clone()),
-                _ => {}
-            }
-        }
-        match (head, tail) {
-            (Some(s), Some(t)) => {
-                out.push(s);
-                cur = t;
-            }
-            _ => break,
-        }
-    }
-    out
+    crate::common::list_column_strings(&v)
 }
 
-/// Walk a cons list of scalar-collapsed `Int64` rows.
+/// The `Int64` twin of [`drain_strings`].
 fn drain_ints(v: Value) -> Vec<i64> {
-    let mut out = Vec::new();
-    let mut cur = v;
-    while let Value::Entity { named, .. } = &cur {
-        if named.is_empty() {
-            break;
-        }
-        let (mut head, mut tail) = (None, None);
-        for (_k, x) in named.iter() {
-            match x {
-                Value::Int(n) => head = Some(*n),
-                Value::Entity { .. } => tail = Some(x.clone()),
-                _ => {}
-            }
-        }
-        match (head, tail) {
-            (Some(n), Some(t)) => {
-                out.push(n);
-                cur = t;
-            }
-            _ => break,
-        }
-    }
-    out
+    crate::common::list_column_ints(&v)
 }
 
 /// Walk a cons list of `(b, c)` tuple rows, collecting each row's two ints in field order.
@@ -222,10 +181,11 @@ fn drain_int_pairs(v: Value) -> Vec<(i64, i64)> {
     out
 }
 
-/// fix a column to a value, drop it: the sole remaining column 1-collapses, and only the
-/// matching rows survive (alice & carol at age 30).
+/// fix a column to a value, drop it: the sole remaining column KEEPS ITS NAME
+/// (`Relation[(name: String)]`, WI-20260818-YQB1Y — it used to 1-collapse to `String`), and
+/// only the matching rows survive (alice & carol at age 30).
 #[test]
-fn wi727_fix_restrict_and_drop_1collapse() {
+fn wi727_fix_restrict_and_drop_to_one_column() {
     let mut interp = interp_for(SRC);
     let r = interp
         .call("test.wi727fix.names_at_30", &[])
@@ -307,8 +267,8 @@ fn wi727_fix_empty_is_identity() {
     );
 }
 
-/// Drop ONE of three columns → a TWO-column named-tuple schema (not a 1-collapse). Both
-/// a=1 rows survive; the `List[(b, c)]` return type-checking proves the reduced schema.
+/// Drop ONE of three columns → a TWO-column named-tuple schema. Both a=1 rows survive;
+/// the `List[(b, c)]` return type-checking proves the reduced schema.
 #[test]
 fn wi727_fix_drop_one_of_three() {
     let mut interp = interp_for(SRC);
@@ -320,8 +280,8 @@ fn wi727_fix_drop_one_of_three() {
     assert_eq!(got, vec![(2, 3), (20, 30)]);
 }
 
-/// TWO captured values drop TWO columns → the sole remaining `b` 1-collapses; only the
-/// row matching BOTH (a=1, c=3) survives (b = 2).
+/// TWO captured values drop TWO columns → the sole remaining `b` keeps its name
+/// (`Relation[(b: Int64)]`); only the row matching BOTH (a=1, c=3) survives (b = 2).
 #[test]
 fn wi727_fix_two_constants() {
     let mut interp = interp_for(SRC);
@@ -403,7 +363,7 @@ namespace test.wi727fixpt
   fact marker(name: "q", at: point(x: 1, y: 2))
   rule marker_row(?name, ?at) :- marker(name: ?name, at: ?at)
   operation origin() -> Point = point(x: 1, y: 2)
-  operation atOrigin() -> List[String] effects Error =
+  operation atOrigin() -> List[(name: String)] effects Error =
     let rel = marker_row
     let f = rel.fix(at: origin())
     f.takeN(9)
@@ -445,7 +405,7 @@ namespace test.wi727fixctor
   fact item(name: "c", color: red)
   rule item_row(?name, ?color) :- item(name: ?name, color: ?color)
   operation redColor() -> Color = red
-  operation reds() -> List[String] effects Error =
+  operation reds() -> List[(name: String)] effects Error =
     let rel = item_row
     let f = rel.fix(color: redColor())
     f.takeN(9)

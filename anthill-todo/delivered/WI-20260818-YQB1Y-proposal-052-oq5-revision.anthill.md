@@ -1,7 +1,9 @@
 ```anthill
-fact WorkItem(id: "WI-20260818-YQB1Y-proposal-052-oq5-revision", created: "2026-08-18T19:14:50Z", context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none), ToolPasses(tool: "scaland-sbt-test", params: none)], depends_on: some(value: ["WI-714"]), generates: none, requires_capability: none, status: Open)
+fact WorkItem(id: "WI-20260818-YQB1Y-proposal-052-oq5-revision", created: "2026-08-18T19:14:50Z", context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none), ToolPasses(tool: "scaland-sbt-test", params: none)], depends_on: some(value: ["WI-714"]), generates: none, requires_capability: none, status: Delivered(agent: "claude", at: "2026-08-18T21:39:51Z"))
 
 fact Feedback(workitem: "WI-20260818-YQB1Y-proposal-052-oq5-revision", author: "claude", at: "2026-08-18T19:29:55Z")
+
+fact Feedback(workitem: "WI-20260818-YQB1Y-proposal-052-oq5-revision", author: "claude", at: "2026-08-18T21:39:50Z")
 ```
 
 ## description
@@ -56,4 +58,43 @@ THE ONE REAL COST OF OPTION A, and it is structural rather than ergonomic: kerne
 WHAT STAYS TRUE FOR BOTH OPTIONS: it is a breaking change to a specified rule (6.8), `where`'s bare-binder spelling `eq(c, 30)` becomes `c.age` either way, and the whole-row sentinel must be keyed per binder in the same change (it is unreachable today only because `Concat` refuses the operands that would reach it, and both options remove that gate).
 
 RECOMMENDATION: Option A. Option B stays recorded as the fallback if `queens.head : Board` turns out to be load-bearing for a reader that the census above did not find — but the census found no such reader, and Option A is simpler than the code we have today, not merely simpler than Option B.
+
+### 2026-08-18T21:39:50Z — claude
+
+DELIVERED — OPTION A, THE COLLAPSE IS DROPPED. The relation schema IS the row type at every arity: `relation_schema_type` returns `Unit` for zero columns and the named tuple otherwise, with no arity-one case. Decision recorded in 052 OQ5 (rewritten as a decision, with the measurement, the declined alternative B, and the price), and in kernel-language.md 6.8.
+
+BOTH HALVES OF THE PAIRED CONVENTION MOVED TOGETHER, which is what 6.8 required of any revision — plus the third one the section did not name:
+ * TYPE: `relation_schema_type` (kb/typing.rs), replacing `collapse_schema`.
+ * VALUE: `materialize_solution` (eval/mod.rs) — a one-column row is `(age: 30)`, not `30`.
+ * TERM: the `.( )` desugar (parse/convert.rs, and its scaland twin) — `x.(f)` is `(f: x.f)` and a single RENAME `x.(a: f)` keeps its key. Keeping the collapse for a plain tuple while dropping it for a relation was considered and DECLINED: it would make `r.(f)` and `t.(f)` mean different things at one surface.
+
+WHAT THAT BOUGHT, each driven end-to-end in `wi_yqb1y_one_column_relation_test` (7 arms, every one failing on a back-out — the file has no arm that passes either way):
+ * `join` with a one-column operand RUNS, merged schema `(name, age, who)`, condition reading `q.who`, values asserted.
+ * `join` with a MEMBERSHIP operand is a filter and types as one (`Unit` contributes zero columns).
+ * `fix` drops the only column, both polarities.
+ * a one-MEMBER projection keeps its result key — the rename form, which used to be dropped for having no siblings.
+ * the tuple-typed column is ONE column: the four-column declaration is now a LOAD ERROR and the honest three-column one runs. That was the family's only SILENT WRONG ANSWER and it is closed.
+ * `Concat` and `Without` are inverses at arity one, BOTH nesting directions.
+ * merging two membership relations is `Unit`, not `()`.
+
+TWO RECORDED LIMITS RETIRED RATHER THAN PATCHED, each as its own site instructed: WI-728's `Unit`-typed column (now refused at LOAD, and without depending on the `()`-vs-`Unit` typing gap) and WI-1128's tuple-typed column. `wi1128_one_collapse_join_test` is REPLACED by the capability file above rather than edited; `wi776_one_collapse_diagnostic_test` is DELETED with the diagnostic it existed to explain (nothing computes a bare element where a one-field tuple is expected any more, so the note would attribute an ordinary type error to a collapse that no longer exists).
+
+THE WHOLE-ROW SENTINEL IS DELETED, NOT KEYED PER BINDER — a deviation from this ticket's own acceptance, with its reason. Acceptance said "the whole-row sentinel is per-binder", written to cover BOTH options. Under option A a row is a named tuple at every arity, so no column variable carries it and there is nothing honest to fill a whole-row hole with: `compile_operand` refuses a bare binder outright. That dissolves both of WI-1128's blockers at once — there is no per-binder keying to get right when there is no hole. Spelling moves to `eq(c.age, 30)` / `eq(c.age, q.age)`, and the refusal is LOAD-time at both arities (`wi714_where_a_bare_row_binder_is_refused_at_load`, which asserts the two DIFFERENT gates that catch them: `eq`'s own operand typing at one column, the macro at two).
+
+THE REDUCTION BOUNDARY IS NOW A FIXPOINT, and this is the part review caught me on. Dropping the collapse makes `Without`'s residual a mergeable `Concat` operand, but the boundary made ONE pass over `TYPE_CTORS` and a ctor whose operand is a sibling DEFERS — so `Concat[A = Without[..]]` stalled anyway. I first REORDERED the array to put `Without` first. That fixed that shape and REGRESSED its dual `Without[T = Concat[..]]`, four lines of ordinary source that had loaded clean before — a fix that recurred one coordinate over, and my comment claiming "the dual has no witness" was false. Measured both ways, reverted the reorder entirely (`TYPE_CTORS` has NO diff against HEAD), and replaced it with the fixpoint the boundary's own comment said had been written and measured. Both directions reduce under EITHER order once it iterates, which no total order can do since the two nestings are duals. Termination is by a monotone measure with the approximation in the stop condition stated at the site; `MAX_PASSES` is a loud error, not a silent truncation.
+
+REVIEW FINDINGS (/code-review high): 3 raised, 2 real and fixed, 1 with a wrong premise.
+ * `Concat` was the one schema producer still calling `named_tuple_value` directly, so with a `Unit` operand contributing an empty field list it minted `()` — not the `Unit` a zero-column row materializes as. Measured `expected List[T = Unit], got List[T = ()]` and a `Membership` error reading "free column(s): " with an empty list. THIS TICKET'S OWN DEFECT ONE ARITY DOWN. Fixed, pinned.
+ * the `TYPE_CTORS` regression above.
+ * "the width-subtyping arm was deleted with no replacement" — the premise is wrong: `wi766_one_component_tuple_is_inhabited_by_width_subtyping` owns that property and the deleted wi776 arm duplicated it. The substantive half stands though — after this change `(a: A)` is the type of EVERY computed one-column result, so that property is load-bearing rather than curious. Recorded at the wi766 site, including why a reader checking wi776/wi1131 would wrongly conclude it had been dropped.
+
+CENSUS RESTATED AS MEASURED, NOT INHERITED. The ticket's "46 one-column rules" does not reproduce (~49 by my count, and it depends on whether `[simp]` equational heads count), so 052 and 6.8 now state what actually settled it: dropping the collapse moves type, row and term together, so ANY shipped source draining a one-column relation as a value would have failed to load. None did — every `.anthill` file under stdlib/, examples/ and the project's own program is UNCHANGED; the only edits the change forced were in per-feature test fixtures. `examples/classic-mini/ancestor` (the one one-column drain) runs unchanged.
+
+WI-20260818-7X7NK RE-CHECKED as this ticket's description asked, and it is NOT closed — measured and posted as feedback there. `ages.(age)` now works, but a MISTYPED column still reports dot dispatch's "no such member" at both receiver arities, because the recognizer still declines when the member does not resolve. Its shape-(a) candidate no longer has a population.
+
+DOCS UPDATED TOGETHER: kernel-language.md 6.8 (the 1-collapse subsection replaced, with what the collapse cost and why; the named-only rule now noted as applying at arity one), 052 (OQ5 as a recorded decision; the body's "one free variable -> T is that value" bullet, the schema-synthesis obligation and the build path), 056 (the `Without` residual sentence), relation.anthill and sort.anthill (the `T` doc, `negate`'s runtime-guard census, `join`'s degenerate arities, `fix`, `project`), tree-sitter grammar.js (a comment; the grammar itself is unchanged — this is a convert-time decision).
+
+SCOPE NOTE — what is deliberately left: `Without[T = Concat[..]]`'s dual is now handled, so the fixpoint has no known stranded shape. Net -229 lines overall, -200 in production code: simpler than the code that shipped the collapse, as option A predicted.
+
+TESTS: cargo-test green via rustland/scripts/test.sh (full workspace, 29 binaries); scaland `sbt core/test` green (499). Both acceptance tools pass.
 

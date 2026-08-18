@@ -493,7 +493,7 @@ fn an_eliminated_projection_is_not_a_candidate() {
         \x20   rule q2(?x) :- S.q(?x), other(?x)\n\
         \x20 end\n\
         \x20 fact s2e(w: 1)\n\
-        \x20 operation rows() -> List[Int64] effects Error =\n\
+        \x20 operation rows() -> List[(x: Int64)] effects Error =\n\
         \x20   let r = S2.q2\n\
         \x20   r.takeN(5)\n\
         end\n";

@@ -5,13 +5,17 @@
 //! THE RULE: an operand that is NOT YET KNOWN — a logic variable (the `Var::Rigid` skolem a
 //! generic op's `[S]` becomes, or an unsolved inference var), or an unreduced residual one
 //! level down — leaves the ctor SYMBOLIC, to reduce later once the operand grounds. An
-//! operand that IS known but cannot be merged (a name collision, a 1-collapse / scalar
-//! schema) stays a LOUD error.
+//! operand that IS known but cannot be merged (a name collision, or a shape that is no
+//! relation schema at all — a scalar, a denoted value) stays a LOUD error.
 //!
 //! Before this, both cases were handed to the reducer, so an un-instantiated type parameter
-//! was reported with the CONCRETE-malformation message ("operand must be a named-tuple type
-//! … a 1-collapse / membership schema is not supported") — a diagnostic blaming a shape the
+//! was reported with the CONCRETE-malformation message — a diagnostic blaming a shape the
 //! user never wrote. "Cannot reduce yet" and "cannot reduce ever" are different answers.
+//!
+//! WI-20260818-YQB1Y narrowed what "cannot be merged" MEANS without touching this rule: a
+//! one-column and a membership schema are both mergeable now, so the loud arm covers only
+//! shapes that are no schema at all. The abstract/concrete split is unchanged, which is why
+//! the deferral tests below are untouched.
 //!
 //! CONFLUENCE: a residual can only exist over an un-instantiated operand, so a fully
 //! concrete type is always fully reduced — there are never two comparable forms of one
@@ -187,8 +191,8 @@ end
 "#;
     match try_load_kb_with(SRC) {
         Err(errs) => assert!(
-            errs.iter().any(|e| e.contains("named-tuple type")),
-            "expected the concrete non-named-tuple error for a value operand, got: {errs:?}"
+            errs.iter().any(|e| e.contains("is not a relation schema")),
+            "expected the concrete non-schema error for a value operand, got: {errs:?}"
         ),
         Ok(_) => panic!("a denoted value operand can never merge and must stay loud"),
     }

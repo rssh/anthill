@@ -1278,7 +1278,9 @@ module.exports = grammar({
     // `(m1: x.m1, …, mn: x.mn)`: each member is a plain dot-member (WI-638
     // field access), resolved against `x`'s type at TYPING — so a member is
     // never a value-position scope symbol, and both keep (`x.(f1, f2)`) and
-    // rename (`x.(a: f1)`) are safe. A single member 1-collapses to `x.m`.
+    // rename (`x.(a: f1)`) are safe. The result is the named tuple at every arity —
+    // a single member is `(m: x.m)`, not the bare access it used to collapse to
+    // (WI-20260818-YQB1Y). That is a CONVERT-time decision; the grammar is unchanged.
     // Expression/call members (`x.(count(), y)`) are deferred (052 OQ3).
     //
     // The opener is a SINGLE `.(` token (`token(seq('.', '('))`), not `.`

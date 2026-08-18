@@ -68,9 +68,12 @@
 -- parameter). It is now `contains(l, x)` — container first, like `Map.contains` and
 -- `String.contains` — so `l.contains(x)` works.
 --
--- T = the schema: the named tuple of the relation's free head parameters. Two
---   degenerate arities collapse at the typer's schema boundary — one free variable
---   presents as that element (`Relation[Board]`), zero free variables as `Unit`.
+-- T = the schema AND the row type: the named tuple of the relation's free head
+--   parameters, at every arity. One free variable gives `Relation[(board: Board)]`,
+--   read as `row.board`; zero free variables give `Unit` and nothing else, so `Unit`
+--   means "no columns" exactly. (052 OQ5 option A, WI-20260818-YQB1Y: the schema used
+--   to 1-collapse at one column to the element type, which erased the relation's ARITY
+--   and cost `join` / `fix` / `project` the ability to name a single column at all.)
 -- E = the search access-effect row (⊇ {Error}): running a query is NOT pure —
 --   search can raise (a depth limit, or an `Error.raise` from an operation body
 --   evaluated during resolution), exactly `execute`'s `effects Error`. The provides
@@ -122,9 +125,9 @@ sort anthill.prelude.Relation
   -- silent floundered result. To negate a relation with columns, first close them:
   -- bind them by APPLYING the relation, or drop them with `r.fix(...)` — but `fix`
   -- must close them ALL IN ONE CALL. Dropping some of several re-raises this same
-  -- error on the residual, and dropping the only column of a 1-collapsed relation is
-  -- refused by `Without` itself ("a relation with at least two named columns"), so
-  -- for a one-column relation APPLICATION is the only route.
+  -- error on the residual, so
+  -- for a one-column relation APPLICATION was the only route until WI-20260818-YQB1Y;
+  -- `fix` now drops the only column too, leaving the membership relation.
   --
   -- That requirement is carried by the SIGNATURE and checked at LOAD (WI-728):
   -- `Membership[T]` is the type-level predicate "this schema is CLOSED", reducing to
@@ -138,18 +141,17 @@ sort anthill.prelude.Relation
   -- runtime does the query wrap.
   --
   -- The RUNTIME guard stays, and is not redundant: it reads the VALUE's own `columns`
-  -- list, which is a different population from the SCHEMA the typer sees. THREE ways to
+  -- list, which is a different population from the SCHEMA the typer sees. TWO ways to
   -- reach it: a schema that was never statically known (an abstract `S` leaves the
   -- assertion symbolic per WI-734, and a wrapper widening its own return to a bare
-  -- `Relation` lets that residual escape unreduced); a relation built through reflect
-  -- rather than from surface code; and a relation with exactly ONE column whose type IS
-  -- `Unit`, which 1-collapses to the same `Unit` a zero-column relation presents, so
-  -- `Membership` accepts it at load and only the drain refuses it (WI-728's recorded
-  -- limit — no type-level check can separate the two while the collapse is a paired
-  -- type-and-value convention). That third case is why `join` refuses a membership
-  -- operand outright rather than treating `Unit` as "no columns to merge" (WI-1128):
-  -- `negate` can afford the imprecision because this guard re-asks the question at
-  -- runtime, and a merged SCHEMA has no equivalent backstop.
+  -- `Relation` lets that residual escape unreduced); and a relation built through
+  -- reflect rather than from surface code.
+  --
+  -- WI-728's THIRD case is retired (WI-20260818-YQB1Y): a relation with exactly ONE
+  -- column whose type IS `Unit` used to 1-collapse to the same `Unit` a zero-column
+  -- relation presents, so `Membership` accepted it at load and only the drain refused
+  -- it. Its schema is now `(t: Unit)` — a named tuple with one free column — so this
+  -- assertion refuses it at LOAD, where it belongs.
   operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E]
 
   -- union — the BAG union of two relations (052 §algebra; multiplicity kept, OQ6):
@@ -256,35 +258,25 @@ sort anthill.prelude.Relation
   -- loud error and still DEFERRED: the merged schema would have to rename the clashing
   -- column, and the rename surface is WI-731's.
   --
-  -- A 1-COLLAPSED or MEMBERSHIP operand is a loud error and is DECIDED, not deferred
-  -- (WI-1128) — two refusals with two reasons:
-  --   * ONE COLUMN: its schema presents as that column's TYPE (`Relation[Int64]`), so
-  --     the column NAME is not in the type at all (the 1-collapse), and a merged schema
-  --     needs a name for every column. The name is not recoverable later: the collapse
-  --     happens where the relation's type is built, and by the time `join` types, an
-  --     operand carries nothing but its type. Recovering it means keeping the column in
-  --     the schema while the value half still collapses — the paired type-and-value
-  --     convention kernel-language.md 6.8 weighed and declined. Write the join as a
-  --     rule body instead: shared logic variables join without needing a schema at all.
-  --   * ZERO COLUMNS (membership, `Unit`): a different question, and refused for a
-  --     stronger reason. `Unit` does not distinguish "no columns" from "one
-  --     `Unit`-typed column" (see `negate` above), so reading it as "nothing to merge"
-  --     could emit a merged schema with fewer columns than the row `join_run`
-  --     materializes — a type disagreeing with its own value. Joining a membership
-  --     relation is a FILTER rather than a merge; state it as a goal in a rule body.
-  --
-  -- THE ONE CASE THAT IS NOT REFUSED, AND CANNOT BE — a recorded limit, not an
-  -- oversight. The collapse erases ARITY, so a schema that IS a named tuple is equally
-  -- "n columns" and "ONE column whose type is that n-field tuple". The second reading
-  -- is spelled exactly like the ordinary working case, so no type-level check can
-  -- separate them, and `join` accepts it: over `entity h(p: (a: Int64, b: String))`,
-  -- `rule pairs(?p)` joined with a 2-column relation type-checks against a 4-column
-  -- merged schema while the row materialized has 3 columns. `fix` / `project` /
-  -- `negate` survive the same ambiguity because each asks the VALUE a question it can
-  -- answer ("is there a column of this name?") and refuses loudly at runtime; MERGING
-  -- IS NAME-FREE, so `join` has no such question to ask and nothing to detect. See
-  -- kernel-language.md 6.8. OWNED BY WI-20260818-YQB1Y (the 052 OQ5 split), which
-  -- is what would retire it.
+  -- DEGENERATE ARITIES NEED NO SPECIAL CASE (WI-20260818-YQB1Y, 052 OQ5 option A).
+  -- A schema is the named tuple of the relation's columns at EVERY arity, so:
+  --   * ONE COLUMN merges like any other — `Relation[(age: Int64)]` names `age`, and
+  --     the merged schema names it too. (Until OQ5 this was a loud refusal: the schema
+  --     presented as the column's TYPE and the NAME was nowhere in the type.)
+  --   * ZERO COLUMNS (membership, `Unit`) contributes no fields, so the merged schema
+  --     is the other operand's — which is exactly the merged column list `join_run`
+  --     builds from the two VALUES. Joining a membership relation is a FILTER, and it
+  --     now types as one. (Until OQ5 this was refused because `Unit` could not be told
+  --     from a single `Unit`-typed column, so "nothing to merge" risked a schema with
+  --     fewer columns than the row.)
+  --   * A COLUMN WHOSE TYPE IS A TUPLE is ONE column, and says so. Over
+  --     `entity h(p: (a: Int64, b: String))`, `rule pairs(?p)` has schema
+  --     `(p: (a: Int64, b: String))` — no longer confusable with a 2-column relation
+  --     over `a`/`b`, which is what used to let a join type-check against a 4-column
+  --     merged schema while materializing 3 columns. That was the family's one silent
+  --     wrong answer, because MERGING IS NAME-FREE and `join` had no runtime question
+  --     to ask (`fix` / `project` / `negate` each ask the VALUE "is there a column of
+  --     this name?" and refuse loudly). Dropping the collapse is what closed it.
   --
   -- Two-stage lowering, exactly as `where`: `join(?r1, ?r2, ?cond) <=> conjoin_of(?r1,
   -- ?r2, ?cond) [simp]` fires at COMPILE time; `conjoin_of` is a MACRO that reads the
@@ -326,7 +318,9 @@ sort anthill.prelude.Relation
   -- project — SELECT columns of a relation (WI-714 / proposal 052 §"Projection").
   -- The surface is the distribute-dot `r.(f1, f2)` (bare) / `r.(a: f1, b: f2)`
   -- (rename), which desugars (WI-639) to the name-keyed row tuple `(f1: r.f1, …)` /
-  -- `(a: r.f1, …)`; a single member `r.(f)` 1-collapses to `r.f`. Lifted over a
+  -- `(a: r.f1, …)` at every arity — a single member `r.(f)` is the one-column
+  -- projection `Relation[(f: …)]`, not the member access `r.f` it used to desugar to
+  -- (WI-20260818-YQB1Y). Lifted over a
   -- relation, that tuple IS projection → the typer maps it to a `projected` query,
   -- keeping the kept columns' schema and dropping the rest. `projected` lowers as a
   -- PASS-THROUGH in the resolver (kb/execute.rs), so the column restriction happens at

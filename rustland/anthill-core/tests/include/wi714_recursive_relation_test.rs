@@ -65,8 +65,9 @@ namespace test.wi714rec
     let r = anc("abe", "bart")
     length(r.takeN(50))
 
-  -- projection onto the recursion-typed column (bag semantics, OQ6)
-  operation ancestors() -> List[String] effects Error =
+  -- projection onto the recursion-typed column (bag semantics, OQ6). WI-20260818-YQB1Y:
+  -- a single-member projection keeps the column name, so this is `Relation[(e: String)]`.
+  operation ancestors() -> List[(e: String)] effects Error =
     let r = anc
     let p = r.(e)
     p.takeN(50)
@@ -122,12 +123,10 @@ fn collect_pairs(v: &Value) -> Vec<(String, String)> {
     })
 }
 
-/// Decode a `List[String]`.
+/// Decode a one-column relation drain into its `String` column values. WI-20260818-YQB1Y:
+/// each row is the one-component tuple `(e: …)`, read through the shared STRICT reader.
 fn collect_strings(v: &Value) -> Vec<String> {
-    collect_list(v, |val| match val {
-        Value::Str(s) => Some(s.clone()),
-        _ => None,
-    })
+    crate::common::list_column_strings(v)
 }
 
 /// A recursive rule cited BY NAME is a `Relation[T]` that LOADS and enumerates the

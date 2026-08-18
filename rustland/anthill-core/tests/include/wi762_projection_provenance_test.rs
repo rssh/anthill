@@ -63,7 +63,7 @@ fn wi762_handwritten_tuple_is_a_tuple_of_relations() {
         r#"
 namespace test.wi762hand
 {REL}
-  operation handwritten() -> (name: Relation[T = String], age: Relation[T = Int64]) effects Error =
+  operation handwritten() -> (name: Relation[T = (name: String)], age: Relation[T = (age: Int64)]) effects Error =
     let rel = person_row
     let cols = (name: rel.name, age: rel.age)
     cols

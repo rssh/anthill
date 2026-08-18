@@ -1,5 +1,7 @@
 ```anthill
 fact WorkItem(id: "WI-20260818-7X7NK-a-projection-over-a-1", created: "2026-08-18T19:15:24Z", acceptance: [ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")], depends_on: some(value: nil), status: Open)
+
+fact Feedback(workitem: "WI-20260818-7X7NK-a-projection-over-a-1", author: "claude", at: "2026-08-18T20:54:04Z")
 ```
 
 ## description
@@ -17,4 +19,21 @@ TWO CANDIDATE SHAPES, neither chosen: (a) at the dot-dispatch no-such-member sit
 NOTE THE INTERACTION: if WI-20260818-YQB1Y (the 052 OQ5 split) lands, a one-column relation stops having a collapsed schema and this diagnostic becomes unreachable through THAT route — but not through a genuinely mistyped column name, which is the common case and is what shape (b) would serve. So this is not automatically closed by that ticket; check before starting.
 
 ACCEPTANCE: `ages.(age)` reports a message naming the projection and the collapse rather than dot dispatch's "no such member", OR the shape question is decided and the current behaviour is recorded as intended with the decision at the site; `r.isEmpty` and every existing single-member dot call on a relation still work (the fallthrough is not broken — drive one, do not assert only that it loads); existing wi639 / wi732 projection tests green; cargo-test green via scripts/test.sh.
+
+## Feedback
+
+### 2026-08-18T20:54:04Z — claude
+
+RE-CHECKED AFTER WI-20260818-YQB1Y LANDED (052 OQ5 option A, the 1-collapse dropped), because this ticket asked for exactly that ("check before starting"). VERDICT: STILL OPEN, and the route is unchanged.
+
+MEASURED on the post-YQB1Y tree, both receiver arities:
+  * `adults.(nosuch)` over a ONE-column relation `rule adults(?who) :- person(name: ?who, age: 30)`
+  * `person_row.(nosuch)` over a TWO-column relation
+Both report: "type mismatch in anthill.prelude.Relation.nosuch: expected operation declared on the receiver's sort, got no such member (dot dispatch)". Identical text, identical route.
+
+WHAT CHANGED, AND WHY IT DOES NOT CLOSE THIS. The ticket's own mechanism paragraph is now stale in its FIRST clause and still correct in its second. `r.(f)` no longer 1-collapses at convert time — it builds the marked one-field tuple `(f: r.f)` at every arity — so a one-column receiver DOES build a projection node now, and `ages.(age)` runs (driven by `wi_yqb1y_one_column_relation_test::yqb1y_a_one_member_projection_keeps_its_key`, which uses the rename form). The example the ticket was FILED with therefore works. But the failure route for a MISTYPED column is untouched: `relation_column_access_parts` still returns None when the member does not resolve, the recognizer still declines, and the call still falls through to ordinary dot dispatch. That fallthrough is still load-bearing for the same reason (`r.isEmpty` is the same node shape after the desugar), so shape (a) vs (b) is still a real decision.
+
+WHAT THIS MEANS FOR THE TICKET'S SCOPE: the "1-collapsed receiver" framing is gone — there is no collapsed schema left to name — so `projection_columns`' collapse-naming message is now dead prose rather than an unreachable-but-correct one, and the remaining defect is narrower and more ordinary: a projection naming a column that does not exist is reported as a MEMBER lookup. That makes shape (b) (carry the `.( )` provenance to the failure site) the only one of the two candidates that still describes a fix — shape (a) keyed on "a Relation whose schema is not a named tuple" no longer has a population, since a relation schema is ALWAYS a named tuple or `Unit` now. Worth restating the acceptance before starting.
+
+NOT PINNED BY A TEST, deliberately: a test asserting today's dot-dispatch message would pass both before and after YQB1Y and so measures nothing about it. The measurement is recorded in the header of `wi_yqb1y_one_column_relation_test` instead, with the two spellings above.
 

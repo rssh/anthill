@@ -807,9 +807,6 @@ mod wi809_duplicate_named_arg_test;
 #[path = "include/wi778_zero_width_token_test.rs"]
 mod wi778_zero_width_token_test;
 
-#[path = "include/wi776_one_collapse_diagnostic_test.rs"]
-mod wi776_one_collapse_diagnostic_test;
-
 #[path = "include/wi814_lambda_view_test.rs"]
 mod wi814_lambda_view_test;
 
@@ -1291,8 +1288,8 @@ mod wi733_relation_head_eval_test;
 #[path = "include/wi1125_neq_not_an_override_test.rs"]
 mod wi1125_neq_not_an_override_test;
 
-#[path = "include/wi1128_one_collapse_join_test.rs"]
-mod wi1128_one_collapse_join_test;
+#[path = "include/wi_yqb1y_one_column_relation_test.rs"]
+mod wi_yqb1y_one_column_relation_test;
 
 #[path = "include/wi1130_positional_capture_test.rs"]
 mod wi1130_positional_capture_test;

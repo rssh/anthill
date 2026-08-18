@@ -398,7 +398,7 @@ namespace test.wi751applied
   sort myroot
     entity mr(row: Int64)
   end
-  operation cite() -> List[Int64] effects Error = ..myroot.inner.rel.takeN(1)
+  operation cite() -> List[(x: Int64)] effects Error = ..myroot.inner.rel.takeN(1)
 end
 "#;
     for (src, form) in [(BARE, "bare"), (APPLIED, "applied")] {
@@ -453,7 +453,7 @@ namespace test.wi751label
 
   -- the dotted LABEL `a.b`, drained: must be relation `a.b` (extent {7}),
   -- neither relation `a` (extent {1,2}) nor the top-level operation `a.b`.
-  operation citeWhole() -> List[Int64] effects Error = a.b.takeN(5)
+  operation citeWhole() -> List[(x: Int64)] effects Error = a.b.takeN(5)
 end
 "#;
     let mut interp = interp_for(SRC);

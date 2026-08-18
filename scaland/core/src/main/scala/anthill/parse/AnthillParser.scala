@@ -899,8 +899,11 @@ private class AnthillParserImpl(
   /** Build the accessor a single `obj.member` produces: a value receiver (or any
     * call `.member(args)`) routes through `dot_apply` so args are never dropped;
     * a name receiver keeps the `field_access` builtin. Shared by the plain
-    * dot-chain fold (WI-278) and the WI-639 distributive projection, so `x.(m)`
-    * builds byte-identically to `x.m`. `valueRecv` is passed in (not recomputed)
+    * dot-chain fold (WI-278) and the WI-639 distributive projection, so a
+    * projection MEMBER builds byte-identically to the same `x.m` written on its
+    * own — the difference is the tuple wrapper the projection keys it into
+    * (WI-20260818-YQB1Y; before it, a one-member projection WAS `x.m`).
+    * `valueRecv` is passed in (not recomputed)
     * so the projection can decide the receiver kind once for all its members.
     * A name receiver carrying call args never reaches here — `name`/`nameSuffix`
     * consumes `Foo.bar(args)` — so a name receiver always has `callArgs == None`.
@@ -1005,23 +1008,28 @@ private class AnthillParserImpl(
     * member list. Each member desugars to the SAME accessor a single `x.m`
     * builds (`dot_apply(x, Ident(m))` for a value receiver, `field_access(x,
     * Ref(m))` for a name receiver, chosen once by `isValueReceiver`), then each
-    * is keyed by its result label into a named `TupleLiteral`. A single member
-    * 1-collapses to the scalar accessor (`x.(f)` ≡ `x.f`, whether bare or
-    * renamed), so the tuple key only matters for a multi-column result. Mirrors
-    * rustland's `push_distributive_projection` build + `is_value_receiver`. */
+    * is keyed by its result label into a named `TupleLiteral`.
+    *
+    * WI-20260818-YQB1Y (052 OQ5, option A): the tuple is built at EVERY arity,
+    * one member included — `x.(f)` is `(f: x.f)` and a single rename `x.(a: f)`
+    * is `(a: x.f)`, where both used to 1-collapse to the bare accessor `x.f` and
+    * drop the key. That was the TERM half of kernel-language.md §6.8's paired
+    * type-and-value convention, which the ticket moved together with the relation
+    * SCHEMA and the materialized ROW. Mirrors rustland's
+    * `push_distributive_projection` build + `is_value_receiver`. */
   private def buildDistributiveProjection(
     obj: TermId, members: IndexedSeq[ProjectionMember], span: Span
   ): TermId =
-    // Validate result keys BEFORE building a multi-column tuple (a single member
-    // 1-collapses to a scalar — no tuple, nothing to key). Each check turns an
+    // Validate result keys BEFORE building the tuple, at EVERY arity: a single
+    // member used to be exempt because it collapsed to a scalar and had no key to
+    // check, and it now builds `(_1: x._1)` like any other. Each check turns an
     // otherwise-silent wrong result into a loud parse error (WI-639 review).
-    if members.length > 1 then validateProjectionLabels(members, span)
+    validateProjectionLabels(members, span)
     val valueRecv = isValueReceiver(obj)
     val accessors = members.map { m =>
       (m.label, buildFieldAccess(obj, m.member, m.span, valueRecv, None))
     }
-    if accessors.length == 1 then accessors.head._2
-    else terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)), span)
+    terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)), span)
 
   /** Reject the two ill-formed key shapes a multi-member projection could emit
     * into its result tuple, each a silent-corruption footgun (WI-639 review):
