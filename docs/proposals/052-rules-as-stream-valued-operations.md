@@ -288,11 +288,22 @@ constructor:
 | `&&` / `\|\|` / `!` | `conjunction` / `disjunction` / `negation` |
 | `c.x` (row field access) | the column's logic variable |
 | literal | term constant |
+| any other **row-independent** operand | a **parameter** of the recipe, captured at the call |
 
 and the op wraps the result: `where` → `guarded(r.query, ⟨goal⟩)`, `join` → `conjunction` (over both
 rows' columns). The compile is **partial** — only the goal-expressible `Bool` subset; anything else (an
 `if`, a non-predicate call) is a **compile error**, the analog of LINQ's *"cannot translate to SQL"* (a
 computed column goes through `.map` on the stream instead — it is no longer a `Relation`).
+
+**An operand is admissible iff it does not read the row.** A column and a literal are the two shapes the
+compiler can resolve *by itself*; every other operand — a `let`-bound name, an operation result, the
+enclosing operation's own parameter — is one value for the whole restriction, and becomes the recipe's
+second kind of hole: a **parameter**. The macro cannot fold it (it reads the lambda as *syntax*, before
+any value exists), so it hands the **expression** to the runner as a captured argument, evaluated once in
+the caller's scope and filled into the hole exactly as a column hole is filled from the schema. This is
+what makes `fix(x: v)` and `where(λ c → eq(c.x, v)) + project` the same restriction for the same `v`.
+An operand that *does* read the row (`eq(c.rank, bump(c.age))`) stays a compile error: there is no single
+value to capture, and a query goal compares columns rather than evaluating an expression per row.
 
 **Two phases, joined at the columns.** A relation's columns are logic variables minted only when the
 relation *runs* (`VarId`s in the `Relation` value), so the compile splits:

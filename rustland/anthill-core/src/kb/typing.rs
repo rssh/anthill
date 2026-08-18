@@ -12552,16 +12552,20 @@ fn normalize_variadic_capture(
         //
         // An earlier version of this comment justified keeping it by claiming a WI-722
         // compile-time macro could synthesize an `Expr::Apply` carrying named args and so
-        // bypass the parser. THAT IS FALSE, and a /code-review pass caught it: both
-        // occurrence builders hardcode an empty list (`reflect_make_apply` /
+        // bypass the parser. That was FALSE WHEN WRITTEN, and a /code-review pass caught
+        // it: both occurrence builders hardcode an empty list (`reflect_make_apply` /
         // `reflect_make_fn`, eval/builtins.rs) and `try_expand_macro` (kb/simp_rewrite.rs)
-        // DECLINES any template carrying named args. The one synthesizer that does carry
-        // them, `substitute_to_occurrence`, copies its keys from a source-parsed `Term::Fn`
-        // — which the syntactic rule has already checked.
+        // DECLINES any template carrying named args. `substitute_to_occurrence` does carry
+        // them, but copies its keys from a source-parsed `Term::Fn` — already checked by
+        // the syntactic rule.
         //
-        // So this is retained as defence-in-depth against a FUTURE occurrence synthesizer,
-        // with no reachable path today — stated plainly, because a rationale that sounds
-        // reachable is worse than none: it is what stops the next reader from re-checking.
+        // WI-1127 ADDED A SYNTHESIZER THAT DOES BYPASS THE PARSER, and the guard is still
+        // unreachable through it: `splice_query_runner` (eval/builtins.rs) splices
+        // `where_run`/`join_run` with the row condition's captured operands as named args,
+        // whose labels it MINTS from a running counter (`__anthill_row_param_N__`) — one
+        // per hole, so they cannot repeat. That is the property to check of the next such
+        // synthesizer: not whether it went through the parser, but whether its labels come
+        // from a source the author can make collide.
         if captured_fields
             .iter()
             .any(|(prev, _)| same_label(kb, *prev, *label))

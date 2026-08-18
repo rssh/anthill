@@ -175,6 +175,18 @@ sort anthill.prelude.Relation
   -- REJECTS rather than declining, so the message is this compiler's, not the
   -- residual lowering's).
   --
+  -- AN OPERAND IS ADMISSIBLE IFF IT DOES NOT READ THE ROW (WI-1127). A column and a
+  -- literal are the two shapes the compiler resolves by itself; ANY OTHER operand —
+  -- `eq(c.age, v)` for a `let`-bound `v`, `eq(c.age, thirty())`, the enclosing
+  -- operation's own parameter — is ROW-INDEPENDENT, one value for the whole
+  -- restriction, and is CAPTURED: the macro leaves a parameter hole and hands the
+  -- expression to `where_run` as an argument, evaluated once in the caller's scope.
+  -- So `r.where(lambda c -> eq(c.x, v))` and `r.fix(x: v)` restrict alike for the
+  -- same `v` — that is what makes `fix` sugar. An operand that DOES read the row
+  -- (`eq(c.rank, bump(c.age))`) is a loud rejection: there is no single value to
+  -- capture, and a goal compares columns rather than evaluating per row. Compute
+  -- that with `.map` on the stream instead.
+  --
   -- A DISJUNCTIVE condition explores BOTH branches, so a row satisfying both is
   -- PROVED twice; the resolver's choice-point dedup then collapses those repeats
   -- (they differ only in which branch proved them), so `or` normally filters rather
@@ -205,7 +217,16 @@ sort anthill.prelude.Relation
   -- the holes to `r`'s real column variables and conjoin the recipe onto `r.query`: a
   -- new LogicalQuery, so the result stays a composable Relation over `r`'s schema.
   -- Body-less; the host builtin does the wrap.
-  operation where_run(r: Relation, cond: LogicalQuery) -> Relation[T = r.T, E = r.E]
+  --
+  -- `...params` is the PARAMETER channel (WI-1127): the condition's row-independent
+  -- operands, captured AT THE CALL as ordinary arguments and evaluated in the caller's
+  -- scope, one field per hole. The macro cannot fold them into the recipe — it reads the
+  -- lambda as SYNTAX, before any value exists — so it leaves a named hole and hands the
+  -- expression over here, where the fill is the same symbol-keyed step a column hole
+  -- takes. A variadic capture (proposal 056) rather than a fixed slot: the arity is the
+  -- condition's, and the overwhelmingly common count is zero.
+  operation where_run[P](r: Relation, cond: LogicalQuery, ...params: P)
+    -> Relation[T = r.T, E = r.E]
 
   -- join — combine two relations by a condition over BOTH rows (WI-714 / proposal
   -- 052 §"Conditional join"). `join(r1, r2, (c, q) -> eq(c.x, q.y))` keeps the pairs
@@ -258,7 +279,10 @@ sort anthill.prelude.Relation
   -- self-join `r.join(r, …)` does not accidentally unify the two copies. Body-less;
   -- the host builtin does the wrap. T is the merged schema, computed by the typer (a
   -- tuple concatenation, not expressible as a projection).
-  operation join_run[L, R](r1: Relation[T = L], r2: Relation[T = R], cond: LogicalQuery)
+  -- `...params` is the same PARAMETER channel `where_run` carries (WI-1127) — one
+  -- compiler, so a join condition's row-independent operands are captured identically.
+  operation join_run[L, R, P](r1: Relation[T = L], r2: Relation[T = R], cond: LogicalQuery,
+                              ...params: P)
     -> Relation[T = Concat[A = L, B = R], E = {r1.E, r2.E}]
 
   -- project — SELECT columns of a relation (WI-714 / proposal 052 §"Projection").
@@ -293,10 +317,25 @@ sort anthill.prelude.Relation
   operation project_run[Keep](r: Relation, spec: Term)
     -> Relation[T = Project[T = r.T, Keep = Keep], E = r.E]
 
-  -- fix — RESTRICT relation columns to constants and DROP them (WI-714 / proposal 052
+  -- fix — RESTRICT relation columns to given VALUES and DROP them (WI-714 / proposal 052
   -- §"`fix` is sugar"; the driving client of WI-727 / proposal 056 — variadic capture).
   -- `r.fix(x: 1, z: 2)` keeps the solutions of `r` whose columns `x` / `z` equal the given
-  -- constants, then removes those columns from the schema — `≡ where(eq(x, 1)) + project`.
+  -- values, then removes those columns from the schema — `≡ where(eq(x, 1)) + project`.
+  --
+  -- The fixed value is an ORDINARY EXPRESSION of the column's type — NOT a literal and NOT
+  -- a compile-time constant. 052's "restrict a column to a constant" means ROW-INDEPENDENT
+  -- (one value for the whole restriction, as against `where`'s per-ROW predicate), which an
+  -- argument evaluated once at the call is by construction; an operation result, a
+  -- `let`-bound value or the caller's own parameter all restrict identically, and the guard
+  -- is a semantic `eq` over whatever value arrived. WI-735 asked to relax a gate that does
+  -- not exist here and was rejected; `wi727_fix_value_may_be_*` pins the forms. What it had
+  -- actually seen was `where`'s own operand gate, which admitted only a column or a literal.
+  --
+  -- THE `≡` ABOVE ONLY BECAME TRUE WITH WI-1127. While that gate stood, `fix(x: v)` for a
+  -- non-literal `v` had no `where` spelling that loaded, so the equivalence this file has
+  -- always stated was FALSE for exactly the values `fix` accepted and `where` refused. A
+  -- row-independent operand is now CAPTURED (see `where` above), so the two operand sets
+  -- coincide and the claim holds as written.
   --
   -- fix's "arguments" are a VARIADIC SET OF NAMES: `x` / `z` are DYNAMIC COLUMNS of the
   -- receiver relation, not a fixed parameter list (a different relation has different
@@ -311,12 +350,14 @@ sort anthill.prelude.Relation
   --
   -- The narrowed schema is `Without[T = p.T, Drop = R]` — the DUAL of join's `Concat`: the
   -- general type constructor that drops from `p`'s schema every column named in the captured
-  -- record `R`, reducing (with the membership + constant-type checks) at the return-type
-  -- normalization boundary where `Concat` / `s.T` reduce. `E` threads the receiver's `p.E`
-  -- (fix runs no extra search). Body-less; the host builtin reads the `args` record VALUE (a
-  -- `Value::Tuple`, no compile-time spec-splice — §2.1) and wraps `guarded(query, eq(col,
-  -- const))` + drops the columns (the column stays SOLVED in the query, so a dropped column
-  -- keeps the source multiplicity — bag semantics, OQ6, as `project`).
+  -- record `R`, reducing (with the membership + value-TYPE checks — the field must name a
+  -- column and its type must match that column; neither asks what the value IS) at the
+  -- return-type normalization boundary where `Concat` / `s.T` reduce. `E` threads the
+  -- receiver's `p.E` (fix runs no extra search). Body-less; the host builtin reads the
+  -- `args` record VALUE (a `Value::Tuple`, no compile-time spec-splice — §2.1) and wraps
+  -- `guarded(query, eq(col, val))` + drops the columns (the column stays SOLVED in the
+  -- query, so a dropped column keeps the source multiplicity — bag semantics, OQ6, as
+  -- `project`).
   operation fix[R](p: Relation, ...args: R)
     -> Relation[T = Without[T = p.T, Drop = R], E = p.E]
 end

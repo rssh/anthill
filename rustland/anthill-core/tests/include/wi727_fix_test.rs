@@ -1,7 +1,20 @@
-//! WI-727 (proposal 056) — `fix`: RESTRICT relation columns to constants and DROP them,
+//! WI-727 (proposal 056) — `fix`: RESTRICT relation columns to given VALUES and DROP them,
 //! the driving client of VARIADIC ARGUMENT CAPTURE. `r.fix(x: 1, z: 2)` keeps the solutions
-//! whose columns `x`/`z` equal the constants, then removes those columns — `≡ where(eq(x,
+//! whose columns `x`/`z` equal those values, then removes those columns — `≡ where(eq(x,
 //! 1)) + project`.
+//!
+//! The fixed value is an ORDINARY EXPRESSION of the column's type, not a literal and not a
+//! compile-time constant: 052's "constant" means ROW-INDEPENDENT (as against `where`'s
+//! per-row predicate), which an argument evaluated once at the call is by construction. The
+//! `wi727_fix_value_may_be_*` tests drive that; WI-735, which was filed to "relax a literal
+//! gate", was rejected because no such gate exists.
+//!
+//! THE `≡` ONLY BECAME TRUE WITH WI-1127. This header, and the stdlib declaration, always
+//! stated it — and while `where`'s OWN operand compiler admitted only a column or a
+//! literal it was FALSE for exactly the non-literal `v` that `fix` accepts, because that
+//! `where` spelling did not load. WI-1127 lifted the gate (a row-independent operand is
+//! captured as a recipe parameter), so the two operand sets now coincide;
+//! `wi1127_condition_param_test` drives the `where`/`join` half.
 //!
 //! fix is an ORDINARY operation: its dynamic column arguments (`x`/`z` are columns of the
 //! receiver, not declared params) are collected by the `...args: R` capture parameter into a
@@ -67,6 +80,33 @@ namespace test.wi727fix
     let f = rel.fix()
     f.takeN(9)
 
+  -- A NON-LITERAL fixed value: the result of an operation CALL. Nothing in `fix`
+  -- requires a literal or a compile-time constant — the capture is UNCONSTRAINED
+  -- (056 §2.2 / OQ #4), the only load checks are the `Without` reduction's
+  -- membership + type match, and the runtime guard is a SEMANTIC `eq(?col, v)`
+  -- (`PartialEq.eq`, WI-616) over whatever value arrived.
+  operation thirty() -> Int64 = 30
+
+  operation names_at_computed() -> List[String] effects Error =
+    let rel = person_row
+    let f = rel.fix(age: thirty())
+    f.takeN(9)
+
+  -- A `let`-bound value — the third form the doc names, and (until WI-1127) one the
+  -- `where` half of the documented equivalence refused.
+  operation names_at_letbound() -> List[String] effects Error =
+    let target = 30
+    let rel = person_row
+    let f = rel.fix(age: target)
+    f.takeN(9)
+
+  -- A genuinely RUNTIME fixed value: the enclosing operation's PARAMETER, unknown
+  -- until the call. ONE call site, two different restrictions.
+  operation names_at(target: Int64) -> List[String] effects Error =
+    let rel = person_row
+    let f = rel.fix(age: target)
+    f.takeN(9)
+
   sort Triple
     entity triple(a: Int64, b: Int64, c: Int64)
   end
@@ -84,7 +124,7 @@ namespace test.wi727fix
     let f = rel.fix(a: 1)
     f.takeN(9)
 
-  -- fix a = 1 AND c = 3 (TWO captured constants), DROP both → Relation[Int64] (`b`). Keeps
+  -- fix a = 1 AND c = 3 (TWO captured values), DROP both → Relation[Int64] (`b`). Keeps
   -- only (a=1, b=2, c=3) → b = 2.
   operation b_where_a1_c3() -> List[Int64] effects Error =
     let rel = triple_row
@@ -182,7 +222,7 @@ fn drain_int_pairs(v: Value) -> Vec<(i64, i64)> {
     out
 }
 
-/// fix a column to a constant, drop it: the sole remaining column 1-collapses, and only the
+/// fix a column to a value, drop it: the sole remaining column 1-collapses, and only the
 /// matching rows survive (alice & carol at age 30).
 #[test]
 fn wi727_fix_restrict_and_drop_1collapse() {
@@ -280,7 +320,7 @@ fn wi727_fix_drop_one_of_three() {
     assert_eq!(got, vec![(2, 3), (20, 30)]);
 }
 
-/// TWO captured constants drop TWO columns → the sole remaining `b` 1-collapses; only the
+/// TWO captured values drop TWO columns → the sole remaining `b` 1-collapses; only the
 /// row matching BOTH (a=1, c=3) survives (b = 2).
 #[test]
 fn wi727_fix_two_constants() {
@@ -289,6 +329,133 @@ fn wi727_fix_two_constants() {
         .call("test.wi727fix.b_where_a1_c3", &[])
         .expect("b_where_a1_c3 runs");
     assert_eq!(drain_ints(r), vec![2]);
+}
+
+/// The fixed value need not be a LITERAL: an operation CALL's result restricts the column
+/// exactly as `30` does. `fix` has no constant/literal gate anywhere — the capture is
+/// unconstrained (056 §2.2), the load checks are membership + type, and the guard is a
+/// semantic `eq`.
+#[test]
+fn wi727_fix_value_may_be_a_computed_expression() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi727fix.names_at_computed", &[])
+        .expect("names_at_computed runs");
+    let mut got = drain_strings(r);
+    got.sort();
+    assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
+}
+
+/// The fixed value may be a RUNTIME value — here the enclosing operation's parameter. This
+/// is the control that a literal-only `fix` could not pass: ONE call site yields two
+/// different restrictions, so the value cannot have been read at compile time.
+#[test]
+fn wi727_fix_value_may_be_a_runtime_parameter() {
+    let mut interp = interp_for(SRC);
+    let at30 = interp
+        .call("test.wi727fix.names_at", &[Value::Int(30)])
+        .expect("names_at(30) runs");
+    let mut got30 = drain_strings(at30);
+    got30.sort();
+    assert_eq!(got30, vec!["alice".to_string(), "carol".to_string()]);
+
+    let mut interp = interp_for(SRC);
+    let at25 = interp
+        .call("test.wi727fix.names_at", &[Value::Int(25)])
+        .expect("names_at(25) runs");
+    assert_eq!(drain_strings(at25), vec!["bob".to_string()]);
+}
+
+/// The `let`-bound form — named by the doc alongside the op result and the parameter, so
+/// it is driven rather than asserted. This is also the spelling `where` refused until
+/// WI-1127, i.e. one of the values for which the documented `fix ≡ where + project`
+/// equivalence did not actually hold; `wi1127_where_operand_may_be_a_let_bound_value`
+/// is its peer on the other side.
+#[test]
+fn wi727_fix_value_may_be_a_let_bound_value() {
+    let mut interp = interp_for(SRC);
+    let r = interp
+        .call("test.wi727fix.names_at_letbound", &[])
+        .expect("names_at_letbound runs");
+    let mut got = drain_strings(r);
+    got.sort();
+    assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
+}
+
+/// A COMPOUND fixed value — an entity with fields, not a nullary atom — so the guard's
+/// `eq` must recurse structurally through the fields, and the value's named args must
+/// canonicalize the way the fact's did. The nullary case below compares atoms only, which
+/// would not have caught a mismatch here.
+#[test]
+fn wi727_fix_value_may_be_a_compound_entity() {
+    let src = r#"
+namespace test.wi727fixpt
+  import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.Relation.{fix}
+  sort Point
+    entity point(x: Int64, y: Int64)
+  end
+  sort Marker
+    entity marker(name: String, at: Point)
+  end
+  fact marker(name: "o", at: point(x: 1, y: 2))
+  fact marker(name: "p", at: point(x: 3, y: 4))
+  fact marker(name: "q", at: point(x: 1, y: 2))
+  rule marker_row(?name, ?at) :- marker(name: ?name, at: ?at)
+  operation origin() -> Point = point(x: 1, y: 2)
+  operation atOrigin() -> List[String] effects Error =
+    let rel = marker_row
+    let f = rel.fix(at: origin())
+    f.takeN(9)
+end
+"#;
+    let mut interp = interp_for(src);
+    let r = interp
+        .call("test.wi727fixpt.atOrigin", &[])
+        .expect("atOrigin runs");
+    let mut got = drain_strings(r);
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["o".to_string(), "q".to_string()],
+        "the structural eq must select exactly the two markers at (1, 2) — not none \
+         (a failed structural compare) and not all three"
+    );
+}
+
+/// The fixed value need not be a SCALAR either: a NOMINAL value of a user sort, returned
+/// by an operation, restricts the column through the same semantic `eq` guard. Together
+/// with the two cases above this pins the whole claim — `fix`'s argument is an ordinary
+/// expression of the column's type, with no literal / compile-time-constant gate.
+#[test]
+fn wi727_fix_value_may_be_a_nominal_entity() {
+    let src = r#"
+namespace test.wi727fixctor
+  import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.Relation.{fix}
+  sort Color
+    entity red
+    entity blue
+  end
+  sort Item
+    entity item(name: String, color: Color)
+  end
+  fact item(name: "a", color: red)
+  fact item(name: "b", color: blue)
+  fact item(name: "c", color: red)
+  rule item_row(?name, ?color) :- item(name: ?name, color: ?color)
+  operation redColor() -> Color = red
+  operation reds() -> List[String] effects Error =
+    let rel = item_row
+    let f = rel.fix(color: redColor())
+    f.takeN(9)
+end
+"#;
+    let mut interp = interp_for(src);
+    let r = interp.call("test.wi727fixctor.reds", &[]).expect("reds runs");
+    let mut got = drain_strings(r);
+    got.sort();
+    assert_eq!(got, vec!["a".to_string(), "c".to_string()]);
 }
 
 /// A captured field naming NO column of the receiver schema is a LOAD error — the meaning
@@ -321,8 +488,10 @@ end
     );
 }
 
-/// A captured constant whose type mismatches its column is a LOAD error (the type check
-/// that lives in the `Without` reduction — `age` is `Int64`, `"x"` is `String`).
+/// A captured value whose type mismatches its column is a LOAD error (the type check that
+/// lives in the `Without` reduction — `age` is `Int64`, `"x"` is `String`). The rule is
+/// about the value's TYPE, not its constant-ness; `wi727_fix_type_mismatch_computed_is_load_error`
+/// drives the same gate through the non-literal channel.
 #[test]
 fn wi727_fix_type_mismatch_is_load_error() {
     let src = r#"
@@ -345,6 +514,51 @@ end
         Ok(_) => panic!("a type-mismatched fix must be a load error"),
     };
     assert!(!err.is_empty(), "expected a loud diagnostic");
+}
+
+/// The type gate through the NON-LITERAL channel. The literal case above proves nothing
+/// about it: a literal's type is syntactically evident, while a captured field's type comes
+/// from the typed argument result and is checked by `types_compatible`, which UNIFIES — so
+/// an argument arriving as an unresolved var would pass VACUOUSLY and yield a silently
+/// empty relation instead of a load error. CONTROL: `thirty()` (same shape, right type)
+/// loads clean in `names_at_computed`; only the type differs here.
+///
+/// MEASURED back-out — `if false &&` on the `types_compatible` call in
+/// `without_named_tuple_types` (typing.rs): THIS test and
+/// `wi727_fix_type_mismatch_is_load_error` fail, the other 15 in this file pass either way
+/// by design. So the literal arm is not vacuous after all (it does reach this gate, not a
+/// separate literal-typing path), and what this one adds is coverage of the channel where
+/// the type is INFERRED rather than syntactically evident.
+#[test]
+fn wi727_fix_type_mismatch_computed_is_load_error() {
+    let src = r#"
+namespace test.wi727fixtyc
+  import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.Relation.{fix}
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+  rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
+  operation notanint() -> String = "x"
+  operation bad() -> List[String] effects Error =
+    let rel = person_row
+    let f = rel.fix(age: notanint())
+    f.takeN(9)
+end
+"#;
+    let err = match try_load_kb_with(src) {
+        Err(e) => e,
+        Ok(_) => panic!(
+            "a computed argument of the wrong type must be a load error — the `Without` \
+             type check must not be vacuous off the non-literal channel"
+        ),
+    };
+    let joined = err.join("\n");
+    assert!(
+        joined.contains("age"),
+        "the diagnostic should name the offending column; got: {joined}"
+    );
 }
 
 /// TWO variadic capture parameters is ambiguous — a LOAD error ("at most one, trailing").

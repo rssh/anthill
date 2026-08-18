@@ -2109,12 +2109,13 @@ fn relation_union(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 /// BOUND before a guard reads it — which is what keeps a `!` (negation-as-failure)
 /// from floundering on a free column variable.
 fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [r, cond] = expect_args::<2>("Relation.where_run", args)?;
+    let [r, cond, params] = expect_args::<3>("Relation.where_run", args)?;
     let (query, columns) = expect_relation(r)?;
     // The whole-row sentinel symbol (if `compile_operand` ever minted one) — resolved
     // ONCE here, not per `Var::Global` node in the recipe walk.
     let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
-    let condition = fill_column_holes(&interp.kb, &cond, &columns, whole_row)?;
+    let params = spec_record_fields(&params, "a where-condition parameter record")?;
+    let condition = fill_recipe_holes(&interp.kb, &cond, &columns, whole_row, params)?;
     let filtered = interp.build_logical_query_value(
         "conjunction",
         vec![("left", (*query).clone()), ("right", condition)],
@@ -2131,22 +2132,45 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// field (column names are head-variable names, never dunders).
 const WHOLE_ROW_HOLE: &str = "__anthill_where_whole_row__";
 
-/// Replace each column HOLE in a `LogicalQuery` recipe `Value` — a `Var::Global`
-/// variable whose NAME is a schema field symbol (`guarded_of` mints it from `c.x`) —
-/// with `r`'s real column variable of that name (WI-714 `where_run`). The walk is over
-/// the whole recipe, so it reaches the atoms nested under a WI-730 `&&`/`||`/`!` spine
-/// exactly as it reached the lone atom of the first increment. Matching is by the
-/// interned field/column `Symbol`: the SAME symbol names the lambda's field access
-/// and the relation's column, so this is exact canonical equality, NOT a
-/// cross-scope short-name compare (WI-672). Every `Var::Global` in a `guarded_of`
-/// goal is a column hole (the translation introduces vars only for columns), so a
-/// hole naming no column — or a `Value::Node` occurrence, which never appears in an
-/// eval-built goal — is a loud error, never a silent drop.
-fn fill_column_holes(
+/// WI-1127 — name prefix for a PARAMETER hole in a row-condition recipe: the operand
+/// that is neither a column nor a literal (`eq(c.age, v)`, `eq(c.age, thirty())`).
+/// `compile_operand` mints `<prefix>N__` for the Nth such operand and hands the
+/// EXPRESSION to the runner as a captured argument under that SAME label, so
+/// `where_run`/`join_run` fill the hole by exact interned-`Symbol` match — the seam a
+/// column hole already uses. A dunder, so it can clash with neither a user field
+/// (column names are head-variable names) nor the whole-row sentinel above.
+const PARAM_HOLE_PREFIX: &str = "__anthill_row_param_";
+
+/// Replace each HOLE in a `LogicalQuery` recipe `Value` with what fills it. A hole is a
+/// `Var::Global` variable minted by the row-lambda compiler and identified by its NAME
+/// symbol; there are three kinds, and the name space is disjoint by construction:
+/// a COLUMN hole named by a schema field symbol (`guarded_of` mints it from `c.x`) takes
+/// `r`'s real column variable of that name (WI-714), the WHOLE-ROW sentinel takes the
+/// sole column of a 1-collapse relation, and a PARAMETER hole (WI-1127) takes the value
+/// its captured operand evaluated to.
+///
+/// The walk is over the whole recipe, so it reaches the atoms nested under a WI-730
+/// `&&`/`||`/`!` spine exactly as it reached the lone atom of the first increment.
+/// Matching is by the interned `Symbol` in all three cases: the SAME symbol names the
+/// lambda's field access and the relation's column, and the SAME symbol names a parameter
+/// hole and its capture-record field — exact canonical equality, NOT a cross-scope
+/// short-name compare (WI-672). Every `Var::Global` in a `guarded_of` goal is one of the
+/// three (the translation introduces vars for nothing else), so a hole matching none —
+/// or a `Value::Node` occurrence, which never appears in a MACRO-BUILT recipe — is a loud
+/// error, never a silent drop.
+///
+/// That `Value::Node` rule is about the RECIPE's own structure and NOT about what a
+/// parameter carries: a captured operand's value is arbitrary runtime data, spliced in
+/// verbatim without inspection, exactly as `relation_fix` splices its argument. A
+/// reflect-valued column compared against a reflect-valued operand therefore puts a
+/// `Value::Node` in the goal legitimately, through both constructs alike; the guard below
+/// is not weakened by that, because it never governed values in the first place.
+fn fill_recipe_holes(
     kb: &crate::kb::KnowledgeBase,
     v: &Value,
     columns: &[(crate::intern::Symbol, crate::kb::term::VarId)],
     whole_row: Option<crate::intern::Symbol>,
+    params: &[(crate::intern::Symbol, Value)],
 ) -> Result<Value, EvalError> {
     use crate::kb::term::Var;
     match v {
@@ -2157,11 +2181,11 @@ fn fill_column_holes(
         } => {
             let mut pos2 = Vec::with_capacity(pos.len());
             for c in pos.iter() {
-                pos2.push(fill_column_holes(kb, c, columns, whole_row)?);
+                pos2.push(fill_recipe_holes(kb, c, columns, whole_row, params)?);
             }
             let mut named2 = Vec::with_capacity(named.len());
             for (k, c) in named.iter() {
-                named2.push((*k, fill_column_holes(kb, c, columns, whole_row)?));
+                named2.push((*k, fill_recipe_holes(kb, c, columns, whole_row, params)?));
             }
             Ok(Value::Entity {
                 functor: *functor,
@@ -2171,6 +2195,17 @@ fn fill_column_holes(
         }
         Value::Var(Var::Global(hole)) => {
             let name = hole.name();
+            // WI-1127 — a PARAMETER hole: the compiler could not fold this operand (it is
+            // neither a column nor a literal), so it left a hole and captured the
+            // EXPRESSION as an argument; the value arrived here already evaluated, in the
+            // caller's scope. Keyed by the same interned `Symbol` on both ends (the hole's
+            // name IS the capture record's field label), so this is the exact-symbol match
+            // a column hole gets, not a name compare. Tried FIRST: a parameter label is a
+            // dunder (`__anthill_row_param_N__`), which no column and no user field can
+            // spell, so the three hole kinds cannot collide.
+            if let Some((_, val)) = params.iter().find(|(p, _)| *p == name) {
+                return Ok(val.clone());
+            }
             // A WHOLE-ROW hole (bare binder `c`, e.g. `eq(c, 30)`) refers to the entire
             // row, which is a single column ONLY for a 1-collapse (single-column)
             // relation. Over a multi-column relation the whole row is a named tuple with
@@ -2191,10 +2226,20 @@ fn fill_column_holes(
                 };
             }
             let (_, vid) = columns.iter().find(|(cn, _)| *cn == name).ok_or_else(|| {
+                let local = kb.local_name_of(name);
+                // A dunder-named hole that reached here is a PARAMETER hole the capture
+                // record does not carry — a compile/runtime channel desync, not a schema
+                // question, so it says so rather than blaming the schema.
+                if local.starts_with(PARAM_HOLE_PREFIX) {
+                    return EvalError::Internal(format!(
+                        "where_run: the compiled condition references parameter hole `{local}`, \
+                         which the capture record does not carry ({} parameter(s) passed)",
+                        params.len()
+                    ));
+                }
                 EvalError::Internal(format!(
-                    "where_run: the compiled condition references column `{}`, which is not \
-                     in the relation's schema",
-                    kb.local_name_of(name)
+                    "where_run: the compiled condition references column `{local}`, which is \
+                     not in the relation's schema"
                 ))
             })?;
             Ok(Value::Var(Var::Global(*vid)))
@@ -2242,8 +2287,11 @@ fn macro_rejects(
 /// [`compile_condition`] for the tree→query mapping. A field access `c.x` on the
 /// binder becomes a column HOLE: a fresh var NAMED by the field symbol `x`, which
 /// `where_run` fills with `r`'s real column of that name (canonical `Symbol` match,
-/// not a short-name compare). A literal becomes its value. Anything else is a loud
-/// compile error (LINQ's "cannot translate").
+/// not a short-name compare). A literal becomes its value. Any other operand that does
+/// not READ the row becomes a PARAMETER hole, its expression captured as an argument of
+/// the spliced `where_run` call (WI-1127, [`compile_operand`]). An operand that does read
+/// the row, and a condition outside the goal-expressible `Bool` subset, are loud compile
+/// errors (LINQ's "cannot translate").
 fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::{Expr, Pattern};
     use std::rc::Rc;
@@ -2284,13 +2332,15 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     };
 
     // Compile the lambda body, as syntax, into a query recipe (column refs → holes),
-    // then splice `where_run(r, <recipe>)` — the runtime back-end.
-    let recipe = compile_condition(interp, &body, &[binder])?;
+    // then splice `where_run(r, <recipe>, <captured params>)` — the runtime back-end.
+    let mut params = Vec::new();
+    let recipe = compile_condition(interp, &body, &[binder], &mut params)?;
     splice_query_runner(
         interp,
         "anthill.prelude.Relation.where_run",
         &[r_occ],
         recipe,
+        params,
     )
 }
 
@@ -2300,11 +2350,31 @@ fn relation_guarded_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 /// `anthill.reflect.LogicalQuery` (the `runner`'s `cond: LogicalQuery` slot); the
 /// relation occurrences pass through positionally ahead of it. The result is a normal
 /// runtime call the typer re-types (via the macro-expand splice) and eval runs.
+///
+/// WI-1127 — `params` are the condition's row-independent operand OCCURRENCES, one per
+/// PARAMETER hole `compile_operand` minted, riding as NAMED arguments labelled by the
+/// hole's own symbol. They fill the runner's trailing variadic capture (`...params: P`,
+/// proposal 056), which the typer folds into one named-tuple record — so the runner
+/// reads `(hole-label ↦ value)` and matches it against the recipe's holes by exactly the
+/// interned symbol both sides were minted from. The occurrences are re-typed HERE, in
+/// the caller's scope, which is the whole point: their meaning (`v`, `thirty()`) exists
+/// at the call and not inside the lambda the macro read as syntax.
+///
+/// It is not the only synthesizer of an `Expr::Apply` carrying NAMED arguments —
+/// `substitute_to_occurrence` (kb/simp_rewrite.rs) copies parse-checked keys, and
+/// `normalize_variadic_capture` itself rebuilds one from a call's own labels. It is the
+/// only one that MINTS its labels rather than carrying labels an author wrote, which is
+/// what the WI-805 duplicate-label guard's reachability note turns on (typing.rs): a
+/// running counter cannot repeat, so the guard stays unreachable through this path.
 fn splice_query_runner(
     interp: &mut Interpreter,
     runner_qn: &str,
     relations: &[std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>],
     recipe: Value,
+    params: Vec<(
+        crate::intern::Symbol,
+        std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    )>,
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::{Expr, NodeOccurrence};
     use std::rc::Rc;
@@ -2355,7 +2425,7 @@ fn splice_query_runner(
         Expr::Apply {
             functor: runner,
             pos_args,
-            named_args: Vec::new(),
+            named_args: params,
             type_args: Vec::new(),
         },
         Rc::clone(anchor),
@@ -2436,12 +2506,14 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
             &cond_occ,
         ));
     }
-    let recipe = compile_condition(interp, &body, &binders)?;
+    let mut params = Vec::new();
+    let recipe = compile_condition(interp, &body, &binders, &mut params)?;
     splice_query_runner(
         interp,
         "anthill.prelude.Relation.join_run",
         &[r1_occ, r2_occ],
         recipe,
+        params,
     )
 }
 
@@ -2457,7 +2529,7 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 ///      (`conjunction` conjoins the two queries, `guarded` adds the join predicate) — so
 ///      the result stays a composable `Relation` over the merged schema.
 fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [r1, r2, cond] = expect_args::<3>("Relation.join_run", args)?;
+    let [r1, r2, cond, params] = expect_args::<4>("Relation.join_run", args)?;
     let (q1, cols1) = expect_relation(r1)?;
     let (q2, cols2) = expect_relation(r2)?;
 
@@ -2511,7 +2583,8 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     // why this is `conjunction` and not `guarded`). Condition LAST, so both rows'
     // columns are bound before it runs.
     let whole_row = interp.kb.lookup_symbol(WHOLE_ROW_HOLE);
-    let condition = fill_column_holes(&interp.kb, &cond, &merged, whole_row)?;
+    let params = spec_record_fields(&params, "a join-condition parameter record")?;
+    let condition = fill_recipe_holes(&interp.kb, &cond, &merged, whole_row, params)?;
     let product = interp.build_logical_query_value(
         "conjunction",
         vec![("left", (*q1).clone()), ("right", q2_fresh)],
@@ -2524,25 +2597,28 @@ fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     })
 }
 
-/// WI-787: read a column-keyed SPEC record (`Relation.project_run`'s projection
-/// map, `Relation.fix`'s restriction record) — the `named` half of a tuple, with
-/// a POSITIONAL component refused loudly rather than ignored.
+/// WI-787: read a NAME-KEYED record — `Relation.project_run`'s projection map,
+/// `Relation.fix`'s restriction record, and (WI-1127) `where_run`/`join_run`'s
+/// captured condition parameters — as the `named` half of a tuple, with a
+/// POSITIONAL component refused loudly rather than ignored.
 ///
-/// These two builtins are the tuple readers that legitimately want `named`
-/// ALONE: every entry is `column-name ↦ …`, and a positional component carries
-/// no column name, so there is nothing it could restrict or select. But reading
-/// one half and dropping the other is exactly the WI-787 defect, and here it
-/// would degrade silently — a spec whose components all landed in `pos` reads as
-/// the EMPTY record, which both builtins treat as the identity, so the filter
-/// vanishes and the query returns unrestricted rows.
+/// These are the tuple readers that legitimately want `named` ALONE: every entry
+/// is `name ↦ …` (a column for the first two, a recipe hole for the third), and a
+/// positional component carries no name, so there is nothing it could restrict,
+/// select or fill. But reading one half and dropping the other is exactly the
+/// WI-787 defect, and here it would degrade silently — a record whose components
+/// all landed in `pos` reads as EMPTY, which every caller treats as "nothing to
+/// do", so the filter vanishes and the query returns unrestricted rows.
 ///
-/// No source program reaches this — `project_run`'s spec is built by the typer
-/// with `pos` hardcoded empty, and `fix`'s is rejected upstream by the `Without`
+/// No source program reaches this. `project_run`'s spec is built by the typer
+/// with `pos` hardcoded empty; `fix`'s is rejected upstream by the `Without`
 /// reduction, which refuses a key naming no column (MEASURED: `fix(_1: 3)`,
 /// where `_1` is the synthetic positional label for index 0 and so is hoisted
-/// into `pos`, fails to LOAD). The guard is for a programmatically-built spec,
-/// and it is a loud error rather than a `debug_assert` because the silent
-/// reading is a WRONG ANSWER, not a crash.
+/// into `pos`, fails to LOAD); and the condition parameters are minted by
+/// `compile_operand` as NAMED arguments alone, so the capture has no positional
+/// leftover to bind. The guard is for a programmatically-built record, and it is
+/// a loud error rather than a `debug_assert` because the silent reading is a
+/// WRONG ANSWER, not a crash.
 fn spec_record_fields<'a>(
     spec: &'a Value,
     what: &'static str,
@@ -2552,8 +2628,8 @@ fn spec_record_fields<'a>(
         Value::Tuple { pos, .. } => Err(EvalError::TypeMismatch {
             expected: what,
             got: format!(
-                "a spec with {} POSITIONAL component(s), which name no column — every entry \
-                 must be `column-name ↦ value`",
+                "a record with {} POSITIONAL component(s), which name nothing — every entry \
+                 must be `name ↦ value`",
                 pos.len()
             ),
         }),
@@ -2620,25 +2696,47 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
 }
 
 /// `Relation.fix` (WI-714 / proposal 052 §"`fix` is sugar"; WI-727 / proposal 056) — the
-/// RUNTIME back-end of `fix(p, x: 1, z: 2)`: RESTRICT relation columns to constants and
+/// RUNTIME back-end of `fix(p, x: 1, z: 2)`: RESTRICT relation columns to given VALUES and
 /// DROP them. `fix` is an ORDINARY operation (proposal 056 §2.1) — no compile-time macro,
 /// no typer recognizer keyed on its name: the variadic capture folded its dynamic column
-/// arguments into `spec`, an ordinary `Value::Tuple` record `(column-name ↦ constant)`,
-/// which reaches this builtin as a plain argument. For each `(col, const)`: wrap
-/// `guarded(query, eq(col's variable, const))` — the same query-combining step
+/// arguments into `spec`, an ordinary `Value::Tuple` record `(column-name ↦ value)`,
+/// which reaches this builtin as a plain argument. For each `(col, val)`: wrap
+/// `guarded(query, eq(col's variable, val))` — the same query-combining step
 /// `where`/`negate`/`union` perform, with `eq` the resolver's equality connective
-/// (`PartialEq.eq`, as `where`'s guards use) restricting the column to the constant — then
+/// (`PartialEq.eq`, as `where`'s guards use) restricting the column to that value — then
 /// DROP that column from `columns`. The column variable stays in the query (still SOLVED),
 /// so a dropped column keeps the source relation's row multiplicity (bag semantics, OQ6,
 /// exactly as `project`). Columns match `spec` keys by canonical interned symbol (the same
 /// seam `project_run`/`where_run` use), NOT a short-name compare (WI-672). A key naming no
 /// column is a loud error; an empty record (`r.fix()`) is the identity.
+///
+/// "CONSTANT" IN 052's PROSE MEANS ROW-INDEPENDENT — one value for the whole restriction,
+/// as against `where`'s per-ROW predicate — and NOT a literal, NOT a compile-time constant.
+/// The argument is an ORDINARY expression of the column's type, evaluated ONCE at the call
+/// before `fix` is applied, so an operation result, a `let`-bound value, or the caller's own
+/// parameter all restrict identically; the guard is a semantic `eq` over whatever `Value`
+/// arrived, and there is no constant check in the typer or here to relax. WI-735 asked to
+/// relax a gate that does not exist here, and was rejected; the `wi727_fix_value_may_be_*`
+/// tests pin it, the runtime-parameter one being the control a literal-only `fix` could
+/// not pass.
+///
+/// SAME OPERAND SET AS `where` (WI-1127), by two different routes. `fix` takes its value
+/// as an ORDINARY ARGUMENT, already evaluated when it arrives here; `where`'s condition is
+/// a row lambda compiled AS SYNTAX by the `guarded_of` macro, which cannot fold a value
+/// that does not exist yet — so it CAPTURES the operand expression as a recipe parameter
+/// and `where_run` fills it with the same evaluated `Value` this builtin receives.
+///
+/// Until WI-1127 that was NOT so, and the header's `fix ≡ where(…) + project` was simply
+/// FALSE for every non-literal `v`: `compile_operand` admitted a column or a literal and
+/// refused the rest, so the `where` spelling of `fix(x: v)` did not load. The equivalence
+/// is stated here because it now holds, not because it always did — and that literal-only
+/// diagnostic is what WI-735 read and mis-attributed to `fix`, through this very claim.
 fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [p, spec] = expect_args::<2>("Relation.fix", args)?;
     let (query, columns) = expect_relation(p)?;
     let fixes = spec_record_fields(
         &spec,
-        "a fix record (column-name ↦ constant) captured named tuple",
+        "a fix record (column-name ↦ value) captured named tuple",
     )?;
     let eq_sym = interp
         .kb
@@ -2647,7 +2745,7 @@ fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             EvalError::Internal("fix: `anthill.prelude.PartialEq.eq` is unresolvable".to_string())
         })?;
     let mut query: Value = (*query).clone();
-    for (col_name, const_val) in fixes.iter() {
+    for (col_name, fixed_val) in fixes.iter() {
         // The relation's real column variable of this name — matched by canonical interned
         // `Symbol` (a column's name IS the intern-map entry for its short name), the same
         // seam `project_run` uses. The typer's `Without` reduction already verified the
@@ -2658,13 +2756,15 @@ fn relation_fix(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
                 interp.kb.local_name_of(*col_name)
             ))
         })?;
-        // The restrict guard `eq(?col, const)` — a goal atom the resolver conjoins with the
-        // query (guarded), pinning `?col` to the constant on the surviving solutions.
+        // The restrict guard `eq(?col, val)` — a goal atom the resolver conjoins with the
+        // query (guarded), pinning `?col` to that value on the surviving solutions. `val` is
+        // whatever the argument evaluated to (see the header): no constant-ness is asked of
+        // it here or anywhere upstream.
         let guard = Value::Entity {
             functor: eq_sym,
             pos: std::rc::Rc::from(vec![
                 Value::Var(crate::kb::term::Var::Global(vid)),
-                const_val.clone(),
+                fixed_val.clone(),
             ]),
             named: std::rc::Rc::from(Vec::new()),
         };
@@ -2723,6 +2823,10 @@ const BOOLEAN_CONNECTIVES: [(&str, &str, &[&str]); 3] = [
 /// | `or(a, b)`                       | `disjunction(left, right)`         |
 /// | `not(a)`                         | `negation(query)`                  |
 ///
+/// `params` collects the atoms' captured OPERANDS — see [`compile_operand`]. It is
+/// threaded through the connective recursion rather than gathered per atom, so the whole
+/// tree's parameters share one index space and one capture record.
+///
 /// All four are already wired in the `kb/execute.rs` lowerer, which is what makes
 /// nesting free: it flattens a conjunction into a goal LIST and lifts a MULTI-goal
 /// `or`/`not` branch through a synthesized conjunction rule (`_synth_N(?vars) :-
@@ -2736,6 +2840,10 @@ fn compile_condition(
     interp: &mut Interpreter,
     body: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
     binders: &[crate::intern::Symbol],
+    params: &mut Vec<(
+        crate::intern::Symbol,
+        std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    )>,
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
     let Some(Expr::Apply {
@@ -2778,7 +2886,7 @@ fn compile_condition(
         }
         let mut operands = Vec::with_capacity(fields.len());
         for (field, arg) in fields.iter().zip(pos_args) {
-            operands.push((*field, compile_condition(interp, arg, binders)?));
+            operands.push((*field, compile_condition(interp, arg, binders, params)?));
         }
         return interp.build_logical_query_value(ctor, operands);
     }
@@ -2828,11 +2936,11 @@ fn compile_condition(
     }
     let mut pos = Vec::with_capacity(pos_args.len());
     for a in pos_args {
-        pos.push(compile_operand(interp, a, binders)?);
+        pos.push(compile_operand(interp, a, binders, params)?);
     }
     let mut named = Vec::with_capacity(named_args.len());
     for (k, a) in named_args {
-        named.push((*k, compile_operand(interp, a, binders)?));
+        named.push((*k, compile_operand(interp, a, binders, params)?));
     }
     let atom = Value::Entity {
         functor: *functor,
@@ -2845,10 +2953,27 @@ fn compile_condition(
 /// Compile one predicate operand: a column field-access `c.x` on a binder becomes a
 /// HOLE (a fresh var named `x`, filled by `where_run`/`join_run`); a literal becomes
 /// its value. `binders` holds the one (`where`) or two (`join`) row binders.
+///
+/// WI-1127 — ANY OTHER operand that does not mention a row binder becomes a second kind
+/// of hole: a PARAMETER. The macro reads the lambda as SYNTAX, at load time, so a
+/// `let`-bound name or an operation call has no value yet to fold — but it has no
+/// dependence on the row either, so it is one value for the whole restriction, exactly
+/// what `fix` already takes as an ordinary argument. It is pushed onto `params` under a
+/// freshly-minted dunder label and re-emitted by [`splice_query_runner`] as a captured
+/// argument of the runner, which evaluates it in the CALLER's scope and fills the hole.
+///
+/// A ROW-DEPENDENT operand (`plus(c.age, 1)`) stays a loud rejection: there is no single
+/// value to capture, and computing per row is not what a query goal does — 052's "cannot
+/// translate". Recognized by [`mentions_binder`] — a read of one of THESE binder symbols
+/// anywhere in the subtree, nested lambda bodies included.
 fn compile_operand(
     interp: &mut Interpreter,
     occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
     binders: &[crate::intern::Symbol],
+    params: &mut Vec<(
+        crate::intern::Symbol,
+        std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    )>,
 ) -> Result<Value, EvalError> {
     use crate::kb::node_occurrence::Expr;
     use crate::kb::term::{Literal, Var};
@@ -2868,26 +2993,67 @@ fn compile_operand(
         let hole = interp.kb.fresh_var(sole);
         return Ok(Value::Var(Var::Global(hole)));
     }
-    match occ.as_expr() {
-        Some(Expr::Const(lit)) => Ok(match lit {
-            Literal::Int(n) => Value::Int(*n),
-            Literal::Float(f) => Value::Float(f.0),
-            Literal::Bool(b) => Value::Bool(*b),
-            Literal::String(s) => Value::Str(s.clone()),
-            other => {
-                return Err(macro_rejects(
-                    "an Int/Float/Bool/String literal in the `where` condition",
-                    format!("an unsupported literal kind: {other:?}"),
-                    occ,
-                ))
-            }
-        }),
-        _ => Err(macro_rejects(
-            "a column (`c.x`) or a literal in the `where` condition",
-            "an operand that is neither a row column nor a literal".to_string(),
-            occ,
-        )),
+    // A LITERAL folds into the recipe directly — no capture, no runtime argument.
+    // (Only the four scalar kinds; any other `Const` takes the parameter channel below,
+    // where it is evaluated like any other expression rather than refused.)
+    if let Some(Expr::Const(lit)) = occ.as_expr() {
+        match lit {
+            Literal::Int(n) => return Ok(Value::Int(*n)),
+            Literal::Float(f) => return Ok(Value::Float(f.0)),
+            Literal::Bool(b) => return Ok(Value::Bool(*b)),
+            Literal::String(s) => return Ok(Value::Str(s.clone())),
+            _ => {}
+        }
     }
+    // ROW-DEPENDENT: nothing to capture — the operand's value differs per row.
+    if mentions_binder(occ, binders) {
+        return Err(macro_rejects(
+            "a row-INDEPENDENT operand — a column (`c.x`), a literal, or any expression \
+             that does not read the row (it is captured and evaluated once, at the call)",
+            "an operand that COMPUTES over the row binder — a query goal compares columns, \
+             it does not evaluate expressions per row (compute it with `.map` on the \
+             stream instead)"
+                .to_string(),
+            occ,
+        ));
+    }
+    // A PARAMETER: hole + captured expression, keyed by one freshly-minted label.
+    let label = interp
+        .kb
+        .intern(&format!("{PARAM_HOLE_PREFIX}{}__", params.len()));
+    params.push((label, std::rc::Rc::clone(occ)));
+    let hole = interp.kb.fresh_var(label);
+    Ok(Value::Var(Var::Global(hole)))
+}
+
+/// WI-1127 — does `occ` read a row binder anywhere in its subtree? The test that splits
+/// a row-INDEPENDENT operand (capturable as a recipe parameter, evaluated once at the
+/// call) from a row-DEPENDENT one (a loud rejection). Walks the occurrence children
+/// through the canonical [`for_each_child`]; a non-`Expr` child (a nested lambda's
+/// Pattern) binds names rather than reading them.
+///
+/// The match is on the binder SYMBOLS, not their spelling, and both halves of that are
+/// driven by `wi1127_binder_matching_is_symbol_exact_and_descends`. It DESCENDS into a
+/// nested lambda's body, so `apply1(lambda z -> c.age, 1)` is caught — stopping at the
+/// operand's top node would compile a per-row read into a goal that cannot mean it. And
+/// an inner binder that merely REUSES the row binder's spelling (`apply1(lambda c -> c,
+/// 30)`) is a DIFFERENT symbol, reads no row, and is captured — MEASURED, and correct:
+/// refusing it would reject an operand whose value is perfectly row-independent.
+fn mentions_binder(
+    occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,
+    binders: &[crate::intern::Symbol],
+) -> bool {
+    if is_binder_ref(occ, binders) {
+        return true;
+    }
+    let Some(expr) = occ.as_expr() else {
+        return false;
+    };
+    let mut found = false;
+    crate::kb::node_occurrence::for_each_child(expr, |child| {
+        found = found || mentions_binder(child, binders);
+    });
+    found
 }
 
 /// Recognize a column reference `c.x` on the row-lambda binder and return the field

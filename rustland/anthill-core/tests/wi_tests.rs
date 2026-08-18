@@ -77,6 +77,9 @@ mod wi739_guard_generator_delay_test;
 #[path = "include/wi727_fix_test.rs"]
 mod wi727_fix_test;
 
+#[path = "include/wi1127_condition_param_test.rs"]
+mod wi1127_condition_param_test;
+
 #[path = "include/wi734_abstract_operand_test.rs"]
 mod wi734_abstract_operand_test;
 
