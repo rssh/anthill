@@ -38,16 +38,18 @@
 //! one-pass reduction boundary. No arm passes under every back-out: this file measures only
 //! what the change made possible.
 //!
-//! WHAT THIS DID **NOT** CLOSE, measured rather than assumed, because WI-20260818-7X7NK asked
-//! to be re-checked here: a projection naming a column the schema does NOT have still reports
-//! dot dispatch's "no such member" rather than `projection_columns`' own message. MEASURED on
-//! this tree, at both receiver arities — `adults.(nosuch)` and `person_row.(nosuch)` each give
-//! "expected operation declared on the receiver's sort, got no such member (dot dispatch)".
-//! The route is unchanged: a projection field whose member does not resolve makes the
-//! recognizer decline, and the call falls through to ordinary dot dispatch. That fallthrough
-//! is load-bearing (`r.isEmpty` is the same node shape), so it stays 7X7NK's decision. No test
-//! here pins it — it would pass with and without this change, which is what that file's own
-//! rule forbids.
+//! WHAT THIS DID **NOT** CLOSE, and who closed it. This change left a projection naming a
+//! column the schema does NOT have still reporting dot dispatch's "no such member" rather
+//! than `projection_columns`' own message — measured here at both receiver arities
+//! (`adults.(nosuch)`, `person_row.(nosuch)`), because WI-20260818-7X7NK asked to be
+//! re-checked against this tree. It stayed that ticket's decision, and that ticket has since
+//! DELIVERED it: `projection_names_no_column_error` (kb/typing.rs) re-asks the failure as the
+//! projection the author wrote, keyed on WI-762's mark and gated on the same `Relation` sort
+//! test `build_relation_projection` uses. The load-bearing fallthrough (`r.isEmpty` and
+//! `r.(isEmpty)` are the same node shape as the failing projection) survived it. Still no
+//! test HERE — the arms and their controls live in
+//! `wi_7x7nk_projection_names_no_column_test`, and pinning them here would pin something this
+//! file's change does not decide.
 
 use crate::common::{interp_for, try_load_kb_with};
 use anthill_core::eval::{Interpreter, Value};

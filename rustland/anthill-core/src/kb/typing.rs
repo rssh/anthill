@@ -703,10 +703,19 @@ pub enum TypeErrorContext {
     OperationTypeParams {
         op_name: Symbol,
     },
-    /// WI-759: a dot projection `x.m` whose member RESOLVES but whose type does not — an
-    /// abstract field type with no readable interface, a variant-divergent field type. Kept
-    /// distinct from `DotDispatchNoMatch` ("no such member"): the member is right there, so
-    /// naming it as missing would point the user at the wrong thing.
+    /// WI-759: a dot projection `x.m` whose MEMBER is what is at fault, located by that
+    /// member's name. Two populations, and the second is why this is not simply
+    /// `DotDispatchNoMatch`:
+    ///  - the member RESOLVES but its type does not — an abstract field type with no readable
+    ///    interface, a variant-divergent field type. Naming it as MISSING would point the
+    ///    user at the wrong thing, since it is right there.
+    ///  - WI-20260818-7X7NK: the member is missing AND the surface says the author meant a
+    ///    COLUMN — a `.( )` projection over a relation. `DotDispatchNoMatch` is true of it
+    ///    and answers a question they did not ask; the projection's own message, which lists
+    ///    the schema's columns, is the one that repairs the program.
+    ///
+    /// For a RENAME `r.(a: f)` the member is the SOURCE `f`, never the result key `a` — the
+    /// key is the author's to invent, so it cannot be the thing that is wrong.
     DotProjection {
         member: Symbol,
     },
@@ -6537,6 +6546,13 @@ fn projection_columns(
     // `ages.(age)` fell through to dot dispatch and reported "no such member"
     // (WI-20260818-7X7NK). `.( )` no longer collapses, so a single-member projection over a
     // one-column relation is an ordinary projection and selects `age` by name.
+    //
+    // WI-20260818-7X7NK — AND THE FAILING DIRECTION REACHES THE DOT SURFACE TOO. The `Err`
+    // below used to be dot-surface-unreachable for a different reason than the collapse: a
+    // member that names no column does not type as a dot access either, so the FIELD failed
+    // one level down and its "no such member" short-circuited the tuple before any projection
+    // was recognized. [`projection_names_no_column_error`] calls this ahead of that
+    // short-circuit, so the sentence below is what the author of `r.(nosuch)` reads.
     let fields = schema_fields(kb, schema).ok_or_else(|| {
         format!(
             "`Project` cannot select from operand `T`: {}",
@@ -6552,14 +6568,28 @@ fn projection_columns(
             .iter()
             .find_map(|(f, t)| (short_name_of(kb.local_name_of(*f)) == *source).then(|| t.clone()))
             .ok_or_else(|| {
+                // The EMPTY schema gets its own sentence rather than an empty list. It is a
+                // reachable operand since WI-20260818-YQB1Y — `Unit` now means zero columns
+                // and ONLY zero columns, so a membership relation lands here for EVERY
+                // member — and "(its columns are: )" reads as a rendering bug rather than as
+                // the fact that there is nothing to select.
+                let have = if fields.is_empty() {
+                    "it has NONE — a membership relation's schema is `Unit`, which is zero \
+                     columns, so there is nothing to select from it"
+                        .to_string()
+                } else {
+                    format!(
+                        "its columns are: {}",
+                        fields
+                            .iter()
+                            .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
                 format!(
                     "the projection selects column `{source}`, which the relation's schema \
-                     does not have (its columns are: {})",
-                    fields
-                        .iter()
-                        .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                     does not have ({have})"
                 )
             })?;
         proj_columns.push((*result_key, col_ty));
@@ -6817,17 +6847,35 @@ fn build_relation_projection(
     ))
 }
 
-/// WI-714 — the `(receiver, source-column-short-name)` of a tuple field that is a bare
-/// single-column access `rel.c` on a relation VALUE — an `Expr::DotApply { receiver,
-/// name }` (the distribute-dot's desugaring over a value receiver, zero call args).
-/// `None` for any other field shape (including a bare rule-ref receiver, whose members
-/// desugar to `field_access(…, Ident)` and error before reaching here — that form needs
-/// a `let` binding first, the WI-443/F1 dot-access limitation `where`/`join` share), so
-/// the tuple falls through to ordinary tuple typing.
+/// WI-714 — the `(receiver, member-symbol, source-column-short-name)` of a tuple field that
+/// is a bare single-column access `rel.c` on a relation VALUE — an `Expr::DotApply {
+/// receiver, name }` (the distribute-dot's desugaring over a value receiver, zero call
+/// args). `None` for any other field shape — a NON-VALUE receiver, for which `convert.rs`
+/// builds `field_access` rather than `dot_apply` — so the tuple falls through to ordinary
+/// tuple typing.
+///
+/// A BARE RULE REF IS NOT ONE OF THOSE, though this said it was. The claim was that a rule
+/// ref's members "desugar to `field_access(…, Ident)` and error before reaching here — that
+/// form needs a `let` binding first, the WI-443/F1 dot-access limitation `where`/`join`
+/// share". MEASURED otherwise on this tree: `person_row.(name)` with no `let` loads and runs,
+/// and `person_row.(nosuch)` reaches the WI-20260818-7X7NK diagnostic — which is only
+/// reachable through a `Some` from here. The loader's value-rooted re-route
+/// (`field_access_root_is_value`, kb/load.rs) converts it to a `DotApply`, and
+/// [`projection_receiver_type`]'s `relation_ref_arg_type` rung types the bare ref. The `let`
+/// limitation is real for `where`/`join`, whose lambda argument is a different shape; it was
+/// carried over to projection, where it does not hold.
+///
+/// BOTH SPELLINGS OF THE MEMBER, because the two consumers ask different questions of it.
+/// The SHORT NAME is the schema lookup key — a relation schema's field symbols and the
+/// member written after the dot are minted in different scopes, so the column lookup is a
+/// within-schema name compare (WI-638 mode 3), not a symbol identity (WI-672). The SYMBOL is
+/// what a DIAGNOSTIC names (WI-20260818-7X7NK): `TypeErrorContext::DotProjection` locates the
+/// failure by the member the author wrote, which for a RENAME `r.(a: f)` is `f` and not the
+/// result key `a`.
 fn relation_column_access_parts(
     kb: &KnowledgeBase,
     field: &Rc<NodeOccurrence>,
-) -> Option<(Rc<NodeOccurrence>, String)> {
+) -> Option<(Rc<NodeOccurrence>, Symbol, String)> {
     match field.as_expr()? {
         Expr::DotApply {
             receiver,
@@ -6836,6 +6884,7 @@ fn relation_column_access_parts(
             named_args,
         } if pos_args.is_empty() && named_args.is_empty() => Some((
             Rc::clone(receiver),
+            *name,
             short_name_of(kb.local_name_of(*name)).to_string(),
         )),
         _ => None,
@@ -6937,7 +6986,7 @@ fn try_relation_projection_tuple(
     let mut receiver: Option<Rc<NodeOccurrence>> = None;
     let mut projections: Vec<(Symbol, String)> = Vec::with_capacity(named_args.len());
     for (label, field) in named_args {
-        let (recv_occ, source) = relation_column_access_parts(kb, field)?;
+        let (recv_occ, _member, source) = relation_column_access_parts(kb, field)?;
         match &receiver {
             None => receiver = Some(recv_occ),
             // WI-814 made this WRITABLE — see the note below.
@@ -7038,6 +7087,160 @@ fn try_relation_projection_tuple(
         &projections,
         occ,
     )
+}
+
+/// WI-20260818-7X7NK — the diagnostic for a `.( )` projection that names no column of the
+/// relation it projects. Called from the `TypeBuildFrame::Constructor` arm AHEAD of its
+/// `collect_arg_errors`, because the defect is that the field's own error arrives first and
+/// is about the wrong question — and it arrives THERE, not at `check_constructor_iter`'s own
+/// aggregator, which a failing field never reaches.
+///
+/// THE ROUTE IT REPLACES. `r.(nosuch)` desugars (§6.8) to the marked tuple
+/// `(nosuch: r.nosuch)`, so the projection is recognized at the TUPLE
+/// ([`try_relation_projection_tuple`]) while `r.nosuch` is typed as an ordinary member
+/// access one level down. `nosuch` is no column and no member, so dot dispatch fails and
+/// `collect_arg_errors` surfaces "no such member (dot dispatch)" — a TRUE sentence about a
+/// question the author did not ask. They wrote a column selection and were told their
+/// relation has no METHOD of that name.
+///
+/// PER FIELD, AND IT REPLACES NOTHING IT DID NOT ANSWER. This returns the projection's
+/// COMPLETE error list, in field order, with only the fields it can re-ask rewritten and
+/// every other error kept verbatim for the caller to aggregate. It was first written to pick
+/// the FIRST failing field and return that one error, and both halves of that were wrong:
+/// `r.(takeN, nosuch)` reported `nosuch` through dot dispatch again — the very defect, one
+/// coordinate (field order) over, on a surface where the order is the author's arbitrary
+/// choice — and `r.(nosuch, takeN)` DROPPED `takeN`'s arity error entirely. Neither is
+/// visible to a fixture whose fields all fail the same way, which is why every arm of the
+/// first cut agreed with it.
+///
+/// `None` when nothing was rewritten, so the ordinary aggregator runs unchanged rather than
+/// this cloning an identical list.
+///
+/// THREE GATES, and the order is the whole justification:
+///  1. the SURFACE FORM — `Expr::Constructor { from_projection: true }`, the mark
+///     `convert.rs` leaves on the desugared tuple (WI-762). A grammar-owned closed set, which
+///     is what [`try_relation_projection_tuple`] already keys its typing decision on, so a
+///     hand-written `(nosuch: r.nosuch)` is untouched and keeps dot dispatch's message.
+///  2. the FIELD's failure is `DotDispatchNoMatch` for that field's OWN member — see below.
+///  3. the receiver's SORT is `Relation`. This is the same gate
+///     [`build_relation_projection`] uses to decide projection-vs-tuple in the first place —
+///     not a new one — and it is inside the standing "nothing keys on an operation's
+///     identity" discipline for the reason that discipline exists: an op identity is an OPEN
+///     set the stdlib owns, while `Relation` is one kernel sort, named by §6.8 and declared
+///     in `stdlib/anthill/prelude/relation.anthill`. Nothing here keys on a Relation
+///     OPERATION.
+///
+/// WHY IT DOES NOT SWALLOW THE MEMBER READING. §6.8 admits ANY member after `.(`, not only
+/// a column — `r.(isEmpty)` is the tuple `(isEmpty: Bool)` and stays one. So the message
+/// says BOTH things: no column of that name, and no member either.
+///
+/// WHICH IS WHY THE FIELD'S FAILURE MUST BE `DotDispatchNoMatch` AND NOTHING ELSE. "The
+/// field failed" is NOT "the member does not exist", and reading it as such makes the second
+/// clause a LIE. MEASURED: `r.(takeN)` fails because `Stream.takeN` needs its `n` argument —
+/// the member is reachable, the repair is to supply it — and an unfiltered read reported "no
+/// member `takeN` is reachable on it either", destroying the arity error that said what to
+/// do. The same shape covers a requirement/coherence refusal, an effect mismatch, and — the
+/// sharpest case — `TypeErrorContext::DotProjection`'s OWN first population (WI-759: the
+/// member resolves but its type does not), which this very context is shared with.
+///
+/// `None` per field, too, for a non-`Relation` receiver, and that is not a gap: over an
+/// entity or a tuple, `x.(nosuch)` IS a member lookup by §6.8 and dot dispatch's message —
+/// which names the receiver's own sort — is the accurate one. The projection is still
+/// located, because `convert.rs` mints every distributed accessor with the WHOLE `.( )` span.
+fn projection_column_errors(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    positional: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_results: &[Result<TypeResult, TypeError>],
+    occ: &Rc<NodeOccurrence>,
+) -> Option<Vec<TypeError>> {
+    if !matches!(
+        occ.as_expr(),
+        Some(Expr::Constructor {
+            from_projection: true,
+            ..
+        })
+    ) {
+        return None;
+    }
+    // THE SAME TOTAL GUARD [`try_relation_projection_tuple`] takes, mirrored deliberately: a
+    // marked constructor with a POSITIONAL field is a shape the projection path refuses to
+    // interpret, so this must not speak for it either. It also bounds what the caller's early
+    // return can drop — the frame splits one result list at `pos_args.len()`, so `positional
+    // == 0` means there are no positional results beside these, and returning here in their
+    // place loses nothing. Both are implied by `convert.rs` building projections named-only;
+    // neither is a type-level fact, which is why the recognizer states it as a guard.
+    if positional > 0 || named_args.is_empty() {
+        return None;
+    }
+    if named_results.iter().all(|r| r.is_ok()) {
+        return None;
+    }
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut rewrote = false;
+    for (idx, result) in named_results.iter().enumerate() {
+        let Err(err) = result else { continue };
+        match named_args
+            .get(idx)
+            .and_then(|(_label, field)| projection_column_error(kb, env, field, err, occ))
+        {
+            Some(rewritten) => {
+                errors.push(rewritten);
+                rewrote = true;
+            }
+            None => errors.push(err.clone()),
+        }
+    }
+    rewrote.then_some(errors)
+}
+
+/// WI-20260818-7X7NK — ONE field of a marked `.( )` projection, re-asked as the column
+/// selection the author wrote. `None` leaves `err` exactly as it is; see
+/// [`projection_column_errors`] for what each gate is and why.
+fn projection_column_error(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    field: &Rc<NodeOccurrence>,
+    err: &TypeError,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<TypeError> {
+    let (receiver, member, source) = relation_column_access_parts(kb, field)?;
+    // THE FAILURE'S VARIANT, checked against THIS field's own member. Anything else — an
+    // arity error on a member that does exist, a requirement refusal, an unreadable member
+    // type — is a failure whose own message is the actionable one, and re-asking it as a
+    // column lookup would both destroy that message and assert a falsehood about
+    // reachability. The symbol compare cannot itself disable the gate: both sides read
+    // `*name` off the SAME `Expr::DotApply` occurrence (the frame binds the member it was
+    // pushed for; `relation_column_access_parts` reads it back off this very node), so it is
+    // a free conservative guard rather than a second question. The WI-672 short-name hazard
+    // lives in the SCHEMA lookup below, which is a short-name compare for that reason.
+    if !matches!(err, TypeError::DotDispatchNoMatch { member: m, .. } if *m == member) {
+        return None;
+    }
+    let recv_ty = projection_receiver_type(kb, env, &receiver)?;
+    let relation_sym = kb.try_resolve_symbol("anthill.prelude.Relation")?;
+    if sort_functor_of_view(kb, &recv_ty) != Some(relation_sym) {
+        return None;
+    }
+    let schema = extract_type_param(kb, &recv_ty, "T")?;
+    // The SHARED lookup, not a second one — `projection_columns` is the same decision
+    // procedure [`build_relation_projection`] runs to accept a projection and
+    // [`project_schema_type`] runs to re-derive its schema, so "this names no column" and
+    // its wording cannot drift from them (the WI-759 `FieldOf` discipline). `Ok` here means
+    // the column DOES exist while dot dispatch could not reach it as a member, which is not
+    // this function's question — that error is left alone.
+    let selection = [(member, source.clone())];
+    let why = projection_columns(kb, &schema, &selection).err()?;
+    Some(projection_type_error(
+        &TypeErrorContext::DotProjection { member },
+        Some(occ.span.span),
+        &format!(
+            "{why}. `.( )` admits any other member of the receiver too (spec §6.8), and no \
+             member `{source}` is reachable on it either — that second lookup is what the \
+             desugared `.{source}` reported."
+        ),
+    ))
 }
 
 /// WI-714 — the identity of a rule-head argument SLOT, stable across a relation's
@@ -10846,6 +11049,24 @@ fn build_type(
             // inline (no frame). A constructor has no declared RETURN for a relational
             // column to be, so the tolerance would mean nothing here either.
             let node = {
+                // WI-20260818-7X7NK — BEFORE the aggregator, and only ever INSTEAD of it.
+                // THIS is where a `.( )` projection's field failure short-circuits: the
+                // marked tuple never reaches `check_constructor_iter` at all, so the
+                // author's projection is never consulted and dot dispatch's "no such
+                // member" — about a question they did not ask — is what surfaces. It
+                // returns `None` for every field failure that is not that (see its gates),
+                // leaving the aggregator below the general owner.
+                if let Some(errors) = projection_column_errors(
+                    kb,
+                    &env,
+                    pos_args.len(),
+                    &named_args,
+                    &named_results,
+                    &occ,
+                ) {
+                    results.push(Err(aggregate_errors(errors)));
+                    return;
+                }
                 if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
                     results.push(Err(e));
                     return;

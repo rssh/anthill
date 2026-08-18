@@ -2766,7 +2766,7 @@ Two properties are load-bearing:
 every arity, one member included, so a projection's result type is always the tuple of its
 keys and a computed one-column result is `(a: A)` rather than the bare `A`. `Concat` and
 `Without` are therefore inverses at every arity, and a relation SCHEMA is the named tuple of
-its columns at every arity too (§4.6): `Relation[(board: Board)]`, whose rows are
+its columns at every arity too (§4.5): `Relation[(board: Board)]`, whose rows are
 `(board: …)` and whose column reads as `row.board`.
 
 This **replaces** the earlier 1-collapse, under which a single member yielded the scalar
@@ -2856,6 +2856,16 @@ deliberately so: **only a written `.( )` projects.** Over a relation, `r.(f1, f2
 is the projection `Relation[T = (f1: …, f2: …)]`, while a hand-written
 `(f1: r.f1, f2: r.f2)` is what it says — an ordinary named tuple whose two
 components are two independent single-column relations, evaluated separately.
+
+**A projection that names no column is reported as a projection.** Over a relation, a member
+that resolves to *nothing* — neither a column nor any member reachable on the receiver, as in
+`r.(nosuch)` — fails, and the failure names the projection and lists the schema's columns.
+Both readings are live at that surface at once (select a column; access any member, above),
+and reporting only the missing *member* answers the one the author is least likely to have
+meant. The rule is narrow on purpose: it applies to a **member lookup that found nothing**,
+never to a member that exists and whose *use* is wrong — `r.(takeN)` is missing an argument,
+not missing a column, and keeps its own error. A hand-written tuple and a non-relation
+receiver likewise keep the ordinary member message, which is the accurate one for each.
 
 That is the same distinction §4.5 draws elsewhere: a projection is an *operation
 on* a relation that happens to yield a tuple-shaped schema; a tuple literal *is* a
