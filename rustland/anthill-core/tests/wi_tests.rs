@@ -1291,6 +1291,9 @@ mod wi733_relation_head_eval_test;
 #[path = "include/wi1125_neq_not_an_override_test.rs"]
 mod wi1125_neq_not_an_override_test;
 
+#[path = "include/wi1128_one_collapse_join_test.rs"]
+mod wi1128_one_collapse_join_test;
+
 #[path = "include/wi1130_positional_capture_test.rs"]
 mod wi1130_positional_capture_test;
 

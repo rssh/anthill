@@ -2278,6 +2278,31 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// condition over a 1-collapse (single-column) relation — `eq(c, 30)`. `where_run`
 /// maps it to the relation's sole column. A dunder name that cannot clash with a user
 /// field (column names are head-variable names, never dunders).
+///
+/// WI-1128 — ONE SENTINEL, AND `join` HAS TWO BINDERS. [`compile_operand`] mints this same
+/// name for a bare `c` and a bare `q`, so in a join condition the hole can say neither WHICH
+/// row it came from nor match [`fill_recipe_holes`]'s sole-column arm, which tests the
+/// MERGED column list. A `join` whose 1-collapsed operand is read as a bare binder —
+/// `join(r, ages, (c, q) -> eq(c.age, q))`, the natural spelling — would therefore still
+/// fail even if the TYPER could name the collapsed column: the missing name is one blocker,
+/// this is a second and independent one. That is exactly why WI-1128 censused the readers
+/// rather than fixing `Concat` alone.
+///
+/// DOCUMENTED, NOT CHANGED, because there is no drivable control: keying the sentinel per
+/// binder is a change no test could measure, since no program in which the two holes differ
+/// can load (the WI-1078 shape, and the discipline WI-731 applied to `binder_field_access`
+/// for the same reason). THE ENFORCEMENT SITES, measured on the current tree — three
+/// spellings, each refused at LOAD by an INDEPENDENT gate:
+///  * `eq(c, q)` over two rows with DIFFERENT schemas — refused by `eq`'s own operand
+///    typing (`expected (name: String, age: Int64), got (who: String, dept: Int64)`);
+///  * the same over rows with the SAME schema — refused by `concat_named_tuple_types`'
+///    disjoint-name rule, since identical schemas collide on every column;
+///  * a user rule as the condition atom, `pairup(c, q)` — refused by the rule goal's own
+///    argument typing.
+///
+/// And if some fourth spelling ever escapes those, [`fill_recipe_holes`]'s whole-row arm is
+/// a LOUD `TypeMismatch` over any merged set that is not exactly one column — never a
+/// silent fill. So the ambiguity costs a worse message, never a wrong answer.
 const WHOLE_ROW_HOLE: &str = "__anthill_where_whole_row__";
 
 /// WI-1127 — name prefix for a PARAMETER hole in a row-condition recipe: the operand
@@ -2676,6 +2701,13 @@ fn relation_conjoin_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 ///   3. wraps `guarded(conjunction(r1.query, r2'.query), <goal>)` — a new LogicalQuery
 ///      (`conjunction` conjoins the two queries, `guarded` adds the join predicate) — so
 ///      the result stays a composable `Relation` over the merged schema.
+///
+/// WI-1128 — THIS SIDE NEEDS NO TYPER NAME. A relation VALUE carries `(name, VarId)` for
+/// every column whether or not its schema type 1-collapsed, so the merge below is already
+/// correct for a one-column operand: it is the TYPE that cannot state the merged schema
+/// (`collapse_schema` in kb/typing.rs holds that census). Which is why the refusal lives in
+/// `Concat` and not here — a runtime backstop cannot repair a schema type that downstream
+/// consumers have already read.
 fn relation_join_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [r1, r2, cond, params] = expect_args::<4>("Relation.join_run", args)?;
     let (q1, cols1) = expect_relation(r1)?;

@@ -138,11 +138,18 @@ sort anthill.prelude.Relation
   -- runtime does the query wrap.
   --
   -- The RUNTIME guard stays, and is not redundant: it reads the VALUE's own `columns`
-  -- list, which is a different population from the SCHEMA the typer sees. Two ways to
+  -- list, which is a different population from the SCHEMA the typer sees. THREE ways to
   -- reach it: a schema that was never statically known (an abstract `S` leaves the
   -- assertion symbolic per WI-734, and a wrapper widening its own return to a bare
-  -- `Relation` lets that residual escape unreduced), and a relation built through
-  -- reflect rather than from surface code. Two checks, two populations.
+  -- `Relation` lets that residual escape unreduced); a relation built through reflect
+  -- rather than from surface code; and a relation with exactly ONE column whose type IS
+  -- `Unit`, which 1-collapses to the same `Unit` a zero-column relation presents, so
+  -- `Membership` accepts it at load and only the drain refuses it (WI-728's recorded
+  -- limit — no type-level check can separate the two while the collapse is a paired
+  -- type-and-value convention). That third case is why `join` refuses a membership
+  -- operand outright rather than treating `Unit` as "no columns to merge" (WI-1128):
+  -- `negate` can afford the imprecision because this guard re-asks the question at
+  -- runtime, and a merged SCHEMA has no equivalent backstop.
   operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E]
 
   -- union — the BAG union of two relations (052 §algebra; multiplicity kept, OQ6):
@@ -243,10 +250,40 @@ sort anthill.prelude.Relation
   --
   -- Increment scope: any `and`/`or`/`not` nesting of atomic predicates `pred(c.x,
   -- q.y)` (WI-730, the same compiler `where` uses) over two MULTI-COLUMN relations
-  -- with DISJOINT column names. A shared column name across the two rows (`eq(c.x,
-  -- q.x)` when both have `x`) and a 1-collapsed / membership operand are deferred — a
-  -- loud error — because the merged schema would need to qualify/rename the clashing
-  -- column, or recover a name a 1-collapse dropped (a follow-up).
+  -- with DISJOINT column names.
+  --
+  -- A shared column name across the two rows (`eq(c.x, q.x)` when both have `x`) is a
+  -- loud error and still DEFERRED: the merged schema would have to rename the clashing
+  -- column, and the rename surface is WI-731's.
+  --
+  -- A 1-COLLAPSED or MEMBERSHIP operand is a loud error and is DECIDED, not deferred
+  -- (WI-1128) — two refusals with two reasons:
+  --   * ONE COLUMN: its schema presents as that column's TYPE (`Relation[Int64]`), so
+  --     the column NAME is not in the type at all (the 1-collapse), and a merged schema
+  --     needs a name for every column. The name is not recoverable later: the collapse
+  --     happens where the relation's type is built, and by the time `join` types, an
+  --     operand carries nothing but its type. Recovering it means keeping the column in
+  --     the schema while the value half still collapses — the paired type-and-value
+  --     convention kernel-language.md 6.8 weighed and declined. Write the join as a
+  --     rule body instead: shared logic variables join without needing a schema at all.
+  --   * ZERO COLUMNS (membership, `Unit`): a different question, and refused for a
+  --     stronger reason. `Unit` does not distinguish "no columns" from "one
+  --     `Unit`-typed column" (see `negate` above), so reading it as "nothing to merge"
+  --     could emit a merged schema with fewer columns than the row `join_run`
+  --     materializes — a type disagreeing with its own value. Joining a membership
+  --     relation is a FILTER rather than a merge; state it as a goal in a rule body.
+  --
+  -- THE ONE CASE THAT IS NOT REFUSED, AND CANNOT BE — a recorded limit, not an
+  -- oversight. The collapse erases ARITY, so a schema that IS a named tuple is equally
+  -- "n columns" and "ONE column whose type is that n-field tuple". The second reading
+  -- is spelled exactly like the ordinary working case, so no type-level check can
+  -- separate them, and `join` accepts it: over `entity h(p: (a: Int64, b: String))`,
+  -- `rule pairs(?p)` joined with a 2-column relation type-checks against a 4-column
+  -- merged schema while the row materialized has 3 columns. `fix` / `project` /
+  -- `negate` survive the same ambiguity because each asks the VALUE a question it can
+  -- answer ("is there a column of this name?") and refuses loudly at runtime; MERGING
+  -- IS NAME-FREE, so `join` has no such question to ask and nothing to detect. See
+  -- kernel-language.md 6.8; 052 OQ5 carries the redesign that would retire it.
   --
   -- Two-stage lowering, exactly as `where`: `join(?r1, ?r2, ?cond) <=> conjoin_of(?r1,
   -- ?r2, ?cond) [simp]` fires at COMPILE time; `conjoin_of` is a MACRO that reads the

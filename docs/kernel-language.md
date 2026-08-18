@@ -2793,6 +2793,34 @@ One consequence is **not** repaired by that and is a known limit: `Concat` and
 `Concat[A = Without[T = (a: A, b: B), Drop = (b: B)], B = (c: C)]` stalls with `A`
 where a named tuple is required, and nothing downstream can supply the lost `a`.
 
+The general statement is that **the collapse erases the schema's arity**, and the lost
+name is the arity-one case of it. A collapsed schema no longer says how many columns it
+came from, so three readings become indistinguishable at the type level:
+
+- **one column** — its name is gone, so a derived schema cannot name it;
+- **zero columns vs one `Unit`-typed column** — both spell `Unit`;
+- **n columns vs one column whose type is an n-field tuple** — both spell that tuple.
+
+The first is decided rather than deferred (WI-1128): a derived-schema constructor refuses
+a *plainly* one-column schema operand — `Concat`'s `A` and `B`, `Without`'s `T`,
+`Project`'s `T` — because each needs a name the collapse discarded, and an operand carries
+nothing but its type by the time it arrives. "Recover the name at the collapse boundary" is
+not an available fix: that boundary is where the relation's own type is built, and it is
+not on the path from any later use of it. Recovering the name *is* the "move both halves
+together" change above.
+
+The other two are **ambiguities, not refusals**, because in each the collapsed reading is
+spelled exactly like an ordinary working one. A constructor may therefore not read `Unit`
+as "no columns to merge" — that would compute a schema with fewer columns than the value
+it types — and it cannot detect the tuple-typed case at all. What separates them is a
+check that reads a relation VALUE's own column list, which `Relation.negate`,
+`Relation.fix` and `Relation.project` each keep and which fires loudly. `Concat` alone has
+no such check available: merging is name-free, so at runtime there is nothing wrong to
+detect — a join of a two-column relation with a one-column one whose column is tuple-typed
+computes a merged schema type that disagrees with the row it will actually materialize.
+That is a known limit of this convention, not a defect of the constructor, and it is the
+sharpest cost the collapse carries.
+
 **Grammar note.** The opener is a single fused `.(` token (a `.` immediately
 followed by `(`, no interior space). `.(` is otherwise-free syntax, so the
 receiver may be any atom **including a bare/dotted `name`** (`t.(x, y)`,

@@ -2951,6 +2951,75 @@ fn named_tuple_value(
 /// field order matches the runtime materialized row). The shared shape that
 /// [`assemble_relation_type`] (a fresh / projected relation) and [`without_named_tuple_types`]
 /// (fix's post-drop residual) both produce.
+///
+/// WI-1128 — THE COLLAPSE ERASES THE RELATION'S ARITY, and every refusal below follows
+/// from that one fact. The 1-arm returns `columns[0].1` — the sole column's TYPE — and the
+/// 0-arm returns `Unit`, so after this function a schema type no longer says how many
+/// columns it came from. Three consequences, and only the first is the one the ticket was
+/// filed about:
+///
+///  * ARITY 1 — the column's NAME is gone. A derived schema (`Concat` / `Without` /
+///    `Project`) needs a name for every column and cannot invent one.
+///  * ARITY 0 vs 1 — `Unit` is both "no columns" and "one `Unit`-typed column" (WI-728's
+///    recorded limit, pinned by
+///    `wi728_a_unit_typed_column_is_indistinguishable_from_no_columns`).
+///  * ARITY n vs 1 — a named tuple is both "n columns" and "ONE column whose type is that
+///    named tuple". MEASURED (review-found): over `entity pair_holder(p: (a: Int64, b:
+///    String))`, `rule pairs(?p)` has schema `(a: Int64, b: String)` — the SAME type a
+///    two-column relation over `a`/`b` has. This one is NOT a refusal, because the shape
+///    it is confused with is the ordinary working case; see the backstop table below.
+///
+/// THE NAME IS NOT RECOVERABLE, which is what the ticket asked. It was filed on the
+/// hypothesis that the name is "recoverable at the boundary rather than reconstructed —
+/// find the site that collapses it and read the pre-collapse name there". This IS that
+/// site, and it is not on the path from a later `join`: by then a relation operand carries
+/// nothing but its TYPE, and it may be a `let`-bound value, a `where`, a projection, not
+/// the citation whose column list was passed here. Reading the name off an argument
+/// OCCURRENCE that happens to be a bare rule citation would work for `r.join(ages, …)` and
+/// not for `let a = ages; r.join(a, …)`: a fallback whose behaviour changes with the
+/// spelling, not a fix. Recovering it means keeping the column in the SCHEMA while the
+/// value half still collapses — the paired type-and-value convention kernel-language.md
+/// §6.8 records as weighed and declined ("revisiting it means moving both halves
+/// together"), whose closing note already states this family's case: `Concat` and `Without`
+/// are not inverses at arity one, and "nothing downstream can supply the lost `a`".
+///
+/// WHO PAYS, AND WHO HAS A BACKSTOP — the census, measured on the current tree, because a
+/// fix at one reader would have left the others paying for the same erasure. The second
+/// column is what happens when the TYPE-level check is fooled by the arity ambiguity above,
+/// and it is the one that decides how bad each row is:
+///
+/// | reader | on a plainly 1-collapsed operand | when the ambiguity fools it |
+/// |---|---|---|
+/// | [`concat_named_tuple_types`] (`join`) | REFUSES | **NOTHING** — see below |
+/// | [`without_named_tuple_types`] (`fix`) | REFUSES | loud at runtime: "fix: restricts column `a`, which is not in the relation's schema" |
+/// | [`projection_columns`] (`project`) | REFUSES | loud at runtime: "project_run: the projection selects column `a`, which is not in the relation's schema" |
+/// | [`membership_schema_type`] (`negate`) | accepts `Unit` | loud at runtime: the host guard reads the value's own `columns` |
+///
+/// `Concat` IS THE ONE MEMBER WITH NO RUNTIME BACKSTOP, and the reason is structural rather
+/// than an omission: the other three ask the VALUE a question it can answer — "is there a
+/// column of this name?" — whereas merging is name-free, so at runtime there is nothing
+/// wrong to detect. `join_run` merging a 2-column relation with a 1-column one is CORRECT;
+/// only the type disagrees. MEASURED: `person_row.join(pairs, …)` type-checks against a
+/// declared `(name, age, a, b)` while the row materialized is `(name, age, p)` — four
+/// columns promised, three delivered, one of them absent from the type. That is the
+/// type-disagrees-with-its-own-value lie this family refuses `Unit` to avoid, arriving
+/// through the one door that cannot be closed from either side. Pinned as a recorded limit
+/// by `wi1128_a_tuple_typed_column_is_indistinguishable_from_two_columns`; 052 OQ5 carries
+/// the redesign that would retire it, and this is its strongest single argument.
+///
+/// Three more readers pay nothing:
+///  * `Relation.join_run`'s merged column set and `materialize_solution` (eval) — the
+///    runtime relation VALUE keeps `(name, VarId)` for every column, 1-collapsed or not, so
+///    the merge and the row build want nothing the type lost. READ, not driven — the typer
+///    refuses first, so no program reaches `join_run` with a plainly collapsed operand.
+///  * `where`'s condition compiler (eval) — a 1-collapsed row is reached with a BARE binder
+///    (`eq(c, 30)`, the `WHOLE_ROW_HOLE`), which needs no column name. Driven by
+///    `wi1128_where_over_a_one_collapsed_relation_still_runs`.
+///
+/// One caveat on the `project` row: a recovered name would fix its reducer, but the DOT
+/// surface never reaches its message — `r.(f)` 1-collapses at convert time to `r.f` (§6.8),
+/// so the recognizer declines and the fallthrough reports dot dispatch's "no such member".
+/// Only a WRITTEN `Project[T, Keep]` sees it.
 fn collapse_schema(
     kb: &mut KnowledgeBase,
     columns: &[(Symbol, Value)],
@@ -2963,42 +3032,158 @@ fn collapse_schema(
     }
 }
 
+/// WI-1128 — WHY a relation SCHEMA type carries no column names, for the derived-schema
+/// constructors that need them (`Concat` / `Without` / `Project`). Three shapes, kept apart
+/// because each wants DIFFERENT advice and because they are not one question:
+///
+///  * `Membership` — the schema is `Unit`. Read as a relation with NO columns; nothing to
+///    merge, drop or select.
+///  * `Collapsed` — the schema is a bare sort or a sort application. Read as ONE column's
+///    ELEMENT type (the 1-collapse, §6.8), whose NAME [`collapse_schema`] dropped — but it
+///    is also what a written non-schema operand looks like (a scalar, a `Relation[..]` type
+///    passed where its schema `r.T` was meant), so the message must offer BOTH readings
+///    rather than assert a collapse that may never have happened.
+///  * `NotASchema` — an arrow, an effect row, a denoted value: shapes a relation schema
+///    cannot be at all. A WRITTEN type can spell these, so they get a shape claim rather
+///    than an invented column — the rule [`membership_schema_type`] states for its catch-all.
+///
+/// THE `Ok` ARM IS NOT A CERTAINTY EITHER, and that is the sharp edge (review-found on
+/// WI-1128, MEASURED). A named tuple answers "n columns" and "ONE column whose type is that
+/// named tuple" identically — `collapse_schema`'s 1-arm returns `columns[0].1` verbatim, so
+/// a relation over `entity pair_holder(p: (a: Int64, b: String))` has schema `(a: Int64,
+/// b: String)`, the SAME type a two-column relation over `a`/`b` has. So this function
+/// CANNOT be made total in the direction that matters, and no caller may treat `Ok` as
+/// proof of arity. See [`collapse_schema`] for what that costs each caller and which of
+/// them has a runtime backstop.
+///
+/// The CLASSIFICATION is shared; the MESSAGE is not. Each caller phrases its own, because
+/// what the author should do next differs per operation (merge / drop / select), and a
+/// shared sentence would have to be vague about all three.
+enum NonTupleSchema {
+    Membership,
+    Collapsed,
+    NotASchema,
+}
+
+/// WI-1128 — read a relation schema's columns, or say WHICH shape it is instead
+/// ([`NonTupleSchema`]). `Ok` is the field list in schema order.
+fn schema_fields_or_shape(
+    kb: &KnowledgeBase,
+    t: &Value,
+) -> Result<Vec<(Symbol, Value)>, NonTupleSchema> {
+    // Resolved ONCE, and read as a THREE-valued answer. `membership_schema_type` DEFERS when
+    // `anthill.prelude.Unit` is unresolvable, because there it decides a VERDICT (accept or
+    // raise) and a failed lookup would turn the accepted type into the offender. Here every
+    // arm refuses, so an unresolvable `Unit` costs only a WRONG MESSAGE — a membership schema
+    // described as a collapsed column. Written out rather than left to `== Some(s)`'s silent
+    // `false`, because that is the shape `without_named_tuple_types` guards with `.zip(..)`
+    // and the difference between the two sites is a reason, not an oversight (review-found).
+    let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
+    match extract_type(kb, t) {
+        // NOT a certainty — see the doc above: this is also every ONE-column relation whose
+        // column type is itself a named tuple.
+        TypeExtractor::NamedTuple(fields) => Ok(fields),
+        // A BARE `Unit` sort ref — exactly what `collapse_schema` mints for zero columns. A
+        // `Unit[..]` APPLICATION is a different type and must not read as membership, the
+        // same distinction `membership_schema_type` draws.
+        TypeExtractor::SortRef(s) if unit == Some(s) => Err(NonTupleSchema::Membership),
+        // What a collapsed single column can be — a sort or a sort application — and equally
+        // what a written non-schema operand looks like. One classification, two readings; the
+        // callers' messages carry both.
+        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => {
+            Err(NonTupleSchema::Collapsed)
+        }
+        _ => Err(NonTupleSchema::NotASchema),
+    }
+}
+
+/// WI-1128 — [`concat_named_tuple_types`]'s per-operand read, and the refusal when the
+/// operand carries no column names. ONE function for BOTH operands, so `a` and `b` cannot
+/// drift apart — the discipline [`CtorReduction::operand_names`] states one level up.
+///
+/// Every arm still contains the words "named-tuple type": the existing pins
+/// (`wi714_join_one_collapse_operand_is_load_error`, `wi734_denoted_operand_is_still_loud`)
+/// measure that the refusal is LOUD and concrete, not its wording, and keeping the marker
+/// leaves them measuring what they were written to measure.
+fn concat_operand_fields(
+    kb: &KnowledgeBase,
+    v: &Value,
+    which: &str,
+) -> Result<Vec<(Symbol, Value)>, String> {
+    schema_fields_or_shape(kb, v).map_err(|shape| {
+        let ty = type_display_name_value(kb, v);
+        match shape {
+            // DECIDED IN WI-1128, and decided SEPARATELY from the 1-collapse above it: a
+            // membership operand stays refused, for a STRONGER reason than a missing name.
+            // `Unit` does not distinguish "no columns" from "one `Unit`-typed column"
+            // (WI-728), so reading it as "nothing to merge" would emit a merged schema TYPE
+            // with one column fewer than the merged column list `join_run` actually builds
+            // from the two VALUES — a type that disagrees with its own row, which is the
+            // WI-737 lie rather than a refusal. `negate` can afford the same imprecision
+            // because its runtime guard re-asks the question; a merged SCHEMA has no such
+            // backstop, since the type is what every downstream consumer reads.
+            NonTupleSchema::Membership => format!(
+                "`Concat` cannot merge operand `{which}`: its schema is `Unit`, not a \
+                 named-tuple type — a MEMBERSHIP relation, whose columns are all bound, \
+                 so it has no column to contribute to a merged schema. Joining one is a \
+                 FILTER, not a merge: write the two predicates as goals in a rule body, \
+                 where a 0-column predicate conjoins directly. (`Unit` is also what a \
+                 single `Unit`-typed column collapses to, and the schema type cannot tell \
+                 those apart — WI-728 — so treating it as `no columns` here could \
+                 silently drop a real column that the joined relation still \
+                 materializes.)"
+            ),
+            // BOTH readings, because this classification cannot tell them apart and the
+            // one-sided version blamed a collapse on operands that never underwent one — a
+            // scalar, or a `Relation[..]` written where its schema `r.T` was meant
+            // (review-found; the old doc on `concat_named_tuple_types` listed "a scalar"
+            // among the reachable operands and the first WI-1128 wording dropped it).
+            NonTupleSchema::Collapsed => format!(
+                "`Concat` cannot merge operand `{which}`: its schema is `{ty}`, not a \
+                 named-tuple type — and a relation schema IS the named tuple of its \
+                 columns. If this is a ONE-COLUMN relation, the 1-collapse presented that \
+                 column's type and dropped its NAME (kernel-language.md §6.8), so no \
+                 merged schema can name it and nothing downstream can supply it: write \
+                 the join as a rule body instead (shared logic variables join without a \
+                 schema), or cite a relation that keeps two or more columns. If it is \
+                 anything else — a scalar, or a `Relation[..]` type where its SCHEMA \
+                 `r.T` was meant — it names no columns to merge at all."
+            ),
+            NonTupleSchema::NotASchema => format!(
+                "`Concat` cannot merge operand `{which}`: `{ty}` is not a named-tuple \
+                 type, and is no relation schema at all — it names no columns to merge."
+            ),
+        }
+    })
+}
+
 /// WI-714 (proposal 052) — the INTERNAL type-level operation behind the `Concat[A, B]`
 /// type constructor: given two NAMED-TUPLE types, produce the named tuple whose fields are
 /// `A`'s followed by `B`'s. Both operands must be named tuples with DISJOINT field names;
 /// a non-named-tuple operand (a 1-collapse / `Unit` relation schema, a scalar) or a
 /// field-name collision is an error, returned as a message [`reduce_type_ctor`]
-/// wraps in a `TypeError`. `Concat` is a type FORM (the surface a signature writes); this
-/// is its reduction — the projection precedent (`ExprCarried` is the form,
-/// `project_type_member` its reduction). The result is an ordinary named tuple.
+/// wraps in a `TypeError`.
+///
+/// WI-1128 — THE TWO REFUSALS THIS SITE OWNS, decided and not deferred. A 1-COLLAPSED
+/// operand stays refused because the column name is gone from the type and nothing can
+/// supply it ([`collapse_schema`] holds the measurement and the census; §6.8 holds the
+/// declined alternative). A MEMBERSHIP (`Unit`) operand stays refused for its own,
+/// independent reason — `Unit` does not distinguish zero columns from one `Unit`-typed
+/// column — and reading it as "nothing to merge" would produce a merged schema type with
+/// fewer columns than the row `join_run` materializes. Both are phrased in
+/// [`concat_operand_fields`], one arm each.
+///
+/// `Concat` is a type FORM (the surface a signature writes); this is its reduction — the
+/// projection precedent (`ExprCarried` is the form, `project_type_member` its reduction).
+/// The result is an ordinary named tuple.
 fn concat_named_tuple_types(
     kb: &mut KnowledgeBase,
     a: &Value,
     b: &Value,
     site: &CtorReduceSite,
 ) -> Result<Value, String> {
-    let fa = match extract_type(kb, a) {
-        TypeExtractor::NamedTuple(f) => f,
-        _ => {
-            return Err(
-                "`concat` operand `a` must be a named-tuple type (a relation with at \
-                         least two named columns); a 1-collapse / membership schema is not \
-                         supported"
-                    .to_string(),
-            )
-        }
-    };
-    let fb = match extract_type(kb, b) {
-        TypeExtractor::NamedTuple(f) => f,
-        _ => {
-            return Err(
-                "`concat` operand `b` must be a named-tuple type (a relation with at \
-                         least two named columns); a 1-collapse / membership schema is not \
-                         supported"
-                    .to_string(),
-            )
-        }
-    };
+    let fa = concat_operand_fields(kb, a, "a")?;
+    let fb = concat_operand_fields(kb, b, "b")?;
     let mut merged: Vec<(Symbol, Value)> = Vec::with_capacity(fa.len() + fb.len());
     merged.extend(fa);
     for (name, ty) in fb {
@@ -3536,18 +3721,35 @@ fn without_named_tuple_types(
         return Ok(t.clone());
     }
     // The base schema must be a named tuple to drop columns BY NAME — a 1-collapse /
-    // membership schema has no named column to match a dropped field against.
-    let t_fields = match extract_type(kb, t) {
-        TypeExtractor::NamedTuple(f) => f,
-        _ => {
-            return Err(
-                "`Without` base operand must be a named-tuple type (a relation with at \
-                        least two named columns); dropping from a 1-collapse / membership \
-                        schema is not supported"
+    // membership schema has no named column to match a dropped field against. WI-1128:
+    // classified by the shared [`schema_fields_or_shape`], phrased HERE, because what the
+    // author should do next about a DROP differs from what they should do about a merge.
+    let t_fields = schema_fields_or_shape(kb, t).map_err(|shape| {
+        let ty = type_display_name_value(kb, t);
+        match shape {
+            NonTupleSchema::Membership =>
+                "`Without` cannot drop from operand `T`: its schema is `Unit`, not a \
+                 named-tuple type — a membership relation has no columns left to drop."
                     .to_string(),
-            )
+            // `fix`'s own doc in relation.anthill already routes the author here: dropping
+            // the only column of a 1-collapsed relation is refused, so APPLYING the relation
+            // (which binds the column instead of dropping it) is the route that works. Both
+            // readings offered, for the reason given on `concat_operand_fields`.
+            NonTupleSchema::Collapsed => format!(
+                "`Without` cannot drop from operand `T`: its schema is `{ty}`, not a \
+                 named-tuple type — and a relation schema IS the named tuple of its \
+                 columns. If this is a ONE-COLUMN relation, the 1-collapse dropped that \
+                 column's NAME (kernel-language.md §6.8), so no captured argument can name \
+                 it: APPLY the relation to bind its only column rather than `fix` it away. \
+                 If it is anything else — a scalar, or a `Relation[..]` type where its \
+                 SCHEMA `r.T` was meant — it names no columns to drop at all."
+            ),
+            NonTupleSchema::NotASchema => format!(
+                "`Without` cannot drop from operand `T`: `{ty}` is not a named-tuple type, \
+                 and is no relation schema at all — it names no columns to drop."
+            ),
         }
-    };
+    })?;
     // Membership + type checks — the LOAD errors that give the capture its meaning (§2.2).
     // Each dropped field must NAME a column of the base schema (recording the name to drop),
     // and its captured type must MATCH that column (a `fix(x: "s")` over an `Int64` column
@@ -6586,17 +6788,37 @@ fn projection_columns(
     schema: &Value,
     projections: &[(Symbol, String)],
 ) -> Result<Vec<(Symbol, Value)>, String> {
-    let fields = match extract_type(kb, schema) {
-        TypeExtractor::NamedTuple(fs) => fs,
-        _ => {
-            return Err(
-                "`Project` operand `T` must be a named-tuple type (a relation with at \
-                        least two named columns); a 1-collapse / membership schema has no \
-                        named column to select by name"
+    // WI-1128: classified by the shared [`schema_fields_or_shape`], phrased here.
+    //
+    // WHERE THIS MESSAGE IS AND IS NOT SEEN, measured: only a WRITTEN `Project[T, Keep]`
+    // reaches it. On the DOT surface `r.(f)` 1-collapses at convert time to `r.f` (§6.8), so
+    // a one-column receiver never builds a projection at all — this function's `Err` makes
+    // the forward recognizer DECLINE and the call falls through to dot dispatch, which
+    // reports "no such member". Improving that would mean a Relation-keyed arm in dot
+    // dispatch and is deliberately not done here.
+    let fields = schema_fields_or_shape(kb, schema).map_err(|shape| {
+        let ty = type_display_name_value(kb, schema);
+        match shape {
+            NonTupleSchema::Membership =>
+                "`Project` cannot select from operand `T`: its schema is `Unit`, not a \
+                 named-tuple type — a membership relation has no columns to select."
                     .to_string(),
-            )
+            NonTupleSchema::Collapsed => format!(
+                "`Project` cannot select from operand `T`: its schema is `{ty}`, not a \
+                 named-tuple type — and a relation schema IS the named tuple of its \
+                 columns. If this is a ONE-COLUMN relation, the 1-collapse dropped that \
+                 column's NAME (kernel-language.md §6.8), so there is no name to select \
+                 by — and a one-column relation already IS that column, so the projection \
+                 would be the identity. If it is anything else — a scalar, or a \
+                 `Relation[..]` type where its SCHEMA `r.T` was meant — it names no \
+                 columns to select at all."
+            ),
+            NonTupleSchema::NotASchema => format!(
+                "`Project` cannot select from operand `T`: `{ty}` is not a named-tuple \
+                 type, and is no relation schema at all — it names no columns to select."
+            ),
         }
-    };
+    })?;
     // Resolve each source column against the schema by SHORT name — the schema field
     // symbol IS the runtime column symbol (both from `rule_head_var_slots`), so this is
     // the schema's own field lookup (WI-638 mode 3), not a cross-scope compare (WI-672).
