@@ -606,10 +606,22 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    its price and not an argument against it.
    `T` answers two questions at once: *what is a row's type* (where the collapse is the ergonomic
    win — `colouring.takeN(20) : List[Board]`) and *what are the columns* (where it is a loss). Splitting them — the schema stays the full named
-   tuple, and the ROW type becomes a `Collapse[T]` constructor in the same family, reduced at the
-   same boundary — would make all three of them work at one column, uniformly, would make
-   `Membership` arity-exact, and would close the un-refusable tuple-typed-column case above,
-   which is the only one of these that is a silent wrong answer rather than a refusal. It is a breaking change to a specified rule (§6.8's paired
+   tuple — would make all three of them work at one column, uniformly, would make `Membership`
+   arity-exact, and would close the un-refusable tuple-typed-column case above, which is the only
+   one of these that is a silent wrong answer rather than a refusal.
+
+   **Two ways to split them, and the simpler one is recommended.** *(A)* Drop the collapse: the
+   schema IS the row type, so `queens.head : (board: Board)`, read as `row.board`. *(B)* Keep the
+   collapsed row type behind a new `Collapse[T]` constructor in this family, reduced at the same
+   boundary. **(A) needs no new constructor and is simpler than what we have today**, and it makes
+   `Membership` exact for free — a 0-column relation stays `Unit` while a one-`Unit`-column one is
+   `(u: Unit)`. What (B) buys is exactly the one line above (`queens.head : Board`) and nothing
+   else. Measured against the shipped sources, that line is barely exercised: of 46 one-column
+   rules, none is consumed as a relation *value*, and the only 1-column drain
+   (`examples/classic-mini/ancestor`, reached by application) passes the result to `length` without
+   touching an element. (A)'s real cost is structural rather than ergonomic — §6.8 desugars `x.(f)`
+   to `x.f` at convert time, so relation projection must stop riding that desugar and `r.(f)`
+   diverges from `t.(f)` on a plain tuple. It is a breaking change to a specified rule (§6.8's paired
    type-and-value convention), it moves `where`'s bare-binder spelling `eq(c, 30)` (a 1-collapsed
    row would then be a 1-field tuple, read as `c.age`), and it must thread through the
    `provides LogicalStream[T = …]` edge so consumers keep seeing the element type. Not costed

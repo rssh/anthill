@@ -1,5 +1,7 @@
 ```anthill
 fact WorkItem(id: "WI-20260818-YQB1Y-proposal-052-oq5-revision", created: "2026-08-18T19:14:50Z", acceptance: [ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")], depends_on: some(value: ["WI-714"]), status: Open)
+
+fact Feedback(workitem: "WI-20260818-YQB1Y-proposal-052-oq5-revision", author: "claude", at: "2026-08-18T19:29:55Z")
 ```
 
 ## description
@@ -19,4 +21,30 @@ WHAT IT COSTS, so it is costed before it is started rather than discovered:
  * THE SECOND, INDEPENDENT BLOCKER already found and documented (WI-1128, at `WHOLE_ROW_HOLE` in eval/builtins.rs): the whole-row sentinel is ONE symbol shared by BOTH `join` binders, so it can say neither which row it means nor match `fill_recipe_holes`' sole-column arm over a MERGED column list. It is unreachable today only because `Concat` refuses the operands that would reach it — this redesign REMOVES that gate, so the sentinel must be keyed per binder in the SAME change or the natural spelling `join(r, ages, (c, q) -> eq(c.age, q))` still fails. Today it has no drivable control; under this ticket it does.
 
 ACCEPTANCE: a decision recorded in 052 (do it or decline it, with the measurement that decides); if done — a join / fix / project over a one-column relation RUNS end-to-end with the recovered column name, driving the values; the tuple-typed-column fixture above becomes a correct schema or a loud error, and its recorded-limit test is RETIRED rather than patched; `Membership` distinguishes 0 columns from one `Unit`-typed column (WI-728's recorded limit retires with it); the whole-row sentinel is per-binder; `where`'s changed spelling is migrated with its tests; kernel-language.md 6.8 and relation.anthill updated together; cargo-test green via scripts/test.sh.
+
+## Feedback
+
+### 2026-08-18T19:29:55Z — claude
+
+OPTION A ADDED AND RECOMMENDED — DROP THE COLLAPSE ENTIRELY (user, 2026-08-18: "why we need Collapse[T]? Why we don't want just work with one-element tuple?"). The ticket as filed proposed keeping the collapsed ROW type behind a new `Collapse[T]` constructor. That preserves an ergonomic that is not worth its price, and the simpler option is better than both it and the status quo.
+
+WHAT `Collapse[T]` ACTUALLY BUYS, and it is one line. 052's whole stated rationale for the collapse is: "one free variable -> T is that value (a 1-tuple auto-collapses): a relation with only `board` free is `Relation[Board]`, so `queens.head : Board`". That is the entire justification — `.head` reads as the element instead of a one-field record. `Collapse[T]` is a type constructor whose sole purpose is to keep that sentence true.
+
+OPTION A: no collapse at all. The schema IS the row type, always the full named tuple. `Relation[(age: Int64)]`, `queens.head : (board: Board)`, read as `row.board`.
+
+  * NO NEW CONSTRUCTOR. Option B needs `Collapse[T]` in the family and a reduction at the return-type boundary plus the `provides LogicalStream[T = ...]` threading, which was the measurement most likely to kill it. Option A deletes that risk rather than measuring it.
+  * ALL THREE AMBIGUITIES DIE, including one Option B does NOT close by itself: `Membership` becomes exact for free, because a 0-column relation stays `Unit` while a one-`Unit`-column relation is `(u: Unit)`. So WI-728's recorded limit retires without touching the `()`-vs-`Unit` typing gap (measured separately: `()` in an entity field is refused as "expected Unit, got TupleLiteral", so NOT depending on it is a real saving).
+  * `Concat` / `Without` / `Project` simply work at arity one. No refusals to write, no messages to phrase, and the WI-1128 refusal messages this ticket would retire become dead code rather than better prose.
+
+MEASURED, THE ERGONOMIC IS BARELY EXERCISED. Census of shipped sources (examples/, stdlib/, rustland/*/anthill/): 46 rules have exactly one head variable, and NONE of them is consumed as a relation VALUE — every one is used as a goal in a rule body, where the schema type never arises. The only 1-column drain anywhere is `examples/classic-mini/ancestor`, and it arrives by APPLICATION (`ancestor("bart")` binds the first column and narrows to the second), then does `length(ofBart.takeN(100))` — it never touches an element, so it is indifferent to the row shape. So the count of places that would have to change from `x` to `x.col` is currently ZERO, and the count that would merely get a more informative type is one.
+
+AND THE APPLICATION CASE IS AN ARGUMENT *FOR* OPTION A, not a cost: `ancestor("bart")` is exactly where a name is lost today. Under Option A the narrowed relation keeps `(is: String)`, so the column stays addressable — the same information WI-1128 spent its whole length explaining could not be recovered.
+
+WI-1131 REMOVED THE OLD OBJECTION. A one-field named tuple was a syntax error as a VALUE until yesterday, so "just use a one-element tuple" was not fully writable when 052 chose the collapse. It is now.
+
+THE ONE REAL COST OF OPTION A, and it is structural rather than ergonomic: kernel-language.md 6.8 desugars `x.(f)` to `x.f` at CONVERT time, before any type exists, and calls the collapse a paired type-and-value convention. So a relation projection `r.(f)` currently becomes a scalar member access — which is precisely why `ages.(age)` reports "no such member" (WI-20260818-7X7NK). Under Option A a one-member relation projection must yield a ONE-COLUMN RELATION with schema `(f: T)`, so relation projection must stop riding the convert-time desugar, and `r.(f)` diverges from `t.(f)` on a plain tuple. Decide whether that divergence is acceptable, or whether the term-level collapse moves too; this is entangled with WI-20260818-7X7NK and the two should be looked at together.
+
+WHAT STAYS TRUE FOR BOTH OPTIONS: it is a breaking change to a specified rule (6.8), `where`'s bare-binder spelling `eq(c, 30)` becomes `c.age` either way, and the whole-row sentinel must be keyed per binder in the same change (it is unreachable today only because `Concat` refuses the operands that would reach it, and both options remove that gate).
+
+RECOMMENDATION: Option A. Option B stays recorded as the fallback if `queens.head : Board` turns out to be load-bearing for a reader that the census above did not find — but the census found no such reader, and Option A is simpler than the code we have today, not merely simpler than Option B.
 
