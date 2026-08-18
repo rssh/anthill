@@ -37,6 +37,23 @@ const TUPLE_LABELS_DISTINCT: &str = "a named tuple's component names must be dis
     is reachable by neither its name nor its position, and its declared type is never \
     checked against anything";
 
+/// The refusal for a ONE-ELEMENT POSITIONAL tuple literal, `(x,)` (WI-1131). The grammar
+/// admits that form ONLY so it can be refused HERE, at the literal's own span — the
+/// WI-763 parse-permissive / convert-strict style, the same one `convert_tuple_type` uses
+/// for a lone positional `(A)` in type position. Left to the grammar it error-recovered
+/// into the 2+ production and reported `missing \`name\`` at a zero-width span; when the
+/// element was NAMED it reported `tuple literal cannot mix positional and named
+/// arguments` about a program that mixed nothing.
+///
+/// NOT an asymmetry the language could simply drop. `(x)` MUST stay grouping, so a lone
+/// positional component has no spelling at all and a trailing comma cannot conjure one —
+/// it would be the only place a positional tuple's arity came from punctuation. A lone
+/// NAMED component has no rival reading (`a: x` is not a term, so `(a: x)` can never be a
+/// parenthesized expression), which is exactly why arity one IS writable when named.
+const TUPLE_ARITY_ONE_IS_NAMED_ONLY: &str = "a one-element tuple literal must name its \
+    component — write `(a: x)`, not `(x,)`: a single parenthesized term is grouping \
+    (`(x)` is `x`), so at arity one only the named form is a tuple (spec §4.5)";
+
 /// The `why` clause for a repeated NAMED ARGUMENT label in one argument list (WI-809).
 /// A third distinct harm, stated as its own: the two earlier rules are about a
 /// DECLARATION naming one thing twice, this is about a CALL SITE binding one slot twice
@@ -1613,6 +1630,12 @@ impl<'a> Converter<'a> {
                 }
                 _ => {}
             }
+        }
+        // WI-1131: arity one is NAMED-only. The grammar's `('(', _term, ',', ')')` arm
+        // exists to reach this message and nothing else yields a single positional
+        // component — the unit `()` has none, and every other arm has two or more.
+        if slots.len() == 1 && matches!(slots[0], ArgSlot::Positional) {
+            self.err(TUPLE_ARITY_ONE_IS_NAMED_ONLY, node);
         }
         work.push(WorkOp::Build(BuildFrame::TupleLiteral { node, slots }));
         // `tuple_literal` shares the `_fn_arg` rule, which admits a lambda

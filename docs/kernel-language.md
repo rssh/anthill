@@ -640,10 +640,15 @@ TupleTypeArg ::= Type | Name ':' Type | Name ':' Literal
 
 -- Tuple literals (in term position)
 TupleLiteral ::= '(' ')'                                           -- unit value
-               | '(' FnArg ',' FnArg (',' FnArg)* ')'              -- 2+ elements
+               | '(' Name ':' Term [','] ')'                       -- 1 element (NAMED only)
+               | '(' FnArg ',' FnArg (',' FnArg)* [','] ')'        -- 2+ elements
 ```
 
-**Disambiguation (term position):** `(a)` with no comma is a parenthesized expression (grouping). `(a, b)` with a comma is a tuple. `Name(...)` preceded by a name is function application. No lookahead needed.
+**Disambiguation (term position):** `Name(...)` preceded by a name is function application. Otherwise the FIRST element decides. A leading `name :` makes `( … )` a tuple at any arity — `a: 1` is not a term, so `(a: 1)` has no parenthesized-expression reading to compete with. A leading *term* makes it a tuple only when a comma and another element follow: `(a)` is grouping, `(a, b)` is a tuple.
+
+**Arity one is named-only** (WI-1131), and the asymmetry is forced, not an omission. `(1)` must stay grouping, so a lone *positional* component has no spelling and a trailing comma cannot conjure one: `(1,)` is refused, with a message naming this rule rather than a syntax error. A lone *named* component is a tuple literal, with or without the trailing comma.
+
+The trailing comma is the one place a reader — and the parser — must look past the comma: `(a: 1,)` closes a one-element tuple while `(a: 1, b: 2)` continues a two-element one, and nothing at the comma itself separates them. Everything else here is decided by the token after `(`.
 
 **Disambiguation (type position)** needs no lookahead either, because a parenthesized type list is *one* construct: `TupleType` is also an arrow's parameter list (WI-766). `( … )` is read as a tuple type unconditionally, and a following `->` simply makes it the parameter list of an arrow. Nothing has to be decided at the `)`.
 
@@ -656,7 +661,9 @@ Both are reported where they occur, with the offending construct named — a loc
 
 A one-component tuple type must therefore name its component: `(a: A)` is a 1-tuple, and the name is what carries the field label, so the named form is the only one that says something a bare `A` does not.
 
-Note the surface is **not** symmetric between types and terms here: `TupleLiteral` has no one-element form, since `(a: 1)` in term position is grouping applied to a named argument. So a one-component tuple type has no arity-matching literal; its inhabitants arrive by width subtyping from a wider tuple (`(a: 1, b: 2)` conforms to `(a: Int64)`).
+That type has an arity-matching literal: `(a: 1)` is a one-component tuple *value* and conforms to `(a: Int64)` directly, so a parameter declared `(a: A)` can be given an argument written at the call site. A one-component tuple type is thus inhabited two ways — by its own literal, and by width subtyping from a wider tuple (`(a: 1, b: 2)` conforms to `(a: Int64)` as well).
+
+The surface is still not symmetric between types and terms, but only in the direction the disambiguation rule forces: a bare `(A)` parses in type position and is refused as a type, while a bare `(1)` in term position *is* a valid term — grouping — and so cannot also be a 1-tuple.
 
 **Denoted components** (`Name ':' Literal`, WI-763) — a component may be a *constant standing in type position*, which lowers to a `denoted` exactly as a literal type **argument** does (`Vector[Int64, 3]`; see "value-in-type" below). This is what makes a projection's keep spec writable: `Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]` maps each result key to its source column's *name*, and a name reaches type position only as a denoted, since there are no singleton types. One asymmetry follows from the surface grammar rather than from the type system, and is deliberate:
 
@@ -2756,18 +2763,18 @@ Two properties are load-bearing:
 
 **1-collapse.** A single-member projection yields the scalar `x.m` (not a
 1-field tuple) — arity-based, so a single *rename* `x.(a: f)` also collapses to
-`x.f` (the label has no multi-column tuple to key, and is dropped). Note there is
-no one-element tuple *literal* to fall back on (§4.5): the one-component **type**
-`(a: A)` is writable, but no term spells a matching value directly, so a computed
-one-column result is always the bare scalar. Projections and the tuple type
-therefore disagree at arity one — a `Without`/`Project` residual with one column
+`x.f` (the label has no multi-column tuple to key, and is dropped). A computed
+one-column result is therefore always the bare scalar, and projections disagree
+with the tuple type at arity one — a `Without`/`Project` residual with one column
 left has type `A`, not `(a: A)`.
 
 That disagreement is **deliberate** (WI-776). Note what it is *not*: it is not that
-`(a: A)` is uninhabited. Per §4.5 its inhabitants arrive by width subtyping from a
-wider tuple, in any position — `operation narrow() -> (a: Int64) = wide()` over a
-`wide() -> (a: Int64, b: String)` is well-typed. What no *collapsed* result ever
-has is that type.
+`(a: A)` is uninhabited, and — since WI-1131 — not that it is unwritable either.
+Per §4.5 its inhabitants arrive both from the one-component literal `(a: v)` and by
+width subtyping from a wider tuple, in any position: `operation narrow() ->
+(a: Int64) = (a: 1)` and `operation narrow() -> (a: Int64) = wide()` over a
+`wide() -> (a: Int64, b: String)` are each well-typed. What no *collapsed* result
+ever has is that type.
 
 The two sides are kept apart because the collapse is a paired **type-and-value**
 convention. The value half is fixed above at the term level — `x.(f)` yields the

@@ -4941,8 +4941,10 @@ fn render_mismatch_pair_by_cause(
 ///
 /// WHY NOT MAKE THEM AGREE — stated correctly, because the first version of this comment
 /// got it wrong and a reviewer caught it. It is NOT that a one-column result would be
-/// unconstructible. It is constructible: §4.5 says a one-component tuple type's inhabitants
-/// arrive by WIDTH SUBTYPING from a wider tuple, and measured, `operation narrow() ->
+/// unconstructible. It is constructible two ways: DIRECTLY, as the one-field literal
+/// `(a: 1)` (WI-1131 — before it, arity one was writable as a type but not as a value, and
+/// this note's advice had to send the reader the long way round); and by WIDTH SUBTYPING
+/// from a wider tuple, which §4.5 states and which is measured — `operation narrow() ->
 /// (a: Int64) = wide()` over `wide() -> (a: Int64, b: String)` loads clean. The value side
 /// is equally capable — `materialize_solution` (eval/mod.rs) already builds the row as
 /// `(name, value)` pairs and then DISCARDS the name at arity one.
@@ -4976,6 +4978,7 @@ fn one_collapse_note(label: &str, elem: &str) -> String {
          `{elem}`, never `({label}: {elem})` — which is the usual source of this pair. \
          `({label}: {elem})` is a real type: by width subtyping it matches any tuple whose \
          `{label}` column conforms to `{elem}`. Either write `{elem}` here, or supply a \
+         tuple carrying a `{label}` column — the one-field literal `({label}: …)`, or any \
          wider tuple)"
     )
 }

@@ -311,3 +311,71 @@ operation bar() -> (a: Int64) -> String
       return_type: (simple_type
         (name
           (identifier))))))
+
+=====================================
+One-component named tuple value (WI-1131)
+=====================================
+
+rule r: (a: 1)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (tuple_literal
+        (named_arg
+          name: (identifier)
+          value: (integer_literal))))))
+
+=====================================
+One-component named tuple value with a trailing comma
+=====================================
+
+rule r: (a: 1,)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (tuple_literal
+        (named_arg
+          name: (identifier)
+          value: (integer_literal))))))
+
+=====================================
+A single parenthesized term is grouping, not a one-component tuple
+=====================================
+
+rule r: (1)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (paren_expr
+        (integer_literal)))))
+
+=====================================
+One-component positional tuple parses, and is refused at conversion
+=====================================
+
+rule r: (1,)
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (tuple_literal
+        (integer_literal)))))

@@ -19,12 +19,16 @@
 //! parameter list, so it parses, and `convert_tuple_type` rejects the TYPE reading with a
 //! located message. Same verdict, better diagnostic.
 
-//! NOTE on what the tests below can and cannot say: a tuple LITERAL has no one-element form
-//! (`TupleLiteral` in docs/kernel-language.md), so no term spells an ARITY-MATCHING value of
-//! type `(a: Int64)` — `(a: 1)` is grouping applied to a named argument, a syntax error here.
-//! The type is still inhabited, by width subtyping from a wider tuple. The signatures below
-//! are bodyless because that is what the type-level acceptance needs; the width-subtyping
-//! route is pinned separately so the gap is recorded as behavior rather than folklore.
+//! NOTE on what the tests below can and cannot say: they are about the TYPE surface alone.
+//! The signatures are bodyless because that is what the type-level acceptance needs, and the
+//! one inhabitation route this file pins is WIDTH SUBTYPING from a wider tuple.
+//!
+//! SUPERSEDED (WI-1131): while WI-766 shipped, the term grammar had no one-element literal —
+//! `(a: 1)` was `syntax error near \`a: 1\``, so width subtyping was the ONLY way to inhabit
+//! `(a: Int64)` and this file's note said so. It is no longer true. `(a: 1)` is now an
+//! arity-matching literal (spec §4.5), which is what made the one-component type a parameter
+//! a caller can actually supply; `wi1131_one_field_named_tuple_test` drives that route, this
+//! file keeps driving the other one.
 
 use anthill_core::parse;
 
@@ -83,12 +87,15 @@ end
     );
 }
 
-/// The type is INHABITED, despite having no arity-matching literal.
+/// The type is INHABITED by a WIDER tuple — one of its two routes.
 ///
-/// Pins the gap named in the module note as behavior: a two-component literal conforms to the
-/// one-component type by width subtyping, so `(a: A)` is a type you can actually return —
-/// it is only the one-element *literal* that the term grammar lacks. Without this, "no
-/// one-element literal exists" would read as "the type is uninhabitable", which is false.
+/// A two-component literal conforms to the one-component type by width subtyping, so `(a: A)`
+/// is a type you can actually return. When this row was written it carried a second job: the
+/// term grammar had no one-element literal, and without this row "no one-element literal
+/// exists" would have read as "the type is uninhabitable", which was false even then. WI-1131
+/// added the arity-matching literal `(a: 1)`, so that second job is gone and this row now
+/// measures width subtyping and nothing else — deliberately, since the two routes reach the
+/// same type through different rules and a regression in either must be visible on its own.
 #[test]
 fn wi766_one_component_tuple_is_inhabited_by_width_subtyping() {
     let src = r#"

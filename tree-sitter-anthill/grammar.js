@@ -51,6 +51,12 @@ module.exports = grammar({
     [$.cut, $._prefix_op],
     // [ after rule head could be meta_block or start of next rule_entry with collection_literal
     [$.rule_entry],
+    // WI-1131: inside a tuple literal, a `,` after the leading element can either
+    // close a ONE-element form (`(a: 1,)`, `(1,)`) or continue into the 2+ form
+    // (`(a: 1, b: 2)`) — shift the `,` as part of a 1-element production, or reduce
+    // the element to `_fn_arg` first. Nothing local decides it; GLR explores both
+    // and keeps whichever continuation parses.
+    [$.tuple_literal, $._fn_arg],
   ],
 
   rules: {
@@ -1365,8 +1371,19 @@ module.exports = grammar({
     // argument-separating comma, so `commaSep($._fn_arg)` still delimits
     // arguments cleanly even though `lambda_expr` is `prec.right`.
     _fn_arg: $ => choice(
-      $._term,
+      $._positional_fn_arg,
       $.named_arg,
+    ),
+
+    // The `_fn_arg` alternatives that are NOT `named_arg` — factored out so
+    // `tuple_literal`'s one-positional arm (WI-1131) covers exactly the same set
+    // and cannot drift from it. Spelling that arm as `$._term` was narrower than
+    // the argument grammar by two forms, and the two it missed (`(?x: T,)`,
+    // `(lambda y -> y,)`) fell back into the very error-recovered `missing \`name\``
+    // the arm exists to eliminate. Excluding `named_arg` is what keeps the arm
+    // from overlapping the one-NAMED arm on `(a: 1,)`.
+    _positional_fn_arg: $ => choice(
+      $._term,
       $.typed_var_arg,
       $.lambda_expr,
     ),
@@ -1419,10 +1436,40 @@ module.exports = grammar({
     // Uses _fn_arg to allow both positional and named args;
     // all-or-nothing naming enforced in the converter.
     // prec(-2) to avoid conflict with parenthesized expressions.
-    tuple_literal: $ => prec(-2, choice(
-      seq('(', ')'),                                                      // unit
-      seq('(', $._fn_arg, ',', commaSep1($._fn_arg), optional(','), ')'), // 2+ elements
-    )),
+    //
+    // ARITY ONE IS NAMED-ONLY (WI-1131), and the asymmetry is the whole point:
+    // `(1)` MUST stay `paren_expr` — grouping — so a single POSITIONAL element
+    // has no tuple spelling and the comma is what tells the two apart. A single
+    // NAMED element carries no such ambiguity: `a: 1` is not a `_term`, so
+    // `(a: 1)` can never be read as a parenthesized expression, and the 2+
+    // requirement was over-broad there — it made the type `(a: Int64)`, which
+    // has always been writable, a parameter no caller could construct an
+    // argument for. Contrast `tuple_type`, whose single-component arm IS fully
+    // general (`(A)` is refused at conversion, not by the grammar) because in
+    // TYPE position there is no grouping reading to protect.
+    //
+    // The `prec(-2)` is per-alternative, NOT on the `choice`, and that is
+    // load-bearing: it is what keeps `()` and the 2+ form losing to `paren_expr` /
+    // block constructs, and the two one-element arms have no such rival to lose to
+    // (both require a token — `:` or `,` — that no competing reading admits there).
+    // Left on the wrapper it also out-ranked, at -2 against the default 0, the
+    // `named_arg`/`_positional_fn_arg` -> `_fn_arg` reduction the 2+ arm needs, silently
+    // resolving each one-element arm away in favour of the 2+ arm and leaving
+    // `(a: 1,)` and `(1,)` error-recovered wrecks. Hoisted off them the actions are
+    // equal, the choice is a declared conflict, and GLR decides it by what follows.
+    //
+    // The 1-POSITIONAL arm parses a form the language does not have: it is admitted
+    // ONLY so `convert.rs` can refuse it at the literal's own span with a message
+    // naming the real rule (`TUPLE_ARITY_ONE_IS_NAMED_ONLY`) — the WI-763
+    // parse-permissive / convert-strict style already used for `(A)` in `tuple_type`.
+    // Left to the grammar it error-recovered into the 2+ arm and reported a MISSING
+    // node, or, when the element was named, a positional/named MIX that was not there.
+    tuple_literal: $ => choice(
+      prec(-2, seq('(', ')')),                                                      // unit
+      seq('(', $.named_arg, optional(','), ')'),                                    // 1 named element
+      seq('(', $._positional_fn_arg, ',', ')'),                                     // 1 positional: refused at conversion
+      prec(-2, seq('(', $._fn_arg, ',', commaSep1($._fn_arg), optional(','), ')')), // 2+ elements
+    ),
 
     ref_term: $ => seq('Ref', '(', $._ref_name, ')'),
 

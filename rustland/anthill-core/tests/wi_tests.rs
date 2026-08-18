@@ -1293,3 +1293,6 @@ mod wi1125_neq_not_an_override_test;
 
 #[path = "include/wi1130_positional_capture_test.rs"]
 mod wi1130_positional_capture_test;
+
+#[path = "include/wi1131_one_field_named_tuple_test.rs"]
+mod wi1131_one_field_named_tuple_test;

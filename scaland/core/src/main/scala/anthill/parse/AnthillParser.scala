@@ -1539,29 +1539,53 @@ private class AnthillParserImpl(
       terms.allocAt(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty), span)
     }
 
+  /** The refusal for a one-element POSITIONAL tuple literal, `(x,)` (WI-1131).
+    * Kept verbatim in step with rustland's `TUPLE_ARITY_ONE_IS_NAMED_ONLY`
+    * (`parse/convert.rs`): the shared `wi777` parity corpus fixes the VERDICT
+    * across the two implementations, and nothing fixes the wording, so it is
+    * spelled once per implementation and matched by hand. */
+  private val TupleArityOneIsNamedOnly: String =
+    "a one-element tuple literal must name its component — write `(a: x)`, not " +
+    "`(x,)`: a single parenthesized term is grouping (`(x)` is `x`), so at arity " +
+    "one only the named form is a tuple (spec §4.5)"
+
   /** Parse `(...)` as one of:
     *   - empty tuple `()`,
     *   - nested-implication `(t1, … -: u1, …)` (induction-style body —
     *     used by stdlib int.anthill, encoded as
     *     `forall_impl(tuple(antecedents), tuple(consequents))`),
     *   - single-arg paren expr `(x)` (returned as-is),
+    *   - one-component NAMED tuple literal `(a: x)` (WI-1131),
     *   - tuple literal `(x, y, …)` with positional or named args.
     *
     * One dispatcher avoids the backtracking trap: alternatives that
     * pre-consumed input then failed under `~/` couldn't reach the
     * fallback (this bit `not(not(?a))` and would also bite the nested-
     * impl form if it lived in a separate alternative).
+    *
+    * ARITY ONE IS NAMED-ONLY (spec §4.5, WI-1131). `(x)` is grouping, so a lone
+    * POSITIONAL component has no spelling and the trailing comma cannot conjure
+    * one — `(x,)` is refused HERE, at the literal's span, exactly as `tupleType`
+    * refuses a lone positional `(A)` in type position. A lone NAMED component has
+    * no rival reading and is a tuple. Rustland's grammar reaches the same two
+    * verdicts through a declared GLR conflict; the shared `wi777` parity corpus
+    * pins both (`accept/one_named_tuple_value*`, `reject/one_positional_tuple_value`).
     */
   private def tupleLiteralOrParenExpr[$: P]: P[TermId] =
     // WI-957: the span is the opening `(` — see `collectionLiteral`.
     P(spanOfToken("(") ~/ (
       ")".map(_ => None) |
-      (fnArg ~ ("," ~/ fnArg).rep ~ ",".? ~ ("-:" ~/ term.rep(1, sep = ",")).? ~ ")").map(Some(_))
+      // `!")"` before the cut so a TRAILING comma leaves the repetition instead of
+      // committing to an element that is not there: `~/` inside a `.rep` turns the
+      // failure that follows it into a hard one, which is why `(a: 1,)` — and
+      // `(1, 2,)`, which rustland has always accepted — were parse errors here. The
+      // cut still guards a comma with real text after it, so `(1,,)` stays refused.
+      (fnArg ~ ("," ~ !")" ~/ fnArg).rep ~ ",".!.? ~ ("-:" ~/ term.rep(1, sep = ",")).? ~ ")").map(Some(_))
     )).map { case (span, body) =>
       body match
         case None =>
           terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty), span)
-        case Some((first, rest, Some(consequents))) =>
+        case Some((first, rest, _, Some(consequents))) =>
           val antecedents = (first +: rest).collect { case Left(t) => t }
           val antTuple = terms.allocAt(Term.Fn(intern("tuple"),
             IArray.from(antecedents), IArray.empty), span)
@@ -1569,9 +1593,12 @@ private class AnthillParserImpl(
             IArray.from(consequents), IArray.empty), span)
           terms.allocAt(Term.Fn(intern("forall_impl"),
             IArray(antTuple, conTuple), IArray.empty), span)
-        case Some((first, rest, None)) =>
+        case Some((first, rest, trailingComma, None)) =>
           if rest.isEmpty then first match
-            case Left(tid) => tid
+            case Left(tid) =>
+              if trailingComma.isDefined then
+                errors += ParseError(TupleArityOneIsNamedOnly, span)
+              tid
             case Right((k, v)) =>
               terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray((k, v))), span)
           else

@@ -1325,6 +1325,77 @@ end
           s"expected a `$needle` error, got: ${es.map(_.message).mkString("; ")}")
       case Right(_) => fail(s"expected parse to fail: $src")
 
+  // ── WI-1131: arity one is NAMED-only ───────────────────────────────────────
+  //
+  // Scaland's `tupleLiteralOrParenExpr` already built the one-field named literal
+  // (the `case Right((k, v))` branch); nothing measured it, and nothing pinned the
+  // two verdicts around it. The shared `wi777` corpus fixes ACCEPT/REJECT across
+  // both implementations; these rows fix the SHAPE, which a verdict cannot see —
+  // returning the bare `1` for `(a: 1)` would "accept" just as well.
+  //
+  // BACK-OUT — MEASURED, three independent halves, each run on its own:
+  //   * `case Right((k, v)) => v` (the named element handed back like a grouping):
+  //     3 red, 1 green — the two named rows fail with `expected TupleLiteral, got
+  //     Const(IntLit(1))`, and the `(1,)` row goes red only because that run also
+  //     disabled the refusal.
+  //   * `if false && trailingComma.isDefined`: the `(1,)` row goes red and the
+  //     source parses CLEAN — the silent accept-as-grouping this refusal replaced.
+  //   * dropping the `!")"` lookahead (restoring the bare `("," ~/ fnArg).rep`):
+  //     3 red — `(a: 1,)` and `(1, 2,)` become `parse failed`, and `(1,)`'s
+  //     diagnostic degrades to `parse error: found ")"`. That is the row's point:
+  //     rustland has always accepted `(1, 2,)`, and scaland never did.
+  //   * `(1)`-stays-grouping and `(1,,)`-still-refused pass under every back-out,
+  //     by design: neither reaches the changed branches. They are the controls for
+  //     the boundary, not evidence about the named form.
+
+  test("WI-1131: `(a: 1)` is a one-component named TupleLiteral, not grouping") {
+    val (pf, t) = factTerm("fact (a: 1)")
+    t match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(fn.posArgs.length, 0)
+        assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("a"))
+      case other => fail(s"expected TupleLiteral, got $other")
+  }
+
+  test("WI-1131: the trailing comma is admitted at arity one too") {
+    val (pf, t) = factTerm("fact (a: 1,)")
+    t match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("a"))
+      case other => fail(s"expected TupleLiteral, got $other")
+  }
+
+  test("WI-1131 control: a single parenthesized term stays grouping") {
+    val (_, t) = factTerm("fact (1)")
+    t match
+      case fn: Term.Fn => fail(s"`(1)` must be grouping, got a ${fn.getClass.getSimpleName}")
+      case _           => ()
+  }
+
+  test("WI-1131: a trailing comma at 2+ parses too, as it always has in rustland") {
+    val (pf, t) = factTerm("fact (1, 2,)")
+    t match
+      case fn: Term.Fn =>
+        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(fn.posArgs.length, 2)
+      case other => fail(s"expected TupleLiteral, got $other")
+  }
+
+  test("WI-1131 control: a doubled comma `(1,,)` is still refused") {
+    assert(Parser.parse("fact (1,,)", "<wi1131>").isLeft, "`(1,,)` must not parse")
+  }
+
+  test("WI-1131: `(1,)` is refused, by a message naming the arity-one rule") {
+    Parser.parse("fact (1,)", "<wi1131>") match
+      case Left(es) =>
+        val joined = es.map(_.message).mkString("; ")
+        assert(joined.contains("one-element tuple literal must name its component"),
+          s"the refusal must name the rule, got: $joined")
+      case Right(_) => fail("`(1,)` must not parse as a tuple literal")
+  }
+
   test("WI-639: `?x.(a, b)` desugars to a named `TupleLiteral` keyed by the members") {
     val (pf, t) = factTerm("fact ?x.(a, b)")
     t match
