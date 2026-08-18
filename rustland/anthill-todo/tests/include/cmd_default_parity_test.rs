@@ -17,6 +17,15 @@
 //!   5. exit codes are LOUD: `show`/`delete` on an unknown id exit 1
 //!      (legacy printed the error but exited 0 — the "exit-0-with-stderr"
 //!      display-command convention is retired with the native dispatch);
+//! THE THREE `add` STEPS CARRY `--created` (WI-1121), and that is load-bearing
+//! rather than decoration: `list` orders by `created` with the id as tie-break,
+//! and a MINTED id's tie-break order is its digest's — deterministic for a given
+//! tracker, but different every run, since the id is derived from the timestamp.
+//! Four items added inside one second therefore tied and listed in an order that
+//! varied run to run. Fixed stamps pin both the ids and the order. `insert` has
+//! no such flag by design (§6.7: it is a positional gesture, not a back-dated
+//! filing), and needs none — `now()` sorts after every fixed stamp here.
+//!
 //!   6. an unknown id is refused by the reference LADDER (WI-1121) before it
 //!      reaches `lookup`, so the message is `no work item matches '<given>'` —
 //!      one refusal for "matches nothing" and for "matches several", where the
@@ -37,9 +46,9 @@ const GOLDEN: &str = include_str!("../golden/cli_transcript.golden");
 
 /// The scenario: each entry is one CLI invocation (argv after the binary).
 const SCENARIO: &[&[&str]] = &[
-    &["add", "base work", "--acceptance", "cargo-test"],
-    &["add", "second work", "--depends", "WI-001", "--tag", "seq"],
-    &["add", "third work", "--depends", "WI-002", "--tag", "seq"],
+    &["add", "base work", "--acceptance", "cargo-test", "--created", "2026-08-01T00:00:01Z"],
+    &["add", "second work", "--depends", "WI-001", "--tag", "seq", "--created", "2026-08-01T00:00:02Z"],
+    &["add", "third work", "--depends", "WI-002", "--tag", "seq", "--created", "2026-08-01T00:00:03Z"],
     &[
         "insert",
         "prereq for third",
@@ -170,6 +179,13 @@ fn default_path_reproduces_the_golden_transcript() {
     }
 
     if transcript != GOLDEN {
+        // The whole actual transcript, so a divergence can be REVIEWED as a diff
+        // rather than re-derived one panic line at a time. Written beside the
+        // build, never into the source tree — accepting it is a deliberate copy.
+        let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/cli_transcript.actual");
+        let _ = std::fs::write(&dump, &transcript);
+        eprintln!("actual transcript written to {}", dump.display());
         // Locate the first diverging line for a readable failure.
         let mut g = GOLDEN.lines();
         for (i, a) in transcript.lines().enumerate() {
