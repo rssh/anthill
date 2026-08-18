@@ -738,16 +738,175 @@ pub(super) fn try_fire(
             Some(opened) => opened,
             None => continue,
         };
+        // WI-1129 (proposal 056 §2.3): a head written `fix(?r, ...?args)` matches a
+        // redex whose named arguments it does not name, by FOLDING the leftovers into
+        // one record occurrence first — see [`fold_capture_redex`]. The pattern is
+        // untouched: the capture variable is an ordinary positional slot in it, so the
+        // matcher that runs below is the same one, over a redex reshaped to the arity
+        // the pattern already has. `None` = this redex cannot supply the capture
+        // (wrong positional arity, a declared named argument missing); that is an
+        // ordinary non-match, so the next candidate gets its turn.
+        let folded = match kb.rule_head_capture(rid) {
+            None => None,
+            Some(capture_idx) => match fold_capture_redex(kb, lhs, occ, capture_idx) {
+                Some(target) => Some(target),
+                None => continue,
+            },
+        };
         // `occ` is itself a `TermView` (WI-277), so we match the rule LHS
         // against it in place — no `Value::Node` wrapping.
-        if let Some(subst) = kb.match_view(lhs, occ) {
+        let target = folded.as_ref().unwrap_or(occ);
+        if let Some(subst) = kb.match_view(lhs, target) {
             if subst.is_contradiction() {
                 continue;
             }
-            return Ok(Some(instantiate_rhs(kb, rhs, &subst, occ)?));
+            // The RHS is instantiated `from` the FOLDED redex when there is one, so the
+            // synthesized provenance chain reaches the record occurrence the macro was
+            // handed rather than a node it never saw.
+            return Ok(Some(instantiate_rhs(kb, rhs, &subst, target)?));
         }
     }
     Ok(None)
+}
+
+/// WI-1129 (proposal 056 §2.3) — reshape a redex so that a VARIADIC-CAPTURE rule head
+/// can match it with the ordinary matcher: collect every named argument the head does
+/// NOT name into one named-tuple record occurrence, and hand it back as the redex's
+/// `capture_idx`-th positional argument.
+///
+/// `lhs` is the OPENED rule head (`fix(?r, ?args)` — the capture variable is a plain
+/// positional slot in it, which is exactly why nothing about matching, DeBruijn
+/// numbering or discrimination-tree keying had to change for this feature).
+/// `capture_idx` is [`KnowledgeBase::rule_head_capture`]'s verdict, decided at parse.
+///
+/// `None` when this redex cannot supply the capture at all: a positional arity other
+/// than the head's declared count, or a named argument the head DOES name that the
+/// redex does not carry. Both are ordinary non-matches — the same answer `match_view`
+/// would give — not diagnostics, because a functor may be lowered by several rules
+/// and only one of them need match.
+///
+/// The record is an `Expr::Constructor` over `anthill.reflect.TupleLiteral` — the SAME
+/// shape the operation face builds (`typing::synthesize_named_tuple_literal`), so a
+/// macro reads its component labels through `occurrence_term` (whose named arguments
+/// ARE the labels) and its children through `sub_occurrences`, with no form of its
+/// own to learn. Its components keep the redex's OWN label symbols and source order.
+/// It is deliberately left UNTYPED (no `set_inferred_type`): the operation face stamps
+/// a type because a `Without[Drop = R]` return-type constructor consumes it, whereas
+/// §2.3's reader is a macro that reads syntax — and a captured argument's own type is
+/// still reachable, per component, through `occurrence_type`.
+///
+/// An EMPTY capture is a record with no components, not a failure — 056 §3 OQ #6, the
+/// same verdict the operation face reaches for `r.fix()`.
+fn fold_capture_redex(
+    kb: &mut KnowledgeBase,
+    lhs: TermId,
+    occ: &Rc<NodeOccurrence>,
+    capture_idx: usize,
+) -> Option<Rc<NodeOccurrence>> {
+    let Term::Fn {
+        pos_args: pat_pos,
+        named_args: pat_named,
+        ..
+    } = kb.get_term(lhs)
+    else {
+        return None;
+    };
+    debug_assert_eq!(
+        capture_idx + 1,
+        pat_pos.len(),
+        "WI-1129: a rule-head capture is TRAILING by construction \
+         (parse/convert.rs `claim_rule_head_captures`); a middle one would leave the \
+         slots after it undefined",
+    );
+    // The head's declared positional count is its arity minus the capture slot.
+    let declared_pos = capture_idx;
+    let pat_labels: SmallVec<[Symbol; 2]> = pat_named.iter().map(|(s, _)| *s).collect();
+
+    let (functor, occ_pos, occ_named, is_constructor) = match occ.as_expr()? {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
+            // A call-site type-argument bracket is not part of the Inc-1 macro surface
+            // (`try_expand_macro` declines a template carrying one), so a capture rule
+            // declines it here rather than dropping the bracket in the reshaped redex.
+            if !type_args.is_empty() {
+                return None;
+            }
+            (*functor, pos_args, named_args, false)
+        }
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        } => (*name, pos_args, named_args, true),
+        _ => return None,
+    };
+    if occ_pos.len() != declared_pos {
+        return None;
+    }
+    // Partition the redex's named arguments: one that the head NAMES stays in place
+    // (keyed by the head's own symbol, so the matcher's identity comparison sees the
+    // pattern's spelling); every other is a component of the captured record.
+    let mut kept: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+    let mut captured: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+    for (label, child) in occ_named.iter() {
+        match pat_labels
+            .iter()
+            .find(|p| super::typing::same_label(kb, **p, *label))
+        {
+            Some(&pat_label) => kept.push((pat_label, Rc::clone(child))),
+            None => captured.push((*label, Rc::clone(child))),
+        }
+    }
+    if kept.len() != pat_labels.len() {
+        return None;
+    }
+    // Resolved outright, not `try_`-ed. This function's `None` means ONE thing — this
+    // redex does not match — and an unresolvable constructor is not that; declining
+    // would make the rule silently never fire, with nothing said anywhere. The
+    // constructor is DEFINED by `register_prelude`, which every load path runs before
+    // any rule loads (`load::CAPTURE_RECORD_CONSTRUCTOR` carries the measurement), so
+    // this is total; if that ever stops holding, `resolve_symbol` says so by name.
+    let tuple_sym = kb.resolve_symbol(super::load::CAPTURE_RECORD_CONSTRUCTOR);
+    let pass = simp_pass(kb);
+    let record = NodeOccurrence::synthesized_expr(
+        Expr::Constructor {
+            name: tuple_sym,
+            pos_args: Vec::new(),
+            named_args: captured,
+            from_projection: false,
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    );
+    let mut pos_args: Vec<Rc<NodeOccurrence>> = occ_pos.to_vec();
+    pos_args.push(record);
+    let expr = if is_constructor {
+        Expr::Constructor {
+            name: functor,
+            pos_args,
+            named_args: kept,
+            from_projection: false,
+        }
+    } else {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args: kept,
+            type_args: Vec::new(),
+        }
+    };
+    Some(NodeOccurrence::synthesized_expr(
+        expr,
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    ))
 }
 
 /// WI-902 — INSTANTIATE a fired `[simp]` rule's RHS: build the template from the

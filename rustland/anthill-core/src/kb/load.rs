@@ -3746,6 +3746,24 @@ const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
     "anthill.reflect.sub_occurrences",
 ];
 
+/// WI-1129 (proposal 056 §2.3): the constructor a rule-head VARIADIC CAPTURE builds
+/// its record with — the same one the operation face uses
+/// (`typing::synthesize_named_tuple_literal`), so a macro reads either face's record
+/// through one shape.
+///
+/// `simp_rewrite::fold_capture_redex` resolves it OUTRIGHT rather than `try_`-ing it,
+/// because that function's `None` already means one thing — "this redex does not
+/// match" — and an unresolvable constructor is not that; declining would make a
+/// capture rule silently never fire, with nothing said anywhere. What makes the
+/// outright resolve total is that the name is DEFINED by [`register_prelude`]
+/// (through `register_stdlib_scopes`, beside `SetLiteral` / `ListLiteral`), which
+/// every load path runs before any rule loads — so it is present with no stdlib at
+/// all. NOT its membership in [`KERNEL_VOCAB_QUALIFIED`] above: that list is a
+/// short-name RESOLUTION fallback and defines nothing. MEASURED both ways by
+/// `wi1129_rule_head_capture_test::the_capture_record_constructor_is_bootstrapped` —
+/// absent on a `KnowledgeBase::new()`, present after a bare `load_all`.
+pub(crate) const CAPTURE_RECORD_CONSTRUCTOR: &str = "anthill.reflect.TupleLiteral";
+
 /// WI-040: short name → qualified target for the reserved kernel desugaring vocab,
 /// or `None` if `name` is not reserved. Resolved directly (no `<global>` import).
 fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
@@ -21700,8 +21718,14 @@ impl<'a> Loader<'a> {
         // different owners (this one, and WI-899).
         let mut positive_head_nondefining: Vec<Option<NonDefiningConnectiveHead>> =
             Vec::with_capacity(r.heads.len());
+        // WI-1129 (proposal 056 §2.3): per positive head, the index of its `...?args`
+        // VARIADIC CAPTURE among the equation-LHS positional arguments, parallel to
+        // `positive_heads`. READ, not re-derived: the converter is the single decider
+        // (`ir::Rule::head_captures`), because the head TERM deliberately carries the
+        // capture variable as an ordinary positional argument and so cannot be asked.
+        let mut positive_head_captures: Vec<Option<usize>> = Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
-        for h in &r.heads {
+        for (h_idx, h) in r.heads.iter().enumerate() {
             match h {
                 RuleHead::Term(tid) => {
                     // WI-618: a keyword-less lambda typo in a head argument
@@ -21726,6 +21750,7 @@ impl<'a> Loader<'a> {
                         &self.parsed.terms,
                         *tid,
                     ));
+                    positive_head_captures.push(r.head_captures.get(h_idx).copied().flatten());
                     positive_heads.push(head);
                     // WI-797: a mounted-extent functor must have no resident rule
                     // (single owner) — refuse any head owned by a mounted source.
@@ -21862,6 +21887,14 @@ impl<'a> Loader<'a> {
             // spans.
             if let Some(&span) = positive_head_spans.get(head_idx) {
                 self.kb.set_rule_head_span(rid, span);
+            }
+            // WI-1129 (proposal 056 §2.3): install this head's variadic capture, so
+            // `simp_rewrite::try_fire` folds a redex's leftover named arguments into
+            // one record occurrence bound to that slot. A `⊥` denial head is not an
+            // equation and has no entry (`positive_head_captures` is empty there, so
+            // `get` is None) — the same indexing the head-span install just used.
+            if let Some(Some(arg_index)) = positive_head_captures.get(head_idx).copied() {
+                self.kb.record_rule_head_capture(rid, arg_index);
             }
             // WI-582: install this head's typed-pattern bounds (if any) on the
             // RuleEntry, mapping each head variable to its DeBruijn index. A

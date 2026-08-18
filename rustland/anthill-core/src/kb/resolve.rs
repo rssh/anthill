@@ -3616,6 +3616,31 @@ impl KnowledgeBase {
             if current_functor != super::simp_rewrite::stored_lhs_functor(self, rid) {
                 continue;
             }
+            // WI-1129 (proposal 056 §2.3): a VARIADIC-CAPTURE head is a COMPILE-TIME
+            // lowering and only that. Its capture binds the redex's leftover named
+            // arguments as a record OCCURRENCE for a macro to read as syntax
+            // (`simp_rewrite::fold_capture_redex`), and by 043.1 §5 a macro runs
+            // occurrence-side at the typer alone — `instantiate_rhs_verbatim` below is
+            // the sibling that deliberately does NOT expand one. So the residue has no
+            // reader here, and folding it would hand the term rewriter a `TupleLiteral`
+            // no goal asked for.
+            //
+            // Skipped EXPLICITLY rather than left to fail the match. It would in fact
+            // fail — the head carries one more positional argument than the goal, so
+            // `match_view` says no — but that is an accident of arity, and a capture
+            // head whose declared arguments happened to line up would fire with the
+            // capture variable bound to an ordinary argument. Stating the exclusion
+            // makes it a decision instead of a coincidence.
+            //
+            // NOTHING COVERS THIS LINE, and that is said here rather than left to be
+            // inferred from a green suite: it changes no verdict on any program that
+            // can be written today (the arity mismatch already decides every case), so
+            // there is no fixture that goes red when it is removed. It is here for the
+            // case that arity stops deciding — a positional capture (WI-1130) is the
+            // obvious one.
+            if self.rule_head_capture(rid).is_some() {
+                continue;
+            }
             // Type-directed requires-guard (WI-283): a requires-bearing sort's
             // rule fires only where the redex's carrier args provide the spec.
             if self.equation_is_requires_guarded(rid) {

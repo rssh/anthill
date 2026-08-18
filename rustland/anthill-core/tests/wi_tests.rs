@@ -80,6 +80,9 @@ mod wi727_fix_test;
 #[path = "include/wi1127_condition_param_test.rs"]
 mod wi1127_condition_param_test;
 
+#[path = "include/wi1129_rule_head_capture_test.rs"]
+mod wi1129_rule_head_capture_test;
+
 #[path = "include/wi734_abstract_operand_test.rs"]
 mod wi734_abstract_operand_test;
 

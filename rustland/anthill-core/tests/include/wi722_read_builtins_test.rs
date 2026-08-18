@@ -9,6 +9,10 @@
 //!     (`term_functor_name`, …). `Bottom` for a child-bearing form.
 //!   * `occurrence_type(occ) -> Option[Type]` — the typer-stamped `inferred_type`
 //!     (the schema source for `where`/`join`), read on a TYPED occurrence.
+//!   * `sub_occurrence_labels(occ) -> List[String]` (WI-1129) — those same
+//!     children's COMPONENT NAMES, same order, same length. The pair is what lets
+//!     a macro enumerate a record whose labels it cannot know in advance (056
+//!     §2.3's rule-head capture).
 //!
 //! Each macro below reads its argument through one of these and rebuilds
 //! `wrapped(5)` (= 105) — so a working read path is observable both structurally
@@ -129,4 +133,76 @@ fn occurrence_term_reflects_functor() {
         105,
         "occurrence_term(orig(5)) should reflect to Fn{{orig,…}} with a readable functor",
     );
+}
+
+// ── sub_occurrence_labels (WI-1129) ─────────────────────────────────────────
+//
+// ITS OWN FIXTURE, not a fourth macro in `SRC`. The macro below spells its callee
+// out of the labels it reads, so a wrong label names an operation that does not
+// exist — which fails the LOAD, taking every other test sharing that namespace
+// down with it. MEASURED: folded into `SRC`, a back-out of `child_labels` turned
+// all four tests in this file red, and three of them say nothing about labels.
+
+const LABELS_SRC: &str = r#"
+namespace test.wi722labels
+  import anthill.prelude.{Int64, String}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Numeric.{add}
+  import anthill.prelude.String.{concat}
+  import anthill.reflect.{NodeOccurrence, make_apply, sub_occurrences, sub_occurrence_labels}
+
+  -- The macro's argument: ONE positional child and ONE named child.
+  operation orig2(a: Int64, b: Int64) -> Int64 = a
+  -- The splice target, named for the two labels it takes to reach.
+  operation lbl_1b(v: Int64, w: Int64) -> Int64 = add(add(v, w), 100)
+
+  -- The callee's NAME is built out of the labels, so the splice resolves only if
+  -- they are exactly `_1` (§4.5's 1-based positional convention) and `b` (the
+  -- named arg's short name), in `for_each_child` order — positional first.
+  operation via_labels(x: NodeOccurrence) -> NodeOccurrence =
+    match sub_occurrence_labels(x)
+      case cons(p, cons(n, _)) ->
+        make_apply(concat(concat("test.wi722labels.lbl", p), n), sub_occurrences(x), x)
+      case _ -> x
+
+  operation trig_d(x: Int64) -> Int64 = x
+  rule trig_d(?x) <=> via_labels(orig2(?x, b: 2)) [simp]
+
+  operation consumer_d() -> Int64 = trig_d(5)
+end
+"#;
+
+/// WI-1129 — `sub_occurrence_labels` is PARALLEL to `sub_occurrences`: same order,
+/// same length, a positional child under its `_N` label and a named one under its
+/// short name. The spliced `lbl_1b(5, 2)` = 107 pins all four claims at once.
+///
+/// BACK-OUT: change `child_labels` (kb/node_occurrence.rs) to mint
+/// `positional_label(i + 1)` — a CONTENT mutation, so the two lists stay the same
+/// length and the parallelism `debug_assert` does not pre-empt the measurement (an
+/// emptied list trips that assert instead, which measures the guard, not the
+/// labels). The macro then spells `lbl_2b`, which no operation answers. MEASURED:
+/// 1 failed, 3 passed — the three tests above pass either way BY DESIGN, since
+/// none of them reads a label and they are in a different namespace, so this
+/// fixture's load failure cannot reach them. The NAMED half has its own back-out:
+/// mint a positional label for a named child too, and this plus the four
+/// `wi1129_rule_head_capture_test` splice rows go red together.
+#[test]
+fn sub_occurrence_labels_pairs_with_the_children() {
+    let kb = crate::common::load_kb_with(LABELS_SRC);
+    let body = kb
+        .op_body_node(sym(&kb, "test.wi722labels.consumer_d"))
+        .expect("consumer_d body");
+    assert_eq!(
+        crate::common::head_short(&kb, &body),
+        "lbl_1b",
+        "the labels `_1` and `b`, in that order, should have named the spliced callee",
+    );
+    let mut interp = crate::common::interp_for(LABELS_SRC);
+    match interp
+        .call("test.wi722labels.consumer_d", &[])
+        .expect("consumer_d evaluates")
+    {
+        Value::Int(n) => assert_eq!(n, 107, "lbl_1b(5, 2) = add(add(5, 2), 100)"),
+        other => panic!("expected Int(107), got {other:?}"),
+    }
 }

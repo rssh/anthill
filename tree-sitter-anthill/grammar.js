@@ -1337,9 +1337,27 @@ module.exports = grammar({
         $.application,
       )),
       '(',
-      commaSep($._fn_arg),
+      commaSep(choice($._fn_arg, $.rest_arg)),
       ')',
     ),
+
+    // WI-1129 (proposal 056 §2.3) — the RULE-HEAD REST PATTERN: `rule fix(?r,
+    // ...?args) <=> fix_of(?r, ?args) [simp]`. The variadic-capture peer of the
+    // `param` rule's `...args: R` marker, on the OTHER dispatch face — where the
+    // operation face hands the callee a record VALUE (whose component types erase
+    // the arguments, kernel spec §4.5 "no singleton types"), this binds the
+    // leftover named arguments as one record OCCURRENCE a `[simp]` macro reads as
+    // SYNTAX, labels and all.
+    //
+    // The SAME fused `token('...')` the `param` rule carries, so it diverges at the
+    // lexer from `.` / `.(` / `A.B` exactly as the distribute-dot does. Admitted on
+    // `fn_term` alone rather than inside `_fn_arg` — `_fn_arg` is shared with
+    // `tuple_literal` and the spec-rule arg list, neither of which has a residue to
+    // capture; a rule head IS a `fn_term`, so this is the narrowest position that
+    // reaches it. WHERE a `...` is legal within a call is not a grammar question
+    // (a rule head and an operation-body call are the same `fn_term`), so the
+    // converter refuses every non-head position (`claim_rule_head_captures`).
+    rest_arg: $ => seq(token('...'), field('var', $.variable_term)),
 
     // A lambda may appear directly as a call argument:
     // `map(xs, lambda x -> f(x))`. The lambda body is an `_expr_body`

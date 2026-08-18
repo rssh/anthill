@@ -1519,6 +1519,90 @@ pub fn visit_classifications(
     }
 }
 
+/// WI-1129 (proposal 056 §2.3) — the LABELS of [`for_each_child`]'s children, in
+/// that same order and always of that same length: what 056 §2.3 calls an
+/// occurrence's "component names". A macro handed the rule-head capture record
+/// needs to ENUMERATE its components — the captured labels are the caller's column
+/// names, so it cannot know them to ask `term_field` for one by name — and reuse
+/// each component's occurrence, which is what makes the two lists a pair.
+///
+/// **Mirrors [`for_each_child`] PER VARIANT, and must keep doing so.** Each arm
+/// below reads the variant's OWN field lengths, in the order that variant yields
+/// its children — it does not infer a shape from the count. That distinction is the
+/// whole correctness argument: the naming forms are NOT uniformly
+/// `positional ++ named`. An `ApplyWithin` yields `args ++ named_args ++
+/// requirements`, so a "the named ones are the last k children" rule would hand the
+/// author's `x:` label to a requirement dictionary and label the real argument `_3`
+/// — same length, wrong content, and the caller's parallelism `debug_assert` cannot
+/// see it. (MEASURED: that is what an earlier count-derived version did, found by
+/// `/code-review`.)
+///
+/// A variant with no named channel — and every future one, until it is added here —
+/// takes the `_` arm and is labelled positionally end to end, which is honest for
+/// `If` / `Let` / `Match` / a list literal and is at worst uninformative for a new
+/// naming form. `child_count` is the caller's own [`for_each_child`] count and is
+/// used only to fill that tail, so a drift in LENGTH still trips the caller's
+/// assert.
+///
+/// A child with no label of its own is `_1`-based `positional_label` — §4.5's
+/// positional-component convention, the same names a positional tuple component
+/// answers to — so `_2` genuinely means "the second slot", not "unlabelled". The
+/// slot is the CHILD's, not the written argument's, and the two differ where a form
+/// leads with something that is not an argument: a `DotApply`'s receiver is `_1` and
+/// its first written argument `_2`, as is an `HoApply`'s predicate.
+pub fn child_labels(kb: &KnowledgeBase, expr: &Expr, child_count: usize) -> Vec<String> {
+    const NONE: &[(Symbol, Rc<NodeOccurrence>)] = &[];
+    // `(children yielded BEFORE the named ones, the named ones)`. Anything a variant
+    // yields AFTER its named args — an `*Within`'s requirements channel — is picked
+    // up by the positional tail below, at its own child index.
+    let (lead, named): (usize, &[(Symbol, Rc<NodeOccurrence>)]) = match expr {
+        Expr::Apply {
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::Constructor {
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::Instantiation {
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::ConstructorWithin {
+            pos_args,
+            named_args,
+            ..
+        } => (pos_args.len(), named_args),
+        Expr::ApplyWithin {
+            args, named_args, ..
+        } => (args.len(), named_args),
+        // The receiver is yielded first and is not an argument, so it takes `_1`.
+        Expr::DotApply {
+            pos_args,
+            named_args,
+            ..
+        } => (1 + pos_args.len(), named_args),
+        Expr::TupleLit { positional, named } => (positional.len(), named),
+        _ => (child_count, NONE),
+    };
+    let mut out: Vec<String> = (0..lead).map(crate::intern::positional_label).collect();
+    // The SHORT name: a named argument's label is registered qualified
+    // (`<op>.<param>`) at some producers and bare at others, and what the author
+    // wrote — and what `term_field` matches on — is the last segment.
+    out.extend(
+        named
+            .iter()
+            .map(|(label, _)| super::typing::short_name_of(kb.local_name_of(*label)).to_string()),
+    );
+    for i in out.len()..child_count {
+        out.push(crate::intern::positional_label(i));
+    }
+    out
+}
+
 /// Canonical non-destructive walker over the direct
 /// `Rc<NodeOccurrence>` children of an `Expr`. Invokes `f` once per
 /// child slot, in a fixed per-variant order (field order: positional
@@ -1527,6 +1611,9 @@ pub fn visit_classifications(
 /// consumes children positionally and relies on it matching this
 /// enumeration. Pre/post-order *across the tree* is still the caller's
 /// concern — drive your own work-stack for that.
+///
+/// WI-1129: [`child_labels`] answers "what is each of these children CALLED", over
+/// the same order and the same length.
 #[inline]
 pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     match expr {
@@ -6136,6 +6223,73 @@ mod tests {
             }
             _ => panic!("expected Apply"),
         }
+    }
+
+    /// WI-1129: [`child_labels`] must mirror [`for_each_child`] PER VARIANT. The
+    /// naming forms are not uniformly `positional ++ named`: an `ApplyWithin` yields
+    /// `args ++ named_args ++ requirements`, so deriving "the named ones are the last
+    /// k children" from the count hands the author's `k:` label to a requirement
+    /// dictionary and calls the real named argument `_3`.
+    ///
+    /// BACK-OUT: replace the per-variant `match` with `pos_count = child_count -
+    /// named_count` (the shipped-then-fixed version) and this row reads
+    /// `["_1", "_2", "k"]` instead of `["_1", "k", "_3"]`. The `Apply` row below
+    /// passes either way BY DESIGN — its children ARE `positional ++ named`, which is
+    /// exactly why the count-derived version looked right. The parallelism
+    /// `debug_assert` in `reflect_sub_occurrence_labels` cannot stand in for this:
+    /// both readings have length 3.
+    #[test]
+    fn child_labels_mirror_for_each_child_per_variant() {
+        let mut kb = KnowledgeBase::new();
+        let f = kb.intern("f");
+        let k = kb.intern("k");
+        let span = make_span();
+        let leaf = || NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+
+        let count = |expr: &Expr| {
+            let mut n = 0;
+            for_each_child(expr, |_| n += 1);
+            n
+        };
+
+        // `args ++ named_args ++ requirements` — the named arg sits in the MIDDLE.
+        let within = Expr::ApplyWithin {
+            functor: f,
+            args: vec![leaf()],
+            named_args: vec![(k, leaf())],
+            requirements: vec![leaf()],
+            type_args: Vec::new(),
+        };
+        assert_eq!(count(&within), 3);
+        assert_eq!(
+            child_labels(&kb, &within, 3),
+            vec!["_1".to_string(), "k".to_string(), "_3".to_string()],
+        );
+
+        // The control: `pos_args ++ named_args`, the shape every ordinary call has.
+        let apply = Expr::Apply {
+            functor: f,
+            pos_args: vec![leaf(), leaf()],
+            named_args: vec![(k, leaf())],
+            type_args: Vec::new(),
+        };
+        assert_eq!(count(&apply), 3);
+        assert_eq!(
+            child_labels(&kb, &apply, 3),
+            vec!["_1".to_string(), "_2".to_string(), "k".to_string()],
+        );
+
+        // A form with no named channel at all is labelled positionally end to end.
+        let iff = Expr::If {
+            condition: leaf(),
+            then_branch: leaf(),
+            else_branch: leaf(),
+        };
+        assert_eq!(count(&iff), 3);
+        assert_eq!(
+            child_labels(&kb, &iff, 3),
+            vec!["_1".to_string(), "_2".to_string(), "_3".to_string()],
+        );
     }
 
     #[test]

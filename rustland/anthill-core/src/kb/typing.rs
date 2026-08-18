@@ -17195,7 +17195,7 @@ fn same_qname(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
 /// WI-672 split this out of `same_symbol` so short-name matching survives ONLY for name
 /// resolution. The `debug_assert` catches the one misuse — two DISTINCT fully-qualified
 /// names sharing a last segment (`A.x` vs `B.x`) — that would reintroduce that unsoundness.
-fn same_label(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+pub(super) fn same_label(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
     if a == b {
         return true;
     }

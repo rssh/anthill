@@ -356,3 +356,36 @@ operation fix[R](p: Relation, ...args: R) -> Relation
     return_type: (simple_type
       (name
         (identifier)))))
+
+==================================
+Rule-head rest pattern (...?args) — WI-1129
+==================================
+
+rule fix(?r, ...?args) <=> fix_of(?r, ?args) [simp]
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (infix_term
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))
+          (rest_arg
+            var: (variable_term
+              (variable))))
+        (operator_symbol)
+        (fn_term
+          name: (name
+            (identifier))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier))))))

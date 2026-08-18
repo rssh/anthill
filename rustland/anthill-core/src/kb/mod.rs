@@ -900,6 +900,27 @@ pub struct KnowledgeBase {
     /// declarations), so the side-table needs no fact backing to survive.
     pub(crate) op_capture_params: HashMap<Symbol, Symbol>,
 
+    /// WI-1129 (proposal 056 §2.3) — the RULE-HEAD face of the same capture: for a
+    /// `[simp]` equation whose left-hand side ends in a `...?args` rest pattern
+    /// (`rule fix(?r, ...?args) <=> fix_of(?r, ?args) [simp]`), the INDEX among that
+    /// LHS's positional arguments of the capture variable. Read by
+    /// [`super::simp_rewrite::try_fire`], which folds the redex's leftover named
+    /// arguments into one record occurrence bound there, so the macro on the RHS
+    /// receives them as SYNTAX — labels and sub-occurrences intact — which is what
+    /// the operation face cannot give it (a captured argument reaches the callee as
+    /// its TYPE, and §4.5 has no singleton types).
+    ///
+    /// Keyed by `RuleId`, not by head functor: a multi-head rule desugars to one
+    /// `RuleId` per head, and two rules may lower the same functor.
+    ///
+    /// A side-table for [`Self::op_capture_params`]' reasons — loader-produced,
+    /// typer-consumed, with no runtime or persistence surface. The rule ITSELF is
+    /// stored with the capture variable as an ordinary positional argument, so its
+    /// head term, its `DeBruijn` numbering and its discrimination-tree key are
+    /// exactly what they would be without the marker; only this table says the last
+    /// positional slot is a residue rather than an argument.
+    pub(crate) rule_head_captures: HashMap<RuleId, usize>,
+
     /// WI-840 (proposal 058 §4.7) — the NAMED requirement slots declared by an
     /// operation or a sort: `owner → [(binder, slot position)]`, in source order.
     ///
@@ -1603,6 +1624,7 @@ impl KnowledgeBase {
             decl_sites: Vec::new(),
             scope_text_files: HashMap::new(),
             op_capture_params: HashMap::new(),
+            rule_head_captures: HashMap::new(),
             named_requirement_slots: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
@@ -1818,6 +1840,21 @@ impl KnowledgeBase {
     /// loader when an operation declares a `...`-marked parameter.
     pub fn record_op_capture_param(&mut self, op_sym: Symbol, param: Symbol) {
         self.op_capture_params.insert(op_sym, param);
+    }
+
+    /// WI-1129 (proposal 056 §2.3) — the index among `rid`'s equation-LHS positional
+    /// arguments of its VARIADIC CAPTURE variable, if its head was written with a
+    /// `...?args` rest pattern. `None` for every ordinary rule. See
+    /// [`Self::rule_head_captures`].
+    pub fn rule_head_capture(&self, rid: RuleId) -> Option<usize> {
+        self.rule_head_captures.get(&rid).copied()
+    }
+
+    /// WI-1129 — record `rid`'s rule-head capture position. Called by the loader from
+    /// the verdict the CONVERTER reached (`ir::Rule::head_captures`); conformance —
+    /// at most one, trailing, on a `[simp]` equation head — is decided there, once.
+    pub fn record_rule_head_capture(&mut self, rid: RuleId, arg_index: usize) {
+        self.rule_head_captures.insert(rid, arg_index);
     }
 
     /// WI-840 (058 §4.7) — record that `owner`'s requirement slot at position `slot`

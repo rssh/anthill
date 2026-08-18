@@ -569,6 +569,20 @@ pub struct Rule {
     /// for denial. Mixing `Bottom` with positive heads is rejected at
     /// load time. Multi-head desugars conjunctively (proposal 032).
     pub heads: Vec<RuleHead>,
+    /// WI-1129 (proposal 056 §2.3) — per head, PARALLEL to [`Self::heads`]: the index
+    /// among that head's equation-LHS POSITIONAL arguments of a variadic capture
+    /// (`rule fix(?r, ...?args) <=> fix_of(?r, ?args) [simp]` → `Some(1)`), or `None`
+    /// for the ordinary head.
+    ///
+    /// Decided ONCE, by the converter (`claim_rule_head_captures`), which is the only
+    /// place that can see the `...` marker at all — the head TERM carries the capture
+    /// variable as a plain positional argument, deliberately, so that the rule the
+    /// loader asserts and the discrimination tree indexes has exactly the shape it
+    /// would have without the marker. The loader therefore READS this rather than
+    /// re-deriving conformance from the term, so a malformed head cannot get one
+    /// verdict here and another there (the operation face's `capture_ok`, kb/load.rs,
+    /// is the same discipline within one function).
+    pub head_captures: Vec<Option<usize>>,
     pub body: Option<Vec<TermId>>,
     pub meta: Option<MetaBlock>,
     pub span: Span,

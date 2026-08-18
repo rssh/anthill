@@ -246,6 +246,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     )?;
     register_if_present(
         interp,
+        "anthill.reflect.sub_occurrence_labels",
+        reflect_sub_occurrence_labels,
+    )?;
+    register_if_present(
+        interp,
         "anthill.reflect.occurrence_type",
         reflect_occurrence_type,
     )?;
@@ -4071,6 +4076,51 @@ fn reflect_sub_occurrences(interp: &mut Interpreter, args: &[Value]) -> Result<V
         node_occurrence::for_each_child(expr, |c| children.push(Value::Node(Rc::clone(c))));
     }
     build_value_list(interp, children)
+}
+
+/// WI-1129 (proposal 056 §2.3) — `anthill.reflect.sub_occurrence_labels(occ:
+/// NodeOccurrence) -> List[String]`.
+///
+/// The COMPONENT NAMES of the occurrence's direct children, in the same order and
+/// of the same length as [`reflect_sub_occurrences`] — the two are read as a pair.
+/// A child with no label of its own reads as its `_1`-based positional label (§4.5),
+/// so the pairing is total.
+///
+/// This is the reader 056 §2.3 names alongside `sub_occurrences`, and it is what
+/// makes the rule-head capture usable: the captured labels are the CALLER's names
+/// (`r.rename(who: r.name)` — a column name no macro can know in advance), so a
+/// macro must enumerate them, which neither `sub_occurrences` (children, no names)
+/// nor `term_field` (one name you must already have) can do. Reading the labels off
+/// `occurrence_term`'s Fn twin is not an alternative for the same reason, and it
+/// additionally goes `Bottom` the moment one component is a child-bearing form.
+///
+/// Only an `Expr`-kind occurrence has children; a `Pattern` / `Type` / `EffectExpr`
+/// one yields the empty list, as `sub_occurrences` does.
+fn reflect_sub_occurrence_labels(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<Value, EvalError> {
+    use crate::kb::node_occurrence;
+    let [occ_arg] = expect_args::<1>("sub_occurrence_labels", args)?;
+    let occ = match &occ_arg {
+        Value::Node(o) => std::rc::Rc::clone(o),
+        other => return Err(type_mismatch("NodeOccurrence", other, None)),
+    };
+    let labels: Vec<Value> = match occ.as_expr() {
+        Some(expr) => {
+            let mut count = 0usize;
+            node_occurrence::for_each_child(expr, |_| count += 1);
+            let labels = node_occurrence::child_labels(&interp.kb, expr, count);
+            debug_assert_eq!(
+                labels.len(),
+                count,
+                "WI-1129: `child_labels` must stay parallel to `for_each_child`",
+            );
+            labels.into_iter().map(Value::Str).collect()
+        }
+        None => Vec::new(),
+    };
+    build_value_list(interp, labels)
 }
 
 /// WI-722 inc 2 (proposal 043.1) — `anthill.reflect.occurrence_type(occ:

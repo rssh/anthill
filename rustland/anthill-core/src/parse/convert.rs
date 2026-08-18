@@ -133,6 +133,22 @@ enum BuildFrame<'t> {
         /// Bindings collected off an `instantiation_term` callee
         /// (`op[bindings](args)`); empty for the untyped form.
         type_args: Vec<SortBinding>,
+        /// WI-1129 (proposal 056 §2.3): the indices in `slots` of this call's
+        /// `...?args` REST PATTERNS. The marker is syntax, not structure — each
+        /// variable rides `slots` as an ordinary positional arg, so the head term
+        /// the loader indexes is exactly `fix(?r, ?args)` — and the mark has to
+        /// survive as a per-OCCURRENCE fact until the `TermId` its child converts
+        /// to exists, which is `build_parse` time. Carried on the frame rather than
+        /// as an `ArgSlot` variant because `ArgSlot` is shared with four other
+        /// frames (`DotApply`, tuple, instantiation, spec-rule args), none of which
+        /// the grammar admits a `rest_arg` in.
+        ///
+        /// A LIST, not the one legal capture: "at most one" is
+        /// `claim_rule_head_captures`' refusal to make, and it can only make it if
+        /// every marker written reaches it. Keeping a single slot here let a second
+        /// `...` overwrite the first, which loaded `f(?x, ...?a, ...?b)` clean with
+        /// `?a` silently an ordinary argument (MEASURED, before this was a Vec).
+        rest_slots: SmallVec<[usize; 1]>,
     },
     Infix {
         node: Node<'t>,
@@ -250,6 +266,21 @@ pub(super) struct Converter<'a> {
     /// PARENT's vars, so the step's claim chains arithmetically with
     /// the parent's body in the consumer's SMT preamble.
     rule_var_scopes: HashMap<Symbol, HashMap<Symbol, VarId>>,
+    /// WI-1129 (proposal 056 §2.3): every `...?args` REST PATTERN converted so far
+    /// that no `[simp]` rule head has claimed — `(the capture variable's TermId, its
+    /// span)`. Filled by [`Self::build_parse`]'s `FnTerm` arm (the earliest point the
+    /// child's `TermId` exists), drained by [`Self::claim_rule_head_captures`], and
+    /// whatever remains when the file finishes converting is refused by
+    /// [`Self::refuse_stray_rest_args`].
+    ///
+    /// A PENDING list rather than a per-position grammar restriction because the
+    /// legality of `...` is not a grammar question: a rule head and an
+    /// operation-body call are the same `fn_term` production, so the grammar can
+    /// only say "somewhere in a call" and this list says which one. Not a
+    /// [`SimpleTermStore`] mark either — nothing downstream reads it; the loader
+    /// reads the DECIDED capture position off [`super::ir::Rule::head_captures`],
+    /// so there is exactly one decider.
+    pending_rest_args: Vec<(TermId, Span)>,
 }
 
 impl<'a> Converter<'a> {
@@ -264,6 +295,7 @@ impl<'a> Converter<'a> {
             next_var: 0,
             var_scope: HashMap::new(),
             rule_var_scopes: HashMap::new(),
+            pending_rest_args: Vec::new(),
         }
     }
 
@@ -490,6 +522,8 @@ impl<'a> Converter<'a> {
             let items = self.convert_items_at(child, ItemOwner::NotASort);
             self.items.extend(items);
         }
+        // WI-1129: after every rule has had its chance to claim one.
+        self.refuse_stray_rest_args();
     }
 
     /// The `import` clauses written directly in `node`'s body — the imports of
@@ -1062,6 +1096,8 @@ impl<'a> Converter<'a> {
         // order so it doesn't need a Visit op.
         let mut slots: SmallVec<[ArgSlot; 4]> = SmallVec::new();
         let mut child_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        // WI-1129: the `...?args` slot indices, filled by the `rest_arg` arm below.
+        let mut rest_slots: SmallVec<[usize; 1]> = SmallVec::new();
         if is_ho {
             // The HO head is a `variable` leaf; treat it as a positional
             // child that requires a Visit so we don't have to specialize
@@ -1097,6 +1133,23 @@ impl<'a> Converter<'a> {
                         child_nodes.push(v);
                     }
                 }
+                // WI-1129 (proposal 056 §2.3): `...?args`. The variable rides
+                // `slots` as an ORDINARY positional argument — the term the loader
+                // indexes and the resolver matches is `fix(?r, ?args)`, unchanged in
+                // shape — and only `rest_slots` remembers which slots were written
+                // with the marker. EVERY one is recorded, however malformed the call:
+                // "at most one, trailing, on a `[simp]` head" is
+                // `claim_rule_head_captures`' verdict to reach, and it can only reach
+                // it over the markers that get this far.
+                "rest_arg" => {
+                    let Some(var) = self.field(child, "var") else {
+                        self.err("malformed rest pattern (expected `...?name`)", child);
+                        continue;
+                    };
+                    rest_slots.push(slots.len());
+                    slots.push(ArgSlot::Positional);
+                    child_nodes.push(var);
+                }
                 k if is_term_kind(k) => {
                     slots.push(ArgSlot::Positional);
                     child_nodes.push(child);
@@ -1111,6 +1164,7 @@ impl<'a> Converter<'a> {
             functor,
             slots,
             type_args,
+            rest_slots,
         }));
         for child in child_nodes.iter().rev() {
             work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
@@ -1160,6 +1214,23 @@ impl<'a> Converter<'a> {
                         slots.push(ArgSlot::Named(sym));
                         child_nodes.push(v);
                     }
+                }
+                // WI-1129 (proposal 056 §2.3): the DOT form is not a capture position.
+                // The engine that reads a rule-head capture is
+                // `simp_rewrite::try_fire`, which fires on an `Apply` / `Constructor`
+                // redex; a `dot_apply`-headed `[simp]` rule is fired by the SEPARATE
+                // `typing::try_fire_dot_rule`, whose `match_dot_rule_lhs` has no fold
+                // step — so a `...` here would bind nothing. Refused at the marker
+                // rather than dropped: this arm's `_ => {}` neighbour would swallow
+                // the whole `rest_arg` node, taking the capture variable out of the
+                // head in silence (MEASURED, before this arm existed).
+                "rest_arg" => {
+                    self.err(
+                        "a `...` variadic capture is not supported on a dot-form call \
+                         — write the `[simp]` rule head in applicative form (`rule \
+                         rename(?r, ...?cols) <=> …`), the form proposal 056 §2.3 defines",
+                        child,
+                    );
                 }
                 k if is_term_kind(k) => {
                     slots.push(ArgSlot::Positional);
@@ -1851,6 +1922,7 @@ impl<'a> Converter<'a> {
                 functor,
                 slots,
                 type_args,
+                rest_slots,
             } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
@@ -1862,6 +1934,17 @@ impl<'a> Converter<'a> {
                         ArgSlot::Positional => pos_args.push(value),
                         ArgSlot::Named(sym) => named_args.push((*sym, value)),
                     }
+                }
+                // WI-1129 (proposal 056 §2.3): record this call's `...?args` capture
+                // variable, now that its `TermId` exists. UNCLAIMED by default —
+                // `claim_rule_head_captures` takes it off this list when the call is a
+                // `[simp]` rule head's LHS, and whatever is left when the file finishes
+                // converting is a `...` written where nothing could ever read it
+                // (`refuse_stray_rest_args`). Loud over silent: the alternative is a
+                // marker that parses everywhere and means something in one place.
+                for ri in rest_slots {
+                    let tid = results[drain_start + ri];
+                    self.pending_rest_args.push((tid, self.terms.span(tid)));
                 }
                 results.truncate(drain_start);
                 let _ = is_ho;
@@ -3694,15 +3777,167 @@ impl<'a> Converter<'a> {
 
         let meta = self.convert_meta_block(node);
 
+        // WI-1129: decided HERE — at the last point where the heads AND the `[simp]`
+        // tag are both in hand. All three `Rule` producers call it (this one,
+        // `convert_rule_entry`, `convert_proof_step`), so no rule shape gets a
+        // hardcoded "no capture" that would let a marker through unread.
+        let head_captures = self.claim_rule_head_captures(&heads, &meta);
+
         self.snapshot_rule_var_scope(&label);
         Some(Rule {
             label,
             descriptions,
             heads,
+            head_captures,
             body,
             meta,
             span,
         })
+    }
+
+    /// WI-1129 (proposal 056 §2.3) — decide, per head, where this rule's VARIADIC
+    /// CAPTURE sits, and CLAIM the `...?args` markers it accounts for off
+    /// [`Self::pending_rest_args`].
+    ///
+    /// The sanctioned position is exactly one: the LAST POSITIONAL argument of a
+    /// `[simp]` equation head's LEFT-HAND SIDE. That is 056 §2.3's whole surface —
+    /// the capture exists so a compile-time macro can read the leftover named
+    /// arguments AS SYNTAX, and the `[simp]` engine is the only thing that ever
+    /// hands a rule head its argument occurrences. Everywhere else the marker has no
+    /// reader, so it is refused: at a specific site here when the head is otherwise
+    /// a lowering (a second `...`, a non-trailing one, a rule with no `[simp]` tag),
+    /// and by [`Self::refuse_stray_rest_args`] for the positions this never inspects
+    /// (an operation body, a rule body goal, the equation's RHS, a nested argument).
+    ///
+    /// A malformed head is claimed but records NO capture — the operation face's
+    /// `capture_ok` discipline (kb/load.rs), for its reason: a capture entry on a
+    /// rule whose shape was already refused would fold arguments at every redex that
+    /// matches its functor and bury the real diagnostic under the consequences.
+    fn claim_rule_head_captures(
+        &mut self,
+        heads: &[RuleHead],
+        meta: &Option<MetaBlock>,
+    ) -> Vec<Option<usize>> {
+        // No `...` anywhere in the file so far ⇒ nothing to decide. Keeps the scan
+        // off every one of the thousands of ordinary rules.
+        if self.pending_rest_args.is_empty() {
+            return vec![None; heads.len()];
+        }
+        let simp_sym = self.intern("simp");
+        let is_simp = meta.as_ref().is_some_and(|m| {
+            m.entries
+                .iter()
+                .any(|e| e.key.segments.as_slice() == [simp_sym])
+        });
+        let mut captures = Vec::with_capacity(heads.len());
+        for head in heads {
+            captures.push(self.claim_one_head_capture(head, is_simp));
+        }
+        captures
+    }
+
+    /// One head's verdict for [`Self::claim_rule_head_captures`].
+    fn claim_one_head_capture(&mut self, head: &RuleHead, is_simp: bool) -> Option<usize> {
+        let RuleHead::Term(tid) = head else {
+            return None;
+        };
+        // The equation's LHS. A head that is not an equation at all (`rule fix(?r,
+        // ...?args)`) leaves its marker pending, so the stray sweep reports it with
+        // the one message that names the whole rule.
+        let lhs = self.equation_lhs(*tid)?;
+        let Term::Fn { pos_args, .. } = self.terms.get(lhs) else {
+            return None;
+        };
+        let pos_args = pos_args.clone();
+        let rest_at: Vec<usize> = pos_args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| self.is_pending_rest(**a))
+            .map(|(i, _)| i)
+            .collect();
+        let &at = rest_at.first()?;
+        // Claimed from here on: every path below has said its own piece about these
+        // markers, so leaving one pending would report it twice in two vocabularies.
+        for &i in &rest_at {
+            self.claim_rest(pos_args[i]);
+        }
+        let span = self.terms.span(pos_args[at]);
+        if !is_simp {
+            self.err_at_span(
+                "a `...` variadic capture in a rule head needs the `[simp]` tag: the capture \
+                 binds the leftover named arguments as an occurrence for a COMPILE-TIME macro \
+                 to read (proposal 056 §2.3), and only a `[simp]` equation is expanded at \
+                 compile time",
+                span,
+            );
+            return None;
+        }
+        if rest_at.len() > 1 {
+            self.err_at_span(
+                "at most one variadic capture (`...`) is allowed in a rule head — a second one \
+                 has no residue left to collect",
+                span,
+            );
+            return None;
+        }
+        if at + 1 != pos_args.len() {
+            self.err_at_span(
+                "a variadic capture (`...`) must be the LAST positional argument of a rule head \
+                 — the capture IS the residue, so nothing can be matched after it",
+                span,
+            );
+            return None;
+        }
+        Some(at)
+    }
+
+    /// The left operand of an equation head (`f(…) <=> g(…)` / `f(…) = g(…)`), or
+    /// `None` for any other head shape. Matched BY NAME through
+    /// [`super::pratt::is_equation_functor`] — the same predicate that decides which
+    /// connectives DEFINE — so a `===` head (which compares without defining) is not
+    /// one, and neither is a bare atom.
+    fn equation_lhs(&self, tid: TermId) -> Option<TermId> {
+        let Term::Fn {
+            functor, pos_args, ..
+        } = self.terms.get(tid)
+        else {
+            return None;
+        };
+        if pos_args.len() == 2
+            && super::pratt::is_equation_functor(self.symbols.local_name(*functor))
+        {
+            Some(pos_args[0])
+        } else {
+            None
+        }
+    }
+
+    fn is_pending_rest(&self, tid: TermId) -> bool {
+        self.pending_rest_args.iter().any(|(t, _)| *t == tid)
+    }
+
+    fn claim_rest(&mut self, tid: TermId) {
+        self.pending_rest_args.retain(|(t, _)| *t != tid);
+    }
+
+    /// WI-1129 (proposal 056 §2.3): every `...?args` the file wrote where no reader
+    /// exists. Run once, after the whole file has converted, so it sees exactly what
+    /// [`Self::claim_rule_head_captures`] did not take.
+    ///
+    /// The marker parses in any call (`fn_term` is one production for a rule head and
+    /// an operation-body call alike), and it MEANS something in exactly one of them.
+    /// Silently ignoring the rest — which is what dropping the mark would do — turns
+    /// `f(...?x)` into an ordinary call on `?x`: it would load, run, and quietly bind
+    /// nothing, which is the reading a `...` was written to avoid.
+    fn refuse_stray_rest_args(&mut self) {
+        for (_, span) in std::mem::take(&mut self.pending_rest_args) {
+            self.err_at_span(
+                "a `...` variadic capture may appear only as the LAST positional argument of a \
+                 `[simp]` rule head's left-hand side (proposal 056 §2.3) — an operation's own \
+                 capture parameter is written `...name: R` in its declaration (§2.1)",
+                span,
+            );
+        }
     }
 
     /// Save the current `var_scope` keyed by the rule's label so a
@@ -4348,11 +4583,13 @@ impl<'a> Converter<'a> {
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
         let meta = self.convert_meta_block(node);
+        let head_captures = self.claim_rule_head_captures(&heads, &meta);
         self.snapshot_rule_var_scope(&label);
         Some(Rule {
             label,
             descriptions: Vec::new(),
             heads,
+            head_captures,
             body,
             meta,
             span,
@@ -4681,10 +4918,20 @@ impl<'a> Converter<'a> {
             .field(node, "tactic")
             .map(|n| self.convert_proof_strategy(n))?;
 
+        // WI-1129: a proof step DELIBERATELY does not claim. Its `Rule` never reaches
+        // `load_rule` — `encode_proof_step` (kb/load.rs) reads `heads` and encodes a
+        // `ProofStep` term — so nothing would ever read a capture recorded here. Not
+        // claiming is what makes `refuse_stray_rest_args` report the marker; calling
+        // `claim_rule_head_captures` would CONSUME it, and a `[simp]`-tagged step
+        // written `step: f(?x, ...?args) <=> g(?x, ?args) [simp]` would load clean with
+        // the rest pattern silently degraded to an ordinary positional argument
+        // (MEASURED, found by `/code-review`).
+        let head_captures = vec![None; heads.len()];
         let rule = Rule {
             label,
             descriptions: Vec::new(),
             heads,
+            head_captures,
             body,
             meta,
             span,
