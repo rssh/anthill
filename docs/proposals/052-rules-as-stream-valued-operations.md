@@ -1,8 +1,8 @@
 # Proposal 052: Relations as first-class values (`Relation[T]`)
 
-**Status:** Draft (2026-07-05; rev. 2026-07-05 — WI-638 landed; projection = distribute-dot (`select` retired); effect-row + naming resolved)
+**Status:** Draft (2026-07-05; rev. 2026-08-15 — WI-638 landed; projection = distribute-dot (`select` retired); effect-row resolved; operation/relation shared-name syntax remains open)
 **Depends on:** [026.1-value-integrated-kb-queries](026.1-value-integrated-kb-queries.md) (the `execute(kb, LogicalQuery) -> Stream[Solution]` engine — **landed**, `kb/execute.rs` — + the `LogicalQuery` ADT this is the typed face of), [010-query-system](010-query-system.md) (`LogicalQuery` constructors), [004-tuple-sorts](004-tuple-sorts.md) (named tuples — the schema `T`), [022-typing-as-facts](022-typing-as-facts.md) / WI-603 (rule-atom variable typing), **WI-638** (named-tuple field access `row.x` — **delivered**, the single-field `.` surface), **WI-639** (the distribute-dot `x.(f1, f2)` — **filed**, the multi-field projection surface `select` retires into), **WI-300** (rule-body requirement goals — **delivered**, how a clause body's `requires`-carrying ops get their dictionary)
-**Related:** [027.2-branch-from-streams](027.2-branch-from-streams.md) (the *effectful* dual — reflecting these streams into the `Branch` effect), [047-effects-as-monads-via-reflection](047-effects-as-monads-via-reflection.md) (`Branch ↦ Stream`), `stdlib/anthill/prelude/logical_stream.anthill` (`LogicalStream`), the provides-dispatch cluster (WI-424 find/map on Iterable, WI-599 finite map/filter, WI-608/609/614 requires/provides views) — the machinery the `provides` edge reuses, kernel spec §4.6 (named tuples) / §6.7 (dot projection — three modes)
+**Related:** [027.2-branch-from-streams](027.2-branch-from-streams.md) (the *effectful* dual — reflecting these streams into the `Branch` effect), [047-effects-as-monads-via-reflection](047-effects-as-monads-via-reflection.md) (`Branch ↦ Stream`), [future/associated-relations](future/associated-relations.md) (the deferred per-instance-dispatched member axis), `stdlib/anthill/prelude/logical_stream.anthill` (`LogicalStream`), the provides-dispatch cluster (WI-424 find/map on Iterable, WI-599 finite map/filter, WI-608/609/614 requires/provides views) — the machinery the `provides` edge reuses, kernel spec §4.6 (named tuples) / §6.7 (dot projection — three modes)
 **Affects:** typer (`Relation[T]` schema typing + the `provides LogicalStream[T, E]` edge + free-var subtraction + 1-field collapse + access-effect row), loader (rule reference → `Relation[T]` in both citation positions, incl. the new `field_access(Sort, ruleName)` → `Relation[T]` arm; application binds parameters; algebra ops → `LogicalQuery` constructors), stdlib (`Relation` sort + `provides LogicalStream[T, E]`)
 **Design origin:** `docs/design/brainstorms/logic-monad-match-over-streams.md` (Layer 1)
 
@@ -566,15 +566,16 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    around round-trips, and treat the collapse as a consumption-site presentation only. Zero → `Unit`.
 6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
    de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
-7. **Naming the two faces of a predicate — RAISED, then WITHDRAWN. There is nothing to name.**
-   The question was whether a Bool-valued predicate's two readings — the intensional relation and the
-   boolean value — need two names, since they coincide in ARITY (unlike a function, whose relational
-   reading is the arity+1 graph, WI-938). A convention was decided (`<name>` the relation, `is<Name>`
-   the boolean) and is **withdrawn**: it was routing around a self-inflicted limitation rather than a
-   language one, and the measurement that raised it was read wrongly.
+7. **Naming an operation and its relational face — OPEN; original convention WITHDRAWN, explicit
+   relation selection PROPOSED.** The original question asked whether a Bool-valued predicate's two
+   readings — the intensional relation and the boolean value — need two names, since they coincide in
+   arity (unlike a function, whose relational reading is the arity+1 graph, WI-938). Its proposed
+   convention (`<name>` the relation, `is<Name>` the boolean) is **withdrawn**: it imposed two declaration
+   names and was based on a measurement that conflated a plain predicate with an operation carrying a
+   derived relational view. Withdrawing that convention did **not** close the underlying question.
 
-   **THE TWO FACES NEVER CONTEND FOR ONE NAME.** `examples/classic-mini/map-colouring` is the design
-   working, with a passing test: `colouring` is a plain `rule`, `main` cites it bare as a
+   **A PLAIN CLAUSE-DEFINED PREDICATE NEEDS NO SECOND NAME.** `examples/classic-mini/map-colouring` is
+   the design working, with a passing test: `colouring` is a plain `rule`, `main` cites it bare as a
    `Relation[(wa: Colour, …)]` and drains it with `colouring.takeN(20)` — and there is **no boolean
    operation anywhere**. The faces come from **how many columns are bound**: all free enumerates, all
    bound gives `Relation[Unit]` whose non-emptiness *is* the boolean, which `negate`'s contract already
@@ -599,81 +600,14 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    Bool goal to `eq(op(args), true)`, using the declared `Eq` by construction — the sound path WI-580
    chose) but is **not** a first-class `Relation` VALUE, since `cites_a_relation` needs a `Goal`/`Rule`
    kind. Measured: `List.contains` answers as a goal and does not resolve where a `Relation` is
-   expected. So a clause-defined predicate can be cited as a value and a body-defined one cannot. Not
-   filed; recorded here as the residue.
+   expected. So a clause-defined predicate can be cited as a value and a body-defined one cannot.
 
-## Future direction — associated (dispatched) relations: relations as *spec members*
-
-052 makes a relation a first-class **value**. A separate axis, surfaced while pinning down how `requires`
-reaches a spec's rules: a relation as a **per-instance-dispatched spec member** — the relational dual of a
-spec operation.
-
-**Baseline — what already holds (no operations-vs-rules asymmetry).** `requires Spec` is **sort
-composition**: it splices Spec's scope in as a parent, and Spec's contents are reachable bare in the
-requiring sort. This is **uniform across operations and rules** — a spec's rules are bare-callable through
-`requires` exactly as its operations are (verified) — *subject to the same variant-exposure filter*: a
-required sort carrying `entity` variants leaks only those constructors, hiding its operations **and** its
-rules alike; an entity-less sort (a spec) leaks everything (WI-291 / [044](044-unified-name-resolution.md)).
-So a spec's **static** rules already compose in; there is no visibility gap to close.
-
-**The genuine gap — per-instance dispatch.** A spec *operation* is abstract: each provider supplies its
-own impl, selected at the call by the discharged requirement (the dictionary). A spec *rule* today is
-concrete: **one fixed clause set, shared by every requirer**. What is missing is the relational analogue
-of operation dispatch — a spec rule whose **clauses are supplied per provider** and selected at
-resolution. That, not visibility, is what this feature adds.
-
-**The construct.** A spec declares a rule **head with no clauses** (a relational signature); each
-instance **provides** clauses; generic code `requires`-ing the spec cites the rule bare and it resolves
-to *the discharged instance's* clauses:
-
-```anthill
-sort Graph
-  sort Node = ?
-  rule edge(?a: Node, ?b: Node)            -- associated relation: a signature, no clauses
-
-sort SocialNet
-  provides Graph[Node = Person]
-  rule edge(?a, ?b) :- follows(?a, ?b)      -- this instance's clauses
-
-sort Reach
-  requires Graph
-  rule reachable(?a, ?b) :- edge(?a, ?b)                    -- bare `edge` DISPATCHES per instance
-  rule reachable(?a, ?b) :- edge(?a, ?c), reachable(?c, ?b)
-```
-
-`reachable` over a `SocialNet` walks *follows*-edges; over a `RoadMap`, *road*-edges — one generic rule,
-a per-instance relation. This is to a relation what `Ord.compare` (declared abstract, provided per
-type) is to a function. Static rules force the alternative: thread the graph explicitly
-(`reachable(g, ?a, ?b) :- edge_of(g, ?a, ?b)`) — the boilerplate dispatch removes for operations.
-
-**What it needs (NOT visibility — that already works via `requires` composition).** Two pieces:
-1. **Provider-scoped clauses** — a provider's `rule edge …` associated with *its provision*, not with the
-   global `rules_by_functor` / `rules_by_label` index every rule lands in today. (The spec's own `edge` is
-   a clause-less signature, like an abstract operation.)
-2. **Requirement-directed clause selection** (the load-bearing engine capability) — bare `edge` in a
-   `requires Graph` clause fires the *discharged* `Graph` instance's clauses, read from the resolver's Γ
-   (the SLD analog of a frame's `requirements`, already threaded for rule-body requirements by **WI-300 /
-   `find_dictionary`**, §Requirements in a clause body). This is the clause-level parallel of **WI-222
-   defer-to-requirement** for operations.
-
-The surface and the coherence rule are comparatively easy; piece 2 is the crux. Because name resolution is
-untouched (the name already composes in), the work is entirely in *storage* + *resolver dispatch*.
-
-**Coherence (resolution policy; owned by [044](044-unified-name-resolution.md)).**
-- An **associated** rule is one whose spec-level head is **clause-less** (a signature) — firing it selects
-  the *discharged provider's* clauses. A spec's ordinary (clause-bearing) rule stays **static** — one
-  shared relation, composed in unchanged. The two are distinguished by the spec-head having clauses or not,
-  not by a new visibility rule.
-- **Ambiguity is a LOAD error** (decided). Two required specs declaring the same associated-rule name ⟹
-  bare use is ambiguous ⟹ reject at load, qualify to disambiguate. Decidable statically at the `requires`
-  site — unlike a plain unqualified rule miss, which is a *silent* 0-solutions — so it is loud by
-  construction, matching the repo's "loud error over silent skip".
-- A sort's **own** rule of that name **overrides** the associated one (mirror the operation override
-  policy, WI-444 / WI-411).
-
-**Relationship.** Complements 052's relations-as-*values* with relations-as-dispatched-*members*; both
-rest on the same 026.1 engine — the value face composes a *fixed* query, the member face selects a *query
-per instance*. Out of scope for the 052 build; recorded as the natural next axis.
+   **The replacement direction is proposed, not yet decided:** keep ordinary calls operational and add
+   an explicit form that selects the same symbol's relational face; treat same-name written rules as
+   properties of the operation rather than competing definitions. Proposal 052 intentionally does not
+   specify that form yet. Its exact syntax, delayed-call semantics, coherence for bodied and builtin
+   operations, and stream multiplicity remain under exploration in
+   [Operation and relational rules sharing one symbol](../design/brainstorms/operation-rule-shared-name.md).
 
 ## Out of scope
 
