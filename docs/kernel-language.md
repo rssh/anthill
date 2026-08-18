@@ -2809,17 +2809,16 @@ not an available fix: that boundary is where the relation's own type is built, a
 not on the path from any later use of it. Recovering the name *is* the "move both halves
 together" change above.
 
-The other two are **ambiguities, not refusals**, because in each the collapsed reading is
-spelled exactly like an ordinary working one. A constructor may therefore not read `Unit`
-as "no columns to merge" — that would compute a schema with fewer columns than the value
-it types — and it cannot detect the tuple-typed case at all. What separates them is a
-check that reads a relation VALUE's own column list, which `Relation.negate`,
-`Relation.fix` and `Relation.project` each keep and which fires loudly. `Concat` alone has
-no such check available: merging is name-free, so at runtime there is nothing wrong to
-detect — a join of a two-column relation with a one-column one whose column is tuple-typed
-computes a merged schema type that disagrees with the row it will actually materialize.
-That is a known limit of this convention, not a defect of the constructor, and it is the
-sharpest cost the collapse carries.
+The other two are **ambiguities, not refusals**, and they are ambiguities of the
+*definition* rather than of any checker: in each, the collapsed reading is spelled
+identically to an ordinary working one, so the two schemas are the **same type** and there
+is nothing to tell apart. Refusing one would refuse the other. So a construct that needs
+the arity has only two options — recognise and refuse the shapes it *can* name, or carry
+its own check against a relation value's column list, which is the one place the arity
+survives the collapse. Where neither is open to it, a derived schema can disagree with the
+row it types. That is a known cost of this convention, weighed with the rest of it;
+`stdlib/anthill/prelude/relation.anthill` records which of the relation operations pay it,
+and how each one does or does not catch it.
 
 **Grammar note.** The opener is a single fused `.(` token (a `.` immediately
 followed by `(`, no interior space). `.(` is otherwise-free syntax, so the
