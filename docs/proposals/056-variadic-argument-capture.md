@@ -77,7 +77,7 @@ An **effect** row `{X, Y}` is set union: if `X`/`Y` are rows they **flatten** in
 |---|---|---|
 | 1 | **Marker / "row var" spelling** — RESOLVED | `fix[R](p, ...args: R)`: `[R]` is a plain explicit type param ([042](042-explicit-type-parameters-on-operations.md), inferred like `join`'s `L`/`R`), `...args` the rest marker. No new record-row syntax; the one new token is `...`. NOT effect `{ }` — records don't flatten (§2.4). |
 | 2 | **Named + positional** | `...args: R` captures **both**: a positional leftover lands in `R` as `_N` (§4.5 named-tuple positional sugar), so one mechanism covers named and positional — no separate positional-variadic feature. |
-| 3 | **Ordering** | a named tuple is name-keyed / order-independent (§4.5); a positional residue keeps its `_N` order. |
+| 3 | **Ordering** | a named tuple's *value* is order-independent — it conforms to its type BY NAME and may present its components in any order (permutation is a `<:` rule, §4.5), and every reader takes position from the TYPE's label list rather than the value's order (§6.7 "Destructuring binds by LABEL"). The *type* does have an order: it is what `_1.._n` number and what a positional read uses. A positional residue keeps its `_N` order. |
 | 4 | **Constraint on captured fields** | **none on the capture** (`R` is inferred, unconstrained); the consumer's `Without` enforces "fields ⊆ columns, types match". |
 | 5 | **At most one, trailing** | a second `...` parameter is ambiguous; trailing keeps declared-param matching unchanged (capture is the residue). |
 | 6 | **Empty capture** | `r.fix()` → `R = ()` → `Without[T, ()] = T` (identity); a legitimate degenerate case, not an error. |
