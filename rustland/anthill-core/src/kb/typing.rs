@@ -12469,9 +12469,17 @@ fn clone_arg_result(r: &Result<TypeResult, TypeError>) -> Result<TypeResult, Typ
 /// through the ordinary path (`args` matches the capture parameter, `R` inferred from the
 /// tuple, the `Without` reduction narrows the schema). Every arg is `Ok` here
 /// (`check_apply_iter`'s `collect_arg_errors` returned early on any failure), so the
-/// leftover results are read directly. FIRST-INCREMENT scope: NAMED leftovers (fix's
-/// need); a positional leftover binds the capture parameter directly (positional capture
-/// is a deferred follow-up, proposal §5).
+/// leftover results are read directly.
+///
+/// WI-1130 — AND FOR A CALL WHOSE CAPTURE SLOT A POSITIONAL ARGUMENT ALREADY FILLS.
+/// Nothing is deferred here: the capture parameter occupies a position like any other, so
+/// a positional leftover binds it DIRECTLY (`R` that argument's own type), which is what
+/// spec §5.4 says. This function used to fold anyway and append its own synthesized
+/// `rest: ()` on top of that binding — one parameter, two bindings, and a load error in
+/// every positional arrangement. Both guards below ask the same question of their own
+/// channel: is the capture slot already spoken for? The named channel answers by label,
+/// the positional one by count. A call that fills it BOTH ways is refused rather than
+/// declined, naming the named argument the author wrote (§5.4's exclusivity rule).
 fn normalize_variadic_capture(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -12496,6 +12504,103 @@ fn normalize_variadic_capture(
         .iter()
         .any(|(label, _)| same_label(kb, capture_sym, *label))
     {
+        return Ok(None);
+    }
+    // WI-1130 (proposal 056 §5.4) — THE CAPTURE SLOT IS A POSITION TOO, and a positional
+    // argument may fill it directly, `R` binding that argument's own type. The parameter
+    // is declared last (`load.rs` refuses a non-trailing or second `...`, and records no
+    // capture entry for a malformed one) and positional arguments fill parameters from
+    // index 0, so the slot is taken positionally exactly when the call writes more
+    // positional arguments than there are parameters before it.
+    //
+    // WITHOUT THIS CLAUSE THE FOLD FIRED ANYWAY and appended its OWN synthesized
+    // `rest: ()`, giving one parameter two bindings. Measured, before it:
+    //   operation cap[R](...rest: R) -> R = rest
+    //   operation drive() -> Int64 = cap(5)
+    //     type mismatch in cap.rest (op-arg): expected Int64, got ()
+    //     type mismatch in cap.rest (op-arg): expected a named argument matching a distinct
+    //       unbound parameter, got named argument 'rest' binds a parameter already given
+    // Read `expected Int64`: `R` had ALREADY been inferred from the positional argument —
+    // the direct binding the spec describes was happening, and the fold then clobbered it.
+    // The guard above asks only whether a NAMED argument names the capture parameter; this
+    // one asks the same question of the POSITIONAL channel. Two channels, one question
+    // (`cap(rest: 5)` and `cap(5)` now agree, both `5`).
+    //
+    // Not an `Option` fallthrough: a capture symbol absent from the very parameter list it
+    // was recorded from is an internal inconsistency, and skipping it would silently
+    // restore the double-bind this clause exists to remove. Loud, and unreachable by
+    // construction — `record_op_capture_param` (load.rs) keys both from the same `o.params`.
+    let capture_index = match params.iter().position(|(s, _)| *s == capture_sym) {
+        Some(i) => i,
+        None => {
+            return Err(TypeError::Other {
+                site: std::panic::Location::caller(),
+                span: Some(occ.span.span),
+                context: TypeErrorContext::OperationArgument {
+                    op_name: fn_sym,
+                    param: capture_sym,
+                },
+                expected: "the recorded `...` capture parameter to be one of the \
+                           operation's declared parameters"
+                    .to_string(),
+                actual: "it is not — the capture registry and the parameter list disagree"
+                    .to_string(),
+            });
+        }
+    };
+    if pos_args.len() > capture_index {
+        // A NAMED leftover has nowhere left to go: the record it would be folded into
+        // is the very slot the positional argument took, and the two cannot both be
+        // `rest`. Refused HERE, naming the argument THE AUTHOR WROTE — the WI-757
+        // class. Letting it fall through to ordinary typing reported the synthesized
+        // record instead (`expected Int64, got (a: Int64)` for `cap(1, 2, a: 3)`),
+        // describing the rewrite rather than the source text.
+        let leftovers: Vec<String> = named_args
+            .iter()
+            .filter(|(label, _)| {
+                !params
+                    .iter()
+                    .any(|(s, _)| *s != capture_sym && same_label(kb, *s, *label))
+            })
+            .map(|(label, _)| format!("'{}'", short_name_of(kb.local_name_of(*label))))
+            .collect();
+        if !leftovers.is_empty() {
+            let capture_name = short_name_of(kb.local_name_of(capture_sym)).to_string();
+            let plural = if leftovers.len() == 1 { "" } else { "s" };
+            // The record alternative is offered ONLY for two or more leftovers. A
+            // ONE-field named tuple has NO SPELLING — `cap(1, rest: (a: 3))` is
+            // `syntax error near \`a: 3\``, measured — so suggesting it for the
+            // single-leftover case, which is the commonest way to reach this error,
+            // would send the author at a repair they cannot write. WI-1131 owns that
+            // gap; when it lands, this condition can go and the clause become
+            // unconditional. Found by a `/code-review` pass, which measured the parse.
+            let alternative = if leftovers.len() >= 2 {
+                format!(", or pass the whole record as `{capture_name}: (…)`")
+            } else {
+                String::new()
+            };
+            return Err(TypeError::Other {
+                site: std::panic::Location::caller(),
+                span: Some(occ.span.span),
+                context: TypeErrorContext::OperationArgument {
+                    op_name: fn_sym,
+                    param: capture_sym,
+                },
+                expected: format!(
+                    "the `...{capture_name}` capture filled ONE way — either by a \
+                     positional argument or by named arguments, never both"
+                ),
+                actual: format!(
+                    "named argument{plural} {} cannot be captured: a positional \
+                     argument already fills `{capture_name}`; drop that positional \
+                     argument{alternative}",
+                    leftovers.join(", "),
+                ),
+            });
+        }
+        // No named leftover: the positional binding IS the capture. Decline to fold and
+        // let the ordinary path bind it — including the surplus case (`cap(1, 2, 3)`),
+        // whose WI-1100 arity error is then the ONLY error the call reports.
         return Ok(None);
     }
     // Partition the named arguments: those matching a DECLARED, NON-capture parameter are
@@ -34240,21 +34345,39 @@ fn call_arity_error(
     // writes. A variadic capture slot is not one of those — it is filled by the WI-727
     // rewrite, from named arguments the fixed list does not name — so it is subtracted
     // here and described instead.
+    //
+    // WI-1130 CORRECTED BOTH HALVES OF THE CAPTURE CASE. The tail read "plus any named
+    // arguments the `...rest` capture collects", naming only ONE of the slot's two
+    // channels — a POSITIONAL argument may fill it too (056 §5.4). And the COUNT still
+    // said "expected 1 argument" for `cap[R](x: Int64, ...rest: R)`, which an author
+    // reading it would take as forbidding the perfectly legal `cap(1, 2)`; the headline
+    // and the tail contradicted each other. Both now admit the extra positional slot, and
+    // state the EXCLUSIVITY — the rule `normalize_variadic_capture` refuses
+    // `cap(1, 2, a: 3)` under. (The count half was found by a `/code-review` pass.)
     let declared = params.len() - usize::from(capture_param.is_some());
-    let capture_tail = match capture_param {
+    let expected = match capture_param {
+        // NO COUNT AT ALL for the capture case, and deliberately not the "N or N+1" a
+        // review first proposed: that is false too. The named channel is UNBOUNDED —
+        // `cap(1, a: 2, b: 3)` writes THREE arguments against one declared parameter and
+        // is legal (`wi1100_call_arity_test::an_empty_variadic_capture_still_loads`) — so
+        // no range describes what this callee admits. What is true is the SHAPE, so the
+        // shape is what it states; the two counts the author can check against remain in
+        // `actual` ("got N arguments") and in `unfilled_tail`.
         Some(c) => format!(
-            ", plus any named arguments the `...{}` capture collects",
+            "the parameter list `{}` filled — it declares {declared} parameter{}, and the \
+             `...{}` capture takes EITHER one further positional argument OR any number of \
+             named arguments the fixed list does not name, never both",
+            kb.qualified_name_of(callee),
+            plural(declared),
             short_name_of(kb.local_name_of(c)),
         ),
-        None => String::new(),
+        None => format!(
+            "{} argument{} — the parameter list `{}` declares",
+            declared,
+            plural(declared),
+            kb.qualified_name_of(callee),
+        ),
     };
-    let expected = format!(
-        "{} argument{} — the parameter list `{}` declares{}",
-        declared,
-        plural(declared),
-        kb.qualified_name_of(callee),
-        capture_tail,
-    );
     Some(TypeError::Other {
         site: TypeError::here(),
         span,

@@ -309,6 +309,13 @@ end
 /// demanded — reporting it on either side would state a count the source cannot have.
 /// (Review-found: with the rewritten argument list this said "got 1 argument" about a
 /// call with none in it, against an "expected 2" no caller could write.)
+///
+/// WI-1130 DROPPED THE EXPECTED COUNT ENTIRELY for a capture callee — this assertion used
+/// to read `expected 1 argument`. Once a positional argument may fill the capture slot
+/// (056 §5.4) that number was a maximum the author would believe, and no range replaces
+/// it either: the NAMED channel is unbounded, so `cap(1, a: 2, b: 3)` above writes three
+/// arguments legally. The message states the SHAPE and leaves counting to `got N` and to
+/// the unfilled-parameter tail, which is what this test actually cares about.
 #[test]
 fn a_capture_op_counts_only_what_the_author_writes() {
     let msg = refusal(
@@ -321,7 +328,7 @@ end
 "#,
     );
     assert!(
-        msg.contains("expected 1 argument") && msg.contains("got 0 arguments"),
+        msg.contains("declares 1 parameter") && msg.contains("got 0 arguments"),
         "both counts in the source's currency; got: {msg}",
     );
     assert!(

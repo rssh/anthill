@@ -822,7 +822,19 @@ fn fold_capture_redex(
     let declared_pos = capture_idx;
     let pat_labels: SmallVec<[Symbol; 2]> = pat_named.iter().map(|(s, _)| *s).collect();
 
-    let (functor, occ_pos, occ_named, is_constructor) = match occ.as_expr()? {
+    // WI-1130: `ctor_from_projection` rather than a bare `is_constructor` flag, so the
+    // rebuild below CANNOT invent the mark — `Some(fp)` carries the redex's own value and
+    // `None` says "this was an Apply, which has no such field". It used to destructure
+    // with `..` and rebuild `from_projection: false`, which is exactly what that field's
+    // doc (node_occurrence.rs, WI-762) says must never happen: the mark rides INSIDE the
+    // `Expr` so that every rebuild site is a compile error until it decides, and missing
+    // one is SILENT — a distributive projection re-read as a tuple of independent
+    // single-column relations, the WI-732 mis-typing. Binding it by name restores that
+    // compile-time obligation here. Found by a `/code-review` pass, which also probed the
+    // arm and could not reach it today (a capture rule on a constructor head is refused at
+    // load as a constructor-arity error), so this is a LATENT trap closed, not a live bug
+    // fixed — and it is closed by construction rather than by remembering.
+    let (functor, occ_pos, occ_named, ctor_from_projection) = match occ.as_expr()? {
         Expr::Apply {
             functor,
             pos_args,
@@ -835,14 +847,14 @@ fn fold_capture_redex(
             if !type_args.is_empty() {
                 return None;
             }
-            (*functor, pos_args, named_args, false)
+            (*functor, pos_args, named_args, None)
         }
         Expr::Constructor {
             name,
             pos_args,
             named_args,
-            ..
-        } => (*name, pos_args, named_args, true),
+            from_projection,
+        } => (*name, pos_args, named_args, Some(*from_projection)),
         _ => return None,
     };
     if occ_pos.len() != declared_pos {
@@ -878,6 +890,9 @@ fn fold_capture_redex(
             name: tuple_sym,
             pos_args: Vec::new(),
             named_args: captured,
+            // CORRECTLY `false`, unlike the rebuild below (WI-1130): this node is MINTED
+            // here, from the redex's leftover named arguments — there is no prior mark to
+            // carry, and a capture record is not a distributive projection.
             from_projection: false,
         },
         Rc::clone(occ),
@@ -886,12 +901,14 @@ fn fold_capture_redex(
     );
     let mut pos_args: Vec<Rc<NodeOccurrence>> = occ_pos.to_vec();
     pos_args.push(record);
-    let expr = if is_constructor {
+    let expr = if let Some(from_projection) = ctor_from_projection {
         Expr::Constructor {
             name: functor,
             pos_args,
             named_args: kept,
-            from_projection: false,
+            // The REDEX's own mark, carried — never re-decided here. Reshaping a node's
+            // argument list is not a statement about where the node came from.
+            from_projection,
         }
     } else {
         Expr::Apply {

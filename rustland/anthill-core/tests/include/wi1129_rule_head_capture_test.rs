@@ -41,7 +41,7 @@ const SRC: &str = r#"
 namespace test.wi1129
   import anthill.prelude.{Int64, String}
   import anthill.prelude.List.{cons, nil}
-  import anthill.prelude.Numeric.{add}
+  import anthill.prelude.Numeric.{add, mul}
   import anthill.prelude.String.{concat}
   import anthill.reflect.{NodeOccurrence, make_apply, sub_occurrences, sub_occurrence_labels}
 
@@ -67,6 +67,30 @@ namespace test.wi1129
   operation drive_a() -> Int64 = trigger(5, a: 7)
   operation drive_b() -> Int64 = trigger(5, b: 7)
   operation drive_empty() -> Int64 = trigger(5)
+
+  -- The KEPT path: a head that NAMES one of the named arguments. `k:` stays in place
+  -- (bound to `?k`) while every OTHER named argument is captured, which is the
+  -- `kept` / `captured` partition in `fold_capture_redex`. Nothing above reaches it —
+  -- `trigger`'s head names no named argument, so its `kept` list is always empty.
+  -- POSITION-SENSITIVE arithmetic, deliberately. Written with `add` alone the two
+  -- orderings below both summed to the same number, so the reordered row would have
+  -- passed even if the partition read the redex's written order. Weighting each slot
+  -- differently is what makes that row measure anything.
+  operation kept_named(v: Int64, k: Int64, w: Int64) -> Int64 =
+    add(add(mul(v, 100), mul(k, 10)), w)
+
+  operation pick_kept(x: NodeOccurrence, k: NodeOccurrence, args: NodeOccurrence)
+      -> NodeOccurrence =
+    make_apply("test.wi1129.kept_named", cons(x, cons(k, sub_occurrences(args))), x)
+
+  operation trigger_kept[R](x: Int64, k: Int64, ...args: R) -> Int64 = x
+
+  rule trigger_kept(?x, k: ?k, ...?args) <=> pick_kept(?x, ?k, ?args) [simp]
+
+  operation drive_kept() -> Int64 = trigger_kept(5, k: 1, a: 7)
+  -- The SAME call with its named arguments written in the other order. A named
+  -- argument list is order-independent, so the partition must not read position.
+  operation drive_kept_reordered() -> Int64 = trigger_kept(5, a: 7, k: 1)
 end
 "#;
 
@@ -281,7 +305,7 @@ const DOT_SRC: &str = r#"
 namespace test.wi1129dot
   import anthill.prelude.{Int64, String}
   import anthill.prelude.List.{cons, nil}
-  import anthill.prelude.Numeric.{add}
+  import anthill.prelude.Numeric.{add, mul}
   import anthill.prelude.String.{concat}
   import anthill.reflect.{NodeOccurrence, make_apply, sub_occurrences, sub_occurrence_labels}
 
@@ -349,5 +373,44 @@ end
         kb.try_resolve_symbol("anthill.reflect.TupleLiteral").is_some(),
         "a bare load must still define the capture record constructor — \
          `fold_capture_redex` resolves it outright",
+    );
+}
+
+/// THE `kept` PATH — a head that NAMES a named argument, so `fold_capture_redex`
+/// partitions the redex's named arguments rather than capturing all of them: `k:` stays
+/// in place bound to `?k`, `a:` is captured. `trigger_kept(5, k: 1, a: 7)` rewrites to
+/// `kept_named(5, 1, 7)` = 5 + 1 + 7 + 400.
+///
+/// NOTHING ELSE IN THIS FILE REACHES IT. Every other rule head here names no named
+/// argument, so their `kept` list is empty by construction and the partition is exercised
+/// on one side only. Found by a `/code-review` pass over the WI-1130 diff, which probed
+/// the branch and reported it undriven; added here rather than filed, per the repo's
+/// inline-over-follow-up rule.
+#[test]
+fn a_head_named_argument_is_kept_while_the_rest_is_captured() {
+    let mut interp = crate::common::interp_for(SRC);
+    assert_eq!(
+        drive(&mut interp, "drive_kept"),
+        517,
+        "trigger_kept(5, k: 1, a: 7) should rewrite to kept_named(5, 1, 7) = 500 + 10 + 7",
+    );
+}
+
+/// …and the partition is BY LABEL, not by position: the same call with its named
+/// arguments written in the other order rewrites identically. A named argument list is
+/// order-independent (§4.5), so a partition that read the redex's written order would
+/// send `a: 7` to `?k` here and produce 571 instead of 517.
+///
+/// `kept_named` weights its slots by 100/10/1 for exactly this reason: written with a
+/// plain three-way `add` the two orderings both came to 413, and this row would have been
+/// green against a position-reading partition. A commutative witness measures nothing.
+#[test]
+fn the_kept_partition_does_not_read_the_written_order() {
+    let mut interp = crate::common::interp_for(SRC);
+    assert_eq!(
+        drive(&mut interp, "drive_kept_reordered"),
+        517,
+        "trigger_kept(5, a: 7, k: 1) must agree with the other spelling (571 would mean \
+         the partition read the written order)",
     );
 }
