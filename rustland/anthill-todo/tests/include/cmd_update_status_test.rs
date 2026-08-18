@@ -16,6 +16,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const DELIVERED_WI: &str = "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"delivered by mistake\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [\"WI-000\"],
@@ -25,6 +26,7 @@ fact WorkItem(
 const CLAIMED_WI: &str = "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"claimed item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -34,6 +36,7 @@ fact WorkItem(
 const OPEN_WI: &str = "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"open item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -435,7 +438,7 @@ fn status_unknown_id_errors() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("WI-999") && stderr.contains("not found"),
+        stderr.contains("WI-999") && stderr.contains("no work item matches"),
         "expected diagnostic, got: {stderr}"
     );
 }

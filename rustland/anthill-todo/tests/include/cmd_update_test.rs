@@ -10,6 +10,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const TWO_OPEN_WIS: &str = "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -17,6 +18,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: \"WI-002\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"second\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -227,6 +229,7 @@ fn remove_dependency_filters_out_dep() {
     let project_text = "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -234,6 +237,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: \"WI-002\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"second\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [\"WI-001\"],

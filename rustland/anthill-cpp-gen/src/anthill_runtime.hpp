@@ -333,4 +333,86 @@ inline std::string str_repeat(const std::string& s, int64_t n) {
     return out;
 }
 
+// ── slug / digestBase32 (WI-1121) ──────────────────────────────
+//
+// THESE TWO MUST AGREE WITH THE RUST HOST BIT FOR BIT, and that is a stronger
+// obligation than the operations around them carry. They exist to MINT AN
+// IDENTIFIER from an item's content (design §6.5), so two hosts that computed
+// them differently would hand two different ids to the same item — which is the
+// collision the whole scheme exists to prevent, arriving by the one route no
+// amount of coordination could catch. Every constant below is therefore the
+// rust host's, not a re-derivation.
+
+// slug(s, cap) — prose reduced to `[a-z0-9-]`, cut at a word boundary at `cap`.
+// Total: an empty answer is legal (a string with no ASCII alphanumerics keeps
+// nothing), which is why §6.5 forbids anything load-bearing from resting on it.
+//
+// ASCII-ONLY LOWERCASING, deliberately, and this is where it differs from
+// `toUpper`/`toLower` — which this file refuses precisely because full Unicode
+// case mapping has no C++17 form. Here no such mapping is needed: every
+// character that survives is `[a-z0-9]`, so only ASCII case matters and the
+// rust host's `to_lowercase()` can only ever affect characters this drops.
+inline std::string str_slug(const std::string& s, int64_t cap) {
+    if (cap <= 0) return std::string();
+    std::string out;
+    for (unsigned char c : s) {
+        char lowered = static_cast<char>(
+            (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c);
+        if ((lowered >= 'a' && lowered <= 'z') || (lowered >= '0' && lowered <= '9')) {
+            out.push_back(lowered);
+        } else if (!out.empty() && out.back() != '-') {
+            // A run of anything else is ONE `-`; a leading run is dropped.
+            out.push_back('-');
+        }
+    }
+    std::size_t width = static_cast<std::size_t>(cap);
+    if (out.size() > width) {
+        // A `-` sitting exactly AT the cap means the head already ends on a word
+        // boundary — keep it whole, or the cut throws away a word that fit.
+        if (out[width] == '-') {
+            out.resize(width);
+        } else {
+            std::size_t at = out.rfind('-', width == 0 ? 0 : width - 1);
+            out.resize(at == std::string::npos ? width : at);
+        }
+    }
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    return out;
+}
+
+// digestBase32(s, chars) — FNV-1a over the UTF-8 bytes, finished with a
+// splitmix64 avalanche, rendered as Crockford base32 (0-9 and A-Z without I, L,
+// O, U), most significant group first.
+//
+// NOT A CHECKSUM AND NOT CRYPTOGRAPHIC. It owes its caller exactly two things:
+// equal inputs give equal outputs, and unequal inputs spread evenly. The
+// avalanche is not decoration — FNV-1a diffuses weakly in its high bits, and a
+// 25-bit answer is a SLICE of the word.
+//
+// A WIDTH OUTSIDE 1..=12 IS CLAMPED HERE where the rust host RAISES, because a
+// generated expression has no error channel. The two hosts therefore differ only
+// on an input no caller produces: the width is written at the call site, and the
+// one caller writes 5.
+inline std::string str_digest_base32(const std::string& s, int64_t chars) {
+    static const char* kCrockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    uint64_t h = 0xcbf29ce484222325ULL;  // FNV-1a 64 offset basis
+    for (unsigned char b : s) {
+        h ^= static_cast<uint64_t>(b);
+        h *= 0x100000001b3ULL;  // FNV-1a 64 prime
+    }
+    h ^= h >> 30;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 27;
+    h *= 0x94d049bb133111ebULL;
+    h ^= h >> 31;
+    int64_t width = chars < 1 ? 1 : (chars > 12 ? 12 : chars);
+    std::string out;
+    out.reserve(static_cast<std::size_t>(width));
+    for (int64_t i = 0; i < width; ++i) {
+        unsigned shift = static_cast<unsigned>(64 - 5 * (i + 1));
+        out.push_back(kCrockford[(h >> shift) & 0x1fU]);
+    }
+    return out;
+}
+
 }  // namespace anthill::runtime

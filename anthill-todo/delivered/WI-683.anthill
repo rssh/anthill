@@ -1,5 +1,0 @@
-fact WorkItem(id: "WI-683", description: some(value: "antill-core: resolve.rs:  Frame::assument_facts blocked carrier-neutral API"), context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none)], depends_on: some(value: nil), generates: none, requires_capability: none, status: Delivered(agent: "user", at: "2026-07-12T04:41:47Z"))
-
-fact Tag(workitem: "WI-683", name: "carrier-neutral")
-
-fact Feedback(workitem: "WI-683", author: "user", content: "Bookkeeping catch-up: code was delivered in a833361c (on main) but the deliver step was missed. Verified all deliverables present on current main: Frame::assumed_facts Vec<TermId>→Vec<Value> (resolve.rs:481); match_view_value_pattern live in the assumed-fact path (resolve.rs:1283); subst_globals DELETED; Expr::ListLit structural in TermView. Acceptance reconfirmed fresh 2026-07-12: full workspace 2734/0. Enabler for WI-682.", at: "2026-07-12T04:41:48Z")

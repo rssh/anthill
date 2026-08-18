@@ -512,9 +512,12 @@ Three consequences worth knowing:
   does not track empty directories, so nothing is published; removing them would be a
   guess about which directories the project meant to keep.
 
-### 5.3 The item file is a document: head + chapters (WI-1120)
+### 5.3 The item file is a document: head + chapters (WI-1120, delivered)
 
-**Added 2026-08-16; revised the same day after review falsified three of its rules.**
+**Added 2026-08-16; revised the same day after review falsified three of its rules.
+DELIVERED 2026-08-18 — this repo's own tracker converted, 1118 files, 2573 rows,
+no data change (a before/after row count per functor is identical). Four things
+the implementation settled that this section left open are recorded at §5.5.**
 §4 writes each item as a block of `fact` declarations. That is the right *content* and
 the wrong *encoding*, and the measurement on this repo's own tracker says so — 1110
 `WorkItem`, 1129 `Feedback` and 281 `Tag` facts, of which the volume is prose:
@@ -783,6 +786,83 @@ on the page. That is a second thing the container buys
 over flat top-level entries, where two identically-named chapters had nothing but a
 `.2` suffix to tell them apart. No domain field has to be added to carry an identity
 the data does not have.
+
+### 5.5 What building it settled (WI-1120, delivered)
+
+**THE MAPPING IS READ FROM THE BUNDLE'S PARSE IR, NOT FROM THE KB**, and that is
+forced rather than chosen. Every other declaration the host reads —
+`ExtentBinding`, the store's field names — is read out of the loaded KB; this one
+cannot be, because it is needed *to parse the project's files in the first place*.
+A document's prose lives outside the fenced head, so reading one means splicing
+each chapter back into the fact it fills BEFORE the loader sees it, and there is
+no later moment at which injecting it would not mean rewriting rows the KB
+already holds. The bundle is embedded, so this is the same text read one phase
+earlier, not a second source of truth — and the same facts still load into the KB
+like any other, which is what keeps them declarations.
+
+**THE SPLICE PRODUCES THE PARSE IR A PLAIN `fact` FILE WOULD HAVE**, and that
+equivalence is the whole design: nothing downstream — not the loader, not the
+typer, not one reader in the bundle — learns that the text arrived from a heading
+rather than from a string literal.
+
+It also settles the first row of the malformed-editing table without a second
+rule. A missing chapter leaves the field OFF the fact, and the loader's existing
+omitted-field handling takes over — which is exactly "`Option` field → `none`".
+The row's other half ("otherwise a load error") is therefore NOT implemented here
+and must not be claimed: an omitted REQUIRED field is filled with a fresh var by
+the loader, everywhere, and that is a pre-existing gap this encoding neither
+widens nor closes. No field in this domain is affected — `description` is the
+only `Chapter`, and it is an `Option`.
+
+**A CHAPTER-BEARING FIELD MAY BE WRITTEN BARE OR WRAPPED**, `"x"` or
+`some(value: "x")`, and both reach the store: the loader accepts a bare literal
+for an `Option[T = String]` field while the printer emits the wrapped form, so a
+tracker holds both (measured: 344 bare against 766 wrapped). Anything that
+compares such a field must peel it; the idempotence check silently failed its
+first time out for exactly this reason, minting a fresh id on every retry.
+
+**THE WRITER REFUSES PROSE IT COULD NOT READ BACK.** A description carrying a
+heading at a reserved level, or an unbalanced fence, would end its own chapter (or
+swallow every chapter after it) on the next load. That is caught BEFORE the file
+is written, where the command can still fail with nothing on disk.
+
+And it is what satisfies §5.3's requirement that migration run the fence-aware
+scanner over all 2239 pre-existing prose bodies: the conversion writes through the
+same writer every ordinary command uses, so the scan is not a separate pass that
+could be forgotten. Measured on this tracker — 1118 files, 2573 rows, not one
+refusal, and no fence or reserved-level heading below any head afterwards.
+
+**THE WRITER'S RESERVED SET IS PER CHAPTER KIND, not per mapping**, and getting
+that uniform was the increment's worst defect. A `###` inside a FIELD chapter is
+prose the reader carries verbatim (§5.3's fourth row, the invariant that keeps
+hand-added sub-sections alive); inside an ENTRY it starts the next entry. A
+writer reserving `level + 1` for both refused text the READER accepts — so a
+description carrying a `###` sub-section loaded fine, round-tripped into the
+fact, and then made its item permanently unwritable, with `claim` and `update`
+failing on bytes already on disk. A field reserves its own level; an entry
+reserves its own and the container level above it.
+
+**A REORDERED ENTRY IS NOT A DECORATION FAULT**, and this is where the
+positional-binding scheme earns its check or loses everything. §5.3 says a
+mismatched heading is "a loud diagnostic that `fsck --fix` repairs" — but there
+are two ways to mismatch and they have opposite repairs. If the headings present
+are a PERMUTATION of the headings the head declares, the entries are the right
+ones in the wrong order: each fact is already holding the wrong prose, so the
+fault BLOCKS and the repair moves the prose back. Rewriting the headings there
+would make the file self-consistent while permanently reattributing every note to
+the wrong author and timestamp — exactly the silent rebinding the check exists to
+prevent. Only a heading naming something no fact does is a hand-edit, and only
+that one is repaired by regenerating the heading. The two are told apart by
+comparing the sets, the same way §6.6 tells its two id faults apart.
+
+**FOUND ON REAL DATA, and it is a finding about the DOMAIN rather than the
+format**: one `Feedback` row in this tracker (`WI-991`) carried no `at` at all. It
+was written before the field was stamped, the loader filled the omission with a
+fresh var, and WI-1118's re-print materialised that var on disk as `at: ?at` — a
+free variable in a fact, invisible for months. The conversion refused it, because
+an entry chapter is NAMED by that field and there was nothing to name it with.
+Repaired by hand to the item's own `Delivered(at:)` stamp, which is what the note
+was.
 
 ## 6. Id allocation
 
@@ -1092,9 +1172,11 @@ permanent may not last. Two mitigations: reconcile before you start referencing
 that reaches `main`, so the team chooses its policy — gate merges on
 reconciliation, or let a token-holding CI reconcile after merge.
 
-### 6.5 `ContentHash`: the id is minted where the item is written
+### 6.5 `ContentHash`: the id is minted where the item is written (delivered)
 
-**Added 2026-08-17.** The other policy, and the one to reach for by default. The
+**Added 2026-08-17. DELIVERED 2026-08-18** — `mint_id` replaces `next_id`, the
+host's counter seed is gone, and this repo's own tracker carries a back-dated
+`created` on all 1118 items. What building it settled is at §6.7. The other policy, and the one to reach for by default. The
 id is derived, at `add`, from facts the tracker already holds, and it has **three
 parts, each doing a different job**:
 
@@ -1313,9 +1395,21 @@ GitHub what has been allocated, because allocation leaves no trace outside the
 tree. That second one is the only loss with teeth, and it is the price of not
 needing the network. Sayability was the third, and the slug buys it back.
 
-### 6.6 When two unsynced writers mint the same id
+### 6.6 When two unsynced writers mint the same id (detection delivered)
 
-**Added 2026-08-17.** §6.5 makes a single writer collision-proof. Two writers who
+**Added 2026-08-17. THE DETECTION IS DELIVERED (WI-1121), THE REPAIR IS NOT.**
+`LayoutFault::IdCollision` is raised at load when two files hold items whose
+`<time>-<hash>` prefixes agree and whose whole ids do not, and it BLOCKS — which
+is the half that matters, because git merges the two files cleanly and nothing
+else can see the problem. `fsck --renumber` is a separate capability (a
+deterministic loser, a re-mint, and a rewrite of every `depends_on` in the tree)
+and is filed as `WI-20260818-VDXAM-anthill-todo-backend-fsck` rather than
+smuggled in here.
+
+Under `ContentHash` the whole-id comparison IS the content comparison this
+section's table asks for: a shared prefix and a shared slug means a shared
+description, which means one item — so `DuplicateId` and `IdCollision` are told
+apart by exactly the test that was already there. §6.5 makes a single writer collision-proof. Two writers who
 have not synced cannot check each other's trees, so this is the one case that
 reaches disk. It is rare — the exposure is not a day's items but the handful
 created independently before a merge — and everything below is about making it
@@ -1378,6 +1472,102 @@ warned-and-skipped by the loader — safe, because WI-1114's
 `refuse_unknown_occupant` will not write over a file the store never read, but
 unhelpful. Recognizing conflict markers specifically, and saying so, costs almost
 nothing and is far more actionable than a generic parse error.
+
+### 6.7 What building it settled (WI-1121, delivered)
+
+**IDEMPOTENCE NEEDED A SECOND HALF AT THE CALL SITE.** `mint_id` re-deriving an
+occupied id is only half of "a retried `add` heals": the caller then has to
+RECOGNISE that id as its own work rather than commit a second row under it.
+`add` looks the id up and reports `already filed:` at exit 0 — the tracker is in
+the state the user asked for, which is what success means.
+
+**AND IT NEEDED A CLOCK SEAM TO BE TESTABLE AT ALL.** With `created` read from
+`now()`, "the same add twice re-derives one id" is observable only when both runs
+land in the same second. `add --created <stamp>` makes the mint a pure function of
+stated inputs. It is not test-only machinery: filing an item that was actually
+created earlier is a real thing to want, and it is what `migrate --to document`
+needs to back-date with.
+
+**THE OCCUPANT COMPARISON DOES NOT READ `author`, AND CANNOT NEED TO.** A work
+item does not record who filed it. That costs nothing: `author` is part of the
+DIGEST input, so two items differing only in author already have different digests
+and never reach the comparison.
+
+**THE TWO MINTING PRIMITIVES ARE REALIZED IN BOTH HOSTS, and the repo's own
+parity check is what insisted.** `slug` and `digestBase32` were added for one
+rust-hosted consumer, and leaving them unmapped in C++ read as harmless — the
+comment written at the time said "nothing has asked for them yet". The check
+disagreed, and it was right for a reason specific to these two: they MINT AN
+IDENTITY from content, so two hosts computing them differently would hand one
+item two ids — the collision the whole scheme exists to prevent, arriving by the
+one route no coordination could catch. They are realized in
+`anthill_runtime.hpp` with the rust host's constants, not a re-derivation, and
+the header says so at the site.
+
+**BOTH MIGRATIONS PLAN `created`, and the one that did not was a dead end rather
+than a gap.** `--to item-per-file` writes documents now, so a tracker filed
+before the field existed landed on disk carrying `created: ?created` — the
+loader's fill for an omitted required field, an unbound variable. The startup
+gate then refused every command *including the `migrate` its own message named*,
+and `--to document` answered "already a document" and exited 0 without stamping:
+nothing could fill the field in. The plan is shared, it runs before either
+migration writes a byte, and an item the table does not name is a refusal — which
+leaves the user with a working tracker rather than a half-converted one.
+
+**A MISSING `created` IS DERIVED, NOT REFUSED — THE FILESYSTEM KNOWS IT.** The
+first cut made every path that met an undated item refuse, which is right about
+the field and wrong about the user: `created` cannot be *invented*, but it does
+not have to be, because the file has a creation time and under a file-per-item
+layout that time IS the item's. Two sources, in order:
+
+* `--created-from`, a `<id><TAB><timestamp>` table — PREFERRED, because it dates
+  each id separately (`scripts/created_from_git.py` derives one from history);
+* the FILE's own creation time (birth time, else modification time) otherwise.
+
+WHICH SOURCE EACH ITEM USED IS REPORTED, because they are not equally good: a
+shared file gives every item in it one stamp, so the whole tracker lands in one
+day partition — where §6.5's collision scope is the tracker at once — while the
+table does not. Saying which was used is what lets someone who cares re-run with
+a table.
+
+**AND `fsck --fix` FILLS ONE IN PLACE**, which is the case a migration never
+sees: somebody writes an item file by hand and leaves the field out, because it
+is not the sort of thing a person remembers. The repair writes through the
+store's own `update`, so the row's head is re-printed and the description chapter
+beside it stays byte-identical — where re-running the conversion would reflow
+every chapter and lose exactly the hand-added prose §5.3's fourth row protects.
+That is also why `--to document` still SKIPS an already-converted file rather
+than restamping it.
+
+The gate still blocks — a var can be neither sorted nor hashed — but it now names
+a remedy that exists for the layout the project is actually on. Naming only
+`--to document` sent a shared-file project to a command that refuses it.
+
+**`created` IS A REQUIRED FIELD WITH A STARTUP GATE.** An omitted required field
+is filled by the loader with a fresh var, so a missing `created` would reach the
+mint and the listing's sort key as something neither can read — loudly, but at the
+wrong place and with the wrong message. The gate names the offending items and the
+conversion that fills the field in, and it reads the STORED TERM rather than a
+materialised `WorkItem`, because a var is not a value any `String` operation can
+be asked about.
+
+**THE LADDER HAS EXACTLY ONE PRECEDENCE RULE, AND IT IS NOT A READING**: an id
+that matches EXACTLY wins outright. Legacy ids are grandfathered and dense, so
+`WI-112` is a whole id *and* a prefix of `WI-1120`; without this the ladder would
+report a hundred of this tracker's published ids as ambiguous. Between the
+readings there is still no precedence — ambiguity is reported with its candidates.
+
+**`--depends` GOES THROUGH THE LADDER TOO**, because `depends_on` stores whole
+ids and a fragment written there is a dangling edge that reads like a real one. A
+fragment matching NOTHING is stored verbatim, and that is not a fallback: `add
+--depends` has never required its target to exist, and a forward reference to an
+item not yet filed stays legal.
+
+**WHAT IS ORDERED BY WHAT.** `list` sorts on `created` with the id as a
+tie-break, not the other way round. A content-derived id carries the DAY and then
+a digest, so within one day id order is digest order — no order at all. Ties are
+common (a back-dated migration stamps every item of one commit alike), so the
+tie-break is what keeps the order total and the sort stable.
 
 ## 7. The mirror — demoted to import / export
 
@@ -1863,6 +2053,14 @@ a silent skip or a fallback:
   PREFIX, never the whole id: the colliding items have different slugs, hence
   different filenames, and a whole-string comparison misses every case.
   `fsck --renumber` repairs it, convergently.
+* **Id collision** — two files whose items' `<time>-<hash>` prefixes agree and
+  whose whole ids do not (§6.6). **Detection delivered (WI-1121)**, blocking;
+  `fsck --renumber` is not built — it is
+  `WI-20260818-VDXAM-anthill-todo-backend-fsck`, blocked on WI-1121.
+* **A chapter heading that disagrees with its fact** — a reordered or hand-edited
+  entry (§5.3). **Delivered (WI-1120)**, NOT blocking: the rows are unambiguous
+  (they are positional siblings), and what is wrong is a rendering, which
+  `fsck --fix` rewrites from the head.
 * **Unresolved merge markers in an item file** — reported as such rather than as a
   generic parse failure. The loader already warns and skips an unparseable file and
   the store already refuses to write over one it never read, so this is a
@@ -1944,7 +2142,14 @@ reason than `fsck` has: it needs a SECOND store, and the bundle cannot build one
    that the tracker migrates exactly once. That ordering was withdrawn (see below):
    with the forge out of the picture a repeat is one mechanical commit that changes
    no data, and the conflict relief was worth two tickets more than the second diff
-   costs. When WI-1120 lands it rewrites the tree to `WI-NNN.anthill.md` (§5.4).
+   costs. **WI-1120 has now landed** and `--to item-per-file` writes documents
+   directly; the second pass it owed is `migrate --to document`, which converts a
+   tree that still holds plain `WI-NNN.anthill` files. It also BACK-DATES `created`
+   (WI-1121) from a `<id><TAB><timestamp>` table given by `--created-from`, because
+   the two passes rewrite the same files and stamping every legacy item with the
+   migration date would collapse the whole tracker into one day partition — where
+   §6.5's collision scope is the entire tracker at once. An item the table does not
+   name is a refusal, checked before a byte moves.
    Every `WI-NNN.anthill` spelling elsewhere in this document illustrates the
    layout, not the encoding — with one exception that is *not* illustration:
    §7.1's mirror-body pointer is generated output, and names `.md` accordingly.
@@ -1992,6 +2197,15 @@ reason than `fsck` has: it needs a SECOND store, and the bundle cannot build one
    Version 2 is better spent on §5.3's markdown encoding (WI-1120), which really
    does change how a row is written. `wi1118_migrate_test::the_data_format_stamp_is_not_bumped`
    is the control, so this decision fails loudly if it is quietly reversed.
+
+   **AND WI-1120 DID NOT SPEND IT (delivered).** The paragraph above is its own
+   refutation: there is still one `current_store_format()` for the binary, and the
+   document encoding applies to `ItemPerFileStore` alone — so a bump would nag
+   every project on the shared-file layout, which has no chapters and never will,
+   about a conversion that does not apply to it. What makes an unconverted tracker
+   loud instead is §6.7's `created` gate, which fires on exactly the projects the
+   conversion is for and on no others. The stamp is untouched, and the control test
+   above still holds.
 
 **Orphaned satellites are carried across, not refused (WI-1118).** A row naming an
 item that has no row of its own has no file to go in, and the store refuses to
@@ -2169,8 +2383,8 @@ preference, the substrate refactor is first, not last.
 | 1 | WI-1113 | **Store-factory substrate.** This amendment; drop the vestigial `store: FileStore` from `main`/`dispatch`; move the last spec-op call site to the dotted form. `open_store` proved not expressible against today's spec and moves to row 2 (§8.2.1). Absent declarations → today's behavior. | no user-visible change; the seam |
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
 | **2a** | WI-1118 | **`migrate` — the split.** Explode `workitems.anthill` into one file per item under `<state>/`, rewrite the store term, stamp the format version. **Renumbered from row 6 and unblocked (2026-08-17):** it waited on 2b and 2c under a "migrates exactly once" rule that only held while migration created ~1110 issues over the network. Migration is now a purely local rewrite (§11 step 2 is optional), so repeating it costs one mechanical commit — and running it FIRST is what makes §5's conflict-freedom real, since until it runs WI-1114 is delivered and unused. Measured: the exploded tree loads in 1.38 s against the single file's 1.30 s. | **this repo stops conflicting on `workitems.anthill`** |
-| 2b | WI-1120 | **Work items are documents** (§5.3). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) Blocks row 6 — the live tracker migrates once, into the final format. | items readable and editable as documents |
-| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one** (§3.2, §6.5, §6.6). `fact Mirror(target:, access:)` replacing `Coordination` (no allocation field — one policy is not a seam), the `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter, the resolution ladder, the identity-prefix duplicate check, `fsck --renumber`, `MirrorEntry(workitem:, target:, entry: String)` as a SET, grandfathered legacy ids. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. Blocks row 6 — the tracker migrates once, and ids are part of what it migrates into. | collision-free `add`, offline, no forge |
+| 2b | WI-1120 | **Work items are documents. DELIVERED** (§5.3, §5.4, §5.5). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) The blocking edge on migration was withdrawn: WI-1118 ran first and this shipped `migrate --to document` as the second pass, converting 1118 files with no data change. | items readable and editable as documents |
+| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one. DELIVERED** (§6.5, §6.6, §6.7). The `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter and its idempotent-retry rule, the resolution ladder, the identity-prefix collision check, grandfathered legacy ids; the host's counter seed deleted. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. NOT shipped here and deliberately: `fact Mirror(target:, access:)` and `MirrorEntry` belong to row 5, where the mirror is and where they have a consumer — with one policy the config carries no allocation field, so this row had no config to write; and `fsck --renumber` is a repair with its own ticket (§6.6). | collision-free `add`, offline, no forge |
 | ~~3~~ | ~~WI-1115~~ | ~~**`Forge` carrier.**~~ — **split unbuilt (2026-08-17)**, because what remained was two unlike things and no independent value (this column said "nothing alone", which is the smell). The **embedder host-fn seam** became **WI-1122** — `anthill-core` substrate, needed by any host binding a carrier, deliberately outside this chain. The **carrier, its bindings and the fake** moved to row 5, where their only consumer is. | — |
 | ~~4~~ | ~~WI-1116~~ | ~~**Coordinated `add`**~~ — **retired unbuilt** (§6.0, §12). `MirrorEntry` moves to row 5, where the mirror is. | — |
 | 5 | WI-1117 | **`export` / `import`** (§7, amended), **plus the `Forge` carrier** absorbed from row 3: the sort, its `provides`/`operation_map` bindings, and the `gh` and fake implementations. The operation set is small now — create/update an entry, list entries, list comments — since `fresh_token`, `retitle`, `close`/`reopen`-for-retreat and `entries_titled` were all the allocator's. Depends on **WI-1122** (an `operation_map` naming `gh_create_entry` is not constructible without it). Export is idempotent and tracker-wins, creating `MirrorEntry` as it goes; import pulls comments back as `Feedback` for review. Continuously-reconciled `sync` — drift detection, close-as-verify, tombstones, `--check` — is a future extension. | a published snapshot + a return channel |

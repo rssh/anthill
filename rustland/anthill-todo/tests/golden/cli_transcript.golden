@@ -135,7 +135,7 @@ Verified:
 3 item(s)
 [exit=0]
 $ anthill-todo show WI-999
-error: work item 'WI-999' not found
+error: no work item matches 'WI-999'
 [exit=1]
 $ anthill-todo nonexistent-subcommand
 anthill-todo: unknown subcommand 'nonexistent-subcommand'. Try `anthill-todo --help`.

@@ -47,6 +47,22 @@ anthill-todo -d "$PWD" graph                             # Show dependency graph
 anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
 ```
 
+### Referring to a work item
+
+An item's id is MINTED FROM THE ITEM: `WI-<YYYYMMDD>-<5 characters>-<slug>`, e.g.
+`WI-20260817-K7M2Q-item-per-file-store`. Nobody types that. Every command that
+takes an id accepts any unambiguous FRAGMENT of one:
+
+```bash
+anthill-todo -d "$PWD" show WI-K7M2Q                  # the 5-character digest, or a prefix
+anthill-todo -d "$PWD" show WI-20260817-K7M2Q         # date-digest — the stable handle
+anthill-todo -d "$PWD" show WI-item-per-file          # the slug, or a prefix of it
+```
+
+A fragment matching several items is REPORTED with the candidates rather than
+resolved by a rule — give more of one of them. Older `WI-NNN` ids still work
+exactly as they always did, and are never renumbered.
+
 ### Build-loop primitives (tags + ordered insert)
 
 A *named list* (tag) plus `list --tag` gives a machine-readable, dependency-ordered

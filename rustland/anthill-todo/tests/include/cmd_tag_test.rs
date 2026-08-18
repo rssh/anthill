@@ -13,6 +13,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const THREE_ITEMS: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -20,6 +21,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "depends on 001",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
@@ -27,6 +29,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "independent",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -102,7 +105,7 @@ fn tag_unknown_item_errors() {
     let out = run(&proj, &["tag", "WI-999", "typing"]);
     assert!(!out.status.success(), "tagging a missing item should error");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not found"), "stderr: {stderr}");
+    assert!(stderr.contains("no work item matches"), "stderr: {stderr}");
 }
 
 #[test]
@@ -218,14 +221,16 @@ fn add_with_tag_writes_workitem_and_tag() {
     let proj = setup_project(&tmp, THREE_ITEMS);
 
     let stdout = ok(&run(&proj, &["add", "tagged item", "--tag", "typing"]));
-    assert!(stdout.contains("added: WI-004"), "stdout: {stdout}");
+    // WI-1121: the id is minted, so the test reads it off the line.
+    let id = stdout.split_whitespace().nth(1).expect("`added: <id> — …`");
+    assert!(stdout.contains(&format!("added: {id}")), "stdout: {stdout}");
     assert!(stdout.contains("typing"), "tag note absent: {stdout}");
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("id: \"WI-004\""), "WI-004 not persisted");
+    assert!(combined.contains(&format!("id: \"{id}\"")), "{id} not persisted");
     assert!(
-        combined.contains("workitem: \"WI-004\"") && combined.contains("name: \"typing\""),
-        "tag fact for WI-004 not persisted:\n{combined}"
+        combined.contains(&format!("workitem: \"{id}\"")) && combined.contains("name: \"typing\""),
+        "tag fact for {id} not persisted:\n{combined}"
     );
 }
 
@@ -247,25 +252,26 @@ fn insert_before_creates_tags_and_adds_dependency() {
             "typing",
         ],
     ));
+    let id = stdout.split_whitespace().nth(1).expect("`inserted: <id> before …`");
     assert!(
-        stdout.contains("inserted: WI-004 before WI-002"),
+        stdout.contains(&format!("inserted: {id} before WI-002")),
         "stdout: {stdout}"
     );
 
     let combined = read_combined(&proj.join("anthill-todo"));
     // The new item exists and is tagged.
     assert!(
-        combined.contains("id: \"WI-004\""),
-        "WI-004 not created:\n{combined}"
+        combined.contains(&format!("id: \"{id}\"")),
+        "{id} not created:\n{combined}"
     );
     assert!(
-        combined.contains("workitem: \"WI-004\""),
-        "WI-004 not tagged:\n{combined}"
+        combined.contains(&format!("workitem: \"{id}\"")),
+        "{id} not tagged:\n{combined}"
     );
-    // WI-002 now depends on the freshly-inserted WI-004.
+    // WI-002 now depends on the freshly-inserted item.
     assert!(
-        workitem_block_contains(&combined, "WI-002", "WI-004"),
-        "WI-002 should depend on WI-004:\n{combined}"
+        workitem_block_contains(&combined, "WI-002", id),
+        "WI-002 should depend on {id}:\n{combined}"
     );
 }
 
@@ -275,7 +281,7 @@ fn insert_orders_new_item_before_target_in_tag_view() {
     let proj = setup_project(&tmp, THREE_ITEMS);
     ok(&run(&proj, &["tag", "WI-002", "typing"]));
 
-    ok(&run(
+    let inserted = ok(&run(
         &proj,
         &[
             "insert",
@@ -286,13 +292,18 @@ fn insert_orders_new_item_before_target_in_tag_view() {
             "typing",
         ],
     ));
+    let id = inserted
+        .split_whitespace()
+        .nth(1)
+        .expect("`inserted: <id> before …`")
+        .to_string();
 
     let stdout = ok(&run(&proj, &["list", "--tag", "typing"]));
-    let pos_new = stdout.find("WI-004").expect("WI-004 listed");
+    let pos_new = stdout.find(&id).expect("the inserted item is listed");
     let pos_002 = stdout.find("WI-002").expect("WI-002 listed");
     assert!(
         pos_new < pos_002,
-        "inserted WI-004 must precede WI-002 in the sequence:\n{stdout}"
+        "the inserted {id} must precede WI-002 in the sequence:\n{stdout}"
     );
 }
 
@@ -329,6 +340,7 @@ fn insert_before_non_bracket_depends_succeeds() {
         r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "nil deps",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: nil(),
@@ -345,14 +357,19 @@ fact WorkItem(
         "insert must rewrite a non-bracket depends_on: stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let id = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .expect("`inserted: <id> before …`")
+        .to_string();
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(
         combined.contains("description: some(value: \"prereq\")"),
         "the new item should be persisted:\n{combined}"
     );
     assert!(
-        workitem_block_contains(&combined, "WI-001", "WI-002"),
-        "WI-001 should now depend on the inserted WI-002:\n{combined}"
+        workitem_block_contains(&combined, "WI-001", &id),
+        "WI-001 should now depend on the inserted {id}:\n{combined}"
     );
 }
 

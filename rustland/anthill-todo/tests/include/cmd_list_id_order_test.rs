@@ -62,7 +62,7 @@ fn listed_ids(stdout: &str) -> Vec<String> {
 
 fn item(id: &str) -> String {
     format!(
-        "\nfact WorkItem(\n  id: \"{id}\",\n  description: \"item {id}\",\n  \
+        "\nfact WorkItem(\n  id: \"{id}\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"item {id}\",\n  \
          acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n"
     )
 }

@@ -75,6 +75,22 @@ fn per_file_project(tmp: &tempfile::TempDir) -> std::path::PathBuf {
     proj
 }
 
+
+/// The id `add` minted, off its own output. WI-1121 removed the counter, so a
+/// test can no longer name `WI-001` in advance — it asks what was filed.
+fn add(proj: &Path, description: &str) -> String {
+    ok(proj, &["add", description])
+        .split_whitespace()
+        .nth(1)
+        .expect("`added: <id> — …`")
+        .to_string()
+}
+
+/// Where an item's file lives. WI-1120 made it a DOCUMENT, `WI-….anthill.md`.
+fn item_file(proj: &Path, state: &str, id: &str) -> std::path::PathBuf {
+    proj.join("anthill-todo").join(state).join(format!("{id}.anthill.md"))
+}
+
 /// `add` files a new item under the directory its status names, in a file of its own.
 /// Two adds are two files, which is the whole conflict story (§9).
 #[test]
@@ -82,13 +98,13 @@ fn add_files_each_item_in_its_own_file_under_its_status() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
-    ok(&proj, &["add", "the first one"]);
-    ok(&proj, &["add", "the second one"]);
+    let a = add(&proj, "the first one");
+    let b = add(&proj, "the second one");
 
-    let first = proj.join("anthill-todo/open/WI-001.anthill");
-    let second = proj.join("anthill-todo/open/WI-002.anthill");
-    assert!(first.exists(), "WI-001 got its own file");
-    assert!(second.exists(), "WI-002 got its own — a different file");
+    let first = item_file(&proj, "open", &a);
+    let second = item_file(&proj, "open", &b);
+    assert!(first.exists(), "{a} got its own file");
+    assert!(second.exists(), "{b} got its own — a different file");
     assert!(
         fs::read_to_string(&first).unwrap().contains("the first one"),
         "and its own row is in it"
@@ -110,18 +126,18 @@ fn a_claim_moves_the_file_and_carries_feedback_and_tags() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
-    ok(&proj, &["add", "movable"]);
-    ok(&proj, &["feedback", "WI-001", "a note that must travel"]);
-    ok(&proj, &["tag", "WI-001", "wi1114"]);
-    assert!(proj.join("anthill-todo/open/WI-001.anthill").exists());
+    let id = add(&proj, "movable");
+    ok(&proj, &["feedback", &id, "a note that must travel"]);
+    ok(&proj, &["tag", &id, "wi1114"]);
+    assert!(item_file(&proj, "open", &id).exists());
 
-    ok(&proj, &["claim", "WI-001", "--agent", "claude"]);
+    ok(&proj, &["claim", &id, "--agent", "claude"]);
 
     assert!(
-        !proj.join("anthill-todo/open/WI-001.anthill").exists(),
+        !item_file(&proj, "open", &id).exists(),
         "the source file is gone"
     );
-    let moved = fs::read_to_string(proj.join("anthill-todo/claimed/WI-001.anthill"))
+    let moved = fs::read_to_string(item_file(&proj, "claimed", &id))
         .expect("the item moved to claimed/");
     assert!(moved.contains("Claimed(agent: \"claude\""), "{moved}");
     assert!(
@@ -129,7 +145,7 @@ fn a_claim_moves_the_file_and_carries_feedback_and_tags() {
         "the feedback rode along: {moved}"
     );
     assert!(
-        moved.contains("Tag(workitem: \"WI-001\", name: \"wi1114\")"),
+        moved.contains(&format!("Tag(workitem: \"{id}\", name: \"wi1114\")")),
         "the tag rode along: {moved}"
     );
 }
@@ -141,17 +157,17 @@ fn the_moved_rows_are_read_back_by_the_next_invocation() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
-    ok(&proj, &["add", "round trip"]);
-    ok(&proj, &["feedback", "WI-001", "survives a reload"]);
-    ok(&proj, &["claim", "WI-001", "--agent", "claude"]);
+    let id = add(&proj, "round trip");
+    ok(&proj, &["feedback", &id, "survives a reload"]);
+    ok(&proj, &["claim", &id, "--agent", "claude"]);
 
-    let shown = ok(&proj, &["show", "WI-001"]);
+    let shown = ok(&proj, &["show", &id]);
     assert!(shown.contains("round trip"), "{shown}");
     assert!(shown.contains("survives a reload"), "{shown}");
     assert!(shown.contains("Claimed"), "{shown}");
 
     let listed = ok(&proj, &["list"]);
-    assert!(listed.contains("WI-001"), "{listed}");
+    assert!(listed.contains(&id), "{listed}");
 }
 
 /// A second state change moves the file again, from wherever it currently is — the
@@ -161,12 +177,12 @@ fn a_second_state_change_moves_it_again() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
-    ok(&proj, &["add", "two hops"]);
-    ok(&proj, &["claim", "WI-001", "--agent", "claude"]);
-    ok(&proj, &["deliver", "WI-001", "--agent", "claude"]);
+    let id = add(&proj, "two hops");
+    ok(&proj, &["claim", &id, "--agent", "claude"]);
+    ok(&proj, &["deliver", &id, "--agent", "claude"]);
 
-    assert!(!proj.join("anthill-todo/claimed/WI-001.anthill").exists());
-    assert!(proj.join("anthill-todo/delivered/WI-001.anthill").exists());
+    assert!(!item_file(&proj, "claimed", &id).exists());
+    assert!(item_file(&proj, "delivered", &id).exists());
 }
 
 /// `feedback` on an item that has already moved lands in the file the item is in NOW.
@@ -177,14 +193,14 @@ fn feedback_after_a_move_lands_in_the_current_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
-    ok(&proj, &["add", "moved first"]);
-    ok(&proj, &["claim", "WI-001", "--agent", "claude"]);
-    ok(&proj, &["feedback", "WI-001", "written after the move"]);
+    let id = add(&proj, "moved first");
+    ok(&proj, &["claim", &id, "--agent", "claude"]);
+    ok(&proj, &["feedback", &id, "written after the move"]);
 
-    let claimed = fs::read_to_string(proj.join("anthill-todo/claimed/WI-001.anthill")).unwrap();
+    let claimed = fs::read_to_string(item_file(&proj, "claimed", &id)).unwrap();
     assert!(claimed.contains("written after the move"), "{claimed}");
     assert!(
-        !proj.join("anthill-todo/open/WI-001.anthill").exists(),
+        !item_file(&proj, "open", &id).exists(),
         "nothing re-created the old file"
     );
 }
@@ -197,7 +213,7 @@ fn feedback_after_a_move_lands_in_the_current_file() {
 fn migrate_stamps_the_format_at_the_root_and_it_is_read_back() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
-    ok(&proj, &["add", "needs a stamp"]);
+    add(&proj, "needs a stamp");
 
     let before = run_in(&proj, &["list"]);
     assert!(
@@ -228,17 +244,13 @@ fn migrate_stamps_the_format_at_the_root_and_it_is_read_back() {
 fn a_misplaced_file_blocks_and_fsck_fix_repairs_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
-    ok(&proj, &["add", "displaced"]);
+    let id = add(&proj, "displaced");
 
     // Move the file by hand, the way an interrupted `claim` or a careless `git mv`
     // would: the bytes say `Open`, the directory says `claimed`.
     let inner = proj.join("anthill-todo");
     fs::create_dir_all(inner.join("claimed")).unwrap();
-    fs::rename(
-        inner.join("open/WI-001.anthill"),
-        inner.join("claimed/WI-001.anthill"),
-    )
-    .unwrap();
+    fs::rename(item_file(&proj, "open", &id), item_file(&proj, "claimed", &id)).unwrap();
 
     let blocked = run_in(&proj, &["list"]);
     assert!(
@@ -246,16 +258,17 @@ fn a_misplaced_file_blocks_and_fsck_fix_repairs_it() {
         "a disagreeing layout is not quietly worked around"
     );
     let err = String::from_utf8_lossy(&blocked.stderr);
-    assert!(err.contains("WI-001"), "the fault names the item: {err}");
+    assert!(err.contains(&id), "the fault names the item: {err}");
     assert!(err.contains("fsck --fix"), "and the remedy: {err}");
 
     let out = run_in(&proj, &["fsck", "--fix"]);
     assert!(out.status.success(), "fsck --fix: {out:?}");
-    assert!(inner.join("open/WI-001.anthill").exists(), "the fact won");
-    assert!(!inner.join("claimed/WI-001.anthill").exists());
+    assert!(item_file(&proj, "open", &id).exists(), "the fact won");
+    assert!(!item_file(&proj, "claimed", &id).exists());
+    let _ = inner;
 
     // And the tracker is usable again.
-    assert!(ok(&proj, &["list"]).contains("WI-001"));
+    assert!(ok(&proj, &["list"]).contains(&id));
 }
 
 /// A clean tree passes `fsck` with nothing to say, and says so — a checker that prints
@@ -264,7 +277,7 @@ fn a_misplaced_file_blocks_and_fsck_fix_repairs_it() {
 fn fsck_reports_a_clean_layout() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
-    ok(&proj, &["add", "tidy"]);
+    add(&proj, "tidy");
     assert!(ok(&proj, &["fsck"]).contains("layout ok"));
 }
 
@@ -310,8 +323,8 @@ fn a_project_declaring_the_backend_before_migrating_is_told_to_migrate() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(
         &tmp,
-        "fact WorkItem(id: \"WI-001\", acceptance: [], status: Open)\n\
-         fact WorkItem(id: \"WI-002\", acceptance: [], status: Open)\n",
+        "fact WorkItem(id: \"WI-001\", created: \"2026-01-01T00:00:00Z\", acceptance: [], status: Open)\n\
+         fact WorkItem(id: \"WI-002\", created: \"2026-01-01T00:00:00Z\", acceptance: [], status: Open)\n",
     );
     fs::write(
         proj.join("anthill-todo/project.anthill"),
@@ -333,7 +346,7 @@ fn a_project_declaring_the_backend_before_migrating_is_told_to_migrate() {
         "and every row is still where it was: {items}"
     );
     assert!(
-        !proj.join("anthill-todo/open/WI-001.anthill").exists(),
+        !proj.join("anthill-todo/open").exists(),
         "nothing was renamed to one item's path"
     );
 }

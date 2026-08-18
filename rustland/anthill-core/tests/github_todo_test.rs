@@ -212,9 +212,9 @@ fn claimable_resolves_only_wi_auth_001() {
 fn wi433_claimable_with_verified_deps() {
     let extra = r#"
 namespace anthill.stage0
-  fact WorkItem(id: "WI-DEP-V", description: "a verified dependency",
+  fact WorkItem(id: "WI-DEP-V", created: "2026-01-01T00:00:00Z", description: "a verified dependency",
                 depends_on: [], status: Verified("2026-06-17"))
-  fact WorkItem(id: "WI-CHILD", description: "depends on a verified item",
+  fact WorkItem(id: "WI-CHILD", created: "2026-01-01T00:00:00Z", description: "depends on a verified item",
                 depends_on: ["WI-DEP-V"], status: Open)
 end
 "#;
@@ -259,10 +259,10 @@ fn blocked_resolves_three() {
 /// the item's solutions.
 const WI717_OMITTED_OPTIONALS: &str = r#"
 namespace anthill.stage0
-  fact WorkItem(id: "WI-NODEPS", description: "omits depends_on entirely",
+  fact WorkItem(id: "WI-NODEPS", created: "2026-01-01T00:00:00Z", description: "omits depends_on entirely",
                 acceptance: [], status: Open)
-  fact WorkItem(id: "WI-NODESC", acceptance: [], depends_on: [], status: Open)
-  fact WorkItem(id: "WI-DELIV-NODESC", acceptance: [], depends_on: [],
+  fact WorkItem(id: "WI-NODESC", created: "2026-01-01T00:00:00Z", acceptance: [], depends_on: [], status: Open)
+  fact WorkItem(id: "WI-DELIV-NODESC", created: "2026-01-01T00:00:00Z", acceptance: [], depends_on: [],
                 status: Delivered(agent: "claude", at: "2026-07-15"))
 end
 "#;
@@ -397,7 +397,7 @@ fn wi501_workitem_round_trips_through_store() {
     use anthill_core::persistence::term_ser;
     let extra = r#"
 namespace anthill.stage0
-  fact WorkItem(id: "WI-RT", description: some(value: "round trip"),
+  fact WorkItem(id: "WI-RT", created: "2026-01-01T00:00:00Z", description: some(value: "round trip"),
                 context: none, acceptance: [], depends_on: none,
                 generates: none, requires_capability: none, status: Open)
 end

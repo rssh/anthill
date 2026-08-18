@@ -21,6 +21,7 @@ fn claim_drops_open_block_and_writes_claimed() {
         "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -28,6 +29,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: \"WI-002\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"second\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -119,6 +121,7 @@ fn claim_on_readonly_dir_raises_clean_error_not_panic() {
         "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -178,7 +181,7 @@ fn claim_unknown_id_errors() {
     assert!(!out.status.success(), "expected failure for unknown id");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("WI-999") && stderr.contains("not found"),
+        stderr.contains("WI-999") && stderr.contains("no work item matches"),
         "expected diagnostic, got stderr: {stderr}"
     );
 }

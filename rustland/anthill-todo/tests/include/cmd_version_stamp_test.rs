@@ -44,6 +44,7 @@ fn stdout(out: &std::process::Output) -> String {
 const NO_STAMP: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -55,6 +56,7 @@ fact StoreFormat(version: 1)
 
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -68,6 +70,7 @@ fact StoreFormat(version: 99)
 
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],

@@ -17,7 +17,11 @@
 //!   5. exit codes are LOUD: `show`/`delete` on an unknown id exit 1
 //!      (legacy printed the error but exited 0 — the "exit-0-with-stderr"
 //!      display-command convention is retired with the native dispatch);
-//!   6. `delete WI-004` warns that WI-003 still depends on it (WI-1123).
+//!   6. an unknown id is refused by the reference LADDER (WI-1121) before it
+//!      reaches `lookup`, so the message is `no work item matches '<given>'` —
+//!      one refusal for "matches nothing" and for "matches several", where the
+//!      old one could only say the first;
+//!   7. `delete WI-004` warns that WI-003 still depends on it (WI-1123).
 //!      THIS SCENARIO IS THE CASE THE WARNING EXISTS FOR, and the golden
 //!      shows why on the very next line: `list --all` renders WI-003 as
 //!      `(depends: WI-002, WI-004)`, an edge to an item that no longer
@@ -94,14 +98,35 @@ fn default_path_reproduces_the_golden_transcript() {
         String::from_utf8_lossy(&init.stderr)
     );
 
+    // WI-1121: THE SCENARIO'S `WI-00N` ARE PLACEHOLDERS, NOT IDS. An id is minted
+    // from the item — author, `created`, description — so it is not knowable in
+    // advance, and a transcript full of them would be a different file on every
+    // run. Each `add`/`insert` registers the id it minted against the next
+    // placeholder; a placeholder in an ARGUMENT is expanded to that id on the way
+    // in, and the id in the OUTPUT is folded back to its placeholder on the way
+    // out. The golden therefore stays exactly the file it was, and still measures
+    // every message, marker, ordering and exit code it always did.
+    //
+    // `WI-999` is not registered by anything and so passes through untouched —
+    // which is the point of the two scenario steps that use it.
+    let mut minted: Vec<(String, String)> = Vec::new();
+
     let mut transcript = String::new();
     for args in SCENARIO {
         transcript.push_str("$ anthill-todo ");
         transcript.push_str(&args.join(" "));
         transcript.push('\n');
 
+        let expand = |arg: &str| -> String {
+            minted
+                .iter()
+                .find(|(_, placeholder)| placeholder == arg)
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| arg.to_string())
+        };
+        let expanded: Vec<String> = args.iter().map(|a| expand(a)).collect();
         let mut full: Vec<&str> = vec!["-d", proj.to_str().unwrap()];
-        full.extend_from_slice(args);
+        full.extend(expanded.iter().map(|s| s.as_str()));
         let out = Command::new(BIN)
             .args(&full)
             .output()
@@ -111,14 +136,33 @@ fn default_path_reproduces_the_golden_transcript() {
         // before stderr, each section emitted only when non-empty.
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stdout = stdout.trim_end_matches('\n');
+        // Registered BEFORE folding, since the line that announces an id is the
+        // only place it is ever seen.
+        if matches!(args.first(), Some(&"add") | Some(&"insert")) {
+            let id = stdout
+                .split_whitespace()
+                .nth(1)
+                .expect("`added:`/`inserted:` names the id")
+                .to_string();
+            let placeholder = format!("WI-{:03}", minted.len() + 1);
+            minted.push((id, placeholder));
+        }
+        let fold = |text: &str| -> String {
+            let mut out = text.to_string();
+            for (id, placeholder) in &minted {
+                out = out.replace(id.as_str(), placeholder.as_str());
+            }
+            out
+        };
+        let stdout = fold(stdout);
         if !stdout.is_empty() {
-            transcript.push_str(stdout);
+            transcript.push_str(&stdout);
             transcript.push('\n');
         }
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let stderr = stderr.trim_end_matches('\n');
+        let stderr = fold(stderr.trim_end_matches('\n'));
         if !stderr.is_empty() {
-            transcript.push_str(stderr);
+            transcript.push_str(&stderr);
             transcript.push('\n');
         }
         let code = out.status.code().unwrap_or(-1);

@@ -13,6 +13,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const THREE_ITEMS: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -20,6 +21,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "depends on 001",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
@@ -27,6 +29,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "independent",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -65,13 +68,16 @@ fn add_with_tags_persists_tag_facts_and_notes_them() {
         &proj,
         &["add", "tagged item", "--tag", "typing", "--tag", "infra"],
     ));
+    // WI-1121: the id is minted from the item, so the test reads it back off the
+    // line rather than naming the counter's `WI-004`.
+    let id = stdout.split_whitespace().nth(1).expect("`added: <id> — …`");
     assert!(
-        stdout.contains("added: WI-004 — tagged item [tags: typing, infra]"),
+        stdout.contains(&format!("added: {id} — tagged item [tags: typing, infra]")),
         "stdout: {stdout}"
     );
 
     let combined = read_combined(&proj.join("anthill-todo"));
-    assert!(combined.contains("workitem: \"WI-004\""), "{combined}");
+    assert!(combined.contains(&format!("workitem: \"{id}\"")), "{combined}");
     assert!(combined.contains("name: \"typing\""), "{combined}");
     assert!(combined.contains("name: \"infra\""), "{combined}");
 }
@@ -92,10 +98,11 @@ fn insert_creates_tags_and_rewires_the_before_target() {
             "typing",
         ],
     ));
+    let id = stdout.split_whitespace().nth(1).expect("`inserted: <id> before …`");
     assert!(
-        stdout.contains(
-            "inserted: WI-004 before WI-002 [tags: typing] (WI-002 now depends on WI-004)"
-        ),
+        stdout.contains(&format!(
+            "inserted: {id} before WI-002 [tags: typing] (WI-002 now depends on {id})"
+        )),
         "stdout: {stdout}"
     );
 
@@ -103,13 +110,13 @@ fn insert_creates_tags_and_rewires_the_before_target() {
     // The new item exists, is tagged, and WI-002's deps now include it
     // (alongside the original WI-001).
     assert!(combined.contains("prereq work"), "{combined}");
-    assert!(combined.contains("workitem: \"WI-004\""), "{combined}");
+    assert!(combined.contains(&format!("workitem: \"{id}\"")), "{combined}");
     let wi002 = combined
         .split("fact WorkItem(")
         .find(|b| b.contains("\"WI-002\""))
         .expect("WI-002 block");
     assert!(
-        wi002.contains("WI-001") && wi002.contains("WI-004"),
+        wi002.contains("WI-001") && wi002.contains(id),
         "WI-002 deps should hold both: {wi002}"
     );
 }
@@ -160,7 +167,7 @@ fn insert_unknown_before_errors() {
 
     let stderr = err(&run_bundle(&proj, &["insert", "x", "--before", "WI-999"]));
     assert!(
-        stderr.contains("error: --before target 'WI-999' not found"),
+        stderr.contains("no work item matches 'WI-999'"),
         "stderr: {stderr}"
     );
 }

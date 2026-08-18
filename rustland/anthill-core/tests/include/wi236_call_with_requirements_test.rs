@@ -65,31 +65,32 @@ fn load_with_driver() -> KnowledgeBase {
     kb
 }
 
-/// Build a Value::Cell holding `wis(FakeBackend, 0)`. The backend is a
+/// Build a Value::Cell holding `wis(FakeBackend)`. The backend is a
 /// stand-in entity — these tests don't exercise retrieve (no
 /// IndexedFileStore is registered), only the dispatch path that should
 /// reach FileBasedWorkitemStore.lookup's body.
+///
+/// ONE FIELD, not two: WI-1121 removed `id_counter` when ids stopped being drawn
+/// from a counter. A hand-built state does not follow the impl's own `open`
+/// factory, so it has to be kept in step by hand — and a `wis` of the wrong
+/// arity matches no case in the impl's bodies, which is why the drift is loud.
 fn build_cell_wis(interp: &mut Interpreter) -> Value {
     let wis_sym = interp
         .kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
     let backend_field = interp.kb_mut().intern("backend");
-    let counter_field = interp.kb_mut().intern("id_counter");
     let fake_backend_sym = interp.kb_mut().intern("FakeBackend");
     let wis_value = Value::Entity {
         functor: wis_sym,
         pos: vec![].into(),
-        named: vec![
-            (
-                backend_field,
-                Value::Entity {
-                    functor: fake_backend_sym,
-                    pos: vec![].into(),
-                    named: vec![].into(),
-                },
-            ),
-            (counter_field, Value::Int(1)),
-        ]
+        named: vec![(
+            backend_field,
+            Value::Entity {
+                functor: fake_backend_sym,
+                pos: vec![].into(),
+                named: vec![].into(),
+            },
+        )]
         .into(),
     };
     let handle = interp.alloc_cell(wis_value);

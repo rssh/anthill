@@ -23,6 +23,7 @@ const ANTHILL_TODO_BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const SINGLE_OPEN_WI: &str = "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -117,7 +118,7 @@ fn feedback_on_missing_item_errors_and_writes_nothing() {
     // Pin the exact diagnostic (not two independent substrings) so a nonzero
     // exit for an *unrelated* reason can't masquerade as the not-found path.
     assert!(
-        stderr.contains("work item 'WI-999' not found"),
+        stderr.contains("no work item matches 'WI-999'"),
         "expected the not-found diagnostic, got stderr: {stderr}"
     );
 

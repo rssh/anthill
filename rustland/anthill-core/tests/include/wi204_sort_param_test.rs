@@ -157,17 +157,19 @@ end
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
 
-    // Build a Value::Cell holding wis(SomeBackend, 0). Backend doesn't
-    // need to be registered for retrieve — we just want to confirm the
-    // call reaches FileBasedWorkitemStore.lookup, then errors at the
-    // retrieve builtin (no store registered for the wis backend) OR
-    // returns empty (if retrieve gracefully no-ops). Either way it
-    // proves dispatch works.
+    // Build a Value::Cell holding `wis(backend:)`. The backend does not need to
+    // be registered for retrieve — this only confirms the call REACHES
+    // FileBasedWorkitemStore.lookup, which is what the form-C dispatch is about.
+    //
+    // ONE FIELD, not two: WI-1121 removed `id_counter` when ids stopped being
+    // drawn from a counter. This is a hand-built state value, so it does not
+    // follow the impl's own `open` factory and has to be kept in step by hand —
+    // which is exactly what this line is, and why it broke loudly rather than
+    // silently (a `wis` of the wrong arity matches no case in the impl's bodies).
     let wis_sym = interp
         .kb_mut()
         .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
     let backend_field = interp.kb_mut().intern("backend");
-    let counter_field = interp.kb_mut().intern("id_counter");
     // A dummy backend value — won't be used unless retrieve actually
     // fires. For this smoke test, we want dispatch to be the only
     // thing exercised.
@@ -179,11 +181,7 @@ end
     let wis_value = Value::Entity {
         functor: wis_sym,
         pos: vec![].into(),
-        named: vec![
-            (backend_field, dummy_backend),
-            (counter_field, Value::Int(1)),
-        ]
-        .into(),
+        named: vec![(backend_field, dummy_backend)].into(),
     };
     let handle = interp.alloc_cell(wis_value);
     let cell_value = Value::Cell(handle);

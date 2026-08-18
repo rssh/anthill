@@ -35,6 +35,42 @@ pub fn has_extension(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|e| extensions.contains(&e))
 }
 
+/// Whether a file's NAME ends with one of `suffixes` — the test
+/// [`has_extension`] cannot express (WI-1120).
+///
+/// `Path::extension()` answers `md` for `WI-690.anthill.md`, so an item document
+/// is unreachable by extension: `.anthill` misses it and `.md` sweeps in every
+/// ordinary markdown file in the tree. A suffix carrying its own leading `.`
+/// cannot half-match either — `x.notanthill` does not end with `.anthill`,
+/// because the character before `anthill` is not a dot.
+pub fn has_suffix(path: &Path, suffixes: &[&str]) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| suffixes.iter().any(|s| name.ends_with(s)))
+}
+
+/// [`collect_files_recursive`], keyed on the file-name SUFFIX rather than the
+/// extension. Same fail-fast contract, and the same reason for not flattening.
+pub fn collect_files_by_suffix_recursive(
+    dir: &Path,
+    suffixes: &[&str],
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let entries =
+        fs::read_dir(dir).map_err(|e| format!("cannot read directory {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| format!("cannot read an entry of directory {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_by_suffix_recursive(&path, suffixes, out)?;
+        } else if has_suffix(&path, suffixes) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 /// Recursively append every file under `dir` whose extension is in `extensions`
 /// to `out`. Fail-fast: the first unreadable directory — or unreadable entry
 /// within one — returns `Err` with a message ready to print, and the partial

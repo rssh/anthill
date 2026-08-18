@@ -1,3 +1,4 @@
+pub mod document;
 pub mod file_store;
 pub mod indexed_file_store;
 pub mod item_per_file_store;

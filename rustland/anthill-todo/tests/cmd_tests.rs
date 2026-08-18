@@ -109,5 +109,11 @@ mod wi1114_item_per_file_backend_test;
 #[path = "include/wi1118_migrate_test.rs"]
 mod wi1118_migrate_test;
 
+#[path = "include/wi1120_document_format_test.rs"]
+mod wi1120_document_format_test;
+
+#[path = "include/wi1121_content_hash_ids_test.rs"]
+mod wi1121_content_hash_ids_test;
+
 #[path = "include/wi1123_delete_cascade_test.rs"]
 mod wi1123_delete_cascade_test;

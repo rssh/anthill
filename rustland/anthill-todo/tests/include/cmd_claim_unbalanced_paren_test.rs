@@ -17,6 +17,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const WORKITEMS_WITH_UNBALANCED_PAREN: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "this description has an unbalanced ( open paren",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],

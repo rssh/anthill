@@ -76,6 +76,7 @@ const ITEMS: &str = r#"fact StoreFormat(version: 1)
 
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "the open one",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -87,6 +88,7 @@ fact Tag(workitem: "WI-001", name: "probe")
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "the delivered one",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -113,12 +115,12 @@ fn migrate_explodes_the_store_into_one_file_per_item() {
     let out = migrate(&proj);
     assert!(out.status.success(), "migrate failed: {}", stderr(&out));
 
-    let one = read(&proj, "open/WI-001.anthill");
+    let one = read(&proj, "open/WI-001.anthill.md");
     assert!(one.contains(r#"id: "WI-001""#), "the item's own row:\n{one}");
     assert!(one.contains("a note"), "its feedback rides along:\n{one}");
     assert!(one.contains(r#"name: "probe""#), "its tag rides along:\n{one}");
 
-    let two = read(&proj, "delivered/WI-002.anthill");
+    let two = read(&proj, "delivered/WI-002.anthill.md");
     assert!(two.contains(r#"id: "WI-002""#), "filed by its own status:\n{two}");
 
     // The store-level row — neither a primary nor a satellite — is filed under its
@@ -156,10 +158,10 @@ fn a_migrated_project_is_a_working_tracker() {
     assert!(out.status.success(), "claim failed: {}", stderr(&out));
 
     assert!(
-        !store_dir(&proj).join("open/WI-001.anthill").exists(),
+        !store_dir(&proj).join("open/WI-001.anthill.md").exists(),
         "the item left the directory its old status named"
     );
-    let moved = read(&proj, "claimed/WI-001.anthill");
+    let moved = read(&proj, "claimed/WI-001.anthill.md");
     assert!(moved.contains("Claimed"), "the status fact is rewritten:\n{moved}");
     assert!(moved.contains("a note"), "the feedback moved with it:\n{moved}");
     assert!(moved.contains(r#"name: "probe""#), "the tag moved with it:\n{moved}");
@@ -167,7 +169,7 @@ fn a_migrated_project_is_a_working_tracker() {
     // A write through the migrated store lands in the item's own file.
     let out = run_in(&proj, &["feedback", "WI-001", "after the move"]);
     assert!(out.status.success(), "feedback failed: {}", stderr(&out));
-    assert!(read(&proj, "claimed/WI-001.anthill").contains("after the move"));
+    assert!(read(&proj, "claimed/WI-001.anthill.md").contains("after the move"));
 }
 
 /// The binding is spliced over the fact's own span, not regenerated. `project.anthill`
@@ -268,7 +270,7 @@ fn an_orphan_satellite_is_carried_across_and_reported() {
     assert!(kept.contains("also-orphaned"), "every orphan kind, not just feedback:\n{kept}");
 
     // And the items that DO exist migrated normally alongside them.
-    assert!(read(&proj, "open/WI-001.anthill").contains("a note"));
+    assert!(read(&proj, "open/WI-001.anthill.md").contains("a note"));
 
     // §10: an orphan is reported and does NOT block. Both halves matter — a
     // migration that produced a blocking fault would leave the tracker unusable.
@@ -293,7 +295,7 @@ fn a_file_holding_both_covered_and_uncovered_rows_is_refused() {
     fs::write(
         &config,
         format!(
-            "{original}\nfact WorkItem(\n  id: \"WI-003\",\n  description: \"misfiled\",\n  \
+            "{original}\nfact WorkItem(\n  id: \"WI-003\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"misfiled\",\n  \
              acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n"
         ),
     )
@@ -327,7 +329,7 @@ fn a_file_holding_a_rule_beside_its_rows_is_refused() {
         "-- a rule this project wrote, in a file that also holds a row\n\
          rule my_urgent(?x)\n  \
            :- WorkItem(id: ?x, status: Open)\n\n\
-         fact WorkItem(\n  id: \"WI-003\",\n  description: \"beside a rule\",\n  \
+         fact WorkItem(\n  id: \"WI-003\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"beside a rule\",\n  \
          acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n",
     )
     .expect("write extra");
@@ -507,7 +509,7 @@ fn the_forge_spelling_is_refused_with_its_reason() {
 #[test]
 fn a_bare_migrate_is_still_the_schema_stamp() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp, "fact WorkItem(\n  id: \"WI-001\",\n  description: \"unstamped\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n");
+    let proj = setup_project(&tmp, "fact WorkItem(\n  id: \"WI-001\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"unstamped\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n");
 
     let out = run_in(&proj, &["migrate"]);
     assert!(out.status.success(), "{}", stderr(&out));

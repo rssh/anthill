@@ -76,6 +76,10 @@ namespace anthill.stage0
 
   entity WorkItem(
     id          : String,
+    -- WI-1121: when the item was filed, ISO-8601 UTC. An id minted from content
+    -- is partitioned by day and a listing orders by this field, so an item
+    -- without one has neither an id nor a place in the sequence.
+    created     : String,
     -- WI-928: `String`, not `Term` — a description is prose, and a `String`
     -- literal is not a `Term` (the crossing is an explicit conversion, WI-406).
     -- Mirrors rustland/anthill-todo/anthill/domain.anthill.

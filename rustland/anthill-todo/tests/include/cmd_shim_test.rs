@@ -57,18 +57,25 @@ fn agent_equals_form_is_accepted() {
         .output()
         .unwrap();
     assert!(add.status.success());
+    // WI-1121: the id is minted from the item, so the test asks what was filed
+    // rather than naming a counter's `WI-001`.
+    let id = String::from_utf8_lossy(&add.stdout)
+        .split_whitespace()
+        .nth(1)
+        .expect("`added: <id> — …`")
+        .to_string();
     let out = Command::new(BIN)
         .args([
             format!("--agent=claude"),
             format!("-d={proj}"),
             "claim".into(),
-            "WI-001".into(),
+            id.clone(),
         ])
         .output()
         .expect("run claim");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("claimed: WI-001 by claude"),
+        stdout.contains(&format!("claimed: {id} by claude")),
         "=-joined globals must work: stdout={stdout} stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );

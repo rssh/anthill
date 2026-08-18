@@ -30,7 +30,13 @@ namespace anthill.prelude
       indexOf: "string_index_of",
       replace: "string_replace",
       trim: "string_trim",
-      split: "string_split"
+      split: "string_split",
+      -- WI-1121 — `slug` classifies characters and `digestBase32` does integer bit
+      -- arithmetic over bytes; `anthill.prelude.String` declares neither capability,
+      -- so both are the host's. The SEMANTICS each commits to are argued on the
+      -- declarations there, as for the search / edit surface above.
+      slug: "string_slug",
+      digestBase32: "string_digest_base32"
     }
     -- WI-644 / proposal 004: String is lawful — partial bases + total markers.
     provides PartialEq[T = String]

@@ -76,6 +76,24 @@ namespace anthill.stage0
 
   entity WorkItem(
     id          : String,
+    -- WI-1121: WHEN THE ITEM WAS FILED, ISO-8601 UTC (`2026-08-17T10:22:03Z`) —
+    -- the same spelling `status`'s `since`/`at` payloads carry. A REQUIRED field,
+    -- and it earns that twice over:
+    --
+    --   * it is an input to the id (design §6.5): an id minted from content is
+    --     partitioned by day, so an item with no creation time has no partition
+    --     and cannot be minted at all;
+    --   * it is what `list` ORDERS BY. Until this field existed the tracker's
+    --     chronological order was an ACCIDENT of ids being dense and ascending —
+    --     `WI-1114` after `WI-437` because the counter said so. A content-derived
+    --     id keeps that order only because its first segment is this timestamp,
+    --     and a re-minted or hand-written id would lose it; the field is the
+    --     truth the rendering is derived from.
+    --
+    -- It is never rewritten. `update` edits the description, `claim` the status;
+    -- nothing edits `created`, which is what lets the id minted from it stay
+    -- stable while the description it was also minted from drifts.
+    created     : String,
     -- WI-928: `String`, not `Term`. A `String` literal is NOT a `Term` — the
     -- value↔Term crossing is an explicit conversion (`as_term`, WI-406), not
     -- subsumption — and every description in workitems.anthill is prose: the
@@ -157,4 +175,76 @@ namespace anthill.stage0
     name     : String
   )
 
+end
+
+-- =================================================================
+-- The document encoding (WI-1120, design §5.3 / §5.4)
+-- =================================================================
+--
+-- An item file is an anthill HEAD followed by markdown CHAPTERS, and this is
+-- the declaration that says which field of which fact leaves the head and which
+-- chapter fills it. The store learns exactly one concept from it — "this
+-- field's text is the chapter named N" — and never learns this domain's schema.
+--
+-- WHY AT ALL, measured on this repo's own tracker: 1110 descriptions averaging
+-- 2107 characters and 1129 feedback entries averaging 2116 come to 92.5% of the
+-- file, each stored as ONE physical line of escaped text because the grammar has
+-- no multi-line string. A work item was already a document with a small
+-- structured head, encoded as a string literal; this stops pretending otherwise.
+--
+-- BUNDLED WITH THE DOMAIN, NOT IN `project.anthill`, and on the same
+-- `StoreFormat` precedent: the encoding is a property of the SCHEMA, not of the
+-- project, so §3 stays "two facts, two questions" and a project has nothing new
+-- to write.
+namespace anthill.stage0.document
+  import anthill.prelude.{List, String, Int64}
+  import anthill.reflect.{Term}
+  import anthill.stage0.{WorkItem, Feedback}
+
+  -- The two structural levels. Fields and containers sit at `level`, a
+  -- container's entries at level + 1, and prose begins below that.
+  --
+  -- THE LEVELS ARE RESERVED, which is the whole reason to name them: if any
+  -- heading could start a chapter, a subsection someone typed mid-description
+  -- would silently cut the field in half and the tail would reappear as an
+  -- innocent-looking stray chapter.
+  entity DocumentFormat(level: Int64)
+
+  -- A prose field of the item's own fact: one chapter, fixed name.
+  entity Chapter(
+    functor : Term,     -- the fact the field belongs to
+    field   : String,   -- the field whose text moves out of the head
+    named   : String)   -- the chapter's heading text
+
+  -- A satellite fact keyed to the item and repeated 0..n: one container
+  -- chapter, one entry chapter per fact inside it.
+  --
+  -- THE SPLIT FROM `Chapter` IS WHAT KEEPS A `repeated` FLAG OUT OF THE
+  -- MAPPING. Repetition is not a property of a field, it is the whole point of a
+  -- group — and making the two illegal to confuse is cheaper than checking a
+  -- boolean nobody would think to check.
+  entity ChapterGroup(
+    functor   : Term,              -- the satellite fact
+    container : String,            -- the `##` heading grouping the entries
+    field     : String,            -- the entry's prose field
+    named_by  : String,            -- the field whose value names each entry
+    decorate  : List[T = String])  -- head fields regenerated into the heading
+
+  fact DocumentFormat(level: 2)
+
+  fact Chapter(
+    functor: WorkItem, field: "description", named: "description")
+
+  -- `named_by` IS NOT INJECTIVE and does not need to be: this tracker holds two
+  -- `Feedback` rows with identical `at` AND identical `author`. Entries are
+  -- ORDERED SIBLINGS under their container, so the Nth row in the head binds to
+  -- the Nth `###` — safe only because the heading is CHECKED against the fact
+  -- rather than ignored, which turns a reordered entry into a loud diagnostic
+  -- instead of prose silently rebound onto the wrong row.
+  fact ChapterGroup(
+    functor: Feedback, container: "Feedback",
+    field: "content", named_by: "at", decorate: ["author"])
+
+  -- `Tag` needs neither: it carries no prose, so it stays in the head as an
+  -- ordinary fact.
 end

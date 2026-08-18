@@ -15,6 +15,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const TWO_ITEMS: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -22,6 +23,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "second item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -113,7 +115,7 @@ fn bundle_tag_unknown_item_errors() {
 
     let stderr = err(&run_bundle(&proj, &["tag", "WI-999", "typing"]));
     assert!(
-        stderr.contains("error: work item 'WI-999' not found"),
+        stderr.contains("no work item matches 'WI-999'"),
         "stderr: {stderr}"
     );
 }

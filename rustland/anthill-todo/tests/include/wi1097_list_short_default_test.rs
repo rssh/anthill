@@ -55,6 +55,7 @@ fn fixture() -> String {
         r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "{head}{TAIL_WORD}",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -62,6 +63,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "{SUMMARY_LINE}\n\n{BODY_WORD} second paragraph",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -69,6 +71,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "{SHORT_DESC}",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -76,6 +79,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-004",
+  created: "2026-01-01T00:00:00Z",
   description: "\n{BURIED_TITLE}\n\n{BODY_WORD} again",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -83,6 +87,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-005",
+  created: "2026-01-01T00:00:00Z",
   description: "{TRAILING_NEWLINE_DESC}\n",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],

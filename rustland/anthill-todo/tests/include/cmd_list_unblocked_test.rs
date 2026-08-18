@@ -14,6 +14,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const FIXTURE: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -21,6 +22,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "blocked on WI-001",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
@@ -28,6 +30,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "independent open",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -35,6 +38,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-004",
+  created: "2026-01-01T00:00:00Z",
   description: "dep already delivered",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-005"],
@@ -42,6 +46,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-005",
+  created: "2026-01-01T00:00:00Z",
   description: "delivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -99,6 +104,7 @@ fn plain_unblocked_reports_none_when_all_blocked() {
         r#"
 fact WorkItem(
   id: "WI-010",
+  created: "2026-01-01T00:00:00Z",
   description: "blocked on undelivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-011"],
@@ -106,6 +112,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-011",
+  created: "2026-01-01T00:00:00Z",
   description: "also open",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-010"],

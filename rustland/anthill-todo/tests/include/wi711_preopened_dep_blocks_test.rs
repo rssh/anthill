@@ -21,6 +21,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const FIXTURE: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "preopened premise",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -28,6 +29,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "depends on preopened premise",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
@@ -35,6 +37,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "dep already delivered",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-004"],
@@ -42,6 +45,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-004",
+  created: "2026-01-01T00:00:00Z",
   description: "delivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -49,6 +53,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-005",
+  created: "2026-01-01T00:00:00Z",
   description: "preopened, depends on still-open WI-002",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-002"],

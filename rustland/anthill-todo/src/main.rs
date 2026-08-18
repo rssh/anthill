@@ -64,6 +64,22 @@ anthill-todo -d "$PWD" graph                             # Show dependency graph
 anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
 ```
 
+### Referring to a work item
+
+An item's id is MINTED FROM THE ITEM: `WI-<YYYYMMDD>-<5 characters>-<slug>`, e.g.
+`WI-20260817-K7M2Q-item-per-file-store`. Nobody types that. Every command that
+takes an id accepts any unambiguous FRAGMENT of one:
+
+```bash
+anthill-todo -d "$PWD" show WI-K7M2Q                  # the 5-character digest, or a prefix
+anthill-todo -d "$PWD" show WI-20260817-K7M2Q         # date-digest — the stable handle
+anthill-todo -d "$PWD" show WI-item-per-file          # the slug, or a prefix of it
+```
+
+A fragment matching several items is REPORTED with the candidates rather than
+resolved by a rule — give more of one of them. Older `WI-NNN` ids still work
+exactly as they always did, and are never renumbered.
+
 ### Build-loop primitives (tags + ordered insert)
 
 A *named list* (tag) plus `list --tag` gives a machine-readable, dependency-ordered
@@ -92,15 +108,25 @@ prerequisite" step, in one command.
 /// invariant ever breaks, or a TOCTOU delete lands between the two, the honest
 /// answer is a loud error, not a skip that makes `list` say "No work items found"
 /// and exit 0.
+/// The two shapes a project file can have (WI-1120): a plain `.anthill` file, and
+/// an item DOCUMENT, `WI-NNN.anthill.md`.
+///
+/// A SUFFIX LIST, not an extension list, and it has to be: `Path::extension()`
+/// answers `md` for the second, so `&["anthill"]` misses every item document
+/// while `&["md"]` would sweep in every README in the tree.
+const PROJECT_FILE_SUFFIXES: [&str; 2] = [ITEM_PLAIN_SUFFIX, ITEM_DOCUMENT_SUFFIX];
+
 fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>> {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     for path in paths {
         if path.is_dir() {
-            if let Err(e) = fs_util::collect_files_recursive(path, &["anthill"], &mut files) {
+            if let Err(e) =
+                fs_util::collect_files_by_suffix_recursive(path, &PROJECT_FILE_SUFFIXES, &mut files)
+            {
                 errors.push(e);
             }
-        } else if fs_util::has_extension(path, &["anthill"]) {
+        } else if fs_util::has_suffix(path, &PROJECT_FILE_SUFFIXES) {
             files.push(path.clone());
         } else {
             errors.push(format!("not a project directory: {}", path.display()));
@@ -227,6 +253,355 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
 
 /// True if a parsed file declares a bundle-owned namespace (`anthill.todo` or
 /// a child). The `--anthill` bundle embeds its own logic (`main.anthill` /
+// ── The declared fact↔markdown mapping (WI-1120) ─────────────────
+
+/// Read `anthill.stage0.document`'s facts out of the BUNDLE'S PARSE IR.
+///
+/// WHY THE IR AND NOT THE KB, which is where every other declaration this host
+/// reads comes from (`ExtentBinding`, the store's field names): the mapping is
+/// needed to PARSE the project's own files, and the KB does not exist yet at
+/// that point. A document's prose lives outside the fenced head, so reading one
+/// means splicing each chapter back into the fact it fills BEFORE the loader
+/// sees it — there is no later moment at which injecting it would not mean
+/// rewriting rows the KB already holds.
+///
+/// The bundle is EMBEDDED, so this is not a second source of truth: it is the
+/// same text, read one phase earlier. The same facts also load into the KB like
+/// any other, which is what keeps them declarations rather than a private
+/// side-channel.
+fn document_mapping(bundle: &[ParsedFile]) -> Result<DocumentMapping, String> {
+    let mut mapping = DocumentMapping::default();
+    for pf in bundle {
+        collect_mapping_facts(pf, &pf.items, &mut mapping)?;
+    }
+    if mapping.level == 0 {
+        return Err("the bundled domain declares no `fact DocumentFormat(level:)`, so there is \
+                    no structural level for a chapter heading to sit at"
+            .to_string());
+    }
+    // A functor with two chapter fields would need the reader to decide which
+    // chapter fills which, and nothing says. Refused rather than first-wins.
+    for (i, c) in mapping.chapters.iter().enumerate() {
+        if mapping.chapters[..i].iter().any(|o| o.functor == c.functor)
+            || mapping.groups.iter().any(|g| g.functor == c.functor)
+        {
+            return Err(format!(
+                "`{}` is given more than one chapter by the document mapping; a fact has one \
+                 prose field here",
+                c.functor
+            ));
+        }
+    }
+    Ok(mapping)
+}
+
+fn collect_mapping_facts(
+    pf: &ParsedFile,
+    items: &[anthill_core::parse::ir::Item],
+    out: &mut DocumentMapping,
+) -> Result<(), String> {
+    use anthill_core::parse::ir::Item;
+    for item in items {
+        match item {
+            Item::Namespace(ns) => collect_mapping_facts(pf, &ns.items, out)?,
+            Item::Fact(f) => {
+                let Term::Fn {
+                    functor,
+                    named_args,
+                    ..
+                } = pf.terms.get(f.term)
+                else {
+                    continue;
+                };
+                match pf.symbols.local_name(*functor) {
+                    "DocumentFormat" => {
+                        out.level = ir_int(pf, named_args, "level")
+                            .ok_or("`fact DocumentFormat` carries no integer `level`")?
+                            as usize;
+                    }
+                    "Chapter" => out.chapters.push(ChapterSpec {
+                        functor: ir_name(pf, named_args, "functor")
+                            .ok_or("`fact Chapter` carries no `functor`")?,
+                        field: ir_string(pf, named_args, "field")
+                            .ok_or("`fact Chapter` carries no `field`")?,
+                        named: ir_string(pf, named_args, "named")
+                            .ok_or("`fact Chapter` carries no `named`")?,
+                    }),
+                    "ChapterGroup" => out.groups.push(ChapterGroupSpec {
+                        functor: ir_name(pf, named_args, "functor")
+                            .ok_or("`fact ChapterGroup` carries no `functor`")?,
+                        container: ir_string(pf, named_args, "container")
+                            .ok_or("`fact ChapterGroup` carries no `container`")?,
+                        field: ir_string(pf, named_args, "field")
+                            .ok_or("`fact ChapterGroup` carries no `field`")?,
+                        named_by: ir_string(pf, named_args, "named_by")
+                            .ok_or("`fact ChapterGroup` carries no `named_by`")?,
+                        decorate: ir_string_list(pf, named_args, "decorate"),
+                    }),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+type IrArgs = [(anthill_core::intern::Symbol, TermId)];
+
+fn ir_arg(pf: &ParsedFile, args: &IrArgs, field: &str) -> Option<TermId> {
+    args.iter()
+        .find(|(s, _)| pf.symbols.local_name(*s) == field)
+        .map(|(_, t)| *t)
+}
+
+fn ir_string(pf: &ParsedFile, args: &IrArgs, field: &str) -> Option<String> {
+    match pf.terms.get(ir_arg(pf, args, field)?) {
+        Term::Const(Literal::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn ir_int(pf: &ParsedFile, args: &IrArgs, field: &str) -> Option<i64> {
+    match pf.terms.get(ir_arg(pf, args, field)?) {
+        Term::Const(Literal::Int(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// A field naming a FUNCTOR (`functor: WorkItem`) rather than holding a string.
+/// It is written as a bare name, which parses to a `Ref`/`Ident`.
+fn ir_name(pf: &ParsedFile, args: &IrArgs, field: &str) -> Option<String> {
+    match pf.terms.get(ir_arg(pf, args, field)?) {
+        Term::Ref(s) | Term::Ident(s) => Some(pf.symbols.local_name(*s).to_string()),
+        Term::Fn { functor, .. } => Some(pf.symbols.local_name(*functor).to_string()),
+        _ => None,
+    }
+}
+
+/// `decorate: ["author"]` — a bracket literal, which parses to a flat
+/// `ListLiteral` application (WI-1099). An absent field is an empty list rather
+/// than an error: a group that decorates its headings with nothing is legal.
+fn ir_string_list(pf: &ParsedFile, args: &IrArgs, field: &str) -> Vec<String> {
+    let Some(t) = ir_arg(pf, args, field) else {
+        return Vec::new();
+    };
+    let Term::Fn { pos_args, .. } = pf.terms.get(t) else {
+        return Vec::new();
+    };
+    pos_args
+        .iter()
+        .filter_map(|a| match pf.terms.get(*a) {
+            Term::Const(Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Splice each chapter's prose back into the fact whose field it holds, so that
+/// what reaches the loader is the SAME parse IR a plain `fact` file would have
+/// produced (WI-1120).
+///
+/// THAT EQUIVALENCE IS THE WHOLE DESIGN. Nothing downstream — not the loader,
+/// not the typer, not a single reader in the bundle — learns that the text
+/// arrived from a heading rather than from a string literal. It also settles
+/// what a MISSING chapter means without a second rule: the field is simply left
+/// off the fact, and the loader's existing omitted-field handling takes over, so
+/// an `Option[T = String]` becomes `none()` exactly as §5.3's first row asks.
+///
+/// A FIELD chapter is matched by NAME and an ENTRY by POSITION, which is the
+/// asymmetry §5.4 argues: a chapter name is fixed by the mapping, while an
+/// entry's name comes from a field that is not injective (two `Feedback` rows on
+/// this tracker share both `at` and `author`). The store checks the heading
+/// against the fact when it seeds; here the binding is made.
+fn inject_chapters(
+    parsed: &mut ParsedFile,
+    source: &str,
+    doc: &Document,
+    mapping: &DocumentMapping,
+) -> Result<(), String> {
+    let mut cursor: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut plan: Vec<(usize, String, String)> = Vec::new();
+    let mut index = 0usize;
+    collect_fact_injections(parsed, doc, mapping, source, &mut cursor, &mut plan, &mut index)?;
+    apply_fact_injections(parsed, &plan);
+    Ok(())
+}
+
+/// Walk the facts in DFS order and decide, per fact, which chapter's text fills
+/// which of its fields. Collected first and applied second because deciding
+/// borrows the IR and applying mutates it.
+fn collect_fact_injections(
+    parsed: &ParsedFile,
+    doc: &Document,
+    mapping: &DocumentMapping,
+    source: &str,
+    cursor: &mut std::collections::HashMap<String, usize>,
+    plan: &mut Vec<(usize, String, String)>,
+    index: &mut usize,
+) -> Result<(), String> {
+    use anthill_core::parse::ir::Item;
+    fn walk(
+        parsed: &ParsedFile,
+        items: &[Item],
+        doc: &Document,
+        mapping: &DocumentMapping,
+        source: &str,
+        cursor: &mut std::collections::HashMap<String, usize>,
+        plan: &mut Vec<(usize, String, String)>,
+        index: &mut usize,
+    ) -> Result<(), String> {
+        for item in items {
+            match item {
+                Item::Namespace(ns) => {
+                    walk(parsed, &ns.items, doc, mapping, source, cursor, plan, index)?
+                }
+                Item::Fact(f) => {
+                    let position = *index;
+                    *index += 1;
+                    let Term::Fn { functor, .. } = parsed.terms.get(f.term) else {
+                        continue;
+                    };
+                    let name = parsed.symbols.local_name(*functor).to_string();
+                    if let Some(spec) = mapping.chapter_for(&name) {
+                        if let Some(seg) = doc.segments.iter().find(|s| {
+                            matches!(&s.kind, SegmentKind::Field { name } if *name == spec.named)
+                        }) {
+                            plan.push((
+                                position,
+                                spec.field.clone(),
+                                source[seg.body.clone()].to_string(),
+                            ));
+                        }
+                    } else if let Some(group) = mapping.group_for(&name) {
+                        let nth = cursor.entry(group.container.clone()).or_insert(0);
+                        let seg = doc
+                            .segments
+                            .iter()
+                            .filter(|s| {
+                                matches!(&s.kind, SegmentKind::Entry { container, .. }
+                                         if *container == group.container)
+                            })
+                            .nth(*nth);
+                        *nth += 1;
+                        let seg = seg.ok_or_else(|| {
+                            format!(
+                                "the head declares more `{name}` rows than `## {}` has entries — \
+                                 each row's prose is the entry at its own position, so the two \
+                                 counts must agree",
+                                group.container
+                            )
+                        })?;
+                        plan.push((
+                            position,
+                            group.field.clone(),
+                            source[seg.body.clone()].to_string(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    walk(
+        parsed,
+        &parsed.items,
+        doc,
+        mapping,
+        source,
+        cursor,
+        plan,
+        index,
+    )
+}
+
+/// Rebuild each planned fact's top-level term with the chapter's text added as a
+/// named argument.
+///
+/// THE SPAN THE NEW LITERAL CARRIES IS ITS OWN — the fact's — rather than a
+/// synthetic one: the text does not exist inside the head, so there is no
+/// sub-range of the parsed region to point at, and pointing at the whole fact is
+/// the closest true answer.
+fn apply_fact_injections(parsed: &mut ParsedFile, plan: &[(usize, String, String)]) {
+    use anthill_core::parse::ir::Item;
+    // Collect (position, term, span) first — the mutation needs `&mut
+    // parsed.terms` while the walk needs `&parsed.items`.
+    let mut targets: Vec<(usize, TermId, anthill_core::span::Span)> = Vec::new();
+    fn scan(
+        items: &[Item],
+        index: &mut usize,
+        out: &mut Vec<(usize, TermId, anthill_core::span::Span)>,
+    ) {
+        for item in items {
+            match item {
+                Item::Namespace(ns) => scan(&ns.items, index, out),
+                Item::Fact(f) => {
+                    out.push((*index, f.term, f.span));
+                    *index += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut index = 0usize;
+    scan(&parsed.items, &mut index, &mut targets);
+
+    let mut rebuilt: std::collections::HashMap<usize, TermId> = std::collections::HashMap::new();
+    for (position, field, value) in plan {
+        let Some((_, term, span)) = targets.iter().find(|(p, _, _)| p == position) else {
+            continue;
+        };
+        let term = rebuilt.get(position).copied().unwrap_or(*term);
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = parsed.terms.get(term).clone()
+        else {
+            continue;
+        };
+        let field_sym = parsed.symbols.intern(field);
+        let literal = parsed
+            .terms
+            .alloc(Term::Const(Literal::String(value.clone())), *span);
+        let mut named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = named_args.clone();
+        named.push((field_sym, literal));
+        let new = parsed.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: pos_args.clone(),
+                named_args: named,
+            },
+            *span,
+        );
+        rebuilt.insert(*position, new);
+    }
+    if rebuilt.is_empty() {
+        return;
+    }
+    fn rewrite(
+        items: &mut [Item],
+        index: &mut usize,
+        rebuilt: &std::collections::HashMap<usize, TermId>,
+    ) {
+        for item in items {
+            match item {
+                Item::Namespace(ns) => rewrite(&mut ns.items, index, rebuilt),
+                Item::Fact(f) => {
+                    if let Some(new) = rebuilt.get(index) {
+                        f.term = *new;
+                    }
+                    *index += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut index = 0usize;
+    rewrite(&mut parsed.items, &mut index, &rebuilt);
+}
+
 /// `store.anthill`); when the scanned directory is the crate dir itself those
 /// sources appear as project files too, and loading them again defines every
 /// bundle symbol twice. Skip them — a project supplies data, not bundle logic.
@@ -308,75 +683,6 @@ const CURRENT_STORE_FORMAT_VERSION: u32 = 1;
 // asserted from anthill via the store (WorkItemStore.stamp_format / `migrate`),
 // never text-written here.
 
-fn extract_named_arg(kb: &KnowledgeBase, term: TermId, field: &str) -> Option<TermId> {
-    match kb.get_term(term) {
-        Term::Fn { named_args, .. } => named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == field)
-            .map(|(_, id)| *id),
-        _ => None,
-    }
-}
-
-fn extract_string(kb: &KnowledgeBase, term: TermId) -> Option<String> {
-    match kb.get_term(term) {
-        Term::Const(Literal::String(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-// ── WorkItem accessors ──────────────────────────────────────────
-
-/// The slice of a WorkItem the HOST still reads: just the id, for the
-/// fresh-id counter seeding. Everything else is bundle territory.
-struct WorkItemInfo {
-    id: String,
-}
-
-/// Collect WorkItem ids for the fresh-id counter. `Err` means the tracker is
-/// malformed (unreadable) — a FATAL condition the caller aborts on rather than
-/// silently seeding the counter from a partial read (which would mint a colliding
-/// id).
-fn collect_workitems(kb: &KnowledgeBase) -> Result<Vec<WorkItemInfo>, String> {
-    use anthill_core::eval::Value;
-    use anthill_core::kb::extent::BodiedRulePolicy;
-
-    let wi_sym = match kb.try_resolve_symbol("anthill.stage0.WorkItem") {
-        Some(s) => s,
-        None => return Ok(Vec::new()),
-    };
-
-    // Read WorkItem FACTS through the kb accessor (WI-773), values-first: a bodied
-    // WorkItem rule is a LOUD refusal, never a phantom item. The old
-    // `rules_by_functor` + `rule_head` walk head-matched a bodied rule (listing it
-    // as if it were a real work item) AND panicked outright on a value-fact head.
-    // The refusal is fatal — propagate it rather than degrade the counter.
-    let rows = kb
-        .read_facts(wi_sym, &[], BodiedRulePolicy::Refuse)
-        .map_err(|e| format!("reading work items: {e}"))?;
-
-    let mut items = Vec::new();
-    for row in rows {
-        // A WorkItem fact head hash-conses to a term. A value-fact carrier
-        // (Value::Node/Entity) is not expected for WorkItem and carries no readable
-        // term id — surface it loudly (the old `rule_head` walk PANICKED here)
-        // rather than drop it silently, but don't abort the whole read for one
-        // anomalous row.
-        let Value::Term { id: head, .. } = row else {
-            eprintln!("warning: skipping a WorkItem fact with an unexpected non-term head");
-            continue;
-        };
-        // A row without a string `id` is the entity-ctor definition (its `id` slot
-        // is a type, not a literal); skip it, as the pre-migration walk did.
-        let id = match extract_named_arg(kb, head, "id").and_then(|t| extract_string(kb, t)) {
-            Some(s) => s,
-            None => continue,
-        };
-        items.push(WorkItemInfo { id });
-    }
-    Ok(items)
-}
-
 /// All `(workitem, tag-name)` pairs from `anthill.stage0.Tag` facts.
 /// Tag names attached to a work item (sorted, deduped).
 /// Work item IDs carrying the given tag.
@@ -395,7 +701,12 @@ use anthill_core::eval::{value_functor, Interpreter, Value};
 use anthill_core::kb::typing::get_named_string_arg;
 use anthill_core::persistence::file_store::FileConvention;
 use anthill_core::persistence::indexed_file_store::IndexedFileStore;
-use anthill_core::persistence::item_per_file_store::{ItemFields, ItemPerFileStore, LayoutFault};
+use anthill_core::persistence::document::{
+    self, ChapterGroupSpec, ChapterSpec, Document, DocumentMapping, SegmentKind,
+};
+use anthill_core::persistence::item_per_file_store::{
+    ItemFields, ItemPerFileStore, LayoutFault, ITEM_DOCUMENT_SUFFIX, ITEM_PLAIN_SUFFIX,
+};
 use anthill_core::persistence::{print, Store};
 
 /// A project file paired with its parsed IR, so the store can associate each fact's
@@ -403,6 +714,34 @@ use anthill_core::persistence::{print, Store};
 struct ProjectFile {
     path: PathBuf,
     parsed: ParsedFile,
+    /// The file's whole text, kept from the one read that produced `parsed`.
+    /// The store cuts it into blocks, and re-reading it there would let the two
+    /// disagree if anything touched the file in between.
+    source: String,
+    /// The document structure, for an item document (WI-1120). `None` for a
+    /// plain `.anthill` file, whose whole text is the head.
+    document: Option<Document>,
+}
+
+impl ProjectFile {
+    /// The byte ranges of this file's facts, in the file's own coordinates.
+    ///
+    /// A DOCUMENT'S HEAD IS PARSED ALONE, so the parser's spans are relative to
+    /// the head text and have to be shifted to address the file. That shift is
+    /// the only place the two coordinate systems meet, and it is why the store is
+    /// handed the whole source rather than the head: everything it renders — the
+    /// preamble, the fences, the chapters — lives outside the parsed region.
+    fn fact_spans_in_file(&self) -> Vec<anthill_core::span::Span> {
+        let offset = self.document.as_ref().map(|d| d.head.start).unwrap_or(0) as u32;
+        self.parsed
+            .fact_spans()
+            .into_iter()
+            .map(|s| anthill_core::span::Span {
+                start: s.start + offset,
+                end: s.end + offset,
+            })
+            .collect()
+    }
 }
 
 /// A built backend, before it is handed to the mirror registry.
@@ -457,6 +796,17 @@ impl BuiltStore {
         }
     }
 
+    /// WI-1120: the OTHER thing `--fix` repairs — a chapter heading that
+    /// disagrees with the fact it projects. An empty answer from a shared-file
+    /// store is honest here where it would be a lie in `checked_layout`: that
+    /// store has no chapters, so there are none to be stale.
+    fn repair_headings(&mut self) -> Result<Vec<(PathBuf, String)>, String> {
+        match self {
+            BuiltStore::Indexed(_) => Ok(Vec::new()),
+            BuiltStore::ItemPerFile(s) => s.repair_headings().map_err(|e| e.to_string()),
+        }
+    }
+
     fn into_boxed(self) -> Box<dyn Store> {
         match self {
             BuiltStore::Indexed(s) => Box::new(s),
@@ -506,6 +856,7 @@ fn build_declared_store(
     store_root: &Path,
     project_items: &[ProjectFile],
     project_results: &[load::LoadResult],
+    mapping: &DocumentMapping,
 ) -> Result<DeclaredStore, String> {
     use anthill_core::kb::extent::ExtentRole;
 
@@ -561,7 +912,16 @@ fn build_declared_store(
             // spans, so a retract of a source-loaded RuleId knows which file and which
             // bytes to drop.
             for (file, result) in project_items.iter().zip(project_results.iter()) {
-                let spans = file.parsed.fact_spans();
+                // IN THE FILE'S COORDINATES, not the parsed region's (WI-1120). A
+                // document's head is parsed alone, so `fact_spans()` counts from
+                // the head rather than from byte 0 — and this store addresses a
+                // row by its byte range in the FILE. The mismatch is silent and
+                // destructive: a retract would splice at an offset short by the
+                // preamble and fence, editing the wrong bytes instead of removing
+                // the row. Reachable whenever a tree holds documents while its
+                // binding still names this store — a `migrate` whose final binding
+                // rewrite failed after the documents were written.
+                let spans = file.fact_spans_in_file();
                 for (rule_id, span) in result.fact_rule_ids.iter().zip(spans.iter()) {
                     store.record_source(*rule_id, file.path.clone(), *span);
                 }
@@ -573,19 +933,32 @@ fn build_declared_store(
             // by the file it lives in, so it takes each file's text and cuts it into
             // blocks, and keeps no byte offsets at all — a state change rewrites the
             // whole file at a new path, and an offset would not survive that.
-            let mut store = ItemPerFileStore::new(store_root.clone(), declared_fields(interp, &binding.store)?);
+            // WI-1120: the document mapping makes every ITEM file a
+            // `WI-NNN.anthill.md`. It is bundled with the domain, so it is not a
+            // per-project choice — the encoding is a property of the schema.
+            let mut store =
+                ItemPerFileStore::new(store_root.clone(), declared_fields(interp, &binding.store)?)
+                    .with_document_mapping(mapping.clone());
             for (file, result) in project_items.iter().zip(project_results.iter()) {
-                let source = fs::read_to_string(&file.path)
-                    .map_err(|e| format!("{}: {e}", file.path.display()))?;
                 let rows: Vec<_> = result
                     .fact_rule_ids
                     .iter()
                     .copied()
-                    .zip(file.parsed.fact_spans())
+                    .zip(file.fact_spans_in_file())
                     .collect();
-                store
-                    .record_file(interp.kb(), file.path.clone(), &source, &rows)
-                    .map_err(|e| format!("reading the project's layout: {e}"))?;
+                let seeded = match &file.document {
+                    Some(doc) => store.record_document(
+                        interp.kb(),
+                        file.path.clone(),
+                        &file.source,
+                        &rows,
+                        doc,
+                    ),
+                    None => {
+                        store.record_file(interp.kb(), file.path.clone(), &file.source, &rows)
+                    }
+                };
+                seeded.map_err(|e| format!("reading the project's layout: {e}"))?;
             }
             BuiltStore::ItemPerFile(store)
         }
@@ -706,7 +1079,7 @@ fn register_declared_store(
 /// direction is settled: the FACT wins. What `--fix` will not do is choose between
 /// two files claiming one id — that is a real disagreement about which is the item,
 /// and only whoever interrupted the move knows.
-fn run_fsck(store: &mut BuiltStore, args: &[String]) -> i32 {
+fn run_fsck(interp: &mut Interpreter, store: &mut BuiltStore, args: &[String]) -> i32 {
     let mut fix = false;
     for arg in args {
         match arg.as_str() {
@@ -734,6 +1107,17 @@ fn run_fsck(store: &mut BuiltStore, args: &[String]) -> i32 {
     }
 
     if fix {
+        match repair_created(interp, store) {
+            Ok(filled) => {
+                for (id, stamp) in &filled {
+                    println!("dated {id} from its file: {stamp}");
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        }
         match store.repair_paths() {
             Ok(moves) => {
                 for (from, to) in &moves {
@@ -741,6 +1125,17 @@ fn run_fsck(store: &mut BuiltStore, args: &[String]) -> i32 {
                 }
                 if moves.is_empty() {
                     println!("no misplaced files");
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        }
+        match store.repair_headings() {
+            Ok(chapters) => {
+                for (path, what) in &chapters {
+                    println!("{}: {what}", path.display());
                 }
             }
             Err(e) => {
@@ -812,14 +1207,16 @@ or tag row is in its item's file.
 /// writes the first byte, so a tree with debris in it aborts with the old layout
 /// untouched.
 fn run_migrate(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     declared: &DeclaredStore,
     store_root: &Path,
     project_items: &[ProjectFile],
     per_file: &[load::LoadResult],
+    mapping: &DocumentMapping,
     args: &[String],
 ) -> i32 {
     let mut to: Option<&str> = None;
+    let mut created_from: Option<String> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -835,8 +1232,21 @@ fn run_migrate(
                     return runner::EXIT_COMPILE;
                 }
             },
-            other => match other.strip_prefix("--to=") {
-                Some(v) => to = Some(v),
+            "--created-from" => match iter.next() {
+                Some(v) => created_from = Some(v.clone()),
+                None => {
+                    eprintln!("error: --created-from requires a value");
+                    eprintln!("{MIGRATE_USAGE}");
+                    return runner::EXIT_COMPILE;
+                }
+            },
+            other => match other
+                .strip_prefix("--to=")
+                .map(|v| (true, v))
+                .or_else(|| other.strip_prefix("--created-from=").map(|v| (false, v)))
+            {
+                Some((true, v)) => to = Some(v),
+                Some((false, v)) => created_from = Some(v.to_string()),
                 None => {
                     eprintln!("error: unknown migrate option `{other}`");
                     eprintln!("{MIGRATE_USAGE}");
@@ -844,6 +1254,17 @@ fn run_migrate(
                 }
             },
         }
+    }
+    if to == Some("document") {
+        return run_migrate_to_document(
+            interp,
+            declared,
+            store_root,
+            project_items,
+            per_file,
+            mapping,
+            created_from.as_deref(),
+        );
     }
     match to {
         Some("item-per-file") => {}
@@ -930,6 +1351,17 @@ fn run_migrate(
         return runner::EXIT_RUNTIME;
     }
 
+    let created = match created_from.as_deref() {
+        Some(path) => match read_created_table(Path::new(path)) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        },
+        None => std::collections::HashMap::new(),
+    };
+
     let mut covered = Vec::with_capacity(declared.covers.len());
     for name in &declared.covers {
         match interp.kb().try_resolve_symbol(name) {
@@ -1015,20 +1447,46 @@ fn run_migrate(
     // reported by `fsck` from then on — which is the state §10 already describes.
     let orphans = orphan_satellites(interp.kb(), &consumed);
 
+    // The target carries the DOCUMENT MAPPING (WI-1120), so a project migrating
+    // today lands directly in `WI-NNN.anthill.md` and never sees the plain-`fact`
+    // shape WI-1118 shipped. `--to document` exists for the trackers that already
+    // did.
+    // THE SAME `created` PLAN AS `--to document`, and running it here is what
+    // closes the dead end: this migration writes DOCUMENTS, so a tracker filed
+    // before the field existed would otherwise land on disk holding
+    // `created: ?created` and be refused by every later command — including the
+    // conversion that would have filled it in.
+    let plan = plan_created_stamps(interp, &consumed, &created);
+    if let Err(code) = plan.report() {
+        return code;
+    }
+    let stamped = plan.stamps;
+
     let mut target = ItemPerFileStore::new(
         store_root.to_path_buf(),
         ItemFields::new(STAGE0_STATUS_FIELD, STAGE0_ID_FIELD, STAGE0_REF_FIELD),
-    );
+    )
+    .with_document_mapping(mapping.clone());
     let mut rows = 0usize;
     for (path, rules) in &consumed {
         for &rule in rules {
             if orphans.iter().any(|(r, _, _)| *r == rule) {
                 continue;
             }
+            let head = match stamped.get(&rule) {
+                Some(stamp) => match with_created(interp, rule, stamp) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("error: {}: {e}", path.display());
+                        return runner::EXIT_RUNTIME;
+                    }
+                },
+                None => interp.kb().rule_head(rule),
+            };
             let kb = interp.kb();
             if let Err(e) = target.persist(
                 kb,
-                kb.rule_head(rule),
+                head,
                 kb.rule_clause_kind(rule),
                 kb.rule_domain(rule),
                 kb.rule_meta(rule),
@@ -1124,6 +1582,467 @@ fn run_migrate(
 }
 
 /// Where migration keeps rows naming an item that has none of its own.
+/// Fill a missing `created` from the item file's own creation time, and write the
+/// row back (WI-1121).
+///
+/// THE REPAIR FOR A HAND-ADDED FILE. Someone can write an item file by hand and
+/// leave the field out — it is not the sort of thing a person remembers — and the
+/// loader fills the omission with a fresh VAR, which the startup gate then
+/// refuses because a var cannot be sorted or hashed. Refusing is right; refusing
+/// with no way forward is not. The filesystem knows when that file was made, and
+/// under a file-per-item layout that time IS the item's.
+///
+/// IT WRITES THROUGH THE STORE'S OWN `update`, so the row is re-printed by the
+/// same printer every other write uses and the file's chapters ride along
+/// untouched — the `created` fill is a head-only change, and the description
+/// beside it is not re-serialized.
+///
+/// ONLY UNDER A LAYOUT WHERE A FILE IS AN ITEM. A shared-file store has one file
+/// for every row, so its creation time says nothing about any particular item;
+/// there the migration's `--created-from` table is the answer, and this reports
+/// nothing rather than stamping them all alike.
+fn repair_created(
+    interp: &mut Interpreter,
+    store: &mut BuiltStore,
+) -> Result<Vec<(String, String)>, String> {
+    let BuiltStore::ItemPerFile(inner) = store else {
+        return Ok(Vec::new());
+    };
+    let mut filled = Vec::new();
+    for (rule, path) in inner.primary_rows() {
+        let head = interp.kb().rule_head(rule);
+        if named_string(interp.kb(), head, "created").is_some() {
+            continue;
+        }
+        let Some(id) = named_string(interp.kb(), head, STAGE0_ID_FIELD) else {
+            continue;
+        };
+        let Some(stamp) = file_created_at(&path) else {
+            return Err(format!(
+                "{}: `{id}` carries no `created` and this file's creation time cannot be read",
+                path.display()
+            ));
+        };
+        let new = with_created(interp, rule, &stamp)?;
+        let (kind, domain, meta) = {
+            let kb = interp.kb();
+            (kb.rule_clause_kind(rule), kb.rule_domain(rule), kb.rule_meta(rule))
+        };
+        inner
+            .update(interp.kb(), rule, new, kind, domain, meta)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        filled.push((id, stamp));
+    }
+    if !filled.is_empty() {
+        inner
+            .flush(interp.kb())
+            .map_err(|e| format!("writing the dated rows: {e}"))?;
+    }
+    Ok(filled)
+}
+
+/// When a file was created, in `now()`'s spelling — the fallback source for a
+/// `created` stamp (WI-1121).
+///
+/// THE FILESYSTEM KNOWS THIS, and for a hand-added item file it is the honest
+/// answer: someone made that file at a time, and under the file-per-item layout
+/// that time IS the item's. It is what turns a missing stamp from a refusal into
+/// a repair.
+///
+/// BIRTH TIME, FALLING BACK TO MODIFICATION TIME, and the fallback is not a
+/// silent degrade: `created()` is genuinely unsupported on some filesystems
+/// (older ext4 without `crtime`), where `modified()` is the closest true thing —
+/// an upper bound on when the file appeared, and never wrong by more than the
+/// edits since. Both are approximations, which is exactly what `created` tolerates:
+/// it is used for ORDERING and for the day partition an id is minted in, neither
+/// of which needs better than a day (§6.5).
+///
+/// A SHARED FILE IS THE ONE PLACE THIS IS WEAK: every item in it gets the same
+/// stamp, so the whole tracker lands in one day partition. That is why
+/// `--created-from` stays the preferred source and this is the fallback — the
+/// git-history table dates each id separately.
+fn file_created_at(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    let at = meta.created().or_else(|_| meta.modified()).ok()?;
+    let secs = at.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let at = chrono::DateTime::from_timestamp(secs as i64, 0)?;
+    Some(at.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// Which rows need a `created` stamp written into them, and from what (WI-1121).
+///
+/// SHARED BY BOTH MIGRATIONS, and that sharing is the fix for a real dead end:
+/// `--to item-per-file` used to write documents without consulting the table at
+/// all, so a tracker predating the field landed on disk carrying
+/// `created: ?created` — an unbound variable — and was then unusable. The startup
+/// gate refused every command including the `migrate` its own message named, and
+/// `--to document` reported "already a document" and exited 0 without stamping.
+/// Nothing could fill the field in.
+///
+/// TWO SOURCES, IN ORDER, AND IT NEVER REFUSES. `--created-from` first, because a
+/// table derived from git history dates each id separately; the FILE'S OWN
+/// creation time otherwise, because the filesystem knows when someone made that
+/// file and under a per-item layout that is the item's own answer. Migration is
+/// how a project adopts this version, and a migration that refuses over a field
+/// it could have derived is a barrier rather than a check.
+///
+/// WHICH SOURCE EACH ITEM USED IS REPORTED, not silent — the two are not equally
+/// good. A shared file gives every item in it one stamp, so the whole tracker
+/// lands in one day partition, where §6.5's collision scope is the tracker at
+/// once; the table does not. Saying which was used is what lets someone who cares
+/// re-run with a table.
+fn plan_created_stamps(
+    interp: &Interpreter,
+    consumed: &[(&Path, Vec<anthill_core::kb::RuleId>)],
+    created: &std::collections::HashMap<String, String>,
+) -> CreatedPlan {
+    let mut plan = CreatedPlan::default();
+    for (path, rules) in consumed {
+        for &rule in rules {
+            let head = interp.kb().rule_head(rule);
+            let Some(id) = named_string(interp.kb(), head, STAGE0_ID_FIELD) else {
+                continue; // a satellite: it carries no id and needs no stamp
+            };
+            if named_string(interp.kb(), head, "created").is_some() {
+                continue;
+            }
+            match created.get(&id) {
+                Some(stamp) => {
+                    plan.stamps.insert(rule, stamp.clone());
+                    plan.from_table += 1;
+                }
+                None => match file_created_at(path) {
+                    Some(stamp) => {
+                        plan.stamps.insert(rule, stamp);
+                        plan.from_file += 1;
+                    }
+                    // Neither source answered: the file is gone from under us, or
+                    // its metadata is unreadable. Loud rather than defaulted — a
+                    // stamp invented here would be indistinguishable from a real
+                    // one forever after.
+                    None => plan.undatable.push(id),
+                },
+            }
+        }
+    }
+    plan
+}
+
+/// Where each newly-stamped row's `created` came from, so the migration can say.
+#[derive(Default)]
+struct CreatedPlan {
+    stamps: std::collections::HashMap<anthill_core::kb::RuleId, String>,
+    from_table: usize,
+    from_file: usize,
+    undatable: Vec<String>,
+}
+
+impl CreatedPlan {
+    /// Print what was derived and from where, and refuse only if something was
+    /// genuinely underivable.
+    fn report(&self) -> Result<(), i32> {
+        if !self.undatable.is_empty() {
+            let mut ids = self.undatable.clone();
+            ids.sort();
+            eprintln!(
+                "error: {} work item(s) carry no `created` stamp, are not named by \
+                 `--created-from`, and their files' creation time cannot be read: {}",
+                ids.len(),
+                ids.join(", ")
+            );
+            return Err(runner::EXIT_RUNTIME);
+        }
+        if self.from_table > 0 {
+            println!("dated {} item(s) from the supplied table", self.from_table);
+        }
+        if self.from_file > 0 {
+            println!(
+                "dated {} item(s) from their file's creation time — pass `--created-from <file>` \
+                 to date each id separately instead (see \
+                 rustland/anthill-todo/scripts/created_from_git.py)",
+                self.from_file
+            );
+        }
+        Ok(())
+    }
+}
+
+/// `migrate --to document` — the SECOND full-tree pass (WI-1120, design §11).
+///
+/// WI-1118 exploded this repo's tracker into one plain `.anthill` file per item
+/// on the rule that migration is cheap to repeat now that it touches no forge.
+/// This is the repeat: every `WI-NNN.anthill` becomes a `WI-NNN.anthill.md`
+/// document, head plus chapters. It changes no data — the same rows, the same
+/// fields, redistributed between the fenced head and the markdown below it — so
+/// a before/after row count is a complete correctness check, and it is the same
+/// writer every ordinary command uses, so it is a test of that writer rather
+/// than a second implementation of it.
+///
+/// IT ALSO BACK-DATES `created` (WI-1121), because the two passes rewrite the
+/// same 1115 files and doing them separately would put two whole-tree diffs in
+/// history for one mechanical change. The stamp is not invented here: `created`
+/// feeds the id mint and the listing's order, and stamping every legacy item
+/// with the migration date would collapse the whole tracker into ONE day
+/// partition — where §6.5's collision scope is the entire tracker at once. It
+/// comes from `--created-from`, a `<id><TAB><timestamp>` table, and an item the
+/// table does not name is a REFUSAL rather than a default.
+///
+/// NO STORE-FORMAT BUMP, and the reason is §11 step 4's own: there is one
+/// `current_store_format()` for the binary, so bumping it makes every project
+/// still on `IndexedFileStore` — a supported layout that has no chapters and
+/// never will — warn on every command that it is out of date. What makes an
+/// unconverted tracker loud instead is the `created` gate, which fires on
+/// exactly the projects this converts and on no others.
+#[allow(clippy::too_many_arguments)]
+fn run_migrate_to_document(
+    interp: &mut Interpreter,
+    declared: &DeclaredStore,
+    store_root: &Path,
+    project_items: &[ProjectFile],
+    per_file: &[load::LoadResult],
+    mapping: &DocumentMapping,
+    created_from: Option<&str>,
+) -> i32 {
+    if !matches!(declared.store, BuiltStore::ItemPerFile(_)) {
+        eprintln!(
+            "error: `--to document` converts an item-per-file tree into documents, and this \
+             project is not on that layout yet. Run `anthill-todo migrate --to item-per-file` \
+             first — it writes documents directly."
+        );
+        return runner::EXIT_RUNTIME;
+    }
+
+    let created = match created_from {
+        Some(path) => match read_created_table(Path::new(path)) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        },
+        None => std::collections::HashMap::new(),
+    };
+
+    let mut covered = Vec::with_capacity(declared.covers.len());
+    for name in &declared.covers {
+        match interp.kb().try_resolve_symbol(name) {
+            Some(s) => covered.push(s),
+            None => {
+                eprintln!("error: this project's binding covers `{name}`, which resolves to nothing");
+                return runner::EXIT_RUNTIME;
+            }
+        }
+    }
+
+    // ONLY THE PLAIN FILES ARE CONVERTED. A tree half-way through this — an
+    // interrupted run, or a re-run — holds both shapes, and a document that is
+    // already a document must be left exactly as it is rather than re-rendered:
+    // re-rendering would reflow every chapter and lose the hand-added prose the
+    // opacity invariant exists to protect.
+    //
+    // SO THIS IS NOT WHERE AN ALREADY-CONVERTED FILE GETS A MISSING `created`
+    // FILLED IN — `fsck --fix` is, and it is the better home anyway: it rewrites
+    // the row's head through the store's own `update`, leaving every chapter
+    // beside it byte-identical, where a re-conversion would not.
+    let mut consumed: Vec<(&Path, Vec<anthill_core::kb::RuleId>)> = Vec::new();
+    for (file, result) in project_items.iter().zip(per_file.iter()) {
+        if file.document.is_some() {
+            continue;
+        }
+        let mut mine = Vec::new();
+        for &rule in &result.fact_rule_ids {
+            let head = interp.kb().rule_head(rule);
+            let Some(functor) = fact_functor(interp.kb(), head) else {
+                continue;
+            };
+            if covered.contains(&functor) {
+                mine.push(rule);
+            }
+        }
+        // ONLY ITEM FILES ARE CONVERTED. The document encoding is about an
+        // item's PROSE, and a file holding no item holds none — the format stamp
+        // at the tree's root is a `StoreFormat` row and stays exactly where and
+        // as it is. Converting it would mean writing it through a store that
+        // never read it, which is `refuse_unknown_occupant`'s refusal and,
+        // correctly, its own answer to "should this file be rewritten": no.
+        let holds_item = mine.iter().any(|&rule| {
+            named_string(interp.kb(), interp.kb().rule_head(rule), STAGE0_ID_FIELD).is_some()
+        });
+        if mine.is_empty() || !holds_item {
+            continue;
+        }
+        let (facts, others) = item_census(&file.parsed);
+        if mine.len() != facts || others != 0 {
+            eprintln!(
+                "error: {} holds {} row(s) this store covers and {} item(s) it does not; \
+                 conversion moves a whole file or none of it, and it removes the files it moves",
+                file.path.display(),
+                mine.len(),
+                facts - mine.len() + others,
+            );
+            return runner::EXIT_RUNTIME;
+        }
+        consumed.push((file.path.as_path(), mine));
+    }
+    if consumed.is_empty() {
+        println!("migrate: every item file is already a document");
+        return 0;
+    }
+
+    let plan = plan_created_stamps(interp, &consumed, &created);
+    if let Err(code) = plan.report() {
+        return code;
+    }
+    let stamped = plan.stamps;
+
+    let mut target = ItemPerFileStore::new(
+        store_root.to_path_buf(),
+        ItemFields::new(STAGE0_STATUS_FIELD, STAGE0_ID_FIELD, STAGE0_REF_FIELD),
+    )
+    .with_document_mapping(mapping.clone());
+    let mut rows = 0usize;
+    for (path, rules) in &consumed {
+        for &rule in rules {
+            let head = match stamped.get(&rule) {
+                Some(stamp) => match with_created(interp, rule, stamp) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("error: {}: {e}", path.display());
+                        return runner::EXIT_RUNTIME;
+                    }
+                },
+                None => interp.kb().rule_head(rule),
+            };
+            let kb = interp.kb();
+            if let Err(e) = target.persist(
+                kb,
+                head,
+                kb.rule_clause_kind(rule),
+                kb.rule_domain(rule),
+                kb.rule_meta(rule),
+            ) {
+                eprintln!("error: {}: {e}", path.display());
+                return runner::EXIT_RUNTIME;
+            }
+            rows += 1;
+        }
+    }
+    if let Err(e) = target.flush(interp.kb()) {
+        eprintln!("error: writing the documents: {e}");
+        eprintln!(
+            "note: the old files are untouched, but a partly written set of documents may be on \
+             disk beside them. Remove the `*{ITEM_DOCUMENT_SUFFIX}` files under {} before running \
+             this again",
+            store_root.display()
+        );
+        return runner::EXIT_RUNTIME;
+    }
+    // The old files go LAST, so a crash leaves both encodings — which the next
+    // load names as a `DuplicateId`, loud and repairable — rather than a hole.
+    for (path, _) in &consumed {
+        if let Err(e) = fs::remove_file(path) {
+            eprintln!("error: removing the converted file {}: {e}", path.display());
+            return runner::EXIT_RUNTIME;
+        }
+    }
+    println!(
+        "migrated {} file(s), {rows} row(s), to `*{ITEM_DOCUMENT_SUFFIX}` documents",
+        consumed.len()
+    );
+    if !stamped.is_empty() {
+        println!("back-dated `created` on {} item(s)", stamped.len());
+    }
+    0
+}
+
+/// A `<id><TAB><timestamp>` table. Blank lines and `#` comments are skipped; a
+/// line that is neither is a REFUSAL, because a table half-read would silently
+/// leave items undated and the refusal above would then name the wrong cause.
+fn read_created_table(path: &Path) -> Result<std::collections::HashMap<String, String>, String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let mut out = std::collections::HashMap::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((id, stamp)) = line.split_once('\t') else {
+            return Err(format!(
+                "{}:{}: expected `<id><TAB><timestamp>`, got `{line}`",
+                path.display(),
+                n + 1
+            ));
+        };
+        out.insert(id.trim().to_string(), stamp.trim().to_string());
+    }
+    Ok(out)
+}
+
+/// The row's head with `created` inserted right after `id`.
+///
+/// POSITION MATTERS ONLY TO A READER, and that is reason enough: the field is
+/// identity-adjacent and belongs beside the id in every one of 1115 files, not
+/// appended after `status` because that is where a push lands.
+fn with_created(
+    interp: &mut Interpreter,
+    rule: anthill_core::kb::RuleId,
+    stamp: &str,
+) -> Result<TermId, String> {
+    let head = interp.kb().rule_head(rule);
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = interp.kb().get_term(head).clone()
+    else {
+        return Err("a work item whose head has no fields cannot be stamped".to_string());
+    };
+    let kb = interp.kb_mut();
+    let created_sym = kb.intern("created");
+    let value = kb.alloc(Term::Const(Literal::String(stamp.to_string())));
+    let mut named = named_args.clone();
+    // REPLACE, NOT INSERT, when the slot is already there. It usually IS: the
+    // loader fills an omitted REQUIRED field with a fresh var, so every legacy
+    // row reaches this carrying `created: ?created` — invisible in the source
+    // file it came from and very visible in the one this writes. Pushing a
+    // second `created:` beside it produced a duplicate named argument, which
+    // the loader refuses; the whole rehearsed tree failed to reload.
+    match named
+        .iter()
+        .position(|(s, _)| kb.local_name_of(*s) == "created")
+    {
+        Some(at) => named[at] = (created_sym, value),
+        None => {
+            let at = named
+                .iter()
+                .position(|(s, _)| kb.local_name_of(*s) == STAGE0_ID_FIELD)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            named.insert(at, (created_sym, value));
+        }
+    }
+    Ok(kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args: named,
+    }))
+}
+
+/// A term's string-valued named argument.
+fn named_string(kb: &KnowledgeBase, term: TermId, field: &str) -> Option<String> {
+    let Term::Fn { named_args, .. } = kb.get_term(term) else {
+        return None;
+    };
+    named_args
+        .iter()
+        .find(|(s, _)| kb.local_name_of(*s) == field)
+        .and_then(|(_, t)| match kb.get_term(*t) {
+            Term::Const(Literal::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+}
+
 const ORPHAN_FILE: &str = "orphaned.anthill";
 
 const ORPHAN_HEADER: &str = "\
@@ -1143,7 +2062,7 @@ const ORPHAN_HEADER: &str = "\
 ";
 
 const MIGRATE_USAGE: &str = "\
-usage: anthill-todo migrate [--to item-per-file]
+usage: anthill-todo migrate [--to item-per-file | --to document] [--created-from FILE]
 
   migrate                   stamp a pre-versioning project with the current data
                             format (the SCHEMA a row is written in).
@@ -1151,6 +2070,20 @@ usage: anthill-todo migrate [--to item-per-file]
                             move this project's work items from one shared file to
                             one file per item under a directory per state, and
                             rewrite its `ExtentBinding` to name the new layout.
+                            Each item is written as a DOCUMENT (see below).
+  migrate --to document     convert an item-per-file tree that still holds plain
+                            `WI-NNN.anthill` files into `WI-NNN.anthill.md`
+                            documents: an anthill head of facts, then the prose
+                            fields as markdown chapters. Changes no data.
+      --created-from FILE   a `<id><TAB><timestamp>` table supplying `created` for
+                            items filed before the field existed. Applies to
+                            EITHER `--to`, and is optional: an item the table does
+                            not name is dated from its own file's creation time
+                            instead, and the run says which source it used. Prefer
+                            the table — it dates each id separately, where a
+                            shared file dates every item in it alike.
+                            `rustland/anthill-todo/scripts/created_from_git.py`
+                            derives one from git history.
 
 Two jobs under one name, and they do not overlap: the first versions how a row is
 written, the second which file it lives in.
@@ -1279,7 +2212,11 @@ fn rewrite_binding(
     let text = item_per_file_binding(&covers);
 
     for (file, result) in project_items.iter().zip(per_file.iter()) {
-        let spans = file.parsed.fact_spans();
+        // IN THE FILE'S COORDINATES (WI-1120): this splices the binding's text
+        // into the file it was read from, so a head-relative span would cut at
+        // the wrong offset. `project.anthill` is never a document, so today the
+        // two agree — the shift is taken anyway rather than resting on that.
+        let spans = file.fact_spans_in_file();
         if spans.len() != result.fact_rule_ids.len() {
             return Err(format!(
                 "{}: {} fact span(s) against {} loaded fact(s)",
@@ -1957,6 +2894,17 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             return runner::EXIT_COMPILE;
         }
     };
+    // The fact<->markdown mapping, read out of the bundle's own parse IR because
+    // it is needed to READ the project's files (WI-1120) — see `document_mapping`
+    // for why the KB is too late.
+    let mapping = match document_mapping(&bundle_parsed) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: the bundled document mapping is malformed: {e}");
+            return runner::EXIT_COMPILE;
+        }
+    };
+
     // Each project file pairs its on-disk path with the parsed IR so
     // the IndexedFileStore can later associate fact RuleIds with their
     // byte-range spans on disk.
@@ -1972,7 +2920,31 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 return runner::EXIT_COMPILE;
             }
         };
-        match parse::parse(&source) {
+        // AN ITEM DOCUMENT IS PARSED AT ITS HEAD (WI-1120): the fenced block is
+        // anthill and everything after it is markdown, so the parser is handed
+        // the head alone and the chapters are spliced back into the facts they
+        // fill before the loader sees them.
+        //
+        // The load-error rendering is the honest cost, and it is small: the head
+        // is what `parsed.source` holds, so a `line:col` inside a document counts
+        // from the head's first line rather than the file's — off by the one
+        // fence line above it.
+        let document = if fs_util::has_suffix(file, &[ITEM_DOCUMENT_SUFFIX]) {
+            match document::read_document(&source, &mapping) {
+                Ok(doc) => Some(doc),
+                Err(e) => {
+                    eprintln!("error: {}: {e}", file.display());
+                    return runner::EXIT_COMPILE;
+                }
+            }
+        } else {
+            None
+        };
+        let head = match &document {
+            Some(doc) => &source[doc.head.clone()],
+            None => source.as_str(),
+        };
+        match parse::parse(head) {
             Ok(mut parsed) => {
                 if is_bundle_logic_file(&parsed) {
                     continue;
@@ -1988,10 +2960,18 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 // WI-745: stamp the path so a load error names the FILE
                 // (`path:line:col`) — the todo CLI merges embedded stdlib +
                 // bundle + N project files, so a bare byte offset identified none.
+                if let Some(doc) = &document {
+                    if let Err(e) = inject_chapters(&mut parsed, &source, doc, &mapping) {
+                        eprintln!("error: {}: {e}", file.display());
+                        return runner::EXIT_COMPILE;
+                    }
+                }
                 let parsed = parsed.with_path(file.clone());
                 project_items.push(ProjectFile {
                     path: file.clone(),
                     parsed,
+                    source,
+                    document,
                 });
             }
             Err(errs) => {
@@ -2004,7 +2984,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
                 // WI-852: through the shared owner, so this cannot drift from
                 // the rendering every other parse-error and load-error printer
                 // uses; batched so the file is indexed once.
-                for located in ParseError::all_located(&errs, file, &source) {
+                for located in ParseError::all_located(&errs, file, head) {
                     eprintln!("warning: {located}");
                 }
             }
@@ -2074,6 +3054,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         &store_root,
         &project_items,
         &per_file_results[project_offset..],
+        &mapping,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -2087,7 +3068,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // layout, not of storage. It is served here, between building the store and handing
     // it to the registry, because that is the only point at which the host still holds it.
     if bundle_argv.first().map(|s| s.as_str()) == Some("fsck") {
-        return run_fsck(&mut declared.store, &bundle_argv[1..]);
+        return run_fsck(&mut interp, &mut declared.store, &bundle_argv[1..]);
     }
 
     // `migrate --to <layout>` is served here for the same reason and one more.
@@ -2113,11 +3094,12 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             .any(|a| a == "--to" || a.starts_with("--to=") || a == "--help" || a == "-h")
     {
         return run_migrate(
-            &interp,
+            &mut interp,
             &declared,
             &store_root,
             &project_items,
             &per_file_results[project_offset..],
+            &mapping,
             &bundle_argv[1..],
         );
     }
@@ -2156,34 +3138,21 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     };
     let agent_value = Value::Str(agent);
 
-    // Seed Cell[V = WIS] from on-disk WI-NNN max so the next freshly
-    // allocated id doesn't collide. This cell is now the ONLY way the backend
+    // The `Cell[V = WIS]` the bundle receives. It is the ONLY way the backend
     // reaches the bundle — every command body goes through the `WorkItemStore`
     // spec ops on it (WI-1113 removed the parallel `store: FileStore` path).
     //
-    // Under a coordinated backend this seeding is exactly the id-collision bug
-    // (design doc §1.2), and it disappears: `alloc_id` reads the forge registry
-    // instead. Until then the host owns the scan, because the bundle has no
-    // String -> Int64 to recover a counter from an id.
+    // THE COUNTER SEED IS GONE (WI-1121). This used to scan every loaded row for
+    // the highest `WI-NNN` and hand the bundle `max + 1` to allocate from —
+    // which IS the id-collision bug design §1.2 names, not a step towards fixing
+    // it: two checkouts scan their own trees, reach the same number, and hand it
+    // to two different items. `mint_id` derives an id from the item instead
+    // (author, `created`, description), so there is no counter, nothing for the
+    // host to scan, and no state to carry between commands. The one site that
+    // parsed the digits out of an id is this one, and it is why grandfathered
+    // `WI-NNN` ids can coexist with minted ones forever — nothing else reads an
+    // id as anything but a string.
     let wis_cell_value = {
-        let kb_ref = interp.kb();
-        let items = match collect_workitems(kb_ref) {
-            Ok(items) => items,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return runner::EXIT_RUNTIME;
-            }
-        };
-        let mut max_num: u32 = 0;
-        for item in items {
-            if let Some(rest) = item.id.strip_prefix("WI-") {
-                if let Ok(n) = rest.parse::<u32>() {
-                    max_num = max_num.max(n);
-                }
-            }
-        }
-        let id_counter = (max_num as i64) + 1;
-
         // THE IMPL BUILDS ITS OWN STATE (WI-1114). This used to intern
         // `…FileBasedWorkitemStore.wis` and its `backend` / `id_counter` field names
         // and assemble the entity here — the host knowing one impl's INTERNALS, which
@@ -2201,7 +3170,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         // above.
         let wis_value = match interp.call(
             "anthill.todo.store.FileBasedWorkitemStore.open",
-            &[store_value.clone(), Value::Int(id_counter)],
+            &[store_value.clone()],
         ) {
             Ok(v) => v,
             Err(e) => {

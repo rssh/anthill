@@ -22,87 +22,17 @@ fn read_all_anthill(inner: &std::path::Path) -> String {
     combined
 }
 
-#[test]
-fn add_assigns_next_id_after_max() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    // WI-001 + WI-005 → next id should be WI-006.
-    let proj = setup_project(
-        &tmp,
-        "\
-fact WorkItem(
-  id: \"WI-001\",
-  description: \"first\",
-  acceptance: [ToolPasses(\"cargo-test\")],
-  depends_on: [],
-  status: Open)
-
-fact WorkItem(
-  id: \"WI-005\",
-  description: \"fifth\",
-  acceptance: [ToolPasses(\"cargo-test\")],
-  depends_on: [],
-  status: Open)
-",
-    );
-    let out = Command::new(ANTHILL_TODO_BIN)
-        .args([
-            "--anthill",
-            "-d",
-            proj.to_str().unwrap(),
-            "add",
-            "next item",
-        ])
-        .output()
-        .expect("run");
-    assert!(
-        out.status.success(),
-        "add failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("added: WI-006 — next item"),
-        "unexpected stdout: {stdout}"
-    );
-
-    let combined = read_all_anthill(&proj.join("anthill-todo"));
-    assert!(
-        combined.contains("id: \"WI-006\""),
-        "WI-006 not persisted: {combined}"
-    );
-    // WI-408: optional fields persist in the explicit some()/none() format.
-    assert!(
-        combined.contains("description: some(value: \"next item\")"),
-        "description not in explicit some() format: {combined}"
-    );
-    assert!(combined.contains("status: Open"));
-}
-
-#[test]
-fn add_empty_project_starts_at_wi_001() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp, "");
-    let out = Command::new(ANTHILL_TODO_BIN)
-        .args([
-            "--anthill",
-            "-d",
-            proj.to_str().unwrap(),
-            "add",
-            "first ever",
-        ])
-        .output()
-        .expect("run");
-    assert!(
-        out.status.success(),
-        "add failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("added: WI-001 — first ever"),
-        "expected WI-001, got: {stdout}"
-    );
-}
+/// WI-1121 REPLACED THE TWO TESTS THAT USED TO SIT HERE.
+///
+/// `add_assigns_next_id_after_max` and `add_empty_project_starts_at_wi_001`
+/// pinned the counter: the first asserted `WI-006` after `WI-005`, the second
+/// `WI-001` in an empty project. There is no counter to pin any more — an id is
+/// derived from the item (§6.5) — so both moved to
+/// `wi1121_content_hash_ids_test`, which asserts what replaced them: the shape
+/// of a minted id, that it does NOT continue the sequence on disk, and that the
+/// same `add` twice re-derives one id rather than filing two items.
+///
+/// What stays here is everything about `add` that the mint did not change.
 
 #[test]
 fn add_repeatable_depends_in_caller_order() {
@@ -279,7 +209,9 @@ fn add_custom_acceptance_overrides_default() {
     // The default cargo-test must not appear when the user supplied
     // an explicit acceptance — it would mean the default-fallback
     // branch fired even though the user opted out.
-    let added_block_start = combined.find("WI-001").expect("WI-001 lives");
+    // WI-1121: keyed on the ONE fact the file holds rather than on a counter's
+    // `WI-001`, which is no longer what an id looks like.
+    let added_block_start = combined.find("fact WorkItem(").expect("the added item lives");
     let added_block = &combined[added_block_start..];
     let block_end = added_block
         .find("status: Open")

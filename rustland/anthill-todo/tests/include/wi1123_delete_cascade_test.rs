@@ -87,6 +87,16 @@ fn per_file_project(tmp: &tempfile::TempDir) -> std::path::PathBuf {
     proj
 }
 
+/// The id `add` minted, off its own output — WI-1121 removed the counter, so a
+/// test cannot name `WI-001` in advance.
+fn add(proj: &Path, description: &str) -> String {
+    ok(proj, &["add", description])
+        .split_whitespace()
+        .nth(1)
+        .expect("`added: <id> — …`")
+        .to_string()
+}
+
 // ── The cascade (a): the item's satellite rows ─────────────────
 
 /// THE TICKET'S ACCEPTANCE, driven: add an item, attach feedback and a tag, delete,
@@ -101,20 +111,20 @@ fn delete_takes_the_items_feedback_and_tags_with_it() {
     let proj = setup_project(&tmp, "");
     let inner = proj.join("anthill-todo");
 
-    ok(&proj, &["add", "doomed"]);
-    ok(&proj, &["feedback", "WI-001", "first note"]);
-    ok(&proj, &["feedback", "WI-001", "second note"]);
-    ok(&proj, &["tag", "WI-001", "cascade"]);
+    let id = add(&proj, "doomed");
+    ok(&proj, &["feedback", &id, "first note"]);
+    ok(&proj, &["feedback", &id, "second note"]);
+    ok(&proj, &["tag", &id, "cascade"]);
 
     let before = read_combined(&inner);
     assert!(before.contains("first note") && before.contains("second note"));
-    assert!(before.contains("Tag(workitem: \"WI-001\", name: \"cascade\")"));
+    assert!(before.contains(&format!("Tag(workitem: \"{id}\", name: \"cascade\")")));
 
-    assert!(ok(&proj, &["delete", "WI-001"]).contains("deleted: WI-001"));
+    assert!(ok(&proj, &["delete", &id]).contains(&format!("deleted: {id}")));
 
     let after = read_combined(&inner);
     assert!(
-        !after.contains("WI-001"),
+        !after.contains(id.as_str()),
         "no row naming the deleted item is left anywhere: {after}"
     );
     assert!(!after.contains("first note"), "feedback row 1 left: {after}");
@@ -133,16 +143,24 @@ fn the_deleted_rows_do_not_come_back_on_the_next_load() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, "");
 
-    ok(&proj, &["add", "doomed"]);
-    ok(&proj, &["feedback", "WI-001", "a note about the doomed one"]);
-    ok(&proj, &["delete", "WI-001"]);
+    // WI-1121 CHANGED HOW THE ID COMES BACK, not whether it can. A counter freed
+    // the number and the next `add` happened to reuse it; a derived id is
+    // re-derived by filing the same content again — same agent, same `created`,
+    // same description — which is a SHARPER version of the same hazard, because
+    // it is reproducible rather than incidental.
+    let stamp = "2026-08-17T10:22:03Z";
+    let id = ok(&proj, &["--agent", "claude", "add", "doomed", "--created", stamp]);
+    let id = id.split_whitespace().nth(1).expect("an id").to_string();
+    ok(&proj, &["feedback", &id, "a note about the doomed one"]);
+    ok(&proj, &["delete", &id]);
 
-    // The id is free again, so the next add reuses it — which is precisely the
-    // state a stranded row corrupts: the old item's feedback attaching to a new,
-    // unrelated item that happens to reuse the number.
-    ok(&proj, &["add", "the reused number"]);
-    let shown = ok(&proj, &["show", "WI-001"]);
-    assert!(shown.contains("the reused number"), "{shown}");
+    let again = ok(&proj, &["--agent", "claude", "add", "doomed", "--created", stamp]);
+    assert!(
+        again.contains(&id),
+        "the same content re-derives the same id: {again}"
+    );
+    let shown = ok(&proj, &["show", &id]);
+    assert!(shown.contains("doomed"), "{shown}");
     assert!(
         !shown.contains("a note about the doomed one"),
         "the deleted item's feedback resurfaced on its successor: {shown}"
@@ -163,22 +181,22 @@ fn deleting_one_item_leaves_another_items_satellites_alone() {
     let proj = setup_project(&tmp, "");
     let inner = proj.join("anthill-todo");
 
-    ok(&proj, &["add", "doomed"]);
-    ok(&proj, &["add", "bystander"]);
-    ok(&proj, &["feedback", "WI-001", "goes away"]);
-    ok(&proj, &["feedback", "WI-002", "stays put"]);
-    ok(&proj, &["tag", "WI-002", "keepme"]);
+    let id = add(&proj, "doomed");
+    let bystander = add(&proj, "bystander");
+    ok(&proj, &["feedback", &id, "goes away"]);
+    ok(&proj, &["feedback", &bystander, "stays put"]);
+    ok(&proj, &["tag", &bystander, "keepme"]);
 
-    ok(&proj, &["delete", "WI-001"]);
+    ok(&proj, &["delete", &id]);
 
     let after = read_combined(&inner);
     assert!(!after.contains("goes away"), "{after}");
     assert!(after.contains("stays put"), "the bystander's feedback: {after}");
     assert!(
-        after.contains("Tag(workitem: \"WI-002\", name: \"keepme\")"),
+        after.contains(&format!("Tag(workitem: \"{bystander}\", name: \"keepme\")")),
         "the bystander's tag: {after}"
     );
-    assert!(ok(&proj, &["show", "WI-002"]).contains("stays put"));
+    assert!(ok(&proj, &["show", &bystander]).contains("stays put"));
 }
 
 // ── The per-file layout: the item's FILE ───────────────────────
@@ -199,17 +217,18 @@ fn delete_removes_the_items_file_and_fsck_stays_clean() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
-    ok(&proj, &["add", "doomed"]);
-    ok(&proj, &["feedback", "WI-001", "a note in the item's own file"]);
-    ok(&proj, &["tag", "WI-001", "cascade"]);
-    let item_file = proj.join("anthill-todo/open/WI-001.anthill");
+    let id = add(&proj, "doomed");
+    ok(&proj, &["feedback", &id, "a note in the item's own file"]);
+    ok(&proj, &["tag", &id, "cascade"]);
+    // WI-1120: an item file is a DOCUMENT, `WI-….anthill.md`.
+    let item_file = proj.join(format!("anthill-todo/open/{id}.anthill.md"));
     let text = fs::read_to_string(&item_file).expect("the item has a file");
     assert!(
         text.contains("a note in the item's own file") && text.contains("name: \"cascade\""),
         "the satellites are filed in the item's file: {text}"
     );
 
-    ok(&proj, &["delete", "WI-001"]);
+    ok(&proj, &["delete", &id]);
 
     assert!(
         !item_file.exists(),
@@ -235,15 +254,17 @@ fn delete_names_the_items_that_still_depend_on_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, "");
 
-    ok(&proj, &["add", "the prerequisite"]);
-    ok(&proj, &["add", "waits on it", "--depends", "WI-001"]);
-    ok(&proj, &["add", "also waits on it", "--depends", "WI-001"]);
+    let id = add(&proj, "the prerequisite");
+    let one = ok(&proj, &["add", "waits on it", "--depends", &id]);
+    let one = one.split_whitespace().nth(1).expect("an id").to_string();
+    let two = ok(&proj, &["add", "also waits on it", "--depends", &id]);
+    let two = two.split_whitespace().nth(1).expect("an id").to_string();
 
-    let out = run_in(&proj, &["delete", "WI-001"]);
+    let out = run_in(&proj, &["delete", &id]);
     assert!(out.status.success(), "the delete still succeeds: {out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("WI-002") && err.contains("WI-003"),
+        err.contains(&one) && err.contains(&two),
         "every dependent is named: {err}"
     );
     assert!(
@@ -254,14 +275,14 @@ fn delete_names_the_items_that_still_depend_on_it() {
     // NOT deleted — the dependents and their edges are exactly as they were.
     let listed = ok(&proj, &["list"]);
     assert!(
-        listed.contains("WI-002") && listed.contains("WI-003"),
+        listed.contains(&one) && listed.contains(&two),
         "the dependents are still there: {listed}"
     );
     assert!(
         crate::common::workitem_block_contains(
             &read_combined(&proj.join("anthill-todo")),
-            "WI-002",
-            "WI-001"
+            &one,
+            &id
         ),
         "and their edges are untouched — clearing them is the user's call"
     );
@@ -341,22 +362,24 @@ fn a_finished_dependent_is_not_named_but_an_open_one_is() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, "");
 
-    ok(&proj, &["add", "the prerequisite"]);
-    ok(&proj, &["add", "finished long ago", "--depends", "WI-001"]);
-    ok(&proj, &["add", "still waiting", "--depends", "WI-001"]);
-    ok(&proj, &["--agent", "claude", "claim", "WI-002"]);
-    ok(&proj, &["--agent", "claude", "deliver", "WI-002"]);
-    ok(&proj, &["verify", "WI-002"]);
+    let id = add(&proj, "the prerequisite");
+    let finished = ok(&proj, &["add", "finished long ago", "--depends", &id]);
+    let finished = finished.split_whitespace().nth(1).expect("an id").to_string();
+    let waiting = ok(&proj, &["add", "still waiting", "--depends", &id]);
+    let waiting = waiting.split_whitespace().nth(1).expect("an id").to_string();
+    ok(&proj, &["--agent", "claude", "claim", &finished]);
+    ok(&proj, &["--agent", "claude", "deliver", &finished]);
+    ok(&proj, &["verify", &finished]);
 
-    let out = run_in(&proj, &["delete", "WI-001"]);
+    let out = run_in(&proj, &["delete", &id]);
     assert!(out.status.success(), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("WI-003"),
+        err.contains(&waiting),
         "the open dependent is still named: {err}"
     );
     assert!(
-        !err.contains("WI-002"),
+        !err.contains(&finished),
         "the verified one is not — its stale edge costs nothing: {err}"
     );
 }
@@ -368,9 +391,9 @@ fn a_finished_dependent_is_not_named_but_an_open_one_is() {
 fn delete_with_no_dependents_adds_no_warning() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(&tmp, "");
-    ok(&proj, &["add", "depended on by nobody"]);
+    let id = add(&proj, "depended on by nobody");
 
-    let out = run_in(&proj, &["delete", "WI-001"]);
+    let out = run_in(&proj, &["delete", &id]);
     assert!(out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(

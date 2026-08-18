@@ -19,6 +19,7 @@ fact StoreFormat(version: 1)
 
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"first item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
@@ -26,6 +27,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: \"WI-002\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"second item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [\"WI-001\"],

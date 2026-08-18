@@ -1489,10 +1489,12 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
 /// canonical surface). The two are one function's two modes —
 /// [`TermPrinter::reload_faithful`] carries the rule, the measurement, and why
 /// no single text can serve both.
+/// Render one fact as the `.anthill` text a loader reads back.
+///
+/// WI-1099: the text this writes is READ BACK by the loader, so it is the
+/// reload-faithful question, not the canonical-surface one. The file store's
+/// retract key keeps the surface print — see [`TermPrinter::reload_faithful`].
 pub fn print_fact<V: TermSource + ?Sized>(view: &V, term: TermId, meta: Option<TermId>) -> String {
-    // WI-1099: the text this writes is READ BACK by the loader, so it is the
-    // reload-faithful question, not the canonical-surface one. The file store's
-    // retract key keeps the surface print — see [`TermPrinter::reload_faithful`].
     let printer = TermPrinter::reload_faithful(view);
     let mut out = String::from("fact ");
     out.push_str(&printer.print_term(term));
@@ -1504,6 +1506,72 @@ pub fn print_fact<V: TermSource + ?Sized>(view: &V, term: TermId, meta: Option<T
     out.push('\n');
     out
 }
+
+/// [`print_fact`], with the named arguments in `omit` LEFT OUT of the top-level
+/// application (WI-1120).
+///
+/// The one caller is the document encoding, where a prose field moves out of the
+/// head and becomes a markdown chapter (design §5.3): the head must then be
+/// printed without it, and there is no term to print — `Store::persist` is handed
+/// `&KnowledgeBase`, so a stripped copy of the fact cannot be interned on the
+/// way past.
+///
+/// TOP LEVEL ONLY, and by NAME. A nested `Feedback(content: …)` inside some other
+/// term is not this fact's field, and dropping it would silently edit a subterm
+/// nobody asked about. If the top-level term carries none of the named arguments,
+/// this IS [`print_fact`] — same text, same round trip.
+pub fn print_fact_omitting<V: TermSource + ?Sized>(
+    view: &V,
+    term: TermId,
+    meta: Option<TermId>,
+    omit: &[&str],
+) -> String {
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = view.term(term)
+    else {
+        return print_fact(view, term, meta);
+    };
+    if omit.is_empty() || !named_args.iter().any(|(s, _)| omit.contains(&view.sym_name(*s))) {
+        return print_fact(view, term, meta);
+    }
+    let printer = TermPrinter::reload_faithful(view);
+    let mut out = String::from("fact ");
+    out.push_str(view.sym_name(*functor));
+    out.push('(');
+    let mut first = true;
+    for &tid in pos_args.iter() {
+        if !first {
+            out.push_str(", ");
+        }
+        first = false;
+        out.push_str(&printer.print_term(tid));
+    }
+    for &(sym, tid) in named_args.iter() {
+        if omit.contains(&view.sym_name(sym)) {
+            continue;
+        }
+        if !first {
+            out.push_str(", ");
+        }
+        first = false;
+        out.push_str(view.sym_name(sym));
+        out.push_str(": ");
+        out.push_str(&printer.print_term(tid));
+    }
+    out.push(')');
+    if let Some(meta_id) = meta {
+        out.push_str(" {\n  ");
+        out.push_str(&printer.print_term(meta_id));
+        out.push_str("\n}");
+    }
+    out.push('\n');
+    out
+}
+
+
 
 #[cfg(test)]
 mod tests {

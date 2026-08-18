@@ -846,3 +846,59 @@ fn what_the_store_writes_parses_back() {
         "the item, its original note and the new one: {text}"
     );
 }
+
+// ── §6.6: two unsynced writers, one digest (WI-1121) ───────────
+
+/// TWO REAL ITEMS whose content-derived ids collided, and the reason the tracker
+/// is the only thing that can notice: their slugs differ, so their FILENAMES
+/// differ, so git merged the two files perfectly cleanly.
+///
+/// COMPARED ON THE `<time>-<hash>` PREFIX, never the whole id — a whole-string
+/// comparison misses every case, silently. That is the control here: both files
+/// hold a `WI-20260817-K7M2Q…` item, and neither is a `DuplicateId`.
+#[test]
+fn two_items_sharing_an_identity_prefix_are_a_collision_not_a_duplicate() {
+    let alice = "namespace test.wi1114\n\
+                 \x20 fact Item(id: \"WI-20260817-K7M2Q-alpha-thing\", note: \"a\", status: Open)\n\
+                 end\n";
+    let bob = "namespace test.wi1114\n\
+               \x20 fact Item(id: \"WI-20260817-K7M2Q-beta-thing\", note: \"b\", status: Open)\n\
+               end\n";
+    let f = Fixture::new(&[
+        ("open/WI-20260817-K7M2Q-alpha-thing.anthill", alice),
+        ("open/WI-20260817-K7M2Q-beta-thing.anthill", bob),
+    ]);
+
+    let faults = f.store.layout_faults();
+    assert!(
+        faults
+            .iter()
+            .any(|x| matches!(x, LayoutFault::IdCollision { prefix, .. } if prefix == "WI-20260817-K7M2Q")),
+        "the shared identity prefix is named: {faults:?}"
+    );
+    assert!(
+        !faults.iter().any(|x| matches!(x, LayoutFault::DuplicateId { .. })),
+        "and it is NOT read as one item in two files: {faults:?}"
+    );
+    assert!(
+        faults.iter().any(|x| x.blocking()),
+        "it blocks — the next write would not know which item it means"
+    );
+}
+
+/// A GRANDFATHERED `WI-NNN` CANNOT COLLIDE BY THIS MECHANISM, because nothing
+/// derives it. Two legacy ids that merely share a leading run of characters are
+/// two ordinary items, and reporting them would fire on most of this repo's own
+/// tracker.
+#[test]
+fn legacy_ids_that_share_a_prefix_are_not_a_collision() {
+    let f = Fixture::new(&[("open/WI-1.anthill", WI1), ("open/WI-2.anthill", WI2)]);
+    assert!(
+        !f.store
+            .layout_faults()
+            .iter()
+            .any(|x| matches!(x, LayoutFault::IdCollision { .. })),
+        "{:?}",
+        f.store.layout_faults()
+    );
+}

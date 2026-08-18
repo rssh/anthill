@@ -65,6 +65,16 @@ fact anthill.persistence.ExtentBinding(
 /// Driven end to end — add, then read back from the file the binding named, then delete
 /// and see the row leave that file (the retract leg, which only works when the row's
 /// reference carries the mirror the declared `covers` established).
+
+/// The id `add` minted, off its own output (WI-1121 removed the counter).
+fn added_id(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .expect("`added: <id> — …`")
+        .to_string()
+}
+
 #[test]
 fn a_declared_binding_drives_the_real_store() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -77,6 +87,7 @@ fn a_declared_binding_drives_the_real_store() {
 
     let out = run_in(&proj, &["add", "declared-store probe"]);
     assert!(out.status.success(), "add failed: {out:?}");
+    let id = added_id(&out);
 
     let items = fs::read_to_string(proj.join("anthill-todo/workitems.anthill"))
         .expect("read workitems.anthill");
@@ -88,7 +99,7 @@ fn a_declared_binding_drives_the_real_store() {
     // The retract leg. `delete` reaches the row through `stored_facts_of`, whose reference
     // carries a mirror only for a COVERED functor — so this is the declared `covers`
     // being honoured, not just the persist path.
-    let out = run_in(&proj, &["delete", "WI-001"]);
+    let out = run_in(&proj, &["delete", &id]);
     assert!(out.status.success(), "delete failed: {out:?}");
     let items = fs::read_to_string(proj.join("anthill-todo/workitems.anthill"))
         .expect("read workitems.anthill");
@@ -223,6 +234,7 @@ fn a_project_without_a_binding_still_works() {
     // what this test is about is that the STORE still works without a declaration.
     let out = run_in(&proj, &["add", "zero-config probe", "--acceptance", "cargo-test"]);
     assert!(out.status.success(), "add failed: {out:?}");
+    let id = added_id(&out);
     let items = fs::read_to_string(proj.join("anthill-todo/workitems.anthill"))
         .expect("read workitems.anthill");
     assert!(
@@ -230,7 +242,7 @@ fn a_project_without_a_binding_still_works() {
         "the default binding writes to workitems.anthill:\n{items}"
     );
 
-    let out = run_in(&proj, &["delete", "WI-001"]);
+    let out = run_in(&proj, &["delete", &id]);
     assert!(out.status.success(), "delete failed: {out:?}");
     let items = fs::read_to_string(proj.join("anthill-todo/workitems.anthill"))
         .expect("read workitems.anthill");
@@ -278,11 +290,33 @@ fn default_matches_the_scaffolded_binding() {
     let bare_items =
         fs::read_to_string(bare_proj.join("anthill-todo/workitems.anthill")).expect("read");
 
+    // WI-1121: WITH THE ID AND `created` MASKED OUT. Two `add`s a second apart
+    // now mint different ids and stamp different times — by design — so a
+    // verbatim comparison would measure the clock rather than the binding. What
+    // this test is about is that the two paths write the same ROW SHAPE, and
+    // that is exactly what survives the mask.
     let row_of = |s: &str| {
-        s.lines()
+        let row = s
+            .lines()
             .find(|l| l.contains("parity probe"))
             .unwrap_or("<no row>")
-            .to_string()
+            .to_string();
+        let mut out = String::new();
+        let mut rest = row.as_str();
+        for field in ["id: \"", "created: \""] {
+            match rest.split_once(field) {
+                Some((before, after)) => {
+                    let (_, tail) = after.split_once('"').expect("a closed literal");
+                    out.push_str(before);
+                    out.push_str(field);
+                    out.push_str("…\"");
+                    rest = tail;
+                }
+                None => break,
+            }
+        }
+        out.push_str(rest);
+        out
     };
     assert_eq!(
         row_of(&scaffolded_items),

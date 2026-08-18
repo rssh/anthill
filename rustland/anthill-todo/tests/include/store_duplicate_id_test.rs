@@ -27,6 +27,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const DUPLICATE: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "first record under this id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -34,6 +35,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "a wholly different item, same id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -41,6 +43,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "bystander",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -52,6 +55,7 @@ fact WorkItem(
 const MANY_DUPLICATES: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "first record under this id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -59,6 +63,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "second record, same id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -66,6 +71,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "third record, same id again",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -73,6 +79,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "an unrelated second collision",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -80,6 +87,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "its twin",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -91,6 +99,7 @@ fact WorkItem(
 const CLEAN: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "first record; supersedes the note in WI-001 above",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -98,6 +107,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "renumbered away from WI-001, per the collision fix",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -105,6 +115,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "bystander",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],

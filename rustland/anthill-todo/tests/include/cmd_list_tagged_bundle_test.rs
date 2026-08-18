@@ -14,6 +14,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 const FIXTURE: &str = r#"
 fact WorkItem(
   id: "WI-001",
+  created: "2026-01-01T00:00:00Z",
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -21,6 +22,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-002",
+  created: "2026-01-01T00:00:00Z",
   description: "mid item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
@@ -28,6 +30,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-003",
+  created: "2026-01-01T00:00:00Z",
   description: "top item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-002"],
@@ -35,6 +38,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-004",
+  created: "2026-01-01T00:00:00Z",
   description: "untagged item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -137,6 +141,7 @@ fn empty_tag_reports_no_items() {
 const NEXT_SKIPS_PREOPENED_FIXTURE: &str = r#"
 fact WorkItem(
   id: "WI-100",
+  created: "2026-01-01T00:00:00Z",
   description: "deferred backlog item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
@@ -144,6 +149,7 @@ fact WorkItem(
 
 fact WorkItem(
   id: "WI-101",
+  created: "2026-01-01T00:00:00Z",
   description: "live actionable item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],

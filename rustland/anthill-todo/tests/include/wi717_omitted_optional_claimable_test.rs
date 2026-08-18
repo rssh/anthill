@@ -19,12 +19,14 @@ fact StoreFormat(version: 1)
 
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"omits depends_on entirely\",
   acceptance: [ToolPasses(\"cargo-test\")],
   status: Open)
 
 fact WorkItem(
   id: \"WI-002\",
+  created: \"2026-01-01T00:00:00Z\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
   status: Open)

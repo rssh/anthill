@@ -20,7 +20,9 @@ scaland/                Scala 3 implementation (parallel port, uses fastparse)
 tree-sitter-anthill/    Tree-sitter grammar (grammar.js + Rust/Node bindings, used by rustland)
 stdlib/anthill/         Standard library .anthill files (prelude, reflect, realization, persistence)
 examples/github-todo/   Example project: work-item tracking with domain, rules, tools
-anthill-todo/           Work-item .anthill files for this project's own task tracking
+anthill-todo/           This project's own work items: one `WI-….anthill.md` DOCUMENT
+                        per item (a fenced anthill head, then prose as markdown chapters),
+                        under a directory per status. WI-1120/WI-1121.
 docs/                   Kernel language spec, stage0 design docs, proposals
 ```
 

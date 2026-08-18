@@ -15,8 +15,12 @@ namespace anthill.todo.store
   import anthill.persistence.{persist, retract, update, flush}
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
   import anthill.prelude.Int64.{to_string}
-  import anthill.prelude.String.{concat}
-  import anthill.prelude.Ord.{lt}
+  -- WI-1121: `slug` and `digestBase32` are the two halves of a minted id — the
+  -- readable one and the identifying one. Both are host-backed (they classify
+  -- characters / do bit arithmetic), and both are ordinary `String` operations,
+  -- so nothing here knows how the digest is computed.
+  import anthill.prelude.String.{concat, substring, startsWith, toLower,
+                                 isEmpty, slug, digestBase32}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Option.{none, some}
@@ -56,10 +60,32 @@ namespace anthill.todo.store
   sort WorkItemStore
     sort State = ?
 
+    -- MINT THE ID OF AN ITEM ABOUT TO BE FILED (WI-1121, design §6.5).
+    --
+    -- It is not `next_id(s)` any more, and the shape change IS the design: there
+    -- is no "next", because there is no counter and no sequence. An id is
+    -- DERIVED from the item — `WI-<YYYYMMDD>-<5 Crockford base32>-<slug>` over
+    -- the author who is filing it, the moment they filed it, and what they wrote
+    -- — so the three inputs have to arrive as arguments. Two people filing
+    -- offline on the same afternoon mint different ids without exchanging a
+    -- byte, which is the whole point.
+    --
+    -- READ-ONLY, and that is the second half of the same change: `next_id` bumped
+    -- a counter, so it carried `Modify[s]`; this reads the tracker to see whether
+    -- its candidate is taken and writes nothing. The item is written by `commit`,
+    -- as it always was.
+    --
+    -- IDEMPOTENT. Deriving rather than drawing means a retried `add` re-derives
+    -- the SAME id and finds its own half-written item there, so it heals instead
+    -- of filing a second one. An implementation must preserve that while
+    -- resolving genuine collisions — see the impl for the one comparison that
+    -- tells the two apart.
+    operation mint_id(s: Cell[V = State], author: String, created: String,
+                      description: String) -> String
+      effects Error
+
     -- Mutating ops: Modify[s] covers everything reachable from s
     -- (per proposal 037 transitivity).
-    operation next_id(s: Cell[V = State]) -> String
-      effects Modify[s]
     operation commit(s: Cell[V = State], w: WorkItem) -> Unit
       effects {Modify[s], Error}
     -- Remove the work item `id` AND every satellite row that describes it —
@@ -145,8 +171,14 @@ namespace anthill.todo.store
   -- calls `retrieve`, and demanding it would refuse a perfectly good backend
   -- for an operation this impl never performs.
   sort FileBasedWorkitemStore
+    -- WI-1121: `id_counter` is GONE. It was the last piece of allocation state,
+    -- seeded by the host from the highest `WI-NNN` on disk — which is exactly
+    -- the id-collision bug design §1.2 names, since two checkouts scanning their
+    -- own trees seed the same number and hand it out twice. `mint_id` derives an
+    -- id from the item instead, so there is no counter to seed, nothing for the
+    -- host to scan, and nothing to carry between commands.
     enum WIS
-      entity wis(backend: NonMonotonicStore, id_counter: Int64)
+      entity wis(backend: NonMonotonicStore)
     end
 
     provides WorkItemStore[State = WIS]
@@ -172,26 +204,152 @@ namespace anthill.todo.store
     -- carrier is its dictionary and whose value is its `State` — §8.2.2 carries
     -- the measurement. Selection is already done, by `sort Main`'s
     -- `requires WorkItemStore[State]` and the host's requirement dictionary.
-    operation open(backend: NonMonotonicStore, next: Int64) -> WIS =
-      wis(backend, next)
+    operation open(backend: NonMonotonicStore) -> WIS =
+      wis(backend)
 
-    -- Format an Int64 as a 3-zero-padded decimal string. Larger numbers
-    -- expand naturally (`WI-1000` is fine).
-    operation pad3(n: Int64) -> String =
-      if lt(n, 10) then concat("00", to_string(n))
-      else if lt(n, 100) then concat("0", to_string(n))
-      else to_string(n)
-
-    -- next_id reads the counter, formats it as `WI-NNN`, bumps it.
-    -- Bundle host seeds the counter to max-existing-id + 1 at startup,
-    -- so the first call after a fresh project yields `WI-001`.
-    operation next_id(s: Cell[V = WIS]) -> String
-      effects Modify[s]
+    -- ─── Minting (WI-1121, design §6.5) ──────────────────────────
+    --
+    -- `WI-` <YYYYMMDD> `-` <5 Crockford base32> [ `-` <slug> ], each part doing a
+    -- different job: the DAY orders (a lexicographic sort is chronological, so
+    -- `ls`, a sorted `depends_on` and a plain `sort` all read in order with no
+    -- comparator that knows anything); the DIGEST identifies, and is the only
+    -- part that does; the SLUG describes, and may be absent.
+    --
+    -- THE SLUG IS NOT COMPARED, and that is the sharp consequence of the split.
+    -- Two items whose digests collide have different descriptions, hence
+    -- different slugs, hence different FILENAMES — so a duplicate check that
+    -- compared whole id strings would miss every collision. Everything below
+    -- keyed on occupancy compares the `WI-<day>-<digest>` IDENTITY PREFIX.
+    operation mint_id(s: Cell[V = WIS], author: String, created: String,
+                      description: String) -> String
+      effects Error
     =
-      match Cell.get(s)
-        case wis(b, c) ->
-          let _ = Cell.set(s, wis(b, c + 1))
-          concat("WI-", pad3(c))
+      mint_attempt(s, author, created, description, 0)
+
+    -- An ATTEMPT COUNTER makes a single writer collision-proof, because the CLI
+    -- holds the whole tracker and can look before it writes: re-hash until the
+    -- identity prefix is free. Measured on this repo — 78 active days, mean 9.9
+    -- items a day, busiest day 35 — a re-hash essentially never happens.
+    --
+    -- THE ONE INTERACTION TO GET RIGHT is that this must not break idempotent
+    -- retry. When the prefix is occupied, compare the occupant: same `created`
+    -- and same description means it IS this item, written by a half-finished
+    -- earlier run, so succeed with the id already on disk. Only a genuinely
+    -- different item advances the attempt.
+    --
+    -- `author` is deliberately NOT part of that comparison, and the reason is
+    -- that it cannot matter: it IS part of the digest input, so two items
+    -- differing only in author already have different digests and never reach
+    -- here. A work item does not record its author, so comparing what the row
+    -- holds is both possible and sufficient.
+    operation mint_attempt(s: Cell[V = WIS], author: String, created: String,
+                           description: String, attempt: Int64) -> String
+      effects Error
+    =
+      let prefix = identity_prefix(created,
+        digestBase32(digest_input(author, created, description, attempt), 5))
+      match occupant_of(facts_of(kb(), WorkItem), prefix)
+        case none() -> compose_id(prefix, slug(description, 30))
+        case some(t) ->
+          if is_same_item(t, created, description) then
+            string_field_of(t, "id")
+          else mint_attempt(s, author, created, description, attempt + 1)
+
+    -- The digest's input. Joined with a separator no field of a work item is
+    -- expected to carry ALONE on a line — the join only has to be injective
+    -- enough that two different items rarely produce one string, which is the
+    -- same job the digest itself is doing one layer down.
+    operation digest_input(author: String, created: String, description: String,
+                           attempt: Int64) -> String =
+      concat(author, concat("\n", concat(created, concat("\n",
+        concat(description, concat("\n", to_string(attempt)))))))
+
+    -- `WI-` + the day + `-` + the digest: the part of an id that IS the identity.
+    operation identity_prefix(created: String, digest: String) -> String =
+      concat("WI-", concat(day_of(created), concat("-", digest)))
+
+    -- `2026-08-17T10:22:03Z` -> `20260817`. THE PARTITION, and the scaling lever:
+    -- two items can only collide inside one, so a project filing one item a
+    -- second wants an hour here rather than a day. The fix for scale is a finer
+    -- time, never a longer digest (§6.5) — at that rate the DIRECTORY fails first.
+    --
+    -- A `created` that is not a timestamp yields a short partition rather than
+    -- trapping; the shape is checked once, loudly, at startup (Main's
+    -- `items_missing_created`), so this stays total.
+    --
+    -- The three fields are CUT rather than the separators stripped, deliberately:
+    -- `replace(…, "-", "")` would also swallow a `-` from a garbled stamp and
+    -- turn it into a shorter partition that still looks like one, and this sort
+    -- may not import `replace` in any case — it declares its own (proposal 059
+    -- R4 refuses a member that captures a name already in scope).
+    operation day_of(created: String) -> String =
+      concat(substring(created, 0, 4),
+        concat(substring(created, 5, 7), substring(created, 8, 10)))
+
+    operation compose_id(prefix: String, slug_text: String) -> String =
+      if isEmpty(slug_text) then prefix
+      else concat(prefix, concat("-", slug_text))
+
+    -- The stored WorkItem term whose id carries `prefix` as its identity, if any.
+    -- MATCHED AS A SEGMENT, not as a raw prefix: the id either IS the prefix (an
+    -- empty slug) or continues with `-`, so `WI-20260817-K7M2Q` cannot be read as
+    -- occupying `WI-20260817-K7M2` — different digests, different items.
+    operation occupant_of(ts: List[T = Term], prefix: String) -> Option[T = Term] =
+      match ts
+        case nil() -> none()
+        case cons(t, rest) ->
+          if occupies(string_field_of(t, "id"), prefix) then some(t)
+          else occupant_of(rest, prefix)
+
+    -- Case-INSENSITIVELY, which is the rule that keeps a case-folding filesystem
+    -- (APFS by default, and every FAT variant) from deciding identity: an id is
+    -- minted in one canonical case and compared in none (§6.5).
+    operation occupies(id: String, prefix: String) -> Bool =
+      let a = toLower(id)
+      let b = toLower(prefix)
+      if eq(a, b) then true else startsWith(a, concat(b, "-"))
+
+    -- Whether a stored row is THIS item — the idempotent-retry test above.
+    operation is_same_item(t: Term, created: String, description: String) -> Bool =
+      if eq(string_field_of(t, "created"), created) then
+        eq(prose_field_of(t, "description"), description)
+      else false
+
+    -- A field that may be written either bare or wrapped, `"x"` or
+    -- `some(value: "x")`. BOTH SPELLINGS REACH THE STORE and neither is a
+    -- deviation: the field is declared `Option[T = String]`, the loader accepts a
+    -- bare literal for it, and the printer emits the wrapped form — so a tracker
+    -- holds both (measured: 344 bare against 766 wrapped before WI-1120's
+    -- conversion). Comparing the wrapped form against a bare argument is how the
+    -- idempotence check silently failed its first time out: every retry minted a
+    -- fresh id because the occupant's description never matched.
+    operation prose_field_of(t: Term, field: String) -> String =
+      match term_field(t, field)
+        case none() -> ""
+        case some(v) ->
+          match term_as_string(v)
+            case some(str) -> str
+            case none() -> unwrapped_string(v)
+
+    operation unwrapped_string(v: Term) -> String =
+      match term_field(v, "value")
+        case none() -> ""
+        case some(inner) ->
+          match term_as_string(inner)
+            case none() -> ""
+            case some(str) -> str
+
+    -- A term's string-valued field, or "" when the field is absent or holds
+    -- something else. Total by design: every caller here is comparing, and a
+    -- comparison against "" is a mismatch, which is the right answer for a row
+    -- that does not carry the field.
+    operation string_field_of(t: Term, field: String) -> String =
+      match term_field(t, field)
+        case none() -> ""
+        case some(v) ->
+          match term_as_string(v)
+            case none() -> ""
+            case some(str) -> str
 
     -- Materialize each in-KB WorkItem Term into a typed entity.
     -- Pre-filter on a string `id`: a malformed row without one is
@@ -285,7 +443,7 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) ->
+        case wis(_) ->
           match find_term_by_id(facts_of(kb(), WorkItem), id)
             case none() -> none()
             case some(t) -> term_as_entity(t)
@@ -295,7 +453,7 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) ->
+        case wis(_) ->
           match term_functor_name(st)
             case some(name) ->
               terms_to_workitems(
@@ -306,7 +464,7 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) ->
+        case wis(_) ->
           terms_to_workitems(facts_of(kb(), WorkItem))
 
     -- Buffering primitives. persist/retract stage into the backend's
@@ -318,7 +476,7 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       match Cell.get(s)
-        case wis(b, _) ->
+        case wis(b) ->
           let _ = persist(b, fact, Meta(entries: as_term(nil())))
           ()
 
@@ -331,7 +489,7 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       match Cell.get(s)
-        case wis(b, _) ->
+        case wis(b) ->
           match row
             case stored_ref(_, reference) ->
               let _ = retract(b, reference)
@@ -400,15 +558,15 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       match Cell.get(s)
-        case wis(b, _) ->
+        case wis(b) ->
           let _ = flush(b, nil())
           ()
 
     -- Persist `fact` and flush. The typed-surface entry points (commit /
     -- commit_feedback) split only to preserve the WorkItem-vs-Feedback
-    -- type distinction at the spec; the impl body is one shape. Counter
-    -- management lives entirely in `next_id`, so commit doesn't bump it
-    -- (the update path reuses the existing id via `replace`).
+    -- type distinction at the spec; the impl body is one shape. There is no id
+    -- state for this to maintain (WI-1121): `mint_id` derives an id and writes
+    -- nothing, and the update path reuses the existing id via `replace`.
     operation persist_through(s: Cell[V = WIS], fact: Term) -> Unit
       effects {Modify[s], Error}
     =
@@ -451,7 +609,7 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       match Cell.get(s)
-        case wis(b, _) ->
+        case wis(b) ->
           match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
             case none() -> ()
             case some(row) ->
@@ -498,7 +656,7 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) ->
+        case wis(_) ->
           match find_tag_term(facts_of(kb(), Tag), id, name)
             case none() -> false
             case some(_) -> true
@@ -530,7 +688,7 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) -> collect_tagged(facts_of(kb(), Tag), name)
+        case wis(_) -> collect_tagged(facts_of(kb(), Tag), name)
 
     -- The mirror of tagged_id_of: the tag NAME when the fact's workitem
     -- matches `id`.
@@ -559,13 +717,13 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) -> collect_item_tags(facts_of(kb(), Tag), id)
+        case wis(_) -> collect_item_tags(facts_of(kb(), Tag), id)
 
     operation raw_term_of(s: Cell[V = WIS], id: String) -> Option[T = Term]
       effects Error
     =
       match Cell.get(s)
-        case wis(_, _) -> find_term_by_id(facts_of(kb(), WorkItem), id)
+        case wis(_) -> find_term_by_id(facts_of(kb(), WorkItem), id)
 
     operation tag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
       effects {Modify[s], Error}

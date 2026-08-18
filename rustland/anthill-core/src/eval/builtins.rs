@@ -436,6 +436,9 @@ const HOST_FNS: &[(
     ("string_replace", 3, string_replace),
     ("string_trim", 1, string_trim),
     ("string_split", 2, string_split),
+    // WI-1121 — the two primitives a content-derived id is minted from (§6.5).
+    ("string_slug", 2, string_slug),
+    ("string_digest_base32", 2, string_digest_base32),
     // WI-931 — PERSISTENCE (proposal 007), the first entries here that are keyed
     // to a SPEC rather than to a scalar carrier. Each takes the store as its
     // first argument and resolves THAT VALUE to its registered mirror, so one
@@ -1815,6 +1818,146 @@ fn string_replace(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 fn string_trim(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("String.trim", args)?;
     Ok(Value::Str(str_operand(&s)?.trim().to_string()))
+}
+
+// ── slug / digest (WI-1121) ────────────────────────────────────
+//
+// The two host primitives a locally-minted, content-derived identifier needs
+// (`anthill-todo/docs/design/backend-github-coordination.md` §6.5). Both are
+// declared on `anthill.prelude.String` and argued there; what is host-specific
+// — and therefore lives here — is only that neither is expressible in anthill:
+// `slug` classifies CHARACTERS, and `digestBase32` needs integer bit
+// arithmetic over bytes.
+
+/// `String.slug(s, cap)` — the total, deterministic reduction of prose to
+/// `[a-z0-9-]` the design's §6.5 specifies: lowercase, keep `[a-z0-9]`,
+/// collapse every other run to a single `-`, cut at a word boundary at `cap`
+/// characters, drop a trailing `-`.
+///
+/// TOTAL, AND THE EMPTY ANSWER IS LEGAL — a description written entirely in a
+/// non-ASCII script (this project writes Ukrainian) or entirely in punctuation
+/// keeps nothing, and the caller omits the segment. That is why a slug can
+/// never be load-bearing: it is a rendering, not an identity.
+///
+/// CUT AT A WORD BOUNDARY means: take the last `-` at or before `cap` and cut
+/// there, unless there is none, in which case cut at `cap` exactly — so a
+/// single long word yields a truncated word rather than nothing. `cap <= 0`
+/// yields "".
+fn string_slug(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, cap] = expect_args::<2>("String.slug", args)?;
+    let s = str_operand(&s)?;
+    let Value::Int(cap) = cap else {
+        return Err(type_mismatch("Int64", &cap, None));
+    };
+    Ok(Value::Str(slug(s, cap)))
+}
+
+/// The slug rule itself, split out so it is unit-testable without a `Value`.
+fn slug(s: &str, cap: i64) -> String {
+    if cap <= 0 {
+        return String::new();
+    }
+    // Lowercase first: `to_lowercase` can change the character COUNT (`İ` →
+    // `i̇`), so classifying before it would count a different string than the
+    // one that gets cut.
+    let lowered = s.to_lowercase();
+    let mut out = String::new();
+    for c in lowered.chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            out.push(c);
+        } else if !out.ends_with('-') && !out.is_empty() {
+            // A run of anything else is ONE `-`, and a leading run is dropped
+            // outright — a slug never starts with the separator.
+            out.push('-');
+        }
+    }
+    let cap = cap as usize;
+    if out.chars().count() > cap {
+        // `out` is ASCII by construction, so byte and character indices agree
+        // and `[..cap]` cannot split a scalar.
+        let head = &out[..cap];
+        // A `-` sitting exactly AT the cap means the head already ends on a word
+        // boundary — keep it whole. Without this test the cut retreats to the
+        // PREVIOUS boundary and throws away a word that fit exactly, which is
+        // how a 30-character cap yielded 20 characters.
+        out = if out.as_bytes()[cap] == b'-' {
+            head.to_string()
+        } else {
+            match head.rfind('-') {
+                Some(at) => head[..at].to_string(),
+                None => head.to_string(),
+            }
+        };
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// Crockford base32 — `0123456789ABCDEFGHJKMNPQRSTVWXYZ`, i.e. 0–9 and A–Z
+/// without `I`, `L`, `O` and `U`. Uppercase, which is the ONE canonical case
+/// §6.5 requires: the digest lands in a filename, and on a case-insensitive
+/// filesystem (APFS by default) two spellings that differ only in case are one
+/// file, so minting must never produce two.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// `String.digestBase32(s, chars)` — a deterministic digest of `s`, rendered as
+/// `chars` Crockford base32 characters (5 bits each).
+///
+/// NOT A CHECKSUM AND NOT CRYPTOGRAPHIC. §6.5 is explicit that the id it feeds
+/// is OPAQUE — a minting rule, not an integrity check — because one of the hash
+/// inputs (a work item's description) is edited for months afterwards, so no
+/// later recomputation can reproduce it. What the digest owes its caller is
+/// exactly two properties: the same input gives the same output (which is what
+/// makes a retried `add` idempotent rather than duplicating an item), and
+/// different inputs spread evenly (which is what keeps collisions at the
+/// birthday bound rather than clustered).
+///
+/// FNV-1a over the UTF-8 bytes, finished with a splitmix64 avalanche. FNV-1a
+/// alone has weak diffusion in its high bits, and a 25-bit answer is a SLICE of
+/// the word — so the avalanche is not decoration, it is what makes the slice
+/// uniform.
+fn string_digest_base32(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, chars] = expect_args::<2>("String.digestBase32", args)?;
+    let s = str_operand(&s)?;
+    let Value::Int(chars) = chars else {
+        return Err(type_mismatch("Int64", &chars, None));
+    };
+    // 12 characters is 60 bits, the most a `u64` digest can render without
+    // padding the top with a constant — which would look like width the answer
+    // does not have. Refused rather than clamped: a caller asking for 16 is
+    // asking for entropy this cannot supply, and quietly handing back 60 bits
+    // dressed as 80 is the silent degradation the repo's rules forbid.
+    if chars <= 0 || chars > 12 {
+        return Err(EvalError::TypeMismatch {
+            expected: "String.digestBase32 width: an Int64 in 1..=12 (the digest is 64 bits \
+                       wide, and 5 bits go into each base32 character)",
+            got: chars.to_string(),
+        });
+    }
+    Ok(Value::Str(digest_base32(s, chars as u32)))
+}
+
+/// The digest itself, split out so it is unit-testable without a `Value`.
+fn digest_base32(s: &str, chars: u32) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64 offset basis
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a 64 prime
+    }
+    // splitmix64 finalizer.
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    // Most significant group first, so a PREFIX of a wider digest is the
+    // narrower digest of the same input — which is what lets §6.5 widen the
+    // hash later without renumbering anything.
+    (0..chars)
+        .map(|i| {
+            let shift = 64 - 5 * (i + 1);
+            CROCKFORD[((h >> shift) & 0x1f) as usize] as char
+        })
+        .collect()
 }
 
 /// `str::split`, which keeps the empty pieces the declaration requires.
@@ -5626,5 +5769,79 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── WI-1121: slug / digestBase32 ────────────────────────────
+
+    #[test]
+    fn slug_keeps_only_lowercase_alnum_and_single_separators() {
+        assert_eq!(slug("Item-per-file store", 30), "item-per-file-store");
+        assert_eq!(slug("  leading & trailing  ", 30), "leading-trailing");
+        assert_eq!(slug("A//B__C", 30), "a-b-c");
+        assert_eq!(slug("WI-437: the backend!", 30), "wi-437-the-backend");
+    }
+
+    /// The empty answer is the property a caller must not build an identity on:
+    /// a description in a non-Latin script keeps nothing, and the mint has to
+    /// stay total over it (§6.5).
+    #[test]
+    fn slug_of_non_latin_or_punctuation_is_empty() {
+        assert_eq!(slug("Перевірка типів", 30), "");
+        assert_eq!(slug("!!! ??? ...", 30), "");
+        assert_eq!(slug("anything", 0), "");
+    }
+
+    #[test]
+    fn slug_cuts_at_a_word_boundary_but_never_to_nothing() {
+        // 30 lands inside "store"; the cut retreats to the preceding `-`.
+        assert_eq!(
+            slug("anthill todo backend increment two", 30),
+            "anthill-todo-backend-increment"
+        );
+        // No `-` at or before the cap: truncate the single word rather than
+        // returning "", which would make the slug absent for a long word.
+        assert_eq!(slug("supercalifragilisticexpialidocious", 10), "supercalif");
+    }
+
+    #[test]
+    fn digest_is_deterministic_and_uses_the_crockford_alphabet() {
+        let a = digest_base32("alice\n2026-08-17T10:22:03Z\nfix the thing\n0", 5);
+        let b = digest_base32("alice\n2026-08-17T10:22:03Z\nfix the thing\n0", 5);
+        assert_eq!(a, b, "the same input must re-derive the same id");
+        assert_eq!(a.chars().count(), 5);
+        assert!(
+            a.chars()
+                .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c)),
+            "{a} left the Crockford alphabet"
+        );
+    }
+
+    /// The property that lets §6.5 widen the hash later without renumbering:
+    /// five characters are the first five of six.
+    #[test]
+    fn a_narrow_digest_is_a_prefix_of_a_wider_one() {
+        assert_eq!(digest_base32("some input", 5), digest_base32("some input", 8)[..5]);
+    }
+
+    #[test]
+    fn digest_spreads_over_the_partition_it_claims() {
+        // 1000 distinct inputs into 25 bits: the birthday bound predicts ~0.015
+        // collisions, so any collision at all here means the avalanche is not
+        // avalanching. The control is the FNV word without the finisher, which
+        // varies only in its low bits and collides here in the thousands.
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..1000 {
+            assert!(
+                seen.insert(digest_base32(&format!("claude\n2026-08-17\nitem {i}\n0"), 5)),
+                "collision at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn digest_refuses_a_width_it_cannot_supply() {
+        let err =
+            string_digest_base32(&mut dummy(), &[Value::Str("x".into()), Value::Int(16)]).unwrap_err();
+        assert!(matches!(err, EvalError::TypeMismatch { .. }));
     }
 }

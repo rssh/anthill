@@ -40,6 +40,7 @@
 -- which is the loudest available signal, until a profile that vendors an ICU-like
 -- library adds them. This is the ticket's "the restriction is stated in the binding
 -- block and the operations it cannot realize stay a loud refusal."
+--
 namespace anthill.prelude
   provides String language cpp
     operation_map {
@@ -73,6 +74,12 @@ namespace anthill.prelude
       replace: "anthill::runtime::str_replace($1, $2, $3)",
       trim: "anthill::runtime::str_trim($1)",
       split: "anthill::runtime::str_split($1, $2)",
+      -- WI-1121. These two MUST agree with the rust host bit for bit — they mint
+      -- an identifier from content, so two hosts computing them differently would
+      -- give one item two ids. `anthill_runtime.hpp` carries the constants and
+      -- says so at the site.
+      slug: "anthill::runtime::str_slug($1, $2)",
+      digestBase32: "anthill::runtime::str_digest_base32($1, $2)",
       repeat: "anthill::runtime::str_repeat($1, $2)"
     }
   end

@@ -74,6 +74,39 @@ sort anthill.prelude.String
     repeat(s: String, n: Int64) -> String          -- n copies of s; n <= 0 → ""
   }
 
+  -- WI-1121: the two primitives an identifier MINTED FROM CONTENT needs. Both are
+  -- host-backed for the same reason the six above are — one classifies CHARACTERS
+  -- and the other needs integer bit arithmetic over bytes, and this sort declares
+  -- neither capability.
+  --
+  -- THEY ARE A PAIR, and the pairing is the point: `slug` renders content for a
+  -- HUMAN and `digestBase32` renders it for a MACHINE, so a name built from both
+  -- is readable AND distinguishing without either half having to be both.
+  operation {
+    -- Prose reduced to `[a-z0-9-]`, cut to `cap` characters at a word boundary:
+    -- lowercase, keep `[a-z0-9]`, collapse every other run to a single `-`, cut at
+    -- the last `-` at or before `cap` (or at `cap` exactly when the head holds no
+    -- `-`, so one long word truncates rather than vanishing), drop a trailing `-`.
+    --
+    -- TOTAL, AND "" IS A LEGAL ANSWER — a string written entirely in a non-Latin
+    -- script or entirely in punctuation keeps nothing. A caller must therefore
+    -- treat the result as decoration and never as an identity: `cap <= 0` is ""
+    -- too, by the same rule rather than as a special case.
+    slug(s: String, cap: Int64) -> String
+    -- A deterministic digest of `s` as `cap` Crockford base32 characters
+    -- (`0123456789ABCDEFGHJKMNPQRSTVWXYZ` — 0-9 and A-Z without I, L, O, U), 5
+    -- bits each, UPPERCASE. 1 <= cap <= 12; anything else is refused rather than
+    -- clamped, because a clamp would hand back fewer bits than the caller asked
+    -- for while looking like the width they wrote.
+    --
+    -- NOT A CHECKSUM, NOT CRYPTOGRAPHIC, and callers must not build one out of
+    -- it. What it promises is exactly two things: equal inputs give equal outputs,
+    -- and unequal inputs spread evenly. A PREFIX of a wider digest is the narrower
+    -- digest of the same input, so a caller that widens `cap` later does not
+    -- invalidate what it already minted.
+    digestBase32(s: String, cap: Int64) -> String
+  }
+
   -- padRight: s padded with trailing spaces to `width`; unchanged when
   -- already that wide. The deficit is computed once and filled with one
   -- repeat + one concat — O(width), replacing the quadratic

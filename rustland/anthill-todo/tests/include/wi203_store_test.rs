@@ -27,6 +27,7 @@ fn store_anthill_loads_alongside_domain() {
         "\
 fact WorkItem(
   id: \"WI-001\",
+  created: \"2026-01-01T00:00:00Z\",
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],

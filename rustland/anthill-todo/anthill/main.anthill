@@ -26,7 +26,8 @@ namespace anthill.todo
   import anthill.prelude.Map.{empty, put, get, contains}
   import anthill.prelude.Bool.{not}
   import anthill.prelude.String.{length, substring, indexOf, trim,
-                                 toUpper, toLower, padRight}
+                                 toUpper, toLower, padRight,
+                                 startsWith, isEmpty, split}
   import anthill.prelude.Console.{console, println, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
@@ -244,7 +245,13 @@ namespace anthill.todo
                 kind: flag(),
                 required: false,
                 description: "Named list to tag the new item with (repeatable)"),
-              nil())))),
+              cons(
+                ParamSpec(
+                  name: "created",
+                  kind: flag(),
+                  required: false,
+                  description: "Creation stamp to file the item under (default: now)"),
+                nil()))))),
       parent: none())
 
   -- `insert <description> --before <id>`: create a new work item, tag it,
@@ -366,11 +373,36 @@ namespace anthill.todo
   -- repeating that walk inside the dependent-count and sort comparators.
   entity Row(
     id: String,
+    -- WI-1121: the item's `created` stamp, carried into the row because it is
+    -- what `list` ORDERS BY. It used to order by id, which worked only while ids
+    -- were a dense ascending counter; a content-derived id carries the day but
+    -- not the second, so two items filed on one day would otherwise list in
+    -- digest order, which is no order at all.
+    created: String,
     status: String,
     description: String,
     depends: List[String],
     unblocks: Int64,
     has_feedback: Bool)
+
+  -- WI-1121: the three readable parts of a MINTED id, `WI-<day>-<digest>[-<slug>]`.
+  -- Only `day` and `digest` carry identity; the slug is a rendering and may be "".
+  entity IdParts(
+    day    : String,
+    digest : String,
+    slug   : String)
+
+  -- WI-1121: what reading an item-naming ARGUMENT produced. Three outcomes and
+  -- not two, because the caller's exit code differs: an argument that was never
+  -- given is a USAGE error (2), while one that names no item — or several — is a
+  -- run-time refusal (1), and both were already spelled that way before the
+  -- ladder existed. Each not-ok case has already printed its own diagnostic;
+  -- the caller only chooses the code.
+  enum IdRef
+    entity ref_missing
+    entity ref_unresolved
+    entity ref_ok(id: String)
+  end
 
   -- Result of resolving an `update --status <name> [--reason r]` request
   -- (status_for). Each outcome is an explicit variant so the caller
@@ -447,7 +479,7 @@ namespace anthill.todo
           -- before any command touches the store, is the loud error the repo's
           -- rules ask for in place of that silent skip.
           match duplicate_item_ids(wis_cell)
-            case nil() -> dispatch(name, args, agent, wis_cell)
+            case nil() -> undated_gate(name, args, agent, wis_cell)
             case cons(d, ds) ->
               -- ALL of them, not the first: the cause this gate names — a
               -- parallel-branch merge — lands several collisions at once, and
@@ -470,13 +502,40 @@ namespace anthill.todo
                                concat(named, concat(effect, remedy)))
               2
 
+    -- The second store-integrity gate (WI-1121). A SEPARATE STEP rather than one
+    -- combined check, because the two faults are unrelated: a duplicate id is a
+    -- broken store, an undated item is an unconverted one, and folding them
+    -- together would make a tracker that needs `migrate` read as corrupt.
+    operation undated_gate(name: String, args: List[Binding], agent: String,
+                           s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
+    =
+      match items_missing_created()
+        case nil() -> dispatch(name, args, agent, s)
+        case cons(u, us) ->
+          let named = concat("error: work item(s) with no `created` stamp: ",
+                             join_strings(cons(u, us), ", "))
+          let effect = concat(" — `created` is what a new id is minted from and",
+                              " what `list` orders by, so neither can be answered for these.")
+          -- BOTH SPELLINGS, because which one applies depends on the layout the
+          -- project is on and this gate cannot see that: a tracker still in one
+          -- shared file converts with `--to item-per-file`, one already split
+          -- with `--to document`. Naming only the second sent a shared-file
+          -- project to a command that answers "this project is not on that
+          -- layout yet" — a remedy that refuses is worse than none.
+          let remedy = concat(" Fill it in with `anthill-todo fsck --fix`, which dates each",
+                        concat(" item from its own file; or migrate with `--created-from <file>`,",
+                               " a table of `<id><TAB><timestamp>` lines."))
+          let _ = eprintln(console(), concat(named, concat(effect, remedy)))
+          2
+
     -- Each subcommand reads its own positional/flag args; the
     -- OperationSpec for each subcommand declares the params it expects
     -- (see `spec_with_id` for the canonical "needs an id" shape).
     -- `s: Cell[State]` is the WorkItemStore state cell threaded through
     -- to every cmd_X; bodies dispatch through the sort-level
     -- `requires WorkItemStore[State]` and call
-    -- WorkItemStore.{lookup, by_status_of, next_id, commit, replace, forget}
+    -- WorkItemStore.{lookup, by_status_of, mint_id, commit, replace, forget}
     -- on it. The host picks the impl (e.g. FileBasedWorkitemStore) by
     -- calling Main.main via call_with_requirements (WI-236).
     operation dispatch(name: String, args: List[Binding],
@@ -493,7 +552,7 @@ namespace anthill.todo
       else if eq(name, "graph") then cmd_graph(s)
       else if eq(name, "next") then cmd_next(args, s)
       else if eq(name, "feedback") then cmd_feedback(args, agent, s)
-      else if eq(name, "add") then cmd_add(args, s)
+      else if eq(name, "add") then cmd_add(args, agent, s)
       else if eq(name, "claim") then cmd_claim(args, agent, s)
       else if eq(name, "unclaim") then cmd_unclaim(args, agent, s)
       else if eq(name, "preopen") then cmd_preopen(args, agent, s)
@@ -508,7 +567,7 @@ namespace anthill.todo
         cmd_remove_dependency(args, s)
       else if eq(name, "tag") then cmd_tag(args, s)
       else if eq(name, "untag") then cmd_untag(args, s)
-      else if eq(name, "insert") then cmd_insert(args, s)
+      else if eq(name, "insert") then cmd_insert(args, agent, s)
       else if eq(name, "migrate") then cmd_migrate(s)
       else not_yet(name)
 
@@ -538,11 +597,66 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(w, rest) ->
           match w
-            case WorkItem(id, _, _, _, _, _, _, _) ->
+            case WorkItem(id, _, _, _, _, _, _, _, _) ->
               if contains(seen, id) then
                 if contains(reported, id) then repeated_ids(rest, seen, reported)
                 else cons(id, repeated_ids(rest, seen, put(reported, id, true)))
               else repeated_ids(rest, put(seen, id, true), reported)
+
+    -- Every work item whose `created` stamp is absent or is not a date
+    -- (WI-1121). The SECOND gate `main` runs, for the same reason as the first:
+    -- the field is read by two things that must not read a var — the id mint,
+    -- whose day partition IS the first ten characters of it, and the listing's
+    -- sort key. Neither would fail; both would quietly produce nonsense, one of
+    -- them into an id that is then permanent.
+    --
+    -- Reachable in exactly one way now that `add` stamps it: a tracker written
+    -- before this field existed, or hand-edited since. The remedy is the
+    -- conversion that fills the field in, so the message names it.
+    --
+    -- CHECKED FOR SHAPE, NOT MERELY PRESENCE, and only as far as the readers
+    -- need: ten characters of `YYYY-MM-DD`. `day_of` cuts exactly that much and
+    -- the sort compares whole strings, so a bad hour would mis-order two items
+    -- filed in one day and nothing worse — not worth refusing a tracker over.
+    -- READ OFF THE STORED TERM, not off a materialized `WorkItem`, and that is
+    -- forced rather than stylistic: `created` is a REQUIRED field, so the loader
+    -- fills an omitted one with a FRESH VAR — which is exactly the case this
+    -- gate exists to catch, and which every String operation refuses with
+    -- `expected String, got Var`. A var is not a value that can be tested, so
+    -- the test has to be "does this row carry a string here at all", and only
+    -- `term_field` can ask that.
+    operation items_missing_created() -> List[String] =
+      undated_ids(facts_of(kb(), WorkItem))
+
+    operation undated_ids(ts: List[T = Term]) -> List[String] =
+      match ts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match term_field(t, "id")
+            case none() -> undated_ids(rest)
+            case some(id_term) ->
+              match term_as_string(id_term)
+                case none() -> undated_ids(rest)
+                case some(id) ->
+                  if is_dated(t) then undated_ids(rest)
+                  else cons(id, undated_ids(rest))
+
+    operation is_dated(t: Term) -> Bool =
+      match term_field(t, "created")
+        case none() -> false
+        case some(v) ->
+          match term_as_string(v)
+            case none() -> false
+            case some(stamp) -> is_date_shaped(stamp)
+
+    -- `YYYY-MM-DD` and then whatever else: eight digits with `-` at 4 and 7.
+    operation is_date_shaped(s: String) -> Bool =
+      if lt(length(s), 10) then false
+      else if not(eq(substring(s, 4, 5), "-")) then false
+      else if not(eq(substring(s, 7, 8), "-")) then false
+      else if not(all_digits(substring(s, 0, 4), 0)) then false
+      else if not(all_digits(substring(s, 5, 7), 0)) then false
+      else all_digits(substring(s, 8, 10), 0)
 
     -- `tag <id> <name>` — attach a named-list tag to a work item.
     -- Validation order mirrors the legacy run_tag: non-empty name,
@@ -551,11 +665,10 @@ namespace anthill.todo
     operation cmd_tag(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "tag: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "tag: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match get_arg(args, "name")
             case none() ->
               let _ = eprintln(console(), "tag: missing name")
@@ -588,11 +701,10 @@ namespace anthill.todo
     operation cmd_untag(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "untag: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "untag: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match get_arg(args, "name")
             case none() ->
               let _ = eprintln(console(), "untag: missing name")
@@ -708,7 +820,7 @@ namespace anthill.todo
     -- a recognizable Entity/Ref.
     operation status_name_w(w: WorkItem) -> String =
       match w
-        case WorkItem(_, _, _, _, _, _, _, st) ->
+        case WorkItem(_, _, _, _, _, _, _, _, st) ->
           match term_functor_name(st)
             case some(name) -> name
             case none() -> "?"
@@ -757,7 +869,7 @@ namespace anthill.todo
     -- bare-chain reflect-launder is gone.
     operation deps_of_w(w: WorkItem) -> List[String] =
       match w
-        case WorkItem(_, _, _, _, deps, _, _, _) -> normalize_deps(deps)
+        case WorkItem(_, _, _, _, _, deps, _, _, _) -> normalize_deps(deps)
 
     operation normalize_deps(d: Option[List[String]]) -> List[String] =
       match d
@@ -768,11 +880,10 @@ namespace anthill.todo
     operation cmd_show(args: List[Binding], s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "error: missing work item id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "error: missing work item id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -871,7 +982,7 @@ namespace anthill.todo
       effects ConsoleOutput
     =
       match w
-        case WorkItem(_, description, _, _, _, _, _, _) ->
+        case WorkItem(_, _, description, _, _, _, _, _, _) ->
           -- WI-408: the slot is a proper Option — peel it, then read the
           -- payload Term as a String.
           match description
@@ -885,7 +996,7 @@ namespace anthill.todo
       effects ConsoleOutput
     =
       match w
-        case WorkItem(_, _, _, _, _, _, _, st) ->
+        case WorkItem(_, _, _, _, _, _, _, _, st) ->
           match term_functor_name(st)
             case some(name) -> println(console(), concat("Status:      ", name))
             case none() -> ()
@@ -907,7 +1018,7 @@ namespace anthill.todo
     -- pass (annotate_rows / fill_unblocks).
     operation row_of_w(w: WorkItem) -> Row =
       match w
-        case WorkItem(id, desc, _, _, _, _, _, _) ->
+        case WorkItem(id, created, desc, _, _, _, _, _, _) ->
           -- WI-408: peel the Option, then read the payload Term.
           let desc_str = match desc
             case none() -> ""
@@ -917,6 +1028,7 @@ namespace anthill.todo
                 case none() -> ""
           Row(
             id: id,
+            created: created,
             status: status_name_w(w),
             description: desc_str,
             depends: deps_of_w(w),
@@ -950,7 +1062,7 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(_, status, _, _, _, _) ->
+            case Row(_, _, status, _, _, _, _) ->
               if keep(status, status_filter, show_all) then
                 cons(r, filter_rows(rest, status_filter, show_all))
               else filter_rows(rest, status_filter, show_all)
@@ -982,7 +1094,7 @@ namespace anthill.todo
         case nil() -> acc
         case cons(r, rest) ->
           match r
-            case Row(rid, _, _, _, _, _) ->
+            case Row(rid, _, _, _, _, _, _) ->
               -- First-wins: legacy linear scan via status_for returns
               -- the first matching row, so duplicate ids (data permits
               -- them) keep the original entry. Map.put would overwrite.
@@ -997,7 +1109,7 @@ namespace anthill.todo
         case none() -> none()
         case some(r) ->
           match r
-            case Row(_, status, _, _, _, _) -> some(status)
+            case Row(_, _, status, _, _, _, _) -> some(status)
 
     -- Positive claimability gate for the tag view's `<- next` marker.
     -- Mirrors the KB `claimable` rule (anthill-todo/rules.anthill), which is
@@ -1043,7 +1155,7 @@ namespace anthill.todo
         case nil() -> acc
         case cons(r, rest) ->
           match r
-            case Row(rid, _, _, deps, _, _) ->
+            case Row(rid, _, _, _, deps, _, _) ->
               build_dep_map_acc(rest, register_dependents(acc, deps, rid))
 
     -- For each `dep` in `deps`, append `rid` to dep's existing
@@ -1154,10 +1266,11 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(rid, status, desc, deps, _, _) ->
+            case Row(rid, created, status, desc, deps, _, _) ->
               cons(
                 Row(
                   id: rid,
+                  created: created,
                   status: status,
                   description: desc,
                   depends: deps,
@@ -1176,12 +1289,13 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(rid, status, desc, deps, _, fb) ->
+            case Row(rid, created, status, desc, deps, _, fb) ->
               match count_transitive(rid, dep_map, empty())
                 case pair(n, _) ->
                   cons(
                     Row(
                       id: rid,
+                      created: created,
                       status: status,
                       description: desc,
                       depends: deps,
@@ -1248,7 +1362,7 @@ namespace anthill.todo
     -- `duplicate_item_id` gate now refuses ahead of dispatch, so no walk here
     -- can be reached with an ambiguous id.
     operation chrono_topo(rows: List[Row]) -> List[Row] =
-      let sorted = sort_by_id(rows)
+      let sorted = sort_chrono(rows)
       let section_map = build_row_map(sorted)
       match chrono_topo_walk(sorted, section_map, empty(), nil())
         case pair(_, acc) -> reverse_rows(acc)
@@ -1275,7 +1389,7 @@ namespace anthill.todo
       -> Pair[Map[String, Bool], List[Row]]
     =
       match r
-        case Row(rid, _, _, deps, _, _) ->
+        case Row(rid, _, _, _, deps, _, _) ->
           if contains(emitted, rid) then pair(emitted, acc)
           else
             let emitted1 = put(emitted, rid, true)
@@ -1343,7 +1457,7 @@ namespace anthill.todo
         case nil() -> acc
         case cons(r, rest) ->
           match r
-            case Row(_, st, _, _, _, _) ->
+            case Row(_, _, st, _, _, _, _) ->
               if list_contains_string(acc, st) then distinct_statuses(rest, acc)
               else distinct_statuses(rest, cons(st, acc))
 
@@ -1367,17 +1481,265 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(_, st, _, _, _, _) ->
+            case Row(_, _, st, _, _, _, _) ->
               if eq(st, status) then cons(r, rows_with_status(rest, status))
               else rows_with_status(rest, status)
+
+    -- ── The reference ladder (WI-1121, design §6.5) ───────────────
+    --
+    -- A minted id is 37 characters and nobody will type it. Every part of it is
+    -- separately addressable, and a reference is resolved by trying each reading
+    -- and requiring exactly ONE match:
+    --
+    --   WI-K7M2Q                                digest, or a prefix of one
+    --   WI-20260817-K7M2Q                       day-digest, the stable handle
+    --   WI-item-per-file-store                  slug, or a prefix of one
+    --   WI-20260817-K7M2Q-item-per-file-store   the whole thing, as stored
+    --
+    -- AMBIGUITY IS REPORTED, NEVER RESOLVED BY PRECEDENCE — the way git reports
+    -- an ambiguous object name. A slug is not unique (two items may both be
+    -- `fix-flaky-test`; §6.5 measures 4% of this tracker's own slugs shared at
+    -- 30 characters) and neither is a short digest prefix forever, so one
+    -- mechanism handles both and there is no rule about which reading wins.
+    --
+    -- WITH ONE EXCEPTION, AND IT IS NOT A PRECEDENCE RULE: an id that matches
+    -- EXACTLY wins outright. Ids are grandfathered and never renumbered (§6.5),
+    -- and legacy ids are dense, so `WI-112` is a whole id AND a prefix of
+    -- `WI-1120`. Without this the ladder would refuse a reference that names one
+    -- item unambiguously, and it would do so for a hundred existing items —
+    -- breaking every id this tracker has ever published to buy nothing.
+    operation resolve_ref(given: String) -> Option[T = String]
+      effects ConsoleError
+    =
+      let ids = all_ids()
+      match first_exact(ids, given)
+        case some(id) -> some(id)
+        case none() ->
+          match ids_matching(ids, given)
+            case nil() ->
+              let _ = eprintln(console(),
+                concat("error: no work item matches '", concat(given, "'")))
+              none()
+            case cons(first, rest) ->
+              match rest
+                case nil() -> some(first)
+                case cons(_, _) ->
+                  -- The candidate list is itself informative (§6.5): a shared
+                  -- slug groups a family, and seeing the family is usually the
+                  -- answer the reader wanted.
+                  let _ = eprintln(console(),
+                    concat("error: '", concat(given,
+                      concat("' is ambiguous — it matches ",
+                        concat(join_strings(cons(first, rest), ", "),
+                               ". Give more of one of them.")))))
+                  none()
+
+    -- Read an argument that NAMES AN EXISTING ITEM and put it through the ladder.
+    -- Every command that takes an id goes through here, so a fragment works
+    -- wherever a whole id does and the ladder is spelled once.
+    --
+    -- `missing` is the message a caller used to print itself; it varies (`show`
+    -- says "error: missing work item id", the rest say "<cmd>: missing id") and
+    -- is passed rather than derived, because the wording is the command's.
+    operation resolve_id_arg(args: List[Binding], name: String,
+                             missing: String) -> IdRef
+      effects ConsoleError
+    =
+      match get_arg(args, name)
+        case none() ->
+          let _ = eprintln(console(), missing)
+          ref_missing()
+        case some(given) ->
+          match resolve_ref(given)
+            case none() -> ref_unresolved()
+            case some(id) -> ref_ok(id)
+
+    -- The same ladder over a `--depends` entry, which names an item the same way
+    -- but is STORED rather than looked up. `none()` when any entry is ambiguous
+    -- — reported by `resolve_ref`, and the caller writes nothing.
+    --
+    -- A FRAGMENT THAT MATCHES NOTHING IS KEPT VERBATIM, and that is not a
+    -- fallback for a failed resolution — it is the existing contract: `add
+    -- --depends` has never required its target to exist, so a forward reference
+    -- to an item not yet filed is legal and must stay legal. What changes is
+    -- that a fragment naming exactly one item is EXPANDED to the full id before
+    -- it is written, because `depends_on` stores whole ids (§6.5) and storing a
+    -- fragment would create a dangling edge that reads like a real one.
+    --
+    -- `ids` is threaded rather than re-read per entry: it is the whole tracker,
+    -- and `add --depends a --depends b` would otherwise walk four figures of
+    -- items once per flag.
+    -- THE TRACKER IS READ ONLY IF THERE IS SOMETHING TO RESOLVE. `ids_of(all(s))`
+    -- materialises every work item, and an `add` with no `--depends` — which is
+    -- most of them — has nothing to spend that on.
+    operation expand_dep_refs(deps: List[String])
+      -> Option[T = List[T = String]]
+      effects ConsoleError
+    =
+      match deps
+        case nil() -> some(nil())
+        case cons(_, _) -> expand_dep_list(all_ids(), deps)
+
+    operation expand_dep_list(ids: List[String], deps: List[String])
+      -> Option[T = List[T = String]]
+      effects ConsoleError
+    =
+      match deps
+        case nil() -> some(nil())
+        case cons(d, rest) ->
+          match expand_one_dep(ids, d)
+            case none() -> none()
+            case some(expanded) ->
+              match expand_dep_list(ids, rest)
+                case none() -> none()
+                case some(tail) -> some(cons(expanded, tail))
+
+    operation expand_one_dep(ids: List[String], d: String) -> Option[T = String]
+      effects ConsoleError
+    =
+      match first_exact(ids, d)
+        case some(id) -> some(id)
+        case none() ->
+          match ids_matching(ids, d)
+            case nil() -> some(d)
+            case cons(first, tail) ->
+              match tail
+                case nil() -> some(first)
+                case cons(_, _) ->
+                  let _ = eprintln(console(),
+                    concat("error: --depends '", concat(d,
+                      concat("' is ambiguous — it matches ",
+                        concat(join_strings(cons(first, tail), ", "),
+                               ". Give more of one of them.")))))
+                  none()
+
+    -- Every work item's id, READ OFF THE STORED TERMS rather than materialized
+    -- entities. `WorkItemStore.all` builds a typed `WorkItem` per row — which the
+    -- ladder has no use for, since it compares ids — and the ladder runs ahead of
+    -- every command that names an item, on a tracker four figures of items deep.
+    operation all_ids() -> List[String] =
+      ids_of_terms(facts_of(kb(), WorkItem))
+
+    operation ids_of_terms(ts: List[T = Term]) -> List[String] =
+      match ts
+        case nil() -> nil()
+        case cons(t, rest) ->
+          match term_field(t, "id")
+            case none() -> ids_of_terms(rest)
+            case some(id_term) ->
+              match term_as_string(id_term)
+                case none() -> ids_of_terms(rest)
+                case some(id) -> cons(id, ids_of_terms(rest))
+
+    -- Ids are compared CASE-INSENSITIVELY throughout, because the digest is
+    -- minted uppercase and lands in a FILENAME: on a case-folding filesystem
+    -- two spellings that differ only in case are one file, so case must never
+    -- decide identity (§6.5). Crockford base32 also remaps `i`/`l` -> 1 and
+    -- `o` -> 0 on decode for the same reason — people retype these fragments
+    -- out of commit messages.
+    operation first_exact(ids: List[String], given: String) -> Option[T = String] =
+      match ids
+        case nil() -> none()
+        case cons(id, rest) ->
+          if eq(toLower(id), toLower(given)) then some(id)
+          else first_exact(rest, given)
+
+    operation ids_matching(ids: List[String], given: String) -> List[String] =
+      match ids
+        case nil() -> nil()
+        case cons(id, rest) ->
+          if ref_matches(id, given) then cons(id, ids_matching(rest, given))
+          else ids_matching(rest, given)
+
+    operation ref_matches(id: String, given: String) -> Bool =
+      let lowered = toLower(id)
+      let fragment = toLower(given)
+      -- Reading 1: a prefix of the id as stored. This is also what serves the
+      -- day-digest handle and a legacy `WI-11`.
+      if startsWith(lowered, fragment) then true
+      else
+        -- Readings 2 and 3 address a PART, so they drop the `WI-` marker the
+        -- writer keeps for prose (a bare `item-per-file-store` in a sentence is
+        -- a phrase, not a citation). A fragment written without the marker is
+        -- accepted too — stripping is conditional, so nothing is required.
+        let body = drop_marker(fragment)
+        match id_parts(lowered)
+          case none() -> false
+          case some(parts) ->
+            match parts
+              case IdParts(_, digest, slug_text) ->
+                if startsWith(digest, body) then true
+                else if isEmpty(body) then false
+                else startsWith(slug_text, body)
+
+    operation drop_marker(fragment: String) -> String =
+      if startsWith(fragment, "wi-") then substring(fragment, 3, length(fragment))
+      else fragment
+
+    -- The parts of a MINTED id. `none()` for a grandfathered `WI-NNN` or
+    -- anything else hand-written — those are reachable by reading 1 alone,
+    -- which is exactly the behaviour they had before this existed.
+    --
+    -- SPLIT ON `-` RATHER THAN CUT AT FIXED OFFSETS, so widening the digest
+    -- later (§6.5: "if five ever proved narrow you would mint six tomorrow")
+    -- does not silently mis-parse every id minted before the change. The shape
+    -- test is that the second segment is a day — eight digits — which is what
+    -- §12 relies on to tell the two id schemes apart without a version marker.
+    operation id_parts(id: String) -> Option[T = IdParts] =
+      match split(id, "-")
+        case nil() -> none()
+        case cons(marker, after_marker) ->
+          if eq(marker, "wi") then
+            match after_marker
+              case nil() -> none()
+              case cons(day, after_day) ->
+                if is_day_digits(day) then
+                  match after_day
+                    case nil() -> none()
+                    case cons(digest, slug_parts) ->
+                      some(IdParts(day: day, digest: digest,
+                                   slug: join_strings(slug_parts, "-")))
+                else none()
+          else none()
+
+    -- Exactly eight digits — the `YYYYMMDD` partition.
+    operation is_day_digits(s: String) -> Bool =
+      if eq(length(s), 8) then all_digits(s, 0) else false
+
+    operation all_digits(s: String, i: Int64) -> Bool =
+      if lte(length(s), i) then true
+      else if is_digit(substring(s, i, i + 1)) then all_digits(s, i + 1)
+      else false
+
+    -- ── Order is CHRONOLOGICAL, by `created` ──────────────────────
+    -- WI-1121: the sort key is the item's `created` stamp, and the id is only
+    -- the TIE-BREAK. This inverted when ids stopped being a counter: a dense
+    -- ascending `WI-NNN` made "number order" and "age order" the same relation,
+    -- and every reader here (`chrono_topo`'s advancing cursor, the listing's
+    -- grouping) wanted the second while the code compared the first. A
+    -- content-derived id carries the DAY and then a digest, so within one day
+    -- id order is digest order, which is no order at all.
+    --
+    -- ISO-8601 UTC sorts lexicographically, so `created` needs no parse. Ties
+    -- are real and common — a back-dated migration stamps every item of one
+    -- commit alike — so the id tie-break below is not decoration, it is what
+    -- keeps the order TOTAL and the sort's output stable.
+    operation row_before(a: Row, b: Row) -> Bool =
+      match a
+        case Row(aid, acreated, _, _, _, _, _) ->
+          match b
+            case Row(bid, bcreated, _, _, _, _, _) ->
+              if eq(acreated, bcreated) then id_before(aid, bid)
+              else lt(acreated, bcreated)
 
     -- ── Id order is NUMERIC, not lexicographic ────────────────────
     -- `lt` on a whole id compares code units, so "WI-1000" sits between
     -- "WI-094" and "WI-102": at id 1000 the four-digit items land in the
-    -- MIDDLE of the listing, and the cursor `chrono_topo` documents as
-    -- advancing chronologically stops doing so. The ids are allocated
-    -- monotonically (`max + 1`, main.rs), so their number IS their age —
-    -- which is what makes numeric order the chronological one.
+    -- MIDDLE of the listing. This is now the TIE-BREAK under `row_before`
+    -- rather than the sort key, and it stays numeric for the same reason it
+    -- was: the legacy `WI-NNN` ids it was written for are GRANDFATHERED and
+    -- never renumbered (§6.5), so this comparison outlives the allocator that
+    -- made it chronological.
     --
     -- Compared on the trailing DIGIT RUN, leading zeros dropped, by
     -- (length, then code units) — which IS numeric order once no leading
@@ -1417,25 +1779,21 @@ namespace anthill.todo
       else if eq(substring(d, 0, 1), "0") then drop_leading_zeros(substring(d, 1, length(d)))
       else d
 
-    -- Stable merge sort by id. Ties retain input order, matching the legacy
-    -- stable `slice::sort_by` — see `split_half` for why that parity is the
-    -- only remaining reason, now that an id cannot repeat in a store any
-    -- command is allowed to read.
-    operation merge_by_id(xs: List[Row], ys: List[Row]) -> List[Row] =
+    -- Stable merge sort, oldest first, by `row_before` above. Ties retain input
+    -- order, matching the legacy stable `slice::sort_by` — see `split_half` for
+    -- why that parity is the only remaining reason, now that an id cannot repeat
+    -- in a store any command is allowed to read.
+    operation merge_chrono(xs: List[Row], ys: List[Row]) -> List[Row] =
       match xs
         case nil() -> ys
         case cons(x, xrest) ->
           match ys
             case nil() -> xs
             case cons(y, yrest) ->
-              match x
-                case Row(xid, _, _, _, _, _) ->
-                  match y
-                    case Row(yid, _, _, _, _, _) ->
-                      if id_before(yid, xid) then cons(y, merge_by_id(xs, yrest))
-                      else cons(x, merge_by_id(xrest, ys))
+              if row_before(y, x) then cons(y, merge_chrono(xs, yrest))
+              else cons(x, merge_chrono(xrest, ys))
 
-    operation sort_by_id(rs: List[Row]) -> List[Row] =
+    operation sort_chrono(rs: List[Row]) -> List[Row] =
       match rs
         case nil() -> nil()
         case cons(_, rest) ->
@@ -1444,7 +1802,7 @@ namespace anthill.todo
             case cons(_, _) ->
               match split_half(rs)
                 case pair(left, right) ->
-                  merge_by_id(sort_by_id(left), sort_by_id(right))
+                  merge_chrono(sort_chrono(left), sort_chrono(right))
 
     -- ── Partition into ready / blocked ────────────────────────────
 
@@ -1456,7 +1814,7 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(_, _, _, deps, _, _) ->
+            case Row(_, _, _, _, deps, _, _) ->
               if any_unmet(deps, satisfied_set) then partition_ready(rest, satisfied_set)
               else cons(r, partition_ready(rest, satisfied_set))
 
@@ -1468,7 +1826,7 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(_, _, _, deps, _, _) ->
+            case Row(_, _, _, _, deps, _, _) ->
               if any_unmet(deps, satisfied_set) then cons(r, partition_blocked(rest, satisfied_set))
               else partition_blocked(rest, satisfied_set)
 
@@ -1485,7 +1843,7 @@ namespace anthill.todo
             case none() -> filter_unblocked_ids(rest, row_map, satisfied_set)
             case some(r) ->
               match r
-                case Row(_, _, _, deps, _, _) ->
+                case Row(_, _, _, _, deps, _, _) ->
                   if any_unmet(deps, satisfied_set)
                     then filter_unblocked_ids(rest, row_map, satisfied_set)
                     else cons(id, filter_unblocked_ids(rest, row_map, satisfied_set))
@@ -1507,7 +1865,7 @@ namespace anthill.todo
 
     operation render_ready(r: Row) -> String =
       match r
-        case Row(id, status, desc, deps, n, fb) ->
+        case Row(id, _, status, desc, deps, n, fb) ->
           concat("  ",
             concat(id, concat(" [", concat(status, concat("] ",
               concat(desc,
@@ -1516,7 +1874,7 @@ namespace anthill.todo
 
     operation render_blocked(r: Row) -> String =
       match r
-        case Row(id, status, desc, deps, _, fb) ->
+        case Row(id, _, status, desc, deps, _, fb) ->
           concat("  ",
             concat(id, concat(" [", concat(status, concat("] ",
               concat(desc, concat(deps_suffix(deps), feedback_suffix(fb))))))))
@@ -1734,7 +2092,7 @@ namespace anthill.todo
           case none() -> false
           case some(r) ->
             match r
-              case Row(_, _, _, deps, _, _) ->
+              case Row(_, _, _, _, deps, _, _) ->
                 row_deps_reach(row_map, deps, target, cons(from, seen))
 
     operation row_deps_reach(row_map: Map[String, Row], deps: List[String],
@@ -1764,7 +2122,7 @@ namespace anthill.todo
                                 next_marked, shown + 1)
             case some(r) ->
               match r
-                case Row(_, status, desc, deps, _, _) ->
+                case Row(_, _, status, desc, deps, _, _) ->
                   let pass = match status_filter
                     case none() -> true
                     case some(f) -> matches_filter(status, f)
@@ -1866,11 +2224,12 @@ namespace anthill.todo
             case none() -> shorten_row_map(row_map, rest)
             case some(r) ->
               match r
-                case Row(rid, status, desc, deps, n, fb) ->
+                case Row(rid, created, status, desc, deps, n, fb) ->
                   shorten_row_map(
                     put(row_map, id,
                       Row(
                         id: rid,
+                        created: created,
                         status: status,
                         description: short_desc(desc),
                         depends: deps,
@@ -1883,10 +2242,11 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(rid, status, desc, deps, n, fb) ->
+            case Row(rid, created, status, desc, deps, n, fb) ->
               cons(
                 Row(
                   id: rid,
+                  created: created,
                   status: status,
                   description: short_desc(desc),
                   depends: deps,
@@ -1923,7 +2283,7 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(_, _, _, deps, _, _) ->
+            case Row(_, _, _, _, deps, _, _) ->
               match deps
                 case nil() -> cons(r, find_roots(rest))
                 case cons(_, _) -> find_roots(rest)
@@ -1988,7 +2348,7 @@ namespace anthill.todo
         case nil() -> ()
         case cons(r, rest) ->
           match r
-            case Row(rid, _, _, _, _, _) ->
+            case Row(rid, _, _, _, _, _, _) ->
               let _ = print_tree(rid, true, true, "", row_map, dep_map)
               print_roots(rest, row_map, dep_map)
 
@@ -2009,9 +2369,10 @@ namespace anthill.todo
     -- ── cmd_add ──────────────────────────────────────────────────
     --
     -- `add <description> [--depends ID]* [--acceptance tool]*`
-    -- creates a fresh WorkItem with status Open. The next id is
-    -- computed by walking existing WorkItem facts and bumping the
-    -- max WI-NNN suffix. Acceptance defaults to every tool named by the
+    -- creates a fresh WorkItem with status Open. Its id is MINTED FROM THE ITEM
+    -- (WI-1121) — the filing agent, the moment, and the description — rather
+    -- than drawn from a counter, so two checkouts that have not synced cannot
+    -- hand out the same one. Acceptance defaults to every tool named by the
     -- single Project fact when no --acceptance flag is supplied.
 
     -- Collect every Binding whose name matches `name`, in caller order.
@@ -2049,21 +2410,39 @@ namespace anthill.todo
         case cons(h, rest) ->
           cons(tool_to_acceptance(h), tools_to_acceptance(rest))
 
-    operation cmd_add(args: List[Binding],
+    operation cmd_add(args: List[Binding], agent: String,
                       s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_arg(args, "description")
         case none() ->
           let _ = eprintln(console(), "add: missing description")
           2
         case some(description) ->
-          do_add(s, description,
-                 collect_all_args(args, "depends"),
-                 collect_all_args(args, "acceptance"),
-                 collect_all_args(args, "tag"))
+          match expand_dep_refs(collect_all_args(args, "depends"))
+            case none() -> 1
+            case some(deps) ->
+              -- THE CLOCK IS READ ONCE, HERE, and the same value both stamps
+              -- `created` and feeds the mint (WI-1121). Reading it twice would be
+              -- a bug with a long fuse: the id would name a second the item does
+              -- not claim, and since an id is never recomputed nothing would ever
+              -- notice.
+              --
+              -- `--created` OVERRIDES IT, which is what makes the mint a pure
+              -- function of stated inputs rather than of the moment. Two uses:
+              -- filing an item that was actually created earlier, and DRIVING the
+              -- idempotence property in a test — without a settable stamp, "the
+              -- same add twice re-derives one id" is only observable when both
+              -- runs land in one second.
+              let created = match get_arg(args, "created")
+                case some(stamp) -> stamp
+                case none() -> now()
+              do_add(s, agent, created, description, deps,
+                     collect_all_args(args, "acceptance"),
+                     collect_all_args(args, "tag"))
 
-    operation do_add(s: Cell[State], description: String,
+    operation do_add(s: Cell[State], agent: String, created: String,
+                     description: String,
                      depends_on: List[String],
                      raw_acceptance: List[String],
                      tags: List[String]) -> Int64
@@ -2072,19 +2451,33 @@ namespace anthill.todo
       match resolve_acceptance(raw_acceptance)
         case none() -> 1
         case some(acceptance) ->
-          let id = WorkItemStore.next_id(s)
-          let _ = WorkItemStore.commit(s, WorkItem(
-            id: id,
-            description: description,
-            acceptance: acceptance,
-            depends_on: depends_on,
-            status: Open()))
-          let _ = apply_tags(s, id, tags)
-          let _ = println(console(),
-                          concat("added: ",
-                            concat(id, concat(" — ",
-                              concat(description, tag_note(tags))))))
-          0
+          let id = WorkItemStore.mint_id(s, agent, created, description)
+          -- IDEMPOTENT RETRY, and this is the half that makes deriving an id
+          -- better than drawing a random one (§6.5). `mint_id` hands back the id
+          -- of an item that already holds this exact content, so an `add`
+          -- re-run after a partial failure must RECOGNISE its own work rather
+          -- than commit a second row under one key. Exit 0: the tracker is in
+          -- the state the user asked for, which is what success means.
+          match WorkItemStore.lookup(s, id)
+            case some(_) ->
+              let _ = println(console(),
+                              concat("already filed: ",
+                                concat(id, concat(" — ", description))))
+              0
+            case none() ->
+              let _ = WorkItemStore.commit(s, WorkItem(
+                id: id,
+                created: created,
+                description: description,
+                acceptance: acceptance,
+                depends_on: depends_on,
+                status: Open()))
+              let _ = apply_tags(s, id, tags)
+              let _ = println(console(),
+                              concat("added: ",
+                                concat(id, concat(" — ",
+                                  concat(description, tag_note(tags))))))
+              0
 
     -- ` [tags: a, b]` suffix on add/insert output; empty for no tags.
     operation tag_note(tags: List[String]) -> String =
@@ -2111,19 +2504,19 @@ namespace anthill.todo
     -- prerequisite"). Mirrors the native run_insert: the --before
     -- target must exist, and a --depends that is (or transitively
     -- reaches) the target is a cycle and rejected loudly.
-    operation cmd_insert(args: List[Binding], s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    operation cmd_insert(args: List[Binding], agent: String,
+                         s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match get_arg(args, "description")
         case none() ->
           let _ = eprintln(console(), "insert: missing description")
           2
         case some(description) ->
-          match get_arg(args, "before")
-            case none() ->
-              let _ = eprintln(console(), "insert: missing --before")
-              2
-            case some(before) ->
+          match resolve_id_arg(args, "before", "insert: missing --before")
+            case ref_missing() -> 2
+            case ref_unresolved() -> 1
+            case ref_ok(before) ->
               match WorkItemStore.lookup(s, before)
                 case none() ->
                   let _ = eprintln(console(),
@@ -2131,17 +2524,19 @@ namespace anthill.todo
                       concat(before, "' not found")))
                   1
                 case some(before_wi) ->
-                  do_insert(s, description, before, before_wi,
-                            collect_all_args(args, "tag"),
-                            collect_all_args(args, "depends"),
-                            collect_all_args(args, "acceptance"))
+                  match expand_dep_refs(collect_all_args(args, "depends"))
+                    case none() -> 1
+                    case some(deps) ->
+                      do_insert(s, agent, description, before, before_wi,
+                                collect_all_args(args, "tag"), deps,
+                                collect_all_args(args, "acceptance"))
 
-    operation do_insert(s: Cell[State], description: String,
+    operation do_insert(s: Cell[State], agent: String, description: String,
                         before: String, before_wi: WorkItem,
                         tags: List[String],
                         depends_on: List[String],
                         raw_acceptance: List[String]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match first_cycle_dep(s, depends_on, before)
         case some(d) ->
@@ -2156,10 +2551,18 @@ namespace anthill.todo
           match resolve_acceptance(raw_acceptance)
             case none() -> 1
             case some(acceptance) ->
-              -- Native ordering: allocate the id and rewrite the --before
-              -- target's depends_on FIRST, so a failing rewrite can't leave
-              -- an orphaned, unlinked item behind.
-              let id = WorkItemStore.next_id(s)
+              -- Native ordering: mint the id and rewrite the --before target's
+              -- depends_on FIRST, so a failing rewrite can't leave an orphaned,
+              -- unlinked item behind.
+              --
+              -- NO `--created` HERE, unlike `add`, and it is not an oversight:
+              -- that flag exists for filing an item whose creation time is known
+              -- and past, and `insert` is a positional gesture — it puts a
+              -- prerequisite in front of something you are working on NOW. The
+              -- clock is still read once and used for both the stamp and the
+              -- mint, which is the property that matters (WI-1121).
+              let created = now()
+              let id = WorkItemStore.mint_id(s, agent, created, description)
               let current = deps_of_w(before_wi)
               let new_deps =
                 if list_contains_string(current, id) then current
@@ -2168,6 +2571,7 @@ namespace anthill.todo
                         with_deps(before_wi, new_deps))
               let _ = WorkItemStore.commit(s, WorkItem(
                 id: id,
+                created: created,
                 description: description,
                 acceptance: acceptance,
                 depends_on: depends_on,
@@ -2297,13 +2701,19 @@ namespace anthill.todo
     -- where a let-bound constructor's TypeResult.env drops the
     -- enclosing-sort context and downstream spec-op dispatch fails to
     -- find the requires-chain slot. Pattern-match on positional fields
-    -- in declared order (id, description, context, acceptance,
+    -- in declared order (id, created, description, context, acceptance,
     -- depends_on, generates, requires_capability, status).
+    --
+    -- `created` rides through all four UNCHANGED, and that is the field's whole
+    -- contract (WI-1121): an item's creation time is written once and never
+    -- rewritten, which is what lets the id minted from it stay stable while the
+    -- description it was also minted from is edited for months.
     operation with_status(wi: WorkItem, st: WorkStatus) -> WorkItem =
       match wi
-        case WorkItem(id, desc, ctx, acc, deps, gen, reqs, _) ->
+        case WorkItem(id, created, desc, ctx, acc, deps, gen, reqs, _) ->
           WorkItem(
             id: id,
+            created: created,
             description: desc,
             context: ctx,
             acceptance: acc,
@@ -2314,9 +2724,10 @@ namespace anthill.todo
 
     operation with_description(wi: WorkItem, new_desc: String) -> WorkItem =
       match wi
-        case WorkItem(id, _, ctx, acc, deps, gen, reqs, st) ->
+        case WorkItem(id, created, _, ctx, acc, deps, gen, reqs, st) ->
           WorkItem(
             id: id,
+            created: created,
             description: new_desc,
             context: ctx,
             acceptance: acc,
@@ -2330,9 +2741,10 @@ namespace anthill.todo
       -> WorkItem
     =
       match wi
-        case WorkItem(id, desc, ctx, _, deps, gen, reqs, st) ->
+        case WorkItem(id, created, desc, ctx, _, deps, gen, reqs, st) ->
           WorkItem(
             id: id,
+            created: created,
             description: desc,
             context: ctx,
             acceptance: new_acc,
@@ -2343,9 +2755,10 @@ namespace anthill.todo
 
     operation with_deps(wi: WorkItem, new_deps: List[String]) -> WorkItem =
       match wi
-        case WorkItem(id, desc, ctx, acc, _, gen, reqs, st) ->
+        case WorkItem(id, created, desc, ctx, acc, _, gen, reqs, st) ->
           WorkItem(
             id: id,
+            created: created,
             description: desc,
             context: ctx,
             acceptance: acc,
@@ -2365,11 +2778,10 @@ namespace anthill.todo
                          s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "claim: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "claim: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2399,11 +2811,10 @@ namespace anthill.todo
                            s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "unclaim: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "unclaim: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2460,11 +2871,10 @@ namespace anthill.todo
                              to: WorkStatus, verb: String) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), concat(label, ": missing id"))
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", concat(label, ": missing id"))
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2498,11 +2908,10 @@ namespace anthill.todo
                            s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "deliver: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "deliver: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2528,11 +2937,10 @@ namespace anthill.todo
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "verify: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "verify: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2568,11 +2976,10 @@ namespace anthill.todo
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "delete: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "delete: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2602,7 +3009,7 @@ namespace anthill.todo
         case nil() -> nil()
         case cons(w, rest) ->
           match w
-            case WorkItem(wid, _, _, _, _, _, _, _) ->
+            case WorkItem(wid, _, _, _, _, _, _, _, _) ->
               if is_off_queue(status_name_w(w)) then
                 blocked_dependents_of(rest, target)
               else if list_contains_string(deps_of_w(w), target) then
@@ -2660,11 +3067,10 @@ namespace anthill.todo
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "update: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "update: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match WorkItemStore.lookup(s, id)
             case none() ->
               let _ = eprintln(console(),
@@ -2875,17 +3281,14 @@ namespace anthill.todo
                                   s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "add-dependency: missing id")
-          2
-        case some(id) ->
-          match get_arg(args, "dep")
-            case none() ->
-              let _ = eprintln(console(),
-                "add-dependency: missing dep id")
-              2
-            case some(dep) ->
+      match resolve_id_arg(args, "id", "add-dependency: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
+          match resolve_id_arg(args, "dep", "add-dependency: missing dep id")
+            case ref_missing() -> 2
+            case ref_unresolved() -> 1
+            case ref_ok(dep) ->
               if eq(id, dep) then
                 let _ = eprintln(console(),
                   "error: work item cannot depend on itself")
@@ -2942,17 +3345,14 @@ namespace anthill.todo
                                      s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match get_arg(args, "id")
-        case none() ->
-          let _ = eprintln(console(), "remove-dependency: missing id")
-          2
-        case some(id) ->
-          match get_arg(args, "dep")
-            case none() ->
-              let _ = eprintln(console(),
-                "remove-dependency: missing dep id")
-              2
-            case some(dep) ->
+      match resolve_id_arg(args, "id", "remove-dependency: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
+          match resolve_id_arg(args, "dep", "remove-dependency: missing dep id")
+            case ref_missing() -> 2
+            case ref_unresolved() -> 1
+            case ref_ok(dep) ->
               match WorkItemStore.lookup(s, id)
                 case none() ->
                   let _ = eprintln(console(),
@@ -2999,13 +3399,11 @@ namespace anthill.todo
                             s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
-      let id_opt = get_arg(args, "id")
       let text_opt = get_arg(args, "text")
-      match id_opt
-        case none() ->
-          let _ = eprintln(console(), "feedback: missing id")
-          2
-        case some(id) ->
+      match resolve_id_arg(args, "id", "feedback: missing id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
           match text_opt
             case none() ->
               let _ = eprintln(console(), "feedback: missing text")
