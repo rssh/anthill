@@ -3003,9 +3003,10 @@ fn named_tuple_value(
 /// declared `(name, age, a, b)` while the row materialized is `(name, age, p)` — four
 /// columns promised, three delivered, one of them absent from the type. That is the
 /// type-disagrees-with-its-own-value lie this family refuses `Unit` to avoid, arriving
-/// through the one door that cannot be closed from either side. Pinned as a recorded limit
-/// by `wi1128_a_tuple_typed_column_is_indistinguishable_from_two_columns`; 052 OQ5 carries
-/// the redesign that would retire it, and this is its strongest single argument.
+/// through the one door that cannot be closed from either side. OWNED BY WI-20260818-YQB1Y
+/// (the 052 OQ5 split), and it is that ticket's strongest single argument; pinned meanwhile
+/// as a recorded limit by
+/// `wi1128_a_tuple_typed_column_is_indistinguishable_from_two_columns`.
 ///
 /// Three more readers pay nothing:
 ///  * `Relation.join_run`'s merged column set and `materialize_solution` (eval) — the
@@ -3019,7 +3020,7 @@ fn named_tuple_value(
 /// One caveat on the `project` row: a recovered name would fix its reducer, but the DOT
 /// surface never reaches its message — `r.(f)` 1-collapses at convert time to `r.f` (§6.8),
 /// so the recognizer declines and the fallthrough reports dot dispatch's "no such member".
-/// Only a WRITTEN `Project[T, Keep]` sees it.
+/// Only a WRITTEN `Project[T, Keep]` sees it. Owned by WI-20260818-7X7NK.
 fn collapse_schema(
     kb: &mut KnowledgeBase,
     columns: &[(Symbol, Value)],
@@ -6794,8 +6795,7 @@ fn projection_columns(
     // reaches it. On the DOT surface `r.(f)` 1-collapses at convert time to `r.f` (§6.8), so
     // a one-column receiver never builds a projection at all — this function's `Err` makes
     // the forward recognizer DECLINE and the call falls through to dot dispatch, which
-    // reports "no such member". Improving that would mean a Relation-keyed arm in dot
-    // dispatch and is deliberately not done here.
+    // reports "no such member". WI-20260818-7X7NK owns that.
     let fields = schema_fields_or_shape(kb, schema).map_err(|shape| {
         let ty = type_display_name_value(kb, schema);
         match shape {

@@ -601,8 +601,9 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    re-asks the question against the value's own column list; a merged schema TYPE has no such
    backstop.
 
-   **STILL OPEN — the redesign that would let `join`, `fix` and `project` accept a one-column
-   operand,** recorded here because the refusals above are its price and not an argument against it.
+   **STILL OPEN, and owned by WI-20260818-YQB1Y — the redesign that would let `join`,
+   `fix` and `project` accept a one-column operand,** recorded here because the refusals above are
+   its price and not an argument against it.
    `T` answers two questions at once: *what is a row's type* (where the collapse is the ergonomic
    win — `colouring.takeN(20) : List[Board]`) and *what are the columns* (where it is a loss). Splitting them — the schema stays the full named
    tuple, and the ROW type becomes a `Collapse[T]` constructor in the same family, reduced at the
@@ -612,7 +613,8 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    type-and-value convention), it moves `where`'s bare-binder spelling `eq(c, 30)` (a 1-collapsed
    row would then be a 1-field tuple, read as `c.age`), and it must thread through the
    `provides LogicalStream[T = …]` edge so consumers keep seeing the element type. Not costed
-   further here; it needs its own proposal revision, not a ticket.
+   further here; the ticket above owns costing it and deciding it, and its acceptance is a
+   RECORDED DECISION in this section — done or declined — not silence.
 6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
    de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
 7. **Naming an operation and its relational face — OPEN; original convention WITHDRAWN, explicit

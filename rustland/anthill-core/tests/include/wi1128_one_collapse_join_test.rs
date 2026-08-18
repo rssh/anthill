@@ -326,9 +326,9 @@ end
 /// arriving through the one door that cannot be closed.
 ///
 /// `Concat` is the only member of the family with no runtime backstop; the sibling arm
-/// below drives the contrast. If a later change ever makes this a load error, THIS TEST
-/// FAILS and the limit should be retired rather than patched — the wi728 discipline for
-/// exactly this shape of recorded limit.
+/// below drives the contrast. OWNED BY WI-20260818-YQB1Y: if that lands, this becomes
+/// a correct schema or a loud error, THIS TEST FAILS, and the limit is RETIRED rather than
+/// patched — the wi728 discipline for exactly this shape of recorded limit.
 ///
 /// BACK-OUT: passes either way, by design — this measures a pre-existing boundary the
 /// change did not move. It is here because this change is what documented the boundary.

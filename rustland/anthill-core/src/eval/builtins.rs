@@ -2288,9 +2288,12 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// this is a second and independent one. That is exactly why WI-1128 censused the readers
 /// rather than fixing `Concat` alone.
 ///
-/// DOCUMENTED, NOT CHANGED, because there is no drivable control: keying the sentinel per
-/// binder is a change no test could measure, since no program in which the two holes differ
-/// can load (the WI-1078 shape, and the discipline WI-731 applied to `binder_field_access`
+/// DOCUMENTED, NOT CHANGED, because there is no drivable control TODAY: keying the sentinel
+/// per binder is a change no test could measure, since no program in which the two holes
+/// differ can load. WI-20260818-YQB1Y REMOVES THAT GATE — it lets a one-column operand through
+/// `Concat` — so the sentinel must be keyed per binder in that same change, where it finally
+/// has a control; that ticket carries this as a named blocker. Until then, no program in
+/// which the two holes differ can load (the WI-1078 shape, and the discipline WI-731 applied to `binder_field_access`
 /// for the same reason). THE ENFORCEMENT SITES, measured on the current tree — three
 /// spellings, each refused at LOAD by an INDEPENDENT gate:
 ///  * `eq(c, q)` over two rows with DIFFERENT schemas — refused by `eq`'s own operand

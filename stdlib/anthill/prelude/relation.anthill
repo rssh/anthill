@@ -283,7 +283,8 @@ sort anthill.prelude.Relation
   -- `negate` survive the same ambiguity because each asks the VALUE a question it can
   -- answer ("is there a column of this name?") and refuses loudly at runtime; MERGING
   -- IS NAME-FREE, so `join` has no such question to ask and nothing to detect. See
-  -- kernel-language.md 6.8; 052 OQ5 carries the redesign that would retire it.
+  -- kernel-language.md 6.8. OWNED BY WI-20260818-YQB1Y (the 052 OQ5 split), which
+  -- is what would retire it.
   --
   -- Two-stage lowering, exactly as `where`: `join(?r1, ?r2, ?cond) <=> conjoin_of(?r1,
   -- ?r2, ?cond) [simp]` fires at COMPILE time; `conjoin_of` is a MACRO that reads the
