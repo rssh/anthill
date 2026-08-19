@@ -1269,6 +1269,64 @@ impl Interpreter {
     /// op, whose value-directed resolution reads the real carrier (WI-350/WI-822).
     /// Before this they were `functor` with NO sub-slots, which the layout reads as
     /// a dictionary claiming `functor`'s whole `requires` chain and bundling none.
+    ///
+    /// # WI-868 — THE TWO REPRESENTATIONS OF "NO EVIDENCE" STAY SEPARATE
+    ///
+    /// WI-857 left two, and WI-868 asked whether they should be one:
+    ///
+    ///  * a resolver ABSENCE — [`crate::kb::typing::ResolvedRequiresNode::Unavailable`],
+    ///    emitted as an empty bundle over an `anthill.reflect.NoProvider` marker, which
+    ///    `resolve_op_target_checked` REFUSES to dispatch through;
+    ///  * this STAND-IN — marker sub-slots, but its own functor is a real sort, which
+    ///    `call_with_requirements`' own doc calls a claim that can mis-dispatch.
+    ///
+    /// The ticket's hypothesis: they cannot be merged only because the refusal sits
+    /// BEFORE the WI-350/WI-822 value-directed rescue, and moving it after the rescue
+    /// fails would let one representation serve both. MEASURED, that is FALSE, and the
+    /// obstacle is not the ordering. Three experiments, each run over the whole
+    /// `anthill-core` suite (4534 tests):
+    ///
+    /// 1. MERGE ALONE (this function mints the marker as its own functor, refusal
+    ///    untouched): 2 failures. `wi818 variant_b_carrier_impl_loads_and_evaluates` —
+    ///    a WORKING program — is refused, and `requires_path_reports_missing_body_-
+    ///    like_direct_call` reports a missing BODY as an unpinned REQUIREMENT. One
+    ///    representation, two outcomes collapsed into one message.
+    ///
+    /// 2. MERGE + MOVE THE REFUSAL after the rescue: the two do NOT recover. They
+    ///    become `Internal("dispatching dict for … has arity 1 but its requires chain
+    ///    wants 0 slot(s) — … provider `anthill.reflect.NoProvider`")`. THAT is the real
+    ///    obstacle: a dictionary's layout is computed FROM ITS FUNCTOR, so a marker
+    ///    functor erases which provider's chain the dictionary stands in for — the
+    ///    merged form is layout-incoherent, before any question of ordering. Nine more
+    ///    rows fail with it (`wi857`, `wi865` ×7, `wi869`), each a refusal that used to
+    ///    name its cause and now reports an arity mismatch or, in
+    ///    `a_spec_half_with_no_provider_…`, "operation has no body" — a repair pointing
+    ///    at the wrong file.
+    ///
+    /// 3. THE BUILTIN CASE, which the ticket asked to be measured rather than assumed.
+    ///    With the refusal off the dispatch path, a body reading a marker slot to call
+    ///    a BUILTIN-backed spec op gets the host's structural verdict, silently:
+    ///    `PartialEq.eq` over a `PartialEq[Wrap[E = Int64]]` that NOTHING provides
+    ///    answered `Ok(Int(1))` for equal operands and `Ok(Int(0))` for distinct ones.
+    ///    Both polarities, because `eq(x, x)` alone can be answered by reflexivity
+    ///    before dispatch. Driven and pinned by
+    ///    `wi868_a_builtin_read_through_a_marker_slot_is_refused`, which is the control
+    ///    for those two numbers and the tripwire for a future merge.
+    ///
+    /// SO THE DECISION IS: two representations, because they answer two questions. A
+    /// marker says "nothing pins this slot, and here is why" — a verdict, refused at
+    /// every dispatch. A stand-in says "this frame was entered from a host that named
+    /// no dictionary; the receiver VALUE may still say which impl" — an invitation to
+    /// the rescue, which is the only reason `interp.call` works at all on a sort with a
+    /// `requires`. Merging them would have to give the marker a second meaning that
+    /// depends on what the callee turns out to be, and experiment 3 is what that costs
+    /// when the callee is builtin-backed.
+    ///
+    /// WHAT WOULD RE-OPEN IT: a stand-in that keeps the provider's identity while
+    /// carrying an absence — i.e. the layout question and the evidence question
+    /// answered by different fields rather than by one functor. That is a change to the
+    /// dictionary VALUE, not a re-ordering of the refusal, and experiment 2 is the
+    /// measurement that says so.
     fn stand_in_requirement(
         &mut self,
         spec: Symbol,

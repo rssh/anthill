@@ -48082,6 +48082,23 @@ pub(crate) fn is_effects_runtime(kb: &KnowledgeBase, spec: Symbol) -> bool {
 /// user-facing prose; a mechanism failure none of them can act on would have to be
 /// given an arm at every one. The same trade is settled the same way, for the same
 /// kind of inconsistent-KB condition, at [`crate::kb::term_view`]'s reflect-key reads.
+///
+/// AND IT IS THE OPPOSITE ANSWER TO THE ONE ITS TWO NEIGHBOURS GIVE — not an
+/// inconsistency but the rule, which is WHOSE MISTAKE THIS CAN BE:
+///
+///  * `expand_dispatching_dict` checks the same property of a runtime dictionary VALUE
+///    and returns `EvalError::Internal`, because a HOST can hand it a wrong-shaped one.
+///    That is data, and data gets reported.
+///  * `anthill-todo`'s host loop reports its own `alloc_dictionary` refusal and exits
+///    rather than panicking, for the same reason one step further out: the mistake
+///    belongs to the binary being told about it.
+///  * This check's two sides are BOTH computed here, from the same memoized chains, on
+///    inputs no caller supplies. Nothing outside this file can part them. A panic says
+///    that; an error variant would ask every caller to handle a case none of them can
+///    cause or repair.
+///
+/// If a future edit gives either half an input a caller controls, the answer moves with
+/// it — the rule decides, not this precedent.
 fn check_against_prediction(kb: &mut KnowledgeBase, produced: DictLayout, what: &str) {
     let predicted = dict_layout(kb, produced.spec, produced.provider);
     if let Some(why) = produced.divergence_from(kb, &predicted) {

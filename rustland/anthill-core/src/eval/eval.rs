@@ -2009,8 +2009,19 @@ impl Interpreter {
             SmallVec::with_capacity(arity + 1);
         reqs.push((self.fields.req_self, dict.clone()));
         let Some(owner) = crate::kb::typing::impl_parent_of_op(&self.kb, target) else {
-            // A namespace-level target (a WI-431 instance-fact binding op) has no
-            // `requires` chain to fill — `__req_self` alone.
+            // A target with NO owner to read a chain from — `__req_self` alone.
+            //
+            // WI-866: and a NAMESPACE-level target is not what reaches here, though
+            // this comment used to say so — the same misattribution the `DictLayout`
+            // derivation 30 lines up was carrying, and measured false by
+            // `wi866_dispatch_spec_of_op_answers_by_shape`: a namespace RESOLVES, so
+            // `impl_parent_of_op` answers `Some(<the namespace>)` for it and the arm
+            // that actually covers it is `names.is_empty()` below, where a namespace's
+            // empty chain names no slots. What reaches HERE is a dot-less canonical
+            // name (a `_global` operation) or a dotted one whose parent segment
+            // resolves to nothing — [`crate::kb::typing::DispatchSpec`]'s `NoSpec` and
+            // `UnresolvableParent`, the same two shapes, asked of the TARGET rather
+            // than of the op the call named.
             return Ok(reqs);
         };
         let names =
