@@ -187,6 +187,8 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
         relation_project_run,
     )?;
     register_if_present(interp, "anthill.prelude.Relation.fix", relation_fix)?;
+    register_if_present(interp, "anthill.prelude.Relation.rename", relation_rename)?;
+
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
@@ -2829,6 +2831,93 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     })
 }
 
+/// `Relation.rename` (WI-731) — the RUNTIME back-end of `r.rename(who: r.name)`: re-key some
+/// of the relation's columns IN PLACE, keeping the rest and keeping the ORDER. An ordinary
+/// operation with a variadic capture (proposal 056 §2.1, `fix`'s shape) — no compile-time
+/// macro, and nothing keyed on `rename`'s identity in the typer.
+///
+/// `spec` is the captured record `(result-key ↦ the one-column relation naming the source)`.
+/// The source column arrives as a RELATION VALUE rather than a name, which is the same thing
+/// its TYPE carries at the reduction boundary ([`rename_schema_type`]) — one surface, read
+/// twice, and neither reading invents a channel the other lacks.
+///
+/// MATCHED BY THE COLUMN'S NAME **AND** ITS VARIABLE — see the note at the check itself. The
+/// name selects the column (names are distinct within a schema); the variable checks that the
+/// source came from THIS relation, which no type can state. `r.rename(who: other.name)` is
+/// therefore caught here, loudly, rather than renaming `r`'s own `name` behind the author's
+/// back — and a receiver carrying one variable in two columns still re-keys exactly one.
+fn relation_rename(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [r, spec] = expect_args::<2>("Relation.rename", args)?;
+    let (query, columns) = expect_relation(r)?;
+    let pairs = spec_record_fields(
+        &spec,
+        "a rename spec record (result-key \u{21a6} the one-column relation naming the source)",
+    )?;
+    let mut map: Vec<(crate::intern::Symbol, crate::intern::Symbol)> =
+        Vec::with_capacity(pairs.len());
+    for (result_key, source) in pairs.iter() {
+        let key_name = interp.kb.local_name_of(*result_key).to_string();
+        let (_src_query, src_columns) = expect_relation(source.clone())?;
+        let [(src_name, src_vid)] = src_columns.as_ref() else {
+            return Err(EvalError::Internal(format!(
+                "Relation.rename: entry `{key_name}` names {} columns; a rename's source is \
+                 exactly one column (the typer's `Rename` reduction refuses every other \
+                 arity, so this is a programmatically-built spec)",
+                src_columns.len()
+            )));
+        };
+        // BOTH HALVES, and each answers a different question. The NAME selects which of the
+        // receiver's columns is meant — names are distinct within a schema (§4.5), so the
+        // name is the key, and it is the same key `rename_schema_type` resolved against `T`.
+        // The VARIABLE then checks PROVENANCE: `r.name` projects `r`'s own column and carries
+        // `r`'s `VarId`, so a source lifted from a DIFFERENT relation fails here even when the
+        // two columns share a name — which no TYPE can see, since `Relation[T = (name: …)]`
+        // states none.
+        //
+        // THE VARIABLE ALONE IS NOT A KEY, and that was this function's first cut. A relation
+        // may carry ONE `VarId` in TWO columns — `r.(a: id, b: id)` is a legal projection, and
+        // `keep_spec_projections` refuses only duplicate RESULT keys, never a duplicate source
+        // — so `p.rename(z: p.a)` re-keyed BOTH of them and returned a row with two `z`
+        // columns and no `b`: a wrong row, disagreeing with the type `Rename` had computed,
+        // and unanswerable to `row.b` downstream.
+        let Some(_) = columns
+            .iter()
+            .find(|(n, v)| n == src_name && v == src_vid)
+        else {
+            let src = interp.kb.local_name_of(*src_name).to_string();
+            return Err(EvalError::TypeMismatch {
+                // A PROGRAM error, not an evaluator-invariant one, so NOT `Internal` — the
+                // resolver bridge `debug_assert`s on that variant (kb/resolve.rs), which
+                // would abort a debug build and silently residualize a release one on an
+                // ordinary user mistake. The same reading `UnpinnedRequirement` records.
+                expected: "a column of the relation being renamed",
+                got: format!(
+                    "`{src}`, which is a column of a DIFFERENT relation (entry `{key_name}`). \
+                     A rename re-keys the receiver's own columns, so write the source off the \
+                     receiver: `r.rename({key_name}: r.{src})`"
+                ),
+            });
+        };
+        map.push((*src_name, *result_key));
+    }
+    // `columns` IN ORDER — a renamed column keeps its position, the VALUE half of the
+    // in-place rule `rename_schema_type` states for the TYPE.
+    let renamed: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> = columns
+        .iter()
+        .map(|(name, vid)| {
+            let key = map
+                .iter()
+                .find_map(|(s, k)| (s == name).then_some(*k))
+                .unwrap_or(*name);
+            (key, *vid)
+        })
+        .collect();
+    Ok(Value::Relation {
+        query,
+        columns: renamed.into(),
+    })
+}
+
 /// `Relation.fix` (WI-714 / proposal 052 §"`fix` is sugar"; WI-727 / proposal 056) — the
 /// RUNTIME back-end of `fix(p, x: 1, z: 2)`: RESTRICT relation columns to given VALUES and
 /// DROP them. `fix` is an ORDINARY operation (proposal 056 §2.1) — no compile-time macro,
@@ -3215,6 +3304,31 @@ fn mentions_binder(
 /// is exact-symbol, not a WI-672 short-name compare). A raw zero-arg `DotApply` (the
 /// pre-lowering shape) is accepted as a defensive fallback. `None` for any operand
 /// that is not a binder field access.
+///
+/// THE FIELD NAME ALONE IDENTIFIES THE COLUMN — an INVARIANT, not a property of this
+/// function, and WI-731 documents it here rather than changing anything. The returned symbol
+/// discards WHICH BINDER the access came from, so in a two-row `join` condition
+/// `eq(c.name, q.name)` both operands mint a hole named `name` and `fill_recipe_holes` maps
+/// both to the SAME column variable: the condition degrades to `eq(?x, ?x)`, vacuously true,
+/// and EVERY pair of rows joins. That is a silently unfiltered cartesian product, not an
+/// error.
+///
+/// IT IS UNREACHABLE, BY TWO ENFORCEMENT SITES, and both are named because the invariant is
+/// upheld elsewhere and nothing here would notice if they stopped:
+///  * `concat_named_tuple_types` (kb/typing.rs) refuses a merged schema whose operands share
+///    a field name, at LOAD — so no program in which both holes could exist ever loads;
+///  * `join_run`'s own merged-name guard (below) fires before `fill_recipe_holes` on the
+///    reflect path, which the typer does not gate.
+///
+/// SO WI-731 DELIBERATELY DID NOT "FIX" IT. Keying a hole by `(binder, field)` would be a
+/// change with no drivable control — a test would pass with and without it, since the
+/// program that needs it cannot load (the WI-1078 shape). What WI-731 shipped instead is the
+/// `rename` operator, which is how an author gets PAST the refusal: renaming one side leaves
+/// the two holes distinct by construction, so the fix removes the collision rather than
+/// teaching the holes to live with it. It is the AUTOMATIC-QUALIFICATION design — merging
+/// `c.name`/`q.name` into `left.name`/`right.name` behind the author's back — that would have
+/// made this live, which is the strongest reason the collision surface and this invariant had
+/// to be decided together.
 fn binder_field_access(
     interp: &mut Interpreter,
     occ: &std::rc::Rc<crate::kb::node_occurrence::NodeOccurrence>,

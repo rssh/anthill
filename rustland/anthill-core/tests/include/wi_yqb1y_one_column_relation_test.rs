@@ -43,7 +43,7 @@
 //! than `projection_columns`' own message — measured here at both receiver arities
 //! (`adults.(nosuch)`, `person_row.(nosuch)`), because WI-20260818-7X7NK asked to be
 //! re-checked against this tree. It stayed that ticket's decision, and that ticket has since
-//! DELIVERED it: `projection_names_no_column_error` (kb/typing.rs) re-asks the failure as the
+//! DELIVERED it: `projection_column_errors` (kb/typing.rs) re-asks the failure as the
 //! projection the author wrote, keyed on WI-762's mark and gated on the same `Relation` sort
 //! test `build_relation_projection` uses. The load-bearing fallthrough (`r.isEmpty` and
 //! `r.(isEmpty)` are the same node shape as the failing projection) survived it. Still no

@@ -392,4 +392,40 @@ sort anthill.prelude.Relation
   -- `project`).
   operation fix[R](p: Relation, ...args: R)
     -> Relation[T = Without[T = p.T, Drop = R], E = p.E]
+
+  -- rename — RE-KEY columns IN PLACE (WI-731). `r.rename(who: r.name)` gives back `r` with
+  -- its `name` column called `who`; every other column is kept, under its own name and IN
+  -- ITS OWN POSITION. The driving client is `join`: two relations that share a column name
+  -- cannot merge (a schema's column names are distinct), and renaming one side is the fix.
+  --
+  -- WHY NOT `project` (`r.(who: name, …)`), WHICH ALREADY RENAMES: it SELECTS too, so
+  -- renaming one column of a six-column relation means listing all six. That is the whole
+  -- ergonomic gap this operation closes, and it is why `rename` is not sugar for `project`.
+  --
+  -- THE SOURCE IS A COLUMN, WRITTEN AS ONE: `r.name` is the one-column relation
+  -- `Relation[T = (name: String)]`, so the source column's NAME rides in its own SCHEMA and
+  -- reaches type position through the ORDINARY variadic capture — no compile-time macro, no
+  -- denoted, nothing keyed on `rename`'s identity. `fix`'s shape exactly (proposal 056 §2.1).
+  --
+  -- THAT ROUTE OPENED WITH WI-20260818-YQB1Y. Under the schema 1-collapse `r.name` typed as
+  -- `Relation[T = String]` and the column's name was nowhere in the type, so a captured
+  -- source could not carry it — which is why this operation was long expected to need the
+  -- rule-head macro face (WI-1129) to read its arguments as SYNTAX. Dropping the collapse
+  -- retired that need.
+  --
+  -- THE ONE THING THE TYPE CANNOT SEE is WHICH relation the source came from:
+  -- `Relation[T = (name: String)]` states no provenance, so `r.rename(who: other.name)`
+  -- type-checks. The runtime matches the source by its column VARIABLE — `r.name` carries
+  -- `r`'s own — and refuses a foreign one loudly rather than renaming `r`'s same-named column.
+  --
+  -- The renamed schema is `Rename[T = r.T, Map = R]` — the fourth member of join's `Concat` /
+  -- fix's `Without` / project's `Project` family, reducing at the SAME return-type
+  -- normalization boundary. A source naming no column, a column renamed twice, a duplicate
+  -- result key, and a result name that would COLLIDE with a surviving column are each a loud
+  -- error. The swap `r.rename(a: r.b, b: r.a)` is legal — it leaves no duplicate.
+  --
+  -- Body-less; the host builtin re-keys `columns` and leaves `query` untouched, so `rename`
+  -- changes no row and no multiplicity — it is a schema operation alone.
+  operation rename[R](r: Relation, ...args: R)
+    -> Relation[T = Rename[T = r.T, Map = R], E = r.E]
 end

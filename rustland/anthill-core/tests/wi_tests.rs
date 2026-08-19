@@ -1294,6 +1294,9 @@ mod wi_yqb1y_one_column_relation_test;
 #[path = "include/wi_7x7nk_projection_names_no_column_test.rs"]
 mod wi_7x7nk_projection_names_no_column_test;
 
+#[path = "include/wi731_rename_test.rs"]
+mod wi731_rename_test;
+
 #[path = "include/wi1130_positional_capture_test.rs"]
 mod wi1130_positional_capture_test;
 

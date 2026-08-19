@@ -3098,10 +3098,16 @@ fn concat_named_tuple_types(
     merged.extend(fa);
     for (name, ty) in fb {
         if merged.iter().any(|(n, _)| *n == name) {
+            // WI-731 — NAMES THE OPERATOR, not just the verb. "rename one" was advice with
+            // no spelling behind it while `project` was the only thing that renamed, and
+            // `project` SELECTS too, so taking it meant listing every column of the operand
+            // to move one name. `rename` is the operator that does only this.
             return Err(format!(
-                "`concat` operands share the field name `{}` — a merged schema requires \
-                 disjoint field names (rename one, or project first)",
-                kb.local_name_of(name)
+                "`concat` operands share the field name `{n}` — a merged schema requires \
+                 disjoint field names. Re-key one side first: `r.rename(newName: r.{n})` \
+                 keeps every other column as it is (or use `project` if you also want to \
+                 drop columns)",
+                n = kb.local_name_of(name)
             ));
         }
         merged.push((name, ty));
@@ -3328,6 +3334,22 @@ const PROJECT_CTOR: TypeCtor = TypeCtor {
     },
 };
 
+/// WI-731 — `Rename[T, Map]`: the TYPE-position surface of a schema RENAME. The fourth
+/// member of the family — `Concat` merges two schemas, `Without` shrinks one by a drop-set,
+/// `Project` restricts one to a keep-set, `Rename` re-keys some of one IN PLACE.
+const RENAME_CTOR: TypeCtor = TypeCtor {
+    qn: "anthill.prelude.Rename",
+    label: "Rename",
+    reduction: CtorReduction::Binary {
+        operands: ["T", RENAME_MAP_OPERAND],
+        reduce: rename_schema_type,
+    },
+};
+
+/// WI-731 — the type-ARGUMENT channel `rename` carries its rename map on; `Rename`'s second
+/// operand. Named once, for the reason on [`FIELD_OF_NAME_OPERAND`].
+const RENAME_MAP_OPERAND: &str = "Map";
+
 const MEMBERSHIP_CTOR: TypeCtor = TypeCtor {
     qn: "anthill.prelude.Membership",
     label: "Membership",
@@ -3373,11 +3395,12 @@ const MEMBERSHIP_CTOR: TypeCtor = TypeCtor {
 /// and would lose the assertion in silence. Being last is what makes both unreachable;
 /// `wi728_..._a_predicate_over_another_ctors_result_still_reduces` is the check, since a
 /// comment alone would not survive a reordering.
-const TYPE_CTORS: [&TypeCtor; 5] = [
+const TYPE_CTORS: [&TypeCtor; 6] = [
     &CONCAT_CTOR,
     &WITHOUT_CTOR,
     &FIELD_OF_CTOR,
     &PROJECT_CTOR,
+    &RENAME_CTOR,
     &MEMBERSHIP_CTOR,
 ];
 
@@ -6533,6 +6556,33 @@ fn assemble_relation_type(
 /// `None` when the receiver is not a Relation, its schema is not a named tuple, or a
 /// source names no column — the caller then falls through (dot dispatch →
 /// `DotDispatchNoMatch`; the tuple pre-check → ordinary tuple typing).
+/// WI-731 — what a relation schema's columns ARE, as the parenthetical every "no such
+/// column" refusal appends. ONE owner, because there are now two such refusals — the
+/// projection's ([`projection_columns`]) and the rename's ([`rename_schema_type`]) — and the
+/// EMPTY case is the half that is easy to get wrong twice.
+///
+/// A ZERO-COLUMN schema gets its own sentence rather than an empty list. It is a reachable
+/// operand since WI-20260818-YQB1Y — `Unit` now means zero columns and ONLY zero columns, so
+/// a membership relation lands in both refusals for EVERY member — and "(its columns are: )"
+/// reads as a rendering bug rather than as the fact that there is nothing there. That was
+/// fixed at the projection site and left standing at the rename site one function over, which
+/// is why the wording lives here now instead of at either.
+fn schema_columns_tail(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> String {
+    if fields.is_empty() {
+        return "it has NONE — a membership relation's schema is `Unit`, which is zero \
+                columns, so there is nothing there to name"
+            .to_string();
+    }
+    format!(
+        "its columns are: {}",
+        fields
+            .iter()
+            .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn projection_columns(
     kb: &KnowledgeBase,
     schema: &Value,
@@ -6551,7 +6601,7 @@ fn projection_columns(
     // below used to be dot-surface-unreachable for a different reason than the collapse: a
     // member that names no column does not type as a dot access either, so the FIELD failed
     // one level down and its "no such member" short-circuited the tuple before any projection
-    // was recognized. [`projection_names_no_column_error`] calls this ahead of that
+    // was recognized. [`projection_column_errors`] calls this ahead of that
     // short-circuit, so the sentence below is what the author of `r.(nosuch)` reads.
     let fields = schema_fields(kb, schema).ok_or_else(|| {
         format!(
@@ -6568,28 +6618,10 @@ fn projection_columns(
             .iter()
             .find_map(|(f, t)| (short_name_of(kb.local_name_of(*f)) == *source).then(|| t.clone()))
             .ok_or_else(|| {
-                // The EMPTY schema gets its own sentence rather than an empty list. It is a
-                // reachable operand since WI-20260818-YQB1Y — `Unit` now means zero columns
-                // and ONLY zero columns, so a membership relation lands here for EVERY
-                // member — and "(its columns are: )" reads as a rendering bug rather than as
-                // the fact that there is nothing to select.
-                let have = if fields.is_empty() {
-                    "it has NONE — a membership relation's schema is `Unit`, which is zero \
-                     columns, so there is nothing to select from it"
-                        .to_string()
-                } else {
-                    format!(
-                        "its columns are: {}",
-                        fields
-                            .iter()
-                            .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
                 format!(
                     "the projection selects column `{source}`, which the relation's schema \
-                     does not have ({have})"
+                     does not have ({})",
+                    schema_columns_tail(kb, &fields)
                 )
             })?;
         proj_columns.push((*result_key, col_ty));
@@ -6663,6 +6695,222 @@ fn keep_spec_projections(
         }
     }
     Ok(projections)
+}
+
+/// WI-731 — the SOURCE COLUMN each entry of a `Rename` map names, read out of TYPE position.
+///
+/// THE CHANNEL, AND WHY IT IS NOT A DENOTED. `Project` carries its sources as `denoted`
+/// strings (`Keep = (person: "name")`) because the surface `r.(person: name)` writes a bare
+/// member that has no value; `rename`'s surface writes `r.rename(who: r.name)`, whose operand
+/// IS a value — the one-column relation `r.name`. So the source name arrives as that
+/// relation's SCHEMA, `Relation[T = (name: String)]`, and no denoted is needed.
+///
+/// THAT ONLY WORKS BECAUSE OF WI-20260818-YQB1Y. Until the schema 1-collapse was dropped,
+/// `r.name` typed as `Relation[T = String]` — the column's NAME was nowhere in the type — and
+/// a captured source therefore could not reach type position at all. That is the premise this
+/// ticket's "blocked on the macro face" note was written on, and dropping the collapse
+/// retired it: the ordinary variadic-capture face (proposal 056 §2.1, `fix`'s shape) now
+/// carries a column name to the type level, with no compile-time macro and nothing keyed on
+/// `rename`'s identity.
+///
+/// LOUD on every shape that is not exactly one column: a non-relation operand, a whole
+/// relation (`r.rename(who: r)` — which column?), and a membership relation (none).
+fn rename_map_sources(
+    kb: &KnowledgeBase,
+    map: &Value,
+) -> Result<Vec<(Symbol, String)>, String> {
+    let TypeExtractor::NamedTuple(entries) = extract_type(kb, map) else {
+        return Err(
+            "`Rename` operand `Map` must be the record of renames — each entry `newName: \
+             r.oldName`, whose value is the ONE-COLUMN relation naming the source column"
+                .to_string(),
+        );
+    };
+    let relation_sym = kb.try_resolve_symbol("anthill.prelude.Relation");
+    let mut out: Vec<(Symbol, String)> = Vec::with_capacity(entries.len());
+    for (result_key, operand) in entries.iter() {
+        let key_name = short_name_of(kb.local_name_of(*result_key));
+        let describe = |what: &str| {
+            format!(
+                "`rename` entry `{key_name}` must name ONE source column as a single-column \
+                 relation (`{key_name}: r.oldName`), {what}"
+            )
+        };
+        if sort_functor_of_view(kb, operand) != relation_sym {
+            return Err(describe(&format!(
+                "but its value is `{}`, which is no relation at all",
+                type_display_name_value(kb, operand)
+            )));
+        }
+        let schema = extract_type_param(kb, operand, "T").ok_or_else(|| {
+            describe("but its relation type states no schema `T` to read the column name from")
+        })?;
+        let fields = schema_fields(kb, &schema)
+            .ok_or_else(|| describe(&format!("but {}", not_a_schema_tail(kb, &schema))))?;
+        match fields.as_slice() {
+            [(f, _)] => out.push((*result_key, short_name_of(kb.local_name_of(*f)).to_string())),
+            [] => {
+                return Err(describe(
+                    "but its relation is a MEMBERSHIP relation, which has no column to rename",
+                ))
+            }
+            many => {
+                return Err(describe(&format!(
+                    "but its relation has {} columns ({}) — project the one first (`{key_name}: \
+                     r.{}`)",
+                    many.len(),
+                    many.iter()
+                        .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    short_name_of(kb.local_name_of(many[0].0)),
+                )))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// WI-731 — the TYPE of the source column one `Map` entry names, re-read off the same
+/// operand [`rename_map_sources`] read the NAME from. Separate because the two answers have
+/// different consumers — the name resolves the column, the type CHECKS it — and folding them
+/// into one tuple would make every caller carry the half it does not use.
+fn rename_source_column_type(kb: &KnowledgeBase, map: &Value, result_key: Symbol) -> Option<Value> {
+    let TypeExtractor::NamedTuple(entries) = extract_type(kb, map) else {
+        return None;
+    };
+    let operand = entries.iter().find_map(|(k, v)| (*k == result_key).then_some(v))?;
+    let schema = extract_type_param(kb, operand, "T")?;
+    match schema_fields(kb, &schema)?.as_slice() {
+        [(_, ty)] => Some(ty.clone()),
+        _ => None,
+    }
+}
+
+/// WI-731 — the INTERNAL type-level operation behind the `Rename[T, Map]` type constructor:
+/// the relation SCHEMA that re-keying `Map`'s columns leaves of schema `T`.
+///
+/// RENAME IN PLACE, and the result keeps `T`'s ORDER. A renamed column stays where it was;
+/// the ellipsis-shaped alternative (renamed columns first) is not merely uglier, it is
+/// observable — kernel-language §6.7 says a destructuring binder falls back to the VALUE's
+/// own component order where no tuple type is known for the pattern, which is the one reader
+/// that would see the difference. (It is NOT a schema-type change: §4.5 makes permutation a
+/// subtyping rule, so a permuted named tuple is the same type. That correction is recorded on
+/// this ticket; the conclusion survived it, the original reason did not.) The VALUE half
+/// moves with this one — `relation_rename` walks the relation's own `columns` in order.
+///
+/// FOUR REFUSALS, each because the silent reading is a WRONG SCHEMA rather than a crash:
+/// a source naming no column of `T`; two entries renaming the SAME source; two entries with
+/// the same RESULT key; and a result key colliding with a column that is not itself renamed
+/// away. The last is the one worth stating — `(a, b).rename(b: r.a)` would build a schema
+/// with two `b` columns, which label distinctness forbids (§4.5) and which no field lookup
+/// could then answer.
+fn rename_schema_type(
+    kb: &mut KnowledgeBase,
+    t: &Value,
+    map: &Value,
+    site: &CtorReduceSite,
+) -> Result<Value, String> {
+    let fields = schema_fields(kb, t).ok_or_else(|| {
+        format!(
+            "`Rename` cannot re-key operand `T`: {}",
+            not_a_schema_tail(kb, t)
+        )
+    })?;
+    let renames = rename_map_sources(kb, map)?;
+    let column_names: Vec<String> = fields
+        .iter()
+        .map(|(f, _)| short_name_of(kb.local_name_of(*f)).to_string())
+        .collect();
+    // The source column's TYPE must MATCH the column it renames — the same membership+type
+    // pair `Without` checks of a captured argument, and the same reason: the `Map` entry
+    // states a type, and a `Map` whose type disagrees with `T`'s column is describing a
+    // different column than the one it names. It is also the only part of the foreign-source
+    // hole (`r.rename(who: other.name)`, which no TYPE can see — a `Relation[T = (name: …)]`
+    // states no provenance) that a type CAN close: a foreign source of the same name but a
+    // different type is caught here, and only a same-name same-TYPE one reaches the runtime's
+    // column-variable check.
+    for (result_key, source) in renames.iter() {
+        let Some((_, col_ty)) = fields
+            .iter()
+            .find(|(f, _)| short_name_of(kb.local_name_of(*f)) == source)
+        else {
+            continue; // named-no-column: reported by its own arm below, with the column list
+        };
+        let Some(src_ty) = rename_source_column_type(kb, map, *result_key) else {
+            continue; // shape already accepted by `rename_map_sources`
+        };
+        let mut probe = Substitution::new();
+        if !types_compatible(kb, &mut probe, &src_ty, col_ty) {
+            return Err(format!(
+                "`rename` renames column `{source}` from a source column of type `{}`, but \
+                 the relation's `{source}` is `{}`. The source must be THIS relation's own \
+                 column (`r.{source}`)",
+                type_display_name_value(kb, &src_ty),
+                type_display_name_value(kb, col_ty),
+            ));
+        }
+    }
+    // Resolve each SOURCE against `T` by SHORT name — a schema's field symbols and the ones
+    // a rename entry's operand carries are minted in different scopes, so this is the
+    // schema's own field lookup (WI-638 mode 3), not a cross-scope symbol compare (WI-672).
+    // Same reading `projection_columns` takes, for the same reason.
+    for (i, (result_key, source)) in renames.iter().enumerate() {
+        if !column_names.iter().any(|c| c == source) {
+            return Err(format!(
+                "`rename` renames column `{source}`, which the relation's schema does not \
+                 have ({})",
+                schema_columns_tail(kb, &fields)
+            ));
+        }
+        if let Some((prev_key, _)) = renames[..i].iter().find(|(_, s)| s == source) {
+            return Err(format!(
+                "`rename` renames column `{source}` twice — to `{}` and to `{}`. A column has \
+                 one name in the result, so name it once",
+                short_name_of(kb.local_name_of(*prev_key)),
+                short_name_of(kb.local_name_of(*result_key)),
+            ));
+        }
+        let key_name = short_name_of(kb.local_name_of(*result_key));
+        if renames[..i]
+            .iter()
+            .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == key_name)
+        {
+            return Err(format!(
+                "`rename` names the result column `{key_name}` twice; each is a distinct column \
+                 of the renamed schema, so it must appear once"
+            ));
+        }
+    }
+    // The RESULT names, in `T`'s order — a renamed column keeps its position.
+    let renamed: Vec<(Symbol, Value)> = fields
+        .iter()
+        .map(|(f, ty)| {
+            let name = short_name_of(kb.local_name_of(*f));
+            let key = renames
+                .iter()
+                .find_map(|(k, s)| (s == name).then_some(*k))
+                .unwrap_or(*f);
+            (key, ty.clone())
+        })
+        .collect();
+    // A rename onto a name a SURVIVING column already has. Checked over the RESULT rather
+    // than over `T`, which is what makes the swap `(a, b).rename(a: r.b, b: r.a)` legal while
+    // `(a, b).rename(b: r.a)` is not: the first leaves no duplicate, the second does.
+    for (i, (f, _)) in renamed.iter().enumerate() {
+        let name = short_name_of(kb.local_name_of(*f));
+        if renamed[..i]
+            .iter()
+            .any(|(g, _)| short_name_of(kb.local_name_of(*g)) == name)
+        {
+            return Err(format!(
+                "`rename` would leave TWO columns named `{name}` — the schema's own `{name}` is \
+                 still there. Rename it too, or pick another result name (a schema's column \
+                 names are distinct, §4.5)"
+            ));
+        }
+    }
+    Ok(relation_schema_type(kb, &renamed, site.sp))
 }
 
 /// WI-732 — the INTERNAL type-level operation behind the `Project[T, Keep]` type constructor:

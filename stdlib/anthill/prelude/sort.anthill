@@ -218,6 +218,50 @@ sort anthill.prelude.Project
   sort Keep = ?
 end
 
+{< Rename[T, Map]: the TYPE-position surface of a schema RENAME (WI-731 — `rename`'s
+   re-keyed schema `T = Rename[T = r.T, Map = R]`). The fourth schema member of the family:
+   `Concat` MERGES two schemas, `Without` SHRINKS one by a drop-set, `Project` RESTRICTS one
+   to a keep-set, `Rename` RE-KEYS some of one and keeps the rest.
+
+   `Rename` is `Project` over "Map plus identity on the rest", and it exists as its own
+   constructor rather than as an expansion into `Project` because the expansion needs to know
+   WHICH COLUMNS EXIST — and the boundary that answers that is this one. Expanding earlier
+   would put the same question at a second, earlier point, and would refuse an ABSTRACT
+   schema that a residual constructor handles.
+
+   `Map` IS THE CAPTURED RECORD'S OWN TYPE, with no denoted anywhere:
+   `Rename[T = (name: String, age: Int64), Map = (who: Relation[T = (name: String)])]` reduces
+   to `(who: String, age: Int64)`. `Project` needs a denoted for the same job because its
+   surface `r.(person: name)` writes a bare member that has no value; `rename`'s surface
+   `r.rename(who: r.name)` writes an operand that IS one — the one-column relation `r.name` —
+   so the source column's name rides in that relation's own SCHEMA. Which is only true since
+   WI-20260818-YQB1Y: under the schema 1-collapse `r.name` typed as `Relation[T = String]`
+   and the name was nowhere in the type.
+
+   IN PLACE, AND THE RESULT KEEPS `T`'s ORDER. A renamed column stays where it was. This is
+   not a schema-TYPE property — §4.5 makes permutation a subtyping rule, so a permuted named
+   tuple is the same type — but §6.7 says a destructuring binder falls back to the VALUE's own
+   component order where no tuple type is known for the pattern, and that reader would see the
+   difference. The value half (`relation_rename`) walks the relation's own `columns` in order.
+
+   SCOPE: like the rest of the family, `Rename` reduces only as a DIRECT type argument (the
+   schema position `Relation[T = Rename[T = .., Map = ..]]`). A source naming no column of
+   `T`, a column renamed TWICE, a duplicate RESULT key, a result name that would collide with
+   a surviving column, a `Map` entry whose value is not a one-column relation, and a `T` that
+   is no relation schema are each a LOUD error. The swap `r.rename(a: r.b, b: r.a)` is legal:
+   the collision test is over the RESULT, and a swap leaves no duplicate.
+
+   WHAT IT CANNOT SEE is WHICH relation a source came from — `Relation[T = (name: String)]`
+   states no provenance — so `r.rename(who: other.name)` reduces here and is refused at
+   RUNTIME instead, where the column's variable identifies its relation.
+
+   ABSTRACT OPERANDS (WI-734): `Rename` follows the family rule stated on `Concat` above — an
+   operand not yet known leaves the ctor symbolic to reduce once it grounds. >}
+sort anthill.prelude.Rename
+  sort T = ?
+  sort Map = ?
+end
+
 {< Membership[T]: the TYPE-position surface of a CLOSED-SCHEMA requirement (WI-728 /
    proposal 052 — `negate`'s operand contract). The family's first PREDICATE member, and
    its first UNARY one: where `Concat` / `Without` / `Project` / `FieldOf` COMPUTE a type
