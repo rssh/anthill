@@ -86,6 +86,14 @@ That is the spelling for any value the table above cannot express — a string
 containing `, `, a payload-carrying variant, an arbitrary `Term`. The writer uses
 it only where the data spelling does not apply, so it never has to refuse a value.
 
+**A data value must also be markdown-INERT**, and this is the same escape doing a
+second job. A bare value sits in inline context, so `*`, `_`, backticks, `<` and
+link brackets would render as markup rather than as the data — and rendering is
+why this format is `.md` at all. A value carrying any of them therefore has no data
+spelling and takes the term spelling, whose backticks are a code span and suspend
+inline parsing. On this tracker no value is affected: ids, timestamps, tool names
+and tags are alphanumeric with `-`, `+` and `.`.
+
 **Length does not decide anything here; the mapping does.** Whether a field is
 prose is a property of the field, not of how long one item's value happens to be,
 and a threshold would give one field two shapes: on this tracker a 255-character
@@ -104,7 +112,31 @@ concurrent edit to two of them a merge conflict; a blank line makes two fields
 independently mergeable. Fields that are never rewritten belong in a group for the
 same reason — nothing can conflict over them.
 
-**The guarantee is layout, so it reaches only fields written here.** A field of the
+**A flattened sum needs its invariant restated as constraints.** `status` and its
+companions were one payload-carrying variant; as four independently optional fields
+they admit `Claimed` with no agent, and `Open` carrying a stale rejection reason.
+Those facts are well-typed, and `fsck` cannot repair the first — the missing agent
+is information, not a formatting fault. So the invariant the sum type enforced by
+construction is restated where the domain lives, as constraints, and a violation is
+a **load error**:
+
+```anthill
+  -- Each status determines which companions it must have and must not.
+  constraint claimed_names_its_agent :- WorkItem(status: Claimed, status_agent: none)
+  constraint claimed_names_its_time  :- WorkItem(status: Claimed, status_at: none)
+  constraint open_carries_no_reason  :- WorkItem(status: Open, status_reason: some(value: ?))
+  -- …one pair per variant: Draft / PreOpened / Open carry none of the three;
+  -- Claimed / Delivered carry agent and time; Verified carries time;
+  -- Rejected / ProposalRejected / Stale carry time and reason.
+```
+
+This is check logic where the old encoding had unrepresentability, and that is a
+real loss, taken deliberately for the reading the flat form buys. What makes it
+acceptable is that the check is **declarative and total** — one constraint per
+variant-companion pair, enforced at load over every item, not a rule the commands
+are trusted to keep.
+
+**The layout guarantee reaches only fields written here.** A field of the
 same state whose text lives in a prose chapter cannot be made adjacent to its
 group: `status_reason` sits in `## Reason`, several chapters away from `status` and
 `status_at`, and the two regions merge independently. The format does not pretend
@@ -133,19 +165,32 @@ value-preserving, so a domain that needs the distinction cannot use this rule.
 A **chapter** is a named region introduced by a heading at a structural level,
 running to the next heading at that level or to end of file.
 
-`DocumentFormat(level:)` declares the first structural level. There are two, and
-they nest:
+`DocumentFormat(level:)` declares the first structural level.
 
-| level | carries |
-| --- | --- |
-| above `level` (`#`) | nothing — a load error |
-| `level` (`##`) | the attributes chapter, prose chapters, and containers |
-| `level + 1` (`###`) | a container's entries |
-| deeper (`####`…) | prose, carried verbatim, never interpreted |
+**THE RESERVED SET IS PER CHAPTER KIND, NOT PER DOCUMENT.** This is the rule
+WI-1120 recorded as that increment's worst defect, and it must not be flattened
+again: a writer that reserved `level + 1` everywhere refused text the reader
+accepted, so a description carrying a `###` sub-section loaded fine, round-tripped
+into the fact, and then made its item permanently **unwritable** — `claim` and
+`update` failing on bytes already on disk.
 
-Structural levels are **reserved**: a heading at one belongs to the mapping, and
-hand-written prose uses deeper levels. A heading marker inside a fenced code block
-is not a heading; the scanner tracks fences.
+| inside | reserved | everything deeper |
+| --- | --- | --- |
+| the document | `level` (`##`) — chapters and containers | — |
+| a **field** chapter | `level` only | prose, carried verbatim, `###` included |
+| a **container** | `level`, and `level + 1` (`###`) for its entries | — |
+| an **entry** | `level + 1`, and the `level` above it | prose, carried verbatim |
+
+So a field chapter reserves its own level; an entry reserves its own **and** the
+container level above it. A `###` under `## Description` is **prose**, which is
+what keeps a hand-added sub-section alive across a `claim` that rewrites the head
+and renames the file.
+
+A heading **above** `level` (`#`) is a load error wherever it appears: the
+hierarchy is defined from `level` downwards and nothing above it has a meaning.
+
+A heading marker inside a fenced code block is not a heading; the scanner tracks
+fences (§4.4).
 
 ### 4.2 Field chapters
 
@@ -180,7 +225,8 @@ spelling, and a second kind added later is then additive.
 Each entry is self-contained:
 
 - its **heading** is the fields of `heading` joined by ` — `, with `kind`
-  inserted after the first — so `at`, then the kind, then `author`;
+  inserted after the first — so `at`, then the kind, then `author`. `heading` must
+  name at least one field, since "after the first" is otherwise undefined;
 - its **body** is the fact's `field`;
 - its `key` field is the item's id, taken from the **`id` attribute of this
   document's own fact** — never from the filename. The two normally agree, and §1
@@ -211,8 +257,27 @@ two facts. The writer keeps them ascending by their first heading field, and
 diagnostic, because nothing was lost. This is what lets an append-only container be
 merged by concatenation, which cannot preserve order.
 
+**A heading-field value must be inert in a heading.** The parts are joined by a raw
+` — ` and split by it on the way back, so a value containing that separator — an
+author named `release — bot` — or containing a newline has no heading spelling and
+does not round-trip. There is no escape: the writer **refuses** such a value
+before persisting, naming the field and the value, the same way it refuses prose it
+could not read back. A separator-bearing value is rare enough that refusing it
+beats an escaping layer nobody would remember to apply.
+
 An entry's body must not begin with a line the reader would take for a heading at a
 structural level. The writer checks this before writing.
+
+### 4.4 Fences
+
+The scanner tracks fenced code blocks, so a heading marker inside one is not a
+heading. **An unclosed fence is a load error naming the line the fence opens on.**
+It cannot be left to the writer's refusal alone: a hand-edited `## Description`
+whose fence never closes swallows every chapter after it, so a file's feedback
+entries stop being entries and silently become description text — facts vanishing
+with nothing reported. The writer refuses to *create* that state and the reader
+refuses to *read* it, and both are needed because only one of them sees a file
+someone edited by hand.
 
 ## 5. The mapping declaration
 
@@ -281,6 +346,32 @@ namespace anthill.stage0.document
     functor: Tag, named: "tags", field: "name", key: "workitem")
 end
 ```
+
+### 5.1 A well-formed mapping
+
+The declaration is data, so it can be wrong. These are checked when it is read, and
+a failure names the offending fact — a mapping that loads wrong silently produces
+documents that lose data.
+
+- **Every field of a mapped functor has exactly one home.** For a `ChapterGroup`,
+  `key`, each name in `heading`, and `field` must be distinct and together cover
+  every field of `functor`; for a `SatelliteList`, `key` and `field` must cover it.
+  A field with no home is silently dropped on write — the failure this rule exists
+  for, and the one a satellite gaining a field would otherwise meet. A field may be
+  left uncovered only if the declaration gives it an explicit default.
+- **No field has two homes.** A field named by a `Chapter` may not also appear in
+  the attributes chapter, and no field may be named by two mappings. Two writable
+  places for one datum is the failure the format's governing principle exists to
+  prevent.
+- **Names are unique.** No two chapters or containers share a name, and no two
+  groups of one container share a `kind`.
+- **`FieldGroup` names real attributes.** Every field it lists exists on `functor`,
+  is written in the attributes chapter — not moved to a prose chapter — and appears
+  in no other group.
+- **A required field mapped to a chapter must have that chapter.** §4.2's missing
+  chapter yields `none`, which is only correct for an `Option`; for a required field
+  it is a load error naming the file and the chapter, not a fact carrying a fresh
+  variable.
 
 ## 6. Example
 
@@ -363,7 +454,10 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a prose chapter the mapping names is missing | `Option` field → `none` |
 | two chapters with one name, field not declared repeated | load error |
 | a heading at a structural level the mapping does not account for in that scope | load error naming file and heading |
-| a `###` outside any container | load error |
+| a fenced code block opened in prose and never closed | load error naming the line the fence opens on (§4.4) |
+| a status field combination no variant admits | load error naming the item, the status and the offending companion (§3.3) |
+| a mapping that is not well-formed | load error naming the offending fact (§5.1) |
+| a `###` under a **field** chapter | prose, carried verbatim — not an error (§4.1) |
 | a container the mapping names, holding no entries | not an error — the group has no facts |
 | an entry heading with the wrong number of ` — ` separated parts | load error |
 | an entry heading whose kind names no group of that container | load error naming file, heading and kind |
