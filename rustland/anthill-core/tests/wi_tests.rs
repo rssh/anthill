@@ -1305,3 +1305,6 @@ mod wi1130_positional_capture_test;
 
 #[path = "include/wi1131_one_field_named_tuple_test.rs"]
 mod wi1131_one_field_named_tuple_test;
+
+#[path = "include/wi1122_embedder_host_fn_test.rs"]
+mod wi1122_embedder_host_fn_test;

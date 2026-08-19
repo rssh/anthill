@@ -6,6 +6,7 @@ pub(crate) mod eq_derive;
 pub mod execute;
 pub mod extent;
 pub(crate) mod flow_derive;
+pub mod host_fns;
 pub mod load;
 pub mod node_occurrence;
 pub mod occurrence;
@@ -1289,6 +1290,14 @@ pub struct KnowledgeBase {
     // collision (WI-797). See `kb/extent.rs`.
     pub(crate) extents: extent::ExtentRegistry,
 
+    // WI-1122 — the EMBEDDER-supplied half of the `operation_map` host-function
+    // table, the open complement of `eval::builtins::HOST_FNS`. Empty by default;
+    // populated via `register_host_fn`. It lives HERE, not on the `Interpreter`,
+    // because `run_in_bridge_interp` builds a fresh interpreter from the (mem::taken)
+    // KB per bridged evaluation and registers builtins on it — the KB is the only
+    // thing that survives. See `kb/host_fns.rs` for the full argument.
+    pub(crate) host_fns: host_fns::HostFnRegistry,
+
     // WI-218 — static-dispatch rewrite tables.
     // `dispatch_rewrites`: original apply TermId → rewritten apply TermId
     //   (with `fn` substituted from spec op to impl op). The
@@ -1649,6 +1658,7 @@ impl KnowledgeBase {
             derived_provision_origin: std::collections::HashMap::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
+            host_fns: host_fns::HostFnRegistry::new(),
             unsuppliable_requirements: Vec::new(),
             dispatch_rewrites: HashMap::new(),
             dispatch_origin: HashMap::new(),
@@ -8578,6 +8588,66 @@ impl KnowledgeBase {
         self.interpreter_mapped_ops.contains(&sym)
     }
 
+    /// WI-1122 — register a host function this EMBEDDER supplies, under the `key` its
+    /// `operation_map` clauses spell. The open complement of `eval::builtins::HOST_FNS`:
+    /// an embedder binding a carrier of its own could not name its own functions at
+    /// all before this, because the function half of WI-876's registry was a `const`
+    /// slice compiled into anthill-core while the data half was open to any
+    /// `.anthill` file.
+    ///
+    /// `arity` is the number of arguments `f` accepts, and it is not decoration: it is
+    /// checked against the operation's DECLARED arity by the same code that checks a
+    /// built-in entry (`builtins::register_operation_mappings`), which is the whole
+    /// reason an embedder entry carries it. WI-876 measured what its absence costs —
+    /// a mapping that loads clean, passes `anthill check`, and dies at the first call.
+    ///
+    /// `f` is any `Fn + 'static`, so it may CLOSE OVER the embedder's own state — a
+    /// client, a token, a repo handle. That is not a convenience: a host binding a
+    /// carrier of its own generally needs configuration to do it, and a bare `fn`
+    /// pointer would force every embedder into a `static`/thread-local.
+    ///
+    /// CALL THIS BEFORE LOAD, not merely before the embedder's own interpreter — and
+    /// this is ENFORCED, not merely documented: `set_host_op_mappings` seals the
+    /// registry when the loader builds its mapping cache, after which this returns
+    /// [`host_fns::HostFnRegError::AfterLoad`]. The enforcement is there because the
+    /// unenforced failure is SILENT in release: load itself builds interpreters (a
+    /// `[simp]` macro fire crosses `run_in_bridge_interp`), the scratch build fails with
+    /// an `EvalError::Internal`, and both bridge callers `debug_assert!` on `Internal`
+    /// and then residualize — so a debug build asserts while a release build merely
+    /// declines to expand the macro or answer the rule, on a program that loaded clean.
+    ///
+    /// Registering before load is also what makes `is_interpreter_mapped_op` honest: it
+    /// promises at typing time that this process's interpreter has an implementation for
+    /// a rust mapping, and it answers off the mapping's LANGUAGE — it cannot check that
+    /// the key resolves to anything.
+    ///
+    /// A collision — with a key this runtime ships, or with one already registered
+    /// here — is REFUSED, not ordered by precedence. See [`host_fns::HostFnRegError`].
+    pub fn register_host_fn<F>(
+        &mut self,
+        key: &str,
+        arity: usize,
+        f: F,
+    ) -> Result<(), host_fns::HostFnRegError>
+    where
+        F: Fn(
+                &mut crate::eval::Interpreter,
+                &[crate::eval::value::Value],
+            ) -> Result<crate::eval::value::Value, crate::eval::EvalError>
+            + 'static,
+    {
+        self.host_fns.register(
+            key,
+            arity,
+            host_fns::HostFnImpl::Dynamic(std::sync::Arc::new(f)),
+        )
+    }
+
+    /// WI-1122 — the embedder table, for `builtins::host_fn_by_key`'s fallback leg.
+    pub(crate) fn host_fn_registry(&self) -> &host_fns::HostFnRegistry {
+        &self.host_fns
+    }
+
     /// WI-876 — the cached `operation_map` entries, in load order. Read by the host
     /// runtime's builtin registration, which needs the host function name as well
     /// as the operation. See `load::build_host_op_mappings` for why it is cached.
@@ -8619,6 +8689,11 @@ impl KnowledgeBase {
     /// registers `lang == "rust"` entries only, so a cpp mapping belongs in the
     /// program-wide index and NOT in the interpreter's.
     pub(crate) fn set_host_op_mappings(&mut self, mappings: Vec<load::HostOperationMapping>) {
+        // WI-1122 — the loader has now decided which host_fn keys the program demands,
+        // so the embedder's table can no longer grow: a later entry would not be seen by
+        // interpreters load itself already built. Sealing here rather than at `load_all`
+        // keeps the seal with the thing that makes it true.
+        self.host_fns.seal();
         let mut index = std::collections::HashSet::new();
         let mut interp_index = std::collections::HashSet::new();
         for m in &mappings {
