@@ -326,13 +326,33 @@ two facts. The writer keeps them ascending by their first heading field, and
 diagnostic, because nothing was lost. This is what lets an append-only container be
 merged by concatenation, which cannot preserve order.
 
-**A heading-field value must be inert in a heading.** The parts are joined by a raw
-` — ` and split by it on the way back, so a value containing that separator — an
-author named `release — bot` — or containing a newline has no heading spelling and
-does not round-trip. There is no escape: the writer **refuses** such a value
-before persisting, naming the field and the value, the same way it refuses prose it
-could not read back. A separator-bearing value is rare enough that refusing it
-beats an escaping layer nobody would remember to apply.
+**A heading-field value must be inert in a heading**, and this is the format's one
+INJECTION surface, so the rule is positive rather than a list of bad characters. A
+value is admissible only if it is non-empty, carries no line break, contains no
+` — `, and has no leading or trailing whitespace. Anything else the writer
+**refuses**, naming the field and the value; there is no escaping scheme, because a
+value that needs one is rare enough that refusing it beats a layer nobody would
+remember to apply.
+
+The two vectors are not equally dangerous, and the difference decides where the
+check has to live.
+
+*A separator* — an author named `release — bot`, or `--agent "claude — status — x"`
+— is caught twice. The writer refuses it, and if one reaches disk by hand-edit the
+reader's part count no longer matches what `heading` declares, which is the load
+error in §7.
+
+*A line break* is the one that matters: `--agent $'claude\n### 2026-01-01 — status
+— root'` would, if written, produce a **well-formed entry**. It parses, its kind
+names a real group, and it denotes a fact indistinguishable from a recorded one.
+There is NO reader-side detection — a fabricated entry looks exactly like a true
+one — so the writer's refusal is the whole defence rather than one of two, and it
+belongs at the boundary where the value ENTERS (a CLI flag, an imported comment) as
+well as at the write, so the error names what the author typed rather than a
+persistence fault.
+
+A prose **body** is not a vector: a heading it carries is demoted (§4.1), so it
+cannot start an entry however it is spelled.
 
 ### 4.4 Fences
 
@@ -525,7 +545,7 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a mapping that is not well-formed | load error naming the offending fact (§5.1) |
 | a `###` under a **field** chapter | prose, carried verbatim — not an error (§4.1) |
 | a container the mapping names, holding no entries | not an error — the group has no facts |
-| an entry heading with the wrong number of ` — ` separated parts | load error |
+| an entry heading with the wrong number of ` — ` separated parts | load error — the second line against separator injection (§4.3) |
 | an entry heading whose kind names no group of that container | load error naming file, heading and kind |
 | an attributes value longer than 255 characters | diagnostic naming the field — a prose field wants declaring as a chapter (§4.2) |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
