@@ -6,6 +6,8 @@ fact Tag(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", name: "wi4
 fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-18T15:37:52Z")
 
 fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-18T15:47:13Z")
+
+fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-19T07:42:14Z")
 ```
 
 ## description
@@ -99,4 +101,91 @@ AND THE MACHINERY FOR THE REST ALREADY EXISTS. Filling a field into a fact befor
 THE HONEST RESIDUAL COST, and it is the thing to weigh rather than the principle: a row that LEAVES its file no longer says what it is about. That is not hypothetical — `orphaned.anthill` (§11) holds satellite rows whose item has no file, an export writes rows outside the tree, and a query result renders a row with no path. Each would need the identity re-attached or would lose it. Weigh that against 1459 repeated keys and a 278-character mean head line.
 
 RELATED, from the same conversation and worth keeping with it: IF EVERY DOCUMENT CARRIES ITS OWN FIELDS, A SECONDARY INDEX BECOMES UNNECESSARY — the tree is the index, which is what `list` and `fsck` already assume. If one is ever wanted anyway (for a reader that will not scan a tree), making it OKF-compatible costs little and is an EXPORT, not a change to the native format — the position WI-1120's own OKF feedback already reached, and still not filed anywhere.
+
+### 2026-08-19T07:42:14Z — claude
+
+THE LAYOUT QUESTION IS SETTLED BY MEASUREMENT, NOT BY LOOKING AT A PAGE, and three of the four candidates fall to facts rather than to taste. The prior note narrowed this to "fenced field map, markdown list, or markdown table -- decide by rendering one real item three ways". Two of those three are now disqualified, and the surviving one is not the one that note favoured.
+
+(1) FIELD-PER-LINE IS NOT THE PRIZE. FIELD-PER-LINE PLUS A BLANK LINE IS. Measured on real git, one branch changing `status` against another changing `acceptance`:
+
+  head as one physical line (today)          -> CONFLICT
+  one field per line, the two ADJACENT       -> CONFLICT
+  one field per line, a blank line between   -> clean
+
+Isolating the rule: with 0 unchanged lines between the two edited lines git conflicts; with 1 or more it merges. So the ticket's reduction (2) as written does NOT buy the merge property -- two co-edited fields that happen to sit next to each other conflict exactly as the 278-character line does. The blank line is load-bearing and belongs in the ticket's text.
+
+(2) THE TABLE IS DISQUALIFIED ON THIS TICKET'S OWN SUCCESS CRITERION, which is a stronger objection than the escaping one raised in review. GFM parses table cells as inline content and needs `|` escaped -- a second escaping layer -- but the decisive fact is that a blank line TERMINATES a table. Per (1) the blank line is what buys the merge, so a table cannot buy the property this ticket exists for. It is not a weaker candidate; it is a non-candidate. (github.github.com/gfm/#tables-extension-)
+
+(3) YAML IS OUT ON A SYNTAX COLLISION, NOT ON A PRINCIPLE, and the collision is checkable. Run against a real YAML parser:
+
+  REJECT  status: Claimed(agent: "claude", since: "2026-08-18T05:22:11Z")
+     ==>  mapping values are not allowed in this context, line 1 column 22
+  REJECT  acceptance: [ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")]
+     ==>  did not find expected ',' or ']' while parsing a flow sequence
+  OK      created: 2026-08-17T08:43:54Z
+     ==>  {"created" => 2026-08-17 08:43:54 UTC}      <- a Time, NOT the String the domain declares
+
+anthill's named-argument syntax IS YAML's mapping indicator (`: `). The two most information-dense fields in the head are YAML SYNTAX ERRORS, and the one field that parses is SILENTLY RETYPED. Repairing that means quoting every term-valued field -- the same second escaping layer that killed the table, except it bites UNIVERSALLY rather than occasionally. The prior note refused YAML on "it brings a language we must then refuse"; the sharper statement is that the two languages collide at the character level.
+
+THIS ALSO CONVICTS THE HEAD THIS TICKET PROPOSES. `id: WI-1121`, `created: 2026-08-17T08:43:54Z` and `depends_on: [WI-1114]` are BARE SCALARS -- they mean something only under YAML's rule that an unquoted scalar is a string, which anthill does not have. The description says "THIS IS NOT A MOVE TO YAML" and then writes YAML's scalar language. Values must keep their anthill spelling.
+
+And the third reading -- YAML's `---` delimiters around non-YAML content -- is the worst option rather than a compromise: GitHub attempts to parse frontmatter as YAML, fails, falls back to CommonMark where `---` is a thematic break and the field lines are soft-joined into ONE RUN-ON PARAGRAPH. That is precisely the failure the git-trailers survey already recorded, reached by a different road.
+
+(4) THE GENERAL RULE THE TABLE OBJECTION IS AN INSTANCE OF: any layout that puts a value in MARKDOWN INLINE CONTEXT needs a second escaping layer over it. That convicts the bare bullet list too -- `[...]` is link syntax, `_`/`*` emphasis, backticks code spans, `<` HTML -- and every head carries at least two bracketed lists. BUT THE ESCAPE HATCH IS MARKDOWN'S OWN: a CODE SPAN suspends inline parsing. So the surviving shape is a bullet list whose values are code spans:
+
+  - id: `WI-1121`
+  - created: `2026-08-17T08:43:54Z`
+  - acceptance: `[ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")]`
+
+A blank line between bullets makes the list LOOSE, it does not end it -- which is exactly where the table died, and it is why the list survives (1) and the table does not. THE BACKTICKS ARE REQUIRED, NOT OPTIONAL: an optional wrapper is two spellings for one datum, which is the 344-bare-against-766-wrapped hazard §5.5 already recorded as the cause of a live bug.
+
+THE FENCE REMAINS THE CHEAPER OPTION AND SHOULD BE STATED AS THE ALTERNATIVE rather than dropped: inside a fence the reader consumes ZERO markdown tokens (the list form must strip `- ` and a backtick pair), the region already exists, and the change becomes "what is inside the block" rather than a new region. What the list buys over it is that the head renders as CONTENT rather than as a code block, which is why `.md` was chosen at all. Correcting the prior note on one point of fact: a fenced block is NOT "invisible to a GitHub reader" -- it renders as a visible code block, un-pretty rather than unseen.
+
+(5) THE BLANK LINE IS THE HEAD'S COUPLING DECLARATION, and this is what makes flattening `status` safe. From (1): adjacency conflicts, separation merges. Read that as a design tool rather than a constraint --
+
+  A BLANK LINE MEANS "THIS FIELD CHANGES INDEPENDENTLY".
+  ADJACENCY MEANS "THESE FIELDS CHANGE TOGETHER".
+
+-- and the layout encodes which fields form a transition. `id`, `created`, `acceptance`, `depends_on` are blank-separated because they are independent; the status group is written ADJACENT with no blanks, so two concurrent status edits collide as they should instead of silently interleaving into a half-transition.
+
+(6) STATUS FLATTENS -- `status: Claimed` plus sibling fields (user, 2026-08-19) -- AND THE MEASUREMENT SAYS IT FINISHES WI-1120'S JOB RATHER THAN MERELY TIDYING. Per-field, the longest value in any head on this tracker is not `depends_on` or `acceptance`. It is `status`, at 1842 characters (WI-1115): `ProposalRejected(reason: "SPLIT 2026-08-17, not abandoned ...")`. THE 2062-CHARACTER MAXIMUM HEAD LINE THIS TICKET OPENS WITH IS A REJECTION REASON. WI-1120 moved `description` and `Feedback.content` out of the head because they are prose, and MISSED this one because it was buried inside a variant payload. Flattening exposes it, and then the EXISTING `Chapter` mechanism takes it -- `status_reason` is prose and becomes a chapter, with no new machinery. 12 items carry a reason.
+
+With the reason moved, every remaining head value is a one-liner: the longest is `depends_on` at 205 characters (WI-648, 19 dependencies) and exactly one field value on the whole tracker exceeds 110. So the code-span form in (4) needs NO multi-line spelling, and one spelling is what it should have.
+
+TWO CONSEQUENCES THAT MUST BE DECIDED, NOT ASSUMED:
+
+  * THE KEY MUST BE AN ANTHILL FIELD NAME. `status-change-agent` is not one -- this domain writes `snake_case` (`depends_on`, `requires_capability`) -- so it wants `status_agent` / `status_at` / `status_reason`.
+  * THE DOMAIN FLATTENS TOO, or the reader learns the schema. `status: Claimed` bare is already valid anthill (the tracker writes `status: Open` bare in 121 places), but `Claimed` is NOT nullary today. Either `WorkStatus` becomes a plain nullary enum and `WorkItem` gains `status_agent`/`status_at`/`status_reason` as Options -- the document then being a direct field map -- or the mapping SYNTHESIZES `Claimed(agent:, since:)` from three head lines, which requires a per-variant payload table, i.e. exactly the stage0 schema knowledge §5.4 says the reader must never learn. TAKE THE DOMAIN CHANGE.
+
+It also repairs a wart worth naming: today the payloads are irregular -- `since` on Claimed/Stale, `at` on the other four, `agent` on only two, and `Verified` carries NO agent at all, so "who verified this" is currently unrecorded. The uniform triple records it for every transition, and makes that one change instead of two.
+
+AND IT CHANGES WHAT THE MIGRATION IS. The description promises "a pure reformat with no data change, so a before/after per-functor row count is a complete correctness check". With status flattened that is NO LONGER TRUE: the row count is unchanged while every status value is rewritten into a different shape. The check must become per-field, over the reconstructed status, or it proves nothing about the half of the change that can actually go wrong.
+
+(7) THE FIELD SET, decided (user, 2026-08-19):
+
+  * `id` STAYS. It is the filename-versus-fact integrity check, and it keeps a row meaningful in an export, in query output and in `orphaned.anthill`. Without it an accidental filename rename is an UNDETECTABLE identity change. This also settles `status`'s presence in the head by the identical argument -- it is duplicated by the DIRECTORY as `id` is by the filename, it is what §10's directory-versus-status check compares against, and without it a stray `mv` between status directories is an undetectable state change. The ticket's reduction (3) is therefore narrowed to the always-absent fields, not to the keys.
+  * `Feedback.workitem` STAYS FOR NOW, deferred until every context-free representation has an explicit key-reattachment contract. `Tag.workitem` defers with it by the same argument, so `tags: [wi437]` as a collapsed head field waits too -- 287 rows, not the prize.
+
+THE DEFERRAL HAS A COST, AND IT IS THE ONE THE NEXT POINT IS ABOUT: keeping `Feedback.workitem` in the head is what forces every feedback append through the one region that cannot be auto-merged.
+
+(8) FEEDBACK APPENDS CONFLICT TODAY, AND THAT IS THE MOST COMMON CONCURRENT AGENT OPERATION. Measured -- two branches each appending a different `###` entry:
+
+  default text merge                          -> CONFLICT
+  `merge=union` via .gitattributes            -> clean, both entries kept
+
+`union` is a BUILT-IN driver, so `.gitattributes` alone enables it with no per-clone `git config` -- it travels with the repo. Two caveats the run exposed: union does NOT order (the 08-03 entry landed before the 08-02 one), and it drops the blank line between joined hunks. The ordering caveat is harmless only where nothing binds entries POSITIONALLY -- so it is safe once feedback has one home, and BROKEN today, where §5.4 binds the Nth head row to the Nth entry and union would silently desynchronise them.
+
+THE STRUCTURAL POINT: git grants a merge driver PER PATH, never per region. Union on the item file as a whole would union a `status:` change into TWO STATUS LINES. So append/append has exactly three answers --
+
+  * one file per entry: conflict-free by construction, no git machinery, costs the single rendered page (the reason for `.md`);
+  * a FORMAT-AWARE driver, `anthill-todo merge %O %A %B`: keeps one document, unions entries AND sorts by `at` AND merges the head field-wise AND can refuse loudly. It is small precisely because WI-1120 already built the reader and the writer. `.gitattributes` cannot install a custom driver, so each clone needs one `git config` line; ABSENT, git falls back to an ordinary conflict -- loud, not silent, which is the right failure. `fsck` should report the driver missing so its absence is not discovered by surprise;
+  * nothing, and every concurrent feedback add conflicts.
+
+The general shape worth recording: CONFLICT-FREEDOM HERE HAS ALWAYS COME FROM DISJOINT BYTES, NOT FROM CLEVER RESOLUTION. WI-1114 got it between items (a file each); the field map gets it between fields (a line each, plus a blank). Only append-into-a-shared-list resists that, because both sides insert after the same anchor. The driver is a separate ticket and independent of the layout; the layout should not wait for it.
+
+(9) THE ALWAYS-ABSENT REDUCTION SHOULD RIDE IN THIS REWRITE, and it is bigger than the description says. Re-measured on 1127 files: `context`/`generates`/`requires_capability` are written 1124 times each (3372), and `params: none` a further 1148 times inside every `ToolPasses` -- so the reduction reaches NESTED applications, not only top-level head fields, and is a PRINTER rule rather than a layout one. About 4500 writes of nothing, roughly 40% of the 279-character mean head line, removable as a genuine reformat.
+
+ONE EXCLUSION, AND THE ROW-COUNT CHECK WOULD NOT CATCH IT: `depends_on: some(value: nil)`, written 692 times, is NOT in that class. `some([])` and `none` are different values, so dropping it is a data change. Decide it deliberately or leave it.
+
+MEASUREMENTS: 1127 item files, 1127 WorkItem / 1196 Feedback / 287 Tag rows; head line mean 279, median 273, max 2062. Merge and YAML results reproduced with git 3-way merges and a YAML 1.2 parser on the exact strings above.
 
