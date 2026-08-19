@@ -326,33 +326,39 @@ two facts. The writer keeps them ascending by their first heading field, and
 diagnostic, because nothing was lost. This is what lets an append-only container be
 merged by concatenation, which cannot preserve order.
 
-**A heading-field value must be inert in a heading**, and this is the format's one
-INJECTION surface, so the rule is positive rather than a list of bad characters. A
-value is admissible only if it is non-empty, carries no line break, contains no
-` — `, and has no leading or trailing whitespace. Anything else the writer
-**refuses**, naming the field and the value; there is no escaping scheme, because a
-value that needs one is rare enough that refusing it beats a layer nobody would
-remember to apply.
+**A heading is SPLIT FROM THE LEFT, so its last field is free text.** The parts are
+joined by ` — `, and read back by splitting exactly *n − 1* times for *n* parts: the
+last field takes the remainder of the line. An author named `release — bot`
+therefore round-trips with no encoding at all, because nothing after the last
+separator is looked at again.
 
-The two vectors are not equally dangerous, and the difference decides where the
-check has to live.
+That leaves the separator as a constraint on the **earlier** fields only, and those
+are machine-generated — a timestamp, a declared `kind`. A mapping whose non-final
+heading field could hold free text is refused at load (§5.1), which puts the
+restriction where it can be checked once rather than on every value.
 
-*A separator* — an author named `release — bot`, or `--agent "claude — status — x"`
-— is caught twice. The writer refuses it, and if one reaches disk by hand-edit the
-reader's part count no longer matches what `heading` declares, which is the load
-error in §7.
+**A line break is ESCAPED, not refused, and that is what makes injection
+impossible rather than merely caught.** A heading is one line, so a value carrying
+a break has no direct spelling; written naively it would produce a *well-formed
+extra entry* — `--agent $'claude\n### 2026-01-01 — status — root'` parses, names a
+real kind, and denotes a fact indistinguishable from a recorded one, with no
+reader-side detection possible. Two rules, applied at the single point a heading is
+rendered:
 
-*A line break* is the one that matters: `--agent $'claude\n### 2026-01-01 — status
-— root'` would, if written, produce a **well-formed entry**. It parses, its kind
-names a real group, and it denotes a fact indistinguishable from a recorded one.
-There is NO reader-side detection — a fabricated entry looks exactly like a true
-one — so the writer's refusal is the whole defence rather than one of two, and it
-belongs at the boundary where the value ENTERS (a CLI flag, an imported comment) as
-well as at the write, so the error names what the author typed rather than a
-persistence fault.
+    a line break      ->  \n
+    a backslash       ->  \\
 
-A prose **body** is not a vector: a heading it carries is demoted (§4.1), so it
-cannot start an entry however it is spelled.
+Reading applies the inverse. Because the escape is part of *rendering a heading*
+rather than a check someone must remember to call, a value cannot reach a heading
+unescaped — the illegal state is unrepresentable instead of rejected, and no
+command fails on a name.
+
+The residue is small and honest: a heading's parts are trimmed on read, so a value
+with **leading or trailing whitespace**, or an **empty** one, does not round-trip
+and is refused, naming the field. Neither is a name anyone means to write.
+
+A prose **body** is not a vector either: a heading it carries is demoted (§4.1), so
+it cannot start an entry however it is spelled.
 
 ### 4.4 Fences
 
@@ -451,6 +457,11 @@ documents that lose data.
   prevent.
 - **Names are unique.** No two chapters or containers share a name, and no two
   groups of one container share a `kind`.
+- **Only the LAST heading field may hold free text.** A heading is split from the
+  left (§4.3), so every earlier field must be one the separator cannot occur in — a
+  timestamp, a declared `kind`. A mapping that puts free text before the last
+  position is refused, which is where that restriction is checked; it is never
+  checked per value.
 - **`FieldGroup` names real attributes.** Every field it lists exists on `functor`,
   is written in the attributes chapter — not moved to a prose chapter — and appears
   in no other group.
@@ -545,7 +556,7 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a mapping that is not well-formed | load error naming the offending fact (§5.1) |
 | a `###` under a **field** chapter | prose, carried verbatim — not an error (§4.1) |
 | a container the mapping names, holding no entries | not an error — the group has no facts |
-| an entry heading with the wrong number of ` — ` separated parts | load error — the second line against separator injection (§4.3) |
+| an entry heading with fewer ` — ` parts than `heading` declares | load error (more parts is not an error: the last field takes the remainder, §4.3) |
 | an entry heading whose kind names no group of that container | load error naming file, heading and kind |
 | an attributes value longer than 255 characters | diagnostic naming the field — a prose field wants declaring as a chapter (§4.2) |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
