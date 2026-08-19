@@ -86,6 +86,15 @@ concurrent edit to two of them a merge conflict; a blank line makes two fields
 independently mergeable. Fields that are never rewritten belong in a group for the
 same reason — nothing can conflict over them.
 
+**The guarantee is layout, so it reaches only fields written here.** A field of the
+same state whose text lives in a prose chapter cannot be made adjacent to its
+group: `status_reason` sits in `## Reason`, several chapters away from `status` and
+`status_at`, and the two regions merge independently. The format does not pretend
+otherwise. What keeps the pair consistent is that no command writes one without the
+other — `update --status --reason` writes both in a single operation, and there is
+no command that sets a reason alone — so an inconsistent pair is reachable only by
+hand-editing, and is a repair for `fsck` rather than a state the layout prevents.
+
 ### 3.4 Omitted fields
 
 A field absent from the chapter is absent from the fact; an `Option` field so
@@ -125,6 +134,13 @@ is not a heading; the scanner tracks fences.
 `Chapter(functor, field, named)` maps one prose field of the item's fact to one
 chapter with a fixed heading. The field is absent from the attributes chapter, and
 this chapter's body is its text.
+
+**A mapped field is always a chapter, however short its text.** One spelling, so
+nothing has to decide per value and nothing has two homes: `description` gets a
+chapter when it is the single word `test`, and `status_reason` gets one for
+19 characters as readily as for 1842. The alternative — short values inline, long
+values in a chapter — is a threshold to pick, two shapes for one datum, and a
+writer that changes a file's structure when prose grows.
 
 ```markdown
 ## Description
