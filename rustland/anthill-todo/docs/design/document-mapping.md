@@ -195,6 +195,25 @@ container level above it. A `###` under `## Description` is **prose**, which is
 what keeps a hand-added sub-section alive across a `claim` that rewrites the head
 and renames the file.
 
+**Concretely, at the `level: 2` this domain declares.** The rule above is stated in
+terms of `level` because the level is a parameter; this is what it comes to for the
+value actually in force, since a reader wanting to know whether `Description` is an
+`h1` or an `h2` should not have to derive it.
+
+| heading | at the top of the document | inside a field chapter | inside an entry |
+| --- | --- | --- | --- |
+| `#` | load error | load error | load error |
+| `##` | `Attributes`, `Description`, `Reason`, `Changes` | ends the chapter — demoted on write | ends the entry — demoted on write |
+| `###` | an entry, inside a container | **prose** | ends the entry — demoted on write |
+| `####` and deeper | — | prose | prose |
+
+So `Description` is an `h2` and a feedback entry is an `h3`. `#` is unused: the
+hierarchy runs from `level` downwards and nothing above it has a meaning, so an
+`h1` is refused rather than silently classified. Raising the whole structure by one
+— `Description` becoming an `h1` — is the single fact `DocumentFormat(level: 1)`,
+and it buys one more level of prose depth everywhere at the cost of `h1`-sized
+chapter headings.
+
 A heading **above** `level` (`#`) is a load error wherever it appears: the
 hierarchy is defined from `level` downwards and nothing above it has a meaning.
 
