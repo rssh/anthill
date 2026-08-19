@@ -543,30 +543,61 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 
 `context`, `generates` and `requires_capability` are absent, so they are `none`.
 
-## 7. Load errors and diagnostics
+## 7. Faults
+
+**A file with this suffix will be written by hand.** `.md` is chosen so GitHub
+renders it, and anything a person can read a person can also author — so an agent
+that has never seen this specification will generate an `.anthill.md`, and a human
+will edit one. The fault model is built for that, not for files only this writer
+produced.
+
+**Every fault is REPORTED at load and listed by `fsck`.** Not one or the other:
+nothing is silent, and nothing has to be tripped over to be found. What varies is
+one thing only —
+
+> a fault **blocks** when it makes the store's routing ambiguous, because the next
+> write would have to guess. Everything else is reported and does not stand between
+> the user and the tracker.
+
+— and **blocking blocks WRITES, never reads**. The store is always built and the
+tracker always opens, because `fsck` needs the store before it can say anything and
+raising would take down the one command written to diagnose the problem. A file the
+reader cannot make sense of costs that item, not the tracker: the other 1126 load,
+`list` works, and `fsck` names what is wrong.
+
+Only one fault is global, and it is configuration rather than data: a mapping that
+is not well-formed (§5.1). Nothing can load against a mapping that does not
+describe a format.
+
+**Where the loader is too permissive today**, and a hand-authored file is how it
+shows: an omitted *required* attribute is filled with a fresh variable rather than
+refused, everywhere, which is the pre-existing gap §5.5 recorded. A file someone
+writes without `acceptance` therefore loads a `WorkItem` holding a free variable
+instead of reporting that the field is missing. That is a fault (`blocking`), not a
+silent fill.
 
 | situation | response |
 | --- | --- |
-| text before the first chapter | load error |
-| a heading above the first structural level | load error naming file and heading |
-| the attributes chapter is missing | load error |
-| an attributes line that is not `- key: value` | load error naming file and line |
-| a key repeated in the attributes chapter | load error |
-| a key naming neither a field of the functor nor a declared attributes field | load error |
-| a value with no spelling for its declared type | load error naming file, field and value |
-| an unterminated backtick value | load error |
-| a prose chapter the mapping names is missing | `Option` field → `none` |
-| two chapters with one name, field not declared repeated | load error |
-| a heading at a structural level the mapping does not account for in that scope | load error naming file and heading — the reader's rule; the writer demotes instead (§4.1) |
-| a fenced code block opened in prose and never closed | load error naming the line the fence opens on (§4.4) |
-| a status field combination no variant admits | load error naming the item, the status and the offending companion (§3.3) |
-| a mapping that is not well-formed | load error naming the offending fact (§5.1) |
+| text before the first chapter | fault, blocking |
+| a heading above the first structural level | fault, blocking — names file and heading |
+| the attributes chapter is missing | fault, blocking — the file is not an item |
+| an attributes line that is not `- key: value` | fault, blocking — names file and line |
+| a key repeated in the attributes chapter | fault, blocking — which value wins is a guess |
+| a key naming neither a field of the functor nor a declared attributes field | fault, blocking — writing back would drop it |
+| a value with no spelling for its declared type | fault, blocking — names file, field and value |
+| an unterminated backtick value | fault, blocking |
+| a prose chapter the mapping names is missing | `Option` field → `none`; a REQUIRED field is a fault, blocking — never a fresh variable |
+| two chapters with one name, field not declared repeated | fault, blocking — which fills the field is a guess |
+| a heading at a structural level the mapping does not account for in that scope | fault, blocking — it truncates a field; the writer demotes instead (§4.1) |
+| a fenced code block opened in prose and never closed | fault, blocking — names the line the fence opens on (§4.4) |
+| a status field combination no variant admits | fault, NON-blocking — the fact is well-typed and routing is unaffected; repair may need a human, since a missing agent is information |
+| a mapping that is not well-formed | GLOBAL — nothing loads; names the offending fact (§5.1) |
 | a `###` under a **field** chapter | prose, carried verbatim — not an error (§4.1) |
 | a container the mapping names, holding no entries | not an error — the group has no facts |
-| an entry heading with fewer ` — ` parts than `heading` declares | load error (more parts is not an error: the last field takes the remainder, §4.3) |
+| an entry heading with fewer ` — ` parts than `heading` declares | fault, blocking (more parts is fine: the last field takes the remainder, §4.3) |
 | a `b64:` value that decodes to something writable literally | diagnostic; `fsck --fix` rewrites it literally (§4.3) |
-| a `b64:` value that is not valid base64 | load error naming file, heading and field |
-| an entry heading whose kind names no group of that container | load error naming file, heading and kind |
+| a `b64:` value that is not valid base64 | fault, blocking — names file, heading and field |
+| an entry heading whose kind names no group of that container | fault, blocking — which functor it is would be a guess |
 | an attributes value longer than 255 characters | diagnostic naming the field — a prose field wants declaring as a chapter (§4.2) |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
 | attributes, filename and directory disagree | diagnostic; `fsck --fix` repairs from the attributes |
