@@ -565,6 +565,28 @@ raising would take down the one command written to diagnose the problem. A file 
 reader cannot make sense of costs that item, not the tracker: the other 1126 load,
 `list` works, and `fsck` names what is wrong.
 
+**Read as much as can be read, and never write it back.** A fault is scoped to the
+smallest thing it makes ambiguous, and everything outside that scope loads
+normally: a malformed entry heading costs that **entry**, not the item; a value
+with no spelling costs that **field**, not the fact; a repeated key costs the one
+field whose value is a guess. Only a fault that makes the item's *identity*
+ambiguous — no attributes chapter, no `id` — costs the item, because there is then
+nothing to attach the rest to.
+
+That resilience is safe **only because a blocking fault refuses writes**, and the
+two halves are one design rather than two. A partial read that could be written
+back would silently delete the part that could not be read — the reader drops what
+it could not parse, the writer re-renders from what it holds, and the difference is
+gone. Blocking is what turns "read what you can" from data loss into a repair
+opportunity: the file on disk keeps everything, the KB holds what was legible, and
+`fsck` names the gap.
+
+**And nothing is reconstructed by guessing.** Where content cannot be interpreted
+it is reported as unread, not repaired by heuristic: an unclosed fence swallows the
+rest of the file, and the reader says exactly that rather than deciding where the
+author meant it to close. A guess that lands wrong is the one outcome worse than a
+gap, because it looks like data.
+
 Only one fault is global, and it is configuration rather than data: a mapping that
 is not well-formed (§5.1). Nothing can load against a mapping that does not
 describe a format.
