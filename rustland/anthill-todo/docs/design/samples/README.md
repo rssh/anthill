@@ -1,4 +1,9 @@
-# Sample items in the proposed document format (WI-K63ZV)
+# Sample items in the item document format (WI-K63ZV)
+
+> **DELIVERED.** The format these samples proposed is implemented, and the whole
+> tracker is written in it — so the real items beside this directory are now the
+> reference, and these are kept as the record of what was compared against what.
+> Where a sample and a real item disagree, the real item wins.
 
 Seven real work items, converted by hand from the current format to the one
 described in `../document-mapping.md`, so the rendered page can be judged

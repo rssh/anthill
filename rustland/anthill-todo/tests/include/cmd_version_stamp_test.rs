@@ -48,7 +48,7 @@ fact WorkItem(
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 const STAMPED_CURRENT: &str = r#"
@@ -60,7 +60,7 @@ fact WorkItem(
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 // A stamp at a version the binary does not understand — stands in for a project
@@ -74,7 +74,7 @@ fact WorkItem(
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 /// `init` scaffolds a stamped project, so a following command must not warn

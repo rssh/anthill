@@ -59,7 +59,7 @@ fact WorkItem(
   description: "{head}{TAIL_WORD}",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-002",
@@ -67,7 +67,7 @@ fact WorkItem(
   description: "{SUMMARY_LINE}\n\n{BODY_WORD} second paragraph",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-003",
@@ -75,7 +75,7 @@ fact WorkItem(
   description: "{SHORT_DESC}",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-004",
@@ -83,7 +83,7 @@ fact WorkItem(
   description: "\n{BURIED_TITLE}\n\n{BODY_WORD} again",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-005",
@@ -91,7 +91,7 @@ fact WorkItem(
   description: "{TRAILING_NEWLINE_DESC}\n",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact Tag(workitem: "WI-001", name: "seq")
 fact Tag(workitem: "WI-002", name: "seq")

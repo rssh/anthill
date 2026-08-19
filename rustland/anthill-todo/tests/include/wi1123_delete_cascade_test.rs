@@ -69,7 +69,7 @@ const ITEM_PER_FILE_BINDING: &str = r#"fact Project(
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    status_field: "status",
+    status_field: "last_status_change.status",
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),

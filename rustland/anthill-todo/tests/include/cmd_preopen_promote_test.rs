@@ -17,7 +17,7 @@ fact WorkItem(
   description: \"open item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 const SINGLE_PREOPENED_WI: &str = "\
@@ -27,7 +27,7 @@ fact WorkItem(
   description: \"backlog item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: PreOpened)
+  last_status_change: StatusChange(status: PreOpened()))
 ";
 
 const SINGLE_CLAIMED_WI: &str = "\
@@ -37,8 +37,7 @@ fact WorkItem(
   description: \"claimed item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Claimed(agent: \"alice\", since: \"2026-05-01T00:00:00Z\"))
-";
+  last_status_change: StatusChange(status: Claimed(), agent: some(value: \"alice\"), at: some(value: \"2026-05-01T00:00:00Z\")))";
 
 #[test]
 fn preopen_demotes_open_to_preopened() {

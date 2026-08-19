@@ -14,7 +14,7 @@ fact WorkItem(
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: \"WI-002\",
@@ -22,7 +22,7 @@ fact WorkItem(
   description: \"second\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 #[test]
@@ -233,7 +233,7 @@ fact WorkItem(
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: \"WI-002\",
@@ -241,7 +241,7 @@ fact WorkItem(
   description: \"second\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [\"WI-001\"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
     let tmp = tempfile::tempdir().unwrap();
     let proj = setup_project(&tmp, project_text);

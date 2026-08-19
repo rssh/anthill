@@ -25,7 +25,7 @@ fact WorkItem(
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: \"WI-002\",
@@ -33,7 +33,7 @@ fact WorkItem(
   description: \"second\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ",
     );
 
@@ -64,14 +64,14 @@ fact WorkItem(
     let workitems = fs::read_to_string(inner.join("workitems.anthill")).unwrap();
     // WI-001's Open block must be gone, and its Claimed replacement must be
     // in the SAME workitems.anthill (SingleFile convention) — so exactly one
-    // `status: Open)` remains (WI-002's) and WI-001 reads Claimed.
+    // `status: Open` remains (WI-002's) and WI-001 reads Claimed.
     assert_eq!(
-        workitems.matches("status: Open)").count(),
+        workitems.matches("status: Open").count(),
         1,
         "only WI-002 should still be Open: {workitems}"
     );
     assert!(
-        workitems.contains("status: Claimed(agent: \"claude\""),
+        workitems.contains("status: Claimed, agent: some(value: \"claude\")"),
         "WI-001 Claimed replacement should be in workitems.anthill: {workitems}"
     );
     // WI-002 untouched.
@@ -90,7 +90,7 @@ fact WorkItem(
             let content = fs::read_to_string(&path).unwrap();
             if content.contains("\"WI-001\"")
                 && content.contains("Claimed")
-                && content.contains("agent: \"claude\"")
+                && content.contains("agent: some(value: \"claude\")")
             {
                 found_claimed = true;
                 break;
@@ -125,7 +125,7 @@ fact WorkItem(
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ",
     );
     let inner = proj.join("anthill-todo");

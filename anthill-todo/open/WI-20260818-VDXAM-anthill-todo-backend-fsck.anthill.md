@@ -1,10 +1,17 @@
-```anthill
-fact WorkItem(id: "WI-20260818-VDXAM-anthill-todo-backend-fsck", created: "2026-08-18T10:23:40Z", acceptance: [ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")], depends_on: some(value: ["WI-1121"]), status: Open)
+## Attributes
 
-fact Tag(workitem: "WI-20260818-VDXAM-anthill-todo-backend-fsck", name: "wi437")
-```
+- id: WI-20260818-VDXAM-anthill-todo-backend-fsck
+- created: 2026-08-18T10:23:40Z
 
-## description
+- status: Open
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- depends_on: WI-1121
+
+- tags: wi437
+
+## Description
 
 anthill-todo backend: `fsck --renumber` — the REPAIR half of design §6.6, whose detection shipped with WI-1121. Two unsynced writers can mint ids whose `<time>-<hash>` identity prefixes agree; `LayoutFault::IdCollision` now names that and BLOCKS, which is the half only the tracker can do (their slugs differ, so their filenames differ, so git merges the two files cleanly and nothing at the VCS or filesystem level can notice). What is NOT built is the repair, and it is deliberately its own ticket because it changes an IDENTITY rather than a location — a different blast radius from `--fix`, which only moves a file to match its fact.
 

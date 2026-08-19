@@ -1,12 +1,15 @@
-```anthill
-fact WorkItem(id: "WI-20260818-7X7NK-a-projection-over-a-1", created: "2026-08-18T19:15:24Z", context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none), ToolPasses(tool: "scaland-sbt-test", params: none)], depends_on: some(value: nil), generates: none, requires_capability: none, status: Delivered(agent: "claude", at: "2026-08-18T23:26:08Z"))
+## Attributes
 
-fact Feedback(workitem: "WI-20260818-7X7NK-a-projection-over-a-1", author: "claude", at: "2026-08-18T20:54:04Z")
+- id: WI-20260818-7X7NK-a-projection-over-a-1
+- created: 2026-08-18T19:15:24Z
 
-fact Feedback(workitem: "WI-20260818-7X7NK-a-projection-over-a-1", author: "user", at: "2026-08-18T23:26:03Z")
-```
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-18T23:26:08Z
 
-## description
+- acceptance: cargo-test, scaland-sbt-test
+
+## Description
 
 A projection over a 1-collapsed relation is refused by DOT DISPATCH, so the message names the wrong thing. Filed out of WI-1128 (delivered 2026-08-18), which measured it, wrote the reason at the site, and left it unowned.
 
@@ -22,9 +25,9 @@ NOTE THE INTERACTION: if WI-20260818-YQB1Y (the 052 OQ5 split) lands, a one-colu
 
 ACCEPTANCE: `ages.(age)` reports a message naming the projection and the collapse rather than dot dispatch's "no such member", OR the shape question is decided and the current behaviour is recorded as intended with the decision at the site; `r.isEmpty` and every existing single-member dot call on a relation still work (the fallthrough is not broken — drive one, do not assert only that it loads); existing wi639 / wi732 projection tests green; cargo-test green via scripts/test.sh.
 
-## Feedback
+## Changes
 
-### 2026-08-18T20:54:04Z — claude
+### 2026-08-18T20:54:04Z — feedback — claude
 
 RE-CHECKED AFTER WI-20260818-YQB1Y LANDED (052 OQ5 option A, the 1-collapse dropped), because this ticket asked for exactly that ("check before starting"). VERDICT: STILL OPEN, and the route is unchanged.
 
@@ -39,7 +42,7 @@ WHAT THIS MEANS FOR THE TICKET'S SCOPE: the "1-collapsed receiver" framing is go
 
 NOT PINNED BY A TEST, deliberately: a test asserting today's dot-dispatch message would pass both before and after YQB1Y and so measures nothing about it. The measurement is recorded in the header of `wi_yqb1y_one_column_relation_test` instead, with the two spellings above.
 
-### 2026-08-18T23:26:03Z — user
+### 2026-08-18T23:26:03Z — feedback — user
 
 DELIVERED as shape (b) — carry the `.( )` provenance to the failure site — and the marker it was
 costed with turned out to be FREE: WI-762 already marks the desugared tuple

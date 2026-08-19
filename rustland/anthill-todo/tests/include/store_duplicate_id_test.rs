@@ -31,7 +31,7 @@ fact WorkItem(
   description: "first record under this id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "alice", at: "2026-01-01T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "alice"), at: some(value: "2026-01-01T00:00:00Z")))
 
 fact WorkItem(
   id: "WI-001",
@@ -39,7 +39,7 @@ fact WorkItem(
   description: "a wholly different item, same id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "bob", at: "2026-02-02T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "bob"), at: some(value: "2026-02-02T00:00:00Z")))
 
 fact WorkItem(
   id: "WI-002",
@@ -47,7 +47,7 @@ fact WorkItem(
   description: "bystander",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 /// Two separate collisions, one of them three records deep — the shape a
@@ -59,7 +59,7 @@ fact WorkItem(
   description: "first record under this id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "alice", at: "2026-01-01T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "alice"), at: some(value: "2026-01-01T00:00:00Z")))
 
 fact WorkItem(
   id: "WI-001",
@@ -67,7 +67,7 @@ fact WorkItem(
   description: "second record, same id",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-001",
@@ -75,7 +75,7 @@ fact WorkItem(
   description: "third record, same id again",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-002",
@@ -83,7 +83,7 @@ fact WorkItem(
   description: "an unrelated second collision",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-002",
@@ -91,7 +91,7 @@ fact WorkItem(
   description: "its twin",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 /// The same store with the collision resolved. Descriptions still MENTION a
@@ -103,7 +103,7 @@ fact WorkItem(
   description: "first record; supersedes the note in WI-001 above",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "alice", at: "2026-01-01T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "alice"), at: some(value: "2026-01-01T00:00:00Z")))
 
 fact WorkItem(
   id: "WI-003",
@@ -111,7 +111,7 @@ fact WorkItem(
   description: "renumbered away from WI-001, per the collision fix",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "bob", at: "2026-02-02T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "bob"), at: some(value: "2026-02-02T00:00:00Z")))
 
 fact WorkItem(
   id: "WI-002",
@@ -119,7 +119,7 @@ fact WorkItem(
   description: "bystander",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 /// (exit code, stdout, stderr) — this suite is about the FAILURE path, so it

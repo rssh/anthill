@@ -1,11 +1,15 @@
-//! WI-1120 — a work item is a DOCUMENT: an anthill head plus markdown chapters.
+//! WI-1120 — a work item is a DOCUMENT: structured fields, then markdown prose.
 //!
-//! Design: `rustland/anthill-todo/docs/design/backend-github-coordination.md`
-//! §5.3 (the rules) and §5.4 (the mapping and a worked example). `anthill-core`'s
-//! own `persistence::document` unit tests drive the scanner; THIS one drives the
-//! CLI, so it measures the parts that only exist end to end — the declared
-//! mapping reaching the store, prose leaving the head and coming back, and the
-//! invariant that keeps a user's hand-added notes alive.
+//! WI-K63ZV replaced the ENCODING these tests were written against — the fields
+//! moved from a fenced `anthill` head into an `## Attributes` chapter — but not
+//! the invariants, which are WI-1120's contribution and still hold: prose leaves
+//! the structured region and comes back, a hand-added sub-section survives a
+//! rewrite, and a heading the mapping does not name is a LOAD ERROR rather than
+//! a note. Specification: `docs/design/document-mapping.md`.
+//!
+//! `anthill-core`'s `persistence::document` unit tests drive the reader and the
+//! writer; THIS one drives the CLI, so it measures what only exists end to end —
+//! the declared mapping reaching the store, and the opacity invariant.
 //!
 //! WHAT FAILS WITHOUT THE CHANGE: every test here. Before it an item is a block
 //! of `fact` declarations in `WI-NNN.anthill`, so the file these look for does
@@ -14,9 +18,9 @@
 //! WHAT PASSES EITHER WAY BY DESIGN: none of them. The nearest candidate is
 //! `a_state_change_leaves_the_chapters_byte_identical`, which reads like a
 //! restatement of WI-1114's "a claim moves the file" — but its assertion is on
-//! the BYTES of prose the head does not mention, and it fails the day the store
-//! starts re-serialising a whole file from facts, which is the one failure mode
-//! that would quietly eat a user's notes.
+//! the BYTES of prose the attributes do not mention, and it fails the day the
+//! store starts re-serialising a whole file from facts, which is the one failure
+//! mode that would quietly eat a user's notes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -62,7 +66,7 @@ const ITEM_PER_FILE_BINDING: &str = r#"fact Project(
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    status_field: "status",
+    status_field: "last_status_change.status",
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
@@ -93,10 +97,10 @@ fn the_document(proj: &Path, state: &str) -> PathBuf {
     found.pop().expect("checked")
 }
 
-/// THE SHAPE (§5.4): one item file is a fenced `anthill` head followed by
-/// markdown chapters, and the prose is NOT in the head.
+/// THE SHAPE (§2): one item file is an `## Attributes` chapter of data followed
+/// by prose chapters, and the prose is NOT among the attributes.
 #[test]
-fn an_added_item_is_a_fenced_head_plus_a_description_chapter() {
+fn an_added_item_is_an_attributes_chapter_plus_a_description() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
 
@@ -109,14 +113,14 @@ fn an_added_item_is_a_fenced_head_plus_a_description_chapter() {
         path.display()
     );
     let text = fs::read_to_string(&path).expect("read");
-    assert!(text.starts_with("```anthill\n"), "{text}");
-    let (head, body) = text.split_once("\n```\n").expect("a closed head fence");
-    assert!(head.contains("fact WorkItem(id: \""), "{head}");
+    assert!(text.starts_with("## Attributes\n\n"), "{text}");
+    let (attributes, body) = text.split_once("\n## Description\n").expect("a description");
+    assert!(attributes.contains(&format!("- id: {id}\n")), "{attributes}");
     assert!(
-        !head.contains("prose that leaves the head"),
-        "the description is NOT in the head: {head}"
+        !attributes.contains("prose that leaves the head"),
+        "the description is NOT an attribute: {attributes}"
     );
-    assert!(body.contains("## description\n\nprose that leaves the head"), "{body}");
+    assert!(body.starts_with("\nprose that leaves the head"), "{body}");
     // …and it comes back as the description it was.
     assert!(ok(&proj, &["show", &id]).contains("prose that leaves the head"));
 }
@@ -133,15 +137,16 @@ fn feedback_becomes_entries_under_one_container() {
     ok(&proj, &["feedback", &id, "the second note", "--agent", "claude"]);
 
     let text = fs::read_to_string(the_document(&proj, "open")).expect("read");
-    assert_eq!(text.matches("\n## Feedback\n").count(), 1, "one container: {text}");
+    assert_eq!(text.matches("\n## Changes\n").count(), 1, "one container: {text}");
     assert_eq!(text.matches("\n### ").count(), 2, "two entries: {text}");
-    assert!(text.contains(" — user\n"), "the author decorates its heading: {text}");
-    assert!(text.contains(" — claude\n"), "{text}");
+    // The heading IS the fact's structured half — `at`, the KIND, then the
+    // author — so there is no second copy of it anywhere to disagree with.
+    assert!(text.contains(" — feedback — user\n"), "{text}");
+    assert!(text.contains(" — feedback — claude\n"), "{text}");
     assert!(text.contains("the first note"), "{text}");
-    // The head keeps the structured half of each row and none of the prose.
-    let head = text.split("\n```\n").next().expect("head");
-    assert_eq!(head.matches("fact Feedback(").count(), 2, "{head}");
-    assert!(!head.contains("the first note"), "{head}");
+    let attributes = text.split("\n## ").next().expect("attributes");
+    assert!(!attributes.contains("the first note"), "{attributes}");
+    assert!(!attributes.contains("workitem"), "a satellite's key is not written: {attributes}");
     // And both come back.
     let shown = ok(&proj, &["show", &id]);
     assert!(shown.contains("the first note") && shown.contains("the second note"), "{shown}");
@@ -166,13 +171,16 @@ fn a_state_change_leaves_the_chapters_byte_identical() {
     let edited = text.replace("carries notes\n", &format!("carries notes\n{hand_added}"));
     assert_ne!(edited, text, "the edit landed");
     fs::write(&path, &edited).expect("write");
-    let chapters_before = edited.split_once("\n```\n").expect("head fence").1.to_string();
+    let chapters_before = edited.split_once("\n## Description\n").expect("a description").1.to_string();
 
     ok(&proj, &["claim", &id, "--agent", "claude"]);
 
     let moved = fs::read_to_string(the_document(&proj, "claimed")).expect("the item moved");
-    assert!(moved.contains("Claimed(agent: \"claude\""), "the head WAS rewritten: {moved}");
-    let chapters_after = moved.split_once("\n```\n").expect("head fence").1;
+    assert!(
+        moved.contains("- status: Claimed\n- status_agent: claude\n"),
+        "the attributes WERE rewritten: {moved}"
+    );
+    let chapters_after = moved.split_once("\n## Description\n").expect("a description").1;
     assert_eq!(
         chapters_after, chapters_before,
         "every chapter came through the move unchanged, sub-section included"
@@ -192,27 +200,44 @@ fn an_update_rewrites_the_description_chapter_and_no_other() {
     ok(&proj, &["update", &id, "--description", "a second wording"]);
 
     let text = fs::read_to_string(the_document(&proj, "open")).expect("read");
-    assert!(text.contains("## description\n\na second wording"), "{text}");
+    assert!(text.contains("## Description\n\na second wording"), "{text}");
     assert!(!text.contains("the first wording"), "{text}");
     assert!(text.contains("a note that must not move"), "{text}");
 }
 
-/// THE WRITER'S REFUSAL. Prose carrying a heading at the reserved level would
-/// END its own chapter when read back, and the tail would reappear as a stray
-/// chapter — so it is caught BEFORE the file is written, where the command can
-/// still fail with nothing on disk.
+/// PROSE WITH ITS OWN HEADINGS IS DEMOTED, NOT REFUSED (§4.1) — WI-K63ZV\'s
+/// change, and the reason is that text written somewhere else arrives with a
+/// hierarchy starting at `#` or `##`, which collides with the levels this format
+/// reserves. The whole hierarchy shifts down by the MINIMUM that clears them, so
+/// the relative structure is preserved exactly.
+///
+/// IT IS IDEMPOTENT, which is what makes it safe on every write: stored prose has
+/// no collision left, so writing it back shifts nothing.
 #[test]
-fn prose_carrying_a_reserved_heading_is_refused_and_nothing_is_written() {
+fn prose_carrying_a_reserved_heading_is_demoted_rather_than_refused() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
     let id = added_id(&ok(&proj, &["add", "intact", "--created", "2026-08-17T10:22:03Z"]));
-    let before = fs::read_to_string(the_document(&proj, "open")).expect("read");
 
-    let err = fails(&proj, &["update", &id, "--description", "intro\n## a chapter\ntail"]);
-    assert!(err.contains("ends this chapter"), "{err}");
+    ok(&proj, &["update", &id, "--description", "intro\n\n## a section\n\n### under it\n\ntail"]);
 
-    let after = fs::read_to_string(the_document(&proj, "open")).expect("read");
-    assert_eq!(after, before, "the file is untouched");
+    let text = fs::read_to_string(the_document(&proj, "open")).expect("read");
+    assert!(text.contains("\n### a section\n"), "shifted below the reserved level: {text}");
+    assert!(text.contains("\n#### under it\n"), "and its child kept its place under it: {text}");
+    assert_eq!(text.matches("\n## ").count(), 2, "still two chapters: {text}");
+    // The whole description comes back, sub-sections included.
+    let shown = ok(&proj, &["show", &id]);
+    assert!(shown.contains("### a section") && shown.contains("tail"), "{shown}");
+
+    // …and writing it back a second time changes nothing.
+    let again = fs::read_to_string(the_document(&proj, "open")).expect("read");
+    ok(&proj, &["tag", &id, "idempotence"]);
+    let after_tag = fs::read_to_string(the_document(&proj, "open")).expect("read");
+    assert_eq!(
+        after_tag.replace("\n- tags: idempotence\n", "\n"),
+        again,
+        "a second write shifted the prose again"
+    );
 }
 
 /// THE TRUNCATION CASE (§5.3's third row), and it must not look like a note: a
@@ -232,80 +257,47 @@ fn a_heading_the_mapping_does_not_name_is_a_load_error() {
     assert!(err.contains("reserved"), "{err}");
 }
 
-/// AN ENTRY HEADING IS A PROJECTION and is CHECKED, which is the only thing that
-/// makes positional binding safe: without it a reordered or hand-edited entry
-/// would silently rebind prose onto the wrong row.
-#[test]
-fn a_stale_entry_heading_is_reported_and_fsck_fix_rewrites_it() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = per_file_project(&tmp);
-    let id = added_id(&ok(&proj, &["add", "with a note", "--created", "2026-08-17T10:22:03Z"]));
-    ok(&proj, &["feedback", &id, "a note", "--agent", "user"]);
-
-    let path = the_document(&proj, "open");
-    let text = fs::read_to_string(&path).expect("read");
-    fs::write(&path, text.replace(" — user\n", " — somebody-else\n")).expect("write");
-
-    let reported = String::from_utf8_lossy(&run_in(&proj, &["fsck"]).stderr).into_owned();
-    assert!(reported.contains("somebody-else"), "{reported}");
-    assert!(reported.contains("regenerated from the head"), "{reported}");
-
-    let repaired = ok(&proj, &["fsck", "--fix"]);
-    assert!(repaired.contains("rewrote"), "{repaired}");
-    assert!(
-        fs::read_to_string(&path).expect("read").contains(" — user\n"),
-        "the heading agrees with its fact again"
-    );
-}
-
-/// REORDERED ENTRIES ARE NOT A HEADING PROBLEM, and the distinction is the whole
-/// reason positional binding is safe. Entries bind to facts BY POSITION, so a
-/// file whose entries were swapped has already handed each fact the wrong prose
-/// — and "repairing" it by rewriting the headings to match would make the file
-/// self-consistent while permanently reattributing every note to the wrong
-/// author. The repair moves the PROSE.
+/// AN ENTRY HEADING IS THE DATA, NOT A PROJECTION OF IT (WI-K63ZV, §4.3), and
+/// that is a whole fault class gone rather than a check dropped.
 ///
-/// THE CONTROL IS THE TEST ABOVE: a hand-edited heading, where the headings are
-/// NOT a permutation of the facts, still gets rewritten. One uniform rule cannot
-/// serve both, and picking the wrong one silently corrupts an audit trail.
+/// Under the previous encoding the heading was REGENERATED from a field of the
+/// head, so the two could disagree: a hand-edited heading was a diagnostic, and
+/// a REORDERED container was a blocking fault whose repair had to move prose
+/// rather than relabel it, because entries bound to facts by POSITION. Now `at`
+/// and `author` are read out of the heading itself. There is nothing left for it
+/// to disagree with, and order is not data.
+///
+/// SO THIS TEST IS THE OPPOSITE OF THE ONE IT REPLACES: a reordered container is
+/// neither an error nor a diagnostic, and each note is still attached to the
+/// author it was written by.
 #[test]
-fn swapped_entries_are_moved_back_rather_than_relabelled() {
+fn a_reordered_container_is_neither_an_error_nor_a_diagnostic() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
     let id = added_id(&ok(&proj, &["add", "two notes", "--created", "2026-08-17T10:22:03Z"]));
     ok(&proj, &["feedback", &id, "the first note", "--agent", "user"]);
     ok(&proj, &["feedback", &id, "the second note", "--agent", "claude"]);
 
-    // Swap the two entries, the way a careless merge or hand-edit would.
+    // Swap the two entries, the way a union merge or a hand-edit would.
     let path = the_document(&proj, "open");
     let text = fs::read_to_string(&path).expect("read");
-    let (head, body) = text.split_once("## Feedback\n").expect("a container");
-    let entries: Vec<&str> = body
-        .split("### ")
-        .filter(|e| !e.trim().is_empty())
-        .collect();
+    let (head, body) = text.split_once("## Changes\n").expect("a container");
+    let entries: Vec<&str> = body.split("### ").filter(|e| !e.trim().is_empty()).collect();
     assert_eq!(entries.len(), 2, "two entries: {body}");
-    let swapped = format!("{head}## Feedback\n### {}### {}", entries[1], entries[0]);
-    fs::write(&path, &swapped).expect("write");
+    fs::write(&path, format!("{head}## Changes\n### {}### {}", entries[1], entries[0]))
+        .expect("write");
 
-    // It BLOCKS — every read of this file is currently wrong, not just its
-    // headings — and says which way the repair goes.
-    let err = fails(&proj, &["list"]);
-    assert!(err.contains("wrong order"), "{err}");
-    assert!(err.contains("will not relabel"), "{err}");
-
-    let repaired = ok(&proj, &["fsck", "--fix"]);
-    assert!(repaired.contains("back in the head's order"), "{repaired}");
-
-    // Each note is under its OWN heading again.
-    let fixed = fs::read_to_string(&path).expect("read");
-    let user_at = fixed.find("— user").expect("the user entry");
-    let first = fixed.find("the first note").expect("the first note");
-    let claude_at = fixed.find("— claude").expect("the claude entry");
-    let second = fixed.find("the second note").expect("the second note");
-    assert!(user_at < first && first < claude_at, "notes reattached: {fixed}");
-    assert!(claude_at < second, "notes reattached: {fixed}");
+    // Nothing to report: the same entries in any order denote the same facts.
     assert!(ok(&proj, &["fsck"]).contains("layout ok"));
+
+    // And each note is still its own author's — which is the property the old
+    // positional binding needed a blocking fault to protect.
+    let shown = ok(&proj, &["show", &id]);
+    let user_at = shown.find("user").expect("the user entry");
+    let first = shown.find("the first note").expect("the first note");
+    let claude_at = shown.find("claude").expect("the claude entry");
+    let second = shown.find("the second note").expect("the second note");
+    assert!(user_at < first && claude_at < second, "notes kept their authors: {shown}");
 }
 
 /// FILENAME-VS-ID, the check this increment's acceptance surface asks for. It is
@@ -344,7 +336,7 @@ fn migrate_to_document_converts_a_plain_tree_and_backdates_created() {
     fs::write(
         dir.join("WI-042.anthill"),
         "fact WorkItem(id: \"WI-042\", description: \"a legacy item\", \
-         acceptance: [], status: Open)\n\n\
+         acceptance: [], last_status_change: StatusChange(status: Open()))\n\n\
          fact Feedback(workitem: \"WI-042\", author: \"user\", content: \"a legacy note\", \
          at: \"2026-04-04T04:04:04Z\")\n",
     )
@@ -361,8 +353,8 @@ fn migrate_to_document_converts_a_plain_tree_and_backdates_created() {
 
     assert!(!dir.join("WI-042.anthill").exists(), "the plain file is gone");
     let text = fs::read_to_string(dir.join("WI-042.anthill.md")).expect("the document");
-    assert!(text.contains("created: \"2026-04-04T04:04:04Z\""), "{text}");
-    assert!(text.contains("## description\n\na legacy item"), "{text}");
+    assert!(text.contains("- created: 2026-04-04T04:04:04Z\n"), "{text}");
+    assert!(text.contains("## Description\n\na legacy item"), "{text}");
     assert!(text.contains("a legacy note"), "{text}");
     // The rows are the rows they were — a reformat, not a data change.
     let shown = ok(&proj, &["show", "WI-042"]);
@@ -390,7 +382,7 @@ fn a_conversion_dates_an_undated_item_from_its_file() {
     fs::create_dir_all(&dir).expect("mkdir");
     fs::write(
         dir.join("WI-043.anthill"),
-        "fact WorkItem(id: \"WI-043\", description: \"undated\", acceptance: [], status: Open)\n",
+        "fact WorkItem(id: \"WI-043\", description: \"undated\", acceptance: [], last_status_change: StatusChange(status: Open()))\n",
     )
     .expect("write");
 
@@ -402,7 +394,7 @@ fn a_conversion_dates_an_undated_item_from_its_file() {
     assert!(out.contains("--created-from"), "and the better one: {out}");
 
     let text = fs::read_to_string(dir.join("WI-043.anthill.md")).expect("the document");
-    assert!(text.contains("created: \""), "a real stamp was written: {text}");
+    assert!(text.contains("- created: 20"), "a real stamp was written: {text}");
     assert!(!text.contains("?created"), "not the loader's fill var: {text}");
     assert!(ok(&proj, &["show", "WI-043"]).contains("undated"));
 }
@@ -422,7 +414,7 @@ fn the_supplied_table_is_preferred_over_the_file_time() {
     fs::write(
         dir.join("WI-044.anthill"),
         "fact WorkItem(id: \"WI-044\", description: \"dated by the table\", \
-         acceptance: [], status: Open)\n",
+         acceptance: [], last_status_change: StatusChange(status: Open()))\n",
     )
     .expect("write");
     let table = tmp.path().join("created.tsv");
@@ -439,7 +431,7 @@ fn the_supplied_table_is_preferred_over_the_file_time() {
     );
 
     let text = fs::read_to_string(dir.join("WI-044.anthill.md")).expect("the document");
-    assert!(text.contains("created: \"2026-04-04T04:04:04Z\""), "{text}");
+    assert!(text.contains("- created: 2026-04-04T04:04:04Z\n"), "{text}");
 }
 
 /// `--to item-per-file` WRITES DOCUMENTS TOO, so it needs the same `created`
@@ -462,9 +454,9 @@ fn migrating_a_pre_created_tracker_dates_it_and_leaves_it_readable() {
     let proj = setup_project(
         &tmp,
         "fact WorkItem(id: \"WI-001\", description: \"a pre-created item\", \
-         acceptance: [], depends_on: [], status: Open)\n\
+         acceptance: [], depends_on: [], last_status_change: StatusChange(status: Open()))\n\
          fact WorkItem(id: \"WI-002\", description: \"another\", \
-         acceptance: [], depends_on: [], status: Open)\n",
+         acceptance: [], depends_on: [], last_status_change: StatusChange(status: Open()))\n",
     );
 
     let out = ok(&proj, &["migrate", "--to", "item-per-file"]);
@@ -472,7 +464,7 @@ fn migrating_a_pre_created_tracker_dates_it_and_leaves_it_readable() {
 
     let text = fs::read_to_string(proj.join("anthill-todo/open/WI-001.anthill.md"))
         .expect("the document");
-    assert!(text.contains("created: \""), "{text}");
+    assert!(text.contains("- created: 20"), "{text}");
     assert!(!text.contains("?created"), "no unbound stamp reached disk: {text}");
 
     let listed = ok(&proj, &["list"]);
@@ -498,8 +490,8 @@ fn a_document_with_no_description_chapter_loads_with_none() {
     fs::create_dir_all(&dir).expect("mkdir");
     fs::write(
         dir.join("WI-20260101-AAAAA-no-chapter.anthill.md"),
-        "```anthill\nfact WorkItem(id: \"WI-20260101-AAAAA-no-chapter\", \
-         created: \"2026-01-01T00:00:00Z\", acceptance: [], status: Open)\n```\n",
+        "## Attributes\n\n- id: WI-20260101-AAAAA-no-chapter\n\
+         - created: 2026-01-01T00:00:00Z\n\n- status: Open\n",
     )
     .expect("write");
 
@@ -512,24 +504,22 @@ fn a_document_with_no_description_chapter_loads_with_none() {
     );
 }
 
-/// §5.3's "unknown key in the head" row: the head is the machine's region, and a
-/// field the schema does not declare is a LOAD ERROR naming the file.
+/// §7's "a key naming neither a field of the functor nor a declared attributes
+/// field" row: the attributes chapter is the machine's region, and a key the
+/// schema does not declare BLOCKS — because writing the file back would drop it.
 ///
-/// PASSES EITHER WAY BY DESIGN — this is the loader's existing check, not one
-/// this increment adds. It is pinned here because the acceptance surface lists
-/// it, and because what it proves is specific to the encoding: the head really
-/// is parsed as anthill against the declared domain, rather than scanned for
-/// what the store happens to want.
+/// The fault is SCOPED to that field (§7): the rest of the item still loads, and
+/// what makes reading it partially safe is precisely that writes are refused.
 #[test]
-fn an_unknown_key_in_the_head_is_a_load_error_naming_the_file() {
+fn an_unknown_attributes_key_is_a_load_error_naming_the_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = per_file_project(&tmp);
     let dir = proj.join("anthill-todo/open");
     fs::create_dir_all(&dir).expect("mkdir");
     fs::write(
         dir.join("WI-20260101-BBBBB-bad-key.anthill.md"),
-        "```anthill\nfact WorkItem(id: \"WI-20260101-BBBBB-bad-key\", \
-         created: \"2026-01-01T00:00:00Z\", acceptance: [], status: Open, nonesuch: \"x\")\n```\n",
+        "## Attributes\n\n- id: WI-20260101-BBBBB-bad-key\n\
+         - created: 2026-01-01T00:00:00Z\n\n- status: Open\n\n- nonesuch: x\n",
     )
     .expect("write");
 

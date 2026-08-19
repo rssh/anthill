@@ -1,12 +1,17 @@
-```anthill
-fact WorkItem(id: "WI-20260818-YQB1Y-proposal-052-oq5-revision", created: "2026-08-18T19:14:50Z", context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none), ToolPasses(tool: "scaland-sbt-test", params: none)], depends_on: some(value: ["WI-714"]), generates: none, requires_capability: none, status: Delivered(agent: "claude", at: "2026-08-18T21:39:51Z"))
+## Attributes
 
-fact Feedback(workitem: "WI-20260818-YQB1Y-proposal-052-oq5-revision", author: "claude", at: "2026-08-18T19:29:55Z")
+- id: WI-20260818-YQB1Y-proposal-052-oq5-revision
+- created: 2026-08-18T19:14:50Z
 
-fact Feedback(workitem: "WI-20260818-YQB1Y-proposal-052-oq5-revision", author: "claude", at: "2026-08-18T21:39:50Z")
-```
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-18T21:39:51Z
 
-## description
+- acceptance: cargo-test, scaland-sbt-test
+
+- depends_on: WI-714
+
+## Description
 
 Proposal 052 OQ5 REVISION: split the relation SCHEMA from the ROW TYPE, so a one-column relation stops being ambiguous. Filed out of WI-1128 (delivered 2026-08-18), whose delivery left this open with a reason and no owner.
 
@@ -33,9 +38,9 @@ WHAT IT COSTS, so it is costed before it is started rather than discovered (all 
 
 ACCEPTANCE: a decision recorded in 052 (do it or decline it, with the measurement that decides); if done — a join / fix / project over a one-column relation RUNS end-to-end with the recovered column name, driving the values; the tuple-typed-column fixture above becomes a correct schema or a loud error, and its recorded-limit test is RETIRED rather than patched; `Membership` distinguishes 0 columns from one `Unit`-typed column (WI-728's recorded limit retires with it); the whole-row sentinel is per-binder; `where`'s changed spelling is migrated with its tests; kernel-language.md 6.8 and relation.anthill updated together; cargo-test green via scripts/test.sh.
 
-## Feedback
+## Changes
 
-### 2026-08-18T19:29:55Z — claude
+### 2026-08-18T19:29:55Z — feedback — claude
 
 OPTION A ADDED AND RECOMMENDED — DROP THE COLLAPSE ENTIRELY (user, 2026-08-18: "why we need Collapse[T]? Why we don't want just work with one-element tuple?"). The ticket as filed proposed keeping the collapsed ROW type behind a new `Collapse[T]` constructor. That preserves an ergonomic that is not worth its price, and the simpler option is better than both it and the status quo.
 
@@ -59,7 +64,7 @@ WHAT STAYS TRUE FOR BOTH OPTIONS: it is a breaking change to a specified rule (6
 
 RECOMMENDATION: Option A. Option B stays recorded as the fallback if `queens.head : Board` turns out to be load-bearing for a reader that the census above did not find — but the census found no such reader, and Option A is simpler than the code we have today, not merely simpler than Option B.
 
-### 2026-08-18T21:39:50Z — claude
+### 2026-08-18T21:39:50Z — feedback — claude
 
 DELIVERED — OPTION A, THE COLLAPSE IS DROPPED. The relation schema IS the row type at every arity: `relation_schema_type` returns `Unit` for zero columns and the named tuple otherwise, with no arity-one case. Decision recorded in 052 OQ5 (rewritten as a decision, with the measurement, the declined alternative B, and the price), and in kernel-language.md 6.8.
 

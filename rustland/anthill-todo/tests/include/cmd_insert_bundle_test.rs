@@ -17,7 +17,7 @@ fact WorkItem(
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-002",
@@ -25,7 +25,7 @@ fact WorkItem(
   description: "depends on 001",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-003",
@@ -33,7 +33,7 @@ fact WorkItem(
   description: "independent",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 fn run_bundle(proj: &std::path::Path, args: &[&str]) -> std::process::Output {

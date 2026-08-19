@@ -86,7 +86,7 @@ fact WorkItem(
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: \"WI-005\",
@@ -94,7 +94,7 @@ fact WorkItem(
   description: \"fifth\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 /// THE POLICY, in one assertion: the id does not continue the sequence on disk.
@@ -238,9 +238,9 @@ fn an_exact_legacy_id_wins_over_being_a_prefix_of_another() {
     let proj = setup_project(
         &tmp,
         "fact WorkItem(id: \"WI-112\", created: \"2026-01-01T00:00:00Z\", \
-         description: \"the short one\", acceptance: [], status: Open)\n\
+         description: \"the short one\", acceptance: [], last_status_change: StatusChange(status: Open()))\n\
          fact WorkItem(id: \"WI-1120\", created: \"2026-01-02T00:00:00Z\", \
-         description: \"the long one\", acceptance: [], status: Open)\n",
+         description: \"the long one\", acceptance: [], last_status_change: StatusChange(status: Open()))\n",
     );
 
     let shown = ok(&proj, &["show", "WI-112"]);
@@ -280,7 +280,7 @@ fn an_item_with_no_created_stamp_blocks_every_command() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(
         &tmp,
-        "fact WorkItem(id: \"WI-900\", description: \"undated\", acceptance: [], status: Open)\n",
+        "fact WorkItem(id: \"WI-900\", description: \"undated\", acceptance: [], last_status_change: StatusChange(status: Open()))\n",
     );
 
     let err = fails(&proj, &["list"]);
@@ -305,9 +305,9 @@ fn the_listing_orders_by_created_not_by_id() {
     let proj = setup_project(
         &tmp,
         "fact WorkItem(id: \"WI-900\", created: \"2026-02-02T00:00:00Z\", \
-         description: \"filed second\", acceptance: [], status: Open)\n\
+         description: \"filed second\", acceptance: [], last_status_change: StatusChange(status: Open()))\n\
          fact WorkItem(id: \"WI-901\", created: \"2026-01-01T00:00:00Z\", \
-         description: \"filed first\", acceptance: [], status: Open)\n",
+         description: \"filed first\", acceptance: [], last_status_change: StatusChange(status: Open()))\n",
     );
 
     let listed = ok(&proj, &["list"]);
@@ -330,7 +330,7 @@ const ITEM_PER_FILE_BINDING: &str = r#"fact Project(
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    status_field: "status",
+    status_field: "last_status_change.status",
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
@@ -364,8 +364,7 @@ fn fsck_fix_dates_a_hand_written_item_from_its_file() {
     fs::write(
         &path,
         format!(
-            "```anthill\nfact WorkItem(id: \"WI-hand-written\", acceptance: [], status: Open)\n\
-             ```\n\n## description\n\n{prose}\n"
+            "## Attributes\n\n- id: WI-hand-written\n\n- status: Open\n\n## Description\n\n{prose}\n"
         ),
     )
     .expect("write");
@@ -379,9 +378,9 @@ fn fsck_fix_dates_a_hand_written_item_from_its_file() {
     assert!(fixed.contains("dated WI-hand-written from its file"), "{fixed}");
 
     let text = fs::read_to_string(&path).expect("read");
-    assert!(text.contains("created: \""), "the stamp was written: {text}");
+    assert!(text.contains("- created: 20"), "the stamp was written: {text}");
     assert!(!text.contains("?created"), "and it is a value, not a var: {text}");
-    let chapter = text.split_once("## description\n\n").expect("the chapter").1;
+    let chapter = text.split_once("## Description\n\n").expect("the chapter").1;
     assert_eq!(chapter.trim_end(), prose, "the prose is untouched");
 
     // …and the tracker reads.

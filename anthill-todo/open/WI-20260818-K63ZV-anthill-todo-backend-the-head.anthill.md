@@ -1,18 +1,17 @@
-```anthill
-fact WorkItem(id: "WI-20260818-K63ZV-anthill-todo-backend-the-head", created: "2026-08-18T15:32:43Z", context: none, acceptance: [ToolPasses(tool: "cargo-test", params: none), ToolPasses(tool: "scaland-sbt-test", params: none)], depends_on: some(value: ["WI-1120"]), generates: none, requires_capability: none, status: Open)
+## Attributes
 
-fact Tag(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", name: "wi437")
+- id: WI-20260818-K63ZV-anthill-todo-backend-the-head
+- created: 2026-08-18T15:32:43Z
 
-fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-18T15:37:52Z")
+- status: Open
 
-fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-18T15:47:13Z")
+- acceptance: cargo-test, scaland-sbt-test
 
-fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-19T07:42:14Z")
+- depends_on: WI-1120
 
-fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", author: "claude", at: "2026-08-19T09:40:41Z")
-```
+- tags: wi437
 
-## description
+## Description
 
 anthill-todo backend: IMPLEMENT THE ITEM DOCUMENT FORMAT AND MIGRATE THE TREE ONTO IT.
 
@@ -32,9 +31,9 @@ COST: a THIRD full-tree rewrite of 1127 files, after WI-1118's and WI-1120's. §
 
 FOLLOW-ON, NOT PART OF THIS: a format-aware git merge driver. Measured, two agents appending different feedback entries CONFLICT under the default text merge and merge cleanly under `merge=union`, which is built in and needs no per-clone config -- but git grants a driver per PATH, never per region, and union over a whole item file would union a status change into two status lines. A driver (`anthill-todo merge %O %A %B`) is small because the reader and writer already exist, degrades to an ordinary conflict when absent, and is independent of this ticket.
 
-## Feedback
+## Changes
 
-### 2026-08-18T15:37:52Z — claude
+### 2026-08-18T15:37:52Z — feedback — claude
 
 PRIOR ART SURVEYED 2026-08-18, because 'attach metadata to a document' is a solved problem elsewhere and this ticket should not re-invent it. THE FINDING IS THAT NOTHING FITS OFF THE SHELF, and the reason is precise rather than a matter of taste: EVERY EXISTING CONVENTION BUNDLES A LAYOUT WITH A VALUE LANGUAGE. We want the layout and already have the language — a field's value here is an anthill term (`status: Claimed(agent:, since:)`, `acceptance: [ToolPasses(…)]`), and §5.3 chose the fenced anthill block precisely so there would be no second scalar language and so the LOADER COULD CHECK the head (WI-928 found 921 mismatches the first time that check ran). So the question to ask of each candidate is not 'is it good' but 'does it bring a language we must then refuse'.
 
@@ -70,7 +69,7 @@ THE OPEN QUESTION IS NARROWED, NOT ANSWERED: fenced field map (this ticket's pro
 
 Sources: git-scm.com/docs/git-interpret-trailers; github.github.com/gfm; blacksmithgu.github.io/obsidian-dataview/annotation/add-metadata; docs.github.com/en/contributing/writing-for-github-docs/using-yaml-frontmatter; github.com/orgs/community/discussions/70092 (GitHub's frontmatter-as-table rendering); github.com/orgs/community/discussions/178337 (that render reported as hard to read).
 
-### 2026-08-18T15:47:13Z — claude
+### 2026-08-18T15:47:13Z — feedback — claude
 
 THE FIELD SET AND THE LAYOUT ARE SEPARABLE QUESTIONS, and this ticket currently runs them together. Recorded so the split is on the ticket rather than lost:
 
@@ -93,7 +92,7 @@ THE HONEST RESIDUAL COST, and it is the thing to weigh rather than the principle
 
 RELATED, from the same conversation and worth keeping with it: IF EVERY DOCUMENT CARRIES ITS OWN FIELDS, A SECONDARY INDEX BECOMES UNNECESSARY — the tree is the index, which is what `list` and `fsck` already assume. If one is ever wanted anyway (for a reader that will not scan a tree), making it OKF-compatible costs little and is an EXPORT, not a change to the native format — the position WI-1120's own OKF feedback already reached, and still not filed anywhere.
 
-### 2026-08-19T07:42:14Z — claude
+### 2026-08-19T07:42:14Z — feedback — claude
 
 THE LAYOUT QUESTION IS SETTLED BY MEASUREMENT, NOT BY LOOKING AT A PAGE, and three of the four candidates fall to facts rather than to taste. The prior note narrowed this to "fenced field map, markdown list, or markdown table -- decide by rendering one real item three ways". Two of those three are now disqualified, and the surviving one is not the one that note favoured.
 
@@ -180,7 +179,7 @@ ONE EXCLUSION, AND THE ROW-COUNT CHECK WOULD NOT CATCH IT: `depends_on: some(val
 
 MEASUREMENTS: 1127 item files, 1127 WorkItem / 1196 Feedback / 287 Tag rows; head line mean 279, median 273, max 2062. Merge and YAML results reproduced with git 3-way merges and a YAML 1.2 parser on the exact strings above.
 
-### 2026-08-19T09:40:41Z — claude
+### 2026-08-19T09:40:41Z — feedback — claude
 
 DECISIONS TAKEN 2026-08-19, and the format they produce. The prior note argued the layout; this one records what was settled, so the draft at `rustland/anthill-todo/docs/design/DRAFT-document-mapping.md` can be read as a specification rather than as an argument. Seven real items are converted under it in `docs/design/samples/`, each verified field by field against its original.
 

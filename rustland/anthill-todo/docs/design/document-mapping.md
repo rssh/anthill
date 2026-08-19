@@ -121,29 +121,38 @@ concurrent edit to two of them a merge conflict; a blank line makes two fields
 independently mergeable. Fields that are never rewritten belong in a group for the
 same reason — nothing can conflict over them.
 
-**A flattened sum needs its invariant restated as constraints.** `status` and its
-companions were one payload-carrying variant; as four independently optional fields
-they admit `Claimed` with no agent, and `Open` carrying a stale rejection reason.
-Those facts are well-typed, and `fsck` cannot repair the first — the missing agent
-is information, not a formatting fault. So the invariant the sum type enforced by
-construction is restated where the domain lives, as constraints, and a violation is
-a **load error**:
+**What the flat form has to state, and what it must not.** `status` and its
+companions were one payload-carrying variant; written as independent fields they
+admit an `Open` carrying a stale rejection reason. So the part of the invariant
+that is still wanted is restated where the domain lives, as constraints, and a
+violation is a **load error**:
 
 ```anthill
-  -- Each status determines which companions it must have and must not.
-  constraint claimed_names_its_agent :- WorkItem(status: Claimed, status_agent: none)
-  constraint claimed_names_its_time  :- WorkItem(status: Claimed, status_at: none)
-  constraint open_carries_no_reason  :- WorkItem(status: Open, status_reason: some(value: ?))
-  -- …one pair per variant: Draft / PreOpened / Open carry none of the three;
-  -- Claimed / Delivered carry agent and time; Verified carries time;
-  -- Rejected / ProposalRejected / Stale carry time and reason.
+  constraint rejected_names_its_reason :-
+    WorkItem(last_status_change: StatusChange(status: Rejected, reason: none))
+  -- …and the same for ProposalRejected and Stale.
 ```
+
+**Only that much.** It is tempting to restate the old sum's whole shape — `agent`
+required on `Claimed`, forbidden on `Open`, and so on — and it would be wrong: that
+distribution was IRREGULAR RATHER THAN PRINCIPLED. `agent` appeared on two of nine
+variants, `Verified` carried none at all so "who verified this" was unrecorded,
+`since` on two against `at` on four, and `Draft` / `PreOpened` / `Open` carried
+nothing though somebody performed each of those transitions too. Restating it
+faithfully would freeze a defect into the schema. Every status is a transition
+somebody made at some time, so `agent` and `at` are uniform provenance, and a
+reason is meaningful on any change — what is NOT acceptable is an off-ramp that
+does not say why, and that is the one clause above.
+
+They are `Option` because of HISTORY rather than doubt: 985 of 1127 items on this
+tracker had already lost who claimed them, because `Delivered` overwrote `Claimed`
+in place. Migration synthesizes nothing, so those rows arrive with `none` and say
+so; requiring the field would mean inventing an agent for 985 items.
 
 This is check logic where the old encoding had unrepresentability, and that is a
 real loss, taken deliberately for the reading the flat form buys. What makes it
-acceptable is that the check is **declarative and total** — one constraint per
-variant-companion pair, enforced at load over every item, not a rule the commands
-are trusted to keep.
+acceptable is that the check is **declarative and total** — enforced at load over
+every item, not a rule the commands are trusted to keep.
 
 **The layout guarantee reaches only fields written here.** A field of the
 same state whose text lives in a prose chapter cannot be made adjacent to its
@@ -154,7 +163,34 @@ other — `update --status --reason` writes both in a single operation, and ther
 no command that sets a reason alone — so an inconsistent pair is reachable only by
 hand-editing, and is a repair for `fsck` rather than a state the layout prevents.
 
-### 3.4 Omitted fields
+### 3.4 Flattened records
+
+A field whose value is a **record** is written as sibling attribute lines rather
+than as one nested value, under a `FlatRecord` declaration (§5).
+
+It has to be. The attributes chapter is one line per datum, and a record has no
+data spelling (§3.2), so written whole it would land as a single backticked term
+— which is exactly the one long line this format exists to break up. Flattening
+is what lets an item's state be a `StatusChange` in the domain and four
+independently mergeable lines on the page.
+
+**The naming rule, and its one deliberate exception.** The record's **first**
+declared field takes `prefix` as its whole name; every other field takes
+`<prefix>_<field>`. So a `StatusChange(status, agent, at, reason)` under prefix
+`status` writes `status`, `status_agent`, `status_at`, `status_reason`. The
+exception is there because the first field is the record's **headline** — the
+value the directory mirrors and §10 checks the path against — and `status_status`
+is not a name anyone would write.
+
+**Everything else sees a flat functor.** `Chapter`, `FieldGroup`, the value
+spelling and the well-formedness checks are all written against the flattened
+names and none of them knows a record is involved. That is the whole of what
+flattening costs: one expansion, in one place.
+
+A flattened name that collides with a field the functor already has is refused
+(§5.1) — a shadowed field would be silently unwritable.
+
+### 3.5 Omitted fields
 
 A field absent from the chapter is absent from the fact; an `Option` field so
 omitted is `none`. The writer omits every `Option` field whose value is `none`, and
@@ -433,7 +469,15 @@ namespace anthill.stage0.document
     field   : String,   -- the field each element fills
     key     : String)   -- the field taking the item's id (§4.3: from the fact)
 
+  -- A RECORD-VALUED field written as SIBLING attribute lines (§3.4).
+  entity FlatRecord(
+    functor : Term,
+    field   : String,   -- the record-valued field of `functor`
+    prefix  : String)   -- the attribute name its FIRST field takes
+
   fact DocumentFormat(level: 2, attributes: "Attributes")
+
+  fact FlatRecord(functor: WorkItem, field: "last_status_change", prefix: "status")
 
   fact FieldGroup(functor: WorkItem, fields: ["id", "created"])
   fact FieldGroup(functor: WorkItem, fields: ["status", "status_agent", "status_at"])
@@ -479,6 +523,14 @@ documents that lose data.
 - **`FieldGroup` names real attributes.** Every field it lists exists on `functor`,
   is written in the attributes chapter — not moved to a prose chapter — and appears
   in no other group.
+- **The attributes functor is DERIVED, and must be unique.** It is the one
+  functor named by a `Chapter`, a `FieldGroup` or a `FlatRecord` and by no
+  `ChapterGroup` or `SatelliteList`: a satellite has a home of its own, and the
+  item's own fact is what is left. A mapping naming none, or more than one, is
+  refused rather than picking.
+- **A flattened field must BE a record, and must not shadow.** `FlatRecord`'s
+  `field` names a field whose type is a declared entity, and the names its
+  expansion produces (§3.4) must not collide with a field `functor` already has.
 - **A required field mapped to a chapter must have that chapter.** §4.2's missing
   chapter yields `none`, which is only correct for an `Option`; for a required field
   it is a load error naming the file and the chapter, not a fact carrying a fresh
@@ -533,9 +585,11 @@ fact WorkItem(
   description: some(value: "anthill-todo backend, INCREMENT 2c of WI-437: …"),
   acceptance: [ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")],
   depends_on: some(value: ["WI-1114"]),
-  status: Delivered,
-  status_agent: some(value: "claude"),
-  status_at: some(value: "2026-08-18T15:28:04Z"))
+  last_status_change: StatusChange(
+    status: Delivered,
+    agent: some(value: "claude"),
+    at: some(value: "2026-08-18T15:28:04Z"),
+    reason: none))
 
 fact Tag(workitem: "WI-1121", name: "wi437")
 

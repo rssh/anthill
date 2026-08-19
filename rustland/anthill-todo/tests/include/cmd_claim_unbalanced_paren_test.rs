@@ -21,7 +21,7 @@ fact WorkItem(
   description: "this description has an unbalanced ( open paren",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#;
 
 #[test]
@@ -108,7 +108,7 @@ fn claim_completes_when_description_has_unbalanced_paren() {
         let content = fs::read_to_string(&path).expect("read file");
         if content.contains("\"WI-001\"")
             && content.contains("Claimed")
-            && content.contains("agent: \"claude\"")
+            && content.contains("agent: some(value: \"claude\")")
         {
             found_claimed = true;
             break;

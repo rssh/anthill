@@ -66,7 +66,7 @@ use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
 use crate::span::Span;
 
 use super::document::{
-    self, ChapterGroupSpec, Document, DocumentMapping, SegmentKind,
+    self, AttrField, Document, DocumentMapping, SegmentKind,
 };
 use super::print;
 use super::{PersistenceError, Store};
@@ -83,7 +83,13 @@ pub const ITEM_DOCUMENT_SUFFIX: &str = ".anthill.md";
 /// symptom of a swap is rows filed under a directory named after an id.
 #[derive(Clone, Debug)]
 pub struct ItemFields {
-    /// The field whose functor names the directory (`status`).
+    /// The field whose functor names the directory.
+    ///
+    /// A DOTTED PATH, because the field need not be a direct one:
+    /// `last_status_change.status` reaches the state through the record that
+    /// carries it. The store follows the path and knows nothing else about the
+    /// shape — which is what keeps `anthill-core` out of stage0's schema while
+    /// stage0 is free to model a status change as a record.
     pub status: String,
     /// The field carrying a primary row's key (`id`).
     pub id: String,
@@ -200,42 +206,21 @@ pub enum LayoutFault {
         first: PathBuf,
         second: PathBuf,
     },
-    /// A chapter heading that disagrees with the fact it projects (WI-1120) — a
-    /// hand-edited entry heading. Not blocking: the entry still holds the prose
-    /// its position says it does, so what is wrong is a RENDERING, and
-    /// `fsck --fix` regenerates it from the head.
+    /// A fault the document READER found in one file (WI-K63ZV, §7): an
+    /// attributes line that is not `- key: value`, a key naming no field, a
+    /// value with no spelling for its declared type.
     ///
-    /// It has to be reported rather than silently corrected, for the reason §4
-    /// gives the directory name: a projection regenerated without being read
-    /// would overwrite a hand correction without saying so.
-    ChapterDecoration {
+    /// CARRIED THROUGH RATHER THAN RAISED, and that is the design §7 states as
+    /// one thing rather than two: the reader reads as much as can be read, and
+    /// what makes a partial read safe rather than data loss is that a blocking
+    /// fault refuses WRITES. Written back, a document the reader had to drop a
+    /// field from would lose that field silently — the reader drops what it could
+    /// not parse, the writer re-renders from what it holds, and the difference is
+    /// gone.
+    DocumentFault {
         path: PathBuf,
-        found: String,
-        expected: String,
-    },
-    /// The entries under one container are the RIGHT ONES IN THE WRONG ORDER —
-    /// their headings are a permutation of what the head declares.
-    ///
-    /// A DIFFERENT FAULT FROM `ChapterDecoration`, AND IT BLOCKS, because the two
-    /// have opposite remedies and only one of them is about a rendering. Entries
-    /// bind to facts BY POSITION, so a reordered file has already handed each
-    /// fact the wrong prose — every `show` is wrong, not just the headings. And
-    /// the repair is to move the PROSE back, never to relabel it: rewriting the
-    /// headings here would make the file self-consistent while permanently
-    /// reattributing each note to the wrong author and timestamp, which is
-    /// precisely the silent rebinding this check exists to prevent.
-    ///
-    /// Distinguishable from a hand-edit exactly as §6.6 distinguishes its two id
-    /// faults: by comparing the SETS. A permutation is a reorder; anything else
-    /// names something no fact does, and is an edit.
-    ChapterOrder {
-        path: PathBuf,
-        container: String,
-        /// The headings the head declares, in ITS order — slot i wants
-        /// `expected[i]`. Carried on the fault because the repair runs without a
-        /// `KnowledgeBase`, and re-deriving it there would mean a second place
-        /// that knows how a heading is projected from a fact.
-        expected: Vec<String>,
+        blocking: bool,
+        message: String,
     },
 }
 
@@ -253,12 +238,10 @@ impl LayoutFault {
             | LayoutFault::DuplicateId { .. }
             | LayoutFault::IdCollision { .. }
             | LayoutFault::PlainItemFile { .. }
-            | LayoutFault::ChapterOrder { .. }
             | LayoutFault::UnroutableRow { .. }
             | LayoutFault::SharedFile { .. } => true,
-            LayoutFault::OrphanRow { .. }
-            | LayoutFault::MisfiledRow { .. }
-            | LayoutFault::ChapterDecoration { .. } => false,
+            LayoutFault::OrphanRow { .. } | LayoutFault::MisfiledRow { .. } => false,
+            LayoutFault::DocumentFault { blocking, .. } => *blocking,
         }
     }
 }
@@ -333,25 +316,9 @@ impl std::fmt::Display for LayoutFault {
                 first.display(),
                 second.display()
             ),
-            LayoutFault::ChapterOrder {
-                path, container, ..
-            } => write!(
-                f,
-                "{}: the entries under `{container}` are the right ones in the wrong order — \
-                 prose binds to a fact by its POSITION, so each one is currently attached to \
-                 the wrong row. `fsck --fix` moves them back; it will not relabel them",
-                path.display()
-            ),
-            LayoutFault::ChapterDecoration {
-                path,
-                found,
-                expected,
-            } => write!(
-                f,
-                "{}: the chapter heading `{found}` projects a fact that says `{expected}` — the \
-                 heading is regenerated from the head, and `fsck --fix` rewrites it",
-                path.display()
-            ),
+            LayoutFault::DocumentFault { path, message, .. } => {
+                write!(f, "{}: {message}", path.display())
+            }
             LayoutFault::SharedFile { path, ids } => write!(
                 f,
                 "{} holds {} items ({}, …) — this store gives each item a file of its own, \
@@ -387,22 +354,6 @@ struct Block {
     text: String,
 }
 
-impl DocSegment {
-    /// A stand-in held while the entries of one container are permuted. It never
-    /// survives the operation — every slot is filled before the model is rendered
-    /// — and exists only so the move can take segments out without cloning the
-    /// prose, which is the largest thing in the file.
-    fn placeholder() -> Self {
-        DocSegment {
-            id: 0,
-            kind: SegmentKind::Container {
-                name: String::new(),
-            },
-            text: String::new(),
-        }
-    }
-}
-
 impl Block {
     fn rule(&self) -> Option<RuleId> {
         match self.kind {
@@ -417,7 +368,7 @@ impl Block {
 }
 
 /// One markdown chapter of a document file, as text this store may replace
-/// wholesale but never reads into (WI-1120).
+/// wholesale but never reads into.
 ///
 /// IDENTIFIED BY A MINTED `id`, NOT BY ITS POSITION, and that is not tidiness: a
 /// retract removes a segment from the middle, and index-keyed bindings would then
@@ -425,53 +376,78 @@ impl Block {
 /// rows that happened to sit later in the file.
 struct DocSegment {
     id: u32,
-    kind: super::document::SegmentKind,
+    kind: SegmentKind,
     text: String,
 }
 
+/// One element of a satellite list — a `Tag`, written as one comma-separated
+/// item of an attributes field rather than as a row of its own (§3.1).
+struct ListElement {
+    id: u32,
+    /// The attributes field it is written under.
+    named: String,
+    /// Its value, already spelled.
+    value: String,
+}
+
+/// A document file's model: the item's own fields, its satellite lists, and the
+/// prose chapters below them.
+///
+/// THE ATTRIBUTES CHAPTER IS NOT KEPT AS TEXT, and that is the difference from
+/// the fenced-head encoding this replaces. It is DATA, wholly derived from the
+/// facts, so it is RE-RENDERED on every write; nothing about the bytes on disk
+/// is authoritative. Prose is the opposite — a description's text is the fact's
+/// value and is carried verbatim — which is why the two live in different fields
+/// here rather than in one list of chapters.
 #[derive(Default)]
-struct FileModel {
-    /// A document's text BEFORE the head — the ```anthill fence line (WI-1120).
-    /// Empty for a plain `.anthill` file, whose whole text is head.
-    prefix: String,
-    blocks: Vec<Block>,
-    /// A document's text between the head's last byte and its first chapter: the
-    /// closing fence and the blank line after it.
-    ///
-    /// HELD APART FROM `blocks`, and it has to be. A `Feedback` row appended at
-    /// runtime goes on the end of the HEAD, and if the closing fence were the
-    /// model's trailing free text the new row would land after it — outside the
-    /// fenced block, as markdown prose the next load would not parse.
-    suffix: String,
-    /// The document body: the markdown chapters after the head's fenced block.
-    /// Empty for a plain `.anthill` file, which is every file under a project
-    /// that declares no chapter mapping — and, in every project, the store-level
-    /// rows.
+struct DocModel {
+    /// The item's own fact, as the attributes lines it renders to.
+    item: Option<Vec<AttrField>>,
+    lists: Vec<ListElement>,
     body: Vec<DocSegment>,
     next_segment: u32,
 }
 
+#[derive(Default)]
+struct FileModel {
+    blocks: Vec<Block>,
+    /// `Some` for an item document; `None` for a plain `.anthill` file, which is
+    /// every file under a project that declares no mapping and, in every
+    /// project, the store-level rows.
+    doc: Option<DocModel>,
+}
+
 impl FileModel {
-    fn render(&self) -> String {
+    fn render(&self, mapping: Option<&DocumentMapping>) -> String {
+        let Some(doc) = &self.doc else {
+            let mut out = String::new();
+            for b in &self.blocks {
+                out.push_str(&b.text);
+            }
+            return out;
+        };
         let mut out = String::new();
-        out.push_str(&self.prefix);
-        for b in &self.blocks {
-            out.push_str(&b.text);
+        if let Some(mapping) = mapping {
+            let mut fields = doc.item.clone().unwrap_or_default();
+            let mut by_named: HashMap<String, Vec<String>> = HashMap::new();
+            for e in &doc.lists {
+                by_named.entry(e.named.clone()).or_default().push(e.value.clone());
+            }
+            fields.extend(document::list_fields(mapping, &by_named));
+            out.push_str(&document::render_attributes(
+                mapping.level,
+                &mapping.attributes,
+                &fields,
+            ));
         }
-        out.push_str(&self.suffix);
-        for seg in &self.body {
+        for seg in &doc.body {
             out.push_str(&seg.text);
         }
         out
     }
 
-    fn mint_segment(&mut self) -> u32 {
-        self.next_segment += 1;
-        self.next_segment
-    }
-
-    fn segment(&mut self, id: u32) -> Option<&mut DocSegment> {
-        self.body.iter_mut().find(|s| s.id == id)
+    fn doc_mut(&mut self) -> &mut DocModel {
+        self.doc.get_or_insert_with(DocModel::default)
     }
 
     fn position_of(&self, rule: RuleId) -> Option<usize> {
@@ -483,7 +459,10 @@ impl FileModel {
     /// holds that row, and deleting it because the store no longer has a name for
     /// it would delete the item the rewrite was moving.
     fn holds_rows(&self) -> bool {
-        self.blocks.iter().any(|b| !b.is_text())
+        match &self.doc {
+            Some(doc) => doc.item.is_some() || !doc.lists.is_empty() || !doc.body.is_empty(),
+            None => self.blocks.iter().any(|b| !b.is_text()),
+        }
     }
 
     /// Drop the block at `at`, and with it a purely-blank run of text that
@@ -540,6 +519,57 @@ impl FileModel {
     }
 }
 
+impl DocModel {
+    fn mint(&mut self) -> u32 {
+        self.next_segment += 1;
+        self.next_segment
+    }
+
+    fn segment(&mut self, id: u32) -> Option<&mut DocSegment> {
+        self.body.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Where a new chapter goes: at its rank in the writer's canonical order,
+    /// not on the end. A file that gains a `## Reason` gets it above `## Changes`
+    /// rather than below, which is what keeps two files with the same fields
+    /// byte-identical however they were reached.
+    fn insert_at(&self, kind: &SegmentKind, mapping: &DocumentMapping) -> usize {
+        let rank = mapping.rank_of(kind);
+        match &kind {
+            // An entry goes after the last entry of its own container, so that
+            // appending keeps a container's entries in one run.
+            SegmentKind::Entry { container, fields, .. } => {
+                let first = fields.first().cloned().unwrap_or_default();
+                let mut at = None;
+                for (i, s) in self.body.iter().enumerate() {
+                    match &s.kind {
+                        SegmentKind::Container { name } if name == container => at = Some(i + 1),
+                        // Ascending by the entry's first heading field (§4.3),
+                        // so an entry that arrives out of order still lands in
+                        // the right place.
+                        SegmentKind::Entry {
+                            container: c,
+                            fields: f,
+                            ..
+                        } if c == container => {
+                            if f.first().is_some_and(|other| *other <= first) {
+                                at = Some(i + 1);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                at.unwrap_or(self.body.len())
+            }
+            _ => self
+                .body
+                .iter()
+                .position(|s| mapping.rank_of(&s.kind) > rank)
+                .unwrap_or(self.body.len()),
+        }
+    }
+}
+
 /// A row block's text never carries its own trailing newline: the separators
 /// between blocks live in the free blocks around them, so that a row REPLACED in
 /// place (the §5.1 move) occupies exactly the shape the one it replaced did.
@@ -561,32 +591,63 @@ enum Route {
     StoreLevel { functor: String },
 }
 
+/// Where a row's bytes live in the file that holds it.
+///
+/// FOUR SHAPES, NOT ONE, because under the document encoding a row is no longer
+/// a stretch of text: an item's fact is the attributes chapter plus its prose
+/// chapters, a `Tag` is one comma-separated element of an attributes field, and
+/// a `Feedback` is one entry. Only a plain `.anthill` file still holds a row as a
+/// block of source.
+#[derive(Clone, Debug, Default)]
+enum Slot {
+    /// A fact declaration in a plain `.anthill` file.
+    #[default]
+    Block,
+    /// The document's own item fact: the attributes chapter, plus the segment
+    /// id of each prose chapter it fills.
+    Item { chapters: Vec<u32> },
+    /// One element of a satellite list.
+    ListElement { id: u32 },
+    /// One entry of a container.
+    Entry { id: u32 },
+}
+
 struct RowInfo {
     path: PathBuf,
     route: Route,
-    /// The document chapter holding this row's prose field, when the mapping
-    /// gives its functor one and the file is a document (WI-1120).
-    chapter: Option<u32>,
+    slot: Slot,
 }
 
 struct PendingRetract {
     rule: RuleId,
     path: PathBuf,
     route: Route,
-    chapter: Option<u32>,
+    slot: Slot,
 }
 
-/// The chapter half of a row about to be written: the prose that left the head.
-struct PendingChapter {
-    kind: super::document::SegmentKind,
-    decoration: Vec<String>,
-    value: String,
+/// A row about to be written, in the shape its file holds it in.
+enum PendingRow {
+    /// Printed `.anthill` source, for a plain file.
+    Plain(String),
+    /// The item's own fact: its attributes lines, and the prose of each chapter
+    /// the mapping gives it — absent chapters simply missing.
+    Item {
+        fields: Vec<AttrField>,
+        chapters: Vec<(String, String)>,
+    },
+    ListElement {
+        named: String,
+        value: String,
+    },
+    Entry {
+        kind: SegmentKind,
+        body: String,
+    },
 }
 
 struct PendingWrite {
     route: Route,
-    text: String,
-    chapter: Option<PendingChapter>,
+    row: PendingRow,
 }
 
 // ── The store ──────────────────────────────────────────────────
@@ -646,6 +707,21 @@ impl ItemPerFileStore {
     /// Whether item files are documents.
     pub fn writes_documents(&self) -> bool {
         self.mapping.is_some()
+    }
+
+    /// Claim these paths as files this store may overwrite, holding no rows.
+    ///
+    /// FOR A CONVERSION AND NOTHING ELSE. [`Self::refuse_unknown_occupant`]
+    /// refuses to write a file this store never read, because the loader's one
+    /// reason for withholding a file is that it could not parse it — and here
+    /// that would be an item whose id is invisible while the allocator can hand
+    /// it out again. A migration DID read these files; it just read them through
+    /// another store, and it is rewriting them in place. This is where it says
+    /// so, rather than the refusal being weakened for everyone.
+    pub fn adopt(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            self.files.entry(path).or_default();
+        }
     }
 
     /// The file-name suffix an ITEM file carries. `.anthill.md` under a document
@@ -797,7 +873,7 @@ impl ItemPerFileStore {
                 RowInfo {
                     path: path.clone(),
                     route,
-                    chapter: None,
+                    slot: Slot::Block,
                 },
             );
         }
@@ -806,21 +882,27 @@ impl ItemPerFileStore {
         Ok(())
     }
 
-    /// Seed one already-loaded DOCUMENT: [`Self::record_file`] plus the markdown
-    /// chapters after the head (WI-1120).
+    /// Seed one already-loaded DOCUMENT.
     ///
-    /// `source` is the whole file and the spans in `rows` are absolute in it —
-    /// the host parsed the head alone and shifted them by the head's offset — so
-    /// the head's blocks are cut exactly as a plain file's are, from the file's
-    /// first byte to the first chapter. Everything a plain file would call
-    /// trailing text (the closing fence, the blank line after it) stays where it
-    /// is; only the chapters become separately addressable.
+    /// `rows` are the file's facts in the order [`document::document_facts`]
+    /// emitted them — the item, then its satellite-list elements, then its
+    /// entries — which is the order they appear in the file. That order is the
+    /// binding: a field chapter is found by NAME, but a container's entries are
+    /// ORDERED SIBLINGS, because their heading fields are not injective (this
+    /// tracker holds two `Feedback` rows with identical `at` AND `author`).
+    ///
+    /// NOTHING IS CHECKED AGAINST A PROJECTION HERE, and that is a fault class
+    /// gone rather than an omission. Under the fenced-head encoding an entry
+    /// heading was regenerated from a field of the head, so the two could
+    /// disagree and a reordered file silently rebound prose onto the wrong row.
+    /// The heading IS the data now — `at` and `author` are read out of it — so
+    /// there is nothing left for it to disagree with.
     pub fn record_document(
         &mut self,
         kb: &KnowledgeBase,
         path: PathBuf,
         source: &str,
-        rows: &[(RuleId, Span)],
+        rows: &[RuleId],
         doc: &Document,
     ) -> Result<(), PersistenceError> {
         let Some(mapping) = self.mapping.clone() else {
@@ -829,147 +911,162 @@ impl ItemPerFileStore {
                 path.display()
             )));
         };
-        // The head ALONE is cut into blocks, with the spans shifted back into its
-        // own coordinates — the fences and the chapters are text this store
-        // renders around the rows, not text a row can be cut out of.
-        let offset = doc.head.start as u32;
-        let head_rows: Vec<(RuleId, Span)> = rows
-            .iter()
-            .map(|(r, s)| {
-                (
-                    *r,
-                    Span {
-                        start: s.start.saturating_sub(offset),
-                        end: s.end.saturating_sub(offset),
-                    },
-                )
-            })
-            .collect();
-        self.record_file(kb, path.clone(), &source[doc.head.clone()], &head_rows)?;
 
-        let model = self
-            .files
-            .get_mut(&path)
-            .expect("record_file inserted the model");
-        model.prefix = source[..doc.head.start].to_string();
-        model.suffix = source[doc.head.end..doc.body_start].to_string();
+        let mut model = FileModel {
+            blocks: Vec::new(),
+            doc: Some(DocModel::default()),
+        };
+        let docmodel = model.doc.as_mut().expect("just built");
+        // Every chapter and entry becomes a segment, in file order. The
+        // ATTRIBUTES chapter deliberately does not: it is data, re-rendered from
+        // the facts on every write, so keeping its bytes would be keeping a
+        // second copy of what the KB already holds.
+        let mut segment_of: Vec<Option<u32>> = Vec::with_capacity(doc.segments.len());
         for seg in &doc.segments {
-            let id = model.mint_segment();
-            model.body.push(DocSegment {
+            if matches!(seg.kind, SegmentKind::Attributes) {
+                segment_of.push(None);
+                continue;
+            }
+            let id = docmodel.mint();
+            docmodel.body.push(DocSegment {
                 id,
                 kind: seg.kind.clone(),
                 text: source[seg.span.clone()].to_string(),
             });
+            segment_of.push(Some(id));
+        }
+        self.files.insert(path.clone(), model);
+
+        for fault in &doc.faults {
+            self.faults.push(LayoutFault::DocumentFault {
+                path: path.clone(),
+                blocking: fault.blocking,
+                message: fault.message.clone(),
+            });
         }
 
-        // ── bind each row to the chapter that holds its prose
-        //
-        // A FIELD chapter is found BY NAME; an ENTRY is found BY POSITION, and
-        // that difference is the design's (§5.4). `named_by` is not injective —
-        // this tracker holds two `Feedback` rows with identical `at` AND
-        // identical `author` — so entries are matched as ORDERED SIBLINGS: the
-        // Nth row of a functor binds to the Nth entry under its container.
-        //
-        // Positional binding is safe ONLY because the heading is CHECKED against
-        // the fact rather than ignored. A reordered or hand-edited entry
-        // mismatches its own name or decoration and is reported; without that
-        // check this scheme would silently rebind prose onto the wrong row,
-        // which is the worst outcome on the page.
-        let mut file_rows: Vec<(RuleId, String)> = Vec::new();
-        for (rule, _) in rows {
-            let head = kb.rule_head(*rule);
-            if let Some(name) = functor_short(kb, head) {
-                file_rows.push((*rule, name));
-            }
-        }
-        let mut entry_cursor: HashMap<String, usize> = HashMap::new();
-        // Per container, each entry's (expected, found) heading. Compared as a
-        // SEQUENCE at the end rather than one at a time, because that is what
-        // tells a reorder from a hand-edit — see `classify_headings`.
-        let mut headings: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        for (rule, functor) in file_rows {
-            let bound = if let Some(spec) = mapping.chapter_for(&functor) {
-                self.files[&path]
-                    .body
-                    .iter()
-                    .find(|s| matches!(&s.kind, SegmentKind::Field { name } if *name == spec.named))
-                    .map(|s| s.id)
+        // Which entry the next row binds to, keyed on (container, KIND) — the
+        // same pair the segment filter below matches on. Keyed on the container
+        // alone, two groups sharing one container (which the format exists to
+        // make additive) would advance one cursor over two disjoint segment
+        // sequences and bind prose to the wrong row.
+        let mut entry_cursor: HashMap<(String, String), usize> = HashMap::new();
+        for &rule in rows {
+            let head = kb.rule_head(rule);
+            let route = match self.route_of(kb, head) {
+                Ok(route) => route,
+                Err(e) => {
+                    self.faults.push(LayoutFault::UnroutableRow {
+                        path: path.clone(),
+                        reason: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let Some(functor) = functor_short(kb, head) else {
+                continue;
+            };
+            let slot = if let Some(spec) = mapping.list_for(&functor) {
+                let id = self.model_for(&path).doc_mut().mint();
+                let value = list_element_value(kb, head, spec, &mapping)?;
+                self.model_for(&path).doc_mut().lists.push(ListElement {
+                    id,
+                    named: spec.named.clone(),
+                    value,
+                });
+                Slot::ListElement { id }
             } else if let Some(group) = mapping.group_for(&functor) {
-                let nth = entry_cursor.entry(group.container.clone()).or_insert(0);
-                let found = self.files[&path]
-                    .body
+                let nth = entry_cursor
+                    .entry((group.container.clone(), group.kind.clone()))
+                    .or_insert(0);
+                let found = doc
+                    .segments
                     .iter()
-                    .filter(|s| {
-                        matches!(&s.kind, SegmentKind::Entry { container, .. }
-                                 if *container == group.container)
+                    .enumerate()
+                    .filter(|(_, s)| {
+                        matches!(&s.kind, SegmentKind::Entry { container, kind, .. }
+                                 if *container == group.container && *kind == group.kind)
                     })
                     .nth(*nth)
-                    .map(|s| (s.id, s.kind.clone()));
+                    .and_then(|(i, _)| segment_of[i]);
                 *nth += 1;
                 match found {
-                    Some((id, kind)) => {
-                        if let Some(pair) = entry_heading_pair(kb, rule, group, &kind) {
-                            headings
-                                .entry(group.container.clone())
-                                .or_default()
-                                .push(pair);
-                        }
-                        Some(id)
-                    }
+                    Some(id) => Slot::Entry { id },
                     None => {
                         return Err(PersistenceError::Io(format!(
-                            "{}: the head declares more `{functor}` rows than there are `{}` \
-                             entries below it — each row's prose is the entry at its own \
-                             position, so the two counts must agree",
+                            "{}: more `{functor}` rows than `{}` entries of that kind — each \
+                             row's prose is the entry at its own position",
                             path.display(),
                             group.container
                         )))
                     }
                 }
             } else {
-                None
+                // The item's own fact. Its attributes are re-derived, and each
+                // prose chapter the mapping gives it binds BY NAME.
+                let chapters: Vec<u32> = mapping
+                    .chapters
+                    .iter()
+                    .filter(|c| c.functor == functor)
+                    .filter_map(|c| {
+                        doc.segments
+                            .iter()
+                            .enumerate()
+                            .find(|(_, s)| {
+                                matches!(&s.kind, SegmentKind::Field { name } if *name == c.named)
+                            })
+                            .and_then(|(i, _)| segment_of[i])
+                    })
+                    .collect();
+                let fields = document::attribute_fields(kb, head, &functor, &mapping);
+                self.model_for(&path).doc_mut().item = Some(fields);
+                Slot::Item { chapters }
             };
-            if let Some(info) = self.rows.get_mut(&rule) {
-                info.chapter = bound;
+
+            if let Route::Item { id, dir } = &route {
+                let expected = self.item_path(id, dir);
+                if !same_path(&path, &expected) {
+                    self.faults.push(LayoutFault::PathDisagreement {
+                        found: path.clone(),
+                        expected,
+                        id: id.clone(),
+                    });
+                }
+                match self.by_item.get(id) {
+                    Some(first) => self.faults.push(LayoutFault::DuplicateId {
+                        id: id.clone(),
+                        first: first.clone(),
+                        second: path.clone(),
+                    }),
+                    None => {
+                        if let Some(prefix) = identity_prefix(id) {
+                            match self.by_identity.get(&prefix) {
+                                Some(first) => self.faults.push(LayoutFault::IdCollision {
+                                    prefix,
+                                    first: first.clone(),
+                                    second: path.clone(),
+                                }),
+                                None => {
+                                    self.by_identity.insert(prefix, path.clone());
+                                }
+                            }
+                        }
+                        self.by_item.insert(id.clone(), path.clone());
+                    }
+                }
             }
-        }
-        for (container, pairs) in headings {
-            self.faults
-                .extend(classify_headings(&path, &container, &pairs));
-        }
-        // The other direction: an entry with no row is prose bound to nothing,
-        // and it would be silently dropped by the next rewrite of this file.
-        for group in &mapping.groups {
-            let entries = self.files[&path]
-                .body
-                .iter()
-                .filter(|s| {
-                    matches!(&s.kind, SegmentKind::Entry { container, .. }
-                             if *container == group.container)
-                })
-                .count();
-            let bound = entry_cursor.get(&group.container).copied().unwrap_or(0);
-            if entries > bound {
-                return Err(PersistenceError::Io(format!(
-                    "{}: `{}` holds {entries} entries but the head declares {bound} `{}` rows — \
-                     the extra prose belongs to no fact",
-                    path.display(),
-                    group.container,
-                    group.functor
-                )));
-            }
+            self.rows.insert(
+                rule,
+                RowInfo {
+                    path: path.clone(),
+                    route,
+                    slot,
+                },
+            );
         }
         Ok(())
     }
 
-    /// The heading an entry SHOULD carry and the one it does, or `None` when they
-    /// agree.
-    ///
-    /// A heading is a PROJECTION of its fact — the name is the `named_by` field,
-    /// the rest is `decorate` — so it is regenerated on write and CHECKED on
-    /// read, exactly as §4 treats the directory name, loudness included. A
-    /// projection regenerated *without* being read would silently overwrite a
-    /// hand correction.
     /// Every PRIMARY row, with the file it lives in — for a repair that has to
     /// rewrite a fact rather than move a file (WI-1121's `created` fill).
     ///
@@ -1093,13 +1190,84 @@ impl ItemPerFileStore {
         let mut moves = Vec::new();
         for (found, expected) in plan {
             self.relocate(&found, &expected)?;
-            write_file(&expected, &self.files[&expected].render())?;
+            write_file(&expected, &self.files[&expected].render(self.mapping.as_ref()))?;
             remove_file(&found)?;
             moves.push((found, expected));
         }
         self.faults
             .retain(|f| !matches!(f, LayoutFault::PathDisagreement { .. }));
         Ok(moves)
+    }
+
+    /// Re-render the LAYOUT of every document the reader reported a diagnostic
+    /// about (`fsck --fix`).
+    ///
+    /// The two diagnostics §7 lists are both about a rendering rather than a
+    /// value — a `FieldGroup` written apart (or two independent fields written
+    /// together), and a heading value encoded when it did not have to be — so
+    /// the repair is to write the canonical rendering of what is already held.
+    /// The attributes chapter is derived from the facts, and an entry's heading
+    /// is derived from its decoded fields, so this is a re-render and never a
+    /// re-interpretation: prose bodies are carried through untouched.
+    ///
+    /// A BLOCKING fault stops it PER FILE, for the reason §7 gives: a file the
+    /// reader had to drop something from must not be written back, because the
+    /// rewrite would make the loss permanent. Per file and not per tree — one
+    /// unreadable item must not silently cancel the repair of the other 1128,
+    /// which is a fault report that reads as a repair.
+    pub fn repair_layout(&mut self) -> Result<Vec<PathBuf>, PersistenceError> {
+        let Some(mapping) = self.mapping.clone() else {
+            return Ok(Vec::new());
+        };
+        let mut blocked: Vec<PathBuf> = Vec::new();
+        let mut targets: Vec<PathBuf> = Vec::new();
+        for fault in &self.faults {
+            let LayoutFault::DocumentFault { path, blocking, .. } = fault else {
+                continue;
+            };
+            let list = if *blocking { &mut blocked } else { &mut targets };
+            if !list.contains(path) {
+                list.push(path.clone());
+            }
+        }
+        let mut repaired = Vec::new();
+        for path in targets {
+            if blocked.contains(&path) {
+                continue;
+            }
+            let Some(model) = self.files.get_mut(&path) else {
+                continue;
+            };
+            let Some(doc) = model.doc.as_mut() else {
+                continue;
+            };
+            for seg in doc.body.iter_mut() {
+                let SegmentKind::Entry { kind, fields, .. } = &seg.kind else {
+                    continue;
+                };
+                let heading = document::entry_heading(kind, fields);
+                let body = seg
+                    .text
+                    .split_once('\n')
+                    .map(|(_, rest)| rest.trim().to_string())
+                    .unwrap_or_default();
+                seg.text = document::render_chapter(mapping.level + 1, &heading, &body);
+            }
+            let rendered = self.files[&path].render(Some(&mapping));
+            write_file(&path, &rendered)?;
+            repaired.push(path);
+        }
+        // Only the faults of files actually rewritten are cleared. Clearing them
+        // all would make `fsck` answer "layout ok" for a file it skipped.
+        self.faults.retain(|f| match f {
+            LayoutFault::DocumentFault {
+                path,
+                blocking: false,
+                ..
+            } => !repaired.contains(path),
+            _ => true,
+        });
+        Ok(repaired)
     }
 
     /// The directory a row with this status belongs in. DERIVED from the status
@@ -1131,7 +1299,9 @@ impl ItemPerFileStore {
             if let Some(id) =
                 get_named_arg(kb, named, &self.fields.id).and_then(|t| string_of(kb, t))
             {
-                let status = get_named_arg(kb, named, &self.fields.status).ok_or_else(|| {
+                let path: Vec<String> =
+                    self.fields.status.split('.').map(|s| s.to_string()).collect();
+                let status = document::value_at(kb, term, &path).ok_or_else(|| {
                     PersistenceError::Io(format!(
                         "`{functor_name}` carries `{}` = \"{id}\" but no `{}` field, and the \
                          directory a row lives in IS its status",
@@ -1190,375 +1360,292 @@ impl ItemPerFileStore {
         }
     }
 
-    /// Split a row into the text that stays in the HEAD and the prose that
-    /// becomes a CHAPTER (WI-1120). `(printed_fact, None)` under no mapping, or
-    /// for a functor the mapping gives no chapter — which is every row in a
-    /// plain-`fact` tree, and `Tag` / the format stamp in a document tree.
+    /// Turn a row into the shape its file holds it in.
     ///
-    /// THIS IS §5.1's MISSING SENTENCE, made mechanical. `replace` receives a
-    /// whole item, and the relocation rule says the move "rewrites the item's
-    /// fact block in place" — but under this encoding there is no fact block
-    /// holding the prose. The store must split the term, rewrite the head and
-    /// only the chapters whose text actually CHANGED, and leave every other
-    /// chapter byte-identical. Both the opacity invariant and "the store never
-    /// re-serializes the feedback chapters" rest on this split, so it is part of
-    /// the store's contract rather than an implementation choice.
-    fn split_row(
+    /// A row under the document encoding is not a stretch of text: the item's
+    /// fact becomes the attributes chapter plus its prose chapters, a
+    /// satellite-list fact becomes one element of an attributes field, and a
+    /// container's fact becomes one entry. `PendingRow::Plain` is every row in a
+    /// project with no mapping, and the store-level format stamp in every project.
+    ///
+    /// THE PROSE IS DEMOTED HERE, not refused (§4.1). Text written somewhere else
+    /// arrives with a hierarchy of its own; the whole hierarchy shifts down by the
+    /// minimum that clears the levels this chapter reserves. It is idempotent, so
+    /// a round trip is identity from the second write onward.
+    fn render_row(
         &self,
         kb: &KnowledgeBase,
         fact: TermId,
         meta: Option<TermId>,
-    ) -> Result<(String, Option<PendingChapter>), PersistenceError> {
+    ) -> Result<PendingRow, PersistenceError> {
         let Some(mapping) = &self.mapping else {
-            return Ok((print::print_fact(kb, fact, meta), None));
+            return Ok(PendingRow::Plain(print::print_fact(kb, fact, meta)));
         };
         let Some(functor) = functor_short(kb, fact) else {
-            return Ok((print::print_fact(kb, fact, meta), None));
+            return Ok(PendingRow::Plain(print::print_fact(kb, fact, meta)));
         };
-        let (field, kind, decoration) = if let Some(spec) = mapping.chapter_for(&functor) {
-            (
-                spec.field.clone(),
-                SegmentKind::Field {
-                    name: spec.named.clone(),
-                },
-                Vec::new(),
+        if let Some(spec) = mapping.list_for(&functor) {
+            return Ok(PendingRow::ListElement {
+                named: spec.named.clone(),
+                value: list_element_value(kb, fact, spec, mapping)?,
+            });
+        }
+        if let Some(group) = mapping.group_for(&functor) {
+            let mut fields = Vec::with_capacity(group.heading.len());
+            for name in &group.heading {
+                fields.push(named_field(kb, fact, name).ok_or_else(|| {
+                    PersistenceError::Io(format!(
+                        "a `{functor}` row carries no string `{name}`, and that field is written \
+                         in its entry's heading"
+                    ))
+                })?);
+            }
+            let kind = SegmentKind::Entry {
+                container: group.container.clone(),
+                kind: group.kind.clone(),
+                fields,
+            };
+            let body = prose_field(kb, fact, &group.field)?.unwrap_or_default();
+            let body = document::demote_prose(
+                &body,
+                document::deepest_reserved_for(&kind, mapping.level),
             )
-        } else if let Some(group) = mapping.group_for(&functor) {
-            let name = named_field(kb, fact, &group.named_by).ok_or_else(|| {
-                PersistenceError::Io(format!(
-                    "a `{functor}` row carries no string `{}`, and that field NAMES its chapter",
-                    group.named_by
-                ))
+            .map_err(|e| {
+                PersistenceError::Io(format!("this row's `{}` cannot be written: {e}", group.field))
             })?;
-            let decoration = group
-                .decorate
-                .iter()
-                .map(|f| named_field(kb, fact, f).unwrap_or_default())
-                .collect();
-            (
-                group.field.clone(),
-                SegmentKind::Entry {
-                    container: group.container.clone(),
-                    name,
-                    decoration: Vec::new(),
-                },
-                decoration,
-            )
-        } else {
-            return Ok((print::print_fact(kb, fact, meta), None));
-        };
+            return Ok(PendingRow::Entry { kind, body });
+        }
+        if mapping.item_functor() != Some(functor.as_str()) {
+            return Ok(PendingRow::Plain(print::print_fact(kb, fact, meta)));
+        }
 
-        let value = prose_field(kb, fact, &field)?;
-        let head = print::print_fact_omitting(kb, fact, meta, &[field.as_str()]);
-        let Some(value) = value else {
+        let fields = document::attribute_fields(kb, fact, &functor, mapping);
+        let mut chapters = Vec::new();
+        for spec in mapping.chapters.iter().filter(|c| c.functor == functor) {
+            // A chapter field may live inside a FLATTENED record, so it is
+            // reached through its slot's path rather than as a named argument.
+            let Some(slot) = mapping.slot_of(&functor, &spec.field) else {
+                continue;
+            };
+            let held = document::value_at(kb, fact, &slot.path);
             // An ABSENT optional field writes no chapter at all — which is
-            // exactly what the reader turns back into `none()`, by leaving the
-            // field off the fact it hands the loader. No marker in the head,
-            // nothing to keep in sync (§5.4).
-            return Ok((head, None));
-        };
-        // PER CHAPTER KIND, not per mapping: a `###` is prose inside a field
-        // chapter and a boundary inside an entry, and reserving `level + 1` for
-        // both refused text the reader accepts — see `deepest_reserved_for`.
-        let deepest = document::deepest_reserved_for(&kind, mapping.level);
-        document::check_prose(&value, deepest).map_err(|e| {
-            PersistenceError::Io(format!("this row's `{field}` cannot be written: {e}"))
-        })?;
-        Ok((
-            head,
-            Some(PendingChapter {
-                kind,
-                decoration,
-                value,
-            }),
-        ))
+            // exactly what the reader turns back into `none`, by leaving the
+            // field off the fact it hands the loader (§3.5).
+            let Some(value) = held.map(|v| prose_text(kb, v, &spec.field)).transpose()?.flatten()
+            else {
+                continue;
+            };
+            let kind = SegmentKind::Field {
+                name: spec.named.clone(),
+            };
+            let value = document::demote_prose(
+                &value,
+                document::deepest_reserved_for(&kind, mapping.level),
+            )
+            .map_err(|e| {
+                PersistenceError::Io(format!("this row's `{}` cannot be written: {e}", spec.field))
+            })?;
+            chapters.push((spec.named.clone(), value));
+        }
+        Ok(PendingRow::Item { fields, chapters })
     }
 
-    /// Write `chapter` into `path`'s document, replacing the segment `existing`
-    /// names if its text differs and appending a new one otherwise.
+    /// Write one prose chapter into `path`'s document, replacing the segment
+    /// `existing` names if its text differs and inserting a new one otherwise.
     ///
     /// RETURNS THE SEGMENT'S id, so the caller can re-bind the row. And it
     /// compares before it writes: a chapter whose text is unchanged is left
-    /// exactly as its bytes were, which is what makes `claim` (a status change,
-    /// nothing else) leave a 20,000-character description untouched.
-    fn write_chapter(
+    /// exactly as its bytes were, which is what makes `claim` — a status change,
+    /// nothing else — leave a 20,000-character description untouched.
+    fn write_segment(
         &mut self,
         path: &Path,
         existing: Option<u32>,
-        chapter: &PendingChapter,
+        kind: &SegmentKind,
+        body: &str,
     ) -> Result<u32, PersistenceError> {
-        let level = self
+        let mapping = self
             .mapping
-            .as_ref()
-            .map(|m| m.level)
+            .clone()
             .ok_or_else(|| PersistenceError::Io("no chapter mapping".to_string()))?;
-        let (level, name, decoration) = match &chapter.kind {
-            SegmentKind::Field { name } => (level, name.clone(), Vec::new()),
-            SegmentKind::Entry { name, .. } => (level + 1, name.clone(), chapter.decoration.clone()),
-            SegmentKind::Container { name } => (level, name.clone(), Vec::new()),
+        let (level, heading) = match kind {
+            SegmentKind::Field { name } => (mapping.level, name.clone()),
+            SegmentKind::Entry {
+                kind: word, fields, ..
+            } => (
+                mapping.level + 1,
+                document::entry_heading(word, fields),
+            ),
+            other => {
+                return Err(PersistenceError::Io(format!(
+                    "{}: {other:?} is not a chapter this store writes",
+                    path.display()
+                )))
+            }
         };
-        let text = document::render_chapter(level, &name, &decoration, &chapter.value);
-        let model = self.model_for(path);
+        let text = document::render_chapter(level, &heading, body);
+        let model = self.model_for(path).doc_mut();
         if let Some(id) = existing {
             if let Some(seg) = model.segment(id) {
-                if seg.text != text {
-                    seg.text = text;
-                }
-                // The KIND is refreshed too, not just the text: an entry whose
-                // `named_by` or `decorate` field changed would otherwise leave a
-                // heading in the model that the file no longer carries, and the
-                // next check in this process would compare against a stale one.
-                if let SegmentKind::Entry {
-                    name: n,
-                    decoration: d,
-                    ..
-                } = &mut seg.kind
-                {
-                    *n = name;
-                    *d = decoration;
-                }
+                seg.text = text;
+                seg.kind = kind.clone();
                 return Ok(id);
             }
         }
-        // A new ENTRY goes after the last entry of its container, and the
-        // container heading is created if this is the first one — so a document
-        // gains its `## Feedback` section the moment it gains feedback, and never
-        // before.
-        let id = model.mint_segment();
-        let mut kind = chapter.kind.clone();
-        if let SegmentKind::Entry {
-            container,
-            decoration: d,
-            ..
-        } = &mut kind
-        {
-            *d = decoration.clone();
-            let container = container.clone();
+        // A new ENTRY creates its container heading if this is the first one, so
+        // a document gains its `## Changes` section the moment it gains a change
+        // and never before.
+        let id = model.mint();
+        if let SegmentKind::Entry { container, .. } = kind {
             let has_container = model
                 .body
                 .iter()
-                .any(|s| matches!(&s.kind, SegmentKind::Container { name } if *name == container));
+                .any(|s| matches!(&s.kind, SegmentKind::Container { name } if name == container));
             if !has_container {
-                let cid = model.mint_segment();
-                let heading = document::render_chapter(level - 1, &container, &[], "");
-                model.body.push(DocSegment {
-                    id: cid,
-                    kind: SegmentKind::Container {
-                        name: container.clone(),
+                let cid = model.mint();
+                let ckind = SegmentKind::Container {
+                    name: container.clone(),
+                };
+                let at = model.insert_at(&ckind, &mapping);
+                model.body.insert(
+                    at,
+                    DocSegment {
+                        id: cid,
+                        text: document::render_chapter(mapping.level, container, ""),
+                        kind: ckind,
                     },
-                    text: heading,
-                });
+                );
             }
-            let at = model
-                .body
-                .iter()
-                .rposition(|s| match &s.kind {
-                    SegmentKind::Container { name } => *name == container,
-                    SegmentKind::Entry { container: c, .. } => *c == container,
-                    _ => false,
-                })
-                .map(|i| i + 1)
-                .unwrap_or(model.body.len());
-            model.body.insert(at, DocSegment { id, kind, text });
-            return Ok(id);
         }
-        model.body.push(DocSegment { id, kind, text });
+        let at = model.insert_at(kind, &mapping);
+        model.body.insert(
+            at,
+            DocSegment {
+                id,
+                kind: kind.clone(),
+                text,
+            },
+        );
         Ok(id)
     }
 
-    /// Repair what the chapter checks found (WI-1120), and return what changed.
-    ///
-    /// TWO REPAIRS, NOT ONE, because the two faults have opposite remedies:
-    ///
-    /// * `ChapterOrder` — the entries are the right ones in the wrong order, so
-    ///   the PROSE moves back to the position its heading names. Relabelling
-    ///   instead would make the file self-consistent and permanently reattribute
-    ///   every note to the wrong author, which is the failure the positional
-    ///   binding scheme is only safe because this check prevents.
-    /// * `ChapterDecoration` — a heading was hand-edited, so the HEADING is
-    ///   regenerated from the head. The prose does not move.
-    ///
-    /// Run by the same `--fix` as the file moves, because from outside they are
-    /// one question: make the projections agree with the facts. The direction is
-    /// settled the same way too — the head is the truth.
-    pub fn repair_headings(&mut self) -> Result<Vec<(PathBuf, String)>, PersistenceError> {
-        let mut repaired = Vec::new();
-        for fault in self.layout_faults() {
-            match fault {
-                LayoutFault::ChapterOrder {
-                    path,
-                    container,
-                    expected,
-                } => {
-                    let moved = self.reorder_entries(&path, &container, &expected)?;
-                    if !moved.is_empty() {
-                        repaired.push((
-                            path,
-                            format!("put {} `{container}` entries back in the head's order", moved.len()),
-                        ));
-                    }
-                }
-                LayoutFault::ChapterDecoration {
-                    path,
-                    found,
-                    expected,
-                } => {
-                    if self.rewrite_heading(&path, &found, &expected)? {
-                        repaired.push((path, format!("rewrote `{found}` -> `{expected}`")));
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.faults.retain(|f| {
-            !matches!(
-                f,
-                LayoutFault::ChapterDecoration { .. } | LayoutFault::ChapterOrder { .. }
-            )
-        });
-        Ok(repaired)
-    }
-
-    /// Put one container's entry segments back in the order the head declares.
-    ///
-    /// The heading names the fact, so sorting the segments by where their heading
-    /// appears in the head's sequence restores the binding. Only entries of THIS
-    /// container move; the field chapters and the other containers around them
-    /// keep their positions.
-    fn reorder_entries(
-        &mut self,
-        path: &Path,
-        container: &str,
-        expected: &[String],
-    ) -> Result<Vec<String>, PersistenceError> {
-        let Some(model) = self.files.get_mut(path) else {
-            return Ok(Vec::new());
-        };
-        let slots: Vec<usize> = model
-            .body
-            .iter()
-            .enumerate()
-            .filter(
-                |(_, s)| matches!(&s.kind, SegmentKind::Entry { container: c, .. } if c == container),
-            )
-            .map(|(i, _)| i)
-            .collect();
-        if slots.len() != expected.len() {
-            return Err(PersistenceError::Io(format!(
-                "{}: `{container}` holds {} entries against {} the head declares; refusing to \
-                 reorder prose against a count that does not match",
-                path.display(),
-                slots.len(),
-                expected.len()
-            )));
-        }
-
-        // Take the entry segments out, then put each back in the slot whose fact
-        // its own heading names. A heading appearing twice is why this consumes
-        // each match rather than searching afresh: two entries that genuinely
-        // share an `at` AND an `author` (WI-599 holds such a pair) are
-        // interchangeable, and either assignment is correct.
-        let mut taken: Vec<Option<DocSegment>> = slots
-            .iter()
-            .map(|&i| Some(std::mem::replace(&mut model.body[i], DocSegment::placeholder())))
-            .collect();
-        let mut moved = Vec::new();
-        for (slot, want) in slots.iter().zip(expected.iter()) {
-            let at = taken.iter().position(|held| {
-                held.as_ref().is_some_and(|seg| match &seg.kind {
-                    SegmentKind::Entry {
-                        name, decoration, ..
-                    } => heading_text(name, decoration) == *want,
-                    _ => false,
-                })
-            });
-            let Some(at) = at else {
-                return Err(PersistenceError::Io(format!(
-                    "{}: no entry under `{container}` carries the heading `{want}`",
-                    path.display()
-                )));
-            };
-            let seg = taken[at].take().expect("checked");
-            moved.push(want.clone());
-            model.body[*slot] = seg;
-        }
-        write_file(path, &self.files[path].render())?;
-        Ok(moved)
-    }
-
-    /// Regenerate one hand-edited heading from the fact it projects. The heading
-    /// is the segment's FIRST LINE; everything below it is the author's prose and
-    /// is not touched.
-    fn rewrite_heading(
-        &mut self,
-        path: &Path,
-        found: &str,
-        expected: &str,
-    ) -> Result<bool, PersistenceError> {
-        let Some(model) = self.files.get_mut(path) else {
-            return Ok(false);
-        };
-        // BY THE SEGMENT'S OWN HEADING FIELDS, not by re-reading its text: a
-        // text search re-matched a segment an earlier iteration had just
-        // rewritten, so two stale headings in one file repaired each other.
-        let Some(seg) = model.body.iter_mut().find(|s| match &s.kind {
-            SegmentKind::Entry {
-                name, decoration, ..
-            } => heading_text(name, decoration) == found,
-            _ => false,
-        }) else {
-            return Ok(false);
-        };
-        let level = seg.text.chars().take_while(|c| *c == '#').count();
-        let rest: String = seg
-            .text
-            .split_once('\n')
-            .map(|(_, r)| r.to_string())
-            .unwrap_or_default();
-        seg.text = format!("{} {expected}\n{rest}", "#".repeat(level));
-        if let SegmentKind::Entry {
-            name, decoration, ..
-        } = &mut seg.kind
-        {
-            let mut parts = expected.split(document::DECORATION_SEPARATOR);
-            *name = parts.next().unwrap_or("").to_string();
-            *decoration = parts.map(|p| p.to_string()).collect();
-        }
-        write_file(path, &self.files[path].render())?;
-        Ok(true)
-    }
-
-    /// The model for `path`, CREATED WITH ITS FENCES if this is a document file
-    /// that does not exist yet.
-    ///
-    /// A document's head is a fenced block, so an empty model is not an empty
-    /// file: the first row written into one has to land INSIDE ```anthill, or
-    /// what is written is markdown prose that happens to look like a fact. Every
-    /// path that can create a file goes through here, so there is one place that
-    /// knows it.
+    /// The model for `path`.
     fn model_for(&mut self, path: &Path) -> &mut FileModel {
         let documented = self.mapping.is_some()
             && path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.ends_with(ITEM_DOCUMENT_SUFFIX));
-        let fresh = !self.files.contains_key(path);
         let model = self.files.entry(path.to_path_buf()).or_default();
-        if fresh && documented {
-            model.prefix = "```anthill\n".to_string();
-            model.suffix = "```\n\n".to_string();
+        if documented && model.doc.is_none() {
+            model.doc = Some(DocModel::default());
         }
         model
     }
 
-    /// Drop the chapter a retracted row owned. A `Container` left with no entries
-    /// is dropped with the last of them: an empty `## Feedback` heading is a
-    /// section that describes nothing, and the reader would carry it forever.
-    fn drop_chapter(&mut self, path: &Path, chapter: u32) {
-        let Some(model) = self.files.get_mut(path) else {
+    /// Write a document row into its file, reusing the segments the row already
+    /// owned so that unchanged prose comes through byte-identical.
+    fn place_document_row(
+        &mut self,
+        path: &Path,
+        previous: Option<&Slot>,
+        row: &PendingRow,
+    ) -> Result<Slot, PersistenceError> {
+        match row {
+            PendingRow::Item { fields, chapters } => {
+                self.model_for(path).doc_mut().item = Some(fields.clone());
+                let existing = match previous {
+                    Some(Slot::Item { chapters }) => chapters.clone(),
+                    _ => Vec::new(),
+                };
+                let mut ids = Vec::with_capacity(chapters.len());
+                for (named, body) in chapters {
+                    let kind = SegmentKind::Field {
+                        name: named.clone(),
+                    };
+                    let at = existing.iter().copied().find(|id| {
+                        self.files
+                            .get(path)
+                            .and_then(|m| m.doc.as_ref())
+                            .and_then(|d| d.body.iter().find(|s| s.id == *id))
+                            .is_some_and(|s| {
+                                matches!(&s.kind, SegmentKind::Field { name } if name == named)
+                            })
+                    });
+                    ids.push(self.write_segment(path, at, &kind, body)?);
+                }
+                // A chapter that is no longer written goes with the field it
+                // held: an `update` that cleared a reason leaves no `## Reason`
+                // behind, rather than prose bound to nothing.
+                for id in existing {
+                    if !ids.contains(&id) {
+                        self.drop_segment(path, id);
+                    }
+                }
+                Ok(Slot::Item { chapters: ids })
+            }
+            PendingRow::ListElement { named, value } => {
+                let model = self.model_for(path).doc_mut();
+                if let Some(Slot::ListElement { id }) = previous {
+                    if let Some(e) = model.lists.iter_mut().find(|e| e.id == *id) {
+                        e.named = named.clone();
+                        e.value = value.clone();
+                        return Ok(Slot::ListElement { id: *id });
+                    }
+                }
+                let id = model.mint();
+                model.lists.push(ListElement {
+                    id,
+                    named: named.clone(),
+                    value: value.clone(),
+                });
+                Ok(Slot::ListElement { id })
+            }
+            PendingRow::Entry { kind, body } => {
+                let existing = match previous {
+                    Some(Slot::Entry { id }) => Some(*id),
+                    _ => None,
+                };
+                Ok(Slot::Entry {
+                    id: self.write_segment(path, existing, kind, body)?,
+                })
+            }
+            PendingRow::Plain(_) => Err(PersistenceError::Io(format!(
+                "{}: a plain fact row has no place in a document",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Drop everything a retracted row owned.
+    fn drop_slot(&mut self, path: &Path, slot: &Slot) {
+        match slot {
+            Slot::Item { chapters } => {
+                if let Some(doc) = self.files.get_mut(path).and_then(|m| m.doc.as_mut()) {
+                    doc.item = None;
+                }
+                for id in chapters.clone() {
+                    self.drop_segment(path, id);
+                }
+            }
+            Slot::Entry { id } => self.drop_segment(path, *id),
+            Slot::ListElement { id } => {
+                if let Some(doc) = self.files.get_mut(path).and_then(|m| m.doc.as_mut()) {
+                    doc.lists.retain(|e| e.id != *id);
+                }
+            }
+            Slot::Block => {}
+        }
+    }
+
+    /// Drop one prose segment. A `Container` left with no entries goes with the
+    /// last of them: an empty `## Changes` heading is a section that describes
+    /// nothing, and the reader would carry it forever.
+    fn drop_segment(&mut self, path: &Path, id: u32) {
+        let Some(model) = self.files.get_mut(path).and_then(|m| m.doc.as_mut()) else {
             return;
         };
-        let Some(at) = model.body.iter().position(|s| s.id == chapter) else {
+        let Some(at) = model.body.iter().position(|s| s.id == id) else {
             return;
         };
         let container = match &model.body[at].kind {
@@ -1650,12 +1737,8 @@ impl Store for ItemPerFileStore {
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
         let route = self.route_of(kb, fact)?;
-        let (text, chapter) = self.split_row(kb, fact, meta)?;
-        self.pending_writes.push(PendingWrite {
-            route,
-            text,
-            chapter,
-        });
+        let row = self.render_row(kb, fact, meta)?;
+        self.pending_writes.push(PendingWrite { route, row });
         Ok(())
     }
 
@@ -1676,7 +1759,7 @@ impl Store for ItemPerFileStore {
             rule: id,
             path: info.path.clone(),
             route: info.route.clone(),
-            chapter: info.chapter,
+            slot: info.slot.clone(),
         });
         Ok(true)
     }
@@ -1749,33 +1832,31 @@ impl Store for ItemPerFileStore {
 
             let old_path = retracts[i].path.clone();
             let new_path = self.path_of(&write.route)?;
-            let model = self.files.get_mut(&old_path).ok_or_else(|| {
-                PersistenceError::Io(format!("no model for {}", old_path.display()))
-            })?;
-            let at = model.position_of(retracts[i].rule).ok_or_else(|| {
-                PersistenceError::Io(format!(
-                    "{}: the row for `{id}` is not in this file's model",
-                    old_path.display()
-                ))
-            })?;
-            model.blocks[at] = Block {
-                kind: Kind::Row(None),
-                text: row_text(&write.text),
-            };
-            // THE CHAPTER IS REWRITTEN BEFORE THE FILE MOVES, while the model is
-            // still keyed at the old path (WI-1120). Only if its text actually
-            // changed: `claim` rewrites the head and renames the file, and the
-            // description chapter must come through byte-identical — that is the
-            // invariant that keeps hand-added prose alive.
-            match (&write.chapter, retracts[i].chapter) {
-                (Some(chapter), existing) => {
-                    self.write_chapter(&old_path, existing, chapter)?;
+            // THE ROW IS REWRITTEN BEFORE THE FILE MOVES, while the model is
+            // still keyed at the old path. Its chapters are rewritten only where
+            // the text actually changed: `claim` rewrites the attributes and
+            // renames the file, and the description must come through
+            // byte-identical — that is the invariant that keeps hand-added prose
+            // alive.
+            match &write.row {
+                PendingRow::Plain(text) => {
+                    let model = self.files.get_mut(&old_path).ok_or_else(|| {
+                        PersistenceError::Io(format!("no model for {}", old_path.display()))
+                    })?;
+                    let at = model.position_of(retracts[i].rule).ok_or_else(|| {
+                        PersistenceError::Io(format!(
+                            "{}: the row for `{id}` is not in this file's model",
+                            old_path.display()
+                        ))
+                    })?;
+                    model.blocks[at] = Block {
+                        kind: Kind::Row(None),
+                        text: row_text(text),
+                    };
                 }
-                // The field went from present to ABSENT — an `update` that
-                // cleared it. The chapter goes with it rather than lingering as
-                // prose bound to nothing.
-                (None, Some(existing)) => self.drop_chapter(&old_path, existing),
-                (None, None) => {}
+                row => {
+                    self.place_document_row(&old_path, Some(&retracts[i].slot), row)?;
+                }
             }
             self.rows.remove(&retracts[i].rule);
             if !same_path(&old_path, &new_path) {
@@ -1806,9 +1887,7 @@ impl Store for ItemPerFileStore {
             }
             // The row's prose leaves with it — an orphan chapter would be text
             // bound to no fact, and the next rewrite would carry it forever.
-            if let Some(chapter) = r.chapter {
-                self.drop_chapter(&path, chapter);
-            }
+            self.drop_slot(&path, &r.slot);
             self.rows.remove(&r.rule);
             if let Route::Item { id, .. } = &r.route {
                 self.by_item.remove(id);
@@ -1860,9 +1939,11 @@ impl Store for ItemPerFileStore {
             }
             let path = self.path_of(&write.route)?;
             self.refuse_unknown_occupant(&path, &deleted)?;
-            self.model_for(&path).append_row(write.text);
-            if let Some(chapter) = &write.chapter {
-                self.write_chapter(&path, None, chapter)?;
+            match &write.row {
+                PendingRow::Plain(text) => self.model_for(&path).append_row(text.clone()),
+                row => {
+                    self.place_document_row(&path, None, row)?;
+                }
             }
             deleted.remove(&path);
             dirty.insert(path);
@@ -1873,7 +1954,7 @@ impl Store for ItemPerFileStore {
                 .files
                 .get(path)
                 .ok_or_else(|| PersistenceError::Io(format!("no model for {}", path.display())))?;
-            write_file(path, &model.render())?;
+            write_file(path, &model.render(self.mapping.as_ref()))?;
         }
         // Removals last: a crash before this point leaves the row in two files,
         // which the next load names as a `DuplicateId` — loud, and repairable.
@@ -1939,6 +2020,16 @@ fn prose_field(
     let Some(value) = get_named_arg(kb, named_args, field) else {
         return Ok(None);
     };
+    prose_text(kb, value, field)
+}
+
+/// The same, given the value already reached — a chapter field inside a
+/// flattened record is found by PATH, not as a named argument of the fact.
+fn prose_text(
+    kb: &KnowledgeBase,
+    value: TermId,
+    field: &str,
+) -> Result<Option<String>, PersistenceError> {
     if let Some(s) = string_of(kb, value) {
         return Ok(Some(s));
     }
@@ -1978,65 +2069,60 @@ fn prose_field(
     }
 }
 
-/// The (expected, found) headings of one entry, or `None` when they agree.
-fn entry_heading_pair(
+/// The value one satellite-list element is written as: its `field`, spelled by
+/// the declared type, or the backticked term when it has no data spelling.
+///
+/// A value carrying `, ` would be indistinguishable from two elements, so it has
+/// no data spelling either and takes the term form — which is exactly what
+/// [`document::spell_write`] answers `None` for.
+fn list_element_value(
     kb: &KnowledgeBase,
-    rule: RuleId,
-    group: &ChapterGroupSpec,
-    kind: &SegmentKind,
-) -> Option<(String, String)> {
-    let SegmentKind::Entry {
-        name, decoration, ..
-    } = kind
-    else {
-        return None;
+    fact: TermId,
+    spec: &document::SatelliteListSpec,
+    mapping: &DocumentMapping,
+) -> Result<String, PersistenceError> {
+    let Term::Fn { named_args, .. } = kb.get_term(fact) else {
+        return Err(PersistenceError::Io(format!(
+            "a `{}` row has no fields, so it cannot be written as a list element",
+            spec.functor
+        )));
     };
-    let head = kb.rule_head(rule);
-    let expected_name = named_field(kb, head, &group.named_by).unwrap_or_default();
-    let expected_decoration: Vec<String> = group
-        .decorate
-        .iter()
-        .map(|f| named_field(kb, head, f).unwrap_or_default())
-        .collect();
-    let expected = heading_text(&expected_name, &expected_decoration);
-    let found = heading_text(name, decoration);
-    (expected != found).then_some((expected, found))
-}
-
-/// Turn one container's disagreeing headings into faults.
-///
-/// THE SETS DECIDE, and that is the whole point: if the headings present are a
-/// PERMUTATION of the headings expected, the entries are the right ones in the
-/// wrong order and the prose is currently attached to the wrong facts — a
-/// blocking [`LayoutFault::ChapterOrder`] whose repair MOVES prose. Anything else
-/// names something no fact does, so it is a hand-edited heading — a
-/// [`LayoutFault::ChapterDecoration`] whose repair REWRITES a rendering.
-///
-/// Telling them apart is the difference between restoring a file and silently
-/// reattributing every note in it to the wrong author.
-fn classify_headings(path: &Path, container: &str, pairs: &[(String, String)]) -> Vec<LayoutFault> {
-    if pairs.is_empty() {
-        return Vec::new();
+    let value = get_named_arg(kb, named_args, &spec.field).ok_or_else(|| {
+        PersistenceError::Io(format!(
+            "a `{}` row carries no `{}`, and that field IS its written value",
+            spec.functor, spec.field
+        ))
+    })?;
+    let ty = mapping
+        .schema
+        .field_type(&spec.functor, &spec.field)
+        .ok_or_else(|| {
+            PersistenceError::Io(format!(
+                "`{}.{}` is not declared, so its value has no spelling",
+                spec.functor, spec.field
+            ))
+        })?;
+    // BOTH SPELLINGS MUST BE COMMA-FREE, and the fallback is the one that is
+    // easy to forget. A satellite list is written as ONE attributes field with
+    // its elements separated by `, `, so an element carrying that separator has
+    // no spelling at all here — not even the backticked term, which the reader
+    // splits before it ever looks for a backtick. Guarding only the data
+    // spelling produced a file this store's own reader refuses.
+    //
+    // REFUSED, rather than encoded: §3.2's "the writer never has to refuse a
+    // value" is about a field of the item's own fact, where the term spelling is
+    // total. This position has no total escape, so the honest answer is to fail
+    // before anything is written.
+    let text = document::spell_write(kb, value, &ty, mapping)
+        .unwrap_or_else(|| document::term_value(kb, value));
+    if text.contains(", ") {
+        return Err(PersistenceError::Io(format!(
+            "a `{}` row's `{}` is {text}, which carries the `, ` that separates the elements \
+             of `{}` — one element would read back as two",
+            spec.functor, spec.field, spec.named
+        )));
     }
-    let mut expected: Vec<&String> = pairs.iter().map(|(e, _)| e).collect();
-    let mut found: Vec<&String> = pairs.iter().map(|(_, f)| f).collect();
-    expected.sort();
-    found.sort();
-    if expected == found {
-        return vec![LayoutFault::ChapterOrder {
-            path: path.to_path_buf(),
-            container: container.to_string(),
-            expected: pairs.iter().map(|(e, _)| e.clone()).collect(),
-        }];
-    }
-    pairs
-        .iter()
-        .map(|(expected, found)| LayoutFault::ChapterDecoration {
-            path: path.to_path_buf(),
-            found: found.clone(),
-            expected: expected.clone(),
-        })
-        .collect()
+    Ok(text)
 }
 
 /// The `WI-<YYYYMMDD>-<digest>` part of a MINTED id — everything up to the slug,
@@ -2056,16 +2142,6 @@ fn identity_prefix(id: &str) -> Option<String> {
         return None;
     }
     Some(format!("WI-{day}-{digest}"))
-}
-
-/// A chapter heading's text, for the decoration diagnostic.
-fn heading_text(name: &str, decoration: &[String]) -> String {
-    let mut out = name.to_string();
-    for d in decoration {
-        out.push_str(document::DECORATION_SEPARATOR);
-        out.push_str(d);
-    }
-    out
 }
 
 fn functor_short(kb: &KnowledgeBase, t: TermId) -> Option<String> {

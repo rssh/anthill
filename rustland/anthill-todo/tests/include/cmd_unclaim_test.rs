@@ -17,8 +17,7 @@ fact WorkItem(
   description: \"claimed item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Claimed(agent: \"alice\", since: \"2026-05-01T00:00:00Z\"))
-";
+  last_status_change: StatusChange(status: Claimed(), agent: some(value: \"alice\"), at: some(value: \"2026-05-01T00:00:00Z\")))";
 
 const SINGLE_OPEN_WI: &str = "\
 fact WorkItem(
@@ -27,7 +26,7 @@ fact WorkItem(
   description: \"open item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 #[test]

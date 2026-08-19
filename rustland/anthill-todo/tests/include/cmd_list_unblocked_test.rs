@@ -18,7 +18,7 @@ fact WorkItem(
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-002",
@@ -26,7 +26,7 @@ fact WorkItem(
   description: "blocked on WI-001",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-003",
@@ -34,7 +34,7 @@ fact WorkItem(
   description: "independent open",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-004",
@@ -42,7 +42,7 @@ fact WorkItem(
   description: "dep already delivered",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-005"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-005",
@@ -50,7 +50,7 @@ fact WorkItem(
   description: "delivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "bob", at: "2026-01-01T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "bob"), at: some(value: "2026-01-01T00:00:00Z")))
 
 fact Tag(workitem: "WI-001", name: "seq")
 fact Tag(workitem: "WI-002", name: "seq")
@@ -108,7 +108,7 @@ fact WorkItem(
   description: "blocked on undelivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-011"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-011",
@@ -116,7 +116,7 @@ fact WorkItem(
   description: "also open",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-010"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 "#,
     );
 
