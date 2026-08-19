@@ -75,6 +75,13 @@ That is the spelling for any value the table above cannot express — a string
 containing `, `, a payload-carrying variant, an arbitrary `Term`. The writer uses
 it only where the data spelling does not apply, so it never has to refuse a value.
 
+**Length does not decide anything here; the mapping does.** Whether a field is
+prose is a property of the field, not of how long one item's value happens to be,
+and a threshold would give one field two shapes: on this tracker a 255-character
+rule puts 35 descriptions inline and 1092 in a chapter, and moves an author's text
+the moment their prose crosses the line. Length is only a **diagnostic** (§7) —
+a long value in this chapter means a prose field has not been declared as one.
+
 ### 3.3 Blank lines and field groups
 
 A blank line separates every field line from the next, except that fields named
@@ -344,6 +351,7 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a container the mapping names, holding no entries | not an error — the group has no facts |
 | an entry heading with the wrong number of ` — ` separated parts | load error |
 | an entry heading whose kind names no group of that container | load error naming file, heading and kind |
+| an attributes value longer than 255 characters | diagnostic naming the field — a prose field wants declaring as a chapter (§4.2) |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
 | attributes, filename and directory disagree | diagnostic; `fsck --fix` repairs from the attributes |
 
