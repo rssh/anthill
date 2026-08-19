@@ -227,10 +227,21 @@ levels reserved here. The writer shifts the whole hierarchy down by the **minimu
 that puts its shallowest heading below the reserved set for the chapter it is
 going into, and writes that.
 
-    written                    stored in a field chapter
-    # Overview            ->   ### Overview
-    ## The id             ->   #### The id
-    ### three parts       ->   ##### three parts
+**It applies to every prose body, and the shift is the CHAPTER's, not the
+document's.** A feedback entry is prose exactly as a description is, and arrives the
+same way — written elsewhere, pasted in by someone who has never heard of this
+format. Its enclosing chapter reserves one level more (`level` and `level + 1`, so
+`##` and `###`), so the same text demotes one step further:
+
+    written              in a field chapter        in an entry
+    # Overview      ->   ### Overview         ->   #### Overview
+    ## The id       ->   #### The id          ->   ##### The id
+    ### three parts ->   ##### three parts    ->   ###### three parts
+
+Which is also where the depth budget is tightest: three authored levels fit an
+entry exactly, with nothing to spare, while a description has one level in hand. A
+fourth authored level overflows in an entry and is refused (see below), and fits in
+a description.
 
 Nothing is lost, and that is why this is normalisation rather than a silent
 repair: the **relative** hierarchy is preserved exactly, and the absolute level of
@@ -249,10 +260,6 @@ everything else does. And a shift that would push a heading past level 6, where
 markdown has no deeper heading, cannot be represented: that is refused, naming the
 heading and the depth, because there is no correct answer rather than because the
 format is being strict.
-
-The threshold is the chapter's, not the document's, so the same prose demotes
-further inside an **entry** (reserved through `level + 1`) than inside a **field**
-chapter (reserved at `level`).
 
 ### 4.2 Field chapters
 
@@ -326,9 +333,6 @@ does not round-trip. There is no escape: the writer **refuses** such a value
 before persisting, naming the field and the value, the same way it refuses prose it
 could not read back. A separator-bearing value is rare enough that refusing it
 beats an escaping layer nobody would remember to apply.
-
-An entry's body must not begin with a line the reader would take for a heading at a
-structural level. The writer checks this before writing.
 
 ### 4.4 Fences
 
