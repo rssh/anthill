@@ -201,6 +201,40 @@ hierarchy is defined from `level` downwards and nothing above it has a meaning.
 A heading marker inside a fenced code block is not a heading; the scanner tracks
 fences (§4.4).
 
+**Prose that arrives with its own headings is DEMOTED, not refused.** Text written
+somewhere else — a design note, a pasted document, an agent that has never heard of
+this format — carries a hierarchy starting at `#` or `##`, which collides with the
+levels reserved here. The writer shifts the whole hierarchy down by the **minimum**
+that puts its shallowest heading below the reserved set for the chapter it is
+going into, and writes that.
+
+    written                    stored in a field chapter
+    # Overview            ->   ### Overview
+    ## The id             ->   #### The id
+    ### three parts       ->   ##### three parts
+
+Nothing is lost, and that is why this is normalisation rather than a silent
+repair: the **relative** hierarchy is preserved exactly, and the absolute level of
+a heading in text written standalone says where it was written, not anything about
+the item. The shift is by one amount for the whole block, so sibling sections stay
+siblings.
+
+It is **idempotent**, which is what makes it safe to apply on every write: stored
+prose has no collision, so writing it back shifts nothing. A round trip is
+therefore identity from the second write onward, and the first write is the only
+one that changes anything.
+
+Two things it does not touch. A `#` inside a **fenced block** is not a heading and
+is left exactly as written — the shift runs over the same fence-aware scan
+everything else does. And a shift that would push a heading past level 6, where
+markdown has no deeper heading, cannot be represented: that is refused, naming the
+heading and the depth, because there is no correct answer rather than because the
+format is being strict.
+
+The threshold is the chapter's, not the document's, so the same prose demotes
+further inside an **entry** (reserved through `level + 1`) than inside a **field**
+chapter (reserved at `level`).
+
 ### 4.2 Field chapters
 
 `Chapter(functor, field, named)` maps one prose field of the item's fact to one
@@ -462,7 +496,7 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | an unterminated backtick value | load error |
 | a prose chapter the mapping names is missing | `Option` field → `none` |
 | two chapters with one name, field not declared repeated | load error |
-| a heading at a structural level the mapping does not account for in that scope | load error naming file and heading |
+| a heading at a structural level the mapping does not account for in that scope | load error naming file and heading — the reader's rule; the writer demotes instead (§4.1) |
 | a fenced code block opened in prose and never closed | load error naming the line the fence opens on (§4.4) |
 | a status field combination no variant admits | load error naming the item, the status and the offending companion (§3.3) |
 | a mapping that is not well-formed | load error naming the offending fact (§5.1) |
@@ -474,6 +508,8 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
 | attributes, filename and directory disagree | diagnostic; `fsck --fix` repairs from the attributes |
 
-The writer refuses prose it could not read back — a heading at a reserved level, or
-an unbalanced fence — before the file is written, so the command fails with nothing
-on disk.
+The writer still refuses prose it could not read back, but the set is now small.
+A heading at a reserved level is **demoted** (§4.1), not refused. What remains is
+prose no shift can fix: an **unbalanced fence**, which would swallow every chapter
+after it, and a heading that demotion would push **past level 6**. Both fail before
+the file is written, so the command fails with nothing on disk.
