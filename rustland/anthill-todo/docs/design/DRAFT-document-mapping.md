@@ -18,12 +18,14 @@ also fields (§3), and the field is the source: a disagreement is a diagnostic.
 
 A file is a sequence of **chapters**. One of them — named by
 `DocumentFormat(attributes:)` — holds the item's own fact as data; the rest hold
-prose.
+prose. The reader finds it by name, at any position; the writer puts it first.
 
 ```markdown
 ## Attributes                            ← the item's fact, as a bullet list
 
 ## Description                           ← a prose field of that fact
+
+## Reason                                ← another, present only when filled
 
 ## Changes                               ← a container
 ### 2026-08-17T09:19:35Z — feedback — user   ← an entry
@@ -46,8 +48,8 @@ facts, no application syntax.
 - key: value
 ```
 
-`key` matches `[a-z_][a-z0-9_]*` and names a field of the functor, or a head field
-the mapping declares (§5). Everything after `: ` is the value, with leading and
+`key` matches `[a-z_][a-z0-9_]*` and names a field of the functor, or an attributes
+field the mapping declares (§5). Everything after `: ` is the value, with leading and
 trailing whitespace removed.
 
 ### 3.2 Values
@@ -89,6 +91,13 @@ same reason — nothing can conflict over them.
 A field absent from the chapter is absent from the fact; an `Option` field so
 omitted is `none`. The writer omits every `Option` field whose value is `none`, and
 omits any field whose text lives in a prose chapter (§4.2).
+
+**An `Option` holding an EMPTY collection is also omitted**, and this one is a
+deliberate narrowing rather than a restatement: `some([])` and `none` are different
+values, and writing neither means the document cannot tell them apart. It is the
+right trade here — an item with no dependencies and an item with an empty
+dependency list are the same item — but it is the one place the encoding is not
+value-preserving, so a domain that needs the distinction cannot use this rule.
 
 ## 4. Prose chapters
 
@@ -136,8 +145,8 @@ spelling, and a second kind added later is then additive.
 
 Each entry is self-contained:
 
-- its **heading** is the first field of `heading`, then `kind`, then the
-  remaining fields of `heading`, joined by ` — `;
+- its **heading** is the fields of `heading` joined by ` — `, with `kind`
+  inserted after the first — so `at`, then the kind, then `author`;
 - its **body** is the fact's `field`;
 - its `key` field is the item's id, taken from the file.
 
@@ -153,9 +162,15 @@ id should be minted from content, not from a counter.
 Delivered
 ```
 
-Entries are independent: their order is the file's order, and two entries whose
-headings are identical denote two facts. A container's entries are written in
-ascending order of their first heading field.
+A container with no entries is simply absent — the group has no facts. That is not
+the missing-chapter case of §4.2, which concerns a field.
+
+Entries are independent, and **their order is not data**: the same entries in any
+order denote the same facts, and two entries whose headings are identical denote
+two facts. The writer keeps them ascending by their first heading field, and
+`fsck --fix` re-sorts; a hand-reordered container is neither an error nor a
+diagnostic, because nothing was lost. This is what lets an append-only container be
+merged by concatenation, which cannot preserve order.
 
 An entry's body must not begin with a line the reader would take for a heading at a
 structural level. The writer checks this before writing.
@@ -310,6 +325,7 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | two chapters with one name, field not declared repeated | load error |
 | a heading at a structural level the mapping does not account for in that scope | load error naming file and heading |
 | a `###` outside any container | load error |
+| a container the mapping names, holding no entries | not an error — the group has no facts |
 | an entry heading with the wrong number of ` — ` separated parts | load error |
 | an entry heading whose kind names no group of that container | load error naming file, heading and kind |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
