@@ -14,6 +14,17 @@ tree from being read as an item.
 The filename carries the item's id and the directory carries its status. Both are
 also fields (§3), and the field is the source: a disagreement is a diagnostic.
 
+**A satellite fact's key is not written in a document** — an entry in this file is
+about this item, so `ChapterGroup(key:)` and `SatelliteList(key:)` fill it from the
+item's own `id` (§4.3). The field itself is untouched: every fact the reader
+produces carries it, so exports, query output and `orphaned.anthill` are unchanged.
+Only a **document** omits it; a file that is not a document — `orphaned.anthill`
+holds rows whose item has no file at all — writes it in ordinary fact syntax.
+
+One fault class disappears with it. `MisfiledRow` — a satellite row sitting in a
+file other than its item's — is unrepresentable here, because a row that does not
+name an item cannot name the wrong one.
+
 ## 2. Document structure
 
 A file is a sequence of **chapters**. One of them — named by
@@ -171,7 +182,12 @@ Each entry is self-contained:
 - its **heading** is the fields of `heading` joined by ` — `, with `kind`
   inserted after the first — so `at`, then the kind, then `author`;
 - its **body** is the fact's `field`;
-- its `key` field is the item's id, taken from the file.
+- its `key` field is the item's id, taken from the **`id` attribute of this
+  document's own fact** — never from the filename. The two normally agree, and §1
+  makes the field the source when they do not; taking the key from the path would
+  make a hand-renamed file silently re-attribute every entry in it, while the
+  filename-versus-`id` check reported the rename as a separate and apparently
+  harmless fault.
 
 ```markdown
 ## Changes
@@ -244,7 +260,7 @@ namespace anthill.stage0.document
     functor : Term,
     named   : String,   -- the attributes field
     field   : String,   -- the field each element fills
-    key     : String)   -- the field taking the item's id
+    key     : String)   -- the field taking the item's id (§4.3: from the fact)
 
   fact DocumentFormat(level: 2, attributes: "Attributes")
 
