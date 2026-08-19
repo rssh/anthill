@@ -455,27 +455,39 @@ const HOST_FNS: &[(
     ("store_retrieve", 2, persistence_retrieve),
 ];
 
-fn host_fn_by_key(key: &str) -> Option<HostFn> {
-    HOST_FNS
-        .iter()
-        .find(|&&(k, _, _)| k == key)
-        .map(|&(_, arity, f)| HostFn { arity, f })
+/// The function `key` names, from EITHER half of the registry: this runtime's own
+/// [`HOST_FNS`], then WI-1122's embedder table on the KB.
+///
+/// `HOST_FNS` is consulted first, but the order is not a precedence rule — a key
+/// cannot be in both, because `KnowledgeBase::register_host_fn` refuses to register
+/// one this runtime already ships. The order is just the cheap check first.
+///
+/// A miss in BOTH is still the WI-876 refusal at the caller, not a silent skip.
+fn host_fn_by_key(kb: &crate::kb::KnowledgeBase, key: &str) -> Option<HostFn> {
+    if let Some(hit) = HOST_FNS.iter().find(|&&(k, _, _)| k == key).map(|&(_, arity, f)| HostFn {
+        arity,
+        f: HostFnImpl::Static(f),
+    }) {
+        return Some(hit);
+    }
+    kb.host_fn_registry().get(key)
 }
 
-/// WI-876 — a host function this runtime exposes, with the ARITY it accepts.
-///
-/// The arity is carried because the registry is CLOSED, so it is known here and
-/// nowhere else — and without it a mapping may bind an operation to a host function
-/// that cannot take its arguments. MEASURED: `operation squish(a: Widget) -> Int64`
-/// mapped to `"ordered_compare"` (which is `expect_args::<2>`) loaded clean, passed
-/// `anthill check`, and died `ArityMismatch { expected: 2, got: 1 }` on the first
-/// call — a load-time claim of backing that does not imply the operation runs, which
-/// is the very defect class this ticket exists to close, one level down.
-#[derive(Clone, Copy)]
-struct HostFn {
-    arity: usize,
-    f: fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>,
+/// WI-1122 — is `key` one this runtime ships? Asked by
+/// `KnowledgeBase::register_host_fn` so an embedder cannot shadow a built-in entry.
+/// The one reader of [`HOST_FNS`] outside this module, which is why it is a predicate
+/// over the key rather than an accessor handing out the table.
+pub(crate) fn is_builtin_host_fn_key(key: &str) -> bool {
+    HOST_FNS.iter().any(|&(k, _, _)| k == key)
 }
+
+// WI-876's `HostFn` — the function plus the ARITY it accepts — now lives in
+// `kb::host_fns`, because WI-1122's embedder table stores the same type and that
+// table has to live on the KB. The arity rationale moved with it; what matters here
+// is that BOTH halves of the registry yield this one type, so the arity check in
+// `register_operation_mappings` cannot tell which half an entry came from and applies
+// to an embedder entry unchanged.
+use crate::kb::host_fns::{HostFn, HostFnImpl};
 
 /// WI-876 — register the per-carrier host implementations named by every loaded
 /// `operation_map` clause, read from the `anthill.realization.OperationMapping`
@@ -511,7 +523,7 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         op, op_qn, host_fn, ..
     } in mappings
     {
-        let Some(host) = host_fn_by_key(&host_fn) else {
+        let Some(host) = host_fn_by_key(interp.kb(), &host_fn) else {
             // Loud, and it stops the whole interpreter — including the short-lived one
             // the resolver builds per bridged evaluation, so an unrelated `[simp]` fire
             // or `eq` dispatch reports this too. That breadth is deliberate: a binding
@@ -558,9 +570,9 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         // RAW map hit, so whichever spelling reaches dispatch must find the same
         // implementation the predicate promised.
         let canon = interp.kb().canonical_sym(sym);
-        interp.register_builtin_sym(sym, host.f);
+        host.register_on(interp, sym);
         if canon != sym {
-            interp.register_builtin_sym(canon, host.f);
+            host.register_on(interp, canon);
         }
     }
     Ok(())
@@ -600,7 +612,7 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
         ..
     } in mappings
     {
-        let Some(host) = host_fn_by_key(&host_fn) else {
+        let Some(host) = host_fn_by_key(interp.kb(), &host_fn) else {
             return Err(EvalError::Internal(format!(
                 "broken binding block: const_map names host value {host_fn:?} for \
                  {const_qn}, which the rust runtime does not provide. No interpreter can \
@@ -627,9 +639,9 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
         // const lookup is a RAW `Symbol` map hit, so whichever spelling `force_const`
         // reaches must find the registration.
         let canon = interp.kb().canonical_sym(sym);
-        interp.register_builtin_sym(sym, host.f);
+        host.register_on(interp, sym);
         if canon != sym {
-            interp.register_builtin_sym(canon, host.f);
+            host.register_on(interp, canon);
         }
     }
     Ok(())
@@ -5617,11 +5629,12 @@ mod tests {
     /// against a hand-copied roster of the thing under test checks the copy.
     #[test]
     fn every_host_fn_key_declares_the_arity_its_function_accepts() {
+        let kb = crate::kb::KnowledgeBase::new();
         for (key, _, _) in HOST_FNS {
-            let host = host_fn_by_key(key).unwrap_or_else(|| panic!("{key} is registered"));
+            let host = host_fn_by_key(&kb, key).unwrap_or_else(|| panic!("{key} is registered"));
             let args = vec![Value::Float(1.0); host.arity];
             if let Err(EvalError::ArityMismatch { expected, got, .. }) =
-                (host.f)(&mut dummy(), &args)
+                host.call(&mut dummy(), &args)
             {
                 panic!(
                     "host_fn_by_key says {key} takes {}, but the function wants {expected} \
@@ -5631,7 +5644,7 @@ mod tests {
             }
         }
         assert!(
-            host_fn_by_key("no_such_host_function").is_none(),
+            host_fn_by_key(&kb, "no_such_host_function").is_none(),
             "the control: the registry is CLOSED, so an unknown key has no entry",
         );
     }

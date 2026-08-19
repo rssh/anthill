@@ -216,12 +216,39 @@ pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
     try_load_kb_with_files(&[source])
 }
 
+/// WI-1122 — [`try_load_kb_with`] with a hook that runs on the FRESH KB before
+/// `load_all`, for the embedder seams that must be mounted before load
+/// (`register_host_fn`, `register_extent_owner`). Registering after the load would not
+/// exercise the documented ordering: load itself builds interpreters (a `[simp]` macro
+/// fire crosses `run_in_bridge_interp`), and `register_host_fn` now REFUSES a late
+/// entry, so a test that registered afterwards would not load at all.
+#[allow(dead_code)]
+pub fn try_load_kb_prepared(
+    source: &str,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_prepared_files(&[source], prepare)
+}
+
 /// Like [`try_load_kb_with`] but loads MULTIPLE user source strings as SEPARATE
 /// files (each its own `ParsedFile`) alongside the stdlib — for asserting
 /// cross-file load behavior, e.g. WI-321 cross-file mutual structural recursion
 /// (two files whose entities reference each other's sorts must both load).
 #[allow(dead_code)]
 pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_prepared_files(sources, |_| {})
+}
+
+/// The shared body of [`try_load_kb_with_files`] and [`try_load_kb_prepared`]: parse
+/// each source as its own file, build a fresh KB, run `prepare` on it, then `load_all`.
+/// ONE recipe rather than two, so a change to the load pipeline (a different resolver,
+/// an added pass) cannot reach the ~683 ordinary call sites while leaving the
+/// prepared-KB tests on an older one.
+#[allow(dead_code)]
+pub fn try_load_kb_prepared_files(
+    sources: &[&str],
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> Result<KnowledgeBase, Vec<String>> {
     let user: Vec<_> = sources
         .iter()
         .map(|s| parse::parse(s).expect("parse user source"))
@@ -230,6 +257,7 @@ pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<Str
     let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
     refs.extend(user.iter());
     let mut kb = KnowledgeBase::new();
+    prepare(&mut kb);
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => Ok(kb),
         Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
