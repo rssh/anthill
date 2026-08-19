@@ -14,42 +14,23 @@ fact Feedback(workitem: "WI-20260818-K63ZV-anthill-todo-backend-the-head", autho
 
 ## description
 
-anthill-todo backend: DEFINE THE ITEM DOCUMENT FORMAT AND MIGRATE THE TREE ONTO IT. The format is settled and written -- `rustland/anthill-todo/docs/design/DRAFT-document-mapping.md`, which replaces design §5.3 and §5.4 -- with seven real items converted under it in `docs/design/samples/`, each verified field by field. The decisions and the arguments behind them are in this ticket's feedback; the draft is a specification and carries neither. Branch: `wi-k63zv-document-format-samples`. WHAT REMAINS IS IMPLEMENTATION.
+anthill-todo backend: IMPLEMENT THE ITEM DOCUMENT FORMAT AND MIGRATE THE TREE ONTO IT.
 
-THE SHAPE. An item file is a sequence of markdown chapters. `## Attributes` holds the item's own fact as a bullet list of DATA -- not an anthill application -- with `## Description`, `## Reason` and `## Changes` beside it:
+IMPLEMENT ACCORDING TO `rustland/anthill-todo/docs/design/document-mapping.md`. That file is the specification -- file naming, document structure, the attributes chapter, value spelling, structural levels, prose chapters, containers and entries, the mapping declaration and its well-formedness rules, and the full table of load errors and diagnostics. It replaces design §5.3 and §5.4. Seven real items are converted under it in `docs/design/samples/`, each verified field by field against its original, and they are the reference for what a converted file looks like. This ticket does NOT restate the format; where the two disagree, the specification wins.
 
-    ## Attributes
+THE WORK. (1) A reader and a writer for the format, in `anthill-core` -- `persistence/document.rs` already holds the scanner and the chapter model; what is new is the attributes chapter and type-directed value spelling. (2) The mapping declarations of the spec's §5 in `anthill.stage0.document`, replacing today's. (3) The domain change: `WorkStatus` becomes a plain nullary enum, `WorkItem` gains `status_agent` / `status_at` / `status_reason` as Options, and the per-variant constraints of the spec's §3.3 restate the invariant the sum type enforced. (4) The migration, through the ordinary writer so the spec's checks cannot be skipped.
 
-    - id: WI-1121
-    - created: 2026-08-17T08:43:54Z
+THREE THINGS DECIDED, NOT OPEN. They are recorded here because an implementer must not re-litigate them and because two are invisible to any test.
 
-    - status: Delivered
-    - status_agent: claude
-    - status_at: 2026-08-18T15:28:04Z
+  * THE MIGRATION IS NOT A PURE REFORMAT. The earlier claim that a before/after per-functor row count is a complete correctness check is FALSE: the count is identical while 1127 status values change shape and 12 rejection reasons move into chapters. THE CHECK IS PER FIELD -- read the tree before, read it after, compare each WorkItem fact field by field once `Claimed(agent: a, since: t)` is normalised against `status: Claimed / status_agent: a / status_at: t`. The seven samples were verified exactly this way; that script is the model.
+  * `depends_on: some(value: nil)` BECOMES ABSENT, and reads back as `none`. `some([])` and `none` are different values and 692 items write the former. No round-trip test can see this -- both sides read as "no dependencies".
+  * ENTRIES CARRY A KIND AND MIGRATION SYNTHESIZES NOTHING. `### <at> — feedback — <author>`, with the log holding only recorded feedback. Status entries are NOT manufactured from the current status: real history cannot be migrated (985 of 1127 items have already lost who claimed them and when, and `untag` never left a record), and a log that begins partly fictional is worse than one that begins short.
 
-    - acceptance: cargo-test, scaland-sbt-test
-
-    - depends_on: WI-1114
-
-    - tags: wi437
-
-against today's `fact WorkItem(...)` on one physical line, MEAN 279 characters and longest 2062.
-
-FOUR THINGS THE ENCODING RESTS ON. (1) A value's spelling follows its DECLARED TYPE -- unquoted string, bare variant name, comma-separated list, absent means none -- with a BACKTICKED ANTHILL TERM as the total escape, so the writer never refuses a value. The reader therefore reads the domain's entity declarations alongside the mapping, which is a departure from §5.3's "never learns stage0's schema" and is stated as one. (2) BLANK LINES ARE THE COUPLING DECLARATION, measured on git 3-way merges: two edited lines with nothing between them CONFLICT, with one unchanged line between them MERGE. Adjacency says "these change together"; `FieldGroup` declares which. (3) A SATELLITE'S KEY IS NOT WRITTEN -- an entry in this file is about this item -- and it is filled from the document's own `id` ATTRIBUTE, never from the path, or a hand-renamed file would silently re-attribute every entry in it. (4) ENTRIES CARRY A KIND (`### <at> — feedback — <author>`), which is what makes status and tag entries additive later instead of a fourth full-tree rewrite.
-
-TWO DOMAIN CHANGES, BOTH REQUIRED. `WorkStatus` becomes a plain nullary enum and `WorkItem` gains `status_agent` / `status_at` / `status_reason` as Options. This finishes WI-1120's job rather than merely tidying: per FIELD, the longest value in any head on this tracker is `status` at 1842 characters (WI-1115), so THE 2062-CHARACTER MAXIMUM LINE IS A REJECTION REASON -- prose WI-1120 missed because it sat inside a variant payload. `status_reason` becomes a `## Reason` chapter through the existing `Chapter` mechanism. It also records who acted for every transition; `Verified` carries no agent today.
-
-THE MAPPING GAINS THREE KINDS, and they are in the draft's §5: `FieldGroup` (adjacency), `ScalarForm` (a bare scalar denoting a one-slot constructor -- `acceptance: cargo-test` is `ToolPasses(tool: "cargo-test")`, and `acceptance` is 100% `ToolPasses` across 1157 occurrences), and `SatelliteList` (a list field expanding to one fact per element, which is how `tags` works). `ChapterGroup` gains `kind` and `key`, and loses `named_by`/`decorate` to a single `heading` list.
-
-THE MIGRATION IS NOT A PURE REFORMAT, and the earlier claim that a before/after per-functor row count is a complete correctness check is FALSE under these decisions: the row count is identical while 1127 status values change shape and 12 reasons move into chapters. THE CHECK MUST BE PER FIELD over the reconstructed status -- read the tree before, read it after, and compare each WorkItem fact field by field once `Claimed(agent: a, since: t)` is normalised against `status: Claimed / status_agent: a / status_at: t`. The conversion of the seven samples was checked exactly this way and is the model for it.
-
-ONE FIELD IS KNOWINGLY LOSSY, decided rather than discovered: `depends_on: some(value: nil)` becomes absent, which reads back as `none`. `some([])` and `none` are different values and 692 items write the former. NO round-trip test can see this -- both sides read as "no dependencies" -- so it is recorded here because nothing will re-derive it.
-
-DRIVE THE CAPABILITY, do not assert that it loads. Round-trip a real item -- add / feedback / tag / claim / update --description -- through the document format and assert the reparsed FACTS equal the pre-write facts. Then the test that justifies the ticket: change one item's status in one checkout and its description in another, and assert git merges them without conflict. CONTROL: the round-trip test passes either way against an unmodified store and measures only the encoding; the merge test is the one that fails when the head is a single line, and a THIRD test must fix the blank line -- two fields written adjacent instead of blank-separated conflict, which is why the separator is a rule and not a style.
+ACCEPTANCE -- DRIVE THE CAPABILITY, do not assert that it loads. Round-trip a real item (add / feedback / tag / claim / update --description) and assert the reparsed FACTS equal the pre-write facts. Then the two merge tests that justify the ticket: change one item's status in one checkout and its description in another, and assert git merges them without conflict; and write two attribute fields ADJACENT instead of blank-separated and assert they conflict. CONTROL: the round-trip test passes either way against an unmodified store and measures only the encoding; the first merge test fails when the head is a single line; the second fails when the blank-line rule is dropped, which is why the separator is a rule and not a style.
 
 COST: a THIRD full-tree rewrite of 1127 files, after WI-1118's and WI-1120's. §11 accepted that arithmetic once and the machinery is rehearsed -- `migrate --to document` exists, is idempotent, and was driven twice on copies before touching the live tree.
 
-FOLLOW-ON, NOT PART OF THIS: a format-aware git merge driver. Measured, two agents appending different feedback entries CONFLICT under the default text merge and merge cleanly under `merge=union`, which is built in and needs no per-clone config -- but git grants a driver per PATH, never per region, and union over a whole item file would union a status change into two status lines. A driver (`anthill-todo merge %O %A %B`) is small because the reader and writer already exist, degrades to an ordinary conflict when not installed, and is independent of this ticket.
+FOLLOW-ON, NOT PART OF THIS: a format-aware git merge driver. Measured, two agents appending different feedback entries CONFLICT under the default text merge and merge cleanly under `merge=union`, which is built in and needs no per-clone config -- but git grants a driver per PATH, never per region, and union over a whole item file would union a status change into two status lines. A driver (`anthill-todo merge %O %A %B`) is small because the reader and writer already exist, degrades to an ordinary conflict when absent, and is independent of this ticket.
 
 ## Feedback
 
