@@ -16740,6 +16740,100 @@ pub(crate) fn impl_parent_sort_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Opti
     impl_parent_of_op(kb, op_sym).filter(|p| kb.has_kind(*p, crate::intern::SymbolKind::Sort))
 }
 
+/// WI-866 — which SPEC a dictionary reached through a call to `op_sym` is laid out
+/// against ([`DictLayout`]'s spec half), as a decision rather than a fallback.
+///
+/// The two readers ([`Interpreter::expand_dispatching_dict`] at the frame push and
+/// [`dictionary_covers_target`]'s caller) each wrote this as
+/// `impl_parent_of_op(op).unwrap_or(provider)`, whose `unwrap_or` conflated three
+/// unrelated answers into one. MEASURED, `wi866_dispatch_spec_of_op_answers_by_shape`:
+///
+///  * a SORT MEMBER (`anthill.prelude.Ord.compare`) — the sort IS the spec, and for a
+///    WI-415 parent-bundle dict it is also the provider, which the layout's one-list
+///    rule already handles. [`Self::Spec`].
+///  * a TOP-LEVEL operation — its canonical name is DOT-LESS (`operation topLevel(…)`
+///    at a file's top level gets qn `"topLevel"`), so the `rsplit_once('.')` fails.
+///    This is the case the `unwrap_or` actually served, and it names no spec.
+///  * a NAMESPACE-LEVEL operation — `impl_parent_of_op` answers `Some(namespace)`, so
+///    it NEVER REACHED the `unwrap_or` at all, though the comment there claimed it as
+///    the case it covered. It named a namespace as a spec: harmless arithmetically (a
+///    namespace declares no `requires`, so the half counts 0 and every slice lands
+///    where the one-list reading puts it) and wrong in every diagnostic, which
+///    rendered `for spec `some.namespace`'s requires chain`. [`Self::NoSpec`].
+///
+///  * a DOTTED name whose parent segment resolves to NOTHING —
+///    [`Self::UnresolvableParent`]. The ticket expected this to be an inconsistent KB
+///    and both readers to raise on it. MEASURED, IT IS NOT: it is the WI-234 Model 1
+///    dispatch form, where a synthetic spec-op-like symbol
+///    (`test.wi223.dispatch_form.Spec.foo`, whose `Spec` is deliberately never
+///    registered) names the SHORT op and the dispatching dict's functor selects the
+///    impl. Raising here failed
+///    `wi223 apply_within_with_requirement_dispatch_resolves_via_handle_functor`,
+///    which is the only thing that distinguishes it from a corrupt KB — nothing at
+///    this call can. So it takes the spec-less reading too, and what catches a
+///    genuinely wrong one is downstream and already loud: a spec that really did
+///    contribute a half makes the dictionary LONGER than the one-list layout counts
+///    (`expand_dispatching_dict`'s arity raise), and a frame owner the layout says
+///    nothing about is its `slots_for` raise.
+///
+/// So all three spec-less arms reach the same reading. What changes is that each is
+/// now REACHED FOR A STATED REASON, and that a namespace has stopped being named as a
+/// spec in the diagnostic a reader gets when those raises fire.
+#[derive(Clone, Copy, Debug)]
+pub enum DispatchSpec {
+    /// `op_sym` is declared by a sort: that sort owns the dictionary's spec half.
+    Spec(Symbol),
+    /// `op_sym` names no spec — a top-level or namespace-level operation. The
+    /// dictionary is the provider's own bundle alone (the layout's one-list rule,
+    /// reached by passing the provider as the spec).
+    NoSpec,
+    /// `op_sym`'s canonical name is dotted but its parent segment is not a registered
+    /// symbol — the WI-234 Model 1 form, where the dispatching dict's functor picks
+    /// the impl and the synthetic `Spec.foo` name carries only the short name. Spec-
+    /// less like [`Self::NoSpec`], and kept apart from it because the REASON differs
+    /// and only one of the two is a shape a source file can write.
+    UnresolvableParent,
+}
+
+impl DispatchSpec {
+    /// WI-866 — the symbol to lay the dictionary out against, given the `provider` it
+    /// names: the spec where there is one, and the provider itself where there is not
+    /// (the layout's one-list rule, [`DictLayout`]).
+    ///
+    /// ONE OWNER FOR THE COLLAPSE, because the two readers must not come to disagree
+    /// about it — [`Interpreter::expand_dispatching_dict`] at the frame push and
+    /// [`dictionary_covers_target`]'s caller ask the same question one call apart, and
+    /// they each spelled the pre-WI-866 `unwrap_or` for themselves. The `match` is
+    /// exhaustive on purpose: a fifth name shape would stop compiling HERE, which is
+    /// where the decision belongs, rather than inheriting an arm at two call sites.
+    pub fn or_provider(self, provider: Symbol) -> Symbol {
+        match self {
+            DispatchSpec::Spec(s) => s,
+            DispatchSpec::NoSpec | DispatchSpec::UnresolvableParent => provider,
+        }
+    }
+}
+
+/// [`DispatchSpec`] for `op_sym` — see there for the four shapes and what each means.
+pub fn dispatch_spec_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> DispatchSpec {
+    let qn = kb.qualified_name_of(op_sym);
+    let Some((parent_qn, _)) = qn.rsplit_once('.') else {
+        // A top-level (`_global`) operation. No parent segment to resolve, and no
+        // spec: dispatch through it is the provider's own bundle.
+        return DispatchSpec::NoSpec;
+    };
+    let Some(parent) = kb.try_resolve_symbol(parent_qn) else {
+        return DispatchSpec::UnresolvableParent;
+    };
+    if kb.has_kind(parent, crate::intern::SymbolKind::Sort) {
+        DispatchSpec::Spec(parent)
+    } else {
+        // A NAMESPACE parent: it declares no type params and owns no requirement
+        // slots, so it is no more a spec than the absent parent above is.
+        DispatchSpec::NoSpec
+    }
+}
+
 /// WI-565: the sorts that declare a MEMBER operation whose SHORT name equals that
 /// of the bare, out-of-scope apply functor `fn_sym`. Called only on the Path-3
 /// failure edge (`fn_sym` did not resolve to a known free operation): a non-empty
@@ -18919,9 +19013,45 @@ fn build_dispatching_dict_from_chain(
                 }
                 return Ok(None);
             }
-            None => {}
+            // WI-866 — NO SHORT DICTIONARY, on this path either. This arm used to be
+            // `{}`: the dep was dropped and the loop went on, so a chain entry that
+            // did not project left a dictionary with FEWER slots than
+            // `dict_layout(callee_spec_sort, callee_spec_sort)` counts — the exact
+            // WI-857 shape (a dictionary shorter than the chain it is indexed by) at
+            // the one producer WI-857 did not touch.
+            //
+            // MEASURED, not feared: 2434 of 100641 dictionaries emitted here across
+            // the `anthill-core` suite were short — 2401 of them EMPTY where one slot
+            // was wanted (`anthill.prelude.PartialOrd` alone accounts for 2101,
+            // `SortedSet` 130), 25 empty where two were, and one PARTIAL
+            // (`wi817.dsets.BOps`, 1 of 2), which is the shape that would mis-slot if
+            // anything indexed it. All on the `require_complete = false` route, whose
+            // output is `build_dispatching_dict_direct`'s — and that term is
+            // diagnostic-only (`req_insertion.rs`: "Runtime reads CallClass directly
+            // off the NodeOccurrence (post-WI-248) so the term-keyed redirect is now
+            // diagnostic-only"), which is why 2434 malformed dictionaries could sit in
+            // `kb.dispatch_rewrites` with the suite green.
+            //
+            // WHAT CHANGES, and it is a diagnostic surface rather than an executed
+            // one: those calls now record NO rewrite instead of one whose dictionary
+            // states a false shape — an empty bundle is indistinguishable from a
+            // legitimately chain-free one, so the old entry told a reflection consumer
+            // "this call needs no requirements" precisely where one could not be
+            // built. This is the rule the function's own `require_complete` arm
+            // already states ("else fall back to no dict"), applied to the path that
+            // was exempt from it. MEASURED green: 4534 tests, 0 failures — no fixture
+            // reads those entries, which is also why nothing had noticed.
+            None => return Ok(None),
         }
     }
+    // WI-866 — and now it can be SAID: one slot per chain entry, and the chain is the
+    // one the layout counts. Both callers pass `provider_dict_entries(callee_spec_sort)`
+    // (WI-869 made them), so this checks the caller's chain CHOICE as much as the loop.
+    check_against_prediction(
+        kb,
+        DictLayout::from_halves(kb, callee_spec_sort, callee_spec_sort, proj_terms.len(), 0),
+        "the parent-bundle slot list",
+    );
     Ok(Some(build_dictionary_term(
         kb,
         syms,
@@ -20188,7 +20318,9 @@ pub fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
 /// a provider for it"; and WI-870's SLOT-PINNED hint ("the call bound slot `O` of `W`
 /// to `V`, which provides no instance") cannot reach a recorded slot at all —
 /// `slot_pin_at` answers `None` for every spec-half index by construction
-/// (`i.checked_sub(spec_half_len)`), `at_call_goal` is false everywhere below the root
+/// (`i.checked_sub(provider_half_start)` — WI-866 renamed it, and the rename is the
+/// point: it is the PRODUCER's split, not the layout's), `at_call_goal` is false
+/// everywhere below the root
 /// (`stack.push(goal)` precedes the sub-goal loop), and `slot_pin_at` short-circuits
 /// on `pin?` as well, so a `None` pin propagates to EVERY goal in that subtree —
 /// provider-half slots included. No pinned refusal is ever generated below one.
@@ -22176,9 +22308,12 @@ fn pinned_selection_for<'a>(
 fn slot_pin_at<'a>(
     pin: Option<&'a InstanceSelection>,
     i: usize,
-    spec_half_len: usize,
+    // WI-866: [`DictSubGoals::provider_half_start`], the PRODUCER's split point, not
+    // `DictLayout::spec_len` — `chain_index` counts from where the provider walk's
+    // output begins, which in the self case is 0 while the layout says `n`.
+    provider_half_start: usize,
 ) -> Option<&'a SlotSelection> {
-    let j = i.checked_sub(spec_half_len)?;
+    let j = i.checked_sub(provider_half_start)?;
     pin?.slots.iter().find(|s| s.chain_index == j)
 }
 
@@ -24906,28 +25041,23 @@ fn resolve_inner<'a>(
     let chosen_impl_subst = chosen.impl_subst.clone();
     drop(candidates);
 
-    let (sub_goals, spec_half_len, provider_strict) = dict_sub_goals(
+    // WI-857/WI-866 — the producer/consumer contract is asserted INSIDE
+    // `dict_sub_goals` now, against the layout it actually built, so this list cannot
+    // reach the loop below disagreeing with what `dict_layout` counts. It CAUGHT the
+    // last violation while it lived here: the `EffectsRuntime` anchor was dropped from
+    // the provider half while the layout counted it (144 dictionaries across the
+    // suite), which the green suite hid because none of those dictionaries reached a
+    // frame push.
+    let DictSubGoals {
+        goals: sub_goals,
+        provider_half_start,
+        strict: provider_strict,
+    } = dict_sub_goals(
         kb,
         goal,
         chosen_impl_sort,
         &chosen_impl_subst,
         &chosen_bindings,
-    );
-    // WI-857 — the producer/consumer contract, asserted at the producer: this list IS
-    // what `dict_layout` counts, so eval's arity cross-check cannot fire on a
-    // well-formed resolution. Kept as a `debug_assert` because it is the invariant the
-    // whole ticket exists to establish, and because it CAUGHT the last violation: the
-    // `EffectsRuntime` anchor was dropped from the provider half while the layout
-    // counted it (144 dictionaries across the suite), which the green suite hid because
-    // none of those dictionaries reached a frame push. `dict_layout` only reads memoized
-    // chains, so the cost is a cache hit and two symbol compares.
-    debug_assert_eq!(
-        dict_layout(kb, goal.spec_sort, chosen_impl_sort).arity(),
-        sub_goals.len(),
-        "dictionary layout for {} supplied by {} disagrees with what dict_sub_goals \
-         produced",
-        kb.qualified_name_of(goal.spec_sort),
-        kb.qualified_name_of(chosen_impl_sort),
     );
     let mut sub_resolutions: Vec<ResolvedRequiresNode> = Vec::with_capacity(sub_goals.len());
     let anchor = effects_runtime_sym(kb);
@@ -24959,7 +25089,7 @@ fn resolve_inner<'a>(
         // says a provision did not earn. It also runs the search: `Pair` has 8 slots of
         // which any one dispatch is strict on 2, so six full sub-resolutions per dispatch
         // were computed and then kept or discarded by accident.
-        if !provider_slot_is_ours(i, spec_half_len, &provider_strict) {
+        if !provider_slot_is_ours(i, provider_half_start, &provider_strict) {
             sub_resolutions.push(ResolvedRequiresNode::Unavailable {
                 spec_sort: sg.spec_sort,
                 // WI-865: NOTHING FAILED HERE. The slot is not this dispatch's
@@ -24985,7 +25115,7 @@ fn resolve_inner<'a>(
         // search ties. The only right answer is witness-local. It depends on the
         // SELECTED provider and never on caller scope, so it introduces no
         // import-coupling.
-        let sub_pin = slot_pin_at(pin, i, spec_half_len);
+        let sub_pin = slot_pin_at(pin, i, provider_half_start);
         // WI-861 — a sub-goal filling one of the CHOSEN PROVIDER's own NAMED slots is the
         // same erased binding one level down (`LexFst requires OA: Ord[A]` reached with no
         // `[OA = …]`), so the default is withheld there for the reason [`DefaultRung`]
@@ -25016,7 +25146,7 @@ fn resolve_inner<'a>(
             // it (for half the loop, with no reachability lint), and the tolerance is a
             // property of the slot, not of the outcome's shape.
             err => {
-                if i < spec_half_len {
+                if i < provider_half_start {
                     // WI-865: the failure KIND rides into the slot. Read off `err`
                     // before it is dropped, and off THIS level's failure — the tie
                     // that reaches here is the sub-goal's own, forwarded exactly as
@@ -27595,17 +27725,14 @@ fn op_requires_covers_call(
 ///
 /// `impl_sort == goal.spec_sort` (a sort providing its own spec) contributes the
 /// provider half ALONE, per the layout's one-list rule.
-/// Returns the goals in dict order plus the length of the SPEC half — the prefix
-/// whose unresolved slots become [`ResolvedRequiresNode::Unavailable`] rather than
-/// failing the whole resolution.
 fn dict_sub_goals(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
     impl_sort: Symbol,
     impl_subst: &[(Symbol, TermId)],
     head_bindings: &[(Symbol, TermId)],
-) -> (Vec<SortGoal>, usize, Vec<bool>) {
-    let mut out: Vec<SortGoal> = Vec::new();
+) -> DictSubGoals {
+    let mut goals: Vec<SortGoal> = Vec::new();
     if !same_sort_canonical(kb, impl_sort, goal.spec_sort) {
         // σ keyed by the spec's short param name — `provider_requires_subgoals`'
         // convention, and the only key that reaches the stdlib shorthand
@@ -27614,13 +27741,63 @@ fn dict_sub_goals(
             .iter()
             .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
             .collect();
-        out.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma));
+        goals.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma));
     }
-    let spec_len = out.len();
+    let provider_half_start = goals.len();
     let (provider_goals, strict) =
         candidate_provider_sub_goals(kb, impl_sort, impl_subst, goal.spec_sort);
-    out.extend(provider_goals);
-    (out, spec_len, strict)
+    let provider_len = provider_goals.len();
+    goals.extend(provider_goals);
+
+    let layout = DictLayout::from_halves(
+        kb,
+        goal.spec_sort,
+        impl_sort,
+        provider_half_start,
+        provider_len,
+    );
+    // WI-866 — THE PRODUCER/CONSUMER CONTRACT: this list IS the layout
+    // `expand_dispatching_dict` and `stand_in_requirement` PREDICT from the two sorts
+    // alone. See [`check_against_prediction`] for why it is checked here and why it
+    // raises the way it does.
+    check_against_prediction(kb, layout, "the resolver's sub-goal list");
+    DictSubGoals {
+        goals,
+        provider_half_start,
+        strict,
+    }
+}
+
+/// WI-866 — what [`dict_sub_goals`] produced.
+///
+/// TWO LENGTHS THAT ARE NOT ONE NUMBER, which is why this is a struct and not the
+/// `(goals, usize, mask)` tuple it replaced. [`DictLayout`]'s `spec_len` answers
+/// *which slice of the dictionary does an op owned by sort X read*
+/// ([`DictLayout::slots_for`]); `provider_half_start` answers *where in `goals` does
+/// `candidate_provider_sub_goals`' output begin*. They coincide everywhere except the
+/// self case (a sort providing its own spec, or a WI-415 parent bundle), where the
+/// layout folds the one list into the spec half (`n, 0`) while the producer emitted
+/// all of it from the provider walk and so starts that half at 0. A single
+/// `spec_half_len` served both readings by accident of the non-self case being the
+/// common one, and only this field is the producer's.
+///
+/// THE LAYOUT ITSELF IS NOT CARRIED, deliberately: nothing downstream of here holds a
+/// goal, so nothing downstream can be handed the produced layout instead of
+/// predicting one — [`Interpreter::expand_dispatching_dict`] has a runtime
+/// `Dictionary` value and `stand_in_requirement` two bare symbols. It is built and
+/// CHECKED against the prediction inside [`dict_sub_goals`], which is what makes
+/// those predictions safe; a field nobody reads would not add a source of truth, only
+/// a copy of one.
+struct DictSubGoals {
+    /// The sub-requirement goals in dictionary-slot order.
+    goals: Vec<SortGoal>,
+    /// Where [`candidate_provider_sub_goals`]' half begins in `goals`. The index
+    /// [`provider_slot_is_ours`]' `strict` mask and [`slot_pin_at`]'s `chain_index`
+    /// are relative to — NOT the layout's `spec_len`, see the type's own doc.
+    provider_half_start: usize,
+    /// [`candidate_provider_sub_goals`]' strictness mask, parallel to the provider
+    /// half (or empty — see [`provider_slot_is_ours`]).
+    strict: Vec<bool>,
 }
 
 /// WI-869 — is sub-goal `i` a slot THIS dispatch must answer? True for every spec-half
@@ -27631,8 +27808,13 @@ fn dict_sub_goals(
 /// Reads out of range as OURS, which is not a lenient default but the empty-mask
 /// encoding: `candidate_provider_sub_goals` returns an EMPTY mask for a carrier with no
 /// conditional provision at all — the universal case — rather than a vector of `true`.
-fn provider_slot_is_ours(i: usize, spec_half_len: usize, mask: &[bool]) -> bool {
-    i < spec_half_len || mask.get(i - spec_half_len).copied().unwrap_or(true)
+/// WI-866: `provider_half_start` is [`DictSubGoals::provider_half_start`] — where
+/// `mask` starts — and NOT `DictLayout::spec_len`. The two part in the self case,
+/// where the layout folds one list into the spec half while the mask still covers all
+/// of it; reading the layout's number there would mark every slot spec-half and
+/// silently ignore the strictness mask.
+fn provider_slot_is_ours(i: usize, provider_half_start: usize, mask: &[bool]) -> bool {
+    i < provider_half_start || mask.get(i - provider_half_start).copied().unwrap_or(true)
 }
 
 /// WI-865 — a sub-goal's failure as the reason its slot pins no provider.
@@ -47865,6 +48047,43 @@ pub(crate) fn is_effects_runtime(kb: &KnowledgeBase, spec: Symbol) -> bool {
     effects_runtime_sym(kb).is_some_and(|er| same_sort_canonical(kb, spec, er))
 }
 
+/// WI-866 — raise unless a PRODUCED layout is the one [`dict_layout`] predicts for the
+/// same `(spec, provider)`. THE one owner of that comparison, because two producers
+/// must state the invariant identically: `dict_sub_goals` (the resolver's sub-goal
+/// list) and `build_dispatching_dict_from_chain` (the WI-415 parent bundle, whose
+/// slots the IR emitter turns into the runtime dictionary a frame is pushed with).
+///
+/// ALWAYS ON, unlike the pre-WI-866 `debug_assert_eq!` this replaced, and for the
+/// reason that assert was the wrong instrument: its violation is a WRONG-SLOT READ,
+/// not a crash, so switching it off in release switches off the only thing that would
+/// ever notice. `dict_layout` reads two memoized chains and compares two symbols, so
+/// what release pays is a pair of cache hits per dictionary built.
+///
+/// A PANIC, AND THAT IS A DECISION — recorded here because a reviewer will ask, and
+/// because the answer could change. Loud is not in question; the mechanism is. The
+/// alternative is an internal-error arm on [`ResolutionResult`], which would let a
+/// hosting process report instead of die. It is NOT taken, on two grounds. (1) The
+/// condition is programmer error, not input: both halves are built 1:1 with the very
+/// chains the prediction counts — `provider_requires_subgoals` emits one goal per
+/// `direct_requires_chain` entry and `candidate_provider_sub_goals` one per
+/// `provider_dict_chain` entry, each KEEPING the slot on its unreadable-head branch
+/// rather than dropping it — so no KB can part them and only an edit to one of those
+/// functions can. (2) `ResolutionResult` is a SEMANTIC verdict (no provider, a tie, a
+/// cycle) that 27 match arms in this file and three test files translate into
+/// user-facing prose; a mechanism failure none of them can act on would have to be
+/// given an arm at every one. The same trade is settled the same way, for the same
+/// kind of inconsistent-KB condition, at [`crate::kb::term_view`]'s reflect-key reads.
+fn check_against_prediction(kb: &mut KnowledgeBase, produced: DictLayout, what: &str) {
+    let predicted = dict_layout(kb, produced.spec, produced.provider);
+    if let Some(why) = produced.divergence_from(kb, &predicted) {
+        panic!(
+            "WI-866: {what} for `{}` supplied by `{}` — {why}",
+            kb.qualified_name_of(produced.spec),
+            kb.qualified_name_of(produced.provider),
+        );
+    }
+}
+
 /// Compute [`DictLayout`] for a dictionary of `spec` supplied by `provider`.
 pub fn dict_layout(kb: &mut KnowledgeBase, spec: Symbol, provider: Symbol) -> DictLayout {
     // WI-869: BOTH halves come from the chain the dictionary is actually laid out by.
@@ -47892,6 +48111,70 @@ pub fn dict_layout(kb: &mut KnowledgeBase, spec: Symbol, provider: Symbol) -> Di
 }
 
 impl DictLayout {
+    /// WI-866 — the layout a PRODUCER actually built, from the lengths of the two
+    /// half-lists it emitted. [`dict_layout`] is the same shape PREDICTED from the
+    /// two sorts alone, for the consumers that hold no goal (`expand_dispatching_dict`
+    /// at the frame push, `stand_in_requirement`); this is the one derived from the
+    /// list itself, so the NUMBER has the same single source the ORDER does.
+    ///
+    /// FOLDS THE SELF CASE, exactly as [`dict_layout`] does, so a produced and a
+    /// predicted layout are directly comparable. `dict_sub_goals` emits the whole list
+    /// from `candidate_provider_sub_goals` there — it skips the spec half outright —
+    /// and so hands in `(0, n)`, while `dict_layout` counts the same one list as
+    /// `(n, 0)`. Two encodings of ONE list, both right for their own reader; folding
+    /// picks the layout's, which is what [`Self::slots_for`] indexes by. The
+    /// PRODUCER's split point does not fold and is not this — see
+    /// [`DictSubGoals::provider_half_start`].
+    fn from_halves(
+        kb: &KnowledgeBase,
+        spec: Symbol,
+        provider: Symbol,
+        spec_len: usize,
+        provider_len: usize,
+    ) -> DictLayout {
+        if same_sort_canonical(kb, spec, provider) {
+            return DictLayout {
+                spec,
+                provider,
+                spec_len: spec_len + provider_len,
+                provider_len: 0,
+            };
+        }
+        DictLayout {
+            spec,
+            provider,
+            spec_len,
+            provider_len,
+        }
+    }
+
+    /// WI-866 — how `self` (a PRODUCED layout) differs from `predicted`
+    /// ([`dict_layout`]'s), or `None` when they agree. The bridge between the two
+    /// faces of one layout, and the ONLY thing that ties them together — see
+    /// [`check_against_prediction`], the one caller that raises on a `Some`.
+    ///
+    /// BOTH HALVES, not just [`Self::arity`]. The pre-WI-866 assert compared totals,
+    /// which is blind to the divergence that actually reads the wrong slots: a
+    /// produced `(2, 3)` against a predicted `(3, 2)` passes an arity check, passes
+    /// `expand_dispatching_dict`'s own arity guard, passes its `slots.len() ==
+    /// names.len()` guard — and hands the callee's frame a slice of the dictionary
+    /// that belongs to the other half.
+    ///
+    /// LENGTHS ONLY, because the two symbols cannot differ: `check_against_prediction`
+    /// derives `predicted` from `self`'s OWN `(spec, provider)`, so comparing them
+    /// would be checking the compiler. An earlier draft compared them
+    /// `same_sort_canonical`ly and documented a guard nothing could trip.
+    fn divergence_from(&self, kb: &KnowledgeBase, predicted: &DictLayout) -> Option<String> {
+        if self.spec_len == predicted.spec_len && self.provider_len == predicted.provider_len {
+            return None;
+        }
+        Some(format!(
+            "produced {} but `dict_layout` predicts {}",
+            self.describe(kb),
+            predicted.describe(kb),
+        ))
+    }
+
     /// How many sub-requirements a well-formed dictionary of this shape bundles.
     pub fn arity(&self) -> usize {
         self.spec_len + self.provider_len
@@ -62643,6 +62926,135 @@ end
             after.iter().any(|n| n.entry.required_sort == bar),
             "the requirement the second file declares must reach the chain — the memo from \
              before the load must not be served",
+        );
+    }
+}
+
+#[cfg(test)]
+mod wi866_dict_layout_agreement_tests {
+    use super::{dict_layout, DictLayout};
+    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::{KnowledgeBase, Symbol};
+
+    /// Two sorts with DIFFERENT `requires` chain lengths, so a swapped split is a
+    /// different pair of numbers and not a self-cancelling one. `Ord` declares one
+    /// (`provides WeakOrd`, WI-1110), `Holder` declares two.
+    const SRC: &str = r#"
+namespace test.wi866
+  import anthill.prelude.{Int64, Bool, Eq, Ord}
+
+  sort Holder
+    sort T = ?
+    requires Eq[T]
+    requires Ord[T]
+    entity holder(v: T)
+  end
+end
+"#;
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// THE SYNTHETIC DIVERGENCE the ticket asks for, and the reason it is synthetic:
+    /// no program can drive it. Both halves are produced by walking the very chains
+    /// `dict_layout` counts, so production and prediction agree by construction and
+    /// only an EDIT to one of those four functions can part them — which is exactly
+    /// what the always-on check in `dict_sub_goals` exists to catch. So the divergence
+    /// is built here by hand, at `divergence_from`, the one function that decides it.
+    ///
+    /// THE ROW THAT MATTERS IS `swapped`: it has the same ARITY as the prediction, so
+    /// the pre-WI-866 `debug_assert_eq!` on `arity()` passes it, as do BOTH of
+    /// `expand_dispatching_dict`'s own guards — and every frame slice then reads the
+    /// other half's slots. `wrong_total` is the case that assert did cover; it is here
+    /// to show this check is a superset, not a replacement.
+    ///
+    /// BACKED OUT (compare `arity()` instead of the halves): `swapped` fails and
+    /// `agrees`/`wrong_total` pass — which is the whole finding.
+    #[test]
+    fn wi866_a_swapped_split_is_a_divergence() {
+        let mut kb = load_stdlib_and_stl(Some(SRC));
+        let holder = sym(&kb, "test.wi866.Holder");
+        let int64 = sym(&kb, "anthill.prelude.Int64");
+
+        // The prediction for a `Holder` dictionary supplied by `Int64`: `Holder`'s two
+        // `requires` then `Int64`'s (none), which is what makes a swap observable.
+        let predicted = dict_layout(&mut kb, holder, int64);
+        assert_eq!(
+            (predicted.spec_len, predicted.provider_len),
+            (2, 0),
+            "the fixture must give the two halves DIFFERENT lengths, or a swap is not \
+             a divergence: {}",
+            predicted.describe(&kb),
+        );
+
+        let agrees = DictLayout::from_halves(&kb, holder, int64, 2, 0);
+        assert!(
+            agrees.divergence_from(&kb, &predicted).is_none(),
+            "the CONTROL: a producer that built what `dict_layout` predicts diverges \
+             from nothing",
+        );
+
+        let swapped = DictLayout::from_halves(&kb, holder, int64, 0, 2);
+        assert_eq!(
+            swapped.arity(),
+            predicted.arity(),
+            "the swap must be arity-preserving, or it is the case the OLD assert \
+             already caught and this test measures nothing new",
+        );
+        let why = swapped
+            .divergence_from(&kb, &predicted)
+            .expect("a swapped split is a divergence even at equal arity");
+        assert!(
+            why.contains("2 for spec") && why.contains("0 for spec"),
+            "the message must name BOTH halves of BOTH layouts — a bare `expected 2` \
+             cannot say which half is short, which is the whole difficulty \
+             `DictLayout` resolves; got: {why}",
+        );
+
+        let wrong_total = DictLayout::from_halves(&kb, holder, int64, 1, 0);
+        assert!(
+            wrong_total.divergence_from(&kb, &predicted).is_some(),
+            "this check is a SUPERSET of the arity-only one it replaced",
+        );
+    }
+
+    /// THE SELF CASE IS ONE LIST IN TWO ENCODINGS, and `from_halves` folds it to the
+    /// layout's — without which the always-on check in `dict_sub_goals` would fire on
+    /// every self-provision in the stdlib, since the producer hands in `(0, n)` there
+    /// (it skips the spec half outright) while `dict_layout` counts `(n, 0)`.
+    ///
+    /// BACKED OUT (drop the fold from `from_halves`): this row fails and NOTHING ELSE
+    /// does — measured, the whole `anthill-core` suite stays green at 4533 of 4534,
+    /// with zero of the always-on layout raises. That is not the fold being harmless,
+    /// it is the self case never reaching `dict_sub_goals` at all (480_537 reaches
+    /// across `wi_tests`, none of them self-provided — a self-provision and a WI-415
+    /// parent bundle build their dictionaries elsewhere). The fold is what keeps the
+    /// FIRST such dispatch, whenever one arrives, from raising a false divergence
+    /// instead of running; no fixture can stand in for it, so this row is what says
+    /// the two encodings are one list.
+    #[test]
+    fn wi866_the_self_case_folds_to_one_list() {
+        let mut kb = load_stdlib_and_stl(Some(SRC));
+        let holder = sym(&kb, "test.wi866.Holder");
+
+        let predicted = dict_layout(&mut kb, holder, holder);
+        assert_eq!(
+            (predicted.spec_len, predicted.provider_len),
+            (2, 0),
+            "`dict_layout`'s self branch counts the ONE list as the spec half",
+        );
+        // What `dict_sub_goals` hands in for the same pair: no spec half at all.
+        let produced = DictLayout::from_halves(&kb, holder, holder, 0, 2);
+        assert!(
+            produced.divergence_from(&kb, &predicted).is_none(),
+            "the producer's `(0, n)` and the layout's `(n, 0)` are ONE list: {}",
+            produced.describe(&kb),
+        );
+        assert_eq!(
+            produced.spec_len, 2,
+            "and the FOLDED value is the layout's, because `slots_for` indexes by it",
         );
     }
 }

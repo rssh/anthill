@@ -1311,3 +1311,6 @@ mod wi1131_one_field_named_tuple_test;
 
 #[path = "include/wi1122_embedder_host_fn_test.rs"]
 mod wi1122_embedder_host_fn_test;
+
+#[path = "include/wi866_dictionary_layout_source_test.rs"]
+mod wi866_dictionary_layout_source_test;

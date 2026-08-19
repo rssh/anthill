@@ -1974,10 +1974,27 @@ impl Interpreter {
         dict: &super::value::Dictionary,
     ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
         let provider = dict.impl_sort();
-        // A namespace-level `dispatched_from` names no spec (nothing to dispatch
-        // through); the dictionary is then the provider's own bundle alone.
+        // WI-866 — the dictionary's SPEC, DECIDED. The `impl_parent_of_op(..)
+        // .unwrap_or(provider)` this replaced folded three answers into one, and the
+        // comment over it named the one shape that never reached it: a NAMESPACE-level
+        // `dispatched_from` resolves, so it arrived as `Some(namespace)` and a
+        // namespace was named as a dictionary's spec — harmless arithmetically (it
+        // declares no `requires`, so the half counts 0 and every slice lands where the
+        // one-list reading puts it) and wrong in `DictLayout::describe`, which is the
+        // one thing a reader has when the arity guard below fires.
+        //
+        // BOTH SPEC-LESS SHAPES STILL TAKE THE ONE-LIST READING, including the one the
+        // ticket expected to raise. See [`DispatchSpec::UnresolvableParent`]: it is the
+        // WI-234 Model 1 dispatch form, not an inconsistent KB, and it cannot be told
+        // from one HERE. What tells them apart is downstream and already loud — a spec
+        // that really did contribute a half makes the dictionary longer than this
+        // layout counts, which is the `arity != layout.arity()` raise immediately
+        // below; and a frame owner this layout says nothing about is the `slots_for`
+        // raise after it. The collapse itself has ONE owner
+        // ([`DispatchSpec::or_provider`]), so this site and the value-directed one
+        // cannot drift on it.
         let spec =
-            crate::kb::typing::impl_parent_of_op(&self.kb, dispatched_from).unwrap_or(provider);
+            crate::kb::typing::dispatch_spec_of_op(&self.kb, dispatched_from).or_provider(provider);
         let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider);
         let arity = dict.arity();
         if arity != layout.arity() {
@@ -2637,12 +2654,16 @@ impl Interpreter {
             // Where it does not speak, the incoming channel stands exactly as it did
             // before WI-1091: the pre-existing answer for a redirect this ticket has no
             // evidence to change, and the body's own read stays the judge.
+            // WI-866 — the same spec derivation `expand_dispatching_dict` makes at the
+            // frame push, and it must be the same one: this asks that function's own
+            // question one call early ([`dictionary_covers_target`]). Hoisted out of the
+            // `filter` because it does not depend on the dictionary, only on the op.
+            let spec_of_built_for = crate::kb::typing::dispatch_spec_of_op(&self.kb, built_for);
             let covered = find_requirement(&incoming, self.fields.req_self)
                 .cloned()
                 .filter(|dict| {
-                    let spec = crate::kb::typing::impl_parent_of_op(&self.kb, built_for)
-                        .unwrap_or_else(|| dict.impl_sort());
                     let provider = dict.impl_sort();
+                    let spec = spec_of_built_for.or_provider(provider);
                     crate::kb::typing::dictionary_covers_target(
                         &mut self.kb,
                         spec,
