@@ -1227,7 +1227,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //
         //  - The rest of the `*Within` family. Their TERM side is LIVE, not
         //    vestigial: the requirement-insertion pass (`req_insertion.rs`, WI-231)
-        //    rewrites a classified call to `apply_within` as a `Term::Fn` in
+        //    rewrites a classified call to `apply_within` as a `Term::Fn` recorded in
         //    `kb.dispatch_rewrites` (`record_apply_within_concrete`, typing.rs), NOT
         //    as an occurrence — the occurrence stays `Expr::Apply` carrying its
         //    `CallClass` tag, which is what the runtime reads post-WI-248 ("the

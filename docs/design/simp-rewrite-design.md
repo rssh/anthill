@@ -185,7 +185,7 @@ There are not two phases to reconcile: the **same** rewriter (matcher + strategy
 
 ### 5.1 The annotate-only constraint → tree production
 
-Per §2.2(3), getting `dot_apply` (and any rewritten redex) out of the stored body requires the pass to be **tree-producing**: synthesize replacements, rebuild ancestors (hand-written per-variant reconstruction — `Expr: !Clone`; `Rc::clone` the unchanged children; a new `map_children` helper dual to `drain_expr_children`, `node_occurrence.rs:100`), and write the new root back. This is the work 043 under-describes as "hook firing into the work loop." Note this is *not* how `req_insertion` works — that pass annotates `CallClass` and records a diagnostic-only `TermId→TermId` side table (`req_insertion.rs:14–20`, `dispatch_rewrites` `mod.rs:278`); it never rewrites the tree. Front-end B is the first genuine occurrence-tree rewriter.
+Per §2.2(3), getting `dot_apply` (and any rewritten redex) out of the stored body requires the pass to be **tree-producing**: synthesize replacements, rebuild ancestors (hand-written per-variant reconstruction — `Expr: !Clone`; `Rc::clone` the unchanged children; a new `map_children` helper dual to `drain_expr_children`, `node_occurrence.rs:100`), and write the new root back. This is the work 043 under-describes as "hook firing into the work loop." Note this is *not* how `req_insertion` works — that pass annotates `CallClass` and records a diagnostic-only side table keyed by call site (`req_insertion.rs`, `dispatch_rewrites: HashMap<CallSite, DispatchRewrite>` in `kb/mod.rs`; it was `TermId→TermId` until WI-873, whose synthesized key named only the callee); it never rewrites the tree. Front-end B is the first genuine occurrence-tree rewriter.
 
 ### 5.2 Placement in the load pipeline
 

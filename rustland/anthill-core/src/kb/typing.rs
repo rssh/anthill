@@ -16598,32 +16598,37 @@ fn check_apply_iter(
 }
 
 /// WI-218: allocate a rewritten `apply` term with `fn = impl_op_sym`,
-/// keeping the same args. Record (original → rewritten) in
-/// `kb.dispatch_rewrites` and (rewritten → spec_op_sym) in
-/// `kb.dispatch_origin`. The post-typing rewrite pass uses these maps
-/// to substitute the rewritten term into operation bodies bottom-up.
+/// keeping the same args, and record it against `site` in `kb.dispatch_rewrites`.
+///
+/// THAT MAP IS DIAGNOSTIC-ONLY — reflection / proof tooling that wants to see the
+/// elaborated Term shape, and nothing else. This doc used to say "the post-typing
+/// rewrite pass uses these maps to substitute the rewritten term into operation
+/// bodies bottom-up"; no such pass exists. Runtime reads `CallClass` off the
+/// `NodeOccurrence` directly (post-WI-248), and after WI-873 the map is keyed by
+/// [`crate::kb::CallSite`], so a term→term substitution could not read it even if one
+/// wanted to. (Found in review of WI-873, which rewrote the words around that clause
+/// and left it, contradicting the field's own doc one file over.)
+///
+/// `apply_functor` is the `anthill.reflect.Expr.apply` symbol the caller already
+/// holds. Taking it rather than re-interning the short name "apply" keeps it the
+/// same `Symbol` the loader registered, which the eval's reflect-symbol cache
+/// compares against. (Before WI-873 it was read back off a synthesized "original
+/// apply" term, which is where that same symbol came from.)
 pub(crate) fn record_apply_rewrite(
     kb: &mut KnowledgeBase,
-    original_apply: TermId,
+    site: crate::kb::CallSite,
+    apply_functor: Symbol,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
     spec_op_sym: Symbol,
     impl_op_sym: Symbol,
 ) {
-    if kb.dispatch_rewrites.contains_key(&original_apply) {
-        // Idempotent — the same apply term may be type-checked through
+    if kb.dispatch_rewrite_at(site).is_some() {
+        // Idempotent — the same call site may be type-checked through
         // multiple paths (e.g. when the typer is invoked twice on a
         // body). The first rewrite is canonical.
         return;
     }
-    // Reuse the apply term's existing functor symbol rather than re-interning
-    // the short name "apply" — the latter risks producing a different Symbol
-    // value than the loader's `anthill.reflect.Expr.apply`, which the eval's
-    // reflect-symbol cache compares against.
-    let apply_functor = match kb.get_term(original_apply) {
-        Term::Fn { functor, .. } => *functor,
-        _ => return,
-    };
     let fn_arg = kb.intern("fn");
     let new_fn_ref = kb.alloc(Term::Ref(impl_op_sym));
     let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
@@ -16641,7 +16646,7 @@ pub(crate) fn record_apply_rewrite(
         pos_args: pos_args.clone(),
         named_args: new_named,
     });
-    kb.record_dispatch_rewrite(original_apply, rewritten_apply, spec_op_sym);
+    kb.record_dispatch_rewrite(site, rewritten_apply, spec_op_sym);
 }
 
 /// Last segment of a dotted qualified name (`foo.bar.baz` → `baz`).
@@ -21200,7 +21205,7 @@ fn goal_from_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option
 /// (Direct-call path; no SLD tree available).
 pub(crate) fn record_apply_within_concrete(
     kb: &mut KnowledgeBase,
-    original_apply: TermId,
+    site: crate::kb::CallSite,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
     fn_target_sym: Symbol,
@@ -21211,7 +21216,7 @@ pub(crate) fn record_apply_within_concrete(
 ) -> bool {
     use smallvec::SmallVec;
 
-    if kb.dispatch_rewrites.contains_key(&original_apply) {
+    if kb.dispatch_rewrite_at(site).is_some() {
         return false;
     }
     let aw_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.apply_within") {
@@ -21252,7 +21257,7 @@ pub(crate) fn record_apply_within_concrete(
             (reqs_field, requirements_list),
         ]),
     });
-    kb.record_dispatch_rewrite(original_apply, rewritten, spec_op_sym);
+    kb.record_dispatch_rewrite(site, rewritten, spec_op_sym);
     true
 }
 
@@ -21273,7 +21278,7 @@ pub(crate) fn record_apply_within_concrete(
 /// emits, here driven by the resolved tree path.
 pub(crate) fn record_apply_within_rewrite(
     kb: &mut KnowledgeBase,
-    original_apply: TermId,
+    site: crate::kb::CallSite,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
     pos_args: &SmallVec<[TermId; 4]>,
     spec_op_sym: Symbol,
@@ -21288,7 +21293,7 @@ pub(crate) fn record_apply_within_rewrite(
 ) -> bool {
     use smallvec::SmallVec;
 
-    if kb.dispatch_rewrites.contains_key(&original_apply) {
+    if kb.dispatch_rewrite_at(site).is_some() {
         return false;
     }
     let aw_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.apply_within") {
@@ -21345,7 +21350,7 @@ pub(crate) fn record_apply_within_rewrite(
             (reqs_field, requirements_list),
         ]),
     });
-    kb.record_dispatch_rewrite(original_apply, rewritten, spec_op_sym);
+    kb.record_dispatch_rewrite(site, rewritten, spec_op_sym);
     true
 }
 

@@ -1320,3 +1320,6 @@ mod wi867_host_dictionary_constructor_test;
 
 #[path = "include/wi868_absence_representation_test.rs"]
 mod wi868_absence_representation_test;
+
+#[path = "include/wi873_dispatch_rewrite_completeness_test.rs"]
+mod wi873_dispatch_rewrite_completeness_test;

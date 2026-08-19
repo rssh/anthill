@@ -11,13 +11,19 @@
 //! WI-251: source-of-truth for classifications moved from the legacy
 //! `the legacy occurrence classification side-table` side-table to the
 //! `NodeOccurrence`'s own RefCell. This pass walks `kb.op_bodies`
-//! trees to collect tagged occurrences, then re-builds a TermId-form
-//! apply (with the right functor + args) so the existing
-//! `record_apply_*` helpers can populate `dispatch_rewrites` and
-//! `dispatch_origin` — reflection / proof tooling that inspects the
-//! elaborated Term shape keeps working. Runtime reads CallClass
-//! directly off the NodeOccurrence (post-WI-248) so the term-keyed
-//! redirect is now diagnostic-only.
+//! trees to collect tagged occurrences, then builds the rewritten Term
+//! shape so reflection / proof tooling that inspects the elaborated
+//! Term keeps working. Runtime reads CallClass directly off the
+//! NodeOccurrence (post-WI-248) so the recorded rewrite is now
+//! diagnostic-only.
+//!
+//! WI-873: each rewrite is keyed by its [`CallSite`] — the operation whose body
+//! holds the call, the functor, and the span. It used to be keyed by a TermId-form
+//! apply this pass SYNTHESIZED (`apply(fn = Ref(functor), args = nil())`), and terms
+//! are hash-consed, so that key named the callee and nothing else: every call site of
+//! one spec op in the image shared it and the recorders' idempotence guard silently
+//! dropped all but the first. Measured before the fix: 47 classified sites, 16
+//! recorded rewrites, and a total that did not move when a fixture added one.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -31,7 +37,8 @@ use crate::kb::typing::{
     record_apply_rewrite, record_apply_within_concrete, record_apply_within_rewrite, CallClass,
     TypeError,
 };
-use crate::kb::KnowledgeBase;
+use crate::kb::{CallSite, KnowledgeBase};
+use crate::span::SourceSpan;
 
 /// WI-231 — entry point: walk every operation body in `kb.op_bodies`,
 /// find classified Apply occurrences, and emit the corresponding IR
@@ -46,11 +53,19 @@ use crate::kb::KnowledgeBase;
 pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // Collect into Vecs so we don't hold a borrow on `kb.op_bodies`
     // while emitting (each `record_*` mutates `kb.dispatch_rewrites`).
-    let body_roots: Vec<Rc<NodeOccurrence>> = kb.op_bodies_iter().map(|(_, b)| b.clone()).collect();
+    //
+    // WI-873: the OWNING OPERATION is carried from here, not re-derived. It is this
+    // walk's own key, and it is the only place that knows it — an inner expression
+    // occurrence's `owner` field is `None` (measured: all 47 classified sites over
+    // stdlib + `anthill-stl` + one fixture), and `PinNow` records no enclosing scope at
+    // all. It is one component of the [`CallSite`] every rewrite is keyed by.
+    let body_roots: Vec<(Symbol, Rc<NodeOccurrence>)> =
+        kb.op_bodies_iter().map(|(op, b)| (op, b.clone())).collect();
     let mut raw_entries: Vec<RawClassified> = Vec::new();
-    for root in &body_roots {
-        collect_classified(root, &mut raw_entries);
+    for (op, root) in &body_roots {
+        collect_classified(*op, root, &mut raw_entries);
     }
+    stamp_nth_at_span(&mut raw_entries);
 
     // Split into IR-rewrite entries (need materialized Apply terms) and
     // error-only entries (UnresolvedSpecOp — no rewrite, just a
@@ -101,7 +116,8 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 
     for entry in entries {
         let ClassifiedApply {
-            apply_term,
+            site,
+            apply_functor,
             named_args,
             pos_args,
             class,
@@ -113,7 +129,8 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             } => {
                 record_apply_rewrite(
                     kb,
-                    apply_term,
+                    site,
+                    apply_functor,
                     &named_args,
                     &pos_args,
                     spec_op_sym,
@@ -133,7 +150,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     chain_for(kb, &mut chain_cache, enclosing_sort, enclosing_op);
                 record_apply_within_concrete(
                     kb,
-                    apply_term,
+                    site,
                     &named_args,
                     &pos_args,
                     fn_target_sym,
@@ -153,7 +170,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             } => {
                 record_apply_within_rewrite(
                     kb,
-                    apply_term,
+                    site,
                     &named_args,
                     &pos_args,
                     spec_op_sym,
@@ -179,6 +196,43 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     errors
 }
 
+/// WI-873 — number each classified call within its `(op, functor, span)` group, so
+/// the group's members get distinct [`CallSite`]s.
+///
+/// A SPAN DOES NOT IDENTIFY A CALL, which the first cut of this ticket assumed and a
+/// review disproved with a program: `simp_rewrite::substitute_to_occurrence` builds
+/// every node of a `[simp]` RHS from the single redex occurrence, and
+/// `NodeOccurrence::synthesized_expr` inherits that occurrence's span — so a `[simp]`
+/// equation whose RHS calls one deferred spec op twice puts two classified applies at
+/// one `(op, functor, span)`. Without this stamp the second one's rewrite is dropped
+/// by the recorders' idempotence guard, silently and indistinguishably from a
+/// legitimate re-run: WI-873's own defect, recurring at a narrower key. See
+/// [`CallSite::nth_at_span`] for the driven fixture.
+///
+/// The group is the collision class, not the whole walk, so the stamp is `0` for
+/// every call in the stdlib / `anthill-stl` / `anthill-todo` / `github-todo` corpora
+/// and only a macro expansion ever sees a `1`. That keeps the key stable against
+/// changes in walk ORDER wherever the group is a singleton, which is everywhere that
+/// matters.
+///
+/// AFTER THIS RUNS THE KEY IS INJECTIVE BY CONSTRUCTION, so nothing asserts
+/// distinctness afterwards. The first cut of this fix did, and it was worth
+/// measuring: a second `HashMap` over the same ~47 entries per load cost 2.5% of
+/// `eval_tests` (min-of-3, 7.74s → 7.55s) to re-derive what this pass already knew.
+///
+/// COST OF THE FIX ITSELF, measured the same way: 6.98s → 7.55s, +8%. That is ~24
+/// extra `record_apply_*` calls per stdlib load — the rewrites the old key was
+/// dropping — several of them building a projection dictionary. It is the work that
+/// was being skipped, not overhead added around it.
+fn stamp_nth_at_span(raw: &mut [RawClassified]) {
+    let mut counts: HashMap<(Symbol, Symbol, SourceSpan), u32> = HashMap::new();
+    for r in raw.iter_mut() {
+        let slot = counts.entry((r.op, r.functor, r.span)).or_insert(0);
+        r.nth_at_span = *slot;
+        *slot += 1;
+    }
+}
+
 /// Pre-materialization: the apply's structural identity plus the
 /// already-clone'd `CallClass` payload. Held in a Vec so we can drop
 /// the immutable borrow on `kb.op_bodies` before allocating fresh
@@ -186,11 +240,33 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 struct RawClassified {
     /// Apply functor — the `fn` symbol the typer was looking at.
     functor: Symbol,
+    /// WI-873 — the operation whose body this occurrence was found in, and the
+    /// occurrence's span. Together with `functor` and `nth_at_span` they are the
+    /// [`CallSite`] the rewrite is keyed by.
+    op: Symbol,
+    span: SourceSpan,
+    /// Filled by [`stamp_nth_at_span`] once the whole walk is collected — `0` until
+    /// then, which is why [`Self::site`] must not be read before that runs.
+    nth_at_span: u32,
     class: CallClass,
 }
 
+impl RawClassified {
+    fn site(&self) -> CallSite {
+        CallSite {
+            op: self.op,
+            functor: self.functor,
+            span: self.span,
+            nth_at_span: self.nth_at_span,
+        }
+    }
+}
+
 struct ClassifiedApply {
-    apply_term: TermId,
+    site: CallSite,
+    /// The `anthill.reflect.Expr.apply` symbol, interned once per materialization —
+    /// the functor `record_apply_rewrite` builds the rewritten apply with.
+    apply_functor: Symbol,
     named_args: SmallVec<[(Symbol, TermId); 2]>,
     pos_args: SmallVec<[TermId; 4]>,
     class: CallClass,
@@ -201,7 +277,7 @@ struct ClassifiedApply {
 /// explicit work-stack so deeply-nested let / match / lambda chains
 /// (e.g. the 624-line typing_pass_spec.anthill) don't blow the host
 /// stack regardless of source nesting depth.
-fn collect_classified(root: &Rc<NodeOccurrence>, out: &mut Vec<RawClassified>) {
+fn collect_classified(op: Symbol, root: &Rc<NodeOccurrence>, out: &mut Vec<RawClassified>) {
     let mut stack: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(32);
     stack.push(Rc::clone(root));
     while let Some(occ) = stack.pop() {
@@ -217,6 +293,11 @@ fn collect_classified(root: &Rc<NodeOccurrence>, out: &mut Vec<RawClassified>) {
             if let Some(class) = classification.borrow().as_deref() {
                 out.push(RawClassified {
                     functor: *functor,
+                    op,
+                    span: occ.span,
+                    // Assigned by `stamp_nth_at_span` after the whole walk — it needs
+                    // to see every sibling at this span to number them.
+                    nth_at_span: 0,
                     class: class.clone(),
                 });
             }
@@ -225,11 +306,17 @@ fn collect_classified(root: &Rc<NodeOccurrence>, out: &mut Vec<RawClassified>) {
     }
 }
 
-/// Synthesize a Term-form apply for the existing `record_*` helpers.
-/// Shape: `apply(fn = Ref(functor), args = nil)` — the helpers only
-/// look at the `fn` slot to identify the spec op and at the args
-/// slot's structure for rewrite; for the rewrite-table population they
-/// don't need the original args.
+/// Synthesize the `fn` / `args` slots the existing `record_*` helpers read.
+/// Shape: `fn = Ref(functor)`, `args = nil` — the helpers only look at the `fn`
+/// slot to identify the spec op and at the `args` slot's structure for rewrite; for
+/// the rewrite-table population they don't need the original args.
+///
+/// WI-873 STOPPED ASSEMBLING THESE INTO A WHOLE `apply(…)` TERM, because the only
+/// thing that term was for was to be the rewrite table's KEY — and as a key it named
+/// the functor and nothing else, so hash-consing collapsed every call site of one
+/// spec op onto it and the recorders' idempotence guard dropped all but the first
+/// (see [`crate::kb::CallSite`]). Nothing else read it: `record_apply_rewrite` only
+/// took the apply functor back off it, which is passed directly now.
 fn materialize_apply(kb: &mut KnowledgeBase, raw: RawClassified) -> ClassifiedApply {
     let apply_qn = kb.intern("anthill.reflect.Expr.apply");
     let fn_field = kb.intern("fn");
@@ -244,13 +331,9 @@ fn materialize_apply(kb: &mut KnowledgeBase, raw: RawClassified) -> ClassifiedAp
     let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     named.push((fn_field, fn_ref));
     named.push((args_field, nil_term));
-    let apply_term = kb.alloc(Term::Fn {
-        functor: apply_qn,
-        pos_args: SmallVec::new(),
-        named_args: named.clone(),
-    });
     ClassifiedApply {
-        apply_term,
+        site: raw.site(),
+        apply_functor: apply_qn,
         named_args: named,
         pos_args: SmallVec::new(),
         class: raw.class,

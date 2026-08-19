@@ -319,11 +319,13 @@ fn wi866_no_emitted_dictionary_is_short_of_its_layout() {
         .collect();
 
     // A walk that finds nothing passes every assertion below it. MEASURED here so the
-    // row cannot degrade into one: 16 recorded rewrites in this KB, 6 of which carry a
+    // row cannot degrade into one: 40 recorded rewrites in this KB, 22 of which carry a
     // dispatching channel (the rest are `record_apply_rewrite`'s spec→impl form, which
-    // has no `requirements` arg at all).
+    // has no `requirements` arg at all). Both numbers TRIPLED at WI-873 — the table used
+    // to keep one rewrite per spec op for the whole image (16 and 6), so this census
+    // saw one call site per callee and not one per call.
     assert!(
-        recorded.len() >= 16 && found.len() >= 6,
+        recorded.len() >= 40 && found.len() >= 22,
         "the census must find dictionaries to judge, or it is measuring nothing: \
          {} recorded rewrite(s), {} channel dictionar(ies)",
         recorded.len(),

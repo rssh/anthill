@@ -801,52 +801,133 @@ pub const DESC_INSTANCES: &str = r#"
 #[allow(dead_code)]
 pub const MISSING_DESC_REQUIRES: &str = "missing `requires Desc[T = …]`";
 
-/// Assert that a dispatching dict's requirement-param name belongs to the SPEC the
-/// caller expects — `__req_partialeq`, or a DISAMBIGUATED sibling of it.
+/// The rewritten term for the call to `spec_op_qn` inside operation `op_qn` — the
+/// site-scoped read that replaced `assert_req_param_spec` (WI-873).
 ///
-/// The names-model suites (`wi222_defer_rewrite_test`, `wi227_projection_search_test`)
-/// read `kb.dispatch_origin_iter()`, which is KB-GLOBAL, and take the first (or last)
-/// rewrite for a spec op. MEASURED at WI-858: the map keeps exactly ONE rewrite per
-/// spec op across the whole image, and which sort's survives is arbitrary — with the
-/// `wi227.flat` fixture loaded the surviving `PartialEq.eq` entry is
-/// `__req_partialeq_14325` (`anthill.prelude.Pair`'s, whose chain names `PartialEq`
-/// twice), while with `wi222.box` it is the fixture's own `__req_partialeq`, and in
-/// the same load the `Ord.compare` entry is a `Pair` ordering's
-/// `__req_ord_14331`. The eviction is pre-existing — **WI-873** — but before
-/// WI-858 no sort in the tree repeated a spec in its chain, so no disambiguated name
-/// existed and the exact spelling always matched.
+/// `kb.dispatch_origin_iter()` is KB-GLOBAL, so "the rewrite for this spec op" is not
+/// a question it can answer for a caller who means their OWN fixture's: `PartialEq.eq`
+/// is deferred from a dozen stdlib bodies as well as the fixture's. Before WI-873 the
+/// rewrite table kept exactly ONE entry per spec op for the whole image — every call
+/// site of one functor collapsed onto one synthesized key — so the suites here took
+/// "the first (or last) entry for this spec" and got whichever body won a `HashMap`
+/// race. They could then only assert the SPEC of the requirement-param name, via a
+/// tolerant `assert_req_param_spec` helper, because the disambiguating suffix belonged
+/// to a stranger's chain.
 ///
-/// So the SUFFIX is not the fixture's to control, and asserting it made the suites
-/// depend on symbol-interning order. What survives is the claim those suites are
-/// actually about: the dispatching dict is a `var_ref` naming a requirement param
-/// synthesized from a chain slot of THIS SPEC. A foreign spec still fails.
+/// WI-873 keyed the table by [`CallSite`], so every site's rewrite is recorded and the
+/// enclosing OPERATION selects one. That is what lets these suites assert the exact
+/// synthesized name again — the name is now their fixture's, by construction.
 ///
-/// The accepted spellings are `synth_req_names`' (`kb::typing`), which is the one
-/// minter: the bare base when the parent's chain names the spec once, else
-/// `{base}_{TermId}` for a ground spec or `{base}_d{idx}` for a denoted one (WI-662).
-/// Both disambiguations are accepted here — matching only the ground form would leave
-/// this reader silently out of sync with its producer.
+/// Panics unless exactly one rewrite matches: zero means the call was not classified
+/// (or the operation name is wrong), and more than one means the operation calls the
+/// spec op at several sites and the caller must say which.
 #[allow(dead_code)]
-pub fn assert_req_param_spec(
+pub fn rewrite_in_op(
     kb: &KnowledgeBase,
-    actual: anthill_core::intern::Symbol,
-    expected_base: &str,
-    why: &str,
-) {
-    let actual_s = kb.local_name_of(actual);
-    let disambiguated = |rest: &str| {
-        let digits = rest.strip_prefix("_d").or_else(|| rest.strip_prefix('_'));
-        digits.is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
-    };
-    assert!(
-        actual_s == expected_base
-            || actual_s
-                .strip_prefix(expected_base)
-                .is_some_and(disambiguated),
-        "{why}: expected the requirement-param name `{expected_base}` (or a \
-         `{expected_base}_<n>` / `{expected_base}_d<n>` disambiguation of the SAME spec \
-         — see `assert_req_param_spec`); got `{actual_s}`",
+    op_qn: &str,
+    spec_op_qn: &str,
+) -> anthill_core::kb::term::TermId {
+    let op_sym = kb
+        .try_resolve_symbol(op_qn)
+        .unwrap_or_else(|| panic!("no operation symbol `{op_qn}`"));
+    let spec_sym = kb
+        .try_resolve_symbol(spec_op_qn)
+        .unwrap_or_else(|| panic!("no spec-op symbol `{spec_op_qn}`"));
+    let hits: Vec<_> = kb
+        .dispatch_rewrites_iter()
+        .filter(|(site, r)| site.op == op_sym && r.spec_op == spec_sym)
+        .map(|(_, r)| r.rewritten)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one recorded rewrite of `{spec_op_qn}` inside `{op_qn}`; \
+         got {}. Zero means the call was never classified; more than one means the \
+         body calls it at several sites and this read must name which.",
+        hits.len(),
     );
+    hits[0]
+}
+
+/// The `var_ref(name = …)` requirement-param symbol at the head of a rewritten
+/// `apply_within`'s `requirements` channel — the one thing a defer-rewrite assertion
+/// needs, without the six-step drill down `requirements` → `cons` → `head` → `name`.
+///
+/// `wi222_defer_rewrite_test` and `wi227_projection_search_test` keep their drills
+/// inline on purpose and are NOT counted as callers here: each of their intermediate
+/// assertions carries a message about the shape THAT test is pinning (names model,
+/// Strategy 1, channel cardinality), and collapsing them into one call would trade
+/// four located failures for one.
+///
+/// Panics with the shape it found when the channel is not a single-entry list of a
+/// `var_ref`: a `requirement_at_sort` head means the rewrite was a TRANSITIVE
+/// deferral, which is a different claim and must not be read as this one, and a
+/// non-`nil` tail means the channel carries more than one dictionary — a shape change
+/// against §"Channel cardinality (v0)" that these suites exist to catch.
+///
+/// THE TAIL CHECK IS NOT DECORATION: WI-873's review found this doc promising it
+/// while the body read only `head`, so a second dispatching dict would have slipped
+/// past three suites in silence, each of them still asserting confidently about the
+/// first.
+#[allow(dead_code)]
+pub fn defer_dict_param_name(
+    kb: &KnowledgeBase,
+    rewritten: anthill_core::kb::term::TermId,
+) -> anthill_core::intern::Symbol {
+    use anthill_core::kb::term::Term;
+    use anthill_core::kb::typing::get_named_arg;
+
+    let named = match kb.get_term(rewritten) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        other => panic!("rewritten term must be a Fn; got {other:?}"),
+    };
+    let reqs =
+        get_named_arg(kb, &named, "requirements").expect("apply_within must carry `requirements`");
+    let reqs_named = match kb.get_term(reqs) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        other => panic!("requirements must be a cons cell; got {other:?}"),
+    };
+    let tail = get_named_arg(kb, &reqs_named, "tail").expect("cons must carry `tail`");
+    let tail_functor = match kb.get_term(tail) {
+        Term::Fn { functor, .. } => *functor,
+        // WI-511: the empty list is canonicalized to the bare `Ref(nil)` form.
+        Term::Ref(s) => *s,
+        other => panic!("tail must be a Fn (nil) or Ref (nil); got {other:?}"),
+    };
+    let nil_sym = kb
+        .try_resolve_symbol("anthill.prelude.List.nil")
+        .expect("List.nil in stdlib");
+    assert_eq!(
+        tail_functor,
+        nil_sym,
+        "the requirements channel must hold exactly one dispatching dict \
+         (§\"Channel cardinality (v0)\"); tail is {}",
+        kb.qualified_name_of(tail_functor)
+    );
+
+    let head = get_named_arg(kb, &reqs_named, "head").expect("cons must carry `head`");
+    let (head_functor, head_named) = match kb.get_term(head) {
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } => (*functor, named_args.clone()),
+        other => panic!("dispatching dict must be a Fn; got {other:?}"),
+    };
+    let var_ref_sym = kb
+        .try_resolve_symbol("anthill.reflect.Expr.var_ref")
+        .expect("var_ref in stdlib");
+    assert_eq!(
+        head_functor,
+        var_ref_sym,
+        "dispatching dict for a DIRECT deferral must be `var_ref` (names model); got {}",
+        kb.qualified_name_of(head_functor)
+    );
+    let name = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
+    match kb.get_term(name) {
+        Term::Ref(s) => *s,
+        other => panic!("var_ref name must be Term::Ref(<sym>); got {other:?}"),
+    }
 }
 
 /// The short name of an occurrence's head functor (`test.ns.wrapped(…)` →

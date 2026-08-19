@@ -24,24 +24,28 @@ use crate::common::interp_for;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::get_named_arg;
 
-/// **THE SPEC IS THE FIXTURE'S OWN, and that is what makes this test measure the
-/// fixture** (WI-1091). It read `anthill.prelude.PartialEq.eq` and took the FIRST
-/// matching entry out of `kb.dispatch_origin_iter()`, on the recorded grounds that "the
-/// apply_within shape … is identical for any defer rewrite — names model". That premise
-/// is false: a TRANSITIVE deferral emits `requirement_at_sort(var_ref(…), slot = k)`, not
-/// a bare `var_ref`, and the sibling `transitive_eq_call_classifies_as_nested_deferral`
-/// in this very file pins one. What kept it green was that no such rewrite happened to
-/// win the race — `req_insertion::run` walks `kb.op_bodies_iter()`, whose backing
-/// `op_records` is a `HashMap` (random order per process), and
-/// `record_apply_within_rewrite` is IDEMPOTENT on a key built from the callee functor
-/// ALONE, so every abstract `eq` call in the image collides and exactly one rewrite
-/// survives. MEASURED under WI-1091's widened op-scoped placement, which puts more sorts
-/// in that race: `dispatching dict for Defer must be var_ref; got …requirement_at_sort`.
-/// A local spec no other body calls has exactly one rewrite, so the entry read below is
-/// the one this fixture produced — asserted rather than assumed.
+/// **THE REWRITE IS SELECTED BY ITS ENCLOSING OPERATION, and that is what makes this
+/// test measure the fixture** (WI-873). It used to read `anthill.prelude.PartialEq.eq`
+/// and take the FIRST matching entry out of `kb.dispatch_origin_iter()`, on the recorded
+/// grounds that "the apply_within shape … is identical for any defer rewrite — names
+/// model". That premise is false: a TRANSITIVE deferral emits
+/// `requirement_at_sort(var_ref(…), slot = k)`, not a bare `var_ref`, and the sibling
+/// `transitive_eq_call_classifies_as_nested_deferral` in this very file pins one. What
+/// kept it green was that no such rewrite happened to win the race — `req_insertion::run`
+/// walks `kb.op_bodies_iter()`, whose backing `op_records` is a `HashMap` (random order
+/// per process), and the rewrite table was keyed by a SYNTHESIZED apply naming the callee
+/// functor ALONE, so every abstract `eq` call in the image collided on that one key and
+/// exactly one rewrite was ever recorded. MEASURED under WI-1091's widened op-scoped
+/// placement, which puts more sorts in that race: `dispatching dict for Defer must be
+/// var_ref; got …requirement_at_sort`.
 ///
-/// Its twin one file over is `wi227_projection_search_test::flat_path_emits_var_ref_
-/// named_requirement`, repaired the same way and for the same reason.
+/// WI-1091 dodged that by giving the fixture a spec no other body calls. WI-873 removed
+/// the need to dodge: the table is keyed by [`anthill_core::kb::CallSite`], so the read
+/// below names the fixture's own OPERATION and cannot pick up a stranger's rewrite
+/// whatever the spec is. The local spec is kept — it also makes the shape claim below
+/// unambiguous — and its twin one file over
+/// (`wi227_projection_search_test::flat_path_emits_var_ref_named_requirement`) is
+/// selected the same way.
 #[test]
 fn deferred_call_rewrites_to_apply_within_with_spec_op_fn() {
     // Sort `Wi222Box` declares `requires Wi222Spec[T]` and an op `use_eq` that
@@ -85,21 +89,13 @@ end
         .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil in stdlib");
 
-    // ASSERTED, not assumed: exactly one rewrite may exist for a spec op only this
-    // fixture calls. More would mean the subject is again chosen by iteration order.
-    let rewrites: Vec<_> = kb
-        .dispatch_origin_iter()
-        .filter(|(_, spec_sym)| *spec_sym == eq_sym)
-        .map(|(tid, _)| tid)
-        .collect();
-    assert_eq!(
-        rewrites.len(),
-        1,
-        "`Wi222Spec.same` is called from exactly one body, so exactly one rewrite may \
-         be recorded for it — more means this test's subject is chosen by \
-         `dispatch_origin`'s iteration order again"
+    // Selected by the ENCLOSING OPERATION (WI-873), so this is the rewrite `use_eq`'s
+    // body produced and no other; `rewrite_in_op` asserts exactly one match.
+    let rewritten_tid = crate::common::rewrite_in_op(
+        kb,
+        "test.wi222.defer_rewrite.Wi222Box.use_eq",
+        "test.wi222.defer_rewrite.Wi222Spec.same",
     );
-    let rewritten_tid = rewrites[0];
 
     let (functor, named_args) = match kb.get_term(rewritten_tid) {
         Term::Fn {
@@ -166,17 +162,16 @@ end
     );
     let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        // WI-873: the entry read here MAY be another sort's rewrite for the same spec,
-        // so only the spec is asserted. WI-1091 made the entry the fixture's own, so the
-        // name is now exactly slot 0 of `Wi222Box`'s chain — but the tolerant reader is
-        // kept, since it is the shared one and the claim is about WHICH SPEC named the
-        // param either way.
-        Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb,
-            *s,
+        // THE EXACT SYNTHESIZED NAME: `Wi222Box`'s chain is [Wi222Spec], so slot 0 is
+        // named `__req_wi222spec` with no disambiguating suffix. Assertable again
+        // because the entry is selected by operation (WI-873) — while the table kept
+        // ONE rewrite per spec op for the whole image, this read got whichever sort's
+        // chain won the race and could only check which SPEC had named the param.
+        Term::Ref(s) => assert_eq!(
+            kb.local_name_of(*s),
             "__req_wi222spec",
-            "a `Wi222Spec`-deferred call's dispatching dict must read a requirement \
-             param synthesized from `Wi222Spec`",
+            "a `Wi222Spec`-deferred call's dispatching dict must read slot 0 of \
+             `Wi222Box`'s own chain"
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
@@ -231,21 +226,17 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let compare_sym = kb
-        .try_resolve_symbol("anthill.prelude.WeakOrd.compare")
-        .expect("WeakOrd.compare registered");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref in stdlib");
 
-    let mut rewritten_for_compare = None;
-    for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
-        if spec_sym == compare_sym {
-            rewritten_for_compare = Some(rewritten_tid);
-        }
-    }
-    let rewritten_tid = rewritten_for_compare
-        .expect("WeakOrd.compare call inside multi-requires sort must be rewritten");
+    // `WeakOrd.compare` is deferred from a dozen stdlib bodies too, so the SPEC alone
+    // does not name this fixture's rewrite — the enclosing operation does (WI-873).
+    let rewritten_tid = crate::common::rewrite_in_op(
+        kb,
+        "test.wi222.multi_requires.Wi222Multi.use_compare",
+        "anthill.prelude.WeakOrd.compare",
+    );
 
     // Drill into the rewritten apply_within's requirements[0] to find
     // the dispatching dict's name.
@@ -276,14 +267,13 @@ end
     );
     let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        // WI-873: KB-global map, so the surviving entry for this spec may be another
-        // sort's — the SPEC of the name is what this can establish, not the fixture.
-        Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb,
-            *s,
+        // THE EXACT NAME for `Wi222Multi`'s WeakOrd slot — one WeakOrd in the chain, so
+        // no disambiguating suffix. The entry is the fixture's own, by operation.
+        Term::Ref(s) => assert_eq!(
+            kb.local_name_of(*s),
             "__req_weakord",
-            "a `WeakOrd` chain slot maps to a requirement param synthesized from \
-             `Ord`",
+            "`Wi222Multi`'s WeakOrd chain slot maps to the requirement param \
+             `__req_weakord`"
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }
@@ -316,9 +306,6 @@ end
     let interp = interp_for(src);
     let kb = interp.kb();
 
-    let compare_sym = kb
-        .try_resolve_symbol("anthill.prelude.WeakOrd.compare")
-        .expect("WeakOrd.compare registered");
     let var_ref_sym = kb
         .try_resolve_symbol("anthill.reflect.Expr.var_ref")
         .expect("var_ref registered");
@@ -329,14 +316,13 @@ end
         .try_resolve_symbol("anthill.prelude.List.nil")
         .expect("List.nil registered");
 
-    let mut rewritten_for_compare = None;
-    for (rewritten_tid, spec_sym) in kb.dispatch_origin_iter() {
-        if spec_sym == compare_sym {
-            rewritten_for_compare = Some(rewritten_tid);
-        }
-    }
-    let rewritten_tid = rewritten_for_compare
-        .expect("WeakOrd.compare call inside `requires Ord[T]` sort must be rewritten");
+    // By enclosing operation (WI-873) — the stdlib defers `WeakOrd.compare` from many
+    // other bodies, and this test's claim is about THIS caller's own slot.
+    let rewritten_tid = crate::common::rewrite_in_op(
+        kb,
+        "test.wi222.proj_deps.Wi222Outer.use_compare",
+        "anthill.prelude.WeakOrd.compare",
+    );
 
     let named_args = match kb.get_term(rewritten_tid) {
         Term::Fn { named_args, .. } => named_args.clone(),
@@ -380,13 +366,14 @@ end
 
     let name_tid = get_named_arg(kb, &head_named, "name").expect("var_ref must carry `name`");
     match kb.get_term(name_tid) {
-        // WI-873: was "the CALLER's own Ord slot" — the KB-global map cannot
-        // establish whose rewrite this is, so the claim is narrowed to the spec.
-        Term::Ref(s) => crate::common::assert_req_param_spec(
-            kb,
-            *s,
+        // THE CALLER'S OWN slot, named exactly — restored by WI-873, which made the
+        // table site-keyed so this entry is `Wi222Outer.use_compare`'s and not a
+        // stranger's. Before that the map held one rewrite per spec op for the whole
+        // image and the claim had to be narrowed to "some sort's WeakOrd slot".
+        Term::Ref(s) => assert_eq!(
+            kb.local_name_of(*s),
             "__req_weakord",
-            "the var_ref must name a requirement param synthesized from `WeakOrd`",
+            "the var_ref must name `Wi222Outer`'s own WeakOrd requirement param"
         ),
         other => panic!("name must be Term::Ref(<sym>); got {other:?}"),
     }

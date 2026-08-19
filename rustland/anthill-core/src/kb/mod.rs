@@ -607,6 +607,86 @@ pub struct NamedRequirementSlot {
     pub spec_base: Option<Symbol>,
 }
 
+/// WI-873 — the identity of one classified call site: the operation whose body
+/// holds the call, the functor the call is spelled with, and the call's span.
+///
+/// THE KEY OF [`KnowledgeBase::dispatch_rewrites`], and picking it is the whole of
+/// WI-873. The pass that records rewrites walks operation BODIES, which are
+/// `NodeOccurrence` trees — there is no "original apply `TermId`" to key by, so
+/// `req_insertion` used to synthesize one (`apply(fn = Ref(functor), args = nil())`)
+/// and key by that. Terms are hash-consed, so that key named the CALLEE and nothing
+/// else: every call site of one spec op in the image shared it, and the recorders'
+/// idempotence guard dropped all but the first.
+///
+/// Each field earns its place for a different reason, and saying so plainly matters
+/// more than a tidier story:
+///
+/// - `op` is the handle a CONSUMER needs. "The rewrite for this spec op" is not a
+///   question the KB can answer for a caller who means their own fixture's, because
+///   one spec op is deferred from many bodies; "the rewrite for this spec op in THIS
+///   operation" is. Every test that reads one rewrite selects by it.
+/// - `span` carries most of the injectivity — MEASURED over stdlib + `anthill-stl` +
+///   one fixture: 47 classified sites, 47 distinct spans.
+/// - `functor` is free (the pass already holds it) and can only SPLIT keys, never
+///   merge them. It also makes an entry self-describing without a term lookup.
+/// - `nth_at_span` is what closes the gap the other three leave, and it is NOT
+///   defensive: see its own doc for the `[simp]` program that collides without it.
+///   With it the key is injective BY CONSTRUCTION, which is why nothing asserts
+///   distinctness on the load path — there is no residual case left to announce.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CallSite {
+    /// The operation whose body holds the call — `req_insertion::run` walks
+    /// [`KnowledgeBase::op_bodies_iter`], so this is that walk's key, not something
+    /// re-derived from the occurrence (whose own `owner` is `None` on every one of
+    /// those 47 classified expression nodes — measured at WI-873).
+    pub op: Symbol,
+    /// The functor the call site is spelled with: the SPEC op for a deferred or
+    /// abstract call, the impl for one already pinned at the source.
+    pub functor: Symbol,
+    /// The call's source span, with file identity.
+    pub span: SourceSpan,
+    /// WI-873 — WHICH of the calls sharing this `(op, functor, span)`: `0` for the
+    /// only one, `1`, `2`, … for further ones in `req_insertion`'s walk order.
+    ///
+    /// A SPAN IS NOT UNIQUE PER CALL, and the case is a real program rather than a
+    /// theoretical one. `NodeOccurrence::synthesized_expr` inherits its span verbatim
+    /// from the occurrence it was expanded from, and `simp_rewrite`'s
+    /// `substitute_to_occurrence` builds EVERY node of a `[simp]` RHS from the single
+    /// redex occurrence — so a `[simp]` equation whose RHS calls one deferred spec op
+    /// twice expands, inside one operation body, into two classified applies with the
+    /// same op, functor and span. DRIVEN at WI-873 (found in review of the first
+    /// patch, which had only `(op, functor, span)`):
+    ///
+    /// ```anthill
+    /// operation both(a: T, b: T) -> Bool = true
+    /// rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) [simp]
+    /// operation drive(a: T, b: T) -> Bool = both(a, b)
+    /// ```
+    ///
+    /// Without this field that program loses `drive`'s second `eq` rewrite — the
+    /// WI-873 defect recurring one coordinate over, at a key that had merely stopped
+    /// naming the callee and started naming the source position. `wi873_…_test::
+    /// a_simp_expansion_with_two_calls_is_two_entries` is the pin.
+    ///
+    /// Stable across re-runs of the pass (which is what the recorders' idempotence
+    /// needs): the ordinal comes from a deterministic walk of a fixed occurrence
+    /// tree, and it is scoped to the colliding group, so it is `0` for every call in
+    /// the tree today and unaffected by walk order everywhere the group is a
+    /// singleton.
+    pub nth_at_span: u32,
+}
+
+/// WI-873 — what one [`CallSite`] was rewritten to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DispatchRewrite {
+    /// The rewritten term: `apply(fn = <impl>, …)` for a pinned call,
+    /// `apply_within(fn = …, args = …, requirements = [<dict>])` for one that
+    /// carries a requirement dictionary.
+    pub rewritten: TermId,
+    /// The spec op the call was spelled with — its provenance.
+    pub spec_op: Symbol,
+}
+
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
@@ -1298,17 +1378,28 @@ pub struct KnowledgeBase {
     // thing that survives. See `kb/host_fns.rs` for the full argument.
     pub(crate) host_fns: host_fns::HostFnRegistry,
 
-    // WI-218 — static-dispatch rewrite tables.
-    // `dispatch_rewrites`: original apply TermId → rewritten apply TermId
-    //   (with `fn` substituted from spec op to impl op). The
-    //   post-typing rewrite pass uses this to substitute apply terms
-    //   bottom-up in operation bodies.
-    // `dispatch_origin`: rewritten apply TermId → original spec op symbol.
-    //   Read by reflection / proof-record specialization / debug tooling
-    //   for provenance ("this was originally Spec.op, dispatched to
-    //   Impl.op"). The interpreter never reads it.
-    pub(crate) dispatch_rewrites: HashMap<TermId, TermId>,
-    pub(crate) dispatch_origin: HashMap<TermId, Symbol>,
+    // WI-218 / WI-873 — the static-dispatch rewrite table: one entry per
+    // classified CALL SITE, holding the rewritten apply term and the spec op the
+    // call was spelled with. Read by reflection / proof-record specialization /
+    // debug tooling for provenance ("this was originally Spec.op, dispatched to
+    // Impl.op"). The interpreter never reads it — post-WI-248 it takes `CallClass`
+    // off the `NodeOccurrence` directly.
+    //
+    // WI-873 REPLACED TWO TERM-KEYED MAPS WITH THIS ONE SITE-KEYED MAP, and the key
+    // is the whole fix. `dispatch_rewrites` used to be keyed by an "original apply
+    // TermId" that `req_insertion::materialize_apply` SYNTHESIZED as
+    // `apply(fn = Ref(functor), args = nil())` — a term naming the functor and
+    // nothing else. Terms are hash-consed, so every call site of one spec op in the
+    // whole image collapsed to ONE TermId, and the recorders' idempotence guard
+    // (`contains_key`) then dropped every site after the first. MEASURED at this
+    // ticket: stdlib + one fixture classifies 47 call sites and recorded 16 entries
+    // — one per distinct functor — and adding a second fixture that indisputably
+    // defers `PartialEq.eq` again left the total at 16, with WHICH sort's rewrite
+    // survived varying per process (`op_records` is a `HashMap`).
+    //
+    // So the key must identify the SITE, not the callee: the operation whose body
+    // holds the call, the functor it is spelled with, and its span. See [`CallSite`].
+    pub(crate) dispatch_rewrites: HashMap<CallSite, DispatchRewrite>,
 
     // WI-945 — call sites whose parent-bundle dictionary could not be built because a
     // requirement element is left GENUINELY UNCONSTRAINED (§5.2), parked until every
@@ -1661,7 +1752,6 @@ impl KnowledgeBase {
             host_fns: host_fns::HostFnRegistry::new(),
             unsuppliable_requirements: Vec::new(),
             dispatch_rewrites: HashMap::new(),
-            dispatch_origin: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),
             synth_req_names_cache: RefCell::new(HashMap::new()),
@@ -1741,42 +1831,59 @@ impl KnowledgeBase {
         self.requires_tree_cache.borrow().contains_key(&sort_sym)
     }
 
-    /// Record that `original_apply` should be rewritten to `rewritten_apply`
-    /// (a new apply term with `fn` substituted from spec op to impl op),
-    /// and remember `spec_op_sym` as the original spec call's symbol.
-    /// WI-218: typing-time spec→impl rewrite for static dispatch.
-    /// Exposed publicly so tests and out-of-tree elaboration passes can
+    /// Record that the call at `site` was rewritten to `rewritten_apply`
+    /// (an apply / apply_within term with `fn` and, for the requirement-carrying
+    /// forms, a `requirements` channel), and remember `spec_op_sym` as the symbol
+    /// the call was spelled with. WI-218: typing-time spec→impl rewrite for static
+    /// dispatch. Exposed publicly so tests and out-of-tree elaboration passes can
     /// stage their own term-level rewrites alongside the typer's.
+    ///
+    /// WI-873 made the key the SITE. Callers used to pass a synthesized "original
+    /// apply" term that named only the functor, so one entry per spec op survived
+    /// for the whole image; see the [`Self::dispatch_rewrites`] field comment for
+    /// the measurement.
     pub fn record_dispatch_rewrite(
         &mut self,
-        original_apply: TermId,
+        site: CallSite,
         rewritten_apply: TermId,
         spec_op_sym: Symbol,
     ) {
-        self.dispatch_rewrites
-            .insert(original_apply, rewritten_apply);
-        self.dispatch_origin.insert(rewritten_apply, spec_op_sym);
+        self.dispatch_rewrites.insert(
+            site,
+            DispatchRewrite {
+                rewritten: rewritten_apply,
+                spec_op: spec_op_sym,
+            },
+        );
     }
 
-    /// True iff `term` was rewritten from a spec-op call. Returns the
-    /// original spec op symbol for provenance / debug / reflection.
-    /// The interpreter does not consult this — runtime semantics use
-    /// the rewritten term's `fn` directly.
-    pub fn dispatch_origin_of(&self, term: TermId) -> Option<Symbol> {
-        self.dispatch_origin.get(&term).copied()
+    /// The rewrite recorded for one call site, if any. Also the recorders'
+    /// idempotence check, so re-running `req_insertion::run` over a KB that already
+    /// holds its rewrites is a no-op — and the reader an out-of-tree pass staging its
+    /// own rewrites through [`Self::record_dispatch_rewrite`] needs to ask the same.
+    pub fn dispatch_rewrite_at(&self, site: CallSite) -> Option<DispatchRewrite> {
+        self.dispatch_rewrites.get(&site).copied()
+    }
+
+    /// Iterate every recorded rewrite with its call SITE. The reader for anything
+    /// that must attribute a rewrite to the operation it came from — a KB-global
+    /// `(term, spec)` pair cannot, since one spec op is called from many bodies.
+    pub fn dispatch_rewrites_iter(&self) -> impl Iterator<Item = (CallSite, DispatchRewrite)> + '_ {
+        self.dispatch_rewrites.iter().map(|(k, v)| (*k, *v))
     }
 
     /// Iterate (rewritten_term, original_spec_op) pairs. Useful for
     /// reflection, debug tooling, and tests.
+    ///
+    /// ONE ITEM PER CALL SITE, so the same `TermId` can appear more than once —
+    /// two sites in one sort that defer the same spec op build the same rewritten
+    /// term. A reader that wants to attribute a rewrite to its operation wants
+    /// [`Self::dispatch_rewrites_iter`]; this one answers only "what was rewritten,
+    /// and from what".
     pub fn dispatch_origin_iter(&self) -> impl Iterator<Item = (TermId, Symbol)> + '_ {
-        self.dispatch_origin.iter().map(|(t, s)| (*t, *s))
-    }
-
-    /// Look up the rewritten TermId an original term maps to, if any.
-    /// Reflection / tooling / external-elaboration consumers read this
-    /// to see what an apply (or any term) was rewritten to.
-    pub fn dispatch_rewrite_of(&self, original: TermId) -> Option<TermId> {
-        self.dispatch_rewrites.get(&original).copied()
+        self.dispatch_rewrites
+            .values()
+            .map(|r| (r.rewritten, r.spec_op))
     }
 
     /// Register a synthesizing pass by qualified name. Returns a PassId
