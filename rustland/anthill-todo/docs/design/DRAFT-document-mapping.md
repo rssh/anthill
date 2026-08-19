@@ -21,12 +21,12 @@ A file is a sequence of **chapters**. One of them — named by
 prose.
 
 ```markdown
-## Attributes              ← the item's fact, as a bullet list
+## Attributes                            ← the item's fact, as a bullet list
 
-## description             ← a prose field of that fact
+## Description                           ← a prose field of that fact
 
-## Feedback                ← a container
-### 2026-08-17T09:19:35Z — user      ← an entry
+## Changes                               ← a container
+### 2026-08-17T09:19:35Z — feedback — user   ← an entry
 ```
 
 There is no region outside a chapter. Text before the first chapter is a load
@@ -118,33 +118,44 @@ chapter with a fixed heading. The field is absent from the attributes chapter, a
 this chapter's body is its text.
 
 ```markdown
-## description
+## Description
 
 anthill-todo backend, INCREMENT 2c of WI-437 …
 ```
 
 ### 4.3 Containers and entries
 
-`ChapterGroup(functor, container, key, heading, field)` maps a satellite fact
-repeated 0..n to one **container** chapter holding one **entry** per fact. Nothing
-about these facts appears in the attributes chapter.
+`ChapterGroup(functor, container, kind, key, heading, field)` maps a satellite
+fact repeated 0..n to **entries** inside a **container** chapter. Nothing about
+these facts appears in the attributes chapter.
+
+**Several groups may share one container.** `kind` is the word that says which
+functor an entry belongs to, written in the entry's heading between the fields
+`heading` names and the rest. A container holding one kind still writes it: one
+spelling, and a second kind added later is then additive.
 
 Each entry is self-contained:
 
-- its **heading** carries the fields named in `heading`, in order, joined by ` — `;
+- its **heading** is the first field of `heading`, then `kind`, then the
+  remaining fields of `heading`, joined by ` — `;
 - its **body** is the fact's `field`;
 - its `key` field is the item's id, taken from the file.
 
 ```markdown
-## Feedback
+## Changes
 
-### 2026-08-17T09:19:35Z — user
+### 2026-08-17T09:19:35Z — feedback — user
 
 id should be minted from content, not from a counter.
+
+### 2026-08-18T15:28:04Z — status — claude
+
+Delivered
 ```
 
 Entries are independent: their order is the file's order, and two entries whose
-headings are identical denote two facts.
+headings are identical denote two facts. A container's entries are written in
+ascending order of their first heading field.
 
 An entry's body must not begin with a line the reader would take for a heading at a
 structural level. The writer checks this before writing.
@@ -183,10 +194,11 @@ namespace anthill.stage0.document
   -- A repeated satellite WITH prose: one container, one entry per fact (§4.3).
   entity ChapterGroup(
     functor   : Term,
-    container : String,
-    key       : String,            -- the field taking the item's id
+    container : String,        -- several groups may share one
+    kind      : String,        -- the word discriminating this group's entries
+    key       : String,        -- the field taking the item's id
     heading   : List[String],  -- fields carried by the entry heading, in order
-    field     : String)            -- the field carried by the entry body
+    field     : String)        -- the field carried by the entry body
 
   -- A repeated satellite WITHOUT prose: one attributes field holding a list, one
   -- fact per element (§3.1).
@@ -204,12 +216,12 @@ namespace anthill.stage0.document
   fact ScalarForm(
     sort: AcceptanceCriterion, constructor: ToolPasses, slot: "tool")
 
-  fact Chapter(functor: WorkItem, field: "description",   named: "description")
-  fact Chapter(functor: WorkItem, field: "status_reason", named: "reason")
+  fact Chapter(functor: WorkItem, field: "description",   named: "Description")
+  fact Chapter(functor: WorkItem, field: "status_reason", named: "Reason")
 
   fact ChapterGroup(
-    functor: Feedback, container: "Feedback", key: "workitem",
-    heading: ["at", "author"], field: "content")
+    functor: Feedback, container: "Changes", kind: "feedback",
+    key: "workitem", heading: ["at", "author"], field: "content")
 
   fact SatelliteList(
     functor: Tag, named: "tags", field: "name", key: "workitem")
@@ -236,7 +248,7 @@ end
 
 - tags: wi437
 
-## description
+## Description
 
 anthill-todo backend, INCREMENT 2c of WI-437: ALLOCATION IS A POLICY, and
 ContentHash is the local one.
@@ -245,13 +257,13 @@ ContentHash is the local one.
 
 Hand-added prose below the structural level rides along inside its chapter.
 
-## Feedback
+## Changes
 
-### 2026-08-17T09:19:35Z — user
+### 2026-08-17T09:19:35Z — feedback — user
 
 id should be minted from content, not from a counter.
 
-### 2026-08-18T15:27:52Z — claude
+### 2026-08-18T15:27:52Z — feedback — claude
 
 delivered; the counter seed in `main.rs` is gone.
 ````
@@ -299,6 +311,7 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a heading at a structural level the mapping does not account for in that scope | load error naming file and heading |
 | a `###` outside any container | load error |
 | an entry heading with the wrong number of ` — ` separated parts | load error |
+| an entry heading whose kind names no group of that container | load error naming file, heading and kind |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
 | attributes, filename and directory disagree | diagnostic; `fsck --fix` repairs from the attributes |
 

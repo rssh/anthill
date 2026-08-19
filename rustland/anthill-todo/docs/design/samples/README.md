@@ -8,13 +8,20 @@ These are **samples, not items**. They deliberately do not carry the
 `.anthill.md` suffix, so no loader will read them, and they live outside the
 tracker tree.
 
-| sample | feedback entries | shows |
+| sample | change entries | shows |
 | --- | --- | --- |
-| `WI-714.md` | 17 | the most feedback on the tracker; 8 dependencies |
-| `WI-383.md` | 16 | feedback plus a tag |
-| `WI-402.md` | 10 | a typical delivered item |
-| `WI-1115.md` | 1 | `ProposalRejected` — the status reason as a `## reason` chapter |
-| `WI-731.md` | 8 | an open item |
+| `WI-714.md` | 17 feedback + 1 status | the most feedback on the tracker; 8 dependencies |
+| `WI-383.md` | 16 feedback + 1 status | feedback plus a tag |
+| `WI-402.md` | 10 feedback + 1 status | a typical delivered item |
+| `WI-1115.md` | 1 feedback + 1 status | `ProposalRejected` — the reason as a `## Reason` chapter |
+| `WI-731.md` | 8 feedback | an open item, so no status entry |
+
+**The `status` entries are synthesized**, from the item's current status and its
+timestamp. Real history does not exist to migrate: `Delivered(agent, at)`
+overwrote `Claimed(agent, since)` on 985 of 1127 items, and `untag` never left a
+record at all. They are here so the `— feedback —` / `— status —` discriminator
+can be judged against a mixed log, which is the only situation where it earns its
+place.
 
 Originals, for comparison:
 
@@ -27,3 +34,7 @@ Originals, for comparison:
 The conversion was checked field by field — id, created, status and its hoisted
 agent/at/reason, acceptance, depends_on, tags, every feedback entry's at and
 author, and the description text — and all five compare equal.
+
+Chapter headings are display names (`Attributes`, `Description`, `Reason`,
+`Changes`), not field names. The mapping already separated the two, so this costs
+a value in `Chapter(named:)` rather than a mechanism.
