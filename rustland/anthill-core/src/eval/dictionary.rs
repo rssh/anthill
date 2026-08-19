@@ -63,7 +63,14 @@ impl Dictionary {
     /// `None` in a KB that never loaded `anthill.realization.runtime` — the
     /// producer then reports that it cannot build one, which is the same answer
     /// [`crate::kb::term_view::dictionary_view_syms`] gives for the same reason.
-    pub fn build(
+    ///
+    /// WI-867 — `pub(crate)`, NOT `pub`: it knows a provider and no spec, so it cannot
+    /// tell a dictionary that carries evidence from one that is short of it, and while
+    /// it was reachable from outside it was a third host path past the layout with no
+    /// name saying so. A host builds through [`crate::eval::Interpreter::alloc_dictionary`],
+    /// which takes the pair, or names the blindness with
+    /// [`crate::eval::Interpreter::alloc_dictionary_unchecked`].
+    pub(crate) fn build(
         kb: &KnowledgeBase,
         impl_sort: Symbol,
         subs: impl IntoIterator<Item = Dictionary>,

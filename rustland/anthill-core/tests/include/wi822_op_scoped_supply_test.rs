@@ -776,7 +776,11 @@ fn wi1091_the_op_requirements_accessor_answers_for_both_mints() {
         .kb()
         .try_resolve_symbol("anthill.prelude.List.cons")
         .expect("List.cons");
-    let dict = Dictionary::build(interp.kb(), op, []).expect("a one-slot dictionary");
+    // WI-867: the UNCHECKED constructor — this row drives the `opRequirements`
+    // ACCESSOR, so the dictionary is a value to hand back, not evidence for a spec.
+    let dict = interp
+        .alloc_dictionary_unchecked(op, [])
+        .expect("a one-slot dictionary");
 
     let functor = |v: &Value| match v {
         Value::Entity { functor, .. } => *functor,

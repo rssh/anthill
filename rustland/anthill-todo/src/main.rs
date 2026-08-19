@@ -3190,11 +3190,17 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // dynamically avoids hard-coding the chain length, which can grow
     // when Main gains more requires.
     //
-    // WI-239: direct (not flat-transitive) so the count and order line
-    // up with `synth_req_names(Main)` — `call_with_requirements` checks
-    // `chain_dicts.len() == synth_req_names(Main).len()`, and both are
-    // now the direct-require count. A transitive require is bundled
-    // inside its direct parent's dict, not a top-level slot.
+    // WI-239: NOT flat-transitive — a transitive require is bundled inside its direct
+    // parent's dict, not given a top-level slot, so the count and order line up with
+    // the frame's `__req_*` names rather than with a flattened walk.
+    //
+    // WI-867: and the list is `provider_dict_entries`, which is the one
+    // `call_with_requirements` counts against — WI-869 widened THAT to a sort's direct
+    // `requires` FOLLOWED BY its conditional provisions' `:- goals`, and this host was
+    // still reading `direct_requires_chain`. The two agree only while `Main` declares
+    // no conditional provision; the day it does, the old read hands over fewer
+    // dictionaries than there are slots, and the host learns it as a count mismatch at
+    // the entry rather than as a slot it forgot to fill.
     let chain_dicts: smallvec::SmallVec<[_; 2]> = {
         let main_sym = interp
             .kb()
@@ -3206,7 +3212,10 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         let filebased_sym = interp
             .kb_mut()
             .intern("anthill.todo.store.FileBasedWorkitemStore");
-        let entries = anthill_core::kb::typing::direct_requires_chain(interp.kb_mut(), main_sym);
+        let entries: Vec<_> =
+            anthill_core::kb::typing::provider_dict_entries(interp.kb_mut(), main_sym)
+                .entries()
+                .to_vec();
         let mut out: smallvec::SmallVec<[_; 2]> = smallvec::SmallVec::new();
         for entry in &entries {
             let impl_sym = if Some(entry.required_sort) == workitemstore_sym {
@@ -3214,11 +3223,22 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             } else {
                 entry.required_sort
             };
-            out.push(
-                interp
-                    .alloc_requirement(impl_sym, [])
-                    .expect("the stdlib defines anthill.realization.runtime.Dictionary"),
-            );
+            // WI-867: the SPEC beside the provider, and empty subs only because the
+            // layout says so. Today both chains are empty, which is the accident that
+            // made the pre-WI-867 blind call valid; when 058 phase 7 gives these specs
+            // chains this refuses HERE, naming the spec, the provider and both halves,
+            // instead of dying at a frame push inside `Main.main`.
+            match interp.alloc_dictionary(entry.required_sort, impl_sym, []) {
+                Ok(d) => out.push(d),
+                // Reported, not panicked: this is a HOST bug — the dictionary this
+                // binary hands `Main` is the wrong shape — and the refusal already
+                // names the spec, the provider and both halves. A panic would bury
+                // that under a backtrace in the one place it is addressed to.
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return runner::EXIT_RUNTIME;
+                }
+            }
         }
         out
     };

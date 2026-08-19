@@ -1855,7 +1855,7 @@ end
             .try_resolve_symbol("test.wi1016_seam.Color")
             .expect("Color declared above");
         let dict = interp
-            .alloc_requirement(color, [])
+            .alloc_dictionary_unchecked(color, [])
             .expect("the stdlib defines anthill.realization.runtime.Dictionary")
             .into_value();
 

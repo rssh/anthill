@@ -947,8 +947,12 @@ The fix is for the host to supply **real impl-rooted dictionaries** for the chai
 
 ```rust
 // Build a dictionary for `WorkItemStore[State = WIS]` rooted at FileBasedWorkitemStore.
+// WI-867: the constructor takes the SLOT'S SPEC beside the provider, because the
+// number of sub-dictionaries a dictionary must bundle is a property of the PAIR
+// (WI-857 — the spec's own `requires` chain, then the provider's).
+let workitemstore = interp.kb_mut().intern("anthill.todo.store.WorkItemStore");
 let filebased = interp.kb_mut().intern("anthill.todo.store.FileBasedWorkitemStore");
-let dict = interp.alloc_requirement(filebased, SmallVec::new());
+let dict = interp.alloc_dictionary(workitemstore, filebased, [])?;
 
 // Invoke Main.main with the dictionary in slot 1.
 // Slot 0 (Self) is auto-allocated by the runtime as a self-referential placeholder.
@@ -959,9 +963,14 @@ interp.call_with_requirements("anthill.todo.Main.main",
                               chain_dicts)?;
 ```
 
-The caller supplies one handle per entry in the parent sort's flattened `requires` chain (in declaration order); the runtime prepends the Self slot automatically. Handle structure must reflect each impl's own `requires` chain — an impl that itself has `requires Y` is allocated with `sub_requires = [<Y dictionary>]`, recursively.
+The caller supplies one handle per entry in the parent sort's dictionary chain, in declaration order; the runtime prepends the Self slot automatically. **The chain to walk is `typing::provider_dict_entries(parent)`** — WI-869: a sort's direct `requires` FOLLOWED BY the `:- goals` of every conditional provision it declares. Not `direct_requires_chain`, which is that list without the conditions, and not a flattened transitive walk: a transitive requirement is bundled INSIDE its direct parent's dictionary rather than given a top-level slot. Each handle's own structure follows the same rule recursively — an impl whose chain is non-empty is built with one sub-dictionary per entry.
 
-The host API is value-level only; the **typer** doesn't see the caller's intent. The caller must shape the dictionaries to match what the body dispatches through. Mismatches surface as opaque slot reads or `unknown operation` errors mid-body; the boundary's arity check (`chain_dicts.len() == requires_chain_flat(parent).len()`) catches the obvious case at the entry.
+The host API is value-level only; the **typer** doesn't see the caller's intent. Two guards ask the same question, one owner apart (`DictLayout::refuse_arity`):
+
+- **At construction.** `alloc_dictionary(spec, provider, subs)` refuses a handle whose `subs` is not `dict_layout(spec, provider).arity()`, naming the spec, the provider and both halves. This is where a host wants to hear it — a dictionary that claims a provider and bundles nothing is well-formed as a VALUE and wrong as EVIDENCE, and before WI-867 it travelled until a frame push read a slot that was not there, reported against the callee rather than the caller that built it.
+- **At the entry.** `call_with_requirements` checks the count against `provider_dict_entries(parent).names(..)` and then re-asks the layout question per slot, for a handle that did not come from the constructor.
+
+`Interpreter::alloc_dictionary_unchecked` builds a dictionary of any shape and is NOT the host constructor: it exists for fixtures that drive the value carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back), where the pair is not a claim about any spec.
 
 ### When to pick which
 

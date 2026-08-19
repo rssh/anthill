@@ -230,21 +230,33 @@ fn wi866_the_two_half_dispatch_still_runs() {
 /// one, so each of those entries told a reflection consumer "this call needs no
 /// requirements" where in fact none could be built.
 ///
-/// THIS ROW WALKS THE POPULATION rather than a fixture, because the fixture is not
-/// where the defect lived — `anthill.prelude.PartialOrd` alone accounted for 2101 of
-/// the 2434, and no WI-866 fixture would have produced one. Every rewritten
-/// `apply_within` the load recorded is opened, its dispatching dictionary read, and
-/// its slot count compared with the layout its own `impl` names.
+/// IT ASKS THE QUESTION EVAL ASKS, and a first draft did not: it keyed every
+/// dictionary on `dict_layout(provider, provider)`, the PARENT-BUNDLE reading, which
+/// is right only for `build_dispatching_dict_direct`'s output. The other rewrite route
+/// (`emit_tree_as_projection`) emits an INSTANCE dictionary, whose layout is the spec
+/// half plus the provider half — so a correctly-sized one over a spec with a non-empty
+/// chain would have been reported as a violation and a genuinely short one passed.
+/// Found by /code-review; green until then only because this fixture's projections do
+/// not reach that arm. The spec comes from `dispatch_origin`, which records the SPEC OP
+/// each rewrite came from, run through WI-866's own `dispatch_spec_of_op` — which is
+/// what `expand_dispatching_dict` does with the same two inputs at the frame push.
+///
+/// THE CHANNEL'S TOP-LEVEL DICTIONARY, not every nested one: a sub-dictionary's spec is
+/// its slot's chain entry, and nothing in the TERM carries it — the only reader that
+/// can pair a nested dictionary with a spec is the walk that laid the slots out. So
+/// this row covers what a rewrite hands over and says so, rather than deriving a spec
+/// it does not have.
 ///
 /// BACKED OUT (restore `None => {}` in `build_dispatching_dict_from_chain`, and drop
 /// the producer-side check so the emitted shape is what is measured): this row fails
-/// with `` `wi866.shapes.Holder`: 0 slot(s) emitted, layout wants 2 `` — this
+/// with `` `wi866.shapes.Holder` at `wi866.shapes.Holder`: 0 slot(s) emitted, layout
+/// wants 2 `` — this
 /// fixture's own two-entry chain, dropped whole. ONE violation here, where the
 /// suite-wide probe counted 2434: the census sees only the rewrites recorded in THIS
 /// KB, so it is a witness for the class, not a recount of it.
 #[test]
 fn wi866_no_emitted_dictionary_is_short_of_its_layout() {
-    use anthill_core::kb::term::Term;
+    use anthill_core::kb::term::{Term, TermId};
 
     let mut kb = crate::common::load_kb_with(SRC);
     let dict_ctor = kb
@@ -253,47 +265,73 @@ fn wi866_no_emitted_dictionary_is_short_of_its_layout() {
     let dict_impl = kb
         .try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")
         .expect("…and so is its `impl` key");
+    let reqs_key = kb.intern("requirements");
 
-    // Collect first: reading a layout needs `&mut kb`, and the walk borrows it.
-    let mut dicts: Vec<(usize, Symbol)> = Vec::new();
-    let mut stack: Vec<anthill_core::kb::term::TermId> =
-        kb.dispatch_origin_iter().map(|(t, _)| t).collect();
-    let recorded = stack.len();
-    let mut seen = std::collections::HashSet::new();
-    while let Some(tid) = stack.pop() {
-        if !seen.insert(tid) {
-            continue;
-        }
-        let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } = kb.get_term(tid)
-        else {
-            continue;
+    /// The dictionary a rewritten `apply_within` hands over. Its `requirements` named
+    /// arg is a cons list (`wrap_dispatch_channel` = `build_list(&[dict])`), so the
+    /// dictionary sits under one or more list cells — found by BREADTH-first search,
+    /// which is what makes it the CHANNEL's dictionary rather than one of its own
+    /// nested sub-dictionaries: the shallowest one is the one handed over.
+    /// Returned as (slot count, provider).
+    fn channel_dict(
+        kb: &anthill_core::kb::KnowledgeBase,
+        rewritten: TermId,
+        reqs_key: Symbol,
+        dict_ctor: Symbol,
+        dict_impl: Symbol,
+    ) -> Option<(usize, Symbol)> {
+        let Term::Fn { named_args, .. } = kb.get_term(rewritten) else {
+            return None;
         };
-        if *functor == dict_ctor {
-            if let Some((_, impl_ref)) = named_args.iter().find(|(k, _)| *k == dict_impl) {
-                if let Term::Ref(provider) = kb.get_term(*impl_ref) {
-                    dicts.push((pos_args.len(), *provider));
-                }
+        let (_, list) = named_args.iter().find(|(k, _)| *k == reqs_key)?;
+        let mut queue: std::collections::VecDeque<TermId> =
+            std::collections::VecDeque::from([*list]);
+        while let Some(tid) = queue.pop_front() {
+            let Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } = kb.get_term(tid)
+            else {
+                continue;
+            };
+            if *functor == dict_ctor {
+                let (_, impl_ref) = named_args.iter().find(|(k, _)| *k == dict_impl)?;
+                let Term::Ref(provider) = kb.get_term(*impl_ref) else {
+                    return None;
+                };
+                return Some((pos_args.len(), *provider));
             }
+            queue.extend(pos_args.iter().copied());
+            queue.extend(named_args.iter().map(|(_, v)| *v));
         }
-        stack.extend(pos_args.iter().copied());
-        stack.extend(named_args.iter().map(|(_, v)| *v));
+        None
     }
 
+    // Collect first: reading a layout needs `&mut kb`, and the walk borrows it.
+    let recorded: Vec<(TermId, Symbol)> = kb.dispatch_origin_iter().collect();
+    let found: Vec<(usize, Symbol, Symbol)> = recorded
+        .iter()
+        .filter_map(|(rewritten, spec_op)| {
+            channel_dict(&kb, *rewritten, reqs_key, dict_ctor, dict_impl)
+                .map(|(slots, provider)| (slots, provider, *spec_op))
+        })
+        .collect();
+
+    // A walk that finds nothing passes every assertion below it. MEASURED here so the
+    // row cannot degrade into one: 16 recorded rewrites in this KB, 6 of which carry a
+    // dispatching channel (the rest are `record_apply_rewrite`'s spec→impl form, which
+    // has no `requirements` arg at all).
     assert!(
-        recorded > 0 && !dicts.is_empty(),
-        "the walk must find dictionaries to judge, or it is measuring nothing: \
-         {recorded} recorded rewrite(s), {} dictionar(ies)",
-        dicts.len(),
+        recorded.len() >= 16 && found.len() >= 6,
+        "the census must find dictionaries to judge, or it is measuring nothing: \
+         {} recorded rewrite(s), {} channel dictionar(ies)",
+        recorded.len(),
+        found.len(),
     );
 
     let mut short: Vec<String> = Vec::new();
-    for (slots, provider) in dicts {
-        // A dictionary's own `impl` names its provider, and the parent-bundle shape
-        // this producer builds has spec == provider (the layout's one-list rule).
+    for (slots, provider, spec_op) in found {
         // A marker functor (`anthill.reflect.NoProvider…`, WI-865) is an ABSENCE, not
         // a provider, and bundles nothing by design.
         if kb
@@ -302,10 +340,12 @@ fn wi866_no_emitted_dictionary_is_short_of_its_layout() {
         {
             continue;
         }
-        let want = dict_layout(&mut kb, provider, provider).arity();
+        let spec = dispatch_spec_of_op(&kb, spec_op).or_provider(provider);
+        let want = dict_layout(&mut kb, spec, provider).arity();
         if slots != want {
             short.push(format!(
-                "`{}`: {slots} slot(s) emitted, layout wants {want}",
+                "`{}` at `{}`: {slots} slot(s) emitted, layout wants {want}",
+                kb.qualified_name_of(spec),
                 kb.qualified_name_of(provider),
             ));
         }

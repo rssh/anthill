@@ -16815,22 +16815,31 @@ impl DispatchSpec {
 }
 
 /// [`DispatchSpec`] for `op_sym` — see there for the four shapes and what each means.
+/// THROUGH [`impl_parent_of_op`], which is THE one reader of "which symbol declares
+/// this operation" and says so at length in its own doc — a second `rsplit_once('.')
+/// + try_resolve_symbol` here would be that split spelled twice, and the day the one
+/// owner changes (its doc weighs exactly such a change) the dictionary's spec would be
+/// derived one way at the frame push and another way everywhere else.
+///
+/// NOT through [`impl_parent_sort_of_op`], which is the same call plus the `Sort`
+/// gate: it answers a TWO-valued question (a declaring sort, or nothing) and this one
+/// has three answers. Its `None` fuses the namespace parent with the absent one, and
+/// the absent one fuses a dot-less name with an unresolvable parent — the very
+/// collapse this enum exists to undo. So the gate is applied here, beside the dot
+/// test that separates `impl_parent_of_op`'s two ways of answering `None`.
 pub fn dispatch_spec_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> DispatchSpec {
-    let qn = kb.qualified_name_of(op_sym);
-    let Some((parent_qn, _)) = qn.rsplit_once('.') else {
-        // A top-level (`_global`) operation. No parent segment to resolve, and no
-        // spec: dispatch through it is the provider's own bundle.
-        return DispatchSpec::NoSpec;
-    };
-    let Some(parent) = kb.try_resolve_symbol(parent_qn) else {
-        return DispatchSpec::UnresolvableParent;
-    };
-    if kb.has_kind(parent, crate::intern::SymbolKind::Sort) {
-        DispatchSpec::Spec(parent)
-    } else {
+    match impl_parent_of_op(kb, op_sym) {
+        Some(parent) if kb.has_kind(parent, crate::intern::SymbolKind::Sort) => {
+            DispatchSpec::Spec(parent)
+        }
         // A NAMESPACE parent: it declares no type params and owns no requirement
-        // slots, so it is no more a spec than the absent parent above is.
-        DispatchSpec::NoSpec
+        // slots, so it is no more a spec than an absent parent is.
+        Some(_) => DispatchSpec::NoSpec,
+        // `impl_parent_of_op` answers `None` two ways, and they are not one case: a
+        // DOT-LESS canonical name (a `_global` operation — no parent segment at all,
+        // so no spec), versus a dotted one whose parent segment resolves to nothing.
+        None if kb.qualified_name_of(op_sym).contains('.') => DispatchSpec::UnresolvableParent,
+        None => DispatchSpec::NoSpec,
     }
 }
 
@@ -48178,6 +48187,38 @@ impl DictLayout {
     /// How many sub-requirements a well-formed dictionary of this shape bundles.
     pub fn arity(&self) -> usize {
         self.spec_len + self.provider_len
+    }
+
+    /// WI-867 — `None` when a dictionary bundling `got` sub-slots is layout-valid for
+    /// this shape, else the refusal, naming both halves.
+    ///
+    /// ONE OWNER for the question "is this dictionary the right shape", because it is
+    /// now asked at two points on the HOST's side of the boundary and they must not
+    /// come to disagree: [`Interpreter::alloc_dictionary`] asks it at CONSTRUCTION, so
+    /// a short dictionary is refused where it is built, and
+    /// [`Interpreter::call_with_requirements`] asks it again per chain slot at the
+    /// entry, which is the only guard left for a value that did not come from the
+    /// constructor. Before WI-867 only the second existed, so a host learned about a
+    /// dictionary it built wrong at a frame push several calls later, attributed to
+    /// the callee.
+    ///
+    /// The COUNT, one level. It does not descend: a sub-slot's own shape is its own
+    /// layout's question, and a slot legitimately holds shapes that answer nothing —
+    /// a `NoProvider` marker (WI-865) and the `EffectsRuntime` anchor (WI-857) both
+    /// bundle nothing whatever their slot's spec declares.
+    ///
+    /// The spec and the provider are named ONCE, by [`Self::describe`], which is the
+    /// owner of that rendering and the only half of the message that knows whether
+    /// this is a two-half supply or a self-provider's single list.
+    pub fn refuse_arity(&self, kb: &KnowledgeBase, got: usize) -> Option<String> {
+        if got == self.arity() {
+            return None;
+        }
+        Some(format!(
+            "a dictionary bundling {got} sub-requirement(s) is not the shape this \
+             supply calls for: {}",
+            self.describe(kb),
+        ))
     }
 
     /// The dictionary slots whose names are `synth_req_names(owner)` — the frame

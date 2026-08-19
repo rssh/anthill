@@ -1314,3 +1314,6 @@ mod wi1122_embedder_host_fn_test;
 
 #[path = "include/wi866_dictionary_layout_source_test.rs"]
 mod wi866_dictionary_layout_source_test;
+
+#[path = "include/wi867_host_dictionary_constructor_test.rs"]
+mod wi867_host_dictionary_constructor_test;

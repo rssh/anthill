@@ -818,8 +818,12 @@ impl Interpreter {
     /// `WorkItemStore.lookup(…)` would dispatch through the placeholder
     /// — wrong impl, runtime mis-dispatch.
     ///
-    /// Use [`Self::alloc_requirement`] to build each handle. See
-    /// `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
+    /// Use [`Self::alloc_dictionary`] to build each handle — WI-867: it takes the
+    /// slot's SPEC beside the provider and refuses a dictionary of the wrong shape
+    /// where it is built, rather than letting it reach the per-slot check below. The
+    /// chain to walk for those specs is [`crate::kb::typing::provider_dict_entries`]
+    /// of the entry op's parent sort, which is the list this method counts against.
+    /// See `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
     ///
     /// WI-822 LEG 1: the count is the PARENT SORT's chain, not the entry op's composed
     /// one — an op-scoped `requires` has no host-boundary spelling, for the reason
@@ -876,18 +880,19 @@ impl Interpreter {
             // validating fewer dicts than were supplied.
             let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, p);
             for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
+                // WI-867: through `refuse_arity`, the same owner
+                // [`Self::alloc_dictionary`] asks at construction — so a host that
+                // used the constructor cannot be refused here for a reason the
+                // constructor phrased differently, and a value that came from
+                // somewhere else is still judged by the one rule.
                 let want = crate::kb::typing::dict_layout(
                     &mut self.kb,
                     entry.required_sort,
                     dict.impl_sort(),
                 );
-                if dict.arity() != want.arity() {
+                if let Some(why) = want.refuse_arity(&self.kb, dict.arity()) {
                     return Err(EvalError::Internal(format!(
-                        "call_with_requirements({qualified_name}): the dictionary \
-                         supplied for `{}` has arity {} but its layout wants {}",
-                        self.kb.qualified_name_of(entry.required_sort),
-                        dict.arity(),
-                        want.describe(&self.kb),
+                        "call_with_requirements({qualified_name}): {why}"
                     )));
                 }
             }
@@ -1346,10 +1351,54 @@ impl Interpreter {
         self.cells.live()
     }
 
-    /// Build `Dictionary(subs…, impl: functor)` — the host/test-facing face of
-    /// [`Self::build_dictionary`]. `None` in a KB with no
+    /// WI-867 — build the dictionary for spec `spec` supplied by `provider`, REFUSING
+    /// one that is not layout-valid. **The host-facing constructor**: what
+    /// [`Self::call_with_requirements`] points at, and what a host that hand-builds a
+    /// requirement channel should use.
+    ///
+    /// WHY A SPEC ARGUMENT AT ALL, when a dictionary's own functor is its provider: the
+    /// layout is a property of the PAIR (WI-857 — spec half then provider half), so
+    /// `(provider, subs)` alone cannot say whether `subs` is the right number. That is
+    /// the whole of the gap this closes. A dictionary that claims a provider and
+    /// bundles nothing is well-formed as a VALUE and wrong as EVIDENCE, and it used to
+    /// travel until a frame push read a slot that was not there — reported against the
+    /// callee, which is not who built it.
+    ///
+    /// MEASURED as latent, not hypothetical: the one in-tree host
+    /// (`anthill-todo/src/main.rs`) built an arity-0 dictionary for spec
+    /// `WorkItemStore` supplied by `FileBasedWorkitemStore`, and was layout-valid ONLY
+    /// because both chains are empty — the same chain-free-provider accident WI-857
+    /// records as the reason the split went unnoticed. WI-858 (058 phase 7) gives such
+    /// specs real chains, at which point the host learns at CONSTRUCTION instead.
+    ///
+    /// For the VALUE carrier alone — a test of projection or reflection, where the
+    /// pair means nothing — see [`Self::alloc_dictionary_unchecked`].
+    pub fn alloc_dictionary(
+        &mut self,
+        spec: Symbol,
+        provider: Symbol,
+        subs: impl IntoIterator<Item = value::Dictionary>,
+    ) -> Result<value::Dictionary, EvalError> {
+        let subs: smallvec::SmallVec<[value::Dictionary; 2]> = subs.into_iter().collect();
+        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider);
+        if let Some(why) = layout.refuse_arity(&self.kb, subs.len()) {
+            return Err(EvalError::Internal(format!("alloc_dictionary: {why}")));
+        }
+        self.build_dictionary(provider, subs)
+    }
+
+    /// Build `Dictionary(subs…, impl: functor)` with NO layout check — the value
+    /// carrier alone. `None` in a KB with no
     /// `anthill.realization.runtime.Dictionary` to name.
-    pub fn alloc_requirement(
+    ///
+    /// WI-867 — NOT the host constructor; [`Self::alloc_dictionary`] is, and this
+    /// carries `_unchecked` so that reaching for it is a decision. What is unchecked
+    /// is that `subs` is the number the (spec, provider) layout wants, which is what
+    /// makes a dictionary usable as EVIDENCE. Its remaining callers all build a
+    /// dictionary to exercise the value machinery — `Dictionary.impl` reading a
+    /// symbol back, a projection reading slot `k` — where the pair is not a claim
+    /// about any spec and a layout would be a fiction to satisfy.
+    pub fn alloc_dictionary_unchecked(
         &self,
         functor: Symbol,
         requirements: impl IntoIterator<Item = value::Dictionary>,

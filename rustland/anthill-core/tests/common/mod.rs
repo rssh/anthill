@@ -1113,7 +1113,13 @@ pub fn one_goal_carrier_fixture(
 /// WI-1045 — a requirement dictionary `Dictionary(subs…, impl: impl_sym)`, the
 /// one construction path a test has.
 ///
-/// It goes through `Interpreter::alloc_requirement` rather than assembling a
+/// WI-867: the UNCHECKED constructor on purpose — these fixtures drive the value
+/// carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back),
+/// where the (spec, provider) pair is not a claim about any spec and a layout would be
+/// a fiction invented to satisfy. A host building EVIDENCE uses
+/// `Interpreter::alloc_dictionary`, which refuses a wrong-shaped one at construction.
+///
+/// It goes through the interpreter rather than assembling a
 /// `Value::Entity` by hand ON PURPOSE: a test that spelled the functor and the
 /// `impl` key itself would keep passing if the production spelling moved, which
 /// is exactly the drift `dictionary_view_syms` exists to make impossible.
@@ -1126,7 +1132,7 @@ pub fn dict(
     subs: impl IntoIterator<Item = eval::value::Dictionary>,
 ) -> eval::value::Dictionary {
     interp
-        .alloc_requirement(impl_sym, subs)
+        .alloc_dictionary_unchecked(impl_sym, subs)
         .expect("the loaded stdlib declares anthill.realization.runtime.Dictionary")
 }
 
