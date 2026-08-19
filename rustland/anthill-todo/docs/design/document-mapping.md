@@ -209,10 +209,17 @@ value actually in force, since a reader wanting to know whether `Description` is
 
 So `Description` is an `h2` and a feedback entry is an `h3`. `#` is unused: the
 hierarchy runs from `level` downwards and nothing above it has a meaning, so an
-`h1` is refused rather than silently classified. Raising the whole structure by one
-— `Description` becoming an `h1` — is the single fact `DocumentFormat(level: 1)`,
-and it buys one more level of prose depth everywhere at the cost of `h1`-sized
-chapter headings.
+`h1` is refused rather than silently classified.
+
+**`level: 2` is DECIDED, not defaulted.** Raising the structure by one —
+`Description` becoming an `h1` — is the single fact `DocumentFormat(level: 1)`, and
+it buys one more level of prose depth everywhere, which is worth most in a feedback
+entry, where three authored heading levels already fit exactly with nothing to
+spare. It was weighed and declined: an `h1` renders too large for a page carrying
+three or four of them, and four levels of heading nesting inside one feedback entry
+is rare enough not to pay for that. Recorded because the parameter is cheap to
+change *now* and expensive later — every heading in every file shifts, so after the
+migration it is a further full-tree rewrite.
 
 A heading **above** `level` (`#`) is a load error wherever it appears: the
 hierarchy is defined from `level` downwards and nothing above it has a meaning.
