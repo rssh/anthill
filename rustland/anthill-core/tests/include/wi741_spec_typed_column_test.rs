@@ -7,43 +7,55 @@
 //! is not a type of anything at the call site — every rule in the KB that calls `eq`
 //! records the SAME symbol, for variables of unrelated types.
 //!
-//! Two consequences, both fixed here, both measured:
+//! Two consequences, both measured:
 //!
 //!  1. As a relation COLUMN type it is a THIRD spelling of "unknown", alongside the
 //!     `TypeVar` inference wildcard and the raw `Var::Global` WI-714 taught
 //!     `join_column_types` about. The cross-clause lub met it as a rival type and
 //!     reported the column disjoint, so a two-clause relation mixing it with a
 //!     concretely-typed clause failed to LOAD, though both clauses plainly meant
-//!     `String`. `relation_clause_columns` now normalizes it into the raw
-//!     `Var::Global` at the producer, so "unknown" stays spelled ONE way.
+//!     `String`.
 //!
 //!  2. As a var type it CONTRADICTED. `constrain_vid` unified it, and `unify_types`
 //!     resolves the parameter to its ONE shared alias var — so two `eq` calls at
 //!     different carriers in one rule bound that single var twice and the rule was
 //!     declared to have "contradictory variable types". A contradictory rule is
 //!     neither dot-dispatched nor stamped, and for a namespace-level rule the report
-//!     is suppressed, so the loss was silent. A bare parameter now never contradicts
-//!     a concrete type and never overwrites one.
+//!     is suppressed, so the loss was silent.
 //!
-//! WHAT THE NORMALIZATION MUST NOT DESTROY. The parameter answers TWO questions, and
-//! only the first has the answer "nothing": *what type is this column* (nothing), and
-//! *which columns share a type* (a real fact — `rule pair_eq(?x, ?y) :- eq(?x, ?y)`
-//! types both columns at the one `PartialEq.T`, and WI-714's applied type-check threads
-//! that correlation so `pair_eq(5, "s")` is refused). Minting a FRESH var per column
-//! erases it; measured, that broke exactly
+//! ## WI-20260819-9C2PZ REPLACED THE MECHANISM UNDER THESE TESTS
+//!
+//! WI-741 repaired both symptoms while leaving the CONFLATION in place, with two pieces
+//! of code that no longer exist: `relation_clause_columns` normalized a bare parameter
+//! into a variable minted ONE PER PARAMETER SYMBOL (so columns sharing the parameter kept
+//! sharing a variable), and `constrain_vid` carried two arms under which a bare parameter
+//! neither displaced a recorded entry nor contradicted one.
+//!
+//! The callee's parameters are now instantiated with fresh variables PER APPLICATION
+//! (`instantiate_declared_type`), which removes the cause instead of the symptoms, so
+//! both pieces were deleted — the `constrain_vid` arms after being measured unreachable
+//! across the whole corpus. WI-741's own hypothesized fix, "resolve `var_types` through
+//! the substitution `collect_rule_var_types` drops", is also IN now: it was genuinely
+//! unsound while the parameter was shared (it bound the one alias, and would have typed
+//! an `Int64` variable `String`), and per-application instantiation is exactly what makes
+//! it sound.
+//!
+//! WHAT THE REPAIR MUST NOT DESTROY is unchanged and still lives elsewhere: the parameter
+//! answers TWO questions, and only the first has the answer "nothing" — *what type is
+//! this column* (nothing) and *which columns share a type* (a real fact). Minting a FRESH
+//! var per COLUMN erases the second; measured, that broke exactly
 //! `wi714_applied_correlated_columns_reject_contradiction` and
-//! `wi714_applied_unconstrained_column_accepts_and_narrows`, which are the pins that own
-//! this invariant and are not duplicated here. `relation_clause_columns` therefore mints
-//! one var per distinct PARAMETER SYMBOL, so columns that shared the parameter still
-//! share the var.
+//! `wi714_applied_unconstrained_column_accepts_and_narrows`, which own that invariant and
+//! are not duplicated here. A per-APPLICATION mint keeps it (one call, one variable) and
+//! additionally tells two INDEPENDENT calls apart, which a parameter-symbol-keyed mint
+//! could not.
 //!
-//! WI-741's OWN hypothesized fix — resolve `var_types` through the substitution
-//! `collect_rule_var_types` drops — was falsified before any of this was written, by
-//! instrumenting the collector: for `eq(?x, "root")` that substitution is EMPTY (a
-//! literal argument is not a var, so nothing constrains the parameter at all), and
-//! where it is non-empty it holds the ONE shared alias — in the `mix` shape of
-//! `wi741_two_spec_calls_at_different_carriers_do_not_contradict` it binds that alias
-//! to `String`, which would have typed the `Int64` variable `String`.
+//! CONTROLS, RE-MEASURED under the new mechanism (the old ones named deleted code): four
+//! of these seven tests redden when the instantiation is backed out
+//! (`…joins_a_concrete_one`, `…typed_string_not_a_wildcard`, `…drains_its_values`,
+//! `…do_not_contradict`), one when the resolve-through-σ step is
+//! (`…still_out_votes`), and two pass under every back-out by design and say so at their
+//! sites.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
@@ -245,10 +257,10 @@ fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
 
 /// The ticket's shape LOADS, and both clauses are live in the drained relation.
 ///
-/// Back out `relation_clause_columns`' normalization and this fails at LOAD with
-/// "disjoint types for column `x`". Backing out `constrain_vid` alone leaves it
-/// green — `eq(?x, "root")` puts only ONE constraint on `?x`, so there is nothing
-/// for a concrete type to displace; that axis is measured by
+/// CONTROL: back out the per-application instantiation and this fails at LOAD with
+/// "disjoint types for column `x`". It does not redden on the other two halves —
+/// `eq(?x, "root")` puts only ONE constraint on `?x`, so there is nothing for a concrete
+/// type to displace; the resolve-through-σ axis is measured by
 /// [`wi741_a_concretely_typed_clause_still_out_votes`].
 #[test]
 fn wi741_a_spec_typed_column_joins_a_concrete_one() {
@@ -275,13 +287,15 @@ fn wi741_a_spec_typed_column_joins_a_concrete_one() {
 /// parameter to a fresh `Var::Global` makes the clause contribute NO information, and
 /// the lub must then take `String` from the clause that knows.
 ///
-/// `Int64` is the discriminating claim, and it was checked in both directions: a
-/// relation whose column really IS a fresh var (the single-clause `SOLO` shape, whose
-/// one clause is typed only by `eq`) ACCEPTS `List[(x: Int64)]` and loads clean. So a
-/// refusal here can only come from a column that reached a concrete `String`, and this
-/// test would go green on a fix that relaxed the column into a wildcard and stopped.
+/// `Int64` is the discriminating claim. When WI-741 wrote this, the both-directions
+/// check was the single-clause `SOLO` shape ACCEPTING `List[(x: Int64)]`, proving a
+/// column that really is a fresh var admits anything. That cross-check no longer holds
+/// and its retirement is a gain, not a gap: WI-20260819-9C2PZ reads the LITERAL argument
+/// of `eq(?x, "root")`, so `SOLO`'s column reaches a concrete `String` too and now
+/// refuses `Int64` (measured). The claim this test makes stands on its own — a refusal
+/// naming `(x: String)` against `(x: Int64)` cannot come from a wildcard column.
 ///
-/// Backing out `relation_clause_columns` fails it the other way — with the disjoint
+/// CONTROL: back out the instantiation and it fails the other way — with the disjoint
 /// load error, before the citation is ever typed.
 #[test]
 fn wi741_the_joined_column_is_typed_string_not_a_wildcard() {
@@ -296,8 +310,10 @@ fn wi741_the_joined_column_is_typed_string_not_a_wildcard() {
 }
 
 /// The same column drained UNBOUND, values and all: the spec op filters, a rule
-/// subgoal generates. Fails at LOAD without the normalization, for the same reason
-/// as the first test.
+/// subgoal generates.
+///
+/// CONTROL: back out the instantiation and it fails at LOAD, for the same reason as the
+/// first test.
 #[test]
 fn wi741_a_spec_typed_column_drains_its_values() {
     let mut interp = interp_for(GENERATED);
@@ -313,13 +329,14 @@ fn wi741_a_spec_typed_column_drains_its_values() {
 /// A SINGLE-clause spec-typed relation still loads and drains — a no-regression pin on
 /// the path the relaxation reaches but the lub does not.
 ///
-/// THIS TEST PASSES WITH AND WITHOUT EITHER AXIS BACKED OUT, by design, and that null
-/// result is itself the finding: it was written to measure WHERE the normalization
-/// belongs (producer vs. lub), and it showed there is no behavioral difference to
-/// measure. A bare `PartialEq.T` column cites exactly as leniently as a fresh
-/// `Var::Global` one, because a type parameter IS a wildcard to every consumer that
-/// meets it. The producer placement is therefore justified by the invariant it keeps —
-/// one spelling of "unknown" downstream — not by an observable this suite can pin.
+/// THIS TEST PASSES UNDER EVERY BACK-OUT, by design, and that null result is itself the
+/// finding — re-measured under WI-20260819-9C2PZ and still null. It was written to
+/// measure WHERE the "unknown" normalization belongs (producer vs. lub) and showed there
+/// is no behavioral difference to measure: a bare `PartialEq.T` column cites exactly as
+/// leniently as a fresh `Var::Global` one, because a type parameter IS a wildcard to
+/// every consumer that meets it. What it still buys is the only evidence here that a
+/// one-clause spec-typed relation RUNS; every measuring row in this file is a refusal or
+/// a two-clause load.
 #[test]
 fn wi741_a_single_clause_spec_typed_column_still_drains() {
     let mut interp = interp_for(SOLO);
@@ -350,11 +367,16 @@ fn wi741_a_genuinely_disjoint_pair_is_still_loud() {
 /// parameter, `parent.of` then displaces it with `String` — still out-votes an
 /// `Int64` clause, loudly.
 ///
-/// This is the `constrain_vid` axis, and the reason the fix is not just "drop every
-/// parameter". Back out `constrain_vid` and this test FAILS by loading clean: `?x`
-/// keeps `PartialEq.T`, `relation_clause_columns` normalizes it to "unknown", the
-/// clause contributes nothing, and the relation silently becomes `Relation[(x:
-/// Int64)]` — information the producer had, and lost.
+/// This is the axis that says the fix is not just "drop every parameter": the clause
+/// KNOWS `?x` is a `String` and must not lose it.
+///
+/// CONTROL: back out the resolve-through-σ step and this test FAILS by loading clean.
+/// `eq(?x, ?y)` puts both variables on this call's fresh parameter variable and
+/// `parent.of` binds THAT variable to `String` — in the substitution. Unresolved, the
+/// column publishes the bare variable, contributes nothing to the lub, and the relation
+/// silently becomes `Relation[(x: Int64)]` — information the producer had, and lost.
+/// (Under WI-741 the same failure came from backing out `constrain_vid`, which held the
+/// concrete-displaces-parameter rule this now gets from ordinary unification.)
 #[test]
 fn wi741_a_concretely_typed_clause_still_out_votes() {
     let errs = try_load_kb_with(CONCRETE_OUTVOTES)
@@ -368,10 +390,13 @@ fn wi741_a_concretely_typed_clause_still_out_votes() {
 }
 
 /// Two spec calls at different carriers in one rule are NOT a contradiction. The
-/// observable is dot dispatch, which the typer skips for a rule it believes
-/// contradictory: back out `constrain_vid` and `?b.peek()` survives into SLD as a raw
-/// `Expr::DotApply`. The rule is namespace-level, so the contradiction is not
-/// reported — the load stays clean either way and only the dot tells the two apart.
+/// observable is dot dispatch, which the typer only runs for a NON-contradictory rule.
+///
+/// CONTROL: back out the instantiation and `?b.peek()` survives into SLD as a raw
+/// `Expr::DotApply`. The rule is namespace-level, so the contradiction is not reported —
+/// the load stays clean either way and only the dot tells the two apart. (Under WI-741
+/// the same failure came from backing out `constrain_vid`'s never-contradict arm; the
+/// per-application variable makes the unification simply correct instead.)
 #[test]
 fn wi741_two_spec_calls_at_different_carriers_do_not_contradict() {
     let kb = load_kb_with(TWO_CARRIERS);
@@ -381,4 +406,5 @@ fn wi741_two_spec_calls_at_different_carriers_do_not_contradict() {
          neither dispatched nor stamped"
     );
 }
+
 

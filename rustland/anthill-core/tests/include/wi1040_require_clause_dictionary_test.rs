@@ -83,11 +83,14 @@
 //!    the callee's variable is a fresh unbound `Global`, the caller's binding riding
 //!    in `answer_links`. Reaching it is the automatic call-site synthesis (channel
 //!    doc §5) plus §10 item 3.
-//!  * **`an_unbound_carrier_answers_nothing_rather_than_delaying`** — acceptance (d).
+//!  * **`an_unbound_carrier_delays_rather_than_reaching_a_definite_answer`** — acceptance (d).
 //!    The `find_dictionary` goal itself delays correctly, and a woven call whose
 //!    dictionary is unbound now routes to `unify` (which delays on an unevaluated
-//!    call) instead of falling through to a silent no-answer. The CLAUSE still
-//!    answers nothing when the carrier binds only in a LATER goal.
+//!    call) instead of falling through to a silent no-answer. Since
+//!    WI-20260819-9C2PZ the guard also SUSPENDS rather than deciding the requirement
+//!    false — the carried type it used to read was a shared spec parameter, not a type
+//!    of anything at the call — so the clause now yields one INDEFINITE residual. It
+//!    still reaches no DEFINITE answer when the carrier binds only in a LATER goal.
 //!  * **`a_two_supplier_carrier_dispatches_silently_through_the_dictionary`** —
 //!    acceptance (e). Channel doc §4 says a runtime tie is unreachable because
 //!    overlap is refused at typing/load. TRUE for a `provides` overlap; FALSE for
@@ -446,13 +449,37 @@ fn a_clause_dictionary_does_not_cross_a_rule_boundary() {
 /// NAF-decide, WI-067), and a woven call whose dictionary is still unbound routes to
 /// `unify`, which delays on an unevaluated call, instead of falling through to a
 /// silent no-answer. What is missing is the clause-level re-fire: with the carrier
-/// bound only by a LATER body goal, the clause answers nothing.
+/// bound only by a LATER body goal, the clause never reaches a DEFINITE answer.
 ///
 /// The binder is written AFTER the requirement on purpose. With it before, the
 /// carrier is already readable and no delay is entered at all — the test would then
 /// measure nothing, which is exactly what a boundary test must not do.
+///
+/// WI-20260819-9C2PZ MOVED THIS BOUNDARY, and it moved in the direction the three-way
+/// [`FindDictOutcome`] contract asks for. The clause used to answer NOTHING. `?x`'s only
+/// typing source is `Desc.describe(x: T)`, and the typer recorded it at the bare spec
+/// parameter `Desc.T` — a symbol every `describe` call in the KB shares — which WI-603
+/// stamped onto the variable occurrence and `witness_arg_types` then read back as the
+/// carried type. `sort_functor_of_view` answered `Desc.T`, a perfectly readable nominal
+/// head that provides nothing, so the guard decided `DontFire`: a requirement decided
+/// FALSE off an under-determined binding, which is the one thing `FindDictOutcome`'s own
+/// doc says it must never do. Per-application instantiation makes that stamp a fresh
+/// unbound variable, which is headless, so the guard now SUSPENDS as designed and the
+/// clause yields one INDEFINITE residual.
+///
+/// So the assertion moved from "no answers" to "one answer, and it is not definite", and
+/// the test was RENAMED with it — the old name asserted the opposite of what it now
+/// measures. Closing acceptance (d) — the clause-level re-fire — must change it again, to
+/// a single DEFINITE `7`.
+///
+/// HOW MANY OTHER GUARDS FLIPPED: exactly none, measured rather than reasoned. With
+/// `guard_over_arg_types` instrumented, every `find_dictionary` guard outcome across the
+/// whole `wi_tests` corpus was compared before and after; the two censuses are identical
+/// except for THIS fixture, whose one `DontFire` became a `Suspend` (twice, the suspended
+/// goal being re-entered). Nothing else in the corpus reaches a guard through a
+/// spec-parameter-typed witness argument.
 #[test]
-fn an_unbound_carrier_answers_nothing_rather_than_delaying() {
+fn an_unbound_carrier_delays_rather_than_reaching_a_definite_answer() {
     let ns = "test.wi1040.delay";
     let src = program(
         ns,
@@ -460,9 +487,17 @@ fn an_unbound_carrier_answers_nothing_rather_than_delaying() {
            rule via(?x, ?r) :- require[Desc[T]], Desc.describe(?x, ?r), shape(?x)\n  \
            rule answer(?r) :- via(?x, ?r)\n",
     );
+    let got = answers(ns, &src);
+    assert_eq!(
+        got.len(),
+        1,
+        "the suspended guard leaves exactly one residual, got {got:?}",
+    );
     assert!(
-        answers(ns, &src).is_empty(),
-        "PINS a boundary: closing acceptance (d) must change this to `7`",
+        !got[0].1,
+        "PINS a boundary: the residual is INDEFINITE — the guard suspended rather than \
+         deciding the requirement false. Closing acceptance (d) must change this to a \
+         DEFINITE `7`; got {got:?}",
     );
 }
 

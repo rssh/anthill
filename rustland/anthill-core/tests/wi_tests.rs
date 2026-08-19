@@ -68,6 +68,9 @@ mod wi714_recursive_relation_test;
 #[path = "include/wi741_spec_typed_column_test.rs"]
 mod wi741_spec_typed_column_test;
 
+#[path = "include/wi_9c2pz_per_application_type_params_test.rs"]
+mod wi_9c2pz_per_application_type_params_test;
+
 #[path = "include/wi738_operand_call_delay_test.rs"]
 mod wi738_operand_call_delay_test;
 

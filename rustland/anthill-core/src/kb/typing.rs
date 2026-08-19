@@ -7565,32 +7565,23 @@ pub(crate) fn rule_head_var_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<(SlotK
 /// entity-field positions (`collect_rule_var_types`, keyed by DeBruijn index), else a
 /// fresh type var (an unconstrained column).
 ///
-/// WI-741 — "ELSE" COVERS THE UNINSTANTIATED PARAMETER TOO. A column whose only typing
-/// source is a SPEC operation takes that spec's own parameter verbatim (`rule named(?x)
-/// :- eq(?x, "root")` records `anthill.prelude.PartialEq.T`, a `Term::Ref` to the
-/// parameter symbol — see [`bare_type_param_symbol`]). That is the ABSENCE of a column
-/// type, not a column type, so it is normalized here into the raw `Var::Global` spelling
-/// a column with no entry at all gets. That keeps "unknown" spelled ONE way downstream:
-/// [`join_column_types`] needs a single recognizer, and the cross-clause lub takes the
-/// type from the clause that knows instead of reporting the column disjoint against it.
+/// WI-9C2PZ — "ELSE" IS NOW THE WHOLE STORY, because the inferred type is already the
+/// right thing. A column typed only by a SPEC operation used to take that spec's own
+/// parameter verbatim (`rule named(?x) :- eq(?x, "root")` recorded
+/// `anthill.prelude.PartialEq.T`, the symbol every `eq` in the KB shares), which is the
+/// ABSENCE of a column type rather than a column type — so WI-741 normalized it here into
+/// a variable, minting ONE per distinct PARAMETER SYMBOL so that columns which shared the
+/// parameter still shared a variable.
 ///
-/// ONE VAR PER PARAMETER, NOT ONE PER COLUMN — the parameter answers TWO questions and
-/// only the first has the answer "nothing": *what type is this column* (nothing) and
-/// *which columns share a type* (a fact). `rule pair_eq(?x, ?y) :- eq(?x, ?y)` types
-/// both columns at the one `PartialEq.T`, and the applied type-check threads ONE
-/// substitution through the columns so `pair_eq(5, "s")` is refused and `rel(5)` narrows
-/// its sibling column to `Int64`. A per-column fresh var erases that; measured, it broke
-/// exactly `wi714_applied_correlated_columns_reject_contradiction` and
-/// `wi714_applied_unconstrained_column_accepts_and_narrows`, which own the invariant.
-/// Keying the minted var on the parameter SYMBOL answers question two unchanged while
-/// answering question one honestly.
-///
-/// Normalizing HERE rather than waving the parameter through at the lub (WI-741's own
-/// "narrower framing") buys no behavior: measured, a single-clause relation publishing
-/// `Relation[(x: PartialEq.T)]` cites just as leniently as one publishing a var, because
-/// a type parameter is itself a wildcard to every consumer that meets it
-/// (`is_type_param_value`). It buys the INVARIANT — one spelling of "unknown" leaves
-/// this function, so no downstream reader has to learn a second one.
+/// [`instantiate_declared_type`] now mints that variable at the CALL instead, which is
+/// both earlier and sharper: `rule pair_eq(?x, ?y) :- eq(?x, ?y)` still puts both columns
+/// on one variable (one call, one instantiation — the correlation
+/// `wi714_applied_correlated_columns_reject_contradiction` and
+/// `wi714_applied_unconstrained_column_accepts_and_narrows` own), while two INDEPENDENT
+/// `eq` calls now get two, which the parameter-keyed mint could not express — it keyed on
+/// a symbol shared by every call in the KB. So "unknown" still leaves this function spelled
+/// exactly one way, and the normalization that guaranteed it is gone because nothing
+/// arrives needing it.
 fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseColumn> {
     let head = match kb.rule_head_value(rid).clone() {
         Value::Term { id, .. } => id,
@@ -7601,29 +7592,12 @@ fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseCol
     let type_bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
     let slots = rule_head_var_slots(kb, rid);
     let mut columns: Vec<ClauseColumn> = Vec::with_capacity(slots.len());
-    // WI-741 — ONE var per distinct PARAMETER, not one per column. See the note above:
-    // the parameter says nothing about the column's TYPE but everything about which
-    // columns share one, and the applied type-check threads exactly that correlation.
-    let mut param_vars: HashMap<Symbol, Value> = HashMap::new();
     for (slot, name, d) in slots {
         // Split before the chain so the immutable read of `var_types` is finished
         // before the `&mut kb` arms below.
         let inferred = var_types.get(&d).cloned();
-        let param = inferred.as_ref().and_then(|t| bare_type_param_symbol(kb, t));
         let ty = if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
             Value::term(*t)
-        } else if let Some(p) = param {
-            match param_vars.get(&p) {
-                Some(v) => v.clone(),
-                None => {
-                    // Named for the parameter, not the column: the var stands for the
-                    // PARAMETER, and the next column that shares it gets this same one.
-                    let fresh = kb.fresh_var(p);
-                    let v = Value::term(kb.alloc(Term::Var(Var::Global(fresh))));
-                    param_vars.insert(p, v.clone());
-                    v
-                }
-            }
         } else if let Some(t) = inferred {
             t
         } else {
@@ -57390,9 +57364,46 @@ fn collect_rule_var_types(
 ) -> (HashMap<u32, Value>, bool) {
     let mut subst = Substitution::new();
     let mut var_types: HashMap<u32, Value> = HashMap::new();
-    collect_term_type_constraints(kb, head, &mut var_types, &mut subst);
+    // WI-9C2PZ — which entries are a CALL's placeholder rather than a statement about the
+    // variable. Lives for the collection and is dropped with it; see [`constrain_vid`].
+    let mut param_backed: ParamBackedVars = HashSet::new();
+    collect_term_type_constraints(kb, head, &mut var_types, &mut param_backed, &mut subst);
     for node in body_nodes {
-        collect_occurrence_type_constraints(kb, node, &mut var_types, &mut subst);
+        collect_occurrence_type_constraints(
+            kb,
+            node,
+            &mut var_types,
+            &mut param_backed,
+            &mut subst,
+        );
+    }
+    // WI-9C2PZ — RESOLVE THE MAP THROUGH THE SUBSTITUTION IT BUILT, which until now was
+    // collected and dropped. `rule r(?x, ?y) :- eq(?x, ?y), parent(of: ?x, is: ?)`
+    // records both variables at this call's instantiation of `PartialEq.T` and then
+    // binds that variable to `String` from `parent.of` — so the answer for `?y` is in
+    // the substitution and nowhere else, and without this step `?y` stays an unknown
+    // though `eq` forces it equal to a `String`.
+    //
+    // WI-741 CALLED THIS EXACT STEP UNSOUND AND WAS RIGHT AT THE TIME: with the
+    // parameter uninstantiated, the variable it bound was the ONE alias every `eq` in
+    // the rule shared, so resolving through it typed an `Int64` variable `String`
+    // (measured, in the `mix` shape of
+    // `wi741_two_spec_calls_at_different_carriers_do_not_contradict`). Per-application
+    // instantiation is what makes the binding local to the call that made it, and
+    // therefore what makes this sound. The two halves ship together for that reason.
+    //
+    // UNCONDITIONAL, including for a contradictory rule. Skipping it there was the first
+    // cut and /code-review caught the asymmetry it created: [`relation_clause_columns`]
+    // publishes a clause's columns whether or not the rule is contradictory, so one clause
+    // of a relation would publish RAW column types while its siblings published resolved
+    // ones — the inheritance silently not applying to that clause alone. There is nothing
+    // to protect against either: a failed unification records no binding, so what σ holds
+    // is exactly the agreements that were reached.
+    if std::env::var("NO_RESOLVE_9C2PZ").is_err() {
+        for ty in var_types.values_mut() {
+            let (resolved, _) = super::node_occurrence::subst_value_type(kb, ty, &subst);
+            *ty = resolved;
+        }
     }
     (var_types, subst.is_contradiction())
 }
@@ -57403,6 +57414,7 @@ fn collect_term_type_constraints(
     kb: &mut KnowledgeBase,
     term: TermId,
     var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
     match kb.get_term(term) {
@@ -57416,14 +57428,28 @@ fn collect_term_type_constraints(
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
 
-            // Try to get expected types from operation params or entity fields
+            // Try to get expected types from operation params or entity fields.
+            // WI-9C2PZ: ONE [`ParamInstantiation`] per application, so the callee's own
+            // type parameters are correlated across THIS call's arguments and shared
+            // with no other call.
+            let mut inst = ParamInstantiation::new();
             if let Some(op) = lookup_operation_info_full(kb, functor) {
                 // Operation call: match args to param types
                 for (i, &arg) in pos_args.iter().enumerate() {
                     // WI-341 Stage A: seed inference from the param type
                     // carrier-agnostically (a `Value::Node` callback-arrow param too).
                     if let Some((_, param_type)) = op.params.get(i) {
-                        constrain_var_type(kb, arg, param_type, var_types, subst);
+                        let (param_type, instantiated) =
+                            instantiate_declared_type(kb, param_type, &mut inst);
+                        constrain_arg_type(
+                            kb,
+                            arg,
+                            &param_type,
+                            instantiated,
+                            var_types,
+                            param_backed,
+                            subst,
+                        );
                     }
                 }
             } else if let Some(field_types) = kb.entity_field_types(functor) {
@@ -57434,21 +57460,307 @@ fn collect_term_type_constraints(
                         let arg_tid = *arg_tid;
                         // WI-341 Stage A: field type is a carrier-agnostic `Value` —
                         // constrain directly, no re-grounding to a term.
-                        constrain_var_type(kb, arg_tid, field_type, var_types, subst);
+                        let (field_type, instantiated) =
+                            instantiate_declared_type(kb, field_type, &mut inst);
+                        constrain_arg_type(
+                            kb,
+                            arg_tid,
+                            &field_type,
+                            instantiated,
+                            var_types,
+                            param_backed,
+                            subst,
+                        );
                     }
                 }
             }
 
             // Recurse into subterms
             for &arg in pos_args.iter() {
-                collect_term_type_constraints(kb, arg, var_types, subst);
+                collect_term_type_constraints(kb, arg, var_types, param_backed, subst);
             }
             for &(_, arg) in named_args.iter() {
-                collect_term_type_constraints(kb, arg, var_types, subst);
+                collect_term_type_constraints(kb, arg, var_types, param_backed, subst);
             }
         }
         _ => {}
     }
+}
+
+
+/// WI-9C2PZ — ONE APPLICATION's instantiation of the type parameters its callee's
+/// signature binds: canonical parameter variable (`VarId::raw()`) → the fresh variable
+/// THIS call site stands it up as.
+///
+/// Per APPLICATION, not per parameter position, which is the whole point: `eq(?x, ?y)`
+/// declares both arguments at one `T`, so both must land on ONE fresh variable and stay
+/// correlated, while the NEXT `eq` in the same rule body gets a different one and is
+/// independent.
+///
+/// Usually empty and allocated lazily for that reason — a concrete signature
+/// (`parent(of: String, is: String)`, `Int64.lt(a: Int64, b: Int64)`) mentions no
+/// parameter and mints nothing.
+type ParamInstantiation = HashMap<u32, TermId>;
+
+/// WI-9C2PZ — the variables whose recorded type came from a callee's INSTANTIATED
+/// PARAMETER, i.e. from a call, rather than from a declared position of the variable
+/// itself.
+///
+/// The distinction decides who owns a disagreement, and getting it wrong loses a located
+/// error. `var_types` answers "what do this variable's own positions say"; a per-call
+/// parameter says nothing about the variable and is recorded only as a placeholder — so
+/// when a declared position arrives it takes over, and when the two cannot be reconciled
+/// the fault is the CALL's, not the variable's. See [`constrain_vid`].
+type ParamBackedVars = HashSet<u32>;
+
+/// WI-9C2PZ — the canonical type-parameter VARIABLE a declared-type node denotes, if it
+/// denotes one.
+///
+/// The question is NOT "does this look like a type parameter" but "is this a VARIABLE
+/// that [`walk_type`] collapses into one canonical identity KB-wide" — because that
+/// collapse is exactly the conflation being repaired, so its set is exactly the set to
+/// instantiate. Two spellings reach it and both answer here: a parameter already stored
+/// as a `Var::Global` (an operation's bracket parameter, WI-1082's elaborated self
+/// slot), and one written as its NAME (`T`, `List.T`), which the loader records against
+/// its canonical variable through the WI-954 channel [`type_param_global_var`] reads.
+///
+/// A name with NO canonical variable — a namespace-level opaque `sort Term = ?` — is
+/// `None`, and that is a real distinction rather than a miss: it denotes a rigid abstract
+/// type, one thing for every reader, so nothing about it conflates and instantiating it
+/// would DESTROY information. `walk_type` leaves it alone for the same reason.
+///
+/// A HIGHER-KINDED PARAMETER IN FUNCTOR POSITION (`M[T = A]`, where `M` is the `Monad`
+/// spec's own parameter — `stdlib/anthill/prelude/delay.anthill` writes it) is likewise
+/// `None`, and it is the one spelling this cannot reach. Raised by /code-review; the
+/// answer is that there is nothing to reach: `Term::Fn`'s functor is a `Symbol`, not a
+/// child term, so no variable is representable there — and `walk_type` does not collapse
+/// it either (its `extract_sort_ref_sym` answers `None` for a parameterized type and it
+/// returns the term unchanged), so the position never conflates in the first place. The
+/// ARGUMENTS of such a type are ordinary children and ARE instantiated. Reaching the
+/// functor would take a representation change, not a wider predicate here.
+///
+/// THE FUNCTOR OF A PARAMETERIZED TYPE IS NOT REACHED, and that is a representation limit
+/// rather than an omission (found by /code-review). `Monad.flatMap(m: M[T = A], …)` writes
+/// its own parameter `M` in the functor position of a `Term::Fn`, which holds a `Symbol`
+/// — there is no term there for a variable to occupy, so a higher-kinded parameter cannot
+/// be instantiated in this spelling at all. Nothing conflates through it either:
+/// `walk_type` reaches its collapse only via `extract_sort_ref_sym`, which answers `None`
+/// for anything parameterized, so `M` is left as itself on both paths. The type's
+/// ARGUMENTS are ordinary types and are instantiated normally. Making the functor
+/// instantiable is a change to `Term::Fn`, not to this function.
+///
+/// THE TWO CHANNELS AGREE, MEASURED rather than argued. `walk_type` decides "this name is
+/// a variable" by `is_sort_param_symbol` plus a `resolve_sort_alias` target that IS a
+/// `Var::Global`; this reads the WI-954 canonical map instead, which WI-954 made the
+/// single channel precisely so that route would stop being re-derived. A name the first
+/// test accepts and the map does not answer for would be a residual conflation, so it was
+/// counted: instrumented across the whole `wi_tests` corpus (3151 tests, full stdlib plus
+/// every fixture), ZERO names diverged.
+fn declared_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
+    match kb.get_term(t) {
+        Term::Var(Var::Global(v)) => Some(*v),
+        Term::Ref(sym) | Term::Ident(sym) => type_param_global_var(kb, *sym),
+        // WI-359: a bare parameter name also surfaces as a nullary `Fn` — the third
+        // spelling WI-359 records for a bare parameter name, for the same reason.
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => type_param_global_var(kb, *functor),
+        _ => None,
+    }
+}
+
+/// WI-9C2PZ — does `t` mention anything [`instantiate_declared_term`] would rewrite?
+///
+/// A NON-ALLOCATING pre-scan, and it earns its place: the rewrite has to clone a `Fn`'s
+/// argument vectors to release the `kb` borrow before recursing, so without this gate
+/// every concrete parameter type in every rule-body call would pay a rebuild to produce
+/// itself. Measured on a full stdlib load, the large majority of declared parameter /
+/// field types mention no parameter at all (`String`, `Int64`, `List[Term]`).
+fn declared_type_mentions_param(kb: &KnowledgeBase, t: TermId) -> bool {
+    if declared_type_param_var(kb, t).is_some() {
+        return true;
+    }
+    match kb.get_term(t) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            pos_args.iter().any(|&a| declared_type_mentions_param(kb, a))
+                || named_args
+                    .iter()
+                    .any(|&(_, a)| declared_type_mentions_param(kb, a))
+        }
+        _ => false,
+    }
+}
+
+/// WI-9C2PZ — the fresh variable `inst` stands `canonical` up as, minted on first use.
+///
+/// Named after the parameter it instantiates, so a diagnostic reading the resulting type
+/// still says `?T` rather than an anonymous id.
+fn instantiated_param_var(
+    kb: &mut KnowledgeBase,
+    canonical: VarId,
+    inst: &mut ParamInstantiation,
+) -> TermId {
+    if let Some(t) = inst.get(&canonical.raw()) {
+        return *t;
+    }
+    let v = kb.fresh_var(canonical.name());
+    let t = kb.alloc(Term::Var(Var::Global(v)));
+    inst.insert(canonical.raw(), t);
+    t
+}
+
+/// WI-9C2PZ — [`instantiate_declared_type`]'s term half: rebuild `t` with every type
+/// parameter it mentions replaced by this application's fresh variable for it.
+fn instantiate_declared_term(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    inst: &mut ParamInstantiation,
+) -> TermId {
+    if let Some(canonical) = declared_type_param_var(kb, t) {
+        return instantiated_param_var(kb, canonical, inst);
+    }
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(t)
+    else {
+        return t;
+    };
+    let functor = *functor;
+    let pos_args = pos_args.clone();
+    let named_args = named_args.clone();
+    let pos_args: SmallVec<[TermId; 4]> = pos_args
+        .into_iter()
+        .map(|a| instantiate_declared_term(kb, a, inst))
+        .collect();
+    let named_args: SmallVec<[(Symbol, TermId); 2]> = named_args
+        .into_iter()
+        .map(|(k, a)| (k, instantiate_declared_term(kb, a, inst)))
+        .collect();
+    kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    })
+}
+
+/// WI-9C2PZ — a callee's declared parameter / field type with ITS OWN type parameters
+/// instantiated by `inst`, so what this call site records is a type of something HERE.
+///
+/// WHAT WAS WRONG WITHOUT IT. [`collect_rule_var_types`] reads the declared type straight
+/// out of the signature, and every written occurrence of one parameter denotes ONE
+/// canonical variable KB-wide (WI-954). So every `eq` call in every rule in the KB
+/// recorded the same `anthill.prelude.PartialEq.T` — for variables of unrelated types.
+/// WI-741 made that survivable (a bare parameter neither displaces nor contradicts a
+/// concrete type, and [`relation_clause_columns`] normalized it to a variable keyed BY
+/// THE PARAMETER SYMBOL so column correlation survived) without touching the conflation
+/// itself, which cost three things: two independent calls were treated as ONE correlation
+/// class (`rule twoeq(?x, ?n) :- gen(?x, ?n), eq(?x, "a"), eq(?n, 1)` gave its two columns
+/// one variable, so the CORRECT citation `twoeq("a", 1)` was refused); a variable forced
+/// equal to a concrete one did not inherit its type; and which correlation class a
+/// variable joined was decided by whichever parameter reached it first.
+///
+/// Instantiating per application retires all three at the producer, and retires WI-741's
+/// two special cases with them: a per-call variable is an ordinary unification variable,
+/// so [`constrain_vid`] can just unify. That unification is where `eq(?x, ?y), parent(of:
+/// ?x, is: ?)` learns that BOTH variables are `String` — but it learns it into the
+/// SUBSTITUTION, so the answer only reaches `var_types` because
+/// [`collect_rule_var_types`] now resolves the map through it. The two halves are one
+/// change and neither is separately correct; the measurement is at
+/// `wi_9c2pz_per_application_type_params_test`'s control table.
+///
+/// The second half of the answer is WHETHER anything was instantiated — the gate on
+/// [`constrain_literal_arg`]'s channel. It is threaded rather than re-derived by walking
+/// the result for variables: the two questions have the same answer (after this runs, a
+/// declared type carries a flexible variable exactly when this call minted one for it),
+/// and only the threaded one says which question is being asked.
+///
+/// A `Value::Node` type carrier goes through the shared σ walk rather than the term
+/// rebuild — the same [`super::node_occurrence::subst_value_type`] that
+/// [`instantiate_poly_type`] freshens a ∀'s binders with, and for its reason: a
+/// hand-rolled Node walk drifts from the σ every other rewriter uses.
+///
+/// NOTHING DRIVES THAT ARM, and saying so is better than letting the green suite imply
+/// otherwise. Instrumented across the whole `wi_tests` corpus, a Node-carried declared
+/// type reached here exactly TWICE, both times carrying zero variables — so both took the
+/// early return and the freshening below has never run. Two bounds follow and neither is
+/// a silent skip: the arm is written for the case rather than verified on it, and it
+/// reaches the VARIABLE spelling ONLY — a parameter NAME nested inside a Node-carried type
+/// (an arrow parameter's `S`, say) would not be reached, and would stay conflated as it is
+/// today. Both become live together, when the WI-342 P4 producers start handing this
+/// collector Node-carried parameterized types; the population to re-measure is this
+/// counter.
+fn instantiate_declared_type(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    inst: &mut ParamInstantiation,
+) -> (Value, bool) {
+    if std::env::var("NO_INST_9C2PZ").is_ok() {
+        return (ty.clone(), false);
+    }
+    match ty {
+        Value::Term { id, .. } => {
+            if !declared_type_mentions_param(kb, *id) {
+                return (ty.clone(), false);
+            }
+            (Value::term(instantiate_declared_term(kb, *id, inst)), true)
+        }
+        _ => {
+            let mut vars: Vec<VarId> = Vec::new();
+            let mut seen = HashSet::new();
+            super::node_occurrence::collect_value_type(kb, ty, &mut vars, &mut seen);
+            if vars.is_empty() {
+                return (ty.clone(), false);
+            }
+            let mut sigma = Substitution::new();
+            for v in vars {
+                let t = instantiated_param_var(kb, v, inst);
+                sigma.bind_term(kb, v, t);
+            }
+            (
+                super::node_occurrence::subst_value_type(kb, ty, &sigma).0,
+                true,
+            )
+        }
+    }
+}
+
+/// WI-9C2PZ — term-side twin of [`constrain_occ_arg_type`]: [`constrain_var_type`] for a
+/// variable, plus the LITERAL channel. Kept in step with its occurrence sibling on
+/// purpose — the two walkers ask the same question of the same declarations, and a
+/// channel present in only one of them is exactly the drift the twinning exists to
+/// prevent. Both delegate the literal half to [`constrain_literal_arg`], which states the
+/// gate once.
+fn constrain_arg_type(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    expected_type: &Value,
+    instantiated: bool,
+    var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
+    subst: &mut Substitution,
+) {
+    if let Term::Const(lit) = kb.get_term(term) {
+        let lit = lit.clone();
+        constrain_literal_arg(kb, &lit, expected_type, instantiated, subst);
+        return;
+    }
+    constrain_var_type(
+        kb,
+        term,
+        expected_type,
+        instantiated,
+        var_types,
+        param_backed,
+        subst,
+    );
 }
 
 /// If `term` is a variable, record that it should have `expected_type`.
@@ -57457,7 +57769,9 @@ fn constrain_var_type(
     kb: &mut KnowledgeBase,
     term: TermId,
     expected_type: &Value,
+    from_param: bool,
     var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
     let vid = match kb.get_term(term) {
@@ -57465,54 +57779,15 @@ fn constrain_var_type(
         Term::Var(Var::DeBruijn(idx)) => *idx,
         _ => return,
     };
-    constrain_vid(kb, vid, expected_type, var_types, subst);
-}
-
-/// WI-741 — is this collected var type an UNINSTANTIATED type PARAMETER: the
-/// parameter symbol copied verbatim out of an operation's signature, rather than a
-/// type of anything at this call site?
-///
-/// [`collect_rule_var_types`] records a var's expected type by reading the declared
-/// param / field type STRAIGHT out of the signature — it never instantiates. So a
-/// spec operation's own parameter arrives as itself: `eq(?x, "root")` records `?x` at
-/// `anthill.prelude.PartialEq.T`. That symbol names no type here; every rule in the KB
-/// that calls `eq` records the SAME symbol, for variables of unrelated types.
-///
-/// The head-only test is deliberate. A parameterized type that merely MENTIONS a
-/// parameter (`List[T]`) still says the var is a `List`, which is information; only a
-/// BARE parameter says nothing.
-fn is_uninstantiated_type_param(kb: &KnowledgeBase, ty: &Value) -> bool {
-    bare_type_param_symbol(kb, ty).is_some()
-}
-
-/// WI-741 — the type-parameter SYMBOL a collected var type names outright, if it names
-/// one: `Some(anthill.prelude.PartialEq.T)` for the `Ref` / `Ident` / nullary-`Fn`
-/// spellings of a bare sort parameter ([`is_sort_param_symbol`]), `None` otherwise.
-///
-/// A raw `Term::Var` answers `None` even though [`is_type_param_value`] calls it a
-/// parameter, and that difference is the whole point of having this rather than reusing
-/// that predicate: a var already IS the normalized "unknown", already carries its own
-/// identity, and re-keying it would erase the very correlation the symbol answer exists
-/// to preserve.
-fn bare_type_param_symbol(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
-    let Value::Term { id, .. } = ty else {
-        // A `Value::Node` type carrier (WI-342 P4) is an occurrence-borne type; no
-        // producer mints a BARE parameter through one today, and answering `None`
-        // keeps the status quo for it rather than silently widening the test.
-        return None;
-    };
-    let sym = match kb.get_term(*id) {
-        Term::Ref(sym) | Term::Ident(sym) => *sym,
-        // WI-359: a bare parameter name also surfaces as a nullary `Fn` — the same
-        // three spellings [`is_type_param_value`] accepts, minus its `Term::Var` arm.
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => *functor,
-        _ => return None,
-    };
-    is_sort_param_symbol(kb, sym).then_some(sym)
+    constrain_vid(
+        kb,
+        vid,
+        expected_type,
+        from_param,
+        var_types,
+        param_backed,
+        subst,
+    );
 }
 
 /// Shared core of `constrain_var_type` / `constrain_occ_var_type`: record the
@@ -57520,65 +57795,75 @@ fn bare_type_param_symbol(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
 /// raw id / De Bruijn idx — the same key space for a rule's head term and its
 /// body occurrences, both closed against the same `vars`).
 ///
-/// WI-741 — AN UNINSTANTIATED TYPE PARAMETER IS NOT A RIVAL TYPE. It never displaces a
-/// recorded entry — not a concrete one, and not another parameter — and never
-/// contradicts one; a concrete type displaces IT. One rule, so the outcome does not
-/// depend on the order the goals are walked in.
-/// It is still RECORDED when it is the only thing known about the var, rather than
-/// dropped. Measured — dropping it instead fails 57 of the 74 WI-714 tests, in two
-/// distinct ways:
+/// WI-9C2PZ — A PER-CALL PARAMETER IS A PLACEHOLDER, NOT A STATEMENT ABOUT THE VARIABLE,
+/// and the two arms below are what that costs. Every position is UNIFIED now (WI-741's
+/// "a bare parameter never unifies" arms are gone — they existed because the parameter
+/// was one variable shared by every call in the KB, and [`instantiate_declared_type`]
+/// removed that), but two things still turn on where a type came from:
 ///
-///   * most of them on `ambiguous dispatch of anthill.prelude.PartialEq.eq: 53
-///     instances provide PartialEq and the call selects none`. The entry is the
-///     RECEIVER TYPE the spec-op dispatch reads; "abstract" is a usable answer there
-///     and no entry at all is not.
-///   * `wi714_applied_correlated_columns_reject_contradiction` on the other axis: the
-///     entry is also what says "these two variables share a type", which
-///     [`relation_clause_columns`] carries into the columns.
+///   * A DECLARED position TAKES OVER from a parameter placeholder. `var_types` answers
+///     "what do this variable's own positions say", and a callee's parameter says
+///     nothing — it is recorded so the correlation survives (`eq(?x, ?y)` puts both
+///     variables on one variable), not as an answer.
+///   * A DISAGREEMENT INVOLVING A PARAMETER IS THE CALL'S FAULT, NOT THE VARIABLE'S, so
+///     it must NOT set `subst.contradiction`. That flag makes [`type_rule_bodies`] skip
+///     the rule entirely — no dispatch, no WI-603 stamping, and for a namespace-level
+///     rule no report at all — which SUPPRESSES the located error the ordinary call
+///     check would raise. MEASURED, three shapes, all found by /code-review after the
+///     first cut set the flag unconditionally:
 ///
-/// So the parameter is not noise to be suppressed — it is the only channel these two
-/// readers have. What WI-741 changes is who wins when a CONCRETE type also exists.
+///     | rule | before | first cut |
+///     |---|---|---|
+///     | `row(a: ?a, s: ?s), eq(?a, ?s)` | `eq.b (op-arg): expected Int64, got String` | LOADS CLEAN |
+///     | `holder(f: ?f), eq(?f, 0)` | `eq.b (op-arg): expected Float, got Int64` | LOADS CLEAN |
+///     | `eq(?x, "s"), scored(pts: ?x)` | `eq.b (op-arg): expected Int64, got String` | LOADS CLEAN |
 ///
-/// Unifying it instead was a FALSE CONTRADICTION, measured: in
-/// `rule mix(?x, ?n) :- eq(?x, ?s), parent(of: ?x, is: ?s), eq(?n, ?m), scored(who: ?s, pts: ?m)`
-/// all four vars were recorded at the ONE shared `PartialEq.T`, whose alias var
-/// [`unify_types`] then bound to `String` from the first pair — so `?m`'s honest
-/// `Int64` came back incomparable and the whole rule was declared to have
-/// "contradictory variable types". A contradictory rule is neither dot-dispatched nor
-/// stamped, so the cost was silent for a namespace-level rule.
+///     The third is why the test is on the RECORD's provenance and not just on this
+///     call's: the placeholder was pinned to `String` by a literal, and it is the
+///     `scored` position arriving afterwards that must take over so the `eq` call is
+///     still checked against `Int64`.
 ///
-/// This is also why WI-741's own hypothesized fix — resolve `var_types` through the
-/// substitution this function builds — is unsound and was NOT taken: that
-/// substitution binds the ONE shared parameter alias, so it would have typed `?m`
-/// `String`.
+/// What still sets the flag is what always did and what nothing else reports: two
+/// DECLARED positions of one variable that disagree (`parent(of: ?x, is: ?), scored(who:
+/// ?, pts: ?x)`). Entity constructors in goal position are not calls, so no located check
+/// covers them — measured, that shape loads clean at namespace level on both trees.
 fn constrain_vid(
     kb: &mut KnowledgeBase,
     vid: u32,
     expected_type: &Value,
+    from_param: bool,
     var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
-    match var_types.get(&vid) {
-        // Nothing known yet — record whatever we have, parameter included.
-        None => {
-            var_types.insert(vid, expected_type.clone());
+    let Some(existing) = var_types.get(&vid).cloned() else {
+        // Nothing known yet — record what this position says.
+        var_types.insert(vid, expected_type.clone());
+        if from_param {
+            param_backed.insert(vid);
         }
-        // A BARE PARAMETER NEVER DISPLACES A RECORDED ENTRY. It carries no type, so it
-        // cannot out-rank one; and it must not out-rank ANOTHER parameter either,
-        // because which parameter a var holds decides which correlation class it joins
-        // (see [`relation_clause_columns`]) — so a second parameter silently moving the
-        // var to its own class would be a coin-flip on the goal walk's order. This arm
-        // stands FIRST so that reading holds for a parameter meeting a parameter too.
-        Some(_) if is_uninstantiated_type_param(kb, expected_type) => {}
-        // Known abstractly, now known concretely: the concrete type wins outright.
-        Some(existing) if is_uninstantiated_type_param(kb, existing) => {
-            var_types.insert(vid, expected_type.clone());
-        }
-        Some(existing) => {
-            if !unify_types(kb, subst, existing, expected_type) {
-                subst.contradiction = true;
-            }
-        }
+        return;
+    };
+    let mut existing_from_param = param_backed.contains(&vid);
+    let mut from_param = from_param;
+    if std::env::var("FIRST_CUT_9C2PZ").is_ok() {
+        existing_from_param = false;
+        from_param = false;
+    }
+    // Unify either way: that is what binds a call's parameter to the variable's concrete
+    // type, so a SIBLING argument of the same call inherits it.
+    if !unify_types(kb, subst, &existing, expected_type)
+        && !from_param
+        && !existing_from_param
+    {
+        subst.contradiction = true;
+    }
+    // A declared position takes over from a placeholder — including when the two just
+    // disagreed, because the declared type is what the variable is and recording it is
+    // what leaves the offending CALL checkable.
+    if !from_param && existing_from_param {
+        var_types.insert(vid, expected_type.clone());
+        param_backed.remove(&vid);
     }
 }
 
@@ -57598,6 +57883,7 @@ fn collect_occurrence_type_constraints(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
     // WI-298: descend into Pattern children so a var living in a pattern's
@@ -57606,7 +57892,7 @@ fn collect_occurrence_type_constraints(
     // `node_to_debruijn` and `collect_occurrence_global_vars_ordered`.
     if occ.as_pattern().is_some() {
         for_each_pattern_child(occ, |c| {
-            collect_occurrence_type_constraints(kb, c, var_types, subst)
+            collect_occurrence_type_constraints(kb, c, var_types, param_backed, subst)
         });
         return;
     }
@@ -57618,7 +57904,7 @@ fn collect_occurrence_type_constraints(
             named_args,
             ..
         } => {
-            constrain_application(kb, *functor, pos_args, named_args, var_types, subst);
+            constrain_application(kb, *functor, pos_args, named_args, var_types, param_backed, subst);
         }
         Expr::Constructor {
             name,
@@ -57631,7 +57917,7 @@ fn collect_occurrence_type_constraints(
             pos_args,
             named_args,
         } => {
-            constrain_application(kb, *name, pos_args, named_args, var_types, subst);
+            constrain_application(kb, *name, pos_args, named_args, var_types, param_backed, subst);
         }
         // WI-819: `Expr::Let` no longer has a type-positional field. Its
         // annotation is an Expr-kind child of the PATTERN occurrence, and the
@@ -57646,7 +57932,7 @@ fn collect_occurrence_type_constraints(
         _ => {}
     }
     for_each_child(expr, |c| {
-        collect_occurrence_type_constraints(kb, c, var_types, subst)
+        collect_occurrence_type_constraints(kb, c, var_types, param_backed, subst)
     });
 }
 
@@ -57659,13 +57945,27 @@ fn constrain_application(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
+    // WI-9C2PZ: ONE [`ParamInstantiation`] per application — see
+    // [`instantiate_declared_type`].
+    let mut inst = ParamInstantiation::new();
     if let Some(op) = lookup_operation_info_full(kb, functor) {
         for (i, arg) in pos_args.iter().enumerate() {
             // WI-341 Stage A: seed inference from the param type carrier-agnostically.
             if let Some((_, param_type)) = op.params.get(i) {
-                constrain_occ_var_type(kb, arg, param_type, var_types, subst);
+                let (param_type, instantiated) =
+                    instantiate_declared_type(kb, param_type, &mut inst);
+                constrain_occ_arg_type(
+                    kb,
+                    arg,
+                    &param_type,
+                    instantiated,
+                    var_types,
+                    param_backed,
+                    subst,
+                );
             }
         }
     } else if let Some(field_types) = kb.entity_field_types(functor) {
@@ -57674,9 +57974,95 @@ fn constrain_application(
             if let Some((_, arg)) = named_args.iter().find(|(s, _)| s == field_sym) {
                 // WI-341 Stage A: field type is a carrier-agnostic `Value` —
                 // constrain directly, no re-grounding to a term.
-                constrain_occ_var_type(kb, arg, field_type, var_types, subst);
+                let (field_type, instantiated) =
+                    instantiate_declared_type(kb, field_type, &mut inst);
+                constrain_occ_arg_type(
+                    kb,
+                    arg,
+                    &field_type,
+                    instantiated,
+                    var_types,
+                    param_backed,
+                    subst,
+                );
             }
         }
+    }
+}
+
+/// WI-9C2PZ — constrain one applied ARGUMENT position: [`constrain_occ_var_type`] for a
+/// variable, plus the LITERAL channel a variable position does not need.
+///
+/// A literal argument is not a variable, so it recorded nothing at all — and for a
+/// parameter that is the difference between knowing the parameter's type and never
+/// knowing it. `rule twoeq(?x, ?n) :- gen(?x, ?n), eq(?x, "a"), eq(?n, 1)` has no other
+/// typing source for either column (a rule subgoal types nothing), so without this the
+/// two columns instantiate to two unconstrained variables — independent, which is the
+/// repair, but also untyped, so `twoeq(1, "a")` would be accepted as readily as
+/// `twoeq("a", 1)`. Reading the literal makes the columns `String` and `Int64`.
+///
+/// GATED ON `expected` MENTIONING A VARIABLE, deliberately, and the gate is not caution
+/// but scope: against a CONCRETE parameter an argument's own type is the ordinary
+/// type-check's business, which this pre-pass has no standing to re-decide (and could
+/// not, for anything but a literal — every other argument shape still contributes
+/// nothing here). Against an INSTANTIATED one this pre-pass owns the only channel that
+/// says what the parameter is. Ungated it would also start manufacturing refusals in
+/// reflect-shaped code, where a `Bool` literal in a `Term` slot is ordinary.
+fn constrain_occ_arg_type(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    expected_type: &Value,
+    instantiated: bool,
+    var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
+    subst: &mut Substitution,
+) {
+    if let Some(Expr::Const(lit)) = occ.as_expr() {
+        let lit = lit.clone();
+        constrain_literal_arg(kb, &lit, expected_type, instantiated, subst);
+        return;
+    }
+    constrain_occ_var_type(
+        kb,
+        occ,
+        expected_type,
+        instantiated,
+        var_types,
+        param_backed,
+        subst,
+    );
+}
+
+/// WI-9C2PZ — the LITERAL channel itself, one copy for both walkers so the gate that
+/// scopes it cannot come to mean two things. Pins `expected_type` to the literal's own
+/// sort, and a disagreement is a genuine contradiction in the rule.
+///
+/// `instantiated` is that gate: the literal is read ONLY into a parameter THIS application
+/// just instantiated. That is scope, not caution — against a concrete parameter an
+/// argument's type is the ordinary type-check's business, which this pre-pass has no
+/// standing to re-decide (and could not, for anything but a literal); against an
+/// instantiated one this pre-pass owns the only channel that says what the parameter is.
+/// Ungated it would also start manufacturing refusals in reflect-shaped code, where a
+/// `Bool` literal in a `Term` slot is ordinary.
+fn constrain_literal_arg(
+    kb: &mut KnowledgeBase,
+    lit: &Literal,
+    expected_type: &Value,
+    instantiated: bool,
+    subst: &mut Substitution,
+) {
+    if !instantiated || std::env::var("NO_LITERAL_9C2PZ").is_ok() {
+        return;
+    }
+    // A DISAGREEMENT HERE IS NOT RECORDED as a rule-wide contradiction — see
+    // [`constrain_vid`], whose table's second row is exactly this shape. `eq(?f, 0)`
+    // beside `holder(f: Float)` is an argument error at the `eq` call, which the ordinary
+    // call check reports at the literal's own span; flagging the rule would skip that
+    // check and lose it. The failed unification simply pins nothing.
+    let lit_type = literal_sort(kb, lit);
+    let ok = unify_types(kb, subst, expected_type, &lit_type);
+    if !ok && std::env::var("FIRST_CUT_9C2PZ").is_ok() {
+        subst.contradiction = true;
     }
 }
 
@@ -57686,7 +58072,9 @@ fn constrain_occ_var_type(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     expected_type: &Value,
+    from_param: bool,
     var_types: &mut HashMap<u32, Value>,
+    param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
     let vid = match occ.as_expr() {
@@ -57694,7 +58082,15 @@ fn constrain_occ_var_type(
         Some(Expr::Var(Var::DeBruijn(idx))) => *idx,
         _ => return,
     };
-    constrain_vid(kb, vid, expected_type, var_types, subst);
+    constrain_vid(
+        kb,
+        vid,
+        expected_type,
+        from_param,
+        var_types,
+        param_backed,
+        subst,
+    );
 }
 
 #[cfg(test)]
