@@ -8,22 +8,23 @@ These are **samples, not items**. They deliberately do not carry the
 `.anthill.md` suffix, so no loader will read them, and they live outside the
 tracker tree.
 
-| sample | change entries | shows |
+| sample | feedback entries | shows |
 | --- | --- | --- |
-| `WI-714.md` | 17 feedback + 1 status | the most feedback on the tracker; 8 dependencies |
-| `WI-383.md` | 16 feedback + 1 status | feedback plus a tag |
-| `WI-402.md` | 10 feedback + 1 status | a typical delivered item |
-| `WI-1115.md` | 1 feedback + 1 status | `ProposalRejected` — the reason as a `## Reason` chapter |
-| `WI-731.md` | 8 feedback | an open item, so no status entry |
-| `WI-20260818-7X7NK-a-projection-over-a-1.md` | 1 feedback | a NEW-STYLE id, and an empty `depends_on` |
-| `WI-090.md` | 1 status | the FLOOR: a stub item, 26 characters of content across four chapters |
+| `WI-714.md` | 17 | the most feedback on the tracker; 8 dependencies |
+| `WI-383.md` | 16 | feedback plus a tag |
+| `WI-402.md` | 10 | a typical delivered item |
+| `WI-1115.md` | 1 | `ProposalRejected` — the reason as a `## Reason` chapter |
+| `WI-731.md` | 8 | an open item |
+| `WI-20260818-7X7NK-a-projection-over-a-1.md` | 1 | a NEW-STYLE content-hash id |
+| `WI-090.md` | 0 | the FLOOR: a stub, and the only file with NO `## Changes` at all |
 
-**The `status` entries are synthesized**, from the item's current status and its
-timestamp. Real history does not exist to migrate: `Delivered(agent, at)`
-overwrote `Claimed(agent, since)` on 985 of 1127 items, and `untag` never left a
-record at all. They are here so the `— feedback —` / `— status —` discriminator
-can be judged against a mixed log, which is the only situation where it earns its
-place.
+**Nothing here is synthesized.** `## Changes` holds only recorded feedback.
+Status entries do not appear because that history does not exist to migrate:
+`Delivered(agent, at)` overwrote `Claimed(agent, since)` on 985 of 1127 items, and
+`untag` never left a record. Entries still carry their kind — `— feedback —` — so
+that status and tag entries are additive when they begin to accumulate, rather than
+a fourth rewrite of every file. That is the cost this decision accepts: on WI-714,
+seventeen consecutive kind words with nothing yet to distinguish them from.
 
 Originals, for comparison:
 
@@ -61,10 +62,9 @@ FOUR chapter headings on 26 characters of content, and its `## Changes` section
 holds a single synthesized status entry that restates what `- status: Rejected`
 and `- status_at:` already say.
 
-That duplication is what every item looks like on migration day: real history
-cannot be recovered, so each of the 1127 items would get exactly one status entry
-saying what its attributes say. It is an argument for starting the log with
-feedback only and letting status entries accumulate from real transitions.
+It is also the only sample with no `## Changes` section at all, which exercises
+the rule that a container with no entries is simply absent rather than an empty
+heading.
 
 ## Notes
 
