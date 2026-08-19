@@ -3,7 +3,9 @@
 - id: WI-20260818-K63ZV-anthill-todo-backend-the-head
 - created: 2026-08-18T15:32:43Z
 
-- status: Open
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-19T20:29:50Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -204,4 +206,26 @@ THE MIGRATION IS NO LONGER A PURE REFORMAT, and the description's claim that "a 
 Also settled in passing: `List[String]` is legal and idiomatic (`sort_binding` is `choice(param = type, type)`; 106 `List[String]`, 51 `Cell[State]`, 20 `Option[String]` in real sources), so the mapping declaration uses the positional form.
 
 BRANCH: `wi-k63zv-document-format-samples`, docs and samples only, nothing merged.
+
+### 2026-08-19T20:29:28Z — feedback — claude
+
+DELIVERED 2026-08-19. The format is implemented, the tree is migrated onto it, and this file is written in it.
+
+THREE THINGS LANDED DIFFERENTLY FROM THE TICKET'S TEXT, all of them corrections made during the work rather than discoveries:
+
+(1) THE DOMAIN CARRIES A RECORD, NOT THREE LOOSE FIELDS. The ticket asked for `WorkItem` to gain `status_agent` / `status_at` / `status_reason`. Once every variant carries the same three companions, `WorkStatus` has nothing left to discriminate — it is a label, and the thing carrying (label, agent, at, reason) is a StatusChange. So: `entity StatusChange(status, agent, at, reason)`, `WorkItem.last_status_change: StatusChange`, and `WorkStatus` a plain nullary enum. THE DOCUMENT IS UNCHANGED — `- status:` / `- status_agent:` / `- status_at:` exactly as the samples show — because one new mapping fact, `FlatRecord(functor: WorkItem, field: "last_status_change", prefix: "status")`, writes a record-valued field as sibling attribute lines. Its naming rule has one deliberate exception, stated in §3.4: the record's FIRST field takes the prefix bare (`status`, not `status_status`), because that is the field the directory mirrors and §10 checks the path against. Flattening exists in exactly one function; `Chapter`, `FieldGroup`, the value spelling and every well-formedness check see a flat functor and do not know a record is involved.
+
+(2) THREE CONSTRAINTS, NOT ONE PER VARIANT-COMPANION PAIR. §3.3 asked to restate the invariant the sum type enforced. Most of that invariant was a DEFECT rather than a design, and restating it faithfully would have frozen the defect into the schema: `agent` appeared on two of nine variants, `Verified` carried none at all so "who verified this" was unrecorded, `since` on two against `at` on four, and Draft / PreOpened / Open carried nothing though somebody performed each of those transitions too. Every status is a transition somebody made at some time, so `agent` and `at` are uniform provenance and NOT variant-specific. Nor is `reason` — unclaiming because you are blocked is worth recording. What survives is the one clause the old type got right and this one keeps: AN OFF-RAMP WITH NO STATED REASON IS USELESS. Rejected / ProposalRejected / Stale must name a reason, as a load error. Everything else about a reason is a command rule (`update` refuses a `--reason` with nothing to attach to), not a fact about the domain.
+
+CONSEQUENCE, AND IT IS A BEHAVIOUR CHANGE: `verify`, `unclaim`, `preopen` and `promote` now stamp agent and time. They recorded nothing before. `cmd_verify` gained an `agent` parameter it never had.
+
+(3) `--to document` CONVERTS BOTH SHAPES THAT ARE NOT ONE ALREADY — a plain per-item `.anthill` file (as before) and a file still holding a fenced `anthill` head (new). A legacy file is NOT parsed during a normal load: it is recorded and refused by name, because parsing it against today's domain would produce a wall of type errors naming a shape nobody wrote. The previous encoding is read by `document::legacy`, kept for that one caller and marked deletable once no tracker holds one.
+
+THE MIGRATION, AND THE CHECK THE TICKET ASKED FOR. 1129 files, 2618 rows, converted through the ordinary writer (a fresh `ItemPerFileStore` carrying the same mapping every command uses, so the spec's checks — prose demotion, heading encoding, the blank-line rule — cannot be skipped). Verified PER FIELD, not by row count: a script read both trees and compared id, created, status and its hoisted agent/at/reason, acceptance, depends_on, context/generates/requires_capability, tags, every feedback entry's at and author, and the description and reason text. 0 MISMATCHES. `fsck` reports `layout ok`.
+
+694 empty `depends_on` dropped, not 692 — re-measured on today's tree. That is the approved data change and no round-trip test can see it, by construction: both sides read as "no dependencies".
+
+TWO DIAGNOSTICS FROM §7's TABLE ARE IMPLEMENTED AND REPAIRED, and one is stronger than the table asks: a `FieldGroup` written apart is reported, AND so is the converse — two fields written adjacent that are not declared to change together, which is the half that makes two independent edits collide for nothing. A needless `b64:` is reported too. `fsck --fix` re-renders both, and refuses to touch a file with a BLOCKING fault, because a partial read written back would make the loss permanent.
+
+WHAT THE ACCEPTANCE TESTS DRIVE (`anthill-todo/tests/include/wik63zv_attribute_document_test.rs`): a real item through add / tag / feedback / claim and back, asserted BYTE-IDENTICAL after a read-write cycle through a different description and back — stronger than comparing facts, because a field the reader dropped would be missing from both sides of a fact comparison; the merge property, with both sides produced by the real writer from one ancestor, and the CONTROL in the same test (collapse the attributes to one physical line and the identical pair of edits conflicts); adjacency, both directions, with the same two edits merging once a blank line is inserted between them; and that an `--agent` carrying a line break cannot forge an entry.
 
