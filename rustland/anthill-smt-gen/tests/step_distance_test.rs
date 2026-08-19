@@ -31,8 +31,8 @@ fn lf1_with_step_bound_kb() -> anthill_core::kb::KnowledgeBase {
             range_max:    Float,
             signal_speed: Float,
             baud_rate:    Float,
-            byte_size:    Int64,
-            packet_size:  Int64
+            byte_size:    Float,
+            packet_size:  Float
           )
 
           entity KinematicAssumptions(
@@ -73,8 +73,8 @@ fn lf1_with_step_bound_kb() -> anthill_core::kb::KnowledgeBase {
             range_max:    100.0,
             signal_speed: 300000000.0,
             baud_rate:    1000000.0,
-            byte_size:    8,
-            packet_size:  32
+            byte_size:    8.0,
+            packet_size:  32.0
           )
 
           fact KinematicAssumptions(

@@ -6440,14 +6440,15 @@ fn relation_columns_across_clauses(
 /// lubbed independently, slot by slot, so nothing here should pin one column's type
 /// from another's.
 ///
-/// This recognizes only the raw-`Var::Global` spelling of "unconstrained". A column
-/// left open as an uninstantiated SPEC TYPE PARAMETER instead — `rule r(?x) :-
-/// eq(?x, ?y)` types `?x` at `anthill.prelude.PartialEq.T`, a `Term::Ref` to the
-/// parameter symbol — is not a var by this test, so it still reaches `join_types` and
-/// can be reported disjoint against a concrete column. That is pre-existing and
-/// orthogonal to recursion (it needs the producer to resolve `var_types` through the
-/// substitution `collect_rule_var_types` currently drops); it fails loudly, not
-/// silently.
+/// This recognizes ONE spelling of "unconstrained", the raw `Var::Global`, and that is
+/// deliberate — WI-741 retired the second. A column left open as an uninstantiated
+/// SPEC TYPE PARAMETER (`rule r(?x) :- eq(?x, "root")` typed `?x` at
+/// `anthill.prelude.PartialEq.T`, a `Term::Ref` to the parameter symbol) used to reach
+/// `join_types` and be reported disjoint against a concrete column, though both
+/// clauses plainly meant `String`. [`relation_clause_columns`] now normalizes it into
+/// the raw `Var::Global` at the producer, so do NOT add a second recognizer here: a
+/// parameter arriving at this function again means the producer stopped normalizing,
+/// and the lub is the wrong place to learn it.
 fn join_column_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
     if resolved_var(kb, &a).is_some() {
         return Some(b);
@@ -6545,17 +6546,6 @@ fn assemble_relation_type(
     parameterized_value(kb, base, &bindings, sp, None)
 }
 
-/// WI-714 (proposal 052) — PROJECTION `r.(f1, f2)`. The projected `Relation[T', E]`
-/// TYPE for selecting `projections` (an ordered `(result-key, source-column-short-name)`
-/// map — bare `r.(f)` auto-labels result = source, rename `r.(a: f)` differs) from a
-/// relation whose type is `recv_ty`. The receiver's schema `T` (a named tuple, or `Unit`
-/// for a membership relation, which has no column to select) supplies each kept column's
-/// TYPE; the projected schema is `Unit` for no kept column, else the named tuple keyed by
-/// the RESULT keys. The
-/// access-effect row `E` threads through unchanged (projection runs no extra search).
-/// `None` when the receiver is not a Relation, its schema is not a named tuple, or a
-/// source names no column — the caller then falls through (dot dispatch →
-/// `DotDispatchNoMatch`; the tuple pre-check → ordinary tuple typing).
 /// WI-731 — what a relation schema's columns ARE, as the parenthetical every "no such
 /// column" refusal appends. ONE owner, because there are now two such refusals — the
 /// projection's ([`projection_columns`]) and the rename's ([`rename_schema_type`]) — and the
@@ -6583,6 +6573,17 @@ fn schema_columns_tail(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> String
     )
 }
 
+/// WI-714 (proposal 052) — PROJECTION `r.(f1, f2)`. The projected `Relation[T', E]`
+/// TYPE for selecting `projections` (an ordered `(result-key, source-column-short-name)`
+/// map — bare `r.(f)` auto-labels result = source, rename `r.(a: f)` differs) from a
+/// relation whose type is `recv_ty`. The receiver's schema `T` (a named tuple, or `Unit`
+/// for a membership relation, which has no column to select) supplies each kept column's
+/// TYPE; the projected schema is `Unit` for no kept column, else the named tuple keyed by
+/// the RESULT keys. The
+/// access-effect row `E` threads through unchanged (projection runs no extra search).
+/// `None` when the receiver is not a Relation, its schema is not a named tuple, or a
+/// source names no column — the caller then falls through (dot dispatch →
+/// `DotDispatchNoMatch`; the tuple pre-check → ordinary tuple typing).
 fn projection_columns(
     kb: &KnowledgeBase,
     schema: &Value,
@@ -7563,6 +7564,33 @@ pub(crate) fn rule_head_var_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<(SlotK
 /// explicit `?x: T` bound if present, else the type inferred from the var's op-param /
 /// entity-field positions (`collect_rule_var_types`, keyed by DeBruijn index), else a
 /// fresh type var (an unconstrained column).
+///
+/// WI-741 — "ELSE" COVERS THE UNINSTANTIATED PARAMETER TOO. A column whose only typing
+/// source is a SPEC operation takes that spec's own parameter verbatim (`rule named(?x)
+/// :- eq(?x, "root")` records `anthill.prelude.PartialEq.T`, a `Term::Ref` to the
+/// parameter symbol — see [`bare_type_param_symbol`]). That is the ABSENCE of a column
+/// type, not a column type, so it is normalized here into the raw `Var::Global` spelling
+/// a column with no entry at all gets. That keeps "unknown" spelled ONE way downstream:
+/// [`join_column_types`] needs a single recognizer, and the cross-clause lub takes the
+/// type from the clause that knows instead of reporting the column disjoint against it.
+///
+/// ONE VAR PER PARAMETER, NOT ONE PER COLUMN — the parameter answers TWO questions and
+/// only the first has the answer "nothing": *what type is this column* (nothing) and
+/// *which columns share a type* (a fact). `rule pair_eq(?x, ?y) :- eq(?x, ?y)` types
+/// both columns at the one `PartialEq.T`, and the applied type-check threads ONE
+/// substitution through the columns so `pair_eq(5, "s")` is refused and `rel(5)` narrows
+/// its sibling column to `Int64`. A per-column fresh var erases that; measured, it broke
+/// exactly `wi714_applied_correlated_columns_reject_contradiction` and
+/// `wi714_applied_unconstrained_column_accepts_and_narrows`, which own the invariant.
+/// Keying the minted var on the parameter SYMBOL answers question two unchanged while
+/// answering question one honestly.
+///
+/// Normalizing HERE rather than waving the parameter through at the lub (WI-741's own
+/// "narrower framing") buys no behavior: measured, a single-clause relation publishing
+/// `Relation[(x: PartialEq.T)]` cites just as leniently as one publishing a var, because
+/// a type parameter is itself a wildcard to every consumer that meets it
+/// (`is_type_param_value`). It buys the INVARIANT — one spelling of "unknown" leaves
+/// this function, so no downstream reader has to learn a second one.
 fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseColumn> {
     let head = match kb.rule_head_value(rid).clone() {
         Value::Term { id, .. } => id,
@@ -7573,11 +7601,31 @@ fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseCol
     let type_bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
     let slots = rule_head_var_slots(kb, rid);
     let mut columns: Vec<ClauseColumn> = Vec::with_capacity(slots.len());
+    // WI-741 — ONE var per distinct PARAMETER, not one per column. See the note above:
+    // the parameter says nothing about the column's TYPE but everything about which
+    // columns share one, and the applied type-check threads exactly that correlation.
+    let mut param_vars: HashMap<Symbol, Value> = HashMap::new();
     for (slot, name, d) in slots {
+        // Split before the chain so the immutable read of `var_types` is finished
+        // before the `&mut kb` arms below.
+        let inferred = var_types.get(&d).cloned();
+        let param = inferred.as_ref().and_then(|t| bare_type_param_symbol(kb, t));
         let ty = if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
             Value::term(*t)
-        } else if let Some(t) = var_types.get(&d) {
-            t.clone()
+        } else if let Some(p) = param {
+            match param_vars.get(&p) {
+                Some(v) => v.clone(),
+                None => {
+                    // Named for the parameter, not the column: the var stands for the
+                    // PARAMETER, and the next column that shares it gets this same one.
+                    let fresh = kb.fresh_var(p);
+                    let v = Value::term(kb.alloc(Term::Var(Var::Global(fresh))));
+                    param_vars.insert(p, v.clone());
+                    v
+                }
+            }
+        } else if let Some(t) = inferred {
+            t
         } else {
             let fresh = kb.fresh_var(name);
             Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
@@ -57420,10 +57468,89 @@ fn constrain_var_type(
     constrain_vid(kb, vid, expected_type, var_types, subst);
 }
 
+/// WI-741 — is this collected var type an UNINSTANTIATED type PARAMETER: the
+/// parameter symbol copied verbatim out of an operation's signature, rather than a
+/// type of anything at this call site?
+///
+/// [`collect_rule_var_types`] records a var's expected type by reading the declared
+/// param / field type STRAIGHT out of the signature — it never instantiates. So a
+/// spec operation's own parameter arrives as itself: `eq(?x, "root")` records `?x` at
+/// `anthill.prelude.PartialEq.T`. That symbol names no type here; every rule in the KB
+/// that calls `eq` records the SAME symbol, for variables of unrelated types.
+///
+/// The head-only test is deliberate. A parameterized type that merely MENTIONS a
+/// parameter (`List[T]`) still says the var is a `List`, which is information; only a
+/// BARE parameter says nothing.
+fn is_uninstantiated_type_param(kb: &KnowledgeBase, ty: &Value) -> bool {
+    bare_type_param_symbol(kb, ty).is_some()
+}
+
+/// WI-741 — the type-parameter SYMBOL a collected var type names outright, if it names
+/// one: `Some(anthill.prelude.PartialEq.T)` for the `Ref` / `Ident` / nullary-`Fn`
+/// spellings of a bare sort parameter ([`is_sort_param_symbol`]), `None` otherwise.
+///
+/// A raw `Term::Var` answers `None` even though [`is_type_param_value`] calls it a
+/// parameter, and that difference is the whole point of having this rather than reusing
+/// that predicate: a var already IS the normalized "unknown", already carries its own
+/// identity, and re-keying it would erase the very correlation the symbol answer exists
+/// to preserve.
+fn bare_type_param_symbol(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
+    let Value::Term { id, .. } = ty else {
+        // A `Value::Node` type carrier (WI-342 P4) is an occurrence-borne type; no
+        // producer mints a BARE parameter through one today, and answering `None`
+        // keeps the status quo for it rather than silently widening the test.
+        return None;
+    };
+    let sym = match kb.get_term(*id) {
+        Term::Ref(sym) | Term::Ident(sym) => *sym,
+        // WI-359: a bare parameter name also surfaces as a nullary `Fn` — the same
+        // three spellings [`is_type_param_value`] accepts, minus its `Term::Var` arm.
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
+        _ => return None,
+    };
+    is_sort_param_symbol(kb, sym).then_some(sym)
+}
+
 /// Shared core of `constrain_var_type` / `constrain_occ_var_type`: record the
 /// var's expected type, or unify against an existing one (keyed by the var's
 /// raw id / De Bruijn idx — the same key space for a rule's head term and its
 /// body occurrences, both closed against the same `vars`).
+///
+/// WI-741 — AN UNINSTANTIATED TYPE PARAMETER IS NOT A RIVAL TYPE. It never displaces a
+/// recorded entry — not a concrete one, and not another parameter — and never
+/// contradicts one; a concrete type displaces IT. One rule, so the outcome does not
+/// depend on the order the goals are walked in.
+/// It is still RECORDED when it is the only thing known about the var, rather than
+/// dropped. Measured — dropping it instead fails 57 of the 74 WI-714 tests, in two
+/// distinct ways:
+///
+///   * most of them on `ambiguous dispatch of anthill.prelude.PartialEq.eq: 53
+///     instances provide PartialEq and the call selects none`. The entry is the
+///     RECEIVER TYPE the spec-op dispatch reads; "abstract" is a usable answer there
+///     and no entry at all is not.
+///   * `wi714_applied_correlated_columns_reject_contradiction` on the other axis: the
+///     entry is also what says "these two variables share a type", which
+///     [`relation_clause_columns`] carries into the columns.
+///
+/// So the parameter is not noise to be suppressed — it is the only channel these two
+/// readers have. What WI-741 changes is who wins when a CONCRETE type also exists.
+///
+/// Unifying it instead was a FALSE CONTRADICTION, measured: in
+/// `rule mix(?x, ?n) :- eq(?x, ?s), parent(of: ?x, is: ?s), eq(?n, ?m), scored(who: ?s, pts: ?m)`
+/// all four vars were recorded at the ONE shared `PartialEq.T`, whose alias var
+/// [`unify_types`] then bound to `String` from the first pair — so `?m`'s honest
+/// `Int64` came back incomparable and the whole rule was declared to have
+/// "contradictory variable types". A contradictory rule is neither dot-dispatched nor
+/// stamped, so the cost was silent for a namespace-level rule.
+///
+/// This is also why WI-741's own hypothesized fix — resolve `var_types` through the
+/// substitution this function builds — is unsound and was NOT taken: that
+/// substitution binds the ONE shared parameter alias, so it would have typed `?m`
+/// `String`.
 fn constrain_vid(
     kb: &mut KnowledgeBase,
     vid: u32,
@@ -57431,12 +57558,27 @@ fn constrain_vid(
     var_types: &mut HashMap<u32, Value>,
     subst: &mut Substitution,
 ) {
-    if let Some(existing) = var_types.get(&vid) {
-        if !unify_types(kb, subst, existing, expected_type) {
-            subst.contradiction = true;
+    match var_types.get(&vid) {
+        // Nothing known yet — record whatever we have, parameter included.
+        None => {
+            var_types.insert(vid, expected_type.clone());
         }
-    } else {
-        var_types.insert(vid, expected_type.clone());
+        // A BARE PARAMETER NEVER DISPLACES A RECORDED ENTRY. It carries no type, so it
+        // cannot out-rank one; and it must not out-rank ANOTHER parameter either,
+        // because which parameter a var holds decides which correlation class it joins
+        // (see [`relation_clause_columns`]) — so a second parameter silently moving the
+        // var to its own class would be a coin-flip on the goal walk's order. This arm
+        // stands FIRST so that reading holds for a parameter meeting a parameter too.
+        Some(_) if is_uninstantiated_type_param(kb, expected_type) => {}
+        // Known abstractly, now known concretely: the concrete type wins outright.
+        Some(existing) if is_uninstantiated_type_param(kb, existing) => {
+            var_types.insert(vid, expected_type.clone());
+        }
+        Some(existing) => {
+            if !unify_types(kb, subst, existing, expected_type) {
+                subst.contradiction = true;
+            }
+        }
     }
 }
 

@@ -60,8 +60,15 @@ namespace anthill.examples.lf1.safety.gps
     range_max:    Float,   -- emitter.range — max reception distance (m)
     signal_speed: Float,   -- propagation speed (m/s); typically c
     baud_rate:    Float,   -- bits per second
-    byte_size:    Int64,     -- bits per byte (typically 8)
-    packet_size:  Int64      -- payload size in bytes (LeaderPose = 32)
+    -- Counts, but REAL-valued: both feed `comm_delay_max` below, where the
+    -- bit count is divided by the Float `baud_rate`. The language has no
+    -- implicit numeric widening and no Int64→Float conversion, so declaring
+    -- these `Int64` makes that division ill-typed. It read `Int64` until
+    -- WI-741, which stopped an uninstantiated spec type parameter from
+    -- masking the mismatch — the rule below had been silently written off as
+    -- having contradictory variable types, which suppressed the check.
+    byte_size:    Float,   -- bits per byte (typically 8)
+    packet_size:  Float    -- payload size in bytes (LeaderPose = 32)
   )
 
   -- =================================================================
@@ -368,8 +375,8 @@ namespace anthill.examples.lf1.safety.gps
     range_max:    100.0,
     signal_speed: 300000000.0,
     baud_rate:    1000000.0,
-    byte_size:    8,
-    packet_size:  32
+    byte_size:    8.0,
+    packet_size:  32.0
   )
 
   fact GpsErrorBound(epsilon: 0.1)

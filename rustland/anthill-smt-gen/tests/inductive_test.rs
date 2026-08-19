@@ -24,7 +24,7 @@ fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
 
           entity LinkParameters(
             range_max: Float, signal_speed: Float, baud_rate: Float,
-            byte_size: Int64, packet_size: Int64)
+            byte_size: Float, packet_size: Float)
           entity KinematicAssumptions(
             leader_speed_max: Float, follower_speed_max: Float,
             control_period: Float, sensor_period: Float)
@@ -84,7 +84,7 @@ fn inductive_kb() -> anthill_core::kb::KnowledgeBase {
 
           fact LinkParameters(
             range_max: 100.0, signal_speed: 300000000.0,
-            baud_rate: 1000000.0, byte_size: 8, packet_size: 32)
+            baud_rate: 1000000.0, byte_size: 8.0, packet_size: 32.0)
           fact KinematicAssumptions(
             leader_speed_max: 8.0, follower_speed_max: 8.0,
             control_period: 0.032, sensor_period: 0.008)

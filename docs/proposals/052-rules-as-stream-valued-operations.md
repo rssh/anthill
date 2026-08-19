@@ -62,7 +62,15 @@ common to every clause. Clause `ancestor(?x, ?y) :- parent(?x, ?z), ancestor(?z,
 preserves the schema, and why the schema is exactly what the clauses share. A column's *type* across a
 multi-clause relation is the **join (lub) of that head parameter's type in each clause** (WI-287 join
 machinery — declaration-typed heads agree by construction, WI-603-inferred ones lub); a disjoint pair
-(no lub) is a **load error**, never a silent widening to `Term`. To **expose** an
+(no lub) is a **load error**, never a silent widening to `Term`. A clause votes only where it has a
+type to vote with: an **unconstrained** column contributes *nothing* to the lub and takes its type from
+the clause that knows. A column is unconstrained when no operation parameter and no entity field types
+it — its only occurrence is a rule subgoal (WI-714: the recursive clause of a transitive closure, which
+is what makes a recursive relation typable with no assume-then-check iteration), or its only typing
+source is an **uninstantiated spec type parameter** (WI-741: `eq(?x, "root")` types `?x` at
+`PartialEq.T`, which is the *callee's* parameter and names no type at this call site). Neither is a
+widening — a clause that really does say `Int64` against another's `String` is still the load error
+above. To **expose** an
 intermediate, put it in the head (a wider relation: `path(?x, ?z, ?y) :- …` makes `z` a column). These
 head columns are, via the `provides` edge, the stream's element type (the *same* `T` on both faces).
 One degenerate arity, and one that only looks degenerate:
