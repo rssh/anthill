@@ -337,25 +337,32 @@ are machine-generated — a timestamp, a declared `kind`. A mapping whose non-fi
 heading field could hold free text is refused at load (§5.1), which puts the
 restriction where it can be checked once rather than on every value.
 
-**A line break is ESCAPED, not refused, and that is what makes injection
-impossible rather than merely caught.** A heading is one line, so a value carrying
-a break has no direct spelling; written naively it would produce a *well-formed
-extra entry* — `--agent $'claude\n### 2026-01-01 — status — root'` parses, names a
-real kind, and denotes a fact indistinguishable from a recorded one, with no
-reader-side detection possible. Two rules, applied at the single point a heading is
-rendered:
+**A value that cannot be written literally is BASE64-ENCODED as `b64:<…>`.** A
+heading is one line and its parts are trimmed on read, so some values have no
+literal spelling: one carrying a line break, one with leading or trailing
+whitespace, an empty one, and — for a field that is not the last — one carrying the
+separator. Those are written encoded, and read back by decoding. Nothing is
+refused, so no command can fail on a name.
 
-    a line break      ->  \n
-    a backslash       ->  \\
+A value is encoded **exactly when it has to be**, which keeps one spelling per
+datum: a value that could be written literally must be, and a needless `b64:` is a
+diagnostic `fsck --fix` rewrites. The one self-referential case is covered by the
+same rule — a value that genuinely begins with `b64:` cannot be written literally
+either, so it is encoded, and the reader has no ambiguity to resolve.
 
-Reading applies the inverse. Because the escape is part of *rendering a heading*
-rather than a check someone must remember to call, a value cannot reach a heading
-unescaped — the illegal state is unrepresentable instead of rejected, and no
-command fails on a name.
+**This is what makes injection impossible rather than merely caught.** Written
+naively, `--agent $'claude\n### 2026-01-01 — status — root'` would produce a
+*well-formed extra entry*: it parses, names a real kind, and denotes a fact
+indistinguishable from a recorded one, with no reader-side detection possible. Under
+this rule the break has no literal spelling, so the value is encoded at the single
+point a heading is rendered — the illegal state is unrepresentable rather than
+rejected by a check someone must remember to call at every boundary.
 
-The residue is small and honest: a heading's parts are trimmed on read, so a value
-with **leading or trailing whitespace**, or an **empty** one, does not round-trip
-and is refused, naming the field. Neither is a name anyone means to write.
+Encoding is **whole-value and rare**, and both matter. Whole-value, because a
+partially escaped string has more ways to be subtly wrong than a flag saying "this
+one is encoded"; rare, because split-from-left already keeps every legitimate
+separator-bearing name literal and legible in the outline. `release — bot` is never
+encoded; only something that is not really a name ever is.
 
 A prose **body** is not a vector either: a heading it carries is demoted (§4.1), so
 it cannot start an entry however it is spelled.
@@ -557,13 +564,16 @@ fact Feedback(workitem: "WI-1121", author: "claude",
 | a `###` under a **field** chapter | prose, carried verbatim — not an error (§4.1) |
 | a container the mapping names, holding no entries | not an error — the group has no facts |
 | an entry heading with fewer ` — ` parts than `heading` declares | load error (more parts is not an error: the last field takes the remainder, §4.3) |
+| a `b64:` value that decodes to something writable literally | diagnostic; `fsck --fix` rewrites it literally (§4.3) |
+| a `b64:` value that is not valid base64 | load error naming file, heading and field |
 | an entry heading whose kind names no group of that container | load error naming file, heading and kind |
 | an attributes value longer than 255 characters | diagnostic naming the field — a prose field wants declaring as a chapter (§4.2) |
 | a field of a `FieldGroup` separated from its group by a blank line | diagnostic; `fsck --fix` rejoins it |
 | attributes, filename and directory disagree | diagnostic; `fsck --fix` repairs from the attributes |
 
 The writer still refuses prose it could not read back, but the set is now small.
-A heading at a reserved level is **demoted** (§4.1), not refused. What remains is
-prose no shift can fix: an **unbalanced fence**, which would swallow every chapter
-after it, and a heading that demotion would push **past level 6**. Both fail before
-the file is written, so the command fails with nothing on disk.
+A heading at a reserved level is **demoted** (§4.1) and a heading-field value with
+no literal spelling is **encoded** (§4.3); neither is refused. What remains is prose
+no shift can fix: an **unbalanced fence**, which would swallow every chapter after
+it, and a heading that demotion would push **past level 6**. Both fail before the
+file is written, so the command fails with nothing on disk.
