@@ -87,12 +87,21 @@ containing `, `, a payload-carrying variant, an arbitrary `Term`. The writer use
 it only where the data spelling does not apply, so it never has to refuse a value.
 
 **A data value must also be markdown-INERT**, and this is the same escape doing a
-second job. A bare value sits in inline context, so `*`, `_`, backticks, `<` and
-link brackets would render as markup rather than as the data — and rendering is
-why this format is `.md` at all. A value carrying any of them therefore has no data
-spelling and takes the term spelling, whose backticks are a code span and suspend
-inline parsing. On this tracker no value is affected: ids, timestamps, tool names
-and tags are alphanumeric with `-`, `+` and `.`.
+second job. A bare value sits in inline context, so a value that would render as
+markup rather than as itself has no data spelling and takes the term spelling,
+whose backticks are a code span and suspend inline parsing. Rendering is why this
+format is `.md` at all, so a value the page shows differently from the data it
+denotes is a defect, not a cosmetic issue.
+
+**The test is whether the value renders as itself, not whether it contains a
+character from a list**, and the difference is not academic: CommonMark does not
+open emphasis with an intraword `_`, so `prop025_1` is inert and a
+character-blacklist rule would quote it for nothing. Measured on this tracker,
+exactly two values carry any candidate character — the tag `prop025_1` on WI-562
+and WI-563 — and both render as themselves; every other id, timestamp, tool name
+and tag is alphanumeric with `-`, `+` and `.`. A writer that cannot decide should
+**over**-quote: a code span renders the literal text, so the term spelling is
+always safe and only ever costs a pair of backticks.
 
 **Length does not decide anything here; the mapping does.** Whether a field is
 prose is a property of the field, not of how long one item's value happens to be,
