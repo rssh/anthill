@@ -23384,7 +23384,8 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 ///   * a tail already bound by unification, or a RIGID one (a forall-Skolem is not ours
 ///     to solve — WI-336);
 ///   * a declared row with no tail (closed: nothing to infer) or with TWO (a row UNION,
-///     `{E, EffP}` — which lower bound belongs to which tail is not decidable here);
+///     `{E, EffP}` — which lower bound belongs to which tail is not decidable here;
+///     WI-20260820-RDNS4 carries that question one level up);
 ///   * an actual row that is itself OPEN or carries `- e` absents — those are the shapes
 ///     the unify/subtype arms reason about with their own tail machinery.
 ///
@@ -35485,8 +35486,12 @@ fn reorder_named_args_in_apply(
 /// occurrence-preservation the two callers exist to respect. Both callers treat `None` as
 /// "not a row" and fall back to their pre-existing non-row handling, so the value is
 /// carried whole rather than dropped. This is a KNOWN carrier gap shared with
-/// [`explode_incurred_effect_row`], which has always had it; it is stated rather than
-/// papered over, and closing it means giving the wrapper an `Entity` constructor.
+/// [`explode_incurred_effect_row`], which has always had it, and it is OWNED —
+/// WI-20260820-CTD6D, which must decide whether the carrier is REACHABLE (write the
+/// program, give the wrapper an `Entity` constructor, drive the flatten) or UNREACHABLE
+/// BY CONSTRUCTION (say which producers can mint an effect-row `Value` and that none
+/// mints an `Entity`, then make the case loud at both sites) — not widen the match on
+/// either guess.
 ///
 /// Shared by the two sites that must turn a walked row VALUE back into a row:
 /// [`explode_incurred_effect_row`] (the op-boundary reader) and the call-site
@@ -44212,6 +44217,15 @@ fn unify_effect_rows<EA: TermView, EB: TermView>(
             // run once after the arg-unify loops. Leave this relation an EQUALITY that
             // does not leak bindings on refusal (the discipline `pair_present_labels`
             // states for the same reason).
+            //
+            // THE SUCCESS PATH BELOW HAS THE SAME PROBLEM AND IS NOT FIXED HERE —
+            // WI-20260820-RDNS4. `bind_row_tail(…, None)` CLOSES the tail, so even when
+            // this arm succeeds the first argument commits its least solution as if it
+            // were the only constraint: the same `two[Rho]` at an ERRORING `a`, and a
+            // `two_plain[Rho](a: @{Rho}, b: @{Rho})` with no handled label at all, are
+            // both refused — before and after WI-329 alike, so it is pre-existing and not
+            // about handlers. `infer_discharged_row_tails` cannot repair it either: it
+            // fires only for tails still UNBOUND after both arg loops.
             if !only_b.is_empty() {
                 return false;
             }

@@ -1,0 +1,15 @@
+## Attributes
+
+- id: WI-20260820-RDNS4-row-tail-inference-is-per
+- created: 2026-08-20T18:22:51Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-08-20T18:22:51Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+## Description
+
+Row-tail inference is PER-ARGUMENT and closes too early: a tail shared by two callback parameters is closed by whichever argument reaches it first, on unify's SUCCESS path. MEASURED (WI-329, two witnesses, both refused BEFORE and AFTER that ticket so neither is a regression it introduced): (1) `operation two[Rho](a: () -> Int64 @ {Error[Int64], Rho}, b: () -> Int64 @ {Rho}) -> Int64 effects {Rho}` called `two(lambda () -> only_fails(), lambda () -> clocked())` under a declared `effects {Clock}` -- `a` performs the handled label so its unify SUCCEEDS and binds `Rho := {}`, and `b` is then refused with "expected callback effects admitted by parameter `b` ... (a closed row), got the lambda argument declares `Clock`, which the closed row does not admit"; (2) the same with NO handled label at all -- `two_plain[Rho](a: () -> Int64 @ {Rho}, b: () -> Int64 @ {Rho})` at a pure `a` and a `{Clock}` `b` -- so this is not about handlers, it is about any two parameters sharing one row tail. `Rho = {Clock}` is a valid solution in both; the typer rejects a well-typed program. ROOT: `unify_effect_rows`' closed-actual/open-expected arm ends `bind_row_tail(kb, subst, b_t, &only_a, None)` -- `final_tail = None`, i.e. CLOSED -- and `check_apply_iter`'s two arg loops call `unify_types(arg, param)` once per argument DISCARDING the boolean, so the first argument's least solution is committed as if it were the only constraint. WHY WI-329 DID NOT FIX IT: its `infer_discharged_row_tails` computes exactly the right union (lower bound = union over every parameter naming the tail) but only fires for tails STILL UNBOUND after both loops, so it cannot repair a tail unify already closed; extending it to REOPEN a bound tail would be unsound. DIRECTIONS, not prescriptions: (a) bind with an open continuation (`Some(fresh_row_tail_var(kb))`) on that arm so a later argument can extend, plus one place that closes the leftover continuation once all constraints are in -- note the naive version breaks the op-boundary check, which reports a leftover unbound tail as `undeclared effect: ?_N`, so the closing step is the load-bearing half; (b) defer the per-argument close entirely and let `infer_discharged_row_tails` own ALL callback row-tail solving, which makes one pass responsible for one question. ADJACENT AND IN SCOPE IF CHEAP: `infer_discharged_row_tails` skips a declared row with TWO tails (a row UNION, `{E, EffP}`) because which lower bound belongs to which tail is not decidable there -- that skip is stated at its site and leaves the tail unbound (pre-existing behavior), not wrong, but it is the same question one level up. ACCEPTANCE: both witnesses above LOAD; a control pins that a genuinely over-constrained tail is still refused; the WI-329 suite (21 tests) stays green; full cargo-test green.
+

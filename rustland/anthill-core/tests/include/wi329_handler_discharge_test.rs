@@ -371,6 +371,12 @@ fn nested_same_handler_does_not_empty_the_row() {
 /// loading. It loads under the pre-WI-329 arms and under the shipped
 /// `infer_discharged_row_tails`, and fails only under that abandoned cut, which is
 /// precisely the regression it exists to catch.
+///
+/// Two NEIGHBOURING shapes are refused both before and after this ticket and are NOT
+/// pinned here: the same `two` at an ERRORING `a` (unify succeeds and closes `Rho` on the
+/// success path), and a `two_plain[Rho](a: @{Rho}, b: @{Rho})` with no handled label at
+/// all. That is the same eager close one path over, it is pre-existing, and it has an
+/// owner — WI-20260820-RDNS4.
 #[test]
 fn a_tail_shared_by_two_parameters_takes_the_union_of_their_constraints() {
     expect_load(
