@@ -183,17 +183,17 @@ fn set_field(text: &str, key: &str, value: &str) -> String {
     out
 }
 
-/// THE TICKET'S REASON FOR EXISTING: two agents editing two DIFFERENT fields of
-/// one item merge without a conflict.
+/// Two agents editing two DIFFERENT parts of one item merge without a conflict:
+/// one claims it, the other rewrites its description. Both sides are produced by
+/// the real writer from one common ancestor, so this measures the format rather
+/// than a hand-written sample.
 ///
-/// Both sides are produced by the real writer, from one common ancestor — one
-/// checkout claims the item, the other edits its description — so this measures
-/// the format rather than a hand-written sample.
-///
-/// THE CONTROL IS IN THE SAME TEST, and it is the state this replaces: collapse
-/// the attributes chapter back to ONE physical line in all three versions and
-/// the identical pair of edits CONFLICTS. Nothing about the edits changed, only
-/// the layout, which is the whole claim.
+/// IT PASSES EITHER WAY BY DESIGN, and saying so is the point. The previous
+/// encoding already kept the description in a chapter of its own, so a status
+/// change and a description edit were already in disjoint regions and already
+/// merged. What this pins is that the ATTRIBUTES CHAPTER did not cost that
+/// property back — the discriminating measurement, two fields that used to share
+/// one physical line, is `adjacency_conflicts_and_a_blank_line_merges`.
 #[test]
 fn a_status_change_and_a_description_edit_merge_cleanly() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -204,9 +204,13 @@ fn a_status_change_and_a_description_edit_merge_cleanly() {
     ));
     let base = fs::read_to_string(the_document(&proj, "open")).expect("read");
 
-    // Two checkouts of the same item, each editing a different field.
-    let ours_dir = tmp.path().join("ours");
-    let theirs_dir = tmp.path().join("theirs");
+    // Two checkouts of the same item, each editing a different field. They live
+    // in tempdirs of their OWN: `setup_project` returns the tempdir itself, so a
+    // copy into a subdirectory of it would recurse into its own destination.
+    let ours_tmp = tempfile::tempdir().expect("tempdir");
+    let theirs_tmp = tempfile::tempdir().expect("tempdir");
+    let ours_dir = ours_tmp.path().to_path_buf();
+    let theirs_dir = theirs_tmp.path().to_path_buf();
     copy_tree(&proj, &ours_dir);
     copy_tree(&proj, &theirs_dir);
     ok(&ours_dir, &["claim", &id, "--agent", "claude"]);
@@ -219,15 +223,6 @@ fn a_status_change_and_a_description_edit_merge_cleanly() {
     let merged = merge3(tmp.path(), &base, &ours, &theirs).expect("the two edits merge cleanly");
     assert!(merged.contains("- status: Claimed"), "our status survived: {merged}");
     assert!(merged.contains("a rewritten wording"), "their prose survived: {merged}");
-
-    // THE CONTROL. One physical line for the whole fact — the shape this format
-    // replaces — and the same two edits collide.
-    let flat = |t: &str| collapse_attributes(t);
-    assert!(
-        merge3(tmp.path(), &flat(&base), &flat(&ours), &flat(&theirs)).is_err(),
-        "with the fields on ONE line the same two edits must conflict — otherwise \
-         this test is not measuring the layout"
-    );
 }
 
 /// THE BLANK LINE IS THE COUPLING DECLARATION (§3.3), and both halves are
@@ -260,6 +255,17 @@ fn adjacency_conflicts_and_a_blank_line_merges() {
     assert!(merged.contains("- acceptance: scaland-sbt-test"), "{merged}");
     assert!(merged.contains("- depends_on: WI-002"), "{merged}");
 
+    // THE CONTROL FOR THAT ONE, and the state this format replaces: collapse the
+    // whole chapter back to ONE physical line and the IDENTICAL pair of edits
+    // conflicts. Nothing about the edits changed, only the layout — which is the
+    // whole claim, and the reason a file-per-item tree was not already enough.
+    let flat = |t: &str| collapse_attributes(t);
+    assert!(
+        merge3(tmp.path(), &flat(&base), &flat(&ours), &flat(&theirs)).is_err(),
+        "with the fields on ONE line the same two edits must conflict — otherwise \
+         this test is not measuring the layout"
+    );
+
     // ADJACENT: two fields of one group, with nothing between them.
     assert!(
         base.contains("- status_agent: claude\n- status_at: "),
@@ -273,8 +279,11 @@ fn adjacency_conflicts_and_a_blank_line_merges() {
          half-transition"
     );
 
-    // THE CONTROL: the same two edits, one blank line apart.
-    let spaced = |t: &str| t.replace("- status_agent:", "\n- status_agent:");
+    // THE CONTROL: the same two edits, one blank line apart. The blank goes
+    // between the two EDITED lines — `status_agent` and `status_at` — because
+    // separating some other pair would leave these two adjacent and prove
+    // nothing.
+    let spaced = |t: &str| t.replace("- status_at:", "\n- status_at:");
     merge3(tmp.path(), &spaced(&base), &spaced(&ours), &spaced(&theirs))
         .expect("with a blank line between them the SAME two edits merge — so it is the \
                  adjacency that conflicts, not the values");

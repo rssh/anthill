@@ -145,8 +145,8 @@ fn a_claim_moves_the_file_and_carries_feedback_and_tags() {
         "the feedback rode along: {moved}"
     );
     assert!(
-        moved.contains(&format!("Tag(workitem: \"{id}\", name: \"wi1114\")")),
-        "the tag rode along: {moved}"
+        moved.contains("- tags: wi1114\n"),
+        "the tag rode along, as one element of the tags field: {moved}"
     );
 }
 

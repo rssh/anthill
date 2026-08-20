@@ -1999,13 +1999,52 @@ fn run_migrate_to_document(
         );
         return runner::EXIT_RUNTIME;
     }
-    // The PLAIN files go last, and only they: a legacy document was rewritten at
-    // its own path, so there is nothing left of it to remove. A crash before
-    // this point leaves both encodings — which the next load names as a
-    // `DuplicateId`, loud and repairable — rather than a hole.
-    for (path, _) in &plain {
+    // The sources go LAST. A crash before this point leaves both encodings —
+    // which the next load names as a `DuplicateId`, loud and repairable —
+    // rather than a hole.
+    //
+    // A LEGACY DOCUMENT IS USUALLY REWRITTEN AT ITS OWN PATH, and then there is
+    // nothing to remove. USUALLY is not ALWAYS: the directory is the item's
+    // status, so a source tree whose directory already disagreed with its status
+    // converts to a DIFFERENT path, and leaving the source behind puts the item
+    // in two files. Asked of the store rather than assumed, because the store is
+    // what decided where the row went.
+    let mut sources: Vec<PathBuf> = plain.iter().map(|(p, _)| p.to_path_buf()).collect();
+    for ((path, _), parsed) in legacy.iter().zip(converted.iter()) {
+        let Some(id) = first_item_id(parsed) else {
+            continue;
+        };
+        match target.item_location(&id) {
+            Some(written) if written == path.as_path() => {}
+            _ => sources.push(path.clone()),
+        }
+    }
+    for path in &sources {
         if let Err(e) = fs::remove_file(path) {
             eprintln!("error: removing the converted file {}: {e}", path.display());
+            return runner::EXIT_RUNTIME;
+        }
+    }
+    // THE BINDING NAMES A FIELD THIS CONVERSION JUST MOVED, and leaving it is
+    // what turns a successful migration into an unusable tracker: the store
+    // routes a row by `status_field`, stage0's status now lives inside
+    // `last_status_change`, and every command afterwards fails with "carries
+    // `id` but no `status` field" — on data that converted perfectly.
+    //
+    // It is not caught by the conversion itself, which builds its own target
+    // store from this CLI's constants rather than from the declaration. So the
+    // declaration has to be brought along, here, by the one command that knows
+    // the field moved.
+    match rewrite_status_field(project_items) {
+        Ok(Some(path)) => println!("updated the store binding in {}", path.display()),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("error: the documents are converted, but {e}");
+            eprintln!(
+                "note: set `status_field: \"{STAGE0_STATUS_FIELD}\"` in the project's \
+                 `ExtentBinding` by hand — until it names the field an item's status \
+                 actually lives in, every command will refuse to route a row"
+            );
             return runner::EXIT_RUNTIME;
         }
     }
@@ -2083,6 +2122,72 @@ fn plain_item_files<'a>(
         out.push((file.path.as_path(), mine));
     }
     Ok(out)
+}
+
+/// Point the project's `ExtentBinding` at the field an item's status now lives
+/// in, and answer which file was rewritten.
+///
+/// NARROW ON PURPOSE. It rewrites exactly the pre-flattening stage0 spelling
+/// (`"status"`), because that is the one this conversion moved. A binding naming
+/// anything else belongs to a domain this command did not change, and a blanket
+/// rewrite would repoint it at a field its own rows do not have — the store is
+/// domain-neutral, and this is the one place that must not forget it.
+fn rewrite_status_field(project_items: &[ProjectFile]) -> Result<Option<PathBuf>, String> {
+    const WAS: &str = "status_field: \"status\"";
+    let now = format!("status_field: \"{STAGE0_STATUS_FIELD}\"");
+    for file in project_items {
+        if file.source.contains(&now) {
+            return Ok(None);
+        }
+    }
+    let mut found: Option<&ProjectFile> = None;
+    for file in project_items {
+        if !file.source.contains(WAS) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(format!(
+                "two project files declare `{WAS}`; which one binds this store is a guess"
+            ));
+        }
+        found = Some(file);
+    }
+    let Some(file) = found else {
+        // Either there is no binding to update, or it names a field this
+        // conversion did not move. Both are silence rather than a refusal.
+        return Ok(None);
+    };
+    let text = file.source.replacen(WAS, &now, 1);
+    fs::write(&file.path, text)
+        .map_err(|e| format!("writing {}: {e}", file.path.display()))?;
+    Ok(Some(file.path.clone()))
+}
+
+/// The `id` of the item a converted file declares, read off the parse IR.
+fn first_item_id(parsed: &ParsedFile) -> Option<String> {
+    use anthill_core::parse::ir::Item;
+    fn walk(pf: &ParsedFile, items: &[Item]) -> Option<String> {
+        for item in items {
+            match item {
+                Item::Namespace(ns) => {
+                    if let Some(found) = walk(pf, &ns.items) {
+                        return Some(found);
+                    }
+                }
+                Item::Fact(f) => {
+                    let Term::Fn { named_args, .. } = pf.terms.get(f.term) else {
+                        continue;
+                    };
+                    if let Some(id) = ir_string(pf, named_args, STAGE0_ID_FIELD) {
+                        return Some(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    walk(parsed, &parsed.items)
 }
 
 /// One legacy document, as the parse IR the new encoding would have produced.

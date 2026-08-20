@@ -230,7 +230,8 @@ fn status_rejected_with_reason_persists() {
     );
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(
-        combined.contains("Rejected(reason: \"superseded by WI-002\""),
+        combined.contains("status: Rejected, agent: some(value: \"user\"), at: some(value: ")
+            && combined.contains("reason: some(value: \"superseded by WI-002\")"),
         "Rejected reason not persisted: {combined}"
     );
 }

@@ -116,12 +116,12 @@ fn migrate_explodes_the_store_into_one_file_per_item() {
     assert!(out.status.success(), "migrate failed: {}", stderr(&out));
 
     let one = read(&proj, "open/WI-001.anthill.md");
-    assert!(one.contains(r#"id: "WI-001""#), "the item's own row:\n{one}");
+    assert!(one.contains("- id: WI-001\n"), "the item's own row:\n{one}");
     assert!(one.contains("a note"), "its feedback rides along:\n{one}");
-    assert!(one.contains(r#"name: "probe""#), "its tag rides along:\n{one}");
+    assert!(one.contains("- tags: probe\n"), "its tag rides along:\n{one}");
 
     let two = read(&proj, "delivered/WI-002.anthill.md");
-    assert!(two.contains(r#"id: "WI-002""#), "filed by its own status:\n{two}");
+    assert!(two.contains("- id: WI-002\n"), "filed by its own status:\n{two}");
 
     // The store-level row — neither a primary nor a satellite — is filed under its
     // own functor at the root (§8.3's third route).
@@ -164,7 +164,7 @@ fn a_migrated_project_is_a_working_tracker() {
     let moved = read(&proj, "claimed/WI-001.anthill.md");
     assert!(moved.contains("Claimed"), "the status fact is rewritten:\n{moved}");
     assert!(moved.contains("a note"), "the feedback moved with it:\n{moved}");
-    assert!(moved.contains(r#"name: "probe""#), "the tag moved with it:\n{moved}");
+    assert!(moved.contains("- tags: probe\n"), "the tag moved with it:\n{moved}");
 
     // A write through the migrated store lands in the item's own file.
     let out = run_in(&proj, &["feedback", "WI-001", "after the move"]);

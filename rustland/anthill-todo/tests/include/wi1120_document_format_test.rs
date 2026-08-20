@@ -224,17 +224,29 @@ fn prose_carrying_a_reserved_heading_is_demoted_rather_than_refused() {
     let text = fs::read_to_string(the_document(&proj, "open")).expect("read");
     assert!(text.contains("\n### a section\n"), "shifted below the reserved level: {text}");
     assert!(text.contains("\n#### under it\n"), "and its child kept its place under it: {text}");
-    assert_eq!(text.matches("\n## ").count(), 2, "still two chapters: {text}");
+    // `## Attributes` opens the file, so it has no newline before it — count the
+    // chapter headings at line starts rather than by a leading newline.
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("## ")).count(),
+        2,
+        "still two chapters: {text}"
+    );
     // The whole description comes back, sub-sections included.
     let shown = ok(&proj, &["show", &id]);
     assert!(shown.contains("### a section") && shown.contains("tail"), "{shown}");
 
-    // …and writing it back a second time changes nothing.
+    // …and writing the SAME text back shifts nothing. That is what makes the
+    // demotion safe to apply on every write: stored prose has no collision left,
+    // so a round trip is identity from the second write onward. Driven by
+    // rewriting the description rather than by some other command, because it is
+    // the description's own path through demote-and-render that must be idempotent.
     let again = fs::read_to_string(the_document(&proj, "open")).expect("read");
-    ok(&proj, &["tag", &id, "idempotence"]);
-    let after_tag = fs::read_to_string(the_document(&proj, "open")).expect("read");
+    ok(
+        &proj,
+        &["update", &id, "--description", "intro\n\n### a section\n\n#### under it\n\ntail"],
+    );
     assert_eq!(
-        after_tag.replace("\n- tags: idempotence\n", "\n"),
+        fs::read_to_string(the_document(&proj, "open")).expect("read"),
         again,
         "a second write shifted the prose again"
     );
@@ -359,6 +371,101 @@ fn migrate_to_document_converts_a_plain_tree_and_backdates_created() {
     // The rows are the rows they were — a reformat, not a data change.
     let shown = ok(&proj, &["show", "WI-042"]);
     assert!(shown.contains("a legacy item") && shown.contains("a legacy note"), "{shown}");
+}
+
+/// THE CONVERSION BRINGS THE BINDING WITH IT, and without this the migration
+/// succeeds and leaves a tracker nothing can read.
+///
+/// The store routes a row by the `status_field` its `ExtentBinding` names.
+/// WI-K63ZV moved stage0's status inside `last_status_change`, so a binding left
+/// naming `"status"` points at a field the converted rows do not have, and every
+/// later command fails with "carries `id` … but no `status` field" — on data
+/// that converted perfectly. The conversion does not notice, because it builds
+/// its own target store from this CLI's constants rather than from the
+/// declaration.
+///
+/// MEASURED THE WAY A USER MEETS IT: convert a project whose binding is
+/// untouched, then run an ordinary command. The `status` assertion is the one
+/// that fails when the rewrite is backed out.
+#[test]
+fn converting_a_tree_repoints_its_binding_at_the_moved_status_field() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = per_file_project(&tmp);
+    let config = proj.join("anthill-todo/project.anthill");
+    // The binding as a project written before the flattening carries it.
+    let before = fs::read_to_string(&config).expect("read");
+    fs::write(
+        &config,
+        before.replace(
+            "status_field: \"last_status_change.status\"",
+            "status_field: \"status\"",
+        ),
+    )
+    .expect("write");
+
+    let open = proj.join("anthill-todo/open");
+    fs::create_dir_all(&open).expect("mkdir");
+    fs::write(
+        open.join("WI-910.anthill.md"),
+        "```anthill\nfact WorkItem(id: \"WI-910\", created: \"2026-01-01T00:00:00Z\", \
+         acceptance: [], status: Open)\n```\n\n## description\n\nbinding probe\n",
+    )
+    .expect("write");
+
+    let out = ok(&proj, &["migrate", "--to", "document"]);
+    assert!(out.contains("updated the store binding"), "it says so: {out}");
+    assert!(
+        fs::read_to_string(&config)
+            .expect("read")
+            .contains("status_field: \"last_status_change.status\""),
+        "the binding names the field the status actually lives in"
+    );
+
+    // …and the tracker WORKS afterwards, which is the property that matters.
+    assert!(ok(&proj, &["status"]).contains("1 work item"));
+    assert!(ok(&proj, &["show", "WI-910"]).contains("binding probe"));
+}
+
+/// A CONVERTED ITEM WHOSE DIRECTORY DENIED ITS STATUS MUST NOT END UP IN TWO
+/// FILES, and this is the one case where "a legacy document is rewritten at its
+/// own path" is false.
+///
+/// The directory IS the status, so a source tree that already disagreed —
+/// a `Claimed` item sitting under `open/`, which `fsck` reports as a
+/// `PathDisagreement` — converts to a DIFFERENT path. Removing only the plain
+/// sources left the legacy file behind, and the item then existed twice: a
+/// `DuplicateId`, which BLOCKS every later command, produced by the very
+/// command that was supposed to fix the tree.
+///
+/// THE CONTROL is every other conversion test here, where source and
+/// destination agree and there is correctly nothing to remove — so this cannot
+/// be satisfied by deleting the source unconditionally either.
+#[test]
+fn converting_a_misfiled_legacy_document_leaves_exactly_one_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let proj = per_file_project(&tmp);
+    let open = proj.join("anthill-todo/open");
+    fs::create_dir_all(&open).expect("mkdir");
+    // Claimed, but filed under `open/`.
+    fs::write(
+        open.join("WI-905.anthill.md"),
+        "```anthill\nfact WorkItem(id: \"WI-905\", created: \"2026-01-01T00:00:00Z\", \
+         acceptance: [], status: Claimed(agent: \"alice\", since: \"2026-02-02T00:00:00Z\"))\n\
+         ```\n\n## description\n\nmisfiled and legacy\n",
+    )
+    .expect("write");
+
+    ok(&proj, &["migrate", "--to", "document"]);
+
+    assert!(!open.join("WI-905.anthill.md").exists(), "the source was removed");
+    let moved = proj.join("anthill-todo/claimed/WI-905.anthill.md");
+    assert!(moved.exists(), "the item landed where its status says");
+    let text = fs::read_to_string(&moved).expect("read");
+    assert!(text.contains("- status: Claimed\n- status_agent: alice\n"), "{text}");
+
+    // ONE file, so nothing is a duplicate and every command still works.
+    assert!(ok(&proj, &["fsck"]).contains("layout ok"));
+    assert!(ok(&proj, &["show", "WI-905"]).contains("misfiled and legacy"));
 }
 
 /// AN UNDATED ITEM IS DATED FROM ITS OWN FILE rather than refused. `created`

@@ -290,11 +290,16 @@ fn default_matches_the_scaffolded_binding() {
     let bare_items =
         fs::read_to_string(bare_proj.join("anthill-todo/workitems.anthill")).expect("read");
 
-    // WI-1121: WITH THE ID AND `created` MASKED OUT. Two `add`s a second apart
-    // now mint different ids and stamp different times — by design — so a
-    // verbatim comparison would measure the clock rather than the binding. What
-    // this test is about is that the two paths write the same ROW SHAPE, and
-    // that is exactly what survives the mask.
+    // WI-1121: WITH EVERY TIMESTAMP MASKED OUT. Two `add`s a second apart mint
+    // different ids and stamp different times — by design — so a verbatim
+    // comparison would measure the clock rather than the binding. What this test
+    // is about is that the two paths write the same ROW SHAPE, and that is
+    // exactly what survives the mask.
+    //
+    // WI-K63ZV added a SECOND clock reading to every row: an item's state is now
+    // the last change made to it, so `add` stamps `at:` as well as `created:`.
+    // Masking only `created` left that one visible and the comparison started
+    // measuring the clock again.
     let row_of = |s: &str| {
         let row = s
             .lines()
@@ -303,7 +308,7 @@ fn default_matches_the_scaffolded_binding() {
             .to_string();
         let mut out = String::new();
         let mut rest = row.as_str();
-        for field in ["id: \"", "created: \""] {
+        for field in ["id: \"", "created: \"", "at: some(value: \""] {
             match rest.split_once(field) {
                 Some((before, after)) => {
                     let (_, tail) = after.split_once('"').expect("a closed literal");

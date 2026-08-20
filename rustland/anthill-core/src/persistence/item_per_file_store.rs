@@ -709,6 +709,16 @@ impl ItemPerFileStore {
         self.mapping.is_some()
     }
 
+    /// The file this store currently holds an item in.
+    ///
+    /// For a CONVERSION, which has to know whether the file it read is the file
+    /// that was written: a converted item whose status disagreed with its old
+    /// directory lands somewhere else, and the source then has to be removed or
+    /// the item exists twice — a `DuplicateId`, which blocks every later command.
+    pub fn item_location(&self, id: &str) -> Option<&Path> {
+        self.by_item.get(id).map(|p| p.as_path())
+    }
+
     /// Claim these paths as files this store may overwrite, holding no rows.
     ///
     /// FOR A CONVERSION AND NOTHING ELSE. [`Self::refuse_unknown_occupant`]
