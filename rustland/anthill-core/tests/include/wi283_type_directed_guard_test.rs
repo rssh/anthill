@@ -36,7 +36,7 @@ namespace test.wi283guard
       op2(a: T, b: T) -> T
     }
     rule {
-      op2_id: op2(?a, ?b) = ?a [simp]
+      op2_id: op2(?a, ?b) <=> ?a [simp]
     }
   end
 
@@ -111,7 +111,7 @@ namespace test.wi283carrier
       wrap(tag: Int64, x: T) -> T
     }
     rule {
-      wrap_id: wrap(?tag, ?x) = ?x [simp]
+      wrap_id: wrap(?tag, ?x) <=> ?x [simp]
     }
   end
 
@@ -253,7 +253,7 @@ namespace test.wi292nonsimp
       flip(a: T, b: T) -> T
     }
     rule {
-      flip_comm: flip(?a, ?b) = flip(?b, ?a)
+      flip_comm: flip(?a, ?b) <=> flip(?b, ?a)
     }
   end
 

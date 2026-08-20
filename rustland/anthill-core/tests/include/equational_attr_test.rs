@@ -69,7 +69,7 @@ fn bare_equational_rule_is_excluded_from_rules_by_functor() {
         namespace test.eqattr.bare
           rule Marker(?x) :- ?x = 1
           rule {
-            my_law: foo(?a, ?b) = foo(?b, ?a)
+            my_law: foo(?a, ?b) <=> foo(?b, ?a)
           }
         end
     "#,
@@ -95,7 +95,7 @@ fn simp_attributed_equational_rule_is_indexed() {
         r#"
         namespace test.eqattr.simp_with
           rule Marker(?x) :- ?x = 1
-          rule my_def: foo(?a) = bar(?a) [simp]
+          rule my_def: foo(?a) <=> bar(?a) [simp]
         end
     "#,
     ));
@@ -119,7 +119,7 @@ fn unfold_attributed_equational_rule_is_indexed() {
         r#"
         namespace test.eqattr.unfold_with
           rule Marker(?x) :- ?x = 1
-          rule my_def: g(?a) = h(?a) [unfold]
+          rule my_def: g(?a) <=> h(?a) [unfold]
         end
     "#,
     ));
@@ -150,7 +150,7 @@ fn hint_attributed_equational_rule_stays_unindexed_in_v0() {
         namespace test.eqattr.hint
           rule Marker(?x) :- ?x = 1
           rule {
-            my_lemma: comm(?a, ?b) = comm(?b, ?a)
+            my_lemma: comm(?a, ?b) <=> comm(?b, ?a)
             [hint]
           }
         end

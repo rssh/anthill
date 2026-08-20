@@ -187,7 +187,7 @@ fn proof_is_transparent_to_simp_rewriting() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
-            rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
+            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
             operation wrapped(b: Box) -> Int64 =
               proof p by derivation conclude eq(0, 0) end
               ?b.special(7)

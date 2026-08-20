@@ -15,22 +15,22 @@ sort anthill.prelude.Bool
   -- Laws: Boolean algebra
   rule {
     -- identity
-    and_true:   and(true, ?a) = ?a
-    or_false:   or(false, ?a) = ?a
+    and_true:   and(true, ?a) <=> ?a
+    or_false:   or(false, ?a) <=> ?a
     -- annihilation
-    and_false:  and(false, ?_) = false
-    or_true:    or(true, ?_) = true
+    and_false:  and(false, ?_) <=> false
+    or_true:    or(true, ?_) <=> true
     -- complement
-    not_true:   not(true) = false
-    not_false:  not(false) = true
+    not_true:   not(true) <=> false
+    not_false:  not(false) <=> true
     -- double negation
-    not_not:    not(not(?a)) = ?a
+    not_not:    not(not(?a)) <=> ?a
     -- commutativity
-    and_comm:   and(?a, ?b) = and(?b, ?a)
-    or_comm:    or(?a, ?b) = or(?b, ?a)
+    and_comm:   and(?a, ?b) <=> and(?b, ?a)
+    or_comm:    or(?a, ?b) <=> or(?b, ?a)
     -- de Morgan
-    demorgan_and: not(and(?a, ?b)) = or(not(?a), not(?b))
-    demorgan_or:  not(or(?a, ?b)) = and(not(?a), not(?b))
+    demorgan_and: not(and(?a, ?b)) <=> or(not(?a), not(?b))
+    demorgan_or:  not(or(?a, ?b)) <=> and(not(?a), not(?b))
   }
 
   -- if-then-else. `ite` IS NOT AN OPERATION, and cannot be one AT THIS SIGNATURE:
@@ -46,7 +46,7 @@ sort anthill.prelude.Bool
   -- functor's other consumer is smt-gen's `(ite c t e)`, which wants the condition left
   -- symbolic and no reduction at all.
   rule {
-    ite_true:   ite(true, ?t, ?_) = ?t [simp]
-    ite_false:  ite(false, ?_, ?e) = ?e [simp]
+    ite_true:   ite(true, ?t, ?_) <=> ?t [simp]
+    ite_false:  ite(false, ?_, ?e) <=> ?e [simp]
   }
 end

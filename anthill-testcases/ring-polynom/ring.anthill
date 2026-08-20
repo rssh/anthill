@@ -9,22 +9,22 @@ sort Ring
   operation one() -> T
 
   -- Additive identity
-  rule ?a + zero = ?a
-  rule zero + ?a = ?a
+  rule ?a + zero <=> ?a
+  rule zero + ?a <=> ?a
 
   -- Additive inverse
-  rule ?a + neg(?a) = zero
+  rule ?a + neg(?a) <=> zero
 
   -- Multiplicative identity
-  rule ?a * one = ?a
-  rule one * ?a = ?a
+  rule ?a * one <=> ?a
+  rule one * ?a <=> ?a
 
   -- Commutativity of addition
-  rule ?a + ?b = ?b + ?a
+  rule ?a + ?b <=> ?b + ?a
 
   -- Distributivity
-  rule (?a + ?b) * ?c = ?a * ?c + ?b * ?c
-  rule ?a * (?b + ?c) = ?a * ?b + ?a * ?c
+  rule (?a + ?b) * ?c <=> ?a * ?c + ?b * ?c
+  rule ?a * (?b + ?c) <=> ?a * ?b + ?a * ?c
 end
 
 -- Int64 satisfies Ring

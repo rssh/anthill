@@ -1211,8 +1211,8 @@ class ParserIntegrationTest extends munit.FunSuite:
     """namespace p3
       |  sort Boolish
       |    rule {
-      |      ite_true:  ite(true, ?t, ?e) = ?t
-      |      ite_false: ite(false, ?t, ?e) = ?e
+      |      ite_true:  ite(true, ?t, ?e) <=> ?t
+      |      ite_false: ite(false, ?t, ?e) <=> ?e
       |    }
       |    rule likes(?a, ?b) :- ite(?a, ?b, ?a)
       |  end
@@ -1254,7 +1254,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val (_, errs) = loadFixture(
       """namespace p3b
         |  sort Boolish
-        |    rule ite(true, ?t, ?e) = ?t
+        |    rule ite(true, ?t, ?e) <=> ?t
         |  end
         |  sort User
         |    import p3b.Boolish.{nosuchname}
@@ -1350,7 +1350,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val (kb, errs) = loadFixture(
       """namespace p4
         |  sort Boolish
-        |    rule ite(true, ?t, ?e) = ?t
+        |    rule ite(true, ?t, ?e) <=> ?t
         |  end
         |  sort User
         |    import p4.{ite}
@@ -1438,6 +1438,108 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(errs.isEmpty, s"neither shape is a bodyless `===` head; got $errs")
     assertEquals(kindOf(kb, "p1090c.S.g1090"), Some(SymbolKind.EquationFunctor),
       "`<=>` is the connective of equational rule heads, so its subject IS introduced")
+  }
+
+  // ── WI-888: `=` is a test too, so it does not head an equation either ──
+
+  /** THE SAME TABLE ROW AS `===`, one connective over. The spec's equality table puts
+    * `=` in the TEST column beside `===`, and `<=>` alone in the BIND column — and only
+    * a connective that BINDS can head an equation, the head unifying the redex with its
+    * LHS and deriving the RHS. WI-1090 held `===` to that; WI-888 holds `=` to it.
+    *
+    * IT WAS NOT THE SAME DEFECT, which is why the message differs and this test asserts
+    * on the `=` wording rather than reusing the `===` needle. A `===` head was silently
+    * useless; an `=` head FIRED (rustland's WI-884 drove all four connective ×
+    * attribute combinations, and the answer tracked the `[simp]` tag alone). So this
+    * refusal finishes proposal 049's migration — build step 6, WI-526, which relabelled
+    * 40 heads and left 44 in the stdlib — rather than repairing a silence, and the
+    * message owes the author the substitute spelling instead of a diagnosis. */
+  test("WI-888: a bodyless `=` head is refused and names `<=>` as the substitute") {
+    val (kb, errs) = loadFixture(
+      """namespace p888
+        |  sort S
+        |    rule g888(?x) = ?x
+        |  end
+        |end""".stripMargin)
+    assert(errs.exists(e => e.toString.contains("`=` is the semantic equality TEST")),
+      s"a bodyless `=` head must be refused at the rule; got $errs")
+    assert(errs.exists(e => e.toString.contains("Write `g888(…) <=> …`")),
+      s"the message must name the subject and the connective that defines it; got $errs")
+    assertEquals(kindOf(kb, "p888.S.g888"), None,
+      "and nothing is introduced under it \u2014 `=` has no subject to introduce")
+  }
+
+  /** The `[simp]` tag has NO bearing on it, which is the half a reader of the pre-WI-888
+    * behaviour would get backwards: the tag decided everything there and decides nothing
+    * here. `reflect.anthill` and `bool.anthill` both shipped this exact combination. */
+  test("WI-888: a `[simp]` tag does not admit the `=` spelling") {
+    val (_, errs) = loadFixture(
+      """namespace p888b
+        |  sort S
+        |    rule g888(?x) = ?x [simp]
+        |  end
+        |end""".stripMargin)
+    assert(errs.exists(e => e.toString.contains("`=` is the semantic equality TEST")),
+      s"`[simp]` does not admit a bodyless `=` head; got $errs")
+  }
+
+  /** THE BOUNDARY WI-888 DID NOT MOVE, and the row that stops the refusal being widened
+    * into a tidier rule: a GUARDED equation keeps its `=` spelling, because proposal 049
+    * draws the migration line at the EMPTY BODY and `map.anthill` writes one directly
+    * beneath its `<=>` siblings. Passes with and without WI-888, by design. */
+  test("WI-888: a guarded `=` equation keeps its spelling") {
+    val (_, errs) = loadFixture(
+      """namespace p888c
+        |  sort S
+        |    rule p888(?x) :- ?x === 1
+        |    rule g888(?x) = ?x :- p888(?x)
+        |  end
+        |end""".stripMargin)
+    assert(errs.isEmpty, s"a guarded `=` equation is not a bodyless head; got $errs")
+  }
+
+  /** THE DEFECT THE RELABEL SURFACED, mirrored from rustland. A namespace that declares
+    * its own `unify` must not capture the MINTED `<=>` connective: `<=>` is
+    * structural-only and never dispatches (proposal 049's Invariant), so a same-named
+    * symbol in scope is a collision, not an override.
+    *
+    * This is `reflect.anthill`'s shape reduced to one file — that file declares
+    * `unify(a: Term, b: Term, kb: KB)` for proposal 049's term-level face, and the three
+    * `rule fact_monotonicity(…) <=> constant() [simp]` rules WI-888 rewrote in that same
+    * namespace resolved their connective onto it, filing three clauses under a 3-ary
+    * reflect operation. They loaded clean and fired nothing. scaland loads
+    * `reflect.anthill`, so it had the identical defect; found by review after the
+    * rustland half shipped alone.
+    *
+    * Asserted on WHICH FUNCTOR OWNS THE CLAUSE rather than on firing, because scaland has
+    * no normalizer to fire it — the misfiling IS the defect, and it is what a later
+    * reader of `byFunctor(kernel.unify)` would miss. Backing out
+    * `Loader.mintedConnectiveSymbol` moves the clause to `p888d.S.unify` and both
+    * assertions fail.
+    *
+    * The local declaration must stay CALLABLE, which is the second row: a WRITTEN
+    * `unify(a, b, c)` call is not minted (WI-948), so it keeps the ordinary ladder. */
+  test("WI-888: a local `unify` declaration does not capture the `<=>` connective") {
+    val (kb, errs) = loadFixture(
+      """namespace anthill.kernel
+        |  operation unify(a: Int64, b: Int64) -> Bool
+        |end
+        |
+        |namespace p888d
+        |  sort S
+        |    operation unify(a: Int64, b: Int64, c: Int64) -> Int64 = a
+        |    rule g888d(?x) <=> ?x [simp]
+        |  end
+        |end""".stripMargin)
+    assert(errs.isEmpty, s"the fixture must load; got $errs")
+    val kernelUnify = kb.symbols.byQualifiedName.getOrElse("anthill.kernel.unify",
+      fail("the fixture declares `anthill.kernel.unify`"))
+    val localUnify = kb.symbols.byQualifiedName.getOrElse("p888d.S.unify",
+      fail("the fixture declares a local `unify` to shadow with"))
+    assertEquals(kb.byFunctor(kernelUnify).length, 1,
+      "the `<=>` head belongs to the kernel primitive")
+    assertEquals(kb.byFunctor(localUnify).length, 0,
+      "\u2026and NOT to the same-named local declaration the scope ladder would have found")
   }
 
   // ── WI-992: a dotted declaration lives in the namespace it names ──

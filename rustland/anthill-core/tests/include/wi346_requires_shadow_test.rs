@@ -117,7 +117,7 @@ fn provider_override_no_warning() {
           sort Sp
             sort T = ?
             operation s_op(x: T) -> T
-            rule s_op(?x) = ?x
+            rule s_op(?x) <=> ?x
           end
           sort Carrier
             entity c(id: Int64)

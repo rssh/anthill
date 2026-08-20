@@ -285,7 +285,7 @@ rule dot_field: dot_apply(?x, ?name, []) = field_access(?x, ?name)
 
   ```
   -- in sort Either:
-  rule either_map: dot_apply(?e, map, [?f]) = either_map(?e, ?f)   [simp]
+  rule either_map: dot_apply(?e, map, [?f]) <=> either_map(?e, ?f)   [simp]
   ```
 
   Its sort scope (`Either`) is the implicit guard; it outranks the default for

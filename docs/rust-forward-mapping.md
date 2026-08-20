@@ -225,7 +225,7 @@ A different profile (e.g. Rust/no_std) could override these — `List` → `heap
 Rules expressing laws generate property-based test stubs:
 
 ```
-rule add_comm: add(?a, ?b) = add(?b, ?a)
+rule add_comm: add(?a, ?b) <=> add(?b, ?a)
 
 →  #[cfg(test)]
    mod tests {
@@ -844,8 +844,8 @@ sort anthill.prelude.List
   entity nil
   entity cons(head: T, tail: List)
   operation length(l: List) -> Int64
-  rule length(nil) = 0
-  rule length(cons(?x, ?xs)) = add(1, length(?xs))
+  rule length(nil) <=> 0
+  rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 end
 ```
 
@@ -889,7 +889,7 @@ sort anthill.prelude.Eq
   sort T
   operation eq(a: T, b: T) -> Bool
   operation neq(a: T, b: T) -> Bool
-  rule neq(?a, ?b) = not(eq(?a, ?b))
+  rule neq(?a, ?b) <=> not(eq(?a, ?b))
 end
 
 sort anthill.prelude.Ord

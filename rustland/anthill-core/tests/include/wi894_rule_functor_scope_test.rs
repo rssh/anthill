@@ -28,8 +28,8 @@ namespace wi894.inverted
   sort A
     import anthill.prelude.{Int64, Bool}
     rule {
-      pickTrue:  pick894(true, ?t, ?_) = ?t [simp]
-      pickFalse: pick894(false, ?_, ?e) = ?e [simp]
+      pickTrue:  pick894(true, ?t, ?_) <=> ?t [simp]
+      pickFalse: pick894(false, ?_, ?e) <=> ?e [simp]
     }
     operation driveA(n: Int64) -> Int64 = pick894(true, 10, 20)
   end
@@ -37,8 +37,8 @@ namespace wi894.inverted
   sort B
     import anthill.prelude.{Int64, Bool}
     rule {
-      pickTrue:  pick894(true, ?_, ?e) = ?e [simp]
-      pickFalse: pick894(false, ?t, ?_) = ?t [simp]
+      pickTrue:  pick894(true, ?_, ?e) <=> ?e [simp]
+      pickFalse: pick894(false, ?t, ?_) <=> ?t [simp]
     }
     operation driveB(n: Int64) -> Int64 = pick894(true, 10, 20)
   end
@@ -87,9 +87,16 @@ namespace wi894.labels
   sort S
     import anthill.prelude.{Int64, Bool}
     rule {
-      lblEq894: labeledEq894(?x) = ?x [simp]
-      bareEq894(?x) = ?x [simp]
-      lblUni894: labeledUnify894(?x) <=> ?x [simp]
+      -- WI-888: the EQUATION cells, labeled and unlabeled. There used to be a third,
+      -- `lblUni894: labeledUnify894(?x) <=> ?x`, set against these two spelled `=` — a
+      -- real contrast while both connectives headed a bodyless rule. `<=>` is now the
+      -- only one that does, so keeping it would have been the same cell three times,
+      -- and the expectation beside it claimed "`<=>` is the same definition as `=`
+      -- here", which the refusal makes false. The `=` spelling that still reaches this
+      -- path is the GUARDED head below (`lblBodied894`), and it is a different cell
+      -- entirely: not an equation, so it takes the predicate path.
+      lblEq894: labeledEq894(?x) <=> ?x [simp]
+      bareEq894(?x) <=> ?x [simp]
       lblPred894: labeledPred894(?x) :- Int64.gt(?x, 0)
       barePred894(?x) :- Int64.gt(?x, 0)
       -- a BODIED `=` head is not an equation (§8.3: an equation is bodyless), so it
@@ -110,8 +117,8 @@ namespace wi894.labels
   sort M
     import anthill.prelude.{Int64, Bool}
     entity M(f: Int64)
-    rule { dotted: ?x.foo894(?y) = ?y }
-    rule { fieldy: ?x.f = 7 }
+    rule { dotted: ?x.foo894(?y) <=> ?y }
+    rule { fieldy: ?x.f <=> 7 }
     -- the PREDICATE spellings of the same shapes. They reach the OTHER path, where the
     -- guard was missing: MEASURED, `rule ?x.m894(?y) :- p894(?x)` minted
     -- `<ns>.dot_apply`, shadowing reserved kernel vocab for the whole scope.
@@ -162,11 +169,6 @@ fn which_name_a_rule_head_introduces() {
             "S.bareEq894",
             true,
             "an unlabeled equation defines its LHS function",
-        ),
-        (
-            "S.labeledUnify894",
-            true,
-            "`<=>` is the same definition as `=` here",
         ),
         (
             "S.barePred894",

@@ -76,21 +76,29 @@ object Pratt:
     * node, as a bodyless rule head, is a DEFINING EQUATION whose subject sits at
     * position 0. Mirrors rustland's `pratt::EQUATION_FUNCTORS`.
     *
-    * `===` is deliberately absent (WI-1090). The spec's equality table (§"Equality:
-    * test vs. bind, structural vs. semantic") puts it in the TEST column beside `=`,
-    * and §"`===` — the structural identity *test*" makes it a resolver builtin that
-    * never dispatches, while `<=>` is named there as "the connective of equational rule
-    * heads". A `===` head therefore introduces no subject, and a bodyless one is
-    * refused ([[Loader.nonDefiningConnectiveHead]]). */
+    * IT HAS ONE MEMBER, and the spec's equality table decides which (§"Equality: test
+    * vs. bind, structural vs. semantic"): `===` and `=` are the TEST column, `<=>` is
+    * the BIND column alone, and only a connective that BINDS can head an equation — the
+    * head unifies the redex with the LHS and derives the RHS. `===` left under WI-1090
+    * and `=` under WI-888, by the same rule applied to the same table row. Both
+    * therefore introduce no subject, and a bodyless head on either is refused
+    * ([[Loader.nonDefiningConnectiveHead]]).
+    *
+    * They were not the same DEFECT, which is why the message branches even though this
+    * list does not: a `===` head was silently useless, while an `=` head FIRED (WI-884
+    * drove all four connective × attribute combinations). Refusing `=` finishes
+    * proposal 049's migration (build step 6, WI-526) rather than repairing a silence. */
   private val equationFunctors: Set[String] =
-    Set("=", "<=>").flatMap(infixTable.get).map(_.functor)
+    Set("<=>").flatMap(infixTable.get).map(_.functor)
 
   def isEquationFunctor(name: String): Boolean = equationFunctors.contains(name)
 
-  /** The functor `===` desugars to — the one non-defining member of the family, needed
-    * by the loader's refusal so it can name the operator back to the author. */
+  /** The functors `===` and `=` desugar to — the non-defining members of the family,
+    * needed by the loader's refusal so it can name the operator back to the author. */
   val structEqFunctor: String =
     infixTable("===").functor
+  val eqFunctor: String =
+    infixTable("=").functor
 
   /** Desugar a flat infix chain.
     *

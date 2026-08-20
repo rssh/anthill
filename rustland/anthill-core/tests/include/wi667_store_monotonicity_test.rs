@@ -205,7 +205,7 @@ fn monotonicity_query_reads_reflect_rule_without_a_write() {
         import anthill.reflect.{fact_monotonicity, non_monotone}\n  \
         entity Widget\n  \
         entity Gadget\n  \
-        rule fact_monotonicity(Widget) = non_monotone() [simp]\nend\n";
+        rule fact_monotonicity(Widget) <=> non_monotone() [simp]\nend\n";
     let mut interp = interp_for(src);
     let store = register_file_store(&mut interp, dir.path());
 

@@ -743,11 +743,11 @@ object Loader:
         Option.when(Pratt.isEqualityFamilyFunctor(name))((name, fn.posArgs(0)))
       case _ => None
 
-  /** The LHS operand of a parse-layer DEFINING EQUATION head (`lhs = rhs` / `<=>`), or
-    * `None` when `head` is not one — [[parseConnectiveHead]] narrowed to the
-    * connectives that DEFINE. `===` is not one (WI-1090): it is the structural identity
-    * test, its subject defines nothing, and a bodyless `===` head is refused by
-    * [[nonDefiningConnectiveHead]] instead of being stamped.
+  /** The LHS operand of a parse-layer DEFINING EQUATION head (`lhs <=> rhs`), or
+    * `None` when `head` is not one — [[parseConnectiveHead]] narrowed to the ONE
+    * connective that DEFINES. Neither `===` (WI-1090) nor `=` (WI-888) is one: both are
+    * the spec's TEST column, their subjects define nothing, and a bodyless head on
+    * either is refused by [[nonDefiningConnectiveHead]] instead of being stamped.
     *
     * Two questions, kept apart deliberately — "where do the operands sit" is the shape
     * above and answers the same for every family member, while "does this head DEFINE"
@@ -760,10 +760,14 @@ object Loader:
       .filter((name, _) => Pratt.isEquationFunctor(name))
       .map((_, lhs) => lhs)
 
-  /** WI-1090 — a head written with an equality-family connective that does NOT define,
-    * as `(connective spelling, subject or None)`. `None` for every other head,
-    * including a defining one: a `=`/`<=>` head is a real equation and is nobody's
-    * error.
+  /** WI-1090 / WI-888 — a head written with an equality-family connective that does NOT
+    * define, as `(connective spelling, subject or None)`. `None` only for the ONE
+    * defining connective, `<=>`.
+    *
+    * It reads TWO connectives now (`===`, then `=`), and they arrived by the same rule
+    * rather than by two judgements — the spec's equality table puts both in the TEST
+    * column. What differs is what the refusal REPLACES, so the MESSAGE branches
+    * ([[nonDefiningConnectiveMessage]]) while this reader does not.
     *
     * Purely parse-layer: `isMinted` already proves the desugar wrote the node, so the
     * connective's identity needs no symbol resolution — a user's own `struct_eq`
@@ -781,23 +785,46 @@ object Loader:
         (name, subject)
       }
 
-  /** WI-1090 — THE CONNECTIVE-DEFINES-NOTHING SENTENCE. `===` compares, it does not
-    * define, and `<=>` is the connective that does; the author who wrote this believes
-    * otherwise, so the message has to say which and name the substitute. Mirrors
-    * rustland's `non_defining_connective_head_message`. */
+  /** WI-1090 / WI-888 — THE CONNECTIVE-DEFINES-NOTHING SENTENCE. A test connective
+    * compares, it does not define, and `<=>` is the connective that does; the author who
+    * wrote this believes otherwise, so the message has to say which and name the
+    * substitute. Mirrors rustland's `non_defining_connective_head_message`, branch for
+    * branch.
+    *
+    * IT BRANCHES ON THE CONNECTIVE because the two refusals replace different beliefs.
+    * For `===` nothing worked, so the author is told what went wrong. For `=` the rule
+    * FIRED, so a message about silent uselessness would be false — and `===`'s second
+    * remedy must be WITHHELD there, since "give it a body goal" turns an `=` equation
+    * into a guarded one, which no firing site reads. */
   private def nonDefiningConnectiveMessage(connective: String, subject: Option[String]): String =
-    val op = if connective == Pratt.structEqFunctor then "===" else connective
-    val what = subject match
-      case Some(s) => s"the rule `$s(…) $op …` defines nothing, and `$s` is left naming no callable"
-      case None    => s"a `lhs $op rhs` rule with no body goals defines nothing"
-    val remedy = subject match
-      case Some(s) => s"Write `<=>` to define `$s` by equations"
-      case None    => "Write `<=>` to define by equations"
-    s"`$op` is the structural identity TEST, not a defining connective, so $what: " +
-    s"`$op` is a resolver builtin that answers every goal itself, so no clause of it is " +
-    s"ever consulted, and a `[simp]` tag on it never fires (the normalizer reads only " +
-    s"the `=` and `<=>` equations). $remedy, or give the rule a BODY GOAL to state it " +
-    s"as an ordinary law about `$op`."
+    if connective == Pratt.eqFunctor then
+      val remedy = subject match
+        case Some(s) => s"Write `$s(…) <=> …` to define `$s` by equations"
+        case None    => "Write `<=>` to define by equations"
+      val what = subject match
+        case Some(s) => s"so `$s(…) = …` is not an equation about `$s`"
+        case None    => "so a `lhs = rhs` rule with no body goals is not an equation"
+      s"`=` is the semantic equality TEST (`PartialEq.eq`): it dispatches to the " +
+      s"carrier's own equality and never binds, whereas an equational rule head " +
+      s"UNIFIES the redex with its left-hand side and derives the right — $what. " +
+      s"`<=>` is the connective that binds, and it is the only one admitted at a " +
+      s"bodyless head (proposal 049; the `=` spelling was accepted while that " +
+      s"migration was in flight and no longer is). $remedy. Adding a body goal is NOT " +
+      s"the alternative here: `lhs = rhs :- guard` is a guarded equation, which no " +
+      s"firing site reads."
+    else
+      val op = if connective == Pratt.structEqFunctor then "===" else connective
+      val what = subject match
+        case Some(s) => s"the rule `$s(…) $op …` defines nothing, and `$s` is left naming no callable"
+        case None    => s"a `lhs $op rhs` rule with no body goals defines nothing"
+      val remedy = subject match
+        case Some(s) => s"Write `<=>` to define `$s` by equations"
+        case None    => "Write `<=>` to define by equations"
+      s"`$op` is the structural identity TEST, not a defining connective, so $what: " +
+      s"`$op` is a resolver builtin that answers every goal itself, so no clause of it is " +
+      s"ever consulted, and a `[simp]` tag on it never fires (the normalizer reads only " +
+      s"the `<=>` equations). $remedy, or give the rule a BODY GOAL to state it " +
+      s"as an ordinary law about `$op`."
 
   /** WI-1090 — push the refusal for a bodyless head written with a non-defining
     * connective, reporting whether it fired. One helper for the two callers a bodyless
@@ -1465,7 +1492,8 @@ object Loader:
       // declaration and not nowhere.
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
-        val kbFunctor = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
+        val kbFunctor = mintedConnectiveSymbol(kb, fileTerms, name, termId)
+          .getOrElse(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId)))
         val kbPos = IArray.from(fn.posArgs.map(id => reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap)))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
@@ -1481,6 +1509,43 @@ object Loader:
         val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
         kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
+
+  /** WI-888 — A MINTED CARRIER-AGNOSTIC CONNECTIVE DENOTES ITS KERNEL PRIMITIVE,
+    * whatever a same-named symbol in scope holds. `None` for every ordinary functor.
+    * Mirrors rustland's `minted_connective_symbol`.
+    *
+    * THE DEFECT, measured on the stdlib the moment WI-888 made `<=>` the only equational
+    * spelling: `reflect.anthill` declares its own `unify(a: Term, b: Term, kb: KB)`
+    * (proposal 049's term-level face), so the three `rule fact_monotonicity(…) <=>
+    * constant() [simp]` rules written in that same namespace resolve their MINTED
+    * connective through the ordinary ladder onto `anthill.reflect.unify` and file three
+    * clauses under a 3-ary reflect operation. They load clean and fire nothing. The `=`
+    * spelling had worked only because `anthill.reflect` happens to declare no `eq`.
+    * scaland loads `reflect.anthill`, so it had the identical defect — found by review
+    * after the rustland half shipped alone.
+    *
+    * WHY THE LINE IS AT *CARRIER-AGNOSTIC*, and why `eq` is deliberately NOT here: the
+    * spec's Invariant (proposal 049) says `<=>` is structural-only and NEVER dispatches,
+    * and §"`===` — the structural identity *test*" says the same of `===` — so no carrier
+    * can mean something else by them, and a same-named symbol in scope is a collision
+    * rather than an override. `=` is the opposite: it is semantic and DOES dispatch
+    * through a carrier's own `eq` (WI-350/WI-444/WI-627, `Set.eq` / `Map.eq`), so the
+    * ladder answering for it is the feature.
+    *
+    * `isMinted` is the whole gate (WI-948): a user's own `unify(a, b, kb)` CALL is never
+    * minted and keeps the ordinary ladder, so `reflect.anthill`'s operation stays
+    * callable by name from inside its own namespace.
+    *
+    * Both targets live in `anthill.kernel`, which is what makes the qualified name one
+    * concatenation rather than a table; an unloaded target answers `None` and falls to
+    * the ladder, the same defined answer rustland gives for the same reason (a KB with
+    * no kernel has no kernel primitive for the operator to mean). */
+  private def mintedConnectiveSymbol(
+    kb: KnowledgeBase, fileTerms: SimpleTermStore, name: String, termId: TermId
+  ): Option[TermSymbol] =
+    if !fileTerms.isMinted(termId) then None
+    else if !Pratt.isEqualityFamilyFunctor(name) || name == Pratt.eqFunctor then None
+    else kb.tryResolveSymbol(s"anthill.kernel.$name")
 
   /** THE rung order a WRITTEN name resolves in, and the one place it is spelled.
     *

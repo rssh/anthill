@@ -164,8 +164,8 @@ fn monad_law_rule_bodies_load() {
   sort CpsMonad[F[T]]
     operation pure[A](a: A) -> F[T = A]
     operation flatMap[A, B](fa: F[T = A], f: (A) -> F[T = B]) -> F[T = B]
-    rule left_id: flatMap(pure(?x), ?f) = ?f(?x)
-    rule right_id: flatMap(?m, pure) = ?m
+    rule left_id: flatMap(pure(?x), ?f) <=> ?f(?x)
+    rule right_id: flatMap(?m, pure) <=> ?m
   end
 end
 "#;

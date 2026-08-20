@@ -147,8 +147,8 @@ Operations with constructor-complete equational rules become recursive definitio
 
 ```
 operation length(l: List) -> Int64
-rule length(nil) = 0
-rule length(cons(?x, ?xs)) = add(1, length(?xs))
+rule length(nil) <=> 0
+rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 
 → (define-fun-rec length ((l (List T))) Int
     (match l
@@ -189,7 +189,7 @@ These apply when arguments are primitive types. For user-defined sorts, operatio
 ### 4.1 Equational Rules → Universal Assertions
 
 ```
-rule add_comm: add(?a, ?b) = add(?b, ?a)
+rule add_comm: add(?a, ?b) <=> add(?b, ?a)
 
 → (assert (forall ((a T) (b T))
     (! (= (add a b) (add b a))
@@ -290,7 +290,7 @@ When a fact declares that a concrete type satisfies a spec, laws are instantiate
 
 ```
 fact Eq[T = Color]
-rule eq(red, red) = true
+rule eq(red, red) <=> true
 
 → (assert (= (eq-Color red red) true))
 ```

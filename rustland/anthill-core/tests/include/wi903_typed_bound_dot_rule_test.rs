@@ -59,7 +59,7 @@ namespace test.wi903
 
     operation wrapped(h: Holder, v: Int64) -> Int64 = add(v, 100)
 
-    rule dr: dot_apply(?e, bump, ?x{bound}) = wrapped(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x{bound}) <=> wrapped(?e, ?x) [simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
@@ -195,7 +195,7 @@ namespace test.wi903unfold
 
     operation wrapped(h: Holder, v: Int64) -> Int64 = add(v, 100)
 
-    rule dr: dot_apply(?e, bump, ?x: String) = wrapped(?e, ?x) [unfold]
+    rule dr: dot_apply(?e, bump, ?x: String) <=> wrapped(?e, ?x) [unfold]
   end
 end
 "#;
@@ -243,7 +243,7 @@ namespace test.wi903macro
     operation wrap(r: NodeOccurrence, x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
       make_apply("test.wi903macro.Holder.wrapped", cons(r, cons(x, nil())), r)
 
-    rule dr: dot_apply(?e, bump, ?x: String) = wrap(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x: String) <=> wrap(?e, ?x) [simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end

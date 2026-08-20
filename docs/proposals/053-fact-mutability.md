@@ -46,10 +46,10 @@ end
 - **The in-memory default store** is the KB itself; its values are given by reflect rule:
 
   ```anthill
-  rule fact_monotonicity(WorkItem) = non_monotone() [simp]   -- retracted / updated
+  rule fact_monotonicity(WorkItem) <=> non_monotone() [simp]   -- retracted / updated
   ```
 
-  `AuditEntry`, `OperationInfo`, and every unlisted functor fall to the default `monotone`. Two points the WI-666 implementation pinned down: the `[simp]` tag is **required** (an untagged equational rule loads inert) and a nullary RHS needs parens (`non_monotone()`); and there is deliberately **no** catch-all `fact_monotonicity(?) = monotone` rule — under the current load-order simp firing (most-specific-first is deferred, 043 §4.6) it would load first and **mask every specific override**, so the `monotone` default is supplied by the runtime guard's "no rule fired" branch instead. An ordinary reflect rule (reflect already has `sort Symbol`), so **no new syntax**.
+  `AuditEntry`, `OperationInfo`, and every unlisted functor fall to the default `monotone`. Two points the WI-666 implementation pinned down: the `[simp]` tag is **required** (an untagged equational rule loads inert) and a nullary RHS needs parens (`non_monotone()`); and there is deliberately **no** catch-all `fact_monotonicity(?) <=> monotone` rule — under the current load-order simp firing (most-specific-first is deferred, 043 §4.6) it would load first and **mask every specific override**, so the `monotone` default is supplied by the runtime guard's "no rule fired" branch instead. An ordinary reflect rule (reflect already has `sort Symbol`), so **no new syntax**.
 
 - **An external store** provides the same value through its **`Store.monotonicity(store, functor)`** operation (007 §2) — store-specific logic, the natural counterpart of the in-memory rule. The owning store (007 routing) answers for the functors it owns; a deletable work-item table is `non_monotone`, an append-only audit table `monotone`, a materialized view `constant`. Monotonicity is a genuine **storage property** — how that store manages the functor — but *decided by the store's logic*, not a static binding field. Whether the store's answer is materialized into the reflect predicate at registration or routed live per query is an implementation choice (WI-667).
 

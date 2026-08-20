@@ -471,73 +471,53 @@ end
     }
 }
 
-/// THE FIRST DIAGNOSIS OF `ite` WAS WRONG, and this is what refuted it.
+/// THE FIRST DIAGNOSIS OF `ite` WAS WRONG, and this is what refuted it — then WI-888
+/// moved the other side, and the rows below are its inversion.
 ///
-/// `bool.anthill`'s case laws are written `ite_true: ite(true, ?t, ?_) = ?t`, and the
-/// spec says an equational rule's head connective is `<=>` and NOT `=` — "`=` is a
-/// semantic equality *test* that never binds" (kernel-language.md §5.3). That reads
-/// like the explanation for [`ite_does_not_reduce_at_sld_either`], and it was written
-/// down as one before being driven. It is false: the four rows below vary the
-/// connective and the attribute independently, and the ANSWER TRACKS THE ATTRIBUTE
-/// ALONE. `=` with `[simp]` fires; `<=>` without it is dead.
+/// `bool.anthill`'s case laws were written `ite_true: ite(true, ?t, ?_) = ?t`, and the
+/// spec said an equational rule's head connective is `<=>` and NOT `=` — "`=` is a
+/// semantic equality *test* that never binds" (kernel-language.md §5.3). That read like
+/// the explanation for [`ite_does_not_reduce_at_sld_either`], and it was written down as
+/// one before being driven. It was FALSE ABOUT THE LOADER: driven across the same four
+/// rows, the answer tracked the `[simp]` ATTRIBUTE alone — `=` fired, and `<=>` without
+/// the tag was dead.
 ///
-/// The implementation is not ambiguous about this once located — `is_equational_head`
-/// (kb/load.rs) classifies through `is_equality_connective_functor`, which matches the
-/// `eq` symbol OR the `unify` symbol, i.e. both spellings. So the spec states a
-/// distinction the loader does not make, and a reader who trusts §5.3 will
-/// misdiagnose exactly as this ticket did. That divergence is WI-888; this test is
-/// what pins today's behaviour so the fix has to choose a side rather than drift.
+/// WI-888 SETTLED THE DIVERGENCE THE OTHER WAY, so these rows are inverted DELIBERATELY
+/// rather than drifting. The spec was right about the language and the loader was
+/// finishing a migration it never completed (proposal 049 build step 6 / WI-526, 40
+/// heads relabelled and 44 left in the stdlib): `<=>` is now the only connective
+/// admitted at a bodyless head, and an `=`-spelled one is a LOAD ERROR. So the matrix
+/// now reads on two axes instead of one —
 ///
-/// It also re-states WI-881's headline in a second file: `[simp]` IS THE ENABLEMENT,
-/// not the direction. Every untagged equation in the stdlib is inert, whichever
-/// connective it is spelled with.
+/// * the CONNECTIVE decides whether the rule loads at all (`<=>` yes, `=` refused);
+/// * among the admitted spelling, the ATTRIBUTE alone decides whether it FIRES.
+///
+/// The second half is WI-881's headline restated in a second file and is unchanged by
+/// WI-888: an untagged `<=>` equation is inert, exactly as an untagged `=` one was.
+/// What is no longer true is the sentence this test used to be named for — a reader CAN
+/// now diagnose an inert rule from its connective, because only one connective can be
+/// there.
+///
+/// BACK OUT WI-888 (`EQ_FUNCTOR` back into `pratt::EQUATION_FUNCTORS`) and the two
+/// refusal rows fail; the two `<=>` rows pass either way, by design, and are here to
+/// say which half the ticket did NOT move.
 #[test]
-fn the_head_connective_is_not_what_enables_an_equation() {
-    const ROWS: [(&str, &str, &str, Option<i64>); 4] = [
-        ("eqSimp", "=", " [simp]", Some(10)),
-        ("unifySimp", "<=>", " [simp]", Some(10)),
-        ("eqBare", "=", "", None),
-        ("unifyBare", "<=>", "", None),
+fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
+    // The ADMITTED spelling, on both settings of the tag. One source, one interpreter:
+    // the firing row runs first and the trapping row second, since a trap poisons only
+    // LATER calls.
+    const ADMITTED: [(&str, &str, Option<i64>); 2] = [
+        ("unifySimp", " [simp]", Some(10)),
+        ("unifyBare", "", None),
     ];
-    // All four namespaces in ONE source, so the whole matrix costs two stdlib loads
-    // rather than four: the two firing rows and the FIRST trapping row share an
-    // interpreter (a trap poisons only LATER calls), and the last row gets a fresh one.
-    let src: String = ROWS
+    let src: String = ADMITTED
         .iter()
-        .map(|(ns, connective, attribute, _)| {
-            format!(
-                r#"
-namespace wi884.{ns}
-  import anthill.prelude.{{Int64, Bool}}
-  sort C
-    import anthill.prelude.{{Int64, Bool}}
-    operation pick(cond: Bool, then: Int64, else: Int64) -> Int64
-    rule pick(true, ?t, ?_) {connective} ?t{attribute}
-    rule pick(false, ?_, ?e) {connective} ?e{attribute}
-    operation drive(n: Int64) -> Int64 = pick(true, 10, 20)
-  end
-end
-"#
-            )
-        })
+        .map(|(ns, attribute, _)| row_source(ns, "<=>", attribute))
         .collect();
-
     let mut interp = crate::common::interp_for(&src);
-    for (i, (ns, connective, attribute, expected)) in ROWS.iter().enumerate() {
-        // The last row also traps, so it needs an interpreter the third row has not
-        // poisoned.
-        if i == ROWS.len() - 1 {
-            interp = crate::common::interp_for(&src);
-        }
+    for (ns, attribute, expected) in ADMITTED.iter() {
         let got = interp.call(&format!("wi884.{ns}.C.drive"), &[Value::Int(0)]);
-        let label = format!(
-            "`{connective}`{}",
-            if attribute.is_empty() {
-                " bare"
-            } else {
-                " [simp]"
-            }
-        );
+        let label = format!("`<=>`{}", if attribute.is_empty() { " bare" } else { " [simp]" });
         match (expected, got) {
             (Some(want), Ok(Value::Int(n))) => assert_eq!(n, *want, "{label}"),
             (None, Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. })) => {
@@ -552,4 +532,40 @@ end
             ),
         }
     }
+
+    // The REFUSED spelling, on both settings of the tag — the tag has no bearing on it,
+    // which is the half a reader of the old rows would get wrong. Each row loads ALONE:
+    // one refusal fails the whole load, so a shared source could not tell them apart.
+    for attribute in ["", " [simp]"] {
+        let errs = crate::common::try_load_kb_with(&row_source("eqRefused", "=", attribute))
+            .err()
+            .unwrap_or_else(|| {
+                panic!("a bodyless `=` head is refused (WI-888), tag `{attribute:?}`")
+            });
+        let joined = errs.join("\n");
+        assert!(
+            joined.contains("`pick(…) <=> …`"),
+            "the refusal must name the subject and the substitute spelling, got: {joined}",
+        );
+    }
+}
+
+/// One `pick` shape, parameterized by namespace / connective / attribute — the four
+/// rows above are this source four ways, so nothing but those three strings differs
+/// between them.
+fn row_source(ns: &str, connective: &str, attribute: &str) -> String {
+    format!(
+        r#"
+namespace wi884.{ns}
+  import anthill.prelude.{{Int64, Bool}}
+  sort C
+    import anthill.prelude.{{Int64, Bool}}
+    operation pick(cond: Bool, then: Int64, else: Int64) -> Int64
+    rule pick(true, ?t, ?_) {connective} ?t{attribute}
+    rule pick(false, ?_, ?e) {connective} ?e{attribute}
+    operation drive(n: Int64) -> Int64 = pick(true, 10, 20)
+  end
+end
+"#
+    )
 }

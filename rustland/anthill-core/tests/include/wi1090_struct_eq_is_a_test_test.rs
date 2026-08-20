@@ -34,7 +34,8 @@
 //! be defended against the FIRST as well as against the original.
 //!
 //! * BACK OUT THE WHOLE TICKET — `STRUCT_EQ_FUNCTOR` back into
-//!   `pratt::EQUATION_FUNCTORS`, and the two `StructEqDefiningHead` pushes
+//!   `pratt::EQUATION_FUNCTORS`, and the two `NonDefiningConnectiveHead` pushes
+//!   (named `StructEqDefiningHead` until WI-888 widened the variant to `=` as well)
 //!   (`Loader::load_rule`, `Loader::load_fact`) disabled. FOUR fail, all of them rows
 //!   about the refusal or the absent stamp:
 //!   `a_bodyless_struct_eq_head_is_refused_and_names_the_substitute`,

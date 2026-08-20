@@ -46,7 +46,7 @@ pub const ARROW_FUNCTOR: &str = "arrow";
 pub const ARROW_EFFECT_FUNCTOR: &str = "arrow_effect";
 
 /// The functors the infix desugar mints for the equality family, `=`/`<=>`/`===`
-/// (proposal 049/051). Only the first two are EQUATION connectives — see
+/// (proposal 049/051). Only `unify` is an EQUATION connective — see
 /// [`EQUATION_FUNCTORS`].
 pub const EQ_FUNCTOR: &str = "eq";
 pub const UNIFY_FUNCTOR: &str = "unify";
@@ -71,26 +71,36 @@ pub const EQUALITY_FAMILY_FUNCTORS: &[&str] = &[EQ_FUNCTOR, UNIFY_FUNCTOR, STRUC
 /// `pos_args[0]` is a name the rule introduces and the normalizer can fire. Read by
 /// [`is_equation_functor`], which is the only way to ask.
 ///
-/// `struct_eq` is deliberately ABSENT (WI-1090). The spec's equality table
-/// (§"Equality: test vs. bind, structural vs. semantic") puts `===` in the TEST
-/// column beside `=`, and §"`===` — the structural identity *test*" makes it a
-/// resolver builtin that is total, carrier-agnostic and never dispatches, while
-/// `<=>` is named there as "the connective of equational rule heads". The KB-side
-/// owner ([`KnowledgeBase::is_equality_connective_functor`](crate::kb::KnowledgeBase))
-/// has always agreed — it caches `PartialEq.eq` and `kernel.unify` and nothing
-/// else — and this list is what brings the parse side to the same answer.
+/// IT HAS ONE MEMBER, and the spec's equality table decides which
+/// (§"Equality: test vs. bind, structural vs. semantic"): `=` and `===` are the TEST
+/// column, `<=>` is the BIND column alone, and only a connective that BINDS can head
+/// an equation — the head *unifies* the redex with the LHS and derives the RHS.
+/// `struct_eq` left under WI-1090, `eq` under WI-888, and the two departures are the
+/// same rule applied to the same table row rather than two decisions.
 ///
-/// MEASURED before the correction, on a `[simp]`-tagged `g(?x) === ?x`: the
-/// subject was stamped [`SymbolKind::EquationFunctor`](crate::intern::SymbolKind)
-/// with ZERO clauses under it, `simp_equation_rids` (the eq+unify buckets) could
-/// never reach the rule, and citing `g` was refused with "defined by equations …
-/// no defining equation for it can be found" — about an equation written three
-/// lines up. The identical rule spelled `<=>` loads and runs.
+/// THEY WERE NOT THE SAME DEFECT, though, and the difference is why the second one
+/// needed a ticket of its own. A `===` head was silently USELESS: measured on a
+/// `[simp]`-tagged `g(?x) === ?x`, the subject was stamped
+/// [`SymbolKind::EquationFunctor`](crate::intern::SymbolKind) with ZERO clauses under
+/// it, `simp_equation_rids` (the eq+unify buckets) could never reach the rule, and
+/// citing `g` was refused with "defined by equations … no defining equation for it can
+/// be found" — about an equation written three lines up. An `=` head WORKED: measured
+/// across all four (connective × attribute) combinations on one shape (WI-884), the
+/// answer tracks the `[simp]` ATTRIBUTE alone — `=` fires and `<=>` without the tag is
+/// dead. So `=` is refused not to repair a silence but to finish proposal 049's
+/// migration (build step 6, WI-526), whose 40-head first pass left 44 more in the
+/// stdlib and whose affordance — the KB owner matching BOTH connectives — was
+/// documented from the start as holding only "while the relabel is in flight".
 ///
-/// `=` stays IN, and that is a separate known state, not an oversight: §5.3
-/// records (WI-884) that the loader accepts an `=`-spelled bodyless rule as an
-/// equation exactly as it accepts `<=>`, and WI-888 decides which side moves.
-pub const EQUATION_FUNCTORS: &[&str] = &[EQ_FUNCTOR, UNIFY_FUNCTOR];
+/// THE KB-SIDE OWNER IS DELIBERATELY WIDER, and this is the one place the two lists
+/// part company. [`KnowledgeBase::is_equality_connective_functor`](crate::kb::KnowledgeBase)
+/// still answers `true` for `eq`, because it is asked a different question: which head
+/// SHAPES the WI-139 cite-required unindexing withholds from `rules_by_functor`, and
+/// that must keep covering a BODIED `f(?x) = g(?x) :- p(?x)` — a shape this list never
+/// judged and WI-888 deliberately did not move (proposal 049 draws its migration
+/// boundary at the empty body). `load::wi888_connective_agreement_tests` pins the
+/// containment in both directions so neither side can drift.
+pub const EQUATION_FUNCTORS: &[&str] = &[UNIFY_FUNCTOR];
 
 /// Is `name` one of the arrow-family functors the pratt desugar mints for
 /// `->`/`@`? The loader's bare-arrow diagnostics (WI-605/WI-618) key on this
@@ -105,9 +115,10 @@ pub fn is_arrow_functor(name: &str) -> bool {
 /// equation spelling cannot drift out of the loader's equational-head recognition
 /// (WI-619: the `[T]` introducer on an equational head rides on the LHS operand,
 /// not the whole `eq(lhs, rhs)` node). Parse-layer peer of the KB-side
-/// `is_equational_head`, and WI-1090 made the two answer alike — the agreement is
-/// pinned by `load::wi1090_connective_agreement_tests`, which walks this list and the
-/// KB cache in both directions.
+/// `is_equational_head` — a SUBSET of it, not a mirror, for the reason
+/// [`EQUATION_FUNCTORS`] records; the containment is pinned by
+/// `load::wi888_connective_agreement_tests`, which walks this list, the family list
+/// and the KB cache.
 ///
 /// WI-948 — A NAME, NOT A VERDICT. The spellings are ordinary identifiers a user may
 /// write as a call, so this predicate never decides ON ITS OWN that a node is an

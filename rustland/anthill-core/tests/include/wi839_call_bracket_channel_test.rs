@@ -569,7 +569,7 @@ namespace test.wi839.introducer
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]
+      keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] [simp]
     }
   end
 end

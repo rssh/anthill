@@ -50,9 +50,9 @@ namespace anthill.todo.store
   -- spells "retractable only together with its item", so the closest TRUE
   -- policy is non_monotone; what keeps the audit trail is the COMMAND SURFACE,
   -- which offers no way to retract a Feedback row on its own.
-  rule fact_monotonicity(WorkItem) = non_monotone() [simp]
-  rule fact_monotonicity(Feedback) = non_monotone() [simp]
-  rule fact_monotonicity(Tag) = non_monotone() [simp]
+  rule fact_monotonicity(WorkItem) <=> non_monotone() [simp]
+  rule fact_monotonicity(Feedback) <=> non_monotone() [simp]
+  rule fact_monotonicity(Tag) <=> non_monotone() [simp]
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
   -- Operations declared once, parameterized by State. Each impl

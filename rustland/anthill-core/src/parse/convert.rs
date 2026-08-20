@@ -3922,11 +3922,35 @@ impl<'a> Converter<'a> {
         Some(at)
     }
 
-    /// The left operand of an equation head (`f(…) <=> g(…)` / `f(…) = g(…)`), or
-    /// `None` for any other head shape. Matched BY NAME through
-    /// [`super::pratt::is_equation_functor`] — the same predicate that decides which
-    /// connectives DEFINE — so a `===` head (which compares without defining) is not
-    /// one, and neither is a bare atom.
+    /// The left operand of an equality-connective head (`f(…) <=> g(…)`, `f(…) = g(…)`,
+    /// `f(…) === g(…)`), or `None` for any other head shape — a bare atom has no LHS.
+    ///
+    /// IT ASKS THE **SHAPE** QUESTION, so it matches through
+    /// [`super::pratt::is_equality_family_functor`] and NOT through
+    /// `is_equation_functor`: "where do this head's operands sit" answers the same for
+    /// every family member, including the ones that define nothing. Whether the head
+    /// DEFINES is a different question, decided at load, and this reader must not
+    /// borrow its answer.
+    ///
+    /// IT WAS THE NARROW PREDICATE UNTIL WI-888, and that is exactly the WI-1090 defect
+    /// one reader over — the ticket that split `collect_rule_tvar_names` off
+    /// `parse_equation_lhs` for this reason recorded it, and narrowing the list again
+    /// walked a second reader into it. `claim_rule_head_captures` is passed only
+    /// `heads` and `meta`, never the body, so with `eq` gone from the defining list
+    /// BOTH bodyless and GUARDED `=` heads stopped claiming their `...?args`:
+    ///
+    /// * `rule f(?x, ...?args) = rhs [simp]` — refused by WI-888 anyway, but it died at
+    ///   PARSE with `refuse_stray_rest_args` saying the capture "may appear only as the
+    ///   LAST positional argument of a `[simp]` rule head's left-hand side", which is
+    ///   where the author had put it. `parse` failing means the load never runs, so the
+    ///   substitute-naming refusal WI-888 owes the author was never reached.
+    /// * `rule f(?x, ...?args) = rhs :- guard [simp]` — a GUARDED equation, which
+    ///   WI-888 deliberately leaves spelled `=`, became a hard parse error.
+    ///
+    /// Reading the family closes the `===` case too, which had the same defect before
+    /// WI-888 and no ticket. Claiming a capture on a head the loader then refuses costs
+    /// nothing: both refusals return before any rule is asserted, so no capture is ever
+    /// installed on one.
     fn equation_lhs(&self, tid: TermId) -> Option<TermId> {
         let Term::Fn {
             functor, pos_args, ..
@@ -3935,7 +3959,7 @@ impl<'a> Converter<'a> {
             return None;
         };
         if pos_args.len() == 2
-            && super::pratt::is_equation_functor(self.symbols.local_name(*functor))
+            && super::pratt::is_equality_family_functor(self.symbols.local_name(*functor))
         {
             Some(pos_args[0])
         } else {

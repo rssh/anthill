@@ -223,7 +223,7 @@ fn dot_rule_override_enables_dispatch() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
-            rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
+            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
             operation use_override(b: Box) -> Int64 = ?b.special(7)
           end
         end
@@ -248,7 +248,7 @@ fn dot_rule_override_is_sort_scoped() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
-            rule dr: dot_apply(?e, special, ?x) = regular(?e, ?x) [simp]
+            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
           end
           sort Other
             entity other(tag: Int64)
@@ -278,7 +278,7 @@ fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box) -> Int64 = 0
-            rule dr: dot_apply(?e, special, ?e) = regular(?e) [simp]
+            rule dr: dot_apply(?e, special, ?e) <=> regular(?e) [simp]
             operation use_nl(b: Box) -> Int64 = ?b.special(7)
           end
         end

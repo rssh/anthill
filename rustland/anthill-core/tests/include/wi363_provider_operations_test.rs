@@ -98,7 +98,7 @@ fn provider_with_spec_default_rule_is_rejected() {
           sort Spec
             sort T = ?
             operation needed(x: T) -> Int64
-            rule needed(?x) = 0
+            rule needed(?x) <=> 0
           end
           sort Carrier
             entity carrier(id: Int64)

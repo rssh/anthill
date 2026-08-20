@@ -209,7 +209,7 @@ fn retract_via_builtin_removes_fact_from_disk() {
     let src = "namespace test.retract\n  \
         import anthill.reflect.{fact_monotonicity, non_monotone}\n  \
         entity Bar\n  \
-        rule fact_monotonicity(Bar) = non_monotone() [simp]\nend\n";
+        rule fact_monotonicity(Bar) <=> non_monotone() [simp]\nend\n";
     let mut interp = interp_for(src);
 
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
@@ -295,7 +295,7 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     let src = "namespace test.update\n  \
         import anthill.reflect.{fact_monotonicity, non_monotone}\n  \
         entity Bar(value: Int64)\n  \
-        rule fact_monotonicity(Bar) = non_monotone() [simp]\nend\n";
+        rule fact_monotonicity(Bar) <=> non_monotone() [simp]\nend\n";
     let mut interp = interp_for(src);
     let store_val = filestore_value(&mut interp, root.to_str().unwrap());
     let key = interp

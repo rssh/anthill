@@ -4207,9 +4207,9 @@ fn parse_ring_spec_with_arrow_types() {
   operation zero() -> T
   operation one() -> T
 
-  rule ?a + zero = ?a
-  rule ?a * one = ?a
-  rule ?a + neg(?a) = zero
+  rule ?a + zero <=> ?a
+  rule ?a * one <=> ?a
+  rule ?a + neg(?a) <=> zero
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -4248,8 +4248,8 @@ fn load_ring_spec_into_kb() {
   operation zero() -> T
   operation one() -> T
 
-  rule ?a + zero = ?a
-  rule ?a * one = ?a
+  rule ?a + zero <=> ?a
+  rule ?a * one <=> ?a
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -4394,8 +4394,8 @@ fn parse_infix_in_rules_with_ring() {
   operation add(a: T, b: T) -> T
   operation mul(a: T, b: T) -> T
 
-  rule ?a + ?b = ?b + ?a
-  rule (?a + ?b) * ?c = ?a * ?c + ?b * ?c
+  rule ?a + ?b <=> ?b + ?a
+  rule (?a + ?b) * ?c <=> ?a * ?c + ?b * ?c
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");

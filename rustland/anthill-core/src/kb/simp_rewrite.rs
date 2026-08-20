@@ -1210,7 +1210,7 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
 }
 
 /// The reflect `Expr.dot_apply` ENTITY symbol — the LHS head a WI-279 INC2 DOT
-/// rule (`rule dr: dot_apply(?e, m, ?x) = rhs [simp]`) loads as. The one owner of
+/// rule (`rule dr: dot_apply(?e, m, ?x) <=> rhs [simp]`) loads as. The one owner of
 /// the qualified name *for rule-shape tests*, so the site that FIRES dot rules
 /// (`typing::try_fire_dot_rule`) and the site that REFUSES a typed pattern bound on
 /// one (WI-903, `load::load_rule`) cannot drift apart on what a dot rule IS. (The

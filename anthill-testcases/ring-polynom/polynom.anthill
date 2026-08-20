@@ -31,10 +31,10 @@ sort Polynom
   operation scale(c: R, p: Polynom[R]) -> Polynom[R]
 
   -- Polynomial addition is commutative (uses infix + from Ring)
-  rule ?p1 + ?p2 = ?p2 + ?p1
+  rule ?p1 + ?p2 <=> ?p2 + ?p1
 
   -- Scaling distributes over addition
-  rule scale(?c, ?p1 + ?p2) = scale(?c, ?p1) + scale(?c, ?p2)
+  rule scale(?c, ?p1 + ?p2) <=> scale(?c, ?p1) + scale(?c, ?p2)
 end
 
 -- Polynom[Int64] is a valid instantiation (Int64 satisfies Ring).

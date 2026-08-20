@@ -135,7 +135,7 @@ fn non_monotone_functor_retracts_cleanly() {
     let src = "namespace test.mono\n  \
         import anthill.reflect.{fact_monotonicity, non_monotone}\n  \
         entity Widget\n  \
-        rule fact_monotonicity(Widget) = non_monotone() [simp]\nend\n";
+        rule fact_monotonicity(Widget) <=> non_monotone() [simp]\nend\n";
     let mut interp = interp_for(src);
     let store = setup_store(&mut interp, dir.path());
     let fact = declared_fact(&mut interp, "test.mono.Widget");
@@ -151,7 +151,7 @@ fn assert_of_constant_functor_is_loud_error() {
     let src = "namespace test.mono\n  \
         import anthill.reflect.{fact_monotonicity, constant}\n  \
         entity Frozen\n  \
-        rule fact_monotonicity(Frozen) = constant() [simp]\nend\n";
+        rule fact_monotonicity(Frozen) <=> constant() [simp]\nend\n";
     let mut interp = interp_for(src);
     let store = setup_store(&mut interp, dir.path());
     let fact = declared_fact(&mut interp, "test.mono.Frozen");
@@ -177,7 +177,7 @@ fn reflection_index_functors_are_constant() {
     // covers exactly the AFTER-load window where nothing would invalidate it. Adding a
     // rule to reflect.anthill is not the same as the rule FIRING — an untagged or
     // paren-less equational rule loads inert (WI-881/884) — and this row is what says it
-    // does. CONTROL: delete `rule fact_monotonicity(SortRequiresInfo) = constant() [simp]`
+    // does. CONTROL: delete `rule fact_monotonicity(SortRequiresInfo) <=> constant() [simp]`
     // from reflect.anthill and this test fails on that qname alone.
     let dir = tempfile::tempdir().unwrap();
     let mut interp = interp_for("namespace test.reflectmono\n  entity Widget\nend\n");

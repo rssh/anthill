@@ -217,7 +217,7 @@ fn a_rule_naming_an_operation_is_not_a_second_declaration() {
           sort L
             entity l(n: anthill.prelude.Int64)
             operation flag(v: L) -> Bool
-            rule flag(?v) = false [simp]
+            rule flag(?v) <=> false [simp]
           end
         end
     "#;

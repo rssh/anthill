@@ -63,7 +63,7 @@ const SRC: &str = "namespace test.wi830\n  \
                    fact Alpha830()\n  \
                    fact Beta830()\n  \
                    fact Gamma830()\n  \
-                   rule fact_monotonicity(Delta830) = non_monotone() [simp]\n\
+                   rule fact_monotonicity(Delta830) <=> non_monotone() [simp]\n\
                    end\n";
 
 /// A mirror that records the calls it receives instead of writing anything. The log is the

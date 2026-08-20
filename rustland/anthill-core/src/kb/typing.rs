@@ -9042,7 +9042,7 @@ fn collect_arg_errors<'a>(
 
 // ── WI-279 INC2: sort-specific `[simp]` dot-rule override ────────────────
 //
-// A dot rule like `dot_apply(?e, map, ?f) = either_map(?e, ?f) [simp]`
+// A dot rule like `dot_apply(?e, map, ?f) <=> either_map(?e, ?f) [simp]`
 // (declared in a sort) OVERRIDES the default method fallback for receivers
 // whose least sort conforms to that sort. A written dot rule LOADS as the
 // reflect `Expr.dot_apply` ENTITY (`receiver:` / `name:` / `args:
@@ -28764,7 +28764,7 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
 ///     the bound operation.
 ///
 /// A RULE does not back an operation (WI-818, reversing WI-363's original
-/// reading): an equational law (`rule op(args) = rhs`) or a relational clause
+/// reading): an equational law (`rule op(args) <=> rhs`) or a relational clause
 /// (`op(args, r) :- body`) is SPECIFICATION the SLD world resolves against, not
 /// something the evaluator can run — counting them certified programs that
 /// loaded clean and then died at run time (`UnknownOperation`). See

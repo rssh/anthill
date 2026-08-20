@@ -2,7 +2,7 @@
 //!
 //! DECISION (the ticket's option 2, the smaller change): "backed" means
 //! EXECUTABLE — a runnable body or a builtin. A `rule` on the spec
-//! (`rule tag(?x) = 111`) is a law relating the abstract operation to others:
+//! (`rule tag(?x) <=> 111`) is a law relating the abstract operation to others:
 //! the SLD resolver can use it, but the evaluator cannot dispatch to it (a rule
 //! is not a body), so counting it as backing (as WI-363 pinned — that test is
 //! REVERSED by this ticket) certified programs that loaded clean and then died
@@ -122,7 +122,7 @@ namespace wi818.c
   sort Nameable
     sort T = ?
     operation tag(x: T) -> Int64
-    rule tag(?x) = 111
+    rule tag(?x) <=> 111
   end
   sort Widget
     entity widget(id: Int64)

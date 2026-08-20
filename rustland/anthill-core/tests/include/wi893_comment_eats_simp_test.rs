@@ -52,13 +52,13 @@ namespace wi893.commentEatsTag
     operation flip893(cond: Bool, then: Int64, else: Int64) -> Int64
 
     rule {
-      seed:      seed893(?x) = ?x
+      seed:      seed893(?x) <=> ?x
       -- comment above the FIRST tagged entry of the pair
-      pickTrue:  pick893(true, ?t, ?_) = ?t [simp]
-      pickFalse: pick893(false, ?_, ?e) = ?e [simp]
-      flipTrue:  flip893(true, ?t, ?_) = ?t [simp]
+      pickTrue:  pick893(true, ?t, ?_) <=> ?t [simp]
+      pickFalse: pick893(false, ?_, ?e) <=> ?e [simp]
+      flipTrue:  flip893(true, ?t, ?_) <=> ?t [simp]
       -- comment above the SECOND tagged entry of the pair
-      flipFalse: flip893(false, ?_, ?e) = ?e [simp]
+      flipFalse: flip893(false, ?_, ?e) <=> ?e [simp]
     }
 
     operation drivePickThen(n: Int64) -> Int64 = pick893(true, 10, 20)
@@ -184,7 +184,7 @@ namespace wi893.atomHeads
   sort P
     rule { plain: p893(?x) :- q893(?x) }
     rule { withLiteralArg: r893(42) }
-    rule { equational: f893(?x) = 42 [simp] }
+    rule { equational: f893(?x) <=> 42 [simp] }
     rule { denial: ⊥ :- s893(?x) }
     fact t893(42)
   end

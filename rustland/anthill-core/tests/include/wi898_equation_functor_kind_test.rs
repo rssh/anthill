@@ -50,7 +50,7 @@ fn an_equation_head_and_a_predicate_head_get_different_kinds() {
 namespace wi898.kinds
   sort S
     import anthill.prelude.{Int64, Bool}
-    rule { eqn898(?x) = ?x [simp] }
+    rule { eqn898(?x) <=> ?x [simp] }
     rule pred898(?x) :- Int64.gt(?x, 0)
   end
 end
@@ -101,7 +101,7 @@ fn a_name_in_both_head_shapes_is_a_relation_in_either_source_order() {
 namespace wi898.mixeda
   sort S
     import anthill.prelude.{Int64, Bool}
-    rule { both898(?x) = ?x [simp] }
+    rule { both898(?x) <=> ?x [simp] }
     rule both898(?x) :- Int64.gt(?x, 0)
   end
 end
@@ -111,7 +111,7 @@ namespace wi898.mixedb
   sort S
     import anthill.prelude.{Int64, Bool}
     rule both898(?x) :- Int64.gt(?x, 0)
-    rule { both898(?x) = ?x [simp] }
+    rule { both898(?x) <=> ?x [simp] }
   end
 end
 "#;
@@ -201,7 +201,7 @@ fn an_untagged_defining_equation_is_diagnosed_as_inert_not_unmatched() {
 namespace wi898.inert
   sort S
     import anthill.prelude.{Int64, Bool}
-    rule { inert898(?x) = ?x }
+    rule { inert898(?x) <=> ?x }
     operation drive(n: Int64) -> Int64 = inert898(n)
   end
 end
@@ -268,7 +268,7 @@ namespace wi898.mixed
   end
   sort Eqful
     import anthill.prelude.{Int64, Bool}
-    rule { mix898(?x) = ?x [simp] }
+    rule { mix898(?x) <=> ?x [simp] }
   end
   sort User
     import anthill.prelude.{Int64, Bool}

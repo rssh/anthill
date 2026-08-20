@@ -37,13 +37,13 @@ namespace anthill.prelude.algebra
     }
 
     rule {
-      add_comm:      add(?a, ?b) = add(?b, ?a)
-      add_assoc:     add(add(?a, ?b), ?c) = add(?a, add(?b, ?c))
-      add_identity:  add(?a, zero) = ?a
-      mul_comm:      mul(?a, ?b) = mul(?b, ?a)
-      mul_assoc:     mul(mul(?a, ?b), ?c) = mul(?a, mul(?b, ?c))
-      mul_identity:  mul(?a, one) = ?a
-      distrib:       mul(?a, add(?b, ?c)) = add(mul(?a, ?b), mul(?a, ?c))
+      add_comm:      add(?a, ?b) <=> add(?b, ?a)
+      add_assoc:     add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
+      add_identity:  add(?a, zero) <=> ?a
+      mul_comm:      mul(?a, ?b) <=> mul(?b, ?a)
+      mul_assoc:     mul(mul(?a, ?b), ?c) <=> mul(?a, mul(?b, ?c))
+      mul_identity:  mul(?a, one) <=> ?a
+      distrib:       mul(?a, add(?b, ?c)) <=> add(mul(?a, ?b), mul(?a, ?c))
     }
   end
 
@@ -76,14 +76,14 @@ namespace anthill.prelude.algebra
     -- names are also in scope from `anthill.prelude.Numeric` and the
     -- resolver can't disambiguate without the prefix.
     rule {
-      vec_add_comm:        vec_add(?a, ?b) = vec_add(?b, ?a)
-      vec_add_assoc:       vec_add(vec_add(?a, ?b), ?c) = vec_add(?a, vec_add(?b, ?c))
-      vec_add_identity:    vec_add(?a, vec_zero) = ?a
-      vec_sub_def:         vec_sub(?a, ?b) = vec_add(?a, vec_scale(Ring.sub(Ring.zero, Ring.one), ?b))
-      vec_scale_identity:  vec_scale(Ring.one, ?v) = ?v
-      vec_scale_assoc:     vec_scale(?c, vec_scale(?d, ?v)) = vec_scale(Ring.mul(?c, ?d), ?v)
-      vec_scale_distrib_v: vec_scale(?c, vec_add(?a, ?b)) = vec_add(vec_scale(?c, ?a), vec_scale(?c, ?b))
-      vec_scale_distrib_s: vec_scale(Ring.add(?c, ?d), ?v) = vec_add(vec_scale(?c, ?v), vec_scale(?d, ?v))
+      vec_add_comm:        vec_add(?a, ?b) <=> vec_add(?b, ?a)
+      vec_add_assoc:       vec_add(vec_add(?a, ?b), ?c) <=> vec_add(?a, vec_add(?b, ?c))
+      vec_add_identity:    vec_add(?a, vec_zero) <=> ?a
+      vec_sub_def:         vec_sub(?a, ?b) <=> vec_add(?a, vec_scale(Ring.sub(Ring.zero, Ring.one), ?b))
+      vec_scale_identity:  vec_scale(Ring.one, ?v) <=> ?v
+      vec_scale_assoc:     vec_scale(?c, vec_scale(?d, ?v)) <=> vec_scale(Ring.mul(?c, ?d), ?v)
+      vec_scale_distrib_v: vec_scale(?c, vec_add(?a, ?b)) <=> vec_add(vec_scale(?c, ?a), vec_scale(?c, ?b))
+      vec_scale_distrib_s: vec_scale(Ring.add(?c, ?d), ?v) <=> vec_add(vec_scale(?c, ?v), vec_scale(?d, ?v))
     }
   end
 end

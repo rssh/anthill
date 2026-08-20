@@ -172,7 +172,7 @@ pub trait Store {
     /// verdict at a retract (WI-919).
     ///
     /// The filesystem backends return `[]`: their per-functor policy is the
-    /// project's own reflect rules (`rule fact_monotonicity(WorkItem) =
+    /// project's own reflect rules (`rule fact_monotonicity(WorkItem) <=>
     /// non_monotone()`), not intrinsic to the file store. A policy-bearing
     /// backend (a SQL store reading its schema, a read-only materialized view)
     /// overrides this with schema-derived values.

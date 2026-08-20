@@ -45,7 +45,7 @@ namespace test.wi582
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep(?x: Summable, ?y) = ?x [simp]
+      keep_id: keep(?x: Summable, ?y) <=> ?x [simp]
     }
   end
 end
@@ -188,7 +188,7 @@ namespace test.wi582tp
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]
+      keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] [simp]
     }
   end
 end

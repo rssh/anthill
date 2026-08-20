@@ -11,8 +11,18 @@
 //! do not depend on any stdlib carrier's equality shape. They pin: (1) the
 //! bodyless carrier-`eq` base case fires as an ordinary SLD rule; (2)
 //! `is_equation` / `is_equational_head` are false for a carrier `eq` head but
-//! true for a genuine `=` law; (3) WI-139 leaves a genuine `=` law cite-required
+//! true for a genuine connective law; (3) WI-139 leaves a genuine law cite-required
 //! while keeping the carrier's `eq` rules indexed.
+//!
+//! WI-888 CHANGED WHICH CONNECTIVE THE POSITIVE ARM IS WRITTEN WITH, and the fixture
+//! now carries TWO laws rather than one so nothing is lost. A bodyless `=` head is a
+//! load error now (`<=>` is the only defining connective), so `my_law` is spelled
+//! `<=>` and heads on `anthill.kernel.unify`. The `anthill.prelude.PartialEq.eq` arm —
+//! the one that makes "keys on the RESOLVED symbol" a real claim against `Bag.eq`'s
+//! short name — is kept by `bodied_law`, a GUARDED `=` equation, which WI-888
+//! deliberately leaves spelled `=` (proposal 049 draws its boundary at the empty body).
+//! So both connectives are still exercised, and the pair also pins WI-888's boundary:
+//! same head SHAPE, same WI-139 unindexing, and only the bodyless one is an equation.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::load::is_equational_head;
@@ -23,8 +33,10 @@ use smallvec::SmallVec;
 
 /// `Bag` declares its OWN `eq` (head resolves to `test.wi627.Bag.eq`, distinct
 /// from `anthill.prelude.Eq.eq`) with a BODYLESS base case `eq(red(), red())` —
-/// the exact short-name trap WI-627 fixes. `my_law` is a genuine top-level `=`
-/// law (head resolves to `anthill.prelude.Eq.eq`) for contrast.
+/// the exact short-name trap WI-627 fixes. `my_law` and `bodied_law` are genuine
+/// top-level connective laws (heads resolving to `anthill.kernel.unify` and
+/// `anthill.prelude.PartialEq.eq`) for contrast — one per connective, see the module
+/// doc for why it takes two.
 const SRC: &str = r#"
     namespace test.wi627
       import anthill.prelude.{Int64, Eq}
@@ -35,7 +47,8 @@ const SRC: &str = r#"
         rule eq(red(), red())
         rule eq(blue(), blue())
       end
-      rule my_law: foo(?a, ?b) = foo(?b, ?a)
+      rule my_law: foo(?a, ?b) <=> foo(?b, ?a)
+      rule bodied_law: bar(?a) = bar(?a) :- Int64.gt(1, 0)
     end
 "#;
 
@@ -125,10 +138,9 @@ fn classification_keys_on_resolved_symbol_not_short_name() {
         );
     }
 
-    // The genuine `foo(?a,?b) = foo(?b,?a)` law: head is `anthill.prelude.PartialEq.eq`
-    // (WI-644 split — the `eq`/`=` connective moved off `Eq` onto `PartialEq`), so it IS
-    // an equation and IS an equational head (cite-required by WI-139).
-    let my_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
+    // The genuine `foo(?a,?b) <=> foo(?b,?a)` law: head is `anthill.kernel.unify`, so it
+    // IS an equation and IS an equational head (cite-required by WI-139).
+    let my_law = rules_with_head_qn(&kb, "anthill.kernel.unify")
         .iter()
         .copied()
         .find(|&rid| {
@@ -136,27 +148,60 @@ fn classification_keys_on_resolved_symbol_not_short_name() {
                 .map(|l| kb.local_name_of(l) == "my_law")
                 .unwrap_or(false)
         })
-        .expect("my_law must load with head functor anthill.prelude.PartialEq.eq");
-    assert!(kb.is_equation(my_law), "a genuine `=` law is an equation");
+        .expect("my_law must load with head functor anthill.kernel.unify");
+    assert!(kb.is_equation(my_law), "a genuine `<=>` law is an equation");
     let Value::Term { id: law_head, .. } = *kb.rule_head_value(my_law) else {
         panic!("law head is a term")
     };
     assert!(
         is_equational_head(&kb, law_head),
-        "a genuine `=` law is an equational head"
+        "a genuine `<=>` law is an equational head"
+    );
+
+    // The `=` half, and the one that keeps this test honest about "RESOLVED symbol":
+    // `bodied_law`'s head IS `anthill.prelude.PartialEq.eq`, the very symbol `Bag.eq`
+    // shares a short name with, and the two get OPPOSITE verdicts from
+    // `is_equational_head` above. It is NOT an equation (WI-888 / proposal 049: a
+    // guarded `=` law keeps its spelling and its non-equation status, because
+    // `is_equation` requires an empty body) — so the SHAPE question and the EQUATION
+    // question part company here, which is exactly the split WI-888 rests on.
+    let bodied_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
+        .iter()
+        .copied()
+        .find(|&rid| {
+            kb.rule_label(rid)
+                .map(|l| kb.local_name_of(l) == "bodied_law")
+                .unwrap_or(false)
+        })
+        .expect("bodied_law must load with head functor anthill.prelude.PartialEq.eq");
+    assert!(
+        !kb.is_equation(bodied_law),
+        "a GUARDED `=` law is not an equation — it has a body"
+    );
+    let Value::Term { id: bodied_head, .. } = *kb.rule_head_value(bodied_law) else {
+        panic!("bodied law head is a term")
+    };
+    assert!(
+        is_equational_head(&kb, bodied_head),
+        "…but its HEAD is still the canonical `=` connective, which is what WI-139 reads"
     );
 }
 
-/// WI-139 behaviour is unchanged for genuine equations — the bare `foo=foo`
+/// WI-139 behaviour is unchanged for genuine equations — the bare `foo <=> foo`
 /// law is unindexed (cite-required) — while the carrier's `Bag.eq` rules stay
 /// indexed in `rules_by_functor` (no longer collateral-unindexed by short name).
+///
+/// The GUARDED `=` law is checked here too (WI-888): WI-139 keys on the head SHAPE, so
+/// a body does not save it from unindexing, and that is precisely why
+/// `is_equality_connective_functor` still answers for `eq` after the bodyless spelling
+/// was refused. Drop `eq` from that cache and this row is what fails.
 #[test]
 fn wi139_unchanged_for_law_carrier_eq_stays_indexed() {
     let mut kb = load_kb();
 
-    // Genuine bare law: NOT in the `rules_by_functor(Eq.eq)` bucket.
-    let eq_sym = kb.eq_functor();
-    let my_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
+    // Genuine bare law: NOT in the `rules_by_functor(unify)` bucket.
+    let unify_sym = kb.unify_functor();
+    let my_law = rules_with_head_qn(&kb, "anthill.kernel.unify")
         .iter()
         .copied()
         .find(|&rid| {
@@ -166,8 +211,24 @@ fn wi139_unchanged_for_law_carrier_eq_stays_indexed() {
         })
         .expect("my_law loads");
     assert!(
-        !kb.rules_by_functor(eq_sym).contains(&my_law),
-        "a bare `=` law must be unindexed (WI-139 cite-required)"
+        !kb.rules_by_functor(unify_sym).contains(&my_law),
+        "a bare `<=>` law must be unindexed (WI-139 cite-required)"
+    );
+
+    // The guarded `=` law: same treatment, under the OTHER connective's bucket.
+    let eq_sym = kb.eq_functor();
+    let bodied_law = rules_with_head_qn(&kb, "anthill.prelude.PartialEq.eq")
+        .iter()
+        .copied()
+        .find(|&rid| {
+            kb.rule_label(rid)
+                .map(|l| kb.local_name_of(l) == "bodied_law")
+                .unwrap_or(false)
+        })
+        .expect("bodied_law loads");
+    assert!(
+        !kb.rules_by_functor(eq_sym).contains(&bodied_law),
+        "a guarded `=` law is unindexed too — WI-139 reads the head SHAPE, not the body"
     );
 
     // Carrier `Bag.eq` rules: indexed under their own functor.

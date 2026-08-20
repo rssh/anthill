@@ -43,7 +43,7 @@ namespace test.wi902
 
     -- No `bump` operation exists: the body below type-checks only if this rule
     -- fires AND its macro RHS is expanded away.
-    rule dr: dot_apply(?e, bump, ?x) = wrap(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) <=> wrap(?e, ?x) [simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
 
@@ -111,7 +111,7 @@ namespace test.wi902reject
     operation wrap(r: NodeOccurrence, x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
       Error.raise(boom(why: "bump is not translatable here"))
 
-    rule dr: dot_apply(?e, bump, ?x) = wrap(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) <=> wrap(?e, ?x) [simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
@@ -169,7 +169,7 @@ namespace test.wi902decline
     operation wrap(r: NodeOccurrence, x: NodeOccurrence) -> NodeOccurrence =
       make_apply("test.wi902decline.Holder.wrapped", cons(r, cons(x, nil())), r)
 
-    rule dr: dot_apply(?e, bump, ?x) = wrap(r: ?e, x: ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) <=> wrap(r: ?e, x: ?x) [simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
@@ -189,8 +189,8 @@ end
     );
 }
 
-/// SELECTION is connective-agnostic, like the rest of the `[simp]` engine: a dot
-/// rule spelled `<=>` fires exactly as one spelled `=`.
+/// SELECTION reads BOTH equation buckets, which is what lets a dot rule spelled `<=>`
+/// fire at all.
 ///
 /// This site used to re-scan the `eq` bucket alone, so a `<=>` dot rule was never a
 /// candidate and silently did not fire — while `is_equation`, `stored_lhs_functor`,
@@ -198,13 +198,24 @@ end
 /// connective-agnostic. It matters for WI-902 in particular because 043.1 writes its
 /// macro rules `<=>` (`rule where(?r, ?c) <=> guarded_of(?r, ?c) [simp]`), so the
 /// dot-rule macro expansion above would have been dead for the idiomatic spelling.
-/// `[simp]` is the enablement; the connective is not (kernel-language §5.3).
+///
+/// WI-888 REPLACED THIS TEST'S CONTROL, and the replacement is stated rather than
+/// quietly dropped. It used to drive the SAME rule twice, once per connective, and
+/// assert both fired — a genuine two-arm pin while both spellings loaded. A bodyless
+/// `=` head is now a load error, so that arm cannot exist: the `=` row below asserts
+/// the REFUSAL instead, which is a different claim.
+///
+/// What guards the original regression now is the corpus, not this test: after the
+/// migration EVERY equation in the stdlib is `<=>`, so an eq-only rescan here would
+/// stop firing all of them at once rather than one idiomatic spelling silently. That is
+/// a strictly louder guard, and it is the honest thing to say — this test no longer
+/// measures it.
 #[test]
-fn dot_rule_selection_is_connective_agnostic() {
-    let src = |conn: &str| {
+fn a_unify_spelled_dot_rule_fires_and_an_eq_spelled_one_is_refused() {
+    let src = |ns: &str, conn: &str| {
         format!(
             r#"
-namespace test.wi902conn{conn_ns}
+namespace test.wi902conn{ns}
   import anthill.prelude.{{Int64}}
   sort Holder
     entity holder(value: Int64)
@@ -214,16 +225,23 @@ namespace test.wi902conn{conn_ns}
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
 end
-"#,
-            conn = conn,
-            conn_ns = if conn == "=" { "eq" } else { "unify" }
+"#
         )
     };
-    for conn in ["=", "<=>"] {
-        assert!(
-            try_load_kb_with(&src(conn)).is_ok(),
-            "a `{conn}`-spelled [simp] dot rule must fire: {:?}",
-            try_load_kb_with(&src(conn)).err(),
-        );
-    }
+    assert!(
+        try_load_kb_with(&src("unify", "<=>")).is_ok(),
+        "a `<=>`-spelled [simp] dot rule must fire: {:?}",
+        try_load_kb_with(&src("unify", "<=>")).err(),
+    );
+    // The `=` arm: refused at the HEAD, before selection is ever reached. The subject is
+    // the desugar's own `dot_apply`, so the refusal names no user callable — it must
+    // still name the substitute spelling.
+    let errs = try_load_kb_with(&src("eq", "="))
+        .err()
+        .expect("a bodyless `=` head is refused (WI-888)");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("<=>"),
+        "the refusal must name the substitute spelling, got: {joined}",
+    );
 }
