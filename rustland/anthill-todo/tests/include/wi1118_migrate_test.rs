@@ -80,7 +80,7 @@ fact WorkItem(
   description: "the open one",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact Feedback(workitem: "WI-001", author: "user", content: "a note", at: "2026-01-01T00:00:00Z")
 
@@ -92,7 +92,7 @@ fact WorkItem(
   description: "the delivered one",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "claude", at: "2026-01-02T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "claude"), at: some(value: "2026-01-02T00:00:00Z")))
 "#;
 
 fn read(proj: &Path, rel: &str) -> String {
@@ -116,12 +116,12 @@ fn migrate_explodes_the_store_into_one_file_per_item() {
     assert!(out.status.success(), "migrate failed: {}", stderr(&out));
 
     let one = read(&proj, "open/WI-001.anthill.md");
-    assert!(one.contains(r#"id: "WI-001""#), "the item's own row:\n{one}");
+    assert!(one.contains("- id: WI-001\n"), "the item's own row:\n{one}");
     assert!(one.contains("a note"), "its feedback rides along:\n{one}");
-    assert!(one.contains(r#"name: "probe""#), "its tag rides along:\n{one}");
+    assert!(one.contains("- tags: probe\n"), "its tag rides along:\n{one}");
 
     let two = read(&proj, "delivered/WI-002.anthill.md");
-    assert!(two.contains(r#"id: "WI-002""#), "filed by its own status:\n{two}");
+    assert!(two.contains("- id: WI-002\n"), "filed by its own status:\n{two}");
 
     // The store-level row — neither a primary nor a satellite — is filed under its
     // own functor at the root (§8.3's third route).
@@ -164,7 +164,7 @@ fn a_migrated_project_is_a_working_tracker() {
     let moved = read(&proj, "claimed/WI-001.anthill.md");
     assert!(moved.contains("Claimed"), "the status fact is rewritten:\n{moved}");
     assert!(moved.contains("a note"), "the feedback moved with it:\n{moved}");
-    assert!(moved.contains(r#"name: "probe""#), "the tag moved with it:\n{moved}");
+    assert!(moved.contains("- tags: probe\n"), "the tag moved with it:\n{moved}");
 
     // A write through the migrated store lands in the item's own file.
     let out = run_in(&proj, &["feedback", "WI-001", "after the move"]);
@@ -296,7 +296,7 @@ fn a_file_holding_both_covered_and_uncovered_rows_is_refused() {
         &config,
         format!(
             "{original}\nfact WorkItem(\n  id: \"WI-003\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"misfiled\",\n  \
-             acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n"
+             acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  last_status_change: StatusChange(status: Open()))\n"
         ),
     )
     .expect("write config");
@@ -328,9 +328,9 @@ fn a_file_holding_a_rule_beside_its_rows_is_refused() {
         &extra,
         "-- a rule this project wrote, in a file that also holds a row\n\
          rule my_urgent(?x)\n  \
-           :- WorkItem(id: ?x, status: Open)\n\n\
+           :- WorkItem(id: ?x, last_status_change: StatusChange(status: Open()))\n\n\
          fact WorkItem(\n  id: \"WI-003\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"beside a rule\",\n  \
-         acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n",
+         acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  last_status_change: StatusChange(status: Open()))\n",
     )
     .expect("write extra");
 
@@ -418,7 +418,7 @@ fn a_project_declaring_the_backend_before_migrating_is_told_what_to_do() {
          tools: [\"cargo-test\"])\n\n\
          fact anthill.persistence.ExtentBinding(\n  \
            store: anthill.persistence.filesystem.ItemPerFileStore(\n    \
-             root: \".\",\n    status_field: \"status\",\n    id_field: \"id\",\n    \
+             root: \".\",\n    status_field: \"last_status_change.status\",\n    id_field: \"id\",\n    \
              ref_field: \"workitem\"),\n  \
            role: anthill.persistence.ExtentRole.mirror(),\n  \
            covers: [WorkItem, Feedback, Tag, StoreFormat])\n",
@@ -509,7 +509,7 @@ fn the_forge_spelling_is_refused_with_its_reason() {
 #[test]
 fn a_bare_migrate_is_still_the_schema_stamp() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = setup_project(&tmp, "fact WorkItem(\n  id: \"WI-001\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"unstamped\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  status: Open)\n");
+    let proj = setup_project(&tmp, "fact WorkItem(\n  id: \"WI-001\",\n  created: \"2026-01-01T00:00:00Z\",\n  description: \"unstamped\",\n  acceptance: [ToolPasses(\"cargo-test\")],\n  depends_on: [],\n  last_status_change: StatusChange(status: Open()))\n");
 
     let out = run_in(&proj, &["migrate"]);
     assert!(out.status.success(), "{}", stderr(&out));

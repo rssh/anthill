@@ -15,8 +15,7 @@ fact WorkItem(
   description: \"to deliver\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Claimed(agent: \"alice\", since: \"2026-05-01T00:00:00Z\"))
-";
+  last_status_change: StatusChange(status: Claimed(), agent: some(value: \"alice\"), at: some(value: \"2026-05-01T00:00:00Z\")))";
 
 const SINGLE_DELIVERED_WI: &str = "\
 fact WorkItem(
@@ -25,8 +24,7 @@ fact WorkItem(
   description: \"to verify\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Delivered(agent: \"alice\", at: \"2026-05-02T00:00:00Z\"))
-";
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: \"alice\"), at: some(value: \"2026-05-02T00:00:00Z\")))";
 
 const SINGLE_OPEN_WI: &str = "\
 fact WorkItem(
@@ -35,7 +33,7 @@ fact WorkItem(
   description: \"to delete\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 #[test]
@@ -68,7 +66,7 @@ fn deliver_replaces_claimed_with_delivered() {
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(combined.contains("\"WI-001\""), "WI-001 lost: {combined}");
     assert!(
-        combined.contains("agent: \"bob\""),
+        combined.contains("agent: some(value: \"bob\")"),
         "Delivered fact with bob not present: {combined}"
     );
     // Old Claimed block's unique since-timestamp must be gone.

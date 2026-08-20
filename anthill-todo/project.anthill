@@ -42,7 +42,7 @@ fact Module(name: "scaland", root: "scaland", language: "scala", build: "sbt")
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    status_field: "status",
+    status_field: "last_status_change.status",
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),

@@ -55,7 +55,7 @@ const ITEM_PER_FILE_BINDING: &str = r#"fact Project(
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    status_field: "status",
+    status_field: "last_status_change.status",
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
@@ -139,14 +139,14 @@ fn a_claim_moves_the_file_and_carries_feedback_and_tags() {
     );
     let moved = fs::read_to_string(item_file(&proj, "claimed", &id))
         .expect("the item moved to claimed/");
-    assert!(moved.contains("Claimed(agent: \"claude\""), "{moved}");
+    assert!(moved.contains("- status: Claimed\n- status_agent: claude\n"), "{moved}");
     assert!(
         moved.contains("a note that must travel"),
         "the feedback rode along: {moved}"
     );
     assert!(
-        moved.contains(&format!("Tag(workitem: \"{id}\", name: \"wi1114\")")),
-        "the tag rode along: {moved}"
+        moved.contains("- tags: wi1114\n"),
+        "the tag rode along, as one element of the tags field: {moved}"
     );
 }
 
@@ -323,8 +323,8 @@ fn a_project_declaring_the_backend_before_migrating_is_told_to_migrate() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = setup_project(
         &tmp,
-        "fact WorkItem(id: \"WI-001\", created: \"2026-01-01T00:00:00Z\", acceptance: [], status: Open)\n\
-         fact WorkItem(id: \"WI-002\", created: \"2026-01-01T00:00:00Z\", acceptance: [], status: Open)\n",
+        "fact WorkItem(id: \"WI-001\", created: \"2026-01-01T00:00:00Z\", acceptance: [], last_status_change: StatusChange(status: Open()))\n\
+         fact WorkItem(id: \"WI-002\", created: \"2026-01-01T00:00:00Z\", acceptance: [], last_status_change: StatusChange(status: Open()))\n",
     );
     fs::write(
         proj.join("anthill-todo/project.anthill"),

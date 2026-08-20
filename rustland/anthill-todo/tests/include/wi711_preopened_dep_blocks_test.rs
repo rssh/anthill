@@ -25,7 +25,7 @@ fact WorkItem(
   description: "preopened premise",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: PreOpened)
+  last_status_change: StatusChange(status: PreOpened()))
 
 fact WorkItem(
   id: "WI-002",
@@ -33,7 +33,7 @@ fact WorkItem(
   description: "depends on preopened premise",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-003",
@@ -41,7 +41,7 @@ fact WorkItem(
   description: "dep already delivered",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-004"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-004",
@@ -49,7 +49,7 @@ fact WorkItem(
   description: "delivered dep",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Delivered(agent: "claude", at: "2026-01-01T00:00:00Z"))
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: "claude"), at: some(value: "2026-01-01T00:00:00Z")))
 
 fact WorkItem(
   id: "WI-005",
@@ -57,7 +57,7 @@ fact WorkItem(
   description: "preopened, depends on still-open WI-002",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-002"],
-  status: PreOpened)
+  last_status_change: StatusChange(status: PreOpened()))
 "#;
 
 fn run(proj: &std::path::Path, args: &[&str]) -> String {

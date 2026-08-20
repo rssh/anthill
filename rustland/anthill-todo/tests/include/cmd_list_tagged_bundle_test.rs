@@ -18,7 +18,7 @@ fact WorkItem(
   description: "base item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-002",
@@ -26,7 +26,7 @@ fact WorkItem(
   description: "mid item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-001"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-003",
@@ -34,7 +34,7 @@ fact WorkItem(
   description: "top item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: ["WI-002"],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact WorkItem(
   id: "WI-004",
@@ -42,7 +42,7 @@ fact WorkItem(
   description: "untagged item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact Tag(workitem: "WI-003", name: "seq")
 fact Tag(workitem: "WI-001", name: "seq")
@@ -145,7 +145,7 @@ fact WorkItem(
   description: "deferred backlog item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: PreOpened)
+  last_status_change: StatusChange(status: PreOpened()))
 
 fact WorkItem(
   id: "WI-101",
@@ -153,7 +153,7 @@ fact WorkItem(
   description: "live actionable item",
   acceptance: [ToolPasses("cargo-test")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 
 fact Tag(workitem: "WI-100", name: "seq")
 fact Tag(workitem: "WI-101", name: "seq")

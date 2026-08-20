@@ -31,7 +31,7 @@ fact WorkItem(
   description: \"first\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ",
     );
     let out = Command::new(ANTHILL_TODO_BIN)

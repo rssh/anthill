@@ -94,6 +94,25 @@ namespace anthill.stage0
     -- nothing edits `created`, which is what lets the id minted from it stay
     -- stable while the description it was also minted from drifts.
     created     : String,
+    -- WI-K63ZV: THE ITEM'S STATE IS THE LAST CHANGE TO IT.
+    --
+    -- `WorkStatus` used to be a SUM WITH PAYLOADS, and the payloads were
+    -- irregular — `since` on Claimed/Stale against `at` on the other four,
+    -- `agent` on only two, and `Verified` carrying no agent at all, so "who
+    -- verified this" was unrecorded. That was a defect rather than a design:
+    -- every status is a transition somebody made at some time. Once the
+    -- companions are uniform the sum has nothing left to discriminate, so
+    -- `WorkStatus` is a plain enum of labels and what carries the transition is
+    -- a `StatusChange`.
+    --
+    -- IT IS WRITTEN FLAT IN THE DOCUMENT, as `status` / `status_agent` /
+    -- `status_at` / `status_reason` — see `FlatRecord` in
+    -- `anthill.stage0.document`. That is what keeps the attributes chapter one
+    -- line per datum, and it is also what lets the rejection REASON become a
+    -- chapter: per field, the longest value ever written on this tracker was a
+    -- 1842-character `status`, because a reason is prose WI-1120 missed while it
+    -- was buried inside a variant payload.
+    last_status_change : StatusChange,
     -- WI-928: `String`, not `Term`. A `String` literal is NOT a `Term` — the
     -- value↔Term crossing is an explicit conversion (`as_term`, WI-406), not
     -- subsumption — and every description in workitems.anthill is prose: the
@@ -107,8 +126,7 @@ namespace anthill.stage0
     acceptance  : List[T = AcceptanceCriterion],
     depends_on  : Option[T = List[T = String]],
     generates   : Option[T = List[T = Term]],
-    requires_capability : Option[T = List[T = Capability]],
-    status      : WorkStatus
+    requires_capability : Option[T = List[T = Capability]]
   )
 
   enum ContextRef
@@ -124,17 +142,71 @@ namespace anthill.stage0
     entity Constraint(term: Term)
   end
 
+  -- One transition of one item: what it moved to, who moved it, when, and why.
+  --
+  -- WRITTEN FLAT in a document (`FlatRecord`, `anthill.stage0.document`), as
+  -- `status` / `status_agent` / `status_at` / `status_reason`. The record is the
+  -- concept and the flattening is a rendering: `status` is the most-read field
+  -- in the whole format — the directory mirrors it, `fsck` checks the path
+  -- against it, `list` groups by it — so it stays a top-level line rather than
+  -- moving into a sub-section of its own.
+  entity StatusChange(
+    status : WorkStatus,
+    agent  : Option[T = String],
+    at     : Option[T = String],
+    reason : Option[T = String])
+
+  -- A PLAIN NULLARY ENUM (WI-K63ZV): a label, not a sum. Once every transition
+  -- carries the same companions there is nothing left for a payload to
+  -- discriminate — see `StatusChange` above.
   enum WorkStatus
     entity Draft         -- description still being authored; not ready for review
     entity PreOpened     -- captured idea / future direction; not yet committed to the active queue (cannot be claimed until promoted to Open)
     entity Open          -- in the active queue; available to claim
-    entity Claimed(agent: String, since: String)
-    entity Delivered(agent: String, at: String)
-    entity Verified(at: String)
-    entity Rejected(reason: String, at: String)
-    entity ProposalRejected(reason: String, at: String)
-    entity Stale(reason: String, since: String)
+    entity Claimed
+    entity Delivered
+    entity Verified
+    entity Rejected
+    entity ProposalRejected
+    entity Stale
   end
+
+  -- =================================================================
+  -- What the record has to state, and what it deliberately does not
+  -- =================================================================
+  --
+  -- A `StatusChange` is UNIFORM: somebody made it, at some time, and may have
+  -- said why. None of that is variant-specific, and reading a distribution off
+  -- the old sum would freeze its defects into the schema — `agent` appeared on
+  -- Claimed and Delivered only, `Verified` carried none at all, `since` on
+  -- Claimed/Stale against `at` on the other four, and Draft / PreOpened / Open
+  -- carried nothing though somebody performed each of those transitions too.
+  --
+  -- `agent` and `at` are `Option` because of HISTORY, not because the domain is
+  -- unsure: 985 of 1127 items had already lost who claimed them by the time this
+  -- was written, because `Delivered` overwrote `Claimed` in place, and no `Open`
+  -- item ever recorded one. Migration synthesizes nothing, so those rows arrive
+  -- with `none` and say so — inventing an agent for 985 items is the one outcome
+  -- worse than a gap. Every command writes both from here on.
+  --
+  -- `reason` is `Option` for a different reason: most changes have nothing to
+  -- explain. It is NOT variant-specific — unclaiming because you are blocked, or
+  -- delivering with a caveat, are both worth recording. What IS real, and is the
+  -- one thing the old type enforced that survives, is the other direction:
+  --
+  --   AN OFF-RAMP WITH NO STATED REASON IS USELESS.
+  --
+  -- Rejecting an item without saying why leaves nobody able to act on it, so
+  -- that stays a LOAD ERROR rather than a convention the commands are trusted to
+  -- keep. Everything else about a reason is a command-level rule (`update`
+  -- refuses `--reason` where it would have nothing to attach to), not a fact
+  -- about the domain.
+  constraint rejected_names_its_reason :-
+    WorkItem(last_status_change: StatusChange(status: Rejected, reason: none))
+  constraint proposal_rejected_names_its_reason :-
+    WorkItem(last_status_change: StatusChange(status: ProposalRejected, reason: none))
+  constraint stale_names_its_reason :-
+    WorkItem(last_status_change: StatusChange(status: Stale, reason: none))
 
   -- =================================================================
   -- Agent capabilities
@@ -178,73 +250,152 @@ namespace anthill.stage0
 end
 
 -- =================================================================
--- The document encoding (WI-1120, design §5.3 / §5.4)
+-- The item document format (WI-K63ZV)
 -- =================================================================
 --
--- An item file is an anthill HEAD followed by markdown CHAPTERS, and this is
--- the declaration that says which field of which fact leaves the head and which
--- chapter fills it. The store learns exactly one concept from it — "this
--- field's text is the chapter named N" — and never learns this domain's schema.
+-- Specification: `rustland/anthill-todo/docs/design/document-mapping.md`. An
+-- item file is a sequence of markdown CHAPTERS: one holds the item's own fact
+-- as DATA, the rest hold prose. This is the declaration that says which.
 --
--- WHY AT ALL, measured on this repo's own tracker: 1110 descriptions averaging
--- 2107 characters and 1129 feedback entries averaging 2116 come to 92.5% of the
--- file, each stored as ONE physical line of escaped text because the grammar has
--- no multi-line string. A work item was already a document with a small
--- structured head, encoded as a string literal; this stops pretending otherwise.
+-- WHY, measured on this repo's own tracker: an item's head was ONE physical
+-- line, 279 characters on average and 2062 at its longest, so two agents
+-- editing two DIFFERENT fields of one item conflicted in git. Measured on real
+-- 3-way merges, one field per line is not enough either — with nothing between
+-- the two edited lines git still conflicts, and with one unchanged line between
+-- them it merges. So the blank line is the prize, and `FieldGroup` is where the
+-- format states which fields deliberately do NOT get one.
 --
--- BUNDLED WITH THE DOMAIN, NOT IN `project.anthill`, and on the same
--- `StoreFormat` precedent: the encoding is a property of the SCHEMA, not of the
--- project, so §3 stays "two facts, two questions" and a project has nothing new
--- to write.
+-- BUNDLED WITH THE DOMAIN, NOT IN `project.anthill`, on the `StoreFormat`
+-- precedent: the encoding is a property of the SCHEMA, not of the project, so a
+-- project has nothing new to write.
 namespace anthill.stage0.document
   import anthill.prelude.{List, String, Int64}
   import anthill.reflect.{Term}
-  import anthill.stage0.{WorkItem, Feedback}
+  import anthill.stage0.{WorkItem, Feedback, Tag, AcceptanceCriterion, ToolPasses}
+  import anthill.stage0.{StatusChange}
 
-  -- The two structural levels. Fields and containers sit at `level`, a
-  -- container's entries at level + 1, and prose begins below that.
+  -- `level` is the first structural level; `attributes` names the chapter that
+  -- holds a document's own fact as data.
   --
-  -- THE LEVELS ARE RESERVED, which is the whole reason to name them: if any
-  -- heading could start a chapter, a subsection someone typed mid-description
-  -- would silently cut the field in half and the tail would reappear as an
-  -- innocent-looking stray chapter.
-  entity DocumentFormat(level: Int64)
+  -- `level: 2` IS DECIDED, NOT DEFAULTED. Raising the structure by one —
+  -- `Description` becoming an `h1` — buys one more level of prose depth
+  -- everywhere, which is worth most inside a feedback entry, where three
+  -- authored heading levels already fit exactly with nothing to spare. It was
+  -- weighed and declined: an `h1` renders too large for a page carrying three or
+  -- four of them. Recorded because the parameter is cheap to change NOW and
+  -- expensive later — every heading in every file shifts.
+  entity DocumentFormat(
+    level      : Int64,
+    attributes : String)
 
-  -- A prose field of the item's own fact: one chapter, fixed name.
+  -- Fields written ADJACENT, with no blank line between them.
+  --
+  -- A group's fields describe one state that changes as a unit, so adjacency
+  -- makes a concurrent edit to two of them a conflict — which is what it should
+  -- be. Fields that are never rewritten belong in a group for the same reason:
+  -- nothing can conflict over them.
+  entity FieldGroup(
+    functor : Term,
+    fields  : List[String])
+
+  -- A bare scalar `s` in a position of this sort denotes `constructor(slot: s)`.
+  entity ScalarForm(
+    sort        : Term,
+    constructor : Term,
+    slot        : String)
+
+  -- A prose field of the item's fact: one chapter, fixed name.
+  --
+  -- A MAPPED FIELD IS ALWAYS A CHAPTER, however short its text. One spelling, so
+  -- nothing has to decide per value and nothing has two homes: `description`
+  -- gets a chapter when it is the single word `test`. The alternative — short
+  -- values inline, long values in a chapter — is a threshold to pick, two shapes
+  -- for one datum, and a writer that changes a file's structure when prose grows.
   entity Chapter(
-    functor : Term,     -- the fact the field belongs to
-    field   : String,   -- the field whose text moves out of the head
-    named   : String)   -- the chapter's heading text
+    functor : Term,
+    field   : String,
+    named   : String)
 
-  -- A satellite fact keyed to the item and repeated 0..n: one container
-  -- chapter, one entry chapter per fact inside it.
+  -- A repeated satellite WITH prose: one container, one entry per fact.
   --
-  -- THE SPLIT FROM `Chapter` IS WHAT KEEPS A `repeated` FLAG OUT OF THE
-  -- MAPPING. Repetition is not a property of a field, it is the whole point of a
-  -- group — and making the two illegal to confuse is cheaper than checking a
-  -- boolean nobody would think to check.
+  -- `kind` is the word that says which functor an entry belongs to. A container
+  -- holding ONE kind still writes it: one spelling, and a second kind added
+  -- later is then additive rather than a fourth rewrite of every file.
+  --
+  -- `key` is filled from the item's own `id` and is never written in the
+  -- document — an entry in this file is about this item. It comes from the `id`
+  -- ATTRIBUTE and never from the filename: taking it from the path would make a
+  -- hand-renamed file silently re-attribute every entry in it, while the
+  -- filename-versus-`id` check reported the rename as an unrelated fault.
   entity ChapterGroup(
-    functor   : Term,              -- the satellite fact
-    container : String,            -- the `##` heading grouping the entries
-    field     : String,            -- the entry's prose field
-    named_by  : String,            -- the field whose value names each entry
-    decorate  : List[T = String])  -- head fields regenerated into the heading
+    functor   : Term,
+    container : String,        -- several groups may share one
+    kind      : String,        -- the word discriminating this group's entries
+    key       : String,        -- the field taking the item's id
+    heading   : List[String],  -- fields carried by the entry heading, in order
+    field     : String)        -- the field carried by the entry body
 
-  fact DocumentFormat(level: 2)
+  -- A repeated satellite WITHOUT prose: one attributes field holding a list,
+  -- one fact per element.
+  entity SatelliteList(
+    functor : Term,
+    named   : String,   -- the attributes field
+    field   : String,   -- the field each element fills
+    key     : String)   -- the field taking the item's id
 
-  fact Chapter(
-    functor: WorkItem, field: "description", named: "description")
+  -- A RECORD-VALUED field written as SIBLING attribute lines rather than as one
+  -- nested value.
+  --
+  -- WHY AT ALL: the attributes chapter is one line per datum, and a nested
+  -- record has no data spelling — written whole it would land as a single
+  -- backticked term, which is exactly the one long line this format exists to
+  -- break up. Flattening is what lets `StatusChange` be a record in the domain
+  -- and four independently mergeable lines on the page.
+  --
+  -- THE NAMING RULE, and its one deliberate exception: the record's FIRST
+  -- declared field takes `prefix` as its whole name, and every other field takes
+  -- `<prefix>_<field>`. So `StatusChange` under prefix `status` writes `status`,
+  -- `status_agent`, `status_at`, `status_reason`. The exception exists because
+  -- the first field is the record's HEADLINE — the value the directory mirrors
+  -- and §10 checks the path against — and `status_status` is not a name anyone
+  -- would write. The expanded names are checked against the functor's own
+  -- fields, so a collision is a refusal rather than a silent shadow.
+  entity FlatRecord(
+    functor : Term,
+    field   : String,   -- the record-valued field of `functor`
+    prefix  : String)   -- the attribute name its first field takes
 
-  -- `named_by` IS NOT INJECTIVE and does not need to be: this tracker holds two
-  -- `Feedback` rows with identical `at` AND identical `author`. Entries are
-  -- ORDERED SIBLINGS under their container, so the Nth row in the head binds to
-  -- the Nth `###` — safe only because the heading is CHECKED against the fact
-  -- rather than ignored, which turns a reordered entry into a loud diagnostic
-  -- instead of prose silently rebound onto the wrong row.
+  fact DocumentFormat(level: 2, attributes: "Attributes")
+
+  fact FlatRecord(functor: WorkItem, field: "last_status_change", prefix: "status")
+
+  -- `id` and `created` are never rewritten, so nothing can conflict over them.
+  -- The status group is the one that MUST be adjacent: two concurrent status
+  -- edits should collide rather than interleave into a half-transition.
+  fact FieldGroup(functor: WorkItem, fields: ["id", "created"])
+  fact FieldGroup(functor: WorkItem, fields: ["status", "status_agent", "status_at"])
+
+  -- `acceptance` is 100% `ToolPasses` — 1157 occurrences, 8 distinct values —
+  -- so the whole field reads `cargo-test, scaland-sbt-test` and the rare
+  -- `FactHolds` takes the backticked term spelling.
+  fact ScalarForm(
+    sort: AcceptanceCriterion, constructor: ToolPasses, slot: "tool")
+
+  fact Chapter(functor: WorkItem, field: "description",   named: "Description")
+  fact Chapter(functor: WorkItem, field: "status_reason", named: "Reason")
+
+  -- ENTRIES CARRY A KIND AND NOTHING IS SYNTHESIZED. `## Changes` holds only
+  -- recorded feedback: real status history cannot be migrated, since 985 of 1127
+  -- items had already lost who claimed them and when, and `untag` never left a
+  -- record. A log that begins partly fictional is worse than one that begins
+  -- short. The kind word is paid now so that status and tag entries are ADDITIVE
+  -- when they begin to accumulate.
   fact ChapterGroup(
-    functor: Feedback, container: "Feedback",
-    field: "content", named_by: "at", decorate: ["author"])
+    functor: Feedback, container: "Changes", kind: "feedback",
+    key: "workitem", heading: ["at", "author"], field: "content")
 
-  -- `Tag` needs neither: it carries no prose, so it stays in the head as an
-  -- ordinary fact.
+  -- `Tag` carries no prose, so it is one comma-separated element of one
+  -- attributes field rather than a chapter of its own.
+  fact SatelliteList(
+    functor: Tag, named: "tags", field: "name", key: "workitem")
 end

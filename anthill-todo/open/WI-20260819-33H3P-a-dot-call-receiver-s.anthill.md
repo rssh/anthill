@@ -1,8 +1,13 @@
-```anthill
-fact WorkItem(id: "WI-20260819-33H3P-a-dot-call-receiver-s", created: "2026-08-19T04:52:29Z", acceptance: [ToolPasses(tool: "cargo-test"), ToolPasses(tool: "scaland-sbt-test")], depends_on: some(value: nil), status: Open)
-```
+## Attributes
 
-## description
+- id: WI-20260819-33H3P-a-dot-call-receiver-s
+- created: 2026-08-19T04:52:29Z
+
+- status: Open
+
+- acceptance: cargo-test, scaland-sbt-test
+
+## Description
 
 A DOT-CALL RECEIVER'S OCCURRENCE CARRIES NO SPAN, so every diagnostic anchored on it reports at 1:1 and blames a synthesized operation the author never wrote. Split out of WI-731 (delivered), which measured the cause and found it is NOT where WI-1128 pointed.
 

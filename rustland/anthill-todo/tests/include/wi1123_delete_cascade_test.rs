@@ -69,7 +69,7 @@ const ITEM_PER_FILE_BINDING: &str = r#"fact Project(
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
-    status_field: "status",
+    status_field: "last_status_change.status",
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
@@ -224,7 +224,7 @@ fn delete_removes_the_items_file_and_fsck_stays_clean() {
     let item_file = proj.join(format!("anthill-todo/open/{id}.anthill.md"));
     let text = fs::read_to_string(&item_file).expect("the item has a file");
     assert!(
-        text.contains("a note in the item's own file") && text.contains("name: \"cascade\""),
+        text.contains("a note in the item's own file") && text.contains("- tags: cascade\n"),
         "the satellites are filed in the item's file: {text}"
     );
 

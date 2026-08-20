@@ -12,11 +12,13 @@ namespace anthill.stage0.workflow
   -- Dependency checking
   -- ================================================================
 
-  -- A dependency is satisfied if Delivered or Verified.
+  -- A dependency is satisfied if Delivered or Verified. An item's state is the
+  -- `status` of its last change (WI-K63ZV) — the rest of that record is who and
+  -- when, which nothing here asks about.
   rule dep_satisfied(?dep)
-    :- WorkItem(id: ?dep, status: Delivered(agent: ?, at: ?))
+    :- WorkItem(id: ?dep, last_status_change: StatusChange(status: Delivered))
   rule dep_satisfied(?dep)
-    :- WorkItem(id: ?dep, status: Verified(at: ?))
+    :- WorkItem(id: ?dep, last_status_change: StatusChange(status: Verified))
 
   -- A work item has all dependencies satisfied if:
   --   1. It has no dependencies — an explicitly empty list, or the field
@@ -61,25 +63,25 @@ namespace anthill.stage0.workflow
 
   -- Find all open work items
   rule open_item(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?d),
+    :- WorkItem(id: ?id, last_status_change: StatusChange(status: Open), description: ?d),
        description_view(?d, ?desc)
 
   -- Find all work items ready to be claimed
   -- (Open + all dependencies satisfied)
   rule claimable(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?d),
+    :- WorkItem(id: ?id, last_status_change: StatusChange(status: Open), description: ?d),
        description_view(?d, ?desc),
        all_deps_satisfied(?id)
 
   -- Find blocked work items (Open + at least one unmet dependency).
   rule blocked(?id, ?desc)
-    :- WorkItem(id: ?id, status: Open, description: ?d),
+    :- WorkItem(id: ?id, last_status_change: StatusChange(status: Open), description: ?d),
        description_view(?d, ?desc),
        has_unmet_deps(?id)
 
   -- Find delivered items awaiting review
   rule needs_review(?id, ?desc)
-    :- WorkItem(id: ?id, status: Delivered(agent: ?, at: ?), description: ?d),
+    :- WorkItem(id: ?id, last_status_change: StatusChange(status: Delivered), description: ?d),
        description_view(?d, ?desc)
 
 end

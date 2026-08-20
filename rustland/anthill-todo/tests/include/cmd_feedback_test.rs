@@ -27,7 +27,7 @@ fact WorkItem(
   description: \"test item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 #[test]

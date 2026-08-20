@@ -21,8 +21,9 @@ tree-sitter-anthill/    Tree-sitter grammar (grammar.js + Rust/Node bindings, us
 stdlib/anthill/         Standard library .anthill files (prelude, reflect, realization, persistence)
 examples/github-todo/   Example project: work-item tracking with domain, rules, tools
 anthill-todo/           This project's own work items: one `WI-….anthill.md` DOCUMENT
-                        per item (a fenced anthill head, then prose as markdown chapters),
-                        under a directory per status. WI-1120/WI-1121.
+                        per item (an `## Attributes` chapter of one line per field,
+                        then prose chapters), under a directory per status. Format:
+                        `rustland/anthill-todo/docs/design/document-mapping.md`.
 docs/                   Kernel language spec, stage0 design docs, proposals
 ```
 

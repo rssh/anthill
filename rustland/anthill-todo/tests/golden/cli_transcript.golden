@@ -80,7 +80,7 @@ $ anthill-todo --agent claude deliver WI-001
 delivered: WI-001 by claude
 [exit=0]
 $ anthill-todo verify WI-001
-verified: WI-001
+verified: WI-001 by user
 [exit=0]
 $ anthill-todo --agent claude feedback WI-002 some feedback text
 feedback on WI-002: some feedback text

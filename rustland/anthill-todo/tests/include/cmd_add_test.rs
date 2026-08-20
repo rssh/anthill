@@ -214,7 +214,7 @@ fn add_custom_acceptance_overrides_default() {
     let added_block_start = combined.find("fact WorkItem(").expect("the added item lives");
     let added_block = &combined[added_block_start..];
     let block_end = added_block
-        .find("status: Open")
+        .find("last_status_change: StatusChange(status: Open,")
         .map(|i| added_block_start + i)
         .unwrap_or(combined.len());
     let added_block = &combined[added_block_start..block_end];

@@ -136,7 +136,7 @@ fn let_bound_constructor_does_not_drop_enclosing_sort() {
     let driver = r#"
 namespace test.wi204_let_ctor_env_let
   import anthill.prelude.{Cell, Int64, Option, List, none, nil}
-  import anthill.stage0.{WorkItem, Open}
+  import anthill.stage0.{WorkItem, StatusChange, Open}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
 
   sort Main
@@ -154,7 +154,7 @@ namespace test.wi204_let_ctor_env_let
         depends_on: none(),
         generates: none(),
         requires_capability: none(),
-        status: Open())
+        last_status_change: StatusChange(status: Open()))
       let _ = WorkItemStore.commit(s, w)
       0
   end

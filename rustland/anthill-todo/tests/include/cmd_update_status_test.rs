@@ -20,8 +20,7 @@ fact WorkItem(
   description: \"delivered by mistake\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [\"WI-000\"],
-  status: Delivered(agent: \"alice\", at: \"2026-05-02T00:00:00Z\"))
-";
+  last_status_change: StatusChange(status: Delivered(), agent: some(value: \"alice\"), at: some(value: \"2026-05-02T00:00:00Z\")))";
 
 const CLAIMED_WI: &str = "\
 fact WorkItem(
@@ -30,8 +29,7 @@ fact WorkItem(
   description: \"claimed item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Claimed(agent: \"alice\", since: \"2026-05-01T00:00:00Z\"))
-";
+  last_status_change: StatusChange(status: Claimed(), agent: some(value: \"alice\"), at: some(value: \"2026-05-01T00:00:00Z\")))";
 
 const OPEN_WI: &str = "\
 fact WorkItem(
@@ -40,7 +38,7 @@ fact WorkItem(
   description: \"open item\",
   acceptance: [ToolPasses(\"cargo-test\")],
   depends_on: [],
-  status: Open)
+  last_status_change: StatusChange(status: Open()))
 ";
 
 /// The motivating case: an item delivered by mistake reverted to Claimed.
@@ -77,7 +75,7 @@ fn status_reverts_delivered_to_claimed() {
 
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(
-        combined.contains("Claimed(agent: \"bob\""),
+        combined.contains("status: Claimed, agent: some(value: \"bob\")"),
         "Claimed-by-bob not persisted: {combined}"
     );
     assert!(
@@ -91,10 +89,10 @@ fn status_reverts_delivered_to_claimed() {
     );
 }
 
-/// `--status Open` from Claimed clears the claimant — the same end state
-/// as `unclaim`, reached via the general route.
+/// `--status Open` from Claimed releases the item — the same end state as
+/// `unclaim`, reached via the general route — and RECORDS who released it.
 #[test]
-fn status_open_clears_claimant() {
+fn status_open_releases_and_records_who() {
     let tmp = tempfile::tempdir().unwrap();
     let proj = setup_project(&tmp, CLAIMED_WI);
     let out = Command::new(BIN)
@@ -127,11 +125,22 @@ fn status_open_clears_claimant() {
         !workitems.contains("Claimed"),
         "no Claimed block should remain: {workitems}"
     );
+    // WI-K63ZV: it does NOT clear the provenance, it replaces it. `Open` used to
+    // carry no fields, so an unclaim left no record of who released the item;
+    // the new change names the agent and the time like every other.
+    assert!(
+        workitems.contains("status: Open, agent: some(value: \"user\"), at: some(value:"),
+        "the release is recorded, not erased: {workitems}"
+    );
 }
 
-/// `--status Verified` stamps a timestamp but no agent (mirrors `verify`).
+/// `--status Verified` stamps WHO verified it and WHEN (mirrors `verify`).
+///
+/// WI-K63ZV: it used to stamp a timestamp and no agent, because the old
+/// `Verified(at:)` payload had nowhere to put one. Every transition is a
+/// `StatusChange` now, so the verifier is recorded like any other.
 #[test]
-fn status_verified_stamps_timestamp_only() {
+fn status_verified_stamps_its_agent_and_time() {
     let tmp = tempfile::tempdir().unwrap();
     let proj = setup_project(&tmp, DELIVERED_WI);
     let out = Command::new(BIN)
@@ -155,13 +164,16 @@ fn status_verified_stamps_timestamp_only() {
     );
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(
-        combined.contains("status: Verified(at:"),
+        combined.contains("status: Verified, agent: some(value: \"bob\")"),
         "Verified not persisted: {combined}"
     );
-    // Verified carries no agent field, so bob must not appear in the status.
+    // WI-K63ZV: AND IT NAMES THE VERIFIER. The old `Verified(at:)` payload
+    // carried no agent at all, so "who verified this" was simply not written
+    // down; this assertion used to pin that gap in place. Every transition is a
+    // `StatusChange` now, so the agent is there for this one too.
     assert!(
-        !combined.contains("Verified(at: \"") || !combined.contains("bob"),
-        "Verified should not record an agent: {combined}"
+        combined.contains("status: Verified, agent: some(value: \"bob\"), at: some(value:"),
+        "Verified should record who verified it, and when: {combined}"
     );
 }
 
@@ -218,7 +230,8 @@ fn status_rejected_with_reason_persists() {
     );
     let combined = read_combined(&proj.join("anthill-todo"));
     assert!(
-        combined.contains("Rejected(reason: \"superseded by WI-002\""),
+        combined.contains("status: Rejected, agent: some(value: \"user\"), at: some(value: ")
+            && combined.contains("reason: some(value: \"superseded by WI-002\")"),
         "Rejected reason not persisted: {combined}"
     );
 }

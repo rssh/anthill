@@ -20,7 +20,8 @@ namespace anthill.todo
   import anthill.prelude.Meta.{Meta}
   import anthill.prelude.Time.{now, Clock}
   import anthill.stage0.{Project, Feedback, WorkItem, ToolPasses,
-                         AcceptanceCriterion, WorkStatus, StoreFormat}
+                         AcceptanceCriterion, WorkStatus, StatusChange,
+                         StoreFormat}
   import anthill.stage0.WorkStatus.{Open, PreOpened, Draft}
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
@@ -414,7 +415,7 @@ namespace anthill.todo
   --   status_reason_unused — a non-reason status given a stray --reason
   --   status_unknown       — name not a WorkStatus
   sort UpdateStatus
-    entity status_ok(status: WorkStatus)
+    entity status_ok(change: StatusChange)
     entity status_needs_reason
     entity status_reason_unused
     entity status_unknown
@@ -558,7 +559,7 @@ namespace anthill.todo
       else if eq(name, "preopen") then cmd_preopen(args, agent, s)
       else if eq(name, "promote") then cmd_promote(args, agent, s)
       else if eq(name, "deliver") then cmd_deliver(args, agent, s)
-      else if eq(name, "verify") then cmd_verify(args, s)
+      else if eq(name, "verify") then cmd_verify(args, agent, s)
       else if eq(name, "delete") then cmd_delete(args, s)
       else if eq(name, "update") then cmd_update(args, agent, s)
       else if eq(name, "add-dependency") then
@@ -816,14 +817,20 @@ namespace anthill.todo
                                 concat(k, concat(": ", to_string(n)))))
               print_counts(rest)
 
-    -- Status field's functor short name, or "?" when the field isn't
-    -- a recognizable Entity/Ref.
+    -- The name of the state the item is in: the `status` of its last change.
+    -- "?" when the field is not a recognizable Entity/Ref.
     operation status_name_w(w: WorkItem) -> String =
+      match status_of(w)
+        case some(name) -> name
+        case none() -> "?"
+
+    -- The one place a `StatusChange` is opened to read its state name, so every
+    -- caller asks the same question of the same field.
+    operation status_of(w: WorkItem) -> Option[String] =
       match w
-        case WorkItem(_, _, _, _, _, _, _, _, st) ->
-          match term_functor_name(st)
-            case some(name) -> name
-            case none() -> "?"
+        case WorkItem(_, _, ch, _, _, _, _, _, _) ->
+          match ch
+            case StatusChange(st, _, _, _) -> term_functor_name(st)
 
     operation tally_w(items: List[WorkItem],
                       acc: List[Pair[String, Int64]])
@@ -869,7 +876,7 @@ namespace anthill.todo
     -- bare-chain reflect-launder is gone.
     operation deps_of_w(w: WorkItem) -> List[String] =
       match w
-        case WorkItem(_, _, _, _, _, deps, _, _, _) -> normalize_deps(deps)
+        case WorkItem(_, _, _, _, _, _, deps, _, _) -> normalize_deps(deps)
 
     operation normalize_deps(d: Option[List[String]]) -> List[String] =
       match d
@@ -982,7 +989,7 @@ namespace anthill.todo
       effects ConsoleOutput
     =
       match w
-        case WorkItem(_, _, description, _, _, _, _, _, _) ->
+        case WorkItem(_, _, _, description, _, _, _, _, _) ->
           -- WI-408: the slot is a proper Option — peel it, then read the
           -- payload Term as a String.
           match description
@@ -995,11 +1002,9 @@ namespace anthill.todo
     operation print_status_line_w(w: WorkItem) -> Unit
       effects ConsoleOutput
     =
-      match w
-        case WorkItem(_, _, _, _, _, _, _, _, st) ->
-          match term_functor_name(st)
-            case some(name) -> println(console(), concat("Status:      ", name))
-            case none() -> ()
+      match status_of(w)
+        case some(name) -> println(console(), concat("Status:      ", name))
+        case none() -> ()
 
     operation print_deps_w(w: WorkItem) -> Unit
       effects ConsoleOutput
@@ -1018,7 +1023,7 @@ namespace anthill.todo
     -- pass (annotate_rows / fill_unblocks).
     operation row_of_w(w: WorkItem) -> Row =
       match w
-        case WorkItem(id, created, desc, _, _, _, _, _, _) ->
+        case WorkItem(id, created, _, desc, _, _, _, _, _) ->
           -- WI-408: peel the Option, then read the payload Term.
           let desc_str = match desc
             case none() -> ""
@@ -2441,6 +2446,15 @@ namespace anthill.todo
                      collect_all_args(args, "acceptance"),
                      collect_all_args(args, "tag"))
 
+    -- A new item's first change: it was opened, by whoever filed it, WHEN it was
+    -- filed. `created` rather than `now()` on purpose — the two are the same
+    -- instant for a real `add`, and `--created` is what makes the mint a pure
+    -- function of stated inputs, so reading the clock again here would make an
+    -- otherwise-reproducible add depend on the moment.
+    operation opened_by(agent: String, created: String) -> StatusChange =
+      StatusChange(status: Open(), agent: some(agent), at: some(created),
+                   reason: none())
+
     operation do_add(s: Cell[State], agent: String, created: String,
                      description: String,
                      depends_on: List[String],
@@ -2468,10 +2482,10 @@ namespace anthill.todo
               let _ = WorkItemStore.commit(s, WorkItem(
                 id: id,
                 created: created,
+                last_status_change: opened_by(agent, created),
                 description: description,
                 acceptance: acceptance,
-                depends_on: depends_on,
-                status: Open()))
+                depends_on: depends_on))
               let _ = apply_tags(s, id, tags)
               let _ = println(console(),
                               concat("added: ",
@@ -2572,10 +2586,10 @@ namespace anthill.todo
               let _ = WorkItemStore.commit(s, WorkItem(
                 id: id,
                 created: created,
+                last_status_change: opened_by(agent, created),
                 description: description,
                 acceptance: acceptance,
-                depends_on: depends_on,
-                status: Open()))
+                depends_on: depends_on))
               let _ = apply_tags(s, id, tags)
               let _ = println(console(),
                 concat("inserted: ",
@@ -2695,77 +2709,94 @@ namespace anthill.todo
                   case some(acceptance) ->
                     some(cons(tool_to_acceptance(name), acceptance))
 
-    -- Reconstruct a WorkItem with a new status field, preserving every
-    -- other field as the materialized entity carried them. Factored as
-    -- an op (not a let-bound expression) to dodge a typer env-loss bug
-    -- where a let-bound constructor's TypeResult.env drops the
-    -- enclosing-sort context and downstream spec-op dispatch fails to
-    -- find the requires-chain slot. Pattern-match on positional fields
-    -- in declared order (id, created, description, context, acceptance,
-    -- depends_on, generates, requires_capability, status).
+    -- Reconstruct a WorkItem with one field replaced, preserving every other
+    -- field as the materialized entity carried them. Factored as ops (not
+    -- let-bound expressions) to dodge a typer env-loss bug where a let-bound
+    -- constructor's TypeResult.env drops the enclosing-sort context and
+    -- downstream spec-op dispatch fails to find the requires-chain slot.
+    -- Pattern-match on positional fields in declared order (id, created,
+    -- last_status_change, description, context, acceptance, depends_on,
+    -- generates, requires_capability).
     --
     -- `created` rides through all four UNCHANGED, and that is the field's whole
     -- contract (WI-1121): an item's creation time is written once and never
     -- rewritten, which is what lets the id minted from it stay stable while the
     -- description it was also minted from is edited for months.
-    operation with_status(wi: WorkItem, st: WorkStatus) -> WorkItem =
+    operation with_status(wi: WorkItem, ch: StatusChange) -> WorkItem =
       match wi
-        case WorkItem(id, created, desc, ctx, acc, deps, gen, reqs, _) ->
+        case WorkItem(id, created, _, desc, ctx, acc, deps, gen, reqs) ->
           WorkItem(
             id: id,
             created: created,
+            last_status_change: ch,
             description: desc,
             context: ctx,
             acceptance: acc,
             depends_on: deps,
             generates: gen,
-            requires_capability: reqs,
-            status: st)
+            requires_capability: reqs)
 
     operation with_description(wi: WorkItem, new_desc: String) -> WorkItem =
       match wi
-        case WorkItem(id, created, _, ctx, acc, deps, gen, reqs, st) ->
+        case WorkItem(id, created, ch, _, ctx, acc, deps, gen, reqs) ->
           WorkItem(
             id: id,
             created: created,
+            last_status_change: ch,
             description: new_desc,
             context: ctx,
             acceptance: acc,
             depends_on: deps,
             generates: gen,
-            requires_capability: reqs,
-            status: st)
+            requires_capability: reqs)
 
     operation with_acceptance(wi: WorkItem,
                               new_acc: List[AcceptanceCriterion])
       -> WorkItem
     =
       match wi
-        case WorkItem(id, created, desc, ctx, _, deps, gen, reqs, st) ->
+        case WorkItem(id, created, ch, desc, ctx, _, deps, gen, reqs) ->
           WorkItem(
             id: id,
             created: created,
+            last_status_change: ch,
             description: desc,
             context: ctx,
             acceptance: new_acc,
             depends_on: deps,
             generates: gen,
-            requires_capability: reqs,
-            status: st)
+            requires_capability: reqs)
 
     operation with_deps(wi: WorkItem, new_deps: List[String]) -> WorkItem =
       match wi
-        case WorkItem(id, created, desc, ctx, acc, _, gen, reqs, st) ->
+        case WorkItem(id, created, ch, desc, ctx, acc, _, gen, reqs) ->
           WorkItem(
             id: id,
             created: created,
+            last_status_change: ch,
             description: desc,
             context: ctx,
             acceptance: acc,
             depends_on: new_deps,
             generates: gen,
-            requires_capability: reqs,
-            status: st)
+            requires_capability: reqs)
+
+    -- EVERY TRANSITION IS STAMPED THE SAME WAY, and that is the point of the
+    -- record: whoever ran the command, at the time they ran it. The old sum
+    -- recorded an agent on two of nine statuses and a time on six, so `verify`
+    -- left no trace of who verified and `promote` none at all. One constructor
+    -- here means a new status cannot be added with the stamp forgotten.
+    operation changed_by(st: WorkStatus, agent: String) -> StatusChange
+      effects Clock
+    =
+      StatusChange(status: st, agent: some(agent), at: some(now()), reason: none())
+
+    operation changed_for(st: WorkStatus, agent: String, reason: String)
+      -> StatusChange
+      effects Clock
+    =
+      StatusChange(status: st, agent: some(agent), at: some(now()),
+                   reason: some(reason))
 
     -- ── cmd_claim ────────────────────────────────────────────────
     -- `claim <id>` transitions Open → Claimed(agent, since). Routes
@@ -2794,7 +2825,7 @@ namespace anthill.todo
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
       let _ = WorkItemStore.replace(s, id,
-        with_status(wi, Claimed(agent: agent, since: now())))
+        with_status(wi, changed_by(Claimed(), agent)))
       let _ = println(console(),
         concat("claimed: ", concat(id, concat(" by ", agent))))
       0
@@ -2803,13 +2834,13 @@ namespace anthill.todo
     -- `unclaim <id>`: Claimed → Open, the inverse of `claim`. Only
     -- valid from Claimed — any other status is an error (there is no
     -- claim to release), so a typo or a double-unclaim fails loudly
-    -- rather than silently no-op'ing. Replacing the whole status with
-    -- Open() clears the agent/since the Claimed status carried. Honors
-    -- --agent only for the audit line (Open carries no claimant).
+    -- rather than silently no-op'ing. The new change records --agent as
+    -- WHO RELEASED IT — under the old sum `Open` carried no fields, so an
+    -- unclaim left no trace of who did it (WI-K63ZV).
     operation cmd_unclaim(args: List[Binding],
                            agent: String,
                            s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match resolve_id_arg(args, "id", "unclaim: missing id")
         case ref_missing() -> 2
@@ -2824,11 +2855,11 @@ namespace anthill.todo
 
     operation do_unclaim(s: Cell[State], agent: String,
                          id: String, wi: WorkItem) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       let st = status_name_w(wi)
       if eq(st, "Claimed") then
-        let _ = WorkItemStore.replace(s, id, with_status(wi, Open()))
+        let _ = WorkItemStore.replace(s, id, with_status(wi, changed_by(Open(), agent)))
         let _ = println(console(),
           concat("unclaimed: ", concat(id, concat(" by ", agent))))
         0
@@ -2845,21 +2876,23 @@ namespace anthill.todo
     -- `promote <id>` lifts a PreOpened item into the active Open queue.
     -- Each is valid ONLY from its source status (a loud error otherwise),
     -- so a typo can't silently move an item out of an unexpected state.
-    -- Open and PreOpened carry no fields, so neither stamps a timestamp
-    -- (no Clock effect). Both share `set_status_cmd` — the transition is
-    -- identical bar the from/to status and the audit verb.
+    -- BOTH STAMP, which they did not before: `Open` and `PreOpened` carried no
+    -- fields under the old sum, so a promote left no record of who promoted an
+    -- item or when. Every transition is a `StatusChange` now, so both take
+    -- Clock. Both share `set_status_cmd` — the transition is identical bar the
+    -- from/to status and the audit verb.
 
     operation cmd_preopen(args: List[Binding],
                           agent: String,
                           s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       set_status_cmd(args, s, agent, "preopen", "Open", PreOpened(), "preopened")
 
     operation cmd_promote(args: List[Binding],
                           agent: String,
                           s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       set_status_cmd(args, s, agent, "promote", "PreOpened", Open(), "promoted")
 
@@ -2869,7 +2902,7 @@ namespace anthill.todo
     operation set_status_cmd(args: List[Binding], s: Cell[State],
                              agent: String, label: String, from: String,
                              to: WorkStatus, verb: String) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match resolve_id_arg(args, "id", concat(label, ": missing id"))
         case ref_missing() -> 2
@@ -2885,11 +2918,11 @@ namespace anthill.todo
     operation do_set_status(s: Cell[State], agent: String, id: String,
                             wi: WorkItem, from: String, to: WorkStatus,
                             verb: String) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       let st = status_name_w(wi)
       if eq(st, from) then
-        let _ = WorkItemStore.replace(s, id, with_status(wi, to))
+        let _ = WorkItemStore.replace(s, id, with_status(wi, changed_by(to, agent)))
         let _ = println(console(),
           concat(verb, concat(": ", concat(id, concat(" by ", agent)))))
         0
@@ -2924,16 +2957,18 @@ namespace anthill.todo
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
       let _ = WorkItemStore.replace(s, id,
-        with_status(wi, Delivered(agent: agent, at: now())))
+        with_status(wi, changed_by(Delivered(), agent)))
       let _ = println(console(),
         concat("delivered: ", concat(id, concat(" by ", agent))))
       0
 
     -- ── cmd_verify ───────────────────────────────────────────────
-    -- `verify <id>`: Delivered → Verified(at). No agent — the verifier
-    -- identity isn't recorded in the legacy fact shape.
+    -- `verify <id>`: Delivered → Verified. IT RECORDS THE VERIFIER now: under
+    -- the old sum `Verified(at:)` carried no agent, so "who verified this" was
+    -- simply not written down anywhere (WI-K63ZV).
 
     operation cmd_verify(args: List[Binding],
+                          agent: String,
                           s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
@@ -2946,13 +2981,15 @@ namespace anthill.todo
               let _ = eprintln(console(),
                 concat("error: work item '", concat(id, "' not found")))
               1
-            case some(wi) -> do_verify(s, id, wi)
+            case some(wi) -> do_verify(s, agent, id, wi)
 
-    operation do_verify(s: Cell[State], id: String, wi: WorkItem) -> Int64
+    operation do_verify(s: Cell[State], agent: String, id: String,
+                        wi: WorkItem) -> Int64
       effects {ConsoleOutput, Modify[s], Error, Clock}
     =
-      let _ = WorkItemStore.replace(s, id, with_status(wi, Verified(at: now())))
-      let _ = println(console(), concat("verified: ", id))
+      let _ = WorkItemStore.replace(s, id,
+        with_status(wi, changed_by(Verified(), agent)))
+      let _ = println(console(), concat("verified: ", concat(id, concat(" by ", agent))))
       0
 
     -- ── cmd_delete ───────────────────────────────────────────────
@@ -3165,7 +3202,7 @@ namespace anthill.todo
       effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
     =
       match status_for(toLower(name), agent, reason_opt)
-        case status_ok(st) -> commit_status(s, id, wi1, st, summary)
+        case status_ok(ch) -> commit_status(s, id, wi1, ch, summary)
         case status_needs_reason() ->
           let _ = eprintln(console(),
             concat("update: --status ",
@@ -3189,57 +3226,56 @@ namespace anthill.todo
                          reason_opt: Option[String]) -> UpdateStatus
       effects Clock
     =
-      if eq(n, "open") then ok_simple(Open(), reason_opt)
-      else if eq(n, "preopened") then ok_simple(PreOpened(), reason_opt)
-      else if eq(n, "draft") then ok_simple(Draft(), reason_opt)
-      else if eq(n, "claimed") then
-        ok_simple(Claimed(agent: agent, since: now()), reason_opt)
-      else if eq(n, "delivered") then
-        ok_simple(Delivered(agent: agent, at: now()), reason_opt)
-      else if eq(n, "verified") then ok_simple(Verified(at: now()), reason_opt)
-      else if eq(n, "rejected") then
-        ok_reason(reason_opt, Rejected(reason: reason_of(reason_opt), at: now()))
+      if eq(n, "open") then ok_simple(Open(), agent, reason_opt)
+      else if eq(n, "preopened") then ok_simple(PreOpened(), agent, reason_opt)
+      else if eq(n, "draft") then ok_simple(Draft(), agent, reason_opt)
+      else if eq(n, "claimed") then ok_simple(Claimed(), agent, reason_opt)
+      else if eq(n, "delivered") then ok_simple(Delivered(), agent, reason_opt)
+      else if eq(n, "verified") then ok_simple(Verified(), agent, reason_opt)
+      else if eq(n, "rejected") then ok_reason(Rejected(), agent, reason_opt)
       else if eq(n, "proposalrejected") then
-        ok_reason(reason_opt, ProposalRejected(reason: reason_of(reason_opt), at: now()))
-      else if eq(n, "stale") then
-        ok_reason(reason_opt, Stale(reason: reason_of(reason_opt), since: now()))
+        ok_reason(ProposalRejected(), agent, reason_opt)
+      else if eq(n, "stale") then ok_reason(Stale(), agent, reason_opt)
       else status_unknown()
 
-    -- A non-reason status is OK only when no --reason was supplied;
-    -- a stray --reason would otherwise be silently dropped.
-    operation ok_simple(st: WorkStatus, reason_opt: Option[String])
-      -> UpdateStatus
+    -- A status that takes no reason is OK only when no --reason was supplied; a
+    -- stray --reason would otherwise be silently dropped.
+    --
+    -- THAT IS A COMMAND RULE, NOT A DOMAIN ONE (WI-K63ZV): a `StatusChange`
+    -- carries a reason whatever it changed to, and only an OFF-RAMP is required
+    -- by the domain to have one. What this refuses is a `--reason` the user
+    -- would have no way to see afterwards, which is a usage question.
+    operation ok_simple(st: WorkStatus, agent: String,
+                        reason_opt: Option[String]) -> UpdateStatus
+      effects Clock
     =
       match reason_opt
-        case none() -> status_ok(st)
+        case none() -> status_ok(changed_by(st, agent))
         case some(_) -> status_reason_unused()
 
-    -- A reason-carrying status is OK only when --reason was supplied; the
-    -- already-built `st` (constructed with reason_of) is used in that case.
-    operation ok_reason(reason_opt: Option[String], st: WorkStatus)
-      -> UpdateStatus
+    -- An off-ramp is OK only when --reason was supplied: the domain refuses a
+    -- rejection that does not say why, so catching it here names the flag
+    -- instead of failing the load.
+    operation ok_reason(st: WorkStatus, agent: String,
+                        reason_opt: Option[String]) -> UpdateStatus
+      effects Clock
     =
       match reason_opt
         case none() -> status_needs_reason()
-        case some(_) -> status_ok(st)
-
-    operation reason_of(reason_opt: Option[String]) -> String =
-      match reason_opt
-        case some(r) -> r
-        case none() -> ""
+        case some(r) -> status_ok(changed_for(st, agent, r))
 
     -- Shared diagnostic for a --reason that has no reason-carrying --status
     -- to attach to (bare --reason, or --reason on a non-reason status).
     operation reason_unused_msg() -> String =
       "update: --reason applies only to --status Rejected, ProposalRejected, or Stale"
 
-    -- Commit wi1 with status `st` set, printing the change summary. Takes
-    -- an already-built WorkStatus value, so no Clock effect of its own.
+    -- Commit wi1 with `ch` as its last status change, printing the summary.
+    -- Takes an already-built `StatusChange`, so no Clock effect of its own.
     operation commit_status(s: Cell[State], id: String, wi1: WorkItem,
-                            st: WorkStatus, summary: String) -> Int64
+                            ch: StatusChange, summary: String) -> Int64
       effects {ConsoleOutput, Modify[s], Error}
     =
-      let _ = WorkItemStore.replace(s, id, with_status(wi1, st))
+      let _ = WorkItemStore.replace(s, id, with_status(wi1, ch))
       let _ = println(console(),
         concat("updated ", concat(id, concat(": ", summary))))
       0
